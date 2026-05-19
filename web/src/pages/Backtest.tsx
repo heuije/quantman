@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import ConditionBuilder from "../components/ConditionBuilder";
+import SymbolPicker from "../components/SymbolPicker";
 import EquityChart from "../components/EquityChart";
 import type {
   AnalysisResult, BacktestResult, ConditionGroup, StrategyDef, SymbolInfo,
@@ -9,15 +10,36 @@ import type {
 const fmt = (v: number | null | undefined, d = 1) =>
   v == null ? "-" : v.toLocaleString(undefined, { maximumFractionDigits: d });
 
+/** 청산 규칙 정의 — 켜진 규칙 중 먼저 트리거되는 것으로 청산. */
+type RuleKey = "hold" | "tp" | "sl" | "trail" | "atr";
+const RULE_DEFS: { key: RuleKey; name: string; suffix: string }[] = [
+  { key: "hold",  name: "보유기간",      suffix: "일 경과 시" },
+  { key: "tp",    name: "익절",          suffix: "% 이상 수익 시" },
+  { key: "sl",    name: "손절",          suffix: "% 이하 수익 시 (음수 입력)" },
+  { key: "trail", name: "트레일링 스톱",  suffix: "% 하락 시 (진입 후 고점 대비)" },
+  { key: "atr",   name: "ATR 트레일링",   suffix: "× ATR 만큼 고점에서 하락 시" },
+];
+
+/** 원 금액을 만원/억원 단위로 읽기 쉽게 변환. */
+function wonReadable(n: number): string {
+  if (n >= 1e8) return `= ${(n / 1e8).toLocaleString(undefined, { maximumFractionDigits: 2 })}억원`;
+  if (n >= 1e4) return `= ${(n / 1e4).toLocaleString()}만원`;
+  return `= ${n.toLocaleString()}원`;
+}
+
 export default function Backtest() {
   const [symbols, setSymbols] = useState<SymbolInfo[]>([]);
   const [name, setName] = useState("새 전략");
   const [tradeSymbol, setTradeSymbol] = useState("");
   const [buy, setBuy] = useState<ConditionGroup>({ conditions: [], logic: "AND" });
   const [sell, setSell] = useState<ConditionGroup>({ conditions: [], logic: "AND" });
-  const [holdDays, setHoldDays] = useState(5);
-  const [stopLoss, setStopLoss] = useState(-5);
-  const [takeProfit, setTakeProfit] = useState(10);
+  const [exits, setExits] = useState<Record<RuleKey, { on: boolean; v: number }>>({
+    hold:  { on: true,  v: 5 },
+    tp:    { on: true,  v: 10 },
+    sl:    { on: true,  v: -5 },
+    trail: { on: false, v: 8 },
+    atr:   { on: false, v: 3 },
+  });
   const [amountPct, setAmountPct] = useState(100);
   const [capital, setCapital] = useState(10_000_000);
   const [forwardDays, setForwardDays] = useState(1);
@@ -29,10 +51,9 @@ export default function Backtest() {
   const [err, setErr] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
 
-  const tradable = useMemo(
-    () => symbols.filter((s) => s.tradable && s.indicators.length > 0),
-    [symbols],
-  );
+  function setRule(key: RuleKey, patch: Partial<{ on: boolean; v: number }>) {
+    setExits((e) => ({ ...e, [key]: { ...e[key], ...patch } }));
+  }
 
   useEffect(() => {
     api.symbols().then((r) => {
@@ -61,9 +82,11 @@ export default function Backtest() {
       name, trade_symbol: tradeSymbol, buy,
       sell: sell.conditions.length ? sell : null,
       exit_rules: {
-        hold_days: holdDays || null,
-        stop_loss: stopLoss || null,
-        take_profit: takeProfit || null,
+        hold_days:      exits.hold.on  ? exits.hold.v  : null,
+        take_profit:    exits.tp.on    ? exits.tp.v    : null,
+        stop_loss:      exits.sl.on    ? exits.sl.v    : null,
+        trail_pct:      exits.trail.on ? exits.trail.v : null,
+        trail_atr_mult: exits.atr.on   ? exits.atr.v   : null,
       },
       amount_pct: amountPct,
     };
@@ -128,12 +151,12 @@ export default function Backtest() {
               </div>
               <div>
                 <label>매수할 종목</label>
-                <select value={tradeSymbol}
-                        onChange={(e) => setTradeSymbol(e.target.value)}>
-                  {tradable.map((s) => (
-                    <option key={s.symbol} value={s.symbol}>{s.symbol}</option>
-                  ))}
-                </select>
+                <div>
+                  <SymbolPicker
+                    symbols={symbols} value={tradeSymbol} tradableOnly
+                    onChange={setTradeSymbol}
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -150,22 +173,30 @@ export default function Backtest() {
 
           <div className="panel">
             <h3>4. 청산 규칙 · 자금</h3>
+            <p className="muted" style={{ margin: "0 0 10px" }}>
+              켜진 규칙 중 먼저 트리거되는 것으로 청산합니다. 매도 조건도 함께 적용됩니다.
+            </p>
+            <div className="rule-list">
+              {RULE_DEFS.map((r) => {
+                const st = exits[r.key];
+                return (
+                  <label className="rule-row" key={r.key}>
+                    <input
+                      type="checkbox" checked={st.on}
+                      onChange={(e) => setRule(r.key, { on: e.target.checked })}
+                    />
+                    <span className="rule-name">{r.name}</span>
+                    <input
+                      type="number" step="any" disabled={!st.on} value={st.v}
+                      onChange={(e) => setRule(r.key, { v: Number(e.target.value) })}
+                    />
+                    <span className="rule-suffix">{r.suffix}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="spacer" />
             <div className="row">
-              <div>
-                <label>보유기간(일)</label>
-                <input type="number" value={holdDays}
-                       onChange={(e) => setHoldDays(Number(e.target.value))} />
-              </div>
-              <div>
-                <label>익절(%)</label>
-                <input type="number" value={takeProfit}
-                       onChange={(e) => setTakeProfit(Number(e.target.value))} />
-              </div>
-              <div>
-                <label>손절(%)</label>
-                <input type="number" value={stopLoss}
-                       onChange={(e) => setStopLoss(Number(e.target.value))} />
-              </div>
               <div>
                 <label>투입비율(%)</label>
                 <input type="number" value={amountPct}
@@ -175,6 +206,9 @@ export default function Backtest() {
                 <label>초기자본(원)</label>
                 <input type="number" value={capital}
                        onChange={(e) => setCapital(Number(e.target.value))} />
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  {wonReadable(capital)}
+                </div>
               </div>
             </div>
           </div>

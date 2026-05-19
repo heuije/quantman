@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type {
   Condition, ConditionGroup, ModifierKind, Op, Operand, OperandKind,
   Stat, SymbolInfo,
 } from "../types";
+import { CategoryList, SYMBOL_CAT_ORDER, usePopoverDismiss } from "./SymbolPicker";
 
 // ── 상수 ──────────────────────────────────────────────────────────────────────
 
@@ -30,8 +31,6 @@ const STAT_OPTIONS: { value: Stat; label: string }[] = [
 const STAT_LABEL: Record<string, string> =
   Object.fromEntries(STAT_OPTIONS.map((o) => [o.value, o.label]));
 
-const SYMBOL_CAT_ORDER =
-  ["자산", "변동성", "금리·환율", "신용", "거시지표", "심리", "개별종목"];
 const INDICATOR_GROUP_ORDER =
   ["가격·수익률", "모멘텀", "이동평균", "변동성·기술적", "통계", "거래량", "펀더멘털", "기타"];
 
@@ -192,28 +191,10 @@ function OperandChip({ symbols, value, allowConstant, onChange }: {
   onChange: (o: Operand) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDoc(e: MouseEvent) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  const ref = usePopoverDismiss<HTMLSpanElement>(open, setOpen);
 
   return (
-    <span className="chip-wrap" ref={wrapRef}>
+    <span className="chip-wrap" ref={ref}>
       <button type="button" className="chip" onClick={() => setOpen((v) => !v)}>
         {operandSummary(value, symbols)}
         <span className="chip-caret">▾</span>
@@ -338,46 +319,6 @@ function OperandEditor({ symbols, value, allowConstant, onChange }: {
           )}
         </>
       )}
-    </div>
-  );
-}
-
-/** 카테고리 헤더로 그룹화된 검색 가능한 선택 목록. */
-function CategoryList({ items, order, selected, search, onPick }: {
-  items: { key: string; label: string; cat: string }[];
-  order: string[];
-  selected?: string;
-  search?: string;
-  onPick: (key: string) => void;
-}) {
-  const q = (search ?? "").trim().toLowerCase();
-  const filtered = q
-    ? items.filter((i) => i.label.toLowerCase().includes(q)
-                       || i.key.toLowerCase().includes(q))
-    : items;
-
-  const byCat: Record<string, typeof items> = {};
-  for (const it of filtered) (byCat[it.cat] ??= []).push(it);
-  const cats = order.filter((c) => byCat[c]?.length)
-    .concat(Object.keys(byCat).filter((c) => !order.includes(c)));
-
-  return (
-    <div className="cat-list">
-      {cats.length === 0 && <div className="cat-empty">결과 없음</div>}
-      {cats.map((cat) => (
-        <div key={cat}>
-          <div className="cat-head">{cat}</div>
-          {byCat[cat].map((it) => (
-            <button
-              key={it.key} type="button"
-              className={"cat-item" + (it.key === selected ? " sel" : "")}
-              onClick={() => onPick(it.key)}
-            >
-              {it.label}
-            </button>
-          ))}
-        </div>
-      ))}
     </div>
   );
 }
