@@ -1,0 +1,10 @@
+# 퀀트 플랫폼 API 서버
+# core 패키지(platform/core)도 함께 설치 필요: pip install -e ../core
+fastapi>=0.136
+uvicorn[standard]>=0.47
+sqlmodel>=0.0.38
+PyJWT>=2.10
+bcrypt>=4.1
+email-validator>=2.1
+httpx>=0.27
+psycopg[binary]>=3.2          # PostgreSQL 드라이버 (프로덕션 DB)

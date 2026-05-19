@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# 가상환경
+.venv/
+venv/
+
+# 비밀 · 런타임 데이터 (절대 커밋 금지)
+.env
+.env.*
+!.env.example
+*.db
+.token_cache.json
+.kis_token.json
+ledger.json
+equity.json
+trades.jsonl
+pending_snapshot.json
+
+# 빌드 산출물
+dist/
+dist2/
+build/
+build2/
+Output/
+*.zip
+
+# 웹
+node_modules/
+
+# 로그
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
