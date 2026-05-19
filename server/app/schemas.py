@@ -45,6 +45,7 @@ class DeviceStartOut(BaseModel):
     device_code: str
     user_code: str
     verification_uri: str
+    verification_uri_complete: str    # user_code가 쿼리에 미리 채워진 URL
     expires_in: int
 
 

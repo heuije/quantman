@@ -105,6 +105,7 @@ def device_start(body: DeviceStartIn, session: Session = Depends(get_session)):
         device_code=pr.device_code,
         user_code=pr.user_code,
         verification_uri=f"{settings.WEB_URL}/pair",
+        verification_uri_complete=f"{settings.WEB_URL}/pair?code={pr.user_code}",
         expires_in=settings.PAIRING_TTL_MIN * 60,
     )
 

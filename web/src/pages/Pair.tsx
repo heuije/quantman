@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import type { DeviceRow } from "../types";
 
 export default function Pair() {
-  const [code, setCode] = useState("");
+  const [params] = useSearchParams();
+  // 로컬앱이 연 URL(/pair?code=...)이면 코드를 미리 채운다
+  const prefilled = (params.get("code") ?? "").trim().toUpperCase();
+  const [code, setCode] = useState(prefilled);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -63,7 +67,9 @@ export default function Pair() {
       <div className="panel" style={{ maxWidth: 460 }}>
         <h3>2. 연결 코드 입력</h3>
         <p className="muted" style={{ marginBottom: 10 }}>
-          로컬앱에서 "기기 페어링 시작"을 누르면 표시되는 코드를 입력하세요.
+          {prefilled
+            ? "로컬앱이 연결 코드를 자동으로 입력했습니다. “연결”을 누르세요."
+            : "로컬앱에서 “기기 페어링 시작”을 누르면 표시되는 코드를 입력하세요."}
         </p>
         <form onSubmit={approve}>
           <div className="row">

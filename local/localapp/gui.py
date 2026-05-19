@@ -189,8 +189,10 @@ class SettingsApp:
                 return
             self.pair_code.config(text=info["user_code"])
             self.pair_msg.config(
-                text="브라우저에서 이 코드를 입력해 기기를 승인하세요. 승인 대기 중...")
-            webbrowser.open(info["verification_uri"])
+                text="브라우저에서 로그인 후 승인 버튼을 누르세요. 승인 대기 중...")
+            # 코드가 미리 채워진 URL로 연다(구버전 서버 대비 fallback)
+            webbrowser.open(info.get("verification_uri_complete")
+                            or info["verification_uri"])
 
             def poll():
                 return pairing.poll_for_token(info["device_code"])
