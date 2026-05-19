@@ -80,6 +80,13 @@ button.sm { padding: 5px 10px; font-size: 13px; }
 .sentence .txt { color: var(--muted); font-size: 14px; }
 .sentence select, .sentence input { padding: 5px 8px; }
 .sentence input { width: 80px; }
+.sentence .operand, .sentence .modifier {
+  display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap;
+}
+.sentence .modifier {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 6px;
+}
 .logic-toggle { display: inline-flex; gap: 4px; margin: 6px 0 10px; }
 .logic-toggle button { padding: 4px 12px; font-size: 13px; }
 

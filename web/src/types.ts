@@ -3,11 +3,27 @@ export interface SymbolInfo {
   symbol: string; tradable: boolean; rows: number; indicators: IndicatorInfo[];
 }
 
-export type Op = ">" | ">=" | "<" | "<=";
+export type Op = ">" | ">=" | "<" | "<=" | "between" | "cross_up" | "cross_down";
 export type Logic = "AND" | "OR";
+export type OperandKind = "indicator" | "constant" | "history";
+export type Stat = "min" | "max" | "mean" | "percentile" | "lag";
+export type ModifierKind = "streak" | "within";
 
+export interface Operand {
+  kind: OperandKind;
+  symbol?: string;
+  indicator?: string;
+  value?: number | number[];      // constant — between이면 [min, max]
+  stat?: Stat;                    // history
+  window?: number;                // history — 롤링 기간(일)
+  percentile?: number;            // history — stat="percentile"일 때 0~100
+}
+export interface Modifier { kind: ModifierKind; days: number }
 export interface Condition {
-  symbol: string; indicator: string; op: Op; value: number;
+  left: Operand;
+  op: Op;
+  right?: Operand;
+  modifier?: Modifier | null;
 }
 export interface ConditionGroup { conditions: Condition[]; logic: Logic }
 

@@ -1,16 +1,21 @@
 """
-조건부 확률 분석 엔진 (Phase 2).
+조건부 확률 분석 엔진 + 조건 평가 프레임워크.
 
-쿼리 구조:
-  conditions: [{"symbol": str, "indicator": str, "op": str, "value": float}, ...]
-  logic: "AND" | "OR"
-  target_symbol: str
-  target_indicator: str
-  forward_days: int   # 조건 발생 후 N거래일 뒤의 target_indicator 값을 측정
-  lookback_years: int | None
+조건 구조 (신버전):
+  condition = {
+    "left":  Operand,                 # 좌변 (반드시 시계열)
+    "op":    ">"|">="|"<"|"<="|"between"|"cross_up"|"cross_down",
+    "right": Operand,                 # 우변 (지표/숫자/이력통계)
+    "modifier": {"kind": "streak"|"within", "days": N} | None,
+  }
+  Operand = {"kind": "indicator", "symbol", "indicator"}
+          | {"kind": "constant", "value": float | [min,max]}
+          | {"kind": "history", "symbol", "indicator",
+             "stat": "min"|"max"|"mean"|"percentile"|"lag",
+             "window": N, "percentile": 0~100}
 
-결과:
-  n_samples, prob_positive, mean, median, q25, q75, std, p_value, distribution
+구버전 조건 {symbol, indicator, op, value}도 자동 인식·변환한다.
+분석 엔진(run_analysis)과 백테스트 엔진이 build_signal_mask를 공유한다.
 """
 
 from __future__ import annotations
@@ -22,28 +27,154 @@ from typing import Optional
 # scipy는 run_analysis에서만 쓰므로 지연 import한다.
 # (로컬앱 패키징 시 scipy ~135MB를 번들에서 제외하기 위함)
 
-OPS = {
-    ">":  lambda x, v: x > v,
-    ">=": lambda x, v: x >= v,
-    "<":  lambda x, v: x < v,
-    "<=": lambda x, v: x <= v,
-    "between": lambda x, v: (x >= v[0]) & (x <= v[1]),
-}
-
 OP_LABELS = {
-    ">": "초과",
+    ">":  "초과",
     ">=": "이상",
-    "<": "미만",
+    "<":  "미만",
     "<=": "이하",
-    "between": "범위",
+    "between":    "범위",
+    "cross_up":   "상향돌파",
+    "cross_down": "하향돌파",
+}
+
+_STAT_LABELS = {
+    "min": "최솟값", "max": "최댓값", "mean": "평균",
+    "percentile": "백분위", "lag": "전값",
 }
 
 
-def _apply_op(series: pd.Series, op: str, value) -> pd.Series:
-    fn = OPS.get(op)
-    if fn is None:
-        raise ValueError(f"지원하지 않는 연산자: {op}")
-    return fn(series, value).fillna(False)
+# ── 조건 정규화 (구버전 호환) ─────────────────────────────────────────────────
+
+def _normalize_condition(cond: dict) -> dict:
+    """구버전 {symbol, indicator, op, value} 조건을 신버전 구조로 변환한다."""
+    if "left" in cond:
+        return cond
+    return {
+        "left": {"kind": "indicator",
+                 "symbol": cond.get("symbol"),
+                 "indicator": cond.get("indicator")},
+        "op": cond.get("op", ">"),
+        "right": {"kind": "constant", "value": cond.get("value")},
+        "modifier": cond.get("modifier"),
+    }
+
+
+# ── 피연산자 해석 ────────────────────────────────────────────────────────────
+
+def _resolve_operand(data: dict[str, pd.DataFrame], operand: Optional[dict]):
+    """피연산자를 시계열(Series) 또는 상수(float/list)로 해석. 실패 시 None."""
+    if not operand:
+        return None
+    kind = operand.get("kind", "indicator")
+
+    if kind == "constant":
+        return operand.get("value")
+
+    sym = operand.get("symbol")
+    indic = operand.get("indicator")
+    if sym not in data or data[sym].empty or indic not in data[sym].columns:
+        return None
+    series = data[sym][indic]
+
+    if kind == "indicator":
+        return series
+
+    if kind == "history":
+        stat = operand.get("stat")
+        try:
+            win = int(operand.get("window") or 0)
+        except (TypeError, ValueError):
+            return None
+        if win <= 0:
+            return None
+        if stat == "min":
+            return series.rolling(win).min()
+        if stat == "max":
+            return series.rolling(win).max()
+        if stat == "mean":
+            return series.rolling(win).mean()
+        if stat == "percentile":
+            q = float(operand.get("percentile") or 50) / 100.0
+            return series.rolling(win).quantile(min(max(q, 0.0), 1.0))
+        if stat == "lag":
+            return series.shift(win)
+    return None
+
+
+# ── 연산자 적용 ──────────────────────────────────────────────────────────────
+
+def _apply_op(left: pd.Series, op: str, right) -> Optional[pd.Series]:
+    """좌변 시계열에 연산자·우변을 적용해 boolean Series를 반환한다."""
+    if op == "between":
+        if not isinstance(right, (list, tuple)) or len(right) < 2:
+            return None
+        lo, hi = right[0], right[1]
+        return (left >= lo) & (left <= hi)
+
+    if op in ("cross_up", "cross_down"):
+        left_prev = left.shift(1)
+        right_prev = right.shift(1) if isinstance(right, pd.Series) else right
+        if op == "cross_up":
+            return (left_prev <= right_prev) & (left > right)
+        return (left_prev >= right_prev) & (left < right)
+
+    if op == ">":
+        return left > right
+    if op == ">=":
+        return left >= right
+    if op == "<":
+        return left < right
+    if op == "<=":
+        return left <= right
+    return None
+
+
+def _apply_modifier(mask: pd.Series, modifier: Optional[dict]) -> pd.Series:
+    """수식어(지속성·최근성)를 boolean 마스크에 적용한다."""
+    if not modifier:
+        return mask
+    kind = modifier.get("kind")
+    try:
+        days = int(modifier.get("days") or 1)
+    except (TypeError, ValueError):
+        return mask
+    if days <= 1:
+        return mask
+    m = mask.astype(float)
+    if kind == "streak":          # N일 연속 참
+        return m.rolling(days).sum() >= days
+    if kind == "within":          # 최근 N일 내 1회 이상 참
+        return m.rolling(days).sum() >= 1
+    return mask
+
+
+def _condition_mask(data: dict[str, pd.DataFrame],
+                    cond: dict) -> Optional[pd.Series]:
+    """단일 조건의 boolean 마스크를 계산한다. 해석 불가 시 None."""
+    cond = _normalize_condition(cond)
+    left = _resolve_operand(data, cond.get("left"))
+    if not isinstance(left, pd.Series):
+        return None                       # 좌변은 반드시 시계열
+
+    op = cond.get("op")
+    right = _resolve_operand(data, cond.get("right"))
+    if right is None:
+        return None
+
+    # 좌·우변이 모두 시계열이면 공통 인덱스로 정렬
+    if isinstance(right, pd.Series):
+        idx = left.index.intersection(right.index)
+        if idx.empty:
+            return None
+        left_s, right_s = left.reindex(idx), right.reindex(idx)
+    else:
+        left_s, right_s = left, right
+
+    mask = _apply_op(left_s, op, right_s)
+    if mask is None:
+        return None
+    mask = _apply_modifier(mask, cond.get("modifier"))
+    return mask.fillna(False).astype(bool)
 
 
 def build_signal_mask(
@@ -61,10 +192,10 @@ def build_signal_mask(
 
     masks = []
     for cond in conditions:
-        sym, indic, op, val = cond["symbol"], cond["indicator"], cond["op"], cond["value"]
-        if sym not in data or data[sym].empty or indic not in data[sym].columns:
+        m = _condition_mask(data, cond)
+        if m is None:
             return pd.Series(dtype=bool)
-        masks.append(_apply_op(data[sym][indic], op, val))
+        masks.append(m)
 
     common_idx = masks[0].index
     for m in masks[1:]:
@@ -89,6 +220,8 @@ def run_analysis(
     lookback_years: Optional[int] = None,
 ) -> dict:
     """
+    조건 발생일 기준 forward_days 후 target_indicator의 분포를 분석한다.
+
     Returns:
         dict with keys: n_samples, prob_positive, mean, median, q25, q75, std,
                         p_value, t_stat, distribution (Series), condition_dates (Index)
@@ -99,71 +232,27 @@ def run_analysis(
     if target_symbol not in data or data[target_symbol].empty:
         return _empty_result(f"'{target_symbol}' 데이터 없음")
 
-    # 날짜 범위 제한
-    target_df = data[target_symbol].copy()
-    if lookback_years:
-        cutoff = target_df.index.max() - pd.DateOffset(years=lookback_years)
-        target_df = target_df[target_df.index >= cutoff]
-
-    # target_indicator 시프트: forward_days 후의 값
+    target_df = data[target_symbol]
     if target_indicator not in target_df.columns:
         return _empty_result(f"'{target_indicator}' 지표가 {target_symbol}에 없음")
 
-    future_values = target_df[target_indicator].shift(-forward_days)
+    # 조건 마스크 (백테스트와 동일한 엔진)
+    mask = build_signal_mask(data, conditions, logic)
+    if mask.empty:
+        return _empty_result("조건의 종목·지표 설정을 확인하세요.")
 
-    # 각 조건의 마스크 계산
-    masks = []
-    for cond in conditions:
-        sym   = cond["symbol"]
-        indic = cond["indicator"]
-        op    = cond["op"]
-        val   = cond["value"]
-
-        if sym not in data or data[sym].empty:
-            return _empty_result(f"'{sym}' 데이터 없음")
-        if indic not in data[sym].columns:
-            return _empty_result(f"'{indic}' 지표가 {sym}에 없음")
-
-        cond_series = data[sym][indic]
-
-        # 날짜 범위 맞추기
-        if lookback_years:
-            cond_series = cond_series[cond_series.index >= cutoff]
-
-        # 인덱스 정렬
-        common_idx = target_df.index.intersection(cond_series.index)
-        if common_idx.empty:
-            return _empty_result("조건과 대상의 날짜가 겹치지 않음")
-
-        cond_series = cond_series.reindex(common_idx)
-        mask = _apply_op(cond_series, op, val)
-        masks.append(mask)
-
-    # 공통 인덱스에서 조합
-    common_idx = masks[0].index
-    for m in masks[1:]:
-        common_idx = common_idx.intersection(m.index)
-
-    masks_aligned = [m.reindex(common_idx) for m in masks]
-
-    if logic == "AND":
-        combined_mask = masks_aligned[0]
-        for m in masks_aligned[1:]:
-            combined_mask = combined_mask & m
-    else:  # OR
-        combined_mask = masks_aligned[0]
-        for m in masks_aligned[1:]:
-            combined_mask = combined_mask | m
-
-    condition_dates = common_idx[combined_mask]
-
-    if condition_dates.empty:
+    # 조건 충족일 → target 인덱스와 교집합
+    condition_dates = mask.index[mask]
+    if lookback_years:
+        cutoff = target_df.index.max() - pd.DateOffset(years=lookback_years)
+        condition_dates = condition_dates[condition_dates >= cutoff]
+    condition_dates = condition_dates.intersection(target_df.index)
+    if len(condition_dates) == 0:
         return _empty_result("조건을 만족하는 날짜가 없음")
 
-    # 해당 날짜의 future_values 추출
-    future_aligned = future_values.reindex(common_idx)
-    outcome = future_aligned.loc[condition_dates].dropna()
-
+    # forward_days 후 값
+    future_values = target_df[target_indicator].shift(-forward_days)
+    outcome = future_values.loc[condition_dates].dropna()
     if outcome.empty:
         return _empty_result(f"forward {forward_days}일 후 데이터 없음 (기간 끝 부분)")
 
@@ -194,9 +283,8 @@ def run_analysis(
         "t_stat":          t_stat,
         "p_value":         p_value,
         "distribution":    outcome,
-        "condition_dates": condition_dates,
+        "condition_dates": pd.DatetimeIndex(condition_dates),
         "error":           None,
-        # 임계값 확률은 호출부에서 계산 (threshold 파라미터 없이 범용 유지)
     }
 
 
@@ -237,6 +325,27 @@ def run_temporal_stability(
     return pd.DataFrame(rows).set_index("기간")
 
 
+def describe_operand(operand: Optional[dict], indicator_label_fn) -> str:
+    """피연산자를 사람이 읽을 수 있는 문구로 변환한다."""
+    if not operand:
+        return "?"
+    kind = operand.get("kind", "indicator")
+    if kind == "constant":
+        v = operand.get("value")
+        if isinstance(v, (list, tuple)) and len(v) >= 2:
+            return f"{v[0]}~{v[1]}"
+        return str(v)
+    sym = operand.get("symbol", "")
+    lbl = indicator_label_fn(operand.get("indicator", ""))
+    if kind == "history":
+        stat = operand.get("stat")
+        stat_lbl = _STAT_LABELS.get(stat, stat or "")
+        if stat == "percentile":
+            stat_lbl = f"백분위{operand.get('percentile')}"
+        return f"{sym} {lbl}의 {operand.get('window')}일 {stat_lbl}"
+    return f"{sym}의 {lbl}"
+
+
 def build_query_description(
     conditions: list[dict],
     logic: str,
@@ -248,15 +357,18 @@ def build_query_description(
 ) -> str:
     """사람이 읽을 수 있는 쿼리 설명문 생성."""
     parts = []
-    for c in conditions:
-        lbl = indicator_label_fn(c["indicator"])
-        op_lbl = OP_LABELS.get(c["op"], c["op"])
-        val = c["value"]
-        if c["op"] == "between":
-            val_str = f"{val[0]} ~ {val[1]}"
-        else:
-            val_str = str(val)
-        parts.append(f"{c['symbol']}의 {lbl}이(가) {val_str}{op_lbl}")
+    for raw in conditions:
+        c = _normalize_condition(raw)
+        left = describe_operand(c.get("left"), indicator_label_fn)
+        right = describe_operand(c.get("right"), indicator_label_fn)
+        op_lbl = OP_LABELS.get(c.get("op"), c.get("op"))
+        text = f"{left}이(가) {right} {op_lbl}"
+        mod = c.get("modifier")
+        if mod:
+            d = mod.get("days")
+            text += (f" [{d}일 연속]" if mod.get("kind") == "streak"
+                     else f" [최근 {d}일 내]")
+        parts.append(text)
 
     join_str = " AND " if logic == "AND" else " OR "
     tgt_lbl = indicator_label_fn(target_indicator)

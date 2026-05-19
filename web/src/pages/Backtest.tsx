@@ -14,6 +14,7 @@ export default function Backtest() {
   const [name, setName] = useState("새 전략");
   const [tradeSymbol, setTradeSymbol] = useState("");
   const [buy, setBuy] = useState<ConditionGroup>({ conditions: [], logic: "AND" });
+  const [sell, setSell] = useState<ConditionGroup>({ conditions: [], logic: "AND" });
   const [holdDays, setHoldDays] = useState(5);
   const [stopLoss, setStopLoss] = useState(-5);
   const [takeProfit, setTakeProfit] = useState(10);
@@ -44,8 +45,12 @@ export default function Backtest() {
         ) ?? first.indicators[0];
         setBuy({
           logic: "AND",
-          conditions: [{ symbol: first.symbol, indicator: ind.key,
-                         op: "<", value: 0 }],
+          conditions: [{
+            left: { kind: "indicator", symbol: first.symbol, indicator: ind.key },
+            op: "<",
+            right: { kind: "constant", value: 0 },
+            modifier: null,
+          }],
         });
       }
     }).catch((e) => setErr((e as Error).message));
@@ -54,6 +59,7 @@ export default function Backtest() {
   function buildDef(): StrategyDef {
     return {
       name, trade_symbol: tradeSymbol, buy,
+      sell: sell.conditions.length ? sell : null,
       exit_rules: {
         hold_days: holdDays || null,
         stop_loss: stopLoss || null,
@@ -138,7 +144,12 @@ export default function Backtest() {
           </div>
 
           <div className="panel">
-            <h3>3. 청산 규칙 · 자금</h3>
+            <h3>3. 매도 조건 <span className="muted">(선택 — 청산 규칙과 함께, 먼저 트리거되는 쪽)</span></h3>
+            <ConditionBuilder symbols={symbols} group={sell} onChange={setSell} />
+          </div>
+
+          <div className="panel">
+            <h3>4. 청산 규칙 · 자금</h3>
             <div className="row">
               <div>
                 <label>보유기간(일)</label>
@@ -169,7 +180,7 @@ export default function Backtest() {
           </div>
 
           <div className="panel">
-            <h3>4. 실행</h3>
+            <h3>5. 실행</h3>
             <div className="row">
               <div>
                 <label>분석: 조건 발생 후 N일 뒤 수익률</label>
