@@ -66,10 +66,17 @@ MACRO_FRED_SYMBOLS = {
     "하이일드스프레드":   "BAMLH0A0HYM2",
     "투자등급스프레드":   "BAMLC0A0CM",
     "금융여건지수":       "NFCI",
+    # 금리·신용 일간(daily) 시리즈 — 발표지연/룩어헤드 없음
+    "미국채2년":          "DGS2",
+    "미국채30년":         "DGS30",
+    "기대인플레이션10년":  "T10YIE",
+    "실효기준금리":        "DFF",
+    "회사채AAA금리":       "DAAA",
+    "회사채BAA금리":       "DBAA",
 }
 
 # 매크로 파생 지표 (수집한 시리즈로 계산)
-MACRO_DERIVED = ["VIX 기간구조", "구리금비율"]
+MACRO_DERIVED = ["VIX 기간구조", "구리금비율", "회사채신용스프레드"]
 
 ASSET_SYMBOLS = list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + ["비트코인"]
 MACRO_SYMBOLS = list(MACRO_YF_SYMBOLS) + list(MACRO_FRED_SYMBOLS) + MACRO_DERIVED
@@ -261,8 +268,25 @@ def _build_derived(results: dict) -> dict:
         _save(name, df)
         results[name] = df
 
+    def _diff(name: str, a_name: str, b_name: str):
+        """두 시리즈의 차이(a - b)를 OHLCV 형식으로 저장."""
+        a, b = results.get(a_name), results.get(b_name)
+        if a is None or b is None or a.empty or b.empty:
+            return
+        idx = a.index.intersection(b.index)
+        if idx.empty:
+            return
+        d = (a.loc[idx, "Close"] - b.loc[idx, "Close"]).dropna()
+        if d.empty:
+            return
+        df = pd.DataFrame({"Open": d, "High": d, "Low": d, "Close": d, "Volume": 0.0})
+        _save(name, df)
+        results[name] = df
+
     _ratio("VIX 기간구조", "VIX", "VIX 3개월")   # >1 = 백워데이션(스트레스)
     _ratio("구리금비율", "구리선물", "금선물")     # 상승 = 리플레이션
+    # 신용 스프레드 = BAA(중간등급) - AAA(최우량) 회사채 금리차. 확대 = 신용경색
+    _diff("회사채신용스프레드", "회사채BAA금리", "회사채AAA금리")
     return results
 
 
