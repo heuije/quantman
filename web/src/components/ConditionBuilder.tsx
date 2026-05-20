@@ -3,7 +3,12 @@ import type {
   Condition, ConditionGroup, IndicatorInfo, ModifierKind, Op, Operand,
   Stat, SymbolInfo,
 } from "../types";
-import { CategoryList, SYMBOL_CAT_ORDER, usePopoverDismiss } from "./SymbolPicker";
+import { CategoryList, usePopoverDismiss } from "./SymbolPicker";
+import TabbedSymbolList from "./TabbedSymbolList";
+
+const OPERAND_TAB_ORDER = [
+  "자산", "변동성", "금리·환율", "신용", "거시지표", "심리", "개별종목",
+];
 
 // ── 상수 ──────────────────────────────────────────────────────────────────────
 
@@ -277,7 +282,6 @@ function OperandEditor({ symbols, value, allowConstant, compatGroup, onChange }:
   const symList = symbols.filter((s) => s.indicators.length > 0);
   const indicatorsOf = (sym?: string) =>
     symbols.find((s) => s.symbol === sym)?.indicators ?? [];
-  const [search, setSearch] = useState("");
 
   // 지표/숫자 2개 탭만 유지. "이력통계"는 지표 탭의 "최근 N일" 토글로 통합.
   const tabKind: "indicator" | "constant" =
@@ -360,28 +364,32 @@ function OperandEditor({ symbols, value, allowConstant, compatGroup, onChange }:
 
       {tabKind === "indicator" && (
         <>
-          <input
-            className="pop-search" placeholder="종목 검색…" autoFocus
-            value={search} onChange={(e) => setSearch(e.target.value)}
-          />
-          <div className="op-label">종목</div>
-          <CategoryList
+          {/* Step 1: 종목 선택 (탭 기반) */}
+          <div className="op-label">① 종목 선택</div>
+          <TabbedSymbolList
             items={visibleSymbols.map((s) =>
               ({ key: s.symbol, label: s.symbol, cat: s.category }))}
-            order={SYMBOL_CAT_ORDER}
+            order={OPERAND_TAB_ORDER}
             selected={value.symbol}
-            search={search}
+            placeholder="종목 검색…"
+            emptyMessage="호환되는 종목이 없습니다."
             onPick={pickSymbol}
           />
 
+          {/* Step 2: 그 종목이 지원하는 지표 (종목별로 다름) */}
           {value.symbol && (
             <>
-              <div className="op-label">지표 <span className="op-label-sub">({value.symbol})</span></div>
+              <div className="op-label" style={{ marginTop: 14 }}>
+                ② 지표 선택
+                <span className="op-label-sub">
+                  ({value.symbol} · {visibleIndicators.length}개 지원)
+                </span>
+              </div>
               {visibleIndicators.length === 0 ? (
                 <div className="cat-empty">
                   {compatGroup && compatGroup !== "other"
-                    ? "이 종목엔 호환되는 지표가 없습니다"
-                    : "지표가 없습니다"}
+                    ? "이 종목엔 호환되는 지표가 없습니다."
+                    : "이 종목엔 사용 가능한 지표가 없습니다. (라이브 매매 전용)"}
                 </div>
               ) : (
                 <CategoryList

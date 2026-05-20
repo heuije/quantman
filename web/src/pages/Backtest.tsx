@@ -60,16 +60,19 @@ export default function Backtest() {
     api.symbols().then((r) => {
       setSymbols(r.symbols);
       setHasMaster(r.has_master);
-      const first = r.symbols.find((s) => s.tradable && s.indicators.length);
-      if (first) {
-        setTradeSymbol(first.symbol);
-        const ind = first.indicators.find(
+      // 매수 대상 default: 첫 tradable 종목 (백테스트 데이터 유무 무관)
+      const firstTradable = r.symbols.find((s) => s.tradable);
+      if (firstTradable) setTradeSymbol(firstTradable.symbol);
+      // 매수 조건 default: indicators 있는 첫 종목 (매크로/자산 등)
+      const firstWithInd = r.symbols.find((s) => s.indicators.length > 0);
+      if (firstWithInd) {
+        const ind = firstWithInd.indicators.find(
           (i) => i.key.includes("pct_change") || i.key.includes("return"),
-        ) ?? first.indicators[0];
+        ) ?? firstWithInd.indicators[0];
         setBuy({
           logic: "AND",
           conditions: [{
-            left: { kind: "indicator", symbol: first.symbol, indicator: ind.key },
+            left: { kind: "indicator", symbol: firstWithInd.symbol, indicator: ind.key },
             op: "<",
             right: { kind: "constant", value: 0 },
             modifier: null,

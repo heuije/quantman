@@ -137,6 +137,32 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.18); padding: 12px;
 }
+.popover-wide { width: 440px; }
+
+/* 탭 기반 종목 리스트 */
+.tabbed-list { display: flex; flex-direction: column; gap: 8px; }
+.tabbed-tabs {
+  display: flex; gap: 2px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px; max-height: 76px; overflow-y: auto;
+}
+.tabbed-tab {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 9px; font-size: 12px; font-weight: 500;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--muted); cursor: pointer;
+}
+.tabbed-tab:hover { color: var(--text); }
+.tabbed-tab.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.tabbed-tab-n {
+  font-size: 10px; opacity: 0.7; font-weight: 400;
+}
+.tabbed-items {
+  max-height: 240px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 6px;
+}
 .popover input { width: auto; }
 .popover .pop-search {
   width: 100%; box-sizing: border-box; padding: 7px 9px;

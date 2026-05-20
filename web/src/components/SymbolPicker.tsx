@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SymbolInfo } from "../types";
+import TabbedSymbolList from "./TabbedSymbolList";
 
 export const SYMBOL_CAT_ORDER = [
   "국내주식 (KOSPI)", "국내주식 (KOSDAQ)",
@@ -87,7 +88,11 @@ export function CategoryList({ items, order, selected, search, onPick }: {
   );
 }
 
-/** 종목 선택 칩 — 클릭 시 검색·카테고리 팝오버가 열린다. */
+/** 종목 선택 칩 — 클릭 시 탭 + 검색 팝오버가 열린다.
+ *
+ * tradableOnly=true (매수 대상): KIS 매수 가능 종목 (시장별 탭 — KOSPI/KOSDAQ/미국/일본/홍콩)
+ * tradableOnly=false (매수 조건): 백테스트 데이터 있는 종목 (분류별 탭 — 자산/변동성/금리 등)
+ */
 export default function SymbolPicker({ symbols, value, tradableOnly, onChange }: {
   symbols: SymbolInfo[];
   value: string;
@@ -95,14 +100,14 @@ export default function SymbolPicker({ symbols, value, tradableOnly, onChange }:
   onChange: (sym: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [search, setSearch] = useState("");
   const ref = usePopoverDismiss<HTMLSpanElement>(open, setOpen);
 
-  // tradableOnly=true: 매수 가능 종목 = KIS 마스터의 모든 종목 (indicators 없어도 OK)
-  // tradableOnly=false: 조건 평가용 → indicators 있는 종목만
   const list = symbols.filter((s) =>
     tradableOnly ? s.tradable : s.indicators.length > 0);
   const empty = tradableOnly && list.length === 0 && symbols.length > 0;
+
+  // 탭 정렬: tradable은 시장별, 매수 조건은 분류별
+  const tabOrder = tradableOnly ? TRADABLE_TAB_ORDER : OPERAND_TAB_ORDER;
 
   return (
     <span className="chip-wrap" ref={ref}>
@@ -111,36 +116,55 @@ export default function SymbolPicker({ symbols, value, tradableOnly, onChange }:
         <span className="chip-caret">▾</span>
       </button>
       {open && (
-        <div className="popover">
+        <div className="popover popover-wide">
           {empty ? (
             <div className="cat-empty" style={{ padding: 16, lineHeight: 1.6 }}>
               매수 가능 종목 목록을 준비 중입니다.<br/>
-              서버가 KIS 공식 마스터를 다운로드 중입니다.
-              잠시 후 다시 시도해주세요.
+              서버가 KIS 공식 마스터를 다운로드 중입니다. 잠시 후 다시 시도해주세요.
             </div>
           ) : (
-            <>
-              <input
-                className="pop-search" placeholder="종목명 또는 코드 검색…" autoFocus
-                value={search} onChange={(e) => setSearch(e.target.value)}
-              />
-              <div className="op-label">종목</div>
-              <CategoryList
-                items={list.map((s) => ({
-                  key: s.symbol,
-                  label: s.name ? `${s.symbol} ${s.name}` : s.symbol,
-                  cat: s.category,
-                  badge: s.has_backtest_data === false ? "백테스트 불가" : undefined,
-                }))}
-                order={SYMBOL_CAT_ORDER}
-                selected={value}
-                search={search}
-                onPick={(k) => { onChange(k); setOpen(false); }}
-              />
-            </>
+            <TabbedSymbolList
+              items={list.map((s) => ({
+                key: s.symbol,
+                label: s.name ? `${s.symbol} ${s.name}` : s.symbol,
+                cat: tabCategoryFor(s, tradableOnly),
+                badge: tradableOnly && s.has_backtest_data === false
+                  ? "백테스트 불가" : undefined,
+              }))}
+              order={tabOrder}
+              selected={value}
+              placeholder={tradableOnly ? "종목명 또는 코드 검색…" : "종목 검색…"}
+              onPick={(k) => { onChange(k); setOpen(false); }}
+            />
           )}
         </div>
       )}
     </span>
   );
+}
+
+// ── 탭 분류 헬퍼 ─────────────────────────────────────────────────────────────
+
+const TRADABLE_TAB_ORDER = [
+  "KOSPI", "KOSDAQ",
+  "미국 NASDAQ", "미국 NYSE", "미국 AMEX",
+  "일본", "홍콩",
+];
+
+const OPERAND_TAB_ORDER = [
+  "자산", "변동성", "금리·환율", "신용", "거시지표", "심리", "개별종목",
+];
+
+function tabCategoryFor(s: SymbolInfo, tradable?: boolean): string {
+  if (!tradable) return s.category;        // 매수 조건: 카테고리 그대로 (자산/변동성/...)
+  // 매수 대상: 시장별 단일 탭 (주식 + ETF + REITs 통합)
+  const cat = s.category;
+  if (cat.includes("KOSPI")) return "KOSPI";
+  if (cat.includes("KOSDAQ")) return "KOSDAQ";
+  if (cat.includes("NASDAQ")) return "미국 NASDAQ";
+  if (cat.includes("NYSE")) return "미국 NYSE";
+  if (cat.includes("AMEX")) return "미국 AMEX";
+  if (cat.startsWith("일본")) return "일본";
+  if (cat.startsWith("홍콩")) return "홍콩";
+  return cat;
 }
