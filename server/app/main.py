@@ -64,3 +64,18 @@ app.include_router(settings_router.router)
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "quant-platform-api"}
+
+
+@app.get("/health/master")
+def master_health():
+    """KIS 종목마스터 캐시 상태 — 인증 없이 진단용."""
+    return kis_master_cache.get_status()
+
+
+@app.post("/health/master/refresh")
+def master_refresh():
+    """KIS 마스터 즉시 갱신 — 진단/배포 직후 수동 트리거.
+
+    공개 엔드포인트지만 부작용은 동일 데이터 다운로드뿐 (악용 무관).
+    """
+    return kis_master_cache.refresh()
