@@ -23,11 +23,12 @@ def list_symbols(user: User = Depends(get_current_user),
                  session: Session = Depends(get_session)):
     """전략 빌더용 — 심볼별 사용 가능한 지표 컬럼.
 
-    `tradable=True` 판정: 로컬앱이 push한 KIS 종목마스터에 존재해야 함.
-    마스터 sync 이전 사용자는 fallback으로 카테고리=`개별종목`을 tradable로 본다.
+    `tradable=True` 판정:
+    1. 로컬앱이 KIS 종목마스터를 push한 경우 → 그 화이트리스트와 교집합
+    2. fallback (마스터 sync 전) → 한국 주식 6자리 숫자 코드만 통과
+       (미국 ETF·외환·매크로 지표 등 KIS에서 매수 불가능한 것들 차단)
     """
     data = get_dataset()
-    # 펀더멘털 포함 전체 지표 노출 (개별종목 종목엔 fundamentals 컬럼이 있음)
     indic_cols = set(qc.get_all_indicator_columns())
 
     master_rows = session.exec(
@@ -43,8 +44,10 @@ def list_symbols(user: User = Depends(get_current_user),
         if has_master:
             tradable = sym in master_set and has_ohlc
         else:
-            # fallback — 마스터 push 전엔 '개별종목' 카테고리만 tradable 추정
-            tradable = has_ohlc and qc.symbol_category(sym) == "개별종목"
+            # fallback: 한국 주식 6자리 숫자 코드만 통과
+            # (KIS는 한국 주식·ETF가 대부분 6자리. AAPL/^GSPC 등 외국 코드는 자동 제외)
+            is_kr_code = len(sym) == 6 and sym.isdigit()
+            tradable = has_ohlc and is_kr_code
         out.append({
             "symbol": sym,
             "category": qc.symbol_category(sym),
