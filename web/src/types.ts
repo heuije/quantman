@@ -145,11 +145,76 @@ export interface KillSwitchState {
   day_start_equity: number | null; day_start_date: string | null;
 }
 
+export interface PositionRich {
+  symbol: string; name?: string; qty: number;
+  avg_price?: number; eval_price?: number;
+  strategy_name?: string; entry_date?: string;
+  entry_price?: number; peak_price?: number;
+  cur_return_pct?: number; held_days?: number;
+  distances?: {
+    tp_gap_pct?: number;
+    sl_gap_pct?: number;
+    trail_gap_pct?: number;
+    hold_days_left?: number;
+  };
+}
+
+export interface StrategyPnlRow {
+  strategy: string; trades: number; win_rate: number;
+  pnl: number; today_pnl: number; week_pnl: number; month_pnl: number;
+}
+
+export interface StrategyPnlSummary {
+  by_strategy: StrategyPnlRow[];
+  total: { today: number; week: number; month: number; all: number };
+}
+
+export interface SlippageBucket {
+  bucket: string; n: number; avg_bps: number; max_bps: number;
+}
+
+export interface RejectionReason { label: string; n: number }
+
+export interface DrawdownState {
+  high?: number | null; current?: number | null;
+  depth_pct: number; days_since_high: number; high_date?: string | null;
+}
+
+export interface LocalHealth {
+  last_cycle_ts?: string | null;
+  kis_token_expires_at?: string | null;
+  kis_master_pushed_date?: string | null;
+  warnings: string[];
+}
+
+export interface MarketIndicator {
+  label: string; available: boolean;
+  value?: number; change_pct?: number; as_of?: string;
+}
+
+export interface MarketContext {
+  indicators: MarketIndicator[];
+  session: { phase: string; kst_now: string };
+}
+
+export interface PortfolioRisk {
+  positions: string[];
+  matrix: number[][];
+  sectors: { label: string; amount: number; share_pct: number }[];
+  window: number;
+}
+
+export interface UserSettingsIO {
+  alert_webhook_url: string;
+  alert_on_killswitch: boolean;
+  alert_on_daily_loss_pct: number;
+  alert_on_unfilled_count: number;
+}
+
 export interface SyncSnapshot {
   payload: {
     balance?: { cash: number; total_eval: number };
-    positions?: { symbol: string; name?: string; qty: number;
-                  avg_price?: number; eval_price?: number }[];
+    positions?: PositionRich[];
     equity?: { date: string; value: number }[];
     trades?: Record<string, string | number>[];
     decisions?: CycleRow["decisions"];
@@ -160,6 +225,12 @@ export interface SyncSnapshot {
     slippage?: SlippageStats;
     kill_switch?: KillSwitchState;
     cycle_summary?: CycleSummary;
+    // Phase 13 — Monitor 고도화
+    strategy_pnl?: StrategyPnlSummary;
+    slippage_by_hour?: { buckets: SlippageBucket[] };
+    rejection_reasons?: { reasons: RejectionReason[] };
+    drawdown?: DrawdownState;
+    health?: LocalHealth;
   };
   received_at: string; device_id: number;
 }

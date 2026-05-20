@@ -23,7 +23,7 @@ from quant_core.exec_defaults import merged_execution
 
 from .broker import Broker
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH, TRADES_PATH)
-from . import killswitch, order_log
+from . import analytics, killswitch, order_log
 
 log = logging.getLogger("localapp.trader")
 
@@ -534,9 +534,13 @@ class Trader:
         }
         order_log.log_cycle(decisions, cycle_summary)
 
+        # 포지션 풍부화 + 분석 집계 (Monitor용)
+        positions_rich = analytics.enrich_positions(
+            snap["positions"], self.ledger, today.isoformat())
+
         return {
             "balance": snap["balance"],
-            "positions": snap["positions"],
+            "positions": positions_rich,
             "equity": self.equity[-365:],
             "trades": [d for d in decisions if d["action"] in ("bought", "sold")],
             "decisions": decisions,
@@ -547,4 +551,10 @@ class Trader:
             "slippage": order_log.slippage_stats(),
             "kill_switch": killswitch.load(),
             "cycle_summary": cycle_summary,
+            # Phase 13 — Monitor 고도화
+            "strategy_pnl": analytics.strategy_pnl_summary(),
+            "slippage_by_hour": analytics.slippage_by_hour(),
+            "rejection_reasons": analytics.rejection_reasons(),
+            "drawdown": analytics.drawdown_state(),
+            "health": analytics.local_health(),
         }

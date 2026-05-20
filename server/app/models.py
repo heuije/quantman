@@ -69,6 +69,18 @@ class SyncSnapshot(SQLModel, table=True):
     received_at: datetime = Field(default_factory=_now)
 
 
+class UserSettings(SQLModel, table=True):
+    """사용자별 모니터링·알림 설정 (1:1)."""
+    user_id: int = Field(primary_key=True, foreign_key="user.id")
+    alert_webhook_url: str = ""           # Discord/Slack-compatible webhook URL
+    alert_on_killswitch: bool = True
+    alert_on_daily_loss_pct: float = 2.0   # |손실|이 이 % 도달 시 webhook
+    alert_on_unfilled_count: int = 5       # 미체결이 N건 이상 누적되면 webhook
+    last_alerted_killswitch: Optional[datetime] = None
+    last_alerted_loss: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=_now)
+
+
 class BacktestRun(SQLModel, table=True):
     """백테스트 실행 내역 — 자동으로 저장되어 '실행 내역' 탭에서 조회 가능."""
     id: Optional[int] = Field(default=None, primary_key=True)

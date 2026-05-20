@@ -1,7 +1,7 @@
 import type {
   AnalysisResult, BacktestResult, BacktestRunDetail, BacktestRunSummary,
-  CommandRow, CommandType, DeviceRow,
-  StrategyDef, StrategyRow, SymbolInfo, SyncSnapshot,
+  CommandRow, CommandType, DeviceRow, MarketContext, PortfolioRisk,
+  StrategyDef, StrategyRow, SymbolInfo, SyncSnapshot, UserSettingsIO,
 } from "./types";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -100,4 +100,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ device_id: deviceId, type, params }),
     }),
+
+  // Phase 13 — Monitor 고도화
+  marketContext: () => req<MarketContext>("/market/context"),
+  portfolioRisk: (window = 60) =>
+    req<PortfolioRisk>(`/portfolio/risk?window=${window}`),
+  getSettings: () => req<UserSettingsIO>("/settings"),
+  putSettings: (s: UserSettingsIO) =>
+    req<UserSettingsIO>("/settings", { method: "PUT", body: JSON.stringify(s) }),
 };

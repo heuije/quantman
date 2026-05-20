@@ -140,6 +140,13 @@ class SyncSnapshotOut(BaseModel):
 
 # ── 종목마스터 sync ───────────────────────────────────────────────────────────
 
+class UserSettingsIO(BaseModel):
+    alert_webhook_url: str = ""
+    alert_on_killswitch: bool = True
+    alert_on_daily_loss_pct: float = 2.0
+    alert_on_unfilled_count: int = 5
+
+
 class TradableSymbolIn(BaseModel):
     symbol: str
     name: str = ""

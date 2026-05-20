@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { CommandRow, CommandType, DeviceRow, SyncSnapshot } from "../types";
+import {
+  ExecutionQuality, HealthCard, MarketBar, PortfolioRiskCard,
+  PositionDetailCards, RiskGauges, StrategyPnl,
+} from "../components/MonitorCards";
+import {
+  AlertSettings, BacktestLiveOverlay, CsvExportBar,
+} from "../components/MonitorTools";
+import type {
+  CommandRow, CommandType, DeviceRow, MarketContext, PortfolioRisk, SyncSnapshot,
+} from "../types";
 
 const REFRESH_MS = 5000;
 
@@ -8,18 +17,19 @@ export default function Monitor() {
   const [snap, setSnap] = useState<SyncSnapshot | null>(null);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [cmds, setCmds] = useState<CommandRow[]>([]);
+  const [market, setMarket] = useState<MarketContext | null>(null);
+  const [risk, setRisk] = useState<PortfolioRisk | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   async function load() {
     try {
-      const [s, ds, cs] = await Promise.all([
+      const [s, ds, cs, mk] = await Promise.all([
         api.snapshot(), api.devices(), api.listCommands(undefined, false),
+        api.marketContext().catch(() => null),
       ]);
-      setSnap(s);
-      setDevices(ds);
-      setCmds(cs);
+      setSnap(s); setDevices(ds); setCmds(cs); setMarket(mk);
       setErr("");
     } catch (e) {
       setErr((e as Error).message);
@@ -28,28 +38,33 @@ export default function Monitor() {
     }
   }
 
+  // 포트폴리오 위험은 비용이 좀 들어 30초 주기
+  async function loadRisk() {
+    try {
+      const r = await api.portfolioRisk(60);
+      setRisk(r);
+    } catch {/* ignore */}
+  }
+
   useEffect(() => {
     load();
+    loadRisk();
     const t = setInterval(load, REFRESH_MS);
-    return () => clearInterval(t);
+    const t2 = setInterval(loadRisk, 30_000);
+    return () => { clearInterval(t); clearInterval(t2); };
   }, []);
 
   async function send(type: CommandType,
                       params: Record<string, string | number> = {}) {
     const dev = devices[0];
-    if (!dev) {
-      setErr("기기 페어링이 필요합니다.");
-      return;
-    }
+    if (!dev) { setErr("기기 페어링이 필요합니다."); return; }
     setBusy(true);
     try {
       await api.createCommand(dev.id, type, params);
       await load();
     } catch (e) {
       setErr((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   }
 
   const p = snap?.payload;
@@ -59,17 +74,22 @@ export default function Monitor() {
   const pending = p?.broker_pending ?? p?.pending_local ?? [];
   const orders = p?.recent_orders ?? [];
   const cycles = p?.recent_cycles ?? [];
+  const positions = p?.positions ?? [];
+  const equityNow = p?.balance?.total_eval;
 
   return (
     <div>
       <h1 className="page-title">자동매매 모니터</h1>
       <p className="page-sub">
-        로컬앱에서 가져온 최근 사이클·주문·슬리피지를 보고, 웹에서 직접 명령을 보냅니다.
-        명령은 평균 1-3초 안에 로컬앱이 받아 실행합니다.
+        로컬앱에서 동기화된 위험·성과·실행품질을 한 화면에서 확인합니다. 명령은
+        평균 1-3초 안에 로컬앱이 받아 실행합니다.
       </p>
 
       {err && <div className="error">{err}</div>}
       {!loaded && <p className="muted">불러오는 중…</p>}
+
+      {/* 시장 컨텍스트 */}
+      <MarketBar ctx={market} />
 
       {/* Kill switch banner */}
       {ks?.active && (
@@ -125,9 +145,15 @@ export default function Monitor() {
         </span>
       </div>
 
-      {/* Summary stats */}
+      {/* 위험 한도 게이지 + drawdown */}
+      <RiskGauges ks={ks} dd={p?.drawdown} equityNow={equityNow} />
+
+      {/* 보유 종목 디테일 카드 */}
+      <PositionDetailCards positions={positions} />
+
+      {/* 사이클 요약 */}
       {summary && (
-        <div className="panel" style={{ marginTop: 14 }}>
+        <div className="panel">
           <h3 style={{ marginTop: 0 }}>최근 사이클 요약</h3>
           <div style={{ display: "grid",
                           gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
@@ -142,10 +168,21 @@ export default function Monitor() {
         </div>
       )}
 
-      {/* Slippage */}
+      {/* 전략별 P&L */}
+      <StrategyPnl data={p?.strategy_pnl} />
+
+      {/* 백테스트 vs 라이브 overlay */}
+      <BacktestLiveOverlay liveEquity={p?.equity} />
+
+      {/* 실행 품질 — 시간대별 슬리피지 + 거부 사유 */}
+      <ExecutionQuality
+        buckets={p?.slippage_by_hour?.buckets}
+        reasons={p?.rejection_reasons?.reasons} />
+
+      {/* 슬리피지 요약 */}
       {slip && slip.n > 0 && (
-        <div className="panel" style={{ marginTop: 14 }}>
-          <h3 style={{ marginTop: 0 }}>슬리피지</h3>
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>슬리피지 요약</h3>
           <p className="muted" style={{ fontSize: 13 }}>
             의도가 vs 체결가의 차이(bps). 양수 = 불리한 체결.
             표본 {slip.n}건 · 평균 {slip.avg_bps} bps · 중앙값 {slip.p50_bps} bps ·
@@ -154,8 +191,17 @@ export default function Monitor() {
         </div>
       )}
 
+      {/* 포트폴리오 위험 — 상관관계 + 섹터 */}
+      <PortfolioRiskCard risk={risk} />
+
+      {/* 로컬앱 헬스 */}
+      <HealthCard snapAt={snap?.received_at} health={p?.health} />
+
+      {/* 알림 설정 */}
+      <AlertSettings />
+
       {/* Pending */}
-      <div className="panel" style={{ marginTop: 14 }}>
+      <div className="panel">
         <h3 style={{ marginTop: 0 }}>미체결 주문 ({pending.length})</h3>
         {pending.length === 0 ? (
           <p className="muted">현재 미체결 주문이 없습니다.</p>
@@ -195,9 +241,13 @@ export default function Monitor() {
         )}
       </div>
 
-      {/* Recent orders */}
-      <div className="panel" style={{ marginTop: 14 }}>
-        <h3 style={{ marginTop: 0 }}>주문 내역 (최근 {orders.length}건)</h3>
+      {/* Recent orders + CSV export */}
+      <div className="panel">
+        <div style={{ display: "flex", justifyContent: "space-between",
+                         alignItems: "center", marginBottom: 8 }}>
+          <h3 style={{ margin: 0 }}>주문 내역 (최근 {orders.length}건)</h3>
+          <CsvExportBar orders={orders} />
+        </div>
         {orders.length === 0 ? (
           <p className="muted">아직 주문 이벤트가 없습니다.</p>
         ) : (
@@ -230,7 +280,7 @@ export default function Monitor() {
       </div>
 
       {/* Recent cycles */}
-      <div className="panel" style={{ marginTop: 14 }}>
+      <div className="panel">
         <h3 style={{ marginTop: 0 }}>사이클 로그 (최근 {cycles.length}건)</h3>
         {cycles.length === 0 ? (
           <p className="muted">아직 실행된 사이클이 없습니다.</p>
@@ -260,7 +310,7 @@ export default function Monitor() {
 
       {/* Recent commands */}
       {cmds.length > 0 && (
-        <div className="panel" style={{ marginTop: 14 }}>
+        <div className="panel">
           <h3 style={{ marginTop: 0 }}>최근 명령</h3>
           <table>
             <thead>
