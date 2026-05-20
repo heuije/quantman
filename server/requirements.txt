@@ -11,3 +11,5 @@ psycopg[binary]>=3.2          # PostgreSQL 드라이버 (프로덕션 DB)
 google-auth[requests]>=2.30   # Google 소셜 로그인 — ID 토큰 검증
 apscheduler>=3.10             # KIS 종목마스터 일일 갱신 cron
 requests>=2.31                # KIS .mst 다운로드 (이미 transitive로 있음, 명시)
+finance-datareader>=0.9       # NAVER 기반 한국 종목 데이터 (KRX 사이트 차단 우회)
+pandas>=2.0                   # fdr 결과는 pandas DataFrame

@@ -36,7 +36,10 @@ export function RiskGauges({ ks, dd, equityNow }: {
           </div>
         </div>
         <div>
-          <div className="risk-label">손실 한도 사용률 ({limitPct}%)</div>
+          <div className="risk-label">일일 손실 한도</div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+            오늘 한도 {limitPct}% · 현재 사용 {fmt2(usagePct)}%
+          </div>
           <div className="gauge">
             <div className={"gauge-fill " + (usagePct >= 80 ? "danger"
                   : usagePct >= 50 ? "warn" : "")}

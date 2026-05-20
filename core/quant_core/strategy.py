@@ -123,6 +123,8 @@ class Strategy(BaseModel):
     exit_rules: ExitRules = Field(default_factory=ExitRules)
     amount_pct: float = 100.0                          # 자본 대비 매수 투입 비율(%)
     sell_amount_pct: float = 100.0                     # 매도 시 보유분 청산 비율(%) — 100=전량
+    # 자동선정 (trade_symbol='screener:<key>') 한도 — 1이면 한 번에 1종목, N이면 N종목까지
+    screener_limit: int = 1
     fill: Fill = "next_open"                           # 백테스트 체결 모델
     commission: float = 0.00015
     slippage: float = 0.0005

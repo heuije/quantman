@@ -158,15 +158,24 @@ export default function ConditionBuilder({ symbols, group, onChange }: Props) {
         return (
           <div key={i}>
             <div className="sentence">
-              <ModifierChip
-                value={c.modifier ?? null}
-                onChange={(m) => update(i, { modifier: m })}
+              {/* 좌측 — 종목과 지표를 두 chip으로 분리 (종목별로 지원 지표가 다름) */}
+              <LeftSymbolChip
+                symbols={symbols} operand={c.left}
+                onChange={(o) => update(i, { left: o })}
               />
-              <OperandChip
-                symbols={symbols} value={c.left} allowConstant={false}
+              <LeftIndicatorChip
+                symbols={symbols} operand={c.left}
                 onChange={(o) => update(i, { left: o })}
               />
               <span className="txt">가(이)</span>
+
+              {/* 수식어 — 활성 시 "가(이)" 다음에 표시 ("OO가 3일 연속 OO 미만일 때") */}
+              {c.modifier && (
+                <ActiveModifierChip
+                  value={c.modifier}
+                  onChange={(m) => update(i, { modifier: m })}
+                />
+              )}
 
               {c.op === "between" ? (
                 <RangeInline
@@ -195,12 +204,25 @@ export default function ConditionBuilder({ symbols, group, onChange }: Props) {
                 ))}
               </select>
 
-              <button
-                type="button" className="ghost sm" style={{ marginLeft: "auto" }}
-                onClick={() => remove(i)}
-              >
-                삭제
-              </button>
+              {/* 우측 끝 — + 수식어 (미활성 시) + 삭제 버튼 */}
+              <span className="sentence-tail">
+                {!c.modifier && (
+                  <button
+                    type="button" className="chip ghost-chip"
+                    onClick={() => update(i, {
+                      modifier: { kind: "streak", days: 3 },
+                    })}
+                  >
+                    + 수식어
+                  </button>
+                )}
+                <button
+                  type="button" className="ghost sm"
+                  onClick={() => remove(i)}
+                >
+                  삭제
+                </button>
+              </span>
             </div>
 
             {/* 조건 사이의 AND/OR 라벨 (마지막 조건엔 표시 안 함) */}
@@ -464,19 +486,11 @@ function RangeInline({ value, hintGroup, onChange }: {
   );
 }
 
-/** 수식어(지속성·최근성) 칩. 문장 맨 앞에 위치한다. */
-function ModifierChip({ value, onChange }: {
-  value: { kind: ModifierKind; days: number } | null;
+/** 활성 수식어 — "OO가 [3일 연속] OO 미만일 때" 위치에 표시. */
+function ActiveModifierChip({ value, onChange }: {
+  value: { kind: ModifierKind; days: number };
   onChange: (m: { kind: ModifierKind; days: number } | null) => void;
 }) {
-  if (!value) {
-    return (
-      <button type="button" className="chip ghost-chip"
-              onClick={() => onChange({ kind: "streak", days: 3 })}>
-        + 수식어
-      </button>
-    );
-  }
   return (
     <span className="modifier">
       <input type="number" min={1} value={value.days}
@@ -488,6 +502,146 @@ function ModifierChip({ value, onChange }: {
         <option value="within">내</option>
       </select>
       <button type="button" className="x-btn" onClick={() => onChange(null)}>×</button>
+    </span>
+  );
+}
+
+/** 좌측 operand의 종목 chip — 종목만 선택. 변경 시 호환 안되는 지표는 첫 지표로 reset. */
+function LeftSymbolChip({ symbols, operand, onChange }: {
+  symbols: SymbolInfo[];
+  operand: Operand;
+  onChange: (o: Operand) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = usePopoverDismiss<HTMLSpanElement>(open, setOpen);
+  const symList = symbols.filter((s) => s.indicators.length > 0);
+  const sel = symbols.find((s) => s.symbol === operand.symbol);
+  const label = sel?.name ? `${sel.symbol} ${sel.name}`
+    : operand.symbol || "종목 선택";
+
+  function pickSymbol(sym: string) {
+    const inds = symbols.find((s) => s.symbol === sym)?.indicators ?? [];
+    const ind = inds.some((i) => i.key === operand.indicator)
+      ? operand.indicator : inds[0]?.key ?? "";
+    onChange({ ...operand, symbol: sym, indicator: ind });
+    setOpen(false);
+  }
+
+  return (
+    <span className="chip-wrap" ref={ref}>
+      <button type="button" className="chip" onClick={() => setOpen((v) => !v)}>
+        {label}<span className="chip-caret">▾</span>
+      </button>
+      {open && (
+        <div className="popover popover-wide">
+          <TabbedSymbolList
+            items={symList.map((s) => ({
+              key: s.symbol,
+              label: s.name ? `${s.symbol} ${s.name}` : s.symbol,
+              cat: s.category,
+            }))}
+            order={OPERAND_TAB_ORDER}
+            selected={operand.symbol}
+            placeholder="종목 검색…"
+            onPick={pickSymbol}
+          />
+        </div>
+      )}
+    </span>
+  );
+}
+
+/** 좌측 operand의 지표 chip — 선택된 종목이 지원하는 지표 + 이력 토글. */
+function LeftIndicatorChip({ symbols, operand, onChange }: {
+  symbols: SymbolInfo[];
+  operand: Operand;
+  onChange: (o: Operand) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = usePopoverDismiss<HTMLSpanElement>(open, setOpen);
+  const inds = symbols.find((s) => s.symbol === operand.symbol)?.indicators ?? [];
+  const found = inds.find((i) => i.key === operand.indicator);
+  const baseLabel = found?.label ?? operand.indicator ?? "지표 선택";
+  const histSuffix = operand.kind === "history"
+    ? ` · ${operand.window ?? 20}일 ${STAT_LABEL[operand.stat ?? "mean"]}`
+    : "";
+
+  function pickIndicator(key: string) {
+    onChange({ ...operand, indicator: key });
+  }
+
+  function toggleHistory(enabled: boolean) {
+    if (enabled) {
+      onChange({
+        kind: "history", symbol: operand.symbol, indicator: operand.indicator,
+        stat: operand.stat ?? "mean", window: operand.window ?? 20,
+        percentile: operand.percentile,
+      });
+    } else {
+      onChange({
+        kind: "indicator", symbol: operand.symbol, indicator: operand.indicator,
+      });
+    }
+  }
+
+  return (
+    <span className="chip-wrap" ref={ref}>
+      <button type="button" className="chip" onClick={() => setOpen((v) => !v)}>
+        {baseLabel}{histSuffix}<span className="chip-caret">▾</span>
+      </button>
+      {open && (
+        <div className="popover">
+          {inds.length === 0 ? (
+            <div className="cat-empty">
+              이 종목엔 사용 가능한 지표가 없습니다. (라이브 매매 전용)
+            </div>
+          ) : (
+            <>
+              <div className="op-label">
+                지표 선택
+                <span className="op-label-sub">
+                  ({operand.symbol} · {inds.length}개 지원)
+                </span>
+              </div>
+              <CategoryList
+                items={inds.map((i) => ({ key: i.key, label: i.label, cat: i.group }))}
+                order={INDICATOR_GROUP_ORDER}
+                selected={operand.indicator}
+                onPick={pickIndicator}
+              />
+              {operand.indicator && (
+                <div className="op-field hist-toggle">
+                  <label className="hist-toggle-row">
+                    <input type="checkbox"
+                          checked={operand.kind === "history"}
+                          onChange={(e) => toggleHistory(e.target.checked)} />
+                    <span>최근 N일 ___ 으로 비교</span>
+                  </label>
+                  {operand.kind === "history" && (
+                    <div className="op-field hist-row">
+                      <label>최근</label>
+                      <input type="number" min={1} value={operand.window ?? 20}
+                        onChange={(e) => onChange({ ...operand, window: Number(e.target.value) })} />
+                      <span className="txt">일</span>
+                      <select value={operand.stat ?? "mean"}
+                        onChange={(e) => onChange({ ...operand, stat: e.target.value as Stat })}>
+                        {STAT_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                      {operand.stat === "percentile" && (
+                        <input type="number" min={0} max={100}
+                          value={operand.percentile ?? 50}
+                          onChange={(e) => onChange({ ...operand, percentile: Number(e.target.value) })} />
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </span>
   );
 }

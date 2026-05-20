@@ -9,6 +9,7 @@ import type {
   AnalysisResult, BacktestResult, BacktestRunSummary, ConditionGroup,
   StrategyDef, SymbolInfo,
 } from "../types";
+import { parseScreenerKey } from "../types";
 
 /** 청산 규칙 정의 — 켜진 규칙 중 먼저 트리거되는 것으로 청산. */
 type RuleKey = "hold" | "tp" | "sl" | "trail" | "atr";
@@ -40,6 +41,7 @@ export default function Backtest() {
   });
   const [buyAmountPct, setBuyAmountPct] = useState(100);
   const [sellAmountPct, setSellAmountPct] = useState(100);
+  const [screenerLimit, setScreenerLimit] = useState(1);
   const [capital, setCapital] = useState(10_000_000);
   const [forwardDays, setForwardDays] = useState(1);
 
@@ -106,6 +108,7 @@ export default function Backtest() {
       },
       amount_pct: buyAmountPct,
       sell_amount_pct: sellAmountPct,
+      screener_limit: screenerLimit,
     };
   }
 
@@ -140,6 +143,11 @@ export default function Backtest() {
 
   async function runBacktest() {
     setErr(""); setSaveMsg("");
+    if (parseScreenerKey(tradeSymbol)) {
+      setErr("자동선정 전략은 백테스트를 지원하지 않습니다. " +
+              "수동 종목으로 백테스트하거나, [내 전략에 적용]으로 모의투자만 진행하세요.");
+      return;
+    }
     const sellErr = hasSellSetup();
     if (sellErr) { setErr(sellErr); return; }
     setBusy("backtest"); setBacktest(null);
@@ -220,6 +228,7 @@ export default function Backtest() {
           exits={exits} setRule={setRule}
           buyAmountPct={buyAmountPct} setBuyAmountPct={setBuyAmountPct}
           sellAmountPct={sellAmountPct} setSellAmountPct={setSellAmountPct}
+          screenerLimit={screenerLimit} setScreenerLimit={setScreenerLimit}
           capital={capital} setCapital={setCapital}
           forwardDays={forwardDays} setForwardDays={setForwardDays}
           busy={busy} runAnalysis={runAnalysis} runBacktest={runBacktest}
@@ -263,6 +272,7 @@ function BuildTab(props: {
   setRule: (k: RuleKey, p: Partial<{ on: boolean; v: number }>) => void;
   buyAmountPct: number; setBuyAmountPct: (v: number) => void;
   sellAmountPct: number; setSellAmountPct: (v: number) => void;
+  screenerLimit: number; setScreenerLimit: (v: number) => void;
   capital: number; setCapital: (v: number) => void;
   forwardDays: number; setForwardDays: (v: number) => void;
   busy: string;
@@ -274,6 +284,7 @@ function BuildTab(props: {
     symbols, hasMaster, name, setName, tradeSymbol, setTradeSymbol,
     buy, setBuy, sell, setSell, exits, setRule,
     buyAmountPct, setBuyAmountPct, sellAmountPct, setSellAmountPct,
+    screenerLimit, setScreenerLimit,
     capital, setCapital, forwardDays, setForwardDays,
     busy, runAnalysis, runBacktest, analysis,
   } = props;
@@ -313,6 +324,16 @@ function BuildTab(props: {
             </div>
           </div>
         </div>
+        {parseScreenerKey(tradeSymbol) && (
+          <div className="amount-row" style={{ marginTop: 12 }}>
+            <label>최대 동시 보유 종목 수</label>
+            <input type="number" min={1} max={20} value={screenerLimit}
+                   onChange={(e) => setScreenerLimit(Number(e.target.value))} />
+            <span className="muted">
+              자동선정 결과 상위 {screenerLimit}종목까지 매수 (매 사이클 미보유 종목 채움)
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="panel">
@@ -380,8 +401,7 @@ function BuildTab(props: {
         <div className="row">
           <div>
             <label>초기자본(원)</label>
-            <input type="number" value={capital}
-                   onChange={(e) => setCapital(Number(e.target.value))} />
+            <CapitalInput value={capital} onChange={setCapital} />
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
               = {wonReadable(capital)}
             </div>
@@ -404,7 +424,11 @@ function BuildTab(props: {
               {busy === "analysis" ? "분석 중…" : "통계 미리보기"}
             </button>
           </span>
-          <button disabled={!!busy} onClick={runBacktest}>
+          <button
+            disabled={!!busy || !!parseScreenerKey(tradeSymbol)}
+            title={parseScreenerKey(tradeSymbol)
+              ? "자동선정 전략은 백테스트 미지원 — 모의투자에서만 동작합니다." : undefined}
+            onClick={runBacktest}>
             {busy === "backtest" ? "실행 중…" : "백테스트 실행"}
           </button>
         </div>
@@ -580,6 +604,28 @@ function HistoryTab({ rows, loaded, onLoad, onDelete }: {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** 초기자본 입력 — focus 시 raw 숫자, blur 시 콤마 포맷. */
+function CapitalInput({ value, onChange }: {
+  value: number; onChange: (v: number) => void;
+}) {
+  const [focused, setFocused] = useState(false);
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => { if (!focused) setDraft(String(value)); }, [value, focused]);
+  return (
+    <input
+      type="text" inputMode="numeric"
+      value={focused ? draft : value.toLocaleString()}
+      onFocus={() => { setDraft(String(value)); setFocused(true); }}
+      onBlur={() => {
+        setFocused(false);
+        const n = Number(draft.replace(/[^\d.-]/g, ""));
+        if (!Number.isNaN(n) && n >= 0) onChange(n);
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+    />
   );
 }
 

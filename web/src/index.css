@@ -91,6 +91,9 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   background: var(--bg); border: 1px solid var(--border);
   border-radius: 6px; padding: 3px 6px;
 }
+.sentence-tail {
+  margin-left: auto; display: inline-flex; gap: 6px; align-items: center;
+}
 .logic-toggle { display: inline-flex; gap: 4px; }
 .logic-toggle button { padding: 4px 12px; font-size: 13px; }
 
@@ -137,7 +140,7 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.18); padding: 12px;
 }
-.popover-wide { width: 440px; }
+.popover-wide { width: 520px; }
 
 /* 탭 기반 종목 리스트 */
 .tabbed-list { display: flex; flex-direction: column; gap: 8px; }
@@ -158,6 +161,7 @@ button.sm { padding: 5px 10px; font-size: 13px; }
 }
 .tabbed-tab-n {
   font-size: 10px; opacity: 0.7; font-weight: 400;
+  margin-left: 6px;
 }
 .tabbed-items {
   max-height: 240px; overflow-y: auto;
@@ -186,8 +190,9 @@ button.sm { padding: 5px 10px; font-size: 13px; }
 .popover .op-field input { width: 64px; }
 .op-label-sub {
   color: var(--muted); font-weight: 400; font-size: 10px;
-  margin-left: 4px;
+  margin-left: 6px;
 }
+.op-label-sub::before { content: " "; }
 
 /* 상수 입력 + 단위 힌트 */
 .op-field.op-const { flex-direction: column; align-items: stretch; gap: 4px; }
@@ -220,7 +225,7 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   position: sticky; top: 0;
   display: flex; justify-content: space-between; align-items: baseline;
 }
-.cat-head-n { font-weight: 500; opacity: 0.7; }
+.cat-head-n { font-weight: 500; opacity: 0.7; margin-left: 6px; }
 .cat-item {
   display: flex; align-items: center; justify-content: space-between;
   gap: 6px; width: 100%; text-align: left;
@@ -230,6 +235,7 @@ button.sm { padding: 5px 10px; font-size: 13px; }
 .cat-item-badge {
   font-size: 9px; padding: 1px 6px; border-radius: 999px;
   background: var(--bg); color: var(--muted); flex-shrink: 0;
+  margin-left: 8px;
 }
 .cat-item.sel .cat-item-badge { background: rgba(255,255,255,0.2); color: #fff; }
 .cat-item:hover { background: var(--bg); }
@@ -551,3 +557,39 @@ thead th { color: var(--muted); font-weight: 600; }
 .empty-state { text-align: center; padding: 38px 24px; }
 .empty-title { font-size: 15px; font-weight: 700; margin-bottom: 6px; }
 .empty-state p { max-width: 430px; margin: 0 auto 16px; line-height: 1.65; }
+
+/* 종목 자동선정 패널 */
+.screener-panel {
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: 360px; overflow-y: auto;
+}
+.screener-card {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+}
+.screener-card.sel { border-color: var(--accent); background: var(--accent-soft); }
+.screener-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.screener-card-title {
+  flex: 1; text-align: left; background: none; border: none; padding: 0;
+  font: inherit; cursor: pointer; color: var(--text);
+  display: flex; align-items: center; gap: 6px;
+}
+.screener-card-title strong { font-size: 13px; }
+.screener-card-caret { color: var(--muted); font-size: 10px; }
+.screener-card-desc {
+  margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.5;
+}
+.screener-preview {
+  margin-top: 8px; padding: 8px 10px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.screener-preview-list {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 12px;
+}
+.screener-preview-list li {
+  display: flex; justify-content: space-between; gap: 8px;
+}

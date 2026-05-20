@@ -23,7 +23,7 @@ from quant_core.exec_defaults import merged_execution
 
 from .broker import Broker
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH, TRADES_PATH)
-from . import analytics, killswitch, order_log
+from . import analytics, killswitch, order_log, screener_client
 
 log = logging.getLogger("localapp.trader")
 
@@ -348,6 +348,95 @@ class Trader:
             time.sleep(poll_sec)
             self._resolve_pending(decisions)
 
+    # ── 자동선정 진입 ─────────────────────────────────────────────────────────
+
+    def _enter_screener(self, strategy_id: str, strat_name: str,
+                         strat_def: dict, preset_key: str,
+                         decisions: list[dict]) -> None:
+        """자동선정 strategy — 서버 /screener API에서 매칭 받아 미보유 종목을 매수.
+
+        ledger 키 형식: '{strategy_id}:{symbol}' (일반 단일종목 sid와 충돌 회피).
+        strategy_def.screener_limit (기본 1)개까지 동시 보유 가능.
+        매수 조건 평가는 생략 (자동선정 결과 자체가 entry signal).
+        """
+        try:
+            matches = screener_client.fetch_preset_matches(preset_key)
+        except Exception as e:
+            log.error("[%s] 자동선정 fetch 실패: %s", preset_key, e)
+            decisions.append(order_log.decision(
+                "error", strategy_id, strat_name, "",
+                f"자동선정 fetch 실패: {e}"))
+            return
+
+        if not matches:
+            decisions.append(order_log.decision(
+                "skip_signal", strategy_id, strat_name, "",
+                f"자동선정 매칭 없음 (preset={preset_key})"))
+            return
+
+        prefix = f"{strategy_id}:"
+        held_keys = {k for k in self.ledger if k.startswith(prefix)}
+        screener_limit = int(strat_def.get("screener_limit", 1) or 1)
+        slots_left = screener_limit - len(held_keys)
+
+        if slots_left <= 0:
+            decisions.append(order_log.decision(
+                "skip_held", strategy_id, strat_name, "",
+                f"자동선정 한도 충족 ({len(held_keys)}/{screener_limit})"))
+            return
+
+        bought_in_cycle = 0
+        for m in matches:
+            if bought_in_cycle >= slots_left:
+                break
+            symbol = m["symbol"]
+            ledger_key = f"{strategy_id}:{symbol}"
+            if ledger_key in self.ledger:
+                continue
+            self._buy_screener_pick(ledger_key, strategy_id, strat_name,
+                                     strat_def, symbol, decisions)
+            bought_in_cycle += 1
+
+        if bought_in_cycle == 0:
+            decisions.append(order_log.decision(
+                "skip_held", strategy_id, strat_name, "",
+                f"자동선정 매칭 모두 이미 보유 ({len(held_keys)}종목)"))
+
+    def _buy_screener_pick(self, ledger_key: str, strategy_id: str,
+                            strat_name: str, strat_def: dict, symbol: str,
+                            decisions: list[dict]) -> None:
+        """자동선정 후보 1종목 매수. 갭 필터 + 사이징 + 발주."""
+        cur = self._safe_price(symbol)
+        if cur is None:
+            decisions.append(order_log.decision(
+                "error", strategy_id, strat_name, symbol, "가격 조회 실패"))
+            return
+
+        policy = _policy(strat_def)
+
+        try:
+            cash = self.broker.account_snapshot()["balance"]["cash"]
+        except Exception as e:
+            log.error("잔고 조회 실패: %s", e)
+            decisions.append(order_log.decision(
+                "error", strategy_id, strat_name, symbol,
+                f"잔고 조회 실패: {e}"))
+            return
+
+        # 자동선정 종목은 dataset에 OHLCV 없는 게 일반적 → pct_cash 모드 강제
+        amount_pct = float(strat_def.get("amount_pct", 100) or 100)
+        qty = int(float(cash) * amount_pct / 100.0 // cur)
+
+        if qty <= 0:
+            decisions.append(order_log.decision(
+                "skip_funds", strategy_id, strat_name, symbol,
+                f"수량 부족 (현금 {cash:,.0f} / 가격 {cur:,.0f})"))
+            return
+
+        # ledger_key를 sid 자리에 넣어 발주 — _apply_fill이 ledger[ledger_key]에 저장
+        self._submit_buy(ledger_key, strat_name, strat_def, symbol, qty, cur,
+                          policy, decisions)
+
     # ── 메인 사이클 ───────────────────────────────────────────────────────────
 
     def cycle(self, strategies: list[dict], dataset: dict,
@@ -421,6 +510,15 @@ class Trader:
                 sid = str(s["id"])
                 strat_name = s.get("name", "")
                 strat_def = s["definition"]
+
+                # 3-0. 자동선정 분기 — trade_symbol = "screener:<preset>"
+                screener_key = screener_client.parse_screener_key(
+                    strat_def.get("trade_symbol", ""))
+                if screener_key:
+                    self._enter_screener(sid, strat_name, strat_def,
+                                          screener_key, decisions)
+                    continue
+
                 if sid in self.ledger or sid in sold_this_cycle:
                     decisions.append(order_log.decision(
                         "skip_held", sid, strat_name,

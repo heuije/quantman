@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { SymbolInfo } from "../types";
+import { api } from "../api";
+import { parseScreenerKey } from "../types";
+import type { ScreenerMatch, ScreenerPreset, SymbolInfo } from "../types";
 import TabbedSymbolList from "./TabbedSymbolList";
 
 export const SYMBOL_CAT_ORDER = [
@@ -90,8 +92,8 @@ export function CategoryList({ items, order, selected, search, onPick }: {
 
 /** 종목 선택 칩 — 클릭 시 탭 + 검색 팝오버가 열린다.
  *
- * tradableOnly=true (매수 대상): KIS 매수 가능 종목 (시장별 탭 — KOSPI/KOSDAQ/미국/일본/홍콩)
- * tradableOnly=false (매수 조건): 백테스트 데이터 있는 종목 (분류별 탭 — 자산/변동성/금리 등)
+ * tradableOnly=true (매수 대상): KIS 매수 가능 종목 + 자동선정 프리셋
+ * tradableOnly=false (매수 조건): 백테스트 데이터 있는 종목 (분류별 탭)
  */
 export default function SymbolPicker({ symbols, value, tradableOnly, onChange }: {
   symbols: SymbolInfo[];
@@ -102,26 +104,69 @@ export default function SymbolPicker({ symbols, value, tradableOnly, onChange }:
   const [open, setOpen] = useState(false);
   const ref = usePopoverDismiss<HTMLSpanElement>(open, setOpen);
 
+  // 자동선정 모드는 매수 대상에서만 활성
+  const screenerKey = parseScreenerKey(value);
+  const [mode, setMode] = useState<"manual" | "screener">(
+    screenerKey ? "screener" : "manual");
+  const [presets, setPresets] = useState<ScreenerPreset[]>([]);
+
+  useEffect(() => {
+    if (!tradableOnly || presets.length > 0) return;
+    api.listScreenerPresets()
+      .then((r) => setPresets(r.presets))
+      .catch(() => {/* health 미공개도 무관 — UI는 manual 가능 */});
+  }, [tradableOnly, presets.length]);
+
   const list = symbols.filter((s) =>
     tradableOnly ? s.tradable : s.indicators.length > 0);
   const empty = tradableOnly && list.length === 0 && symbols.length > 0;
 
-  // 탭 정렬: tradable은 시장별, 매수 조건은 분류별
   const tabOrder = tradableOnly ? TRADABLE_TAB_ORDER : OPERAND_TAB_ORDER;
+
+  // chip 라벨 — 종목명·자동선정 모두 표시
+  const sel = value && !screenerKey
+    ? symbols.find((s) => s.symbol === value) : undefined;
+  const screenerPreset = screenerKey
+    ? presets.find((p) => p.key === screenerKey) : null;
+  const chipLabel = !value ? "종목 선택"
+    : screenerKey
+      ? `[자동] ${screenerPreset?.title ?? screenerKey}`
+      : sel?.name ? `${value} ${sel.name}` : value;
 
   return (
     <span className="chip-wrap" ref={ref}>
       <button type="button" className="chip" onClick={() => setOpen((v) => !v)}>
-        {value || "종목 선택"}
+        {chipLabel}
         <span className="chip-caret">▾</span>
       </button>
       {open && (
         <div className="popover popover-wide">
+          {tradableOnly && (
+            <div className="seg" style={{ marginBottom: 10 }}>
+              <button type="button"
+                      className={mode === "manual" ? "on" : ""}
+                      onClick={() => setMode("manual")}>
+                수동 선택
+              </button>
+              <button type="button"
+                      className={mode === "screener" ? "on" : ""}
+                      onClick={() => setMode("screener")}>
+                자동선정
+              </button>
+            </div>
+          )}
+
           {empty ? (
             <div className="cat-empty" style={{ padding: 16, lineHeight: 1.6 }}>
               매수 가능 종목 목록을 준비 중입니다.<br/>
               서버가 KIS 공식 마스터를 다운로드 중입니다. 잠시 후 다시 시도해주세요.
             </div>
+          ) : mode === "screener" && tradableOnly ? (
+            <ScreenerPanel
+              presets={presets}
+              selectedKey={screenerKey}
+              onPick={(key) => { onChange(`screener:${key}`); setOpen(false); }}
+            />
           ) : (
             <TabbedSymbolList
               items={list.map((s) => ({
@@ -140,6 +185,96 @@ export default function SymbolPicker({ symbols, value, tradableOnly, onChange }:
         </div>
       )}
     </span>
+  );
+}
+
+/** 자동선정 패널 — 프리셋 카드 그리드. 카드 펼치면 매칭 종목 미리보기. */
+function ScreenerPanel({ presets, selectedKey, onPick }: {
+  presets: ScreenerPreset[];
+  selectedKey: string | null;
+  onPick: (key: string) => void;
+}) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [previews, setPreviews] = useState<Record<string, ScreenerMatch[]>>({});
+  const [loading, setLoading] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  function toggle(key: string) {
+    if (expanded === key) { setExpanded(null); return; }
+    setExpanded(key);
+    if (previews[key]) return;
+    setLoading(key); setErr(null);
+    api.runScreenerPreset(key)
+      .then((r) => setPreviews((p) => ({ ...p, [key]: r.matches })))
+      .catch((e) => setErr((e as Error).message))
+      .finally(() => setLoading(null));
+  }
+
+  if (presets.length === 0) {
+    return (
+      <div className="cat-empty" style={{ padding: 16, lineHeight: 1.6 }}>
+        프리셋 정보를 불러오는 중입니다…<br/>
+        <span style={{ fontSize: 11 }}>
+          서버 스크리너 데이터가 아직 준비되지 않았다면 잠시 후 다시 시도하세요.
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="screener-panel">
+      {err && <div className="error" style={{ fontSize: 12 }}>{err}</div>}
+      {presets.map((p) => {
+        const isExp = expanded === p.key;
+        const isSel = selectedKey === p.key;
+        const items = previews[p.key];
+        return (
+          <div key={p.key}
+               className={"screener-card" + (isSel ? " sel" : "")}>
+            <div className="screener-card-head">
+              <button type="button" className="screener-card-title"
+                      onClick={() => toggle(p.key)}>
+                <strong>{p.title}</strong>
+                <span className="screener-card-caret">{isExp ? "▾" : "▸"}</span>
+              </button>
+              <button type="button" className="ghost sm"
+                      onClick={() => onPick(p.key)}>
+                {isSel ? "선택됨" : "선택"}
+              </button>
+            </div>
+            <div className="screener-card-desc">{p.desc}</div>
+            {isExp && (
+              <div className="screener-preview">
+                {loading === p.key
+                  ? <span className="muted" style={{ fontSize: 12 }}>불러오는 중…</span>
+                  : items && items.length === 0
+                    ? <span className="muted" style={{ fontSize: 12 }}>매칭 종목 없음</span>
+                    : items
+                      ? <>
+                          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
+                            매칭 {items.length}종목 (상위 5개)
+                          </div>
+                          <ul className="screener-preview-list">
+                            {items.slice(0, 5).map((m) => (
+                              <li key={m.symbol}>
+                                <span>{m.symbol} {m.name}</span>
+                                <span className="muted">
+                                  {m.pct_change_1d != null
+                                    ? `${m.pct_change_1d > 0 ? "+" : ""}${m.pct_change_1d.toFixed(2)}%`
+                                    : "—"}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      : null
+                }
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

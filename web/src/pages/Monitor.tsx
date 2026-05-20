@@ -77,6 +77,10 @@ export default function Monitor() {
   const positions = p?.positions ?? [];
   const equityNow = p?.balance?.total_eval;
 
+  const paired = devices.length > 0;
+  const actionDisabled = busy || !paired;
+  const pairTooltip = paired ? undefined : "기기 페어링 후 활성화됩니다";
+
   return (
     <div>
       <h1 className="page-title">자동매매 모니터</h1>
@@ -123,33 +127,41 @@ export default function Monitor() {
       <div className="panel" style={{ display: "flex", flexWrap: "wrap",
                                          gap: 8, alignItems: "center" }}>
         <strong style={{ marginRight: 8 }}>액션:</strong>
-        <button onClick={() => send("RUN_CYCLE_NOW")} disabled={busy}>
+        <button onClick={() => send("RUN_CYCLE_NOW")}
+                disabled={actionDisabled} title={pairTooltip}>
           지금 1회 실행
         </button>
-        <button className="ghost sm" onClick={() => send("PAUSE_AUTO")} disabled={busy}>
+        <button className="ghost sm" onClick={() => send("PAUSE_AUTO")}
+                disabled={actionDisabled} title={pairTooltip}>
           일시정지
         </button>
-        <button className="ghost sm" onClick={() => send("RESUME_AUTO")} disabled={busy}>
+        <button className="ghost sm" onClick={() => send("RESUME_AUTO")}
+                disabled={actionDisabled} title={pairTooltip}>
           재개
         </button>
         <button className="ghost sm" onClick={() => {
           if (confirm("정말 모든 보유 종목을 청산하고 신규 진입을 차단하시겠습니까?"))
             send("LIQUIDATE_ALL");
-        }} disabled={busy} style={{ color: "var(--red)" }}>
+        }} disabled={actionDisabled} title={pairTooltip}
+                style={{ color: "var(--red)" }}>
           전량 청산 + 차단
         </button>
         <span className="muted" style={{ marginLeft: "auto", fontSize: 12 }}>
-          {devices[0]
+          {paired
             ? `대상 기기: ${devices[0].name} (#${devices[0].id})`
             : "기기 페어링 필요"}
         </span>
       </div>
 
-      {/* 위험 한도 게이지 + drawdown */}
-      <RiskGauges ks={ks} dd={p?.drawdown} equityNow={equityNow} />
+      {!paired ? (
+        <PairingOnboarding />
+      ) : (
+        <>
+          {/* 위험 한도 게이지 + drawdown */}
+          <RiskGauges ks={ks} dd={p?.drawdown} equityNow={equityNow} />
 
-      {/* 보유 종목 디테일 카드 */}
-      <PositionDetailCards positions={positions} />
+          {/* 보유 종목 디테일 카드 */}
+          <PositionDetailCards positions={positions} />
 
       {/* 사이클 요약 */}
       {summary && (
@@ -335,6 +347,25 @@ export default function Monitor() {
           </table>
         </div>
       )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 페어링 안 됐을 때 — 빈 섹션 8개 대신 단일 onboarding 카드만 노출. */
+function PairingOnboarding() {
+  return (
+    <div className="panel empty-state">
+      <div className="empty-title">기기 페어링 후 사용 가능합니다</div>
+      <p className="muted">
+        로컬앱을 PC에 설치하고 이 계정과 페어링하면, 위험 한도·보유 종목·전략별
+        P&L·실행 품질·헬스 등 모니터 섹션이 자동으로 활성화됩니다.
+      </p>
+      <a href="/devices" className="link-btn"
+         style={{ display: "inline-block", marginTop: 8 }}>
+        [기기 연결] 페이지로 이동 →
+      </a>
     </div>
   );
 }

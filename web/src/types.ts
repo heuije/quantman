@@ -53,6 +53,7 @@ export interface StrategyDef {
   exit_rules: ExitRules;
   amount_pct: number;              // 자본 대비 매수 비율 (%)
   sell_amount_pct?: number;        // 매도 시 보유분 청산 비율 (%) — 100=전량
+  screener_limit?: number;         // 자동선정 시 동시 보유 한도 (기본 1)
   fill?: string;
 }
 
@@ -238,6 +239,31 @@ export interface SyncSnapshot {
     health?: LocalHealth;
   };
   received_at: string; device_id: number;
+}
+
+// ── 종목 자동선정 (Screener) ─────────────────────────────────────────────────
+
+export interface ScreenerPreset {
+  key: string;          // "marcap_top" 등
+  title: string;        // "시가총액 상위"
+  desc: string;
+}
+
+export interface ScreenerMatch {
+  symbol: string;
+  name: string;
+  market: string;
+  close: number | null;
+  pct_change_1d: number | null;
+  market_cap: number | null;
+  trade_value: number | null;
+  volume: number | null;
+}
+
+/** 매수 대상이 자동선정 모드인지 — trade_symbol이 "screener:..."로 시작. */
+export function parseScreenerKey(tradeSymbol: string): string | null {
+  return tradeSymbol.startsWith("screener:")
+    ? tradeSymbol.slice("screener:".length) : null;
 }
 
 export type CommandType =

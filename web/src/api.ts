@@ -1,6 +1,7 @@
 import type {
   AnalysisResult, BacktestResult, BacktestRunDetail, BacktestRunSummary,
   CommandRow, CommandType, DeviceRow, MarketContext, PortfolioRisk,
+  ScreenerMatch, ScreenerPreset,
   StrategyDef, StrategyRow, SymbolInfo, SyncSnapshot, UserSettingsIO,
 } from "./types";
 
@@ -108,4 +109,11 @@ export const api = {
   getSettings: () => req<UserSettingsIO>("/settings"),
   putSettings: (s: UserSettingsIO) =>
     req<UserSettingsIO>("/settings", { method: "PUT", body: JSON.stringify(s) }),
+
+  // Phase 17~ — 종목 자동선정 (스크리너)
+  listScreenerPresets: () =>
+    req<{ presets: ScreenerPreset[] }>("/screener/presets"),
+  runScreenerPreset: (key: string) =>
+    req<{ preset: string; count: number; matches: ScreenerMatch[] }>(
+      `/screener/preset/${key}/run`, { method: "POST" }),
 };
