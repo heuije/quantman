@@ -145,6 +145,12 @@ class UserSettingsIO(BaseModel):
     alert_on_killswitch: bool = True
     alert_on_daily_loss_pct: float = 2.0
     alert_on_unfilled_count: int = 5
+    # Phase 38.7 — kill switch 일일 손실 한도. None이면 default(3.0)
+    kill_switch_daily_loss_pct: Optional[float] = None
+    # Phase 38.10 — 누적 drawdown 한도. None이면 default(20.0)
+    max_drawdown_pct: Optional[float] = None
+    # Phase 38.5 — preview 연속 누락 알림 임계값
+    preview_missing_alert_threshold: int = 3
 
 
 class TradableSymbolIn(BaseModel):

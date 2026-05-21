@@ -34,6 +34,9 @@ def get_settings(user: User = Depends(get_current_user),
         alert_on_killswitch=s.alert_on_killswitch,
         alert_on_daily_loss_pct=s.alert_on_daily_loss_pct,
         alert_on_unfilled_count=s.alert_on_unfilled_count,
+        kill_switch_daily_loss_pct=s.kill_switch_daily_loss_pct,
+        max_drawdown_pct=s.max_drawdown_pct,
+        preview_missing_alert_threshold=s.preview_missing_alert_threshold,
     )
 
 
@@ -46,6 +49,23 @@ def put_settings(body: UserSettingsIO,
     s.alert_on_killswitch = body.alert_on_killswitch
     s.alert_on_daily_loss_pct = body.alert_on_daily_loss_pct
     s.alert_on_unfilled_count = body.alert_on_unfilled_count
+    # Phase 38.7/38.10 — null이면 기존 값 유지 안 하고 null 그대로 저장 (default로 fallback)
+    # 사용자 입력 1~10/1~50% 범위 검증
+    if body.kill_switch_daily_loss_pct is not None:
+        if not (0.5 <= body.kill_switch_daily_loss_pct <= 20.0):
+            from fastapi import HTTPException, status
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "kill_switch_daily_loss_pct는 0.5~20.0 범위여야 합니다.")
+    if body.max_drawdown_pct is not None:
+        if not (1.0 <= body.max_drawdown_pct <= 80.0):
+            from fastapi import HTTPException, status
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "max_drawdown_pct는 1.0~80.0 범위여야 합니다.")
+    s.kill_switch_daily_loss_pct = body.kill_switch_daily_loss_pct
+    s.max_drawdown_pct = body.max_drawdown_pct
+    s.preview_missing_alert_threshold = max(1, int(body.preview_missing_alert_threshold))
     s.updated_at = datetime.now(timezone.utc)
     session.add(s)
     session.commit()

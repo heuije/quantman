@@ -9,6 +9,7 @@
 - LIQUIDATE_ALL: 보유 전량 청산 + kill switch ON
 - CANCEL_ORDER: 특정 미체결 주문 취소 (params.order_no)
 - RESET_KILL_SWITCH: kill switch 해제
+- RECONCILE_NOW: KIS 잔고 ↔ ledger 즉시 정합성 점검 + 자동 정정 (Phase 40)
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ router = APIRouter(prefix="/sync/commands", tags=["commands"])
 VALID_TYPES = {
     "RUN_CYCLE_NOW", "PAUSE_AUTO", "RESUME_AUTO", "LIQUIDATE_ALL",
     "CANCEL_ORDER", "RESET_KILL_SWITCH",
+    "RECONCILE_NOW",   # Phase 40 — 수동 잔고 정합성 점검
 }
 
 

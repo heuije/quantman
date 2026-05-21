@@ -22,3 +22,10 @@ def get_dataset() -> dict[str, pd.DataFrame]:
             if _dataset is None:
                 _dataset = qc.load_dataset(with_indicators=True)
     return _dataset
+
+
+def invalidate() -> None:
+    """캐시된 dataset을 비운다. 다음 get_dataset() 호출 시 parquet에서 재로드."""
+    global _dataset
+    with _lock:
+        _dataset = None

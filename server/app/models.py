@@ -70,7 +70,7 @@ class SyncSnapshot(SQLModel, table=True):
 
 
 class UserSettings(SQLModel, table=True):
-    """사용자별 모니터링·알림 설정 (1:1)."""
+    """사용자별 모니터링·알림·위험 한도 설정 (1:1)."""
     user_id: int = Field(primary_key=True, foreign_key="user.id")
     alert_webhook_url: str = ""           # Discord/Slack-compatible webhook URL
     alert_on_killswitch: bool = True
@@ -78,6 +78,18 @@ class UserSettings(SQLModel, table=True):
     alert_on_unfilled_count: int = 5       # 미체결이 N건 이상 누적되면 webhook
     last_alerted_killswitch: Optional[datetime] = None
     last_alerted_loss: Optional[datetime] = None
+    # Phase 38.7 — kill switch 일일 손실 한도 (자본 대비 %, 1~10 범위 권장).
+    # null이면 글로벌 default (DEFAULT_EXECUTION['daily_loss_limit_pct'])
+    kill_switch_daily_loss_pct: Optional[float] = None
+    # Phase 38.10 — 누적 drawdown 한도 (자본 고점 대비 %). null이면 default.
+    max_drawdown_pct: Optional[float] = None
+    # Phase 38.5 — preview 연속 누락 일수 카운터 + 알림 임계값
+    preview_missing_streak: int = 0
+    preview_missing_alert_threshold: int = 3
+    last_alerted_preview_missing: Optional[datetime] = None
+    # Phase 40 — 잔고 정합성 (KIS ↔ ledger) drift 알림
+    alert_on_reconcile_drift: bool = True
+    last_alerted_reconcile: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=_now)
 
 
