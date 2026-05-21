@@ -41,12 +41,15 @@ Output/
 # ticker_db.json·user_stocks.json은 작은 metadata라 tracked 유지.
 core/data/*.parquet
 core/data/fundamentals/*.parquet
+core/data/managed_kr_stocks.json
+core/data/managed_overseas_stocks.json
 
 # 웹
 node_modules/
 
 # 로그
 *.log
+*.log.err
 logs/
 
 # OS
