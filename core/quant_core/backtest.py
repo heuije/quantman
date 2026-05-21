@@ -98,13 +98,17 @@ def run_backtest(
     if len(trade_df) < 2:
         return _empty("백테스트 기간의 가격 데이터가 부족합니다.")
 
-    buy_mask = build_signal_mask(data, buy_conditions, buy_logic)
+    # Phase 41 — 백테스트는 단일 종목 시뮬레이션이므로 [이 종목] placeholder는
+    # 모두 trade_symbol로 치환되어 평가된다.
+    buy_mask = build_signal_mask(data, buy_conditions, buy_logic,
+                                  current_symbol=trade_symbol)
     if buy_mask.empty:
         return _empty("매수 조건의 종목·지표를 확인하세요.")
     buy_arr = buy_mask.reindex(trade_df.index, fill_value=False).to_numpy(dtype=bool)
 
     if sell_conditions:
-        sell_mask = build_signal_mask(data, sell_conditions, sell_logic)
+        sell_mask = build_signal_mask(data, sell_conditions, sell_logic,
+                                       current_symbol=trade_symbol)
         if sell_mask.empty:
             return _empty("매도 조건의 종목·지표를 확인하세요.")
         sell_arr = sell_mask.reindex(trade_df.index, fill_value=False).to_numpy(dtype=bool)

@@ -26,11 +26,30 @@ OperandKind = Literal["indicator", "constant", "history"]
 Stat = Literal["min", "max", "mean", "percentile", "lag"]
 ModifierKind = Literal["streak", "within"]
 
+# Phase 41 — Operand.symbol에 이 sentinel이 들어있으면 "각 매수 대상 종목"
+# placeholder. 평가 엔진이 current_symbol로 치환한다 (analysis._resolve_operand).
+# 빈칸 채우기 메타포 확장: 사용자가 좌변 종목 드롭다운에서 "[이 종목]"을 고르면
+# UI가 이 값을 전송. 한 전략 안에서 공통 종목(명시) + [이 종목] 자유 혼용 가능.
+SELF_SYMBOL = "__SELF__"
+
+
+def is_self_ref(op: "Operand | dict | None") -> bool:
+    """Operand가 [이 종목] placeholder를 참조하는지."""
+    if op is None:
+        return False
+    sym = op.get("symbol") if isinstance(op, dict) else getattr(op, "symbol", None)
+    return sym == SELF_SYMBOL
+
 
 class Operand(BaseModel):
-    """비교 피연산자 — 지표 / 숫자 / 지표 이력통계."""
+    """비교 피연산자 — 지표 / 숫자 / 지표 이력통계.
+
+    Phase 41 — symbol에 SELF_SYMBOL("__SELF__") sentinel을 넣으면 "각 매수 대상
+    종목" placeholder. 평가 엔진(analysis._resolve_operand)이 current_symbol로
+    치환한다. 좌변·우변 모두 placeholder 사용 가능 (둘 다 같은 종목으로 치환됨).
+    """
     kind: OperandKind = "indicator"
-    # kind="indicator" 또는 "history": 시그널 종목·지표
+    # kind="indicator" 또는 "history": 시그널 종목·지표 (SELF_SYMBOL이면 placeholder)
     symbol: Optional[str] = None
     indicator: Optional[str] = None
     # kind="constant": 고정 숫자 (op="between"이면 [min, max])
@@ -76,12 +95,32 @@ class ConditionGroup(BaseModel):
 
 
 class ExitRules(BaseModel):
-    """청산 규칙 — 먼저 트리거되는 것으로 청산."""
+    """[DEPRECATED — SellRules로 통합됨] 청산 규칙. 호환성을 위해 유지."""
     hold_days: Optional[int] = None
     take_profit: Optional[float] = None      # %
     stop_loss: Optional[float] = None        # % (음수)
     trail_atr_mult: Optional[float] = None
     trail_pct: Optional[float] = None        # %
+
+
+class SellRules(BaseModel):
+    """매도 규칙 — 익절/손절/트레일링/보유기간 + 자유 매도 조건 통합.
+
+    Phase 32: 기존 sell(ConditionGroup) + exit_rules(익절/손절/...)가 같은
+    "매도" 개념의 두 측면이라 하나로 일원화. 먼저 트리거되는 규칙으로 매도.
+    """
+    # 가격 기반 트리거
+    take_profit: Optional[float] = None      # 익절선 (%, 양수)
+    stop_loss: Optional[float] = None        # 손절선 (%, 음수)
+    trail_pct: Optional[float] = None        # 트레일링 (진입 후 고점 대비 %)
+    trail_atr_mult: Optional[float] = None   # ATR 트레일링 (× ATR_14)
+    # 시간 기반 트리거
+    hold_days: Optional[int] = None          # 보유 일수 초과 시
+    # 조건 기반 트리거 (dataset 평가)
+    conditions: list[Condition] = Field(default_factory=list)
+    logic: Logic = "AND"
+    # 매도 시 청산 비율
+    sell_amount_pct: float = 100.0           # 100 = 전량 매도
 
 
 class ExecutionPolicy(BaseModel):
@@ -92,8 +131,9 @@ class ExecutionPolicy(BaseModel):
     # 주문 유형
     use_limit: Optional[bool] = None
     buy_tolerance_pct: Optional[float] = None
+    # Phase 38.9 — sell/exit 통합. exit_tolerance_pct는 legacy 호환만.
     sell_tolerance_pct: Optional[float] = None
-    exit_tolerance_pct: Optional[float] = None
+    exit_tolerance_pct: Optional[float] = None  # [DEPRECATED — merged_execution이 흡수]
     unfilled_timeout_sec: Optional[int] = None
     poll_interval_sec: Optional[int] = None
     # 갭 필터
@@ -113,20 +153,75 @@ class ExecutionPolicy(BaseModel):
     bt_gap_threshold_pct: Optional[float] = None
 
 
+def parse_trade_symbols(trade_symbol: str) -> tuple[str, list[str]]:
+    """trade_symbol 문자열을 (mode, symbols)로 파싱.
+
+    - "screener:marcap_top" → ("screener", ["marcap_top"])  (preset_key를 단일 항목으로)
+    - "005930"               → ("manual",   ["005930"])
+    - "005930,000660,035420" → ("manual",   ["005930", "000660", "035420"])
+
+    공백·빈 토큰은 무시. 자동 선택과 수동 다중은 혼합 불가.
+    """
+    s = (trade_symbol or "").strip()
+    if s.startswith("screener:"):
+        return ("screener", [s[len("screener:"):]])
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    return ("manual", parts)
+
+
 class Strategy(BaseModel):
-    """매매 전략 — 백테스트/모의/실전 공용."""
+    """매매 전략 — 백테스트/모의/실전 공용.
+
+    Phase 32: sell + exit_rules + sell_amount_pct가 sell_rules로 통합됨.
+    legacy 필드도 유지하되 _migrate_legacy validator가 sell_rules를 정규화한다.
+    """
     name: str = "새 전략"
     enabled: bool = True
-    trade_symbol: str                                  # 매수 대상 종목
+    trade_symbol: str                                  # 매수 대상 종목 — 단일/콤마 다중/screener:
     buy: ConditionGroup = Field(default_factory=ConditionGroup)
+    # Phase 32 — 매도/청산 통합
+    sell_rules: SellRules = Field(default_factory=SellRules)
+    # [DEPRECATED — 호환성용. _migrate_legacy가 sell_rules로 흡수]
     sell: Optional[ConditionGroup] = None
     exit_rules: ExitRules = Field(default_factory=ExitRules)
+    sell_amount_pct: float = 100.0
     amount_pct: float = 100.0                          # 자본 대비 매수 투입 비율(%)
-    sell_amount_pct: float = 100.0                     # 매도 시 보유분 청산 비율(%) — 100=전량
-    # 자동선정 (trade_symbol='screener:<key>') 한도 — 1이면 한 번에 1종목, N이면 N종목까지
-    screener_limit: int = 1
+    # 자동 선택 (trade_symbol='screener:<key>') 한도 — 1이면 한 번에 1종목, N이면 N종목까지
+    screener_limit: int = 5
     fill: Fill = "next_open"                           # 백테스트 체결 모델
     commission: float = 0.00015
     slippage: float = 0.0005
     # 체결 정책 — None이면 글로벌 default 적용
     execution: Optional[ExecutionPolicy] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy(cls, values):
+        """legacy sell/exit_rules/sell_amount_pct를 sell_rules로 흡수.
+
+        - sell_rules 명시 → 그대로 사용 (legacy 필드 무시)
+        - sell_rules 없음 → legacy 필드들을 합쳐 sell_rules 구성
+        """
+        if not isinstance(values, dict):
+            return values
+        if values.get("sell_rules"):
+            return values
+
+        sr: dict = {}
+        er = values.get("exit_rules") or {}
+        if isinstance(er, dict):
+            for k in ("take_profit", "stop_loss", "trail_pct",
+                       "trail_atr_mult", "hold_days"):
+                if er.get(k) is not None:
+                    sr[k] = er[k]
+        sell = values.get("sell")
+        if isinstance(sell, dict):
+            conds = sell.get("conditions") or []
+            if conds:
+                sr["conditions"] = conds
+                sr["logic"] = sell.get("logic", "AND")
+        if values.get("sell_amount_pct") is not None:
+            sr["sell_amount_pct"] = values["sell_amount_pct"]
+        if sr:
+            values["sell_rules"] = sr
+        return values

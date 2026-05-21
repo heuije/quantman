@@ -15,10 +15,10 @@ DEFAULT_EXECUTION: dict[str, Any] = {
     "use_limit": True,
     # 매수: 어제 종가 × (1 + tol%) 까지 허용. 그 이상 갭상승 시 미체결 → 신호 폐기.
     "buy_tolerance_pct": 1.0,
-    # 매도: 어제 종가 × (1 − tol%) 까지 허용. 그 이하 갭하락 시 미체결.
-    "sell_tolerance_pct": 1.0,
-    # 청산 시 더 공격적인 tolerance — 손절은 잡혀야 하므로
-    "exit_tolerance_pct": 2.0,
+    # 매도 (Phase 38.9 — sell/exit 통합): 어제 종가 × (1 − tol%) 까지 허용.
+    # 신호 기반 매도(매도조건·보유기간)와 청산(익절·손절·트레일)이 같은 값을 사용.
+    # 위험 관리는 잡혀야 하므로 매수 tol보다 공격적인 default.
+    "sell_tolerance_pct": 2.0,
     # 미체결 주문 자동 취소 대기시간 (초). 5분.
     "unfilled_timeout_sec": 300,
     # 폴링 간격 (초)
@@ -50,12 +50,23 @@ DEFAULT_EXECUTION: dict[str, Any] = {
 
 
 def merged_execution(strategy_exec: dict | None) -> dict:
-    """전략별 ExecutionPolicy를 글로벌 default와 병합. None 필드는 default로 채움."""
+    """전략별 ExecutionPolicy를 글로벌 default와 병합. None 필드는 default로 채움.
+
+    Phase 38.9 — 구버전 exit_tolerance_pct 키가 들어오면 sell_tolerance_pct로 흡수.
+    """
     out = dict(DEFAULT_EXECUTION)
     if strategy_exec:
+        # Legacy 키 변환
+        if (strategy_exec.get("exit_tolerance_pct") is not None
+                and strategy_exec.get("sell_tolerance_pct") is None):
+            strategy_exec = dict(strategy_exec)
+            strategy_exec["sell_tolerance_pct"] = strategy_exec.pop(
+                "exit_tolerance_pct")
         for k, v in strategy_exec.items():
             if v is not None:
                 out[k] = v
+    # 옛 코드가 exit_tolerance_pct를 읽는 경우를 위해 alias 채워둠
+    out["exit_tolerance_pct"] = out["sell_tolerance_pct"]
     return out
 
 

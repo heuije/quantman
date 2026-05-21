@@ -273,9 +273,10 @@ def add_fundamentals(df: pd.DataFrame, fund_df: Optional[pd.DataFrame]) -> pd.Da
 # ── 지표 메타데이터 ──────────────────────────────────────────────────────────
 
 INDICATOR_META = {
-    # 가격 레벨
-    "price_level":        {"label": "가격(레벨)",         "unit": "",   "decimals": 2},
-    # 가격 수익률
+    # 가격 레벨 — 한국 종목 OHLC는 모두 정규장(09:00~15:30) 기준.
+    # 시간외 단일가는 dataset에 포함되지 않으므로 매수 신호도 정규장 종가로 평가.
+    "price_level":        {"label": "가격 (정규장 종가)",  "unit": "",   "decimals": 2},
+    # 가격 수익률 — 모두 정규장 종가 기반
     "pct_change_1d":      {"label": "전일대비(%)",        "unit": "%",  "decimals": 2},
     "pct_change_5d":      {"label": "5일 수익률(%)",      "unit": "%",  "decimals": 2},
     "pct_change_20d":     {"label": "20일 수익률(%)",     "unit": "%",  "decimals": 2},

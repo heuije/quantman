@@ -24,6 +24,8 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
+from .strategy import SELF_SYMBOL, is_self_ref
+
 # scipy는 run_analysis에서만 쓰므로 지연 import한다.
 # (로컬앱 패키징 시 scipy ~135MB를 번들에서 제외하기 위함)
 
@@ -61,8 +63,13 @@ def _normalize_condition(cond: dict) -> dict:
 
 # ── 피연산자 해석 ────────────────────────────────────────────────────────────
 
-def _resolve_operand(data: dict[str, pd.DataFrame], operand: Optional[dict]):
-    """피연산자를 시계열(Series) 또는 상수(float/list)로 해석. 실패 시 None."""
+def _resolve_operand(data: dict[str, pd.DataFrame], operand: Optional[dict],
+                      current_symbol: Optional[str] = None):
+    """피연산자를 시계열(Series) 또는 상수(float/list)로 해석. 실패 시 None.
+
+    Phase 41 — operand.symbol == SELF_SYMBOL이면 current_symbol로 치환.
+    current_symbol이 None인데 placeholder를 만나면 평가 불가(None) 반환.
+    """
     if not operand:
         return None
     kind = operand.get("kind", "indicator")
@@ -71,6 +78,10 @@ def _resolve_operand(data: dict[str, pd.DataFrame], operand: Optional[dict]):
         return operand.get("value")
 
     sym = operand.get("symbol")
+    if sym == SELF_SYMBOL:
+        if not current_symbol:
+            return None       # placeholder인데 종목 context 없음 — 평가 불가
+        sym = current_symbol
     indic = operand.get("indicator")
     if sym not in data or data[sym].empty or indic not in data[sym].columns:
         return None
@@ -149,15 +160,19 @@ def _apply_modifier(mask: pd.Series, modifier: Optional[dict]) -> pd.Series:
 
 
 def _condition_mask(data: dict[str, pd.DataFrame],
-                    cond: dict) -> Optional[pd.Series]:
-    """단일 조건의 boolean 마스크를 계산한다. 해석 불가 시 None."""
+                    cond: dict,
+                    current_symbol: Optional[str] = None) -> Optional[pd.Series]:
+    """단일 조건의 boolean 마스크를 계산한다. 해석 불가 시 None.
+
+    Phase 41 — current_symbol을 좌·우변 placeholder 치환에 사용.
+    """
     cond = _normalize_condition(cond)
-    left = _resolve_operand(data, cond.get("left"))
+    left = _resolve_operand(data, cond.get("left"), current_symbol)
     if not isinstance(left, pd.Series):
         return None                       # 좌변은 반드시 시계열
 
     op = cond.get("op")
-    right = _resolve_operand(data, cond.get("right"))
+    right = _resolve_operand(data, cond.get("right"), current_symbol)
     if right is None:
         return None
 
@@ -177,22 +192,207 @@ def _condition_mask(data: dict[str, pd.DataFrame],
     return mask.fillna(False).astype(bool)
 
 
+def describe_condition(cond: dict, current_symbol: Optional[str] = None) -> str:
+    """조건을 사람 친화적 한 줄로 표현. Phase 38.11 — 신호 미충족 사유 표시용.
+
+    예: "RSI(14) 30 미만" / "MA5 cross_up MA20 (3일 연속)" / "Close > 어제 Close"
+
+    Phase 41 — placeholder symbol(SELF_SYMBOL)을 만나면 current_symbol로 표시.
+    current_symbol이 None이면 "[이 종목]"으로 라벨링.
+    """
+    cond = _normalize_condition(cond)
+    op = cond.get("op", "?")
+    op_label = OP_LABELS.get(op, op)
+
+    def _operand_str(o: dict | None) -> str:
+        if not o:
+            return "?"
+        kind = o.get("kind", "indicator")
+        if kind == "constant":
+            v = o.get("value")
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                return f"[{v[0]}, {v[1]}]"
+            return str(v)
+        sym = o.get("symbol") or "?"
+        if sym == SELF_SYMBOL:
+            sym = current_symbol or "[이 종목]"
+        ind = o.get("indicator") or "?"
+        base = f"{sym}.{ind}" if sym not in ("", None) else ind
+        if kind == "history":
+            stat = o.get("stat") or ""
+            win = o.get("window")
+            stat_label = _STAT_LABELS.get(stat, stat)
+            if stat == "percentile":
+                pct = o.get("percentile", 50)
+                return f"{base}의 {win}일 {stat_label}({pct}%)"
+            return f"{base}의 {win}일 {stat_label}"
+        return base
+
+    left_s = _operand_str(cond.get("left"))
+    right_s = _operand_str(cond.get("right"))
+    mod = cond.get("modifier") or {}
+    mod_suffix = ""
+    if isinstance(mod, dict) and mod.get("kind"):
+        days = int(mod.get("days") or 1)
+        if days > 1:
+            kind = mod["kind"]
+            mod_suffix = f" ({days}일 연속)" if kind == "streak" else f" (최근 {days}일 내)"
+    return f"{left_s} {op_label} {right_s}{mod_suffix}"
+
+
+def explain_buy_signal(
+    data: dict[str, pd.DataFrame],
+    conditions: list[dict],
+    logic: str,
+    current_symbol: Optional[str] = None,
+) -> dict:
+    """가장 최근 거래일에 대해 조건별 평가 결과를 사람 친화적으로 반환.
+
+    Phase 38.11: trader/preview_engine이 "왜 매수 신호 False였나"를 사용자에게
+    명시할 수 있도록 조건별 통과/미통과 + AND/OR 결합 결과를 함께 노출.
+
+    Phase 41 — current_symbol을 [이 종목] placeholder 치환에 사용. 좌변에
+    placeholder가 있는데 current_symbol이 None이면 그 조건은 평가 불가(passed=None).
+
+    Returns:
+        {
+          "passed": bool,                # 최종 신호 평가
+          "logic": "AND"|"OR",
+          "details": [
+            {"label": "RSI(14) 30 미만", "passed": True | False | None,
+             "reason": "..." (None일 때 원인)}
+          ],
+          "summary": "RSI(14) 30 미만 ✓, MA5 > MA20 ✗",
+        }
+    """
+    if not conditions:
+        return {"passed": False, "logic": logic, "details": [],
+                "summary": "조건 없음"}
+
+    details = []
+    final_mask: Optional[pd.Series] = None
+    for cond in conditions:
+        label = describe_condition(cond, current_symbol)
+        m = _condition_mask(data, cond, current_symbol)
+        if m is None or m.empty:
+            details.append({"label": label, "passed": None,
+                              "reason": "데이터 부족 또는 지표 누락"})
+            continue
+        last = bool(m.iloc[-1])
+        details.append({"label": label, "passed": last, "reason": None})
+        if final_mask is None:
+            final_mask = m
+        else:
+            common = final_mask.index.intersection(m.index)
+            if logic == "AND":
+                final_mask = (final_mask.reindex(common) & m.reindex(common))
+            else:
+                final_mask = (final_mask.reindex(common) | m.reindex(common))
+
+    passed = False
+    if final_mask is not None and not final_mask.empty:
+        passed = bool(final_mask.iloc[-1])
+
+    # 한 줄 요약 — 통과 ✓, 미통과 ✗, 평가불가 ?
+    def _glyph(p):
+        return "✓" if p is True else ("✗" if p is False else "?")
+    summary = ", ".join(f"{d['label']} {_glyph(d['passed'])}" for d in details)
+
+    return {"passed": passed, "logic": logic, "details": details,
+            "summary": summary}
+
+
+def _partition_conditions(conditions: list[dict]) -> tuple[list[dict], list[dict]]:
+    """조건을 (공통, 종목별)로 분리.
+
+    Phase 41 — 좌·우변 중 어느 쪽이든 SELF_SYMBOL placeholder를 참조하면
+    "종목별 조건"으로 분류. 둘 다 명시적 종목이면 "공통 조건".
+    """
+    common: list[dict] = []
+    per: list[dict] = []
+    for c in conditions:
+        n = _normalize_condition(c)
+        if is_self_ref(n.get("left")) or is_self_ref(n.get("right")):
+            per.append(c)
+        else:
+            common.append(c)
+    return common, per
+
+
+def explain_buy_signal_per_symbol(
+    data: dict[str, pd.DataFrame],
+    conditions: list[dict],
+    logic: str,
+    target_symbols: list[str],
+) -> dict:
+    """공통 조건 1회 평가 + 종목별 조건 각 종목 평가 + AND/OR 결합.
+
+    Phase 41 — 자동 선택 / 수동 다중 매수에서 종목별 조건 평가 결과를 종합.
+    AND: 공통 통과 AND 종목별 통과인 종목만 매수 후보
+    OR : 공통 통과 OR 종목별 통과인 종목 매수 후보 (공통이 통과하면 모든 종목 통과)
+
+    Returns:
+        {
+          "common": explain_buy_signal 결과 | None (공통 조건 없으면 None),
+          "per_symbol": {sym: {passed, details, summary}, ...},
+          "passed_symbols": [최종 매수 후보],
+          "logic": "AND" | "OR",
+        }
+    """
+    common, per_cond = _partition_conditions(conditions)
+    common_ex = explain_buy_signal(data, common, logic) if common else None
+
+    per: dict[str, dict] = {}
+    passed_symbols: list[str] = []
+    for sym in target_symbols:
+        sym_ex = (explain_buy_signal(data, per_cond, logic, sym)
+                   if per_cond else None)
+        if common_ex is None and sym_ex is None:
+            passed, details, summary = False, [], "조건 없음"
+        elif common_ex is None:
+            passed = sym_ex["passed"]
+            details = sym_ex["details"]
+            summary = sym_ex["summary"]
+        elif sym_ex is None:
+            passed = common_ex["passed"]
+            details = common_ex["details"]
+            summary = common_ex["summary"]
+        else:
+            if logic == "AND":
+                passed = common_ex["passed"] and sym_ex["passed"]
+            else:
+                passed = common_ex["passed"] or sym_ex["passed"]
+            details = common_ex["details"] + sym_ex["details"]
+            summary = ", ".join(
+                s for s in (common_ex["summary"], sym_ex["summary"]) if s)
+        per[sym] = {"passed": passed, "details": details, "summary": summary}
+        if passed:
+            passed_symbols.append(sym)
+
+    return {"common": common_ex, "per_symbol": per,
+             "passed_symbols": passed_symbols, "logic": logic}
+
+
 def build_signal_mask(
     data: dict[str, pd.DataFrame],
     conditions: list[dict],
     logic: str,
+    current_symbol: Optional[str] = None,
 ) -> pd.Series:
     """
     조건 집합을 만족하는 날짜의 boolean 마스크를 반환한다.
     조건이 없거나 종목·지표 데이터가 부족하면 빈 Series를 반환한다.
     분석 엔진(run_analysis)과 백테스트 엔진이 동일한 조건 정의를 공유하기 위한 헬퍼.
+
+    Phase 41 — current_symbol을 [이 종목] placeholder 치환에 사용. None이면
+    placeholder를 만났을 때 데이터 부족으로 처리되어 빈 Series가 돌아온다.
     """
     if not conditions:
         return pd.Series(dtype=bool)
 
     masks = []
     for cond in conditions:
-        m = _condition_mask(data, cond)
+        m = _condition_mask(data, cond, current_symbol)
         if m is None:
             return pd.Series(dtype=bool)
         masks.append(m)

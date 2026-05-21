@@ -33,24 +33,25 @@ def run_strategy_backtest(
     ExecutionPolicy(있으면 글로벌 default와 병합)의 비용·갭 가정을 적용한다.
     레거시 commission/slippage 필드는 ExecutionPolicy가 없을 때만 fallback.
     """
-    ex = strategy.exit_rules
+    sr = strategy.sell_rules
     pol_dict = strategy.execution.model_dump() if strategy.execution else None
     pol = merged_execution(pol_dict)
     # 편도 비용을 bps → 비율로 변환. 정책 우선, fallback은 strategy 필드.
     commission = pol["bt_commission_bps"] / 10_000.0
     slippage = pol["bt_slippage_bps"] / 10_000.0
+    sell_conds = [c.model_dump() for c in sr.conditions] if sr.conditions else None
     return run_backtest(
         data=data,
         trade_symbol=strategy.trade_symbol,
         buy_conditions=_conds(strategy.buy),
         buy_logic=strategy.buy.logic,
-        hold_days=ex.hold_days,
-        take_profit=ex.take_profit,
-        stop_loss=ex.stop_loss,
-        trail_atr_mult=ex.trail_atr_mult,
-        trail_pct=ex.trail_pct,
-        sell_conditions=_conds(strategy.sell) if strategy.sell else None,
-        sell_logic=strategy.sell.logic if strategy.sell else "AND",
+        hold_days=sr.hold_days,
+        take_profit=sr.take_profit,
+        stop_loss=sr.stop_loss,
+        trail_atr_mult=sr.trail_atr_mult,
+        trail_pct=sr.trail_pct,
+        sell_conditions=sell_conds,
+        sell_logic=sr.logic,
         fill=strategy.fill,
         commission=commission,
         slippage=slippage,
@@ -62,9 +63,15 @@ def run_strategy_backtest(
     )
 
 
-def evaluate_buy_signal(strategy: Strategy, data: dict[str, pd.DataFrame]) -> bool:
-    """가장 최근 거래일 기준으로 매수 조건 충족 여부를 반환한다 (모의/실전 공용)."""
-    mask = build_signal_mask(data, _conds(strategy.buy), strategy.buy.logic)
+def evaluate_buy_signal(strategy: Strategy, data: dict[str, pd.DataFrame],
+                         current_symbol: str | None = None) -> bool:
+    """가장 최근 거래일 기준으로 매수 조건 충족 여부를 반환한다 (모의/실전 공용).
+
+    Phase 41 — current_symbol이 주어지면 [이 종목] placeholder가 그 종목으로
+    치환된다. preview_engine / trader가 종목별 평가용으로 사용.
+    """
+    mask = build_signal_mask(data, _conds(strategy.buy), strategy.buy.logic,
+                              current_symbol=current_symbol)
     if mask.empty:
         return False
     return bool(mask.iloc[-1])

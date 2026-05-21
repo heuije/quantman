@@ -31,6 +31,14 @@ FUNDAMENTALS_DIR.mkdir(parents=True, exist_ok=True)
 
 USER_STOCKS_PATH = DATA_DIR / "user_stocks.json"
 
+# 자동 관리되는 한국 거래 가능 종목 코드 리스트 (KIS 마스터 KOSPI/KOSDAQ + 등록 전략 union)
+# 형식: ["005930", "000660", ...] — 코드 그대로 parquet 파일명·load 키로 사용
+MANAGED_KR_PATH = DATA_DIR / "managed_kr_stocks.json"
+
+# 사용자 등록으로 자동 추가된 해외 종목 — on-demand fetch + 영구 캐시
+# 형식: [{"code":"AAPL", "name":"Apple Inc."}, ...]
+MANAGED_OVERSEAS_PATH = DATA_DIR / "managed_overseas_stocks.json"
+
 # ── 기본 종목 정의 ────────────────────────────────────────────────────────────
 
 # 자산 (가격 시계열)
@@ -241,6 +249,101 @@ def fetch_fdr(symbol_name: str, ticker: str, start: str = "2010-01-01") -> pd.Da
     except Exception as e:
         print(f"  [오류] {symbol_name}: {e}")
         return existing
+
+
+def fetch_korean_stocks(codes: list[str], start: str = "2015-01-01",
+                         verbose: bool = False) -> dict[str, pd.DataFrame]:
+    """한국 거래소 종목 OHLC 일괄 수집 (FinanceDataReader, KRX 직접 소스).
+
+    각 코드(예: "005930")로 fdr.DataReader 호출 → parquet incremental append.
+    실패한 종목은 skip하고 로그 — 한 종목 실패가 전체를 막지 않는다.
+    호출자(서버 cron)가 한국 거래 가능 종목 ~2,800개를 매일 1회 호출.
+
+    **컬럼 의미** — FDR(NAVER 백엔드)의 OHLC는 모두 정규장(09:00~15:30) 기준:
+      Open/High/Low/Close = 정규장 시초가/고가/저가/마감가
+      Volume              = 정규장 거래량 (시간외 거래량 미포함)
+      Change              = 정규장 종가 전일 대비 등락률
+    시간외 단일가(16:00~18:00)는 별도 endpoint이며 본 fetch에 포함되지 않음.
+
+    Args:
+        codes: KRX 종목 코드 리스트 (6자리)
+        start: 새 종목 첫 fetch 시 시작일. 기존 parquet 있으면 무시되고 이어받음.
+    Returns:
+        {code: DataFrame} — 성공한 것만
+    """
+    results: dict[str, pd.DataFrame] = {}
+    n_ok = n_skip = n_fail = 0
+    for i, code in enumerate(codes):
+        existing = _load_existing(code)
+        s = (existing.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d") \
+            if not existing.empty else start
+        try:
+            df = fdr.DataReader(code, s)
+        except Exception as e:
+            if verbose:
+                print(f"  [{i+1}/{len(codes)}] {code}: 오류 {e}")
+            n_fail += 1
+            if not existing.empty:
+                results[code] = existing
+            continue
+        if df.empty:
+            # 신규 데이터 없음 — 기존 그대로
+            if not existing.empty:
+                results[code] = existing
+            n_skip += 1
+            continue
+        cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        df = df[cols].copy()
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        merged = _merge(existing, df)
+        _save(code, merged)
+        results[code] = merged
+        n_ok += 1
+        if verbose and (i + 1) % 200 == 0:
+            print(f"  진행: {i+1}/{len(codes)} (성공 {n_ok} · 신규없음 {n_skip} · 실패 {n_fail})")
+    print(f"한국 종목 fetch 완료: 총 {len(codes)} → 성공 {n_ok} · 신규없음 {n_skip} · 실패 {n_fail}")
+    return results
+
+
+# ── 자동 관리 종목 목록 ───────────────────────────────────────────────────────
+
+def load_managed_kr_codes() -> list[str]:
+    """현재 자동 갱신 대상에 등록된 한국 종목 코드 목록."""
+    if MANAGED_KR_PATH.exists():
+        try:
+            return json.loads(MANAGED_KR_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def save_managed_kr_codes(codes: list[str]) -> None:
+    """자동 갱신 대상 코드 목록 저장. 중복 제거 + 정렬."""
+    unique = sorted(set(codes))
+    MANAGED_KR_PATH.write_text(
+        json.dumps(unique, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_managed_overseas() -> list[dict]:
+    """on-demand 등록된 해외 종목 목록. [{"code", "name"}, ...]"""
+    if MANAGED_OVERSEAS_PATH.exists():
+        try:
+            return json.loads(MANAGED_OVERSEAS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def save_managed_overseas(stocks: list[dict]) -> None:
+    """on-demand 해외 종목 목록 저장. code 기준 dedupe."""
+    seen, uniq = set(), []
+    for s in stocks:
+        c = s.get("code", "").strip()
+        if c and c not in seen:
+            seen.add(c)
+            uniq.append({"code": c, "name": s.get("name", "")})
+    MANAGED_OVERSEAS_PATH.write_text(
+        json.dumps(uniq, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ── Binance REST (비트코인) ───────────────────────────────────────────────────
@@ -683,7 +786,7 @@ def fetch_all(verbose: bool = True) -> dict[str, pd.DataFrame]:
 
 
 def load_all() -> dict[str, pd.DataFrame]:
-    """저장된 parquet에서 전체 심볼(기본+사용자 종목) 로드."""
+    """저장된 parquet에서 전체 심볼 로드. 매크로/자산 + 사용자 종목 + 자동 관리 한국·해외 종목."""
     result = {}
     for symbol in ALL_SYMBOLS:
         p = _parquet_path(symbol)
@@ -693,6 +796,17 @@ def load_all() -> dict[str, pd.DataFrame]:
         p = _parquet_path(stock["name"])
         if p.exists():
             result[stock["name"]] = pd.read_parquet(p)
+    # Phase 29: 자동 관리 한국 종목 (KIS 마스터 KOSPI/KOSDAQ union)
+    for code in load_managed_kr_codes():
+        p = _parquet_path(code)
+        if p.exists():
+            result[code] = pd.read_parquet(p)
+    # Phase 29: on-demand 등록된 해외 종목
+    for stock in load_managed_overseas():
+        code = stock["code"]
+        p = _parquet_path(code)
+        if p.exists():
+            result[code] = pd.read_parquet(p)
     return result
 
 
