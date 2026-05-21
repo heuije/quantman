@@ -108,16 +108,6 @@ interface Props {
 
 /** 칩 + 분류·검색 팝오버 방식의 문장형 조건 빌더. */
 export default function ConditionBuilder({ symbols, group, onChange }: Props) {
-  const symList = symbols.filter((s) => s.indicators.length > 0);
-  const indicatorsOf = (sym?: string) =>
-    symbols.find((s) => s.symbol === sym)?.indicators ?? [];
-
-  function defaultIndicator(sym: string) {
-    const inds = indicatorsOf(sym);
-    return (inds.find((i) => i.key.includes("pct_change")
-                          || i.key.includes("return")) ?? inds[0])?.key ?? "";
-  }
-
   function update(i: number, patch: Partial<Condition>) {
     const conditions = group.conditions.map((c, idx) => {
       if (idx !== i) return c;
