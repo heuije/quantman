@@ -1,4 +1,4 @@
-"""서버 /screener API 호출 — 자동선정 전략의 매수 후보 조회.
+"""서버 /screener API 호출 — 자동 선택 전략의 매수 후보 조회.
 
 전략의 trade_symbol이 'screener:<preset_key>' 형식이면 trader가 이 모듈로
 서버에 매칭 종목 리스트를 요청한다. 서버 캐시(KRX 16:30 KST 갱신)에서 즉시 응답.
@@ -23,7 +23,7 @@ SCREENER_PREFIX = "screener:"
 
 
 def parse_screener_key(trade_symbol: str) -> str | None:
-    """전략의 trade_symbol이 자동선정 prefix면 preset key 반환, 아니면 None."""
+    """전략의 trade_symbol이 자동 선택 prefix면 preset key 반환, 아니면 None."""
     if trade_symbol and trade_symbol.startswith(SCREENER_PREFIX):
         return trade_symbol[len(SCREENER_PREFIX):]
     return None

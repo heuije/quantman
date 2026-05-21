@@ -1,13 +1,12 @@
 """로컬앱 CLI 진입점.
 
-  python run.py setup            KIS 모의투자 자격증명 등록 (keyring)
-  python run.py pair             플랫폼 계정과 기기 페어링
-  python run.py cycle [--mock]   모의투자 사이클 1회 실행
-  python run.py run   [--mock]   스케줄러 상주 실행
-  python run.py status           현재 연동 상태 확인
+  python run.py setup     KIS 모의투자 자격증명 등록 (keyring)
+  python run.py pair      플랫폼 계정과 기기 페어링
+  python run.py cycle     자동매매 사이클 1회 실행
+  python run.py run       스케줄러 상주 실행
+  python run.py status    현재 연동 상태 확인
 
---mock: KIS 연결 없이 MockBroker로 체험.
-정식 배포 시 이 CLI는 트레이 앱(pystray) + 자동시작으로 패키징된다.
+Phase 38.3: --mock 제거. KIS 자격증명이 없으면 명시적 RuntimeError.
 """
 
 from __future__ import annotations
@@ -50,12 +49,12 @@ def _guard_or_exit():
         sys.exit(1)
 
 
-def cmd_cycle(use_mock: bool):
+def cmd_cycle():
     setup_logging()
     _guard_or_exit()
     try:
         from localapp.runner import run_cycle
-        payload = run_cycle(use_mock=use_mock)
+        payload = run_cycle()
         bal = payload["balance"]
         print(f"평가금액 {bal['total_eval']:,}원 · 예수금 {bal['cash']:,}원 · "
               f"보유 {len(payload['positions'])}종목 · 체결 {len(payload['trades'])}건")
@@ -63,12 +62,12 @@ def cmd_cycle(use_mock: bool):
         single_instance.release()
 
 
-def cmd_run(use_mock: bool):
+def cmd_run():
     setup_logging()
     _guard_or_exit()
     try:
         from localapp.scheduler import start
-        start(use_mock=use_mock)
+        start()
     finally:
         single_instance.release()
 
@@ -85,18 +84,14 @@ def cmd_status():
 def main():
     p = argparse.ArgumentParser(description="퀀트 플랫폼 로컬앱")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("setup")
-    sub.add_parser("pair")
-    for name in ("cycle", "run"):
-        sp = sub.add_parser(name)
-        sp.add_argument("--mock", action="store_true", help="KIS 없이 체험")
-    sub.add_parser("status")
+    for name in ("setup", "pair", "cycle", "run", "status"):
+        sub.add_parser(name)
     args = p.parse_args()
 
     if args.cmd == "setup":   cmd_setup()
     elif args.cmd == "pair":  cmd_pair()
-    elif args.cmd == "cycle": cmd_cycle(args.mock)
-    elif args.cmd == "run":   cmd_run(args.mock)
+    elif args.cmd == "cycle": cmd_cycle()
+    elif args.cmd == "run":   cmd_run()
     elif args.cmd == "status": cmd_status()
 
 

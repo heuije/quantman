@@ -19,6 +19,11 @@ EQUITY_PATH = APP_DIR / "equity.json"
 TRADES_PATH = APP_DIR / "trades.jsonl"
 PENDING_PATH = APP_DIR / "pending_snapshot.json"
 
+# Phase 41 — preview pull 실패 시 단기 캐시(24h)로 fallback. 서버 일시 장애가
+# "preview 없음 → 신규 진입 0 → 청산만" 발동시키지 않도록 안전망.
+PREVIEW_CACHE_PATH = APP_DIR / "preview_cache.json"
+PREVIEW_CACHE_TTL_SEC = 24 * 60 * 60
+
 # Phase 9 추가
 ORDERS_PATH = APP_DIR / "orders.jsonl"           # 주문 이벤트 로그 (제출/체결/취소/거부)
 CYCLES_PATH = APP_DIR / "cycles.jsonl"           # 사이클별 의사결정 로그

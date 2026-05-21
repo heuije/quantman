@@ -403,3 +403,131 @@ def enrich_positions(positions: list[dict], ledger: dict,
             "distances": distances,
         })
     return out
+
+
+# ── Phase 40 — KIS 잔고 ↔ ledger 정합성 ──────────────────────────────────────
+#
+# HTS/MTS 수동 매매로 KIS 실 잔고와 자동매매 ledger가 어긋날 수 있다.
+# 정책 (사용자 승인 — "자동 정정 + 알림"):
+#   - ledger 일부 또는 전체 외부 매도 발견 → ledger 자동 차감/제거 + external_close 거래 기록
+#   - 외부 매수 (KIS 초과분 또는 신규 종목) → ledger 손대지 않음 (정보만 표시)
+# 자동 처리는 15:35 settlement 사이클에서만 — 매매 직전 08:55에서 손대면 위험.
+
+def reconcile_ledger(kis_positions: list[dict], ledger: dict) -> dict:
+    """KIS 실 잔고와 로컬 ledger를 비교해 drift를 카테고리별로 분류.
+
+    Args:
+        kis_positions: KIS account_snapshot()["positions"] 리스트.
+            각 항목: {symbol, qty, avg_price, eval_price, name}
+        ledger: trader.ledger (sid → {symbol, qty, entry_price, ...})
+
+    Returns:
+        {
+          "ledger_orphans": [  # ledger엔 있는데 KIS엔 부족 (외부 매도 의심)
+            {symbol, ledger_sids: [{sid, qty}, ...], kis_qty, shortfall,
+             ledger_total_qty}
+          ],
+          "external_extras": [  # KIS엔 있는데 ledger엔 부족 (외부 매수)
+            {symbol, kis_qty, ledger_total_qty, excess, in_ledger: bool}
+          ],
+          "in_sync": [symbol, ...],  # 양쪽 일치
+          "checked_at": ISO timestamp,
+          "ledger_symbol_count": int, "kis_symbol_count": int,
+        }
+    """
+    from datetime import datetime
+
+    kis_by_symbol = {p["symbol"]: int(p.get("qty", 0)) for p in kis_positions
+                      if p.get("symbol") and int(p.get("qty", 0)) > 0}
+
+    # ledger를 symbol → [{sid, qty}, ...]로 그룹핑 (한 종목을 여러 전략이 보유 가능)
+    ledger_by_symbol: dict[str, list[dict]] = defaultdict(list)
+    for sid, lg in ledger.items():
+        sym = lg.get("symbol")
+        qty = int(lg.get("qty", 0))
+        if sym and qty > 0:
+            ledger_by_symbol[sym].append({"sid": sid, "qty": qty})
+
+    orphans = []
+    extras = []
+    in_sync = []
+
+    all_symbols = set(kis_by_symbol) | set(ledger_by_symbol)
+    for sym in sorted(all_symbols):
+        kis_qty = kis_by_symbol.get(sym, 0)
+        ledger_sids = ledger_by_symbol.get(sym, [])
+        ledger_total = sum(s["qty"] for s in ledger_sids)
+
+        if kis_qty == ledger_total and ledger_total > 0:
+            in_sync.append(sym)
+        elif kis_qty < ledger_total:
+            # 외부 매도 — ledger 차감 필요
+            orphans.append({
+                "symbol": sym,
+                "ledger_sids": ledger_sids,
+                "ledger_total_qty": ledger_total,
+                "kis_qty": kis_qty,
+                "shortfall": ledger_total - kis_qty,
+            })
+        else:
+            # kis_qty > ledger_total — 외부 매수 (신규 또는 추가)
+            extras.append({
+                "symbol": sym,
+                "kis_qty": kis_qty,
+                "ledger_total_qty": ledger_total,
+                "excess": kis_qty - ledger_total,
+                "in_ledger": ledger_total > 0,
+            })
+
+    return {
+        "ledger_orphans": orphans,
+        "external_extras": extras,
+        "in_sync": in_sync,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "ledger_symbol_count": len(ledger_by_symbol),
+        "kis_symbol_count": len(kis_by_symbol),
+    }
+
+
+def plan_orphan_adjustments(orphans: list[dict]) -> list[dict]:
+    """ledger_orphans에 대한 차감 계획. 비례 분배 (가장 적은 qty 가진 sid부터 모두
+    제거 → 남은 차감량을 다음 sid에서 차감, 음수 방지).
+
+    Returns: [{sid, symbol, old_qty, new_qty, removed_qty, fully_closed}]
+    """
+    plans = []
+    for o in orphans:
+        # qty 적은 순으로 정렬해 작은 entry부터 제거
+        sids = sorted(o["ledger_sids"], key=lambda s: s["qty"])
+        kis_qty = o["kis_qty"]
+        target_total = kis_qty
+        # 큰 entry부터 남기고, 작은 entry부터 차감
+        # 단순 비례 차감 → 라운딩 오차로 합이 안 맞을 수 있어 큰 entry로 흡수
+        ledger_total = o["ledger_total_qty"]
+        if ledger_total <= 0:
+            continue
+        remaining_target = target_total
+        # 큰 entry부터 비례 배정 (큰 entry에 비례 몫 + 잔여)
+        sids_desc = sorted(o["ledger_sids"], key=lambda s: -s["qty"])
+        new_qtys: dict[str, int] = {}
+        allocated = 0
+        for i, s in enumerate(sids_desc):
+            if i == len(sids_desc) - 1:
+                # 마지막 entry: 남은 만큼 모두 할당 (라운딩 보정)
+                nq = max(0, target_total - allocated)
+            else:
+                nq = int(s["qty"] * target_total / ledger_total)
+                allocated += nq
+            new_qtys[s["sid"]] = nq
+
+        for s in o["ledger_sids"]:
+            new_q = new_qtys[s["sid"]]
+            plans.append({
+                "sid": s["sid"],
+                "symbol": o["symbol"],
+                "old_qty": s["qty"],
+                "new_qty": new_q,
+                "removed_qty": s["qty"] - new_q,
+                "fully_closed": new_q == 0,
+            })
+    return plans

@@ -504,8 +504,10 @@ class SettingsApp:
         log.info("명령 수신: %s %s", t, params)
 
         if t == "RUN_CYCLE_NOW":
+            if secrets_store.load_kis() is None:
+                return {"error": "KIS 자격증명 없음 — setup 후 다시 시도하세요"}
             from .runner import run_cycle
-            payload = run_cycle(use_mock=secrets_store.load_kis() is None)
+            payload = run_cycle()
             # GUI는 다음 자동 갱신에서 반영
             self.root.after(100, self.refresh_status)
             return {"balance": payload.get("balance"),
@@ -526,9 +528,11 @@ class SettingsApp:
             return {"paused": False}
 
         if t == "LIQUIDATE_ALL":
+            if secrets_store.load_kis() is None:
+                return {"error": "KIS 자격증명 없음 — setup 후 다시 시도하세요"}
             killswitch.activate("웹 명령: LIQUIDATE_ALL")
             from .runner import run_cycle
-            payload = run_cycle(use_mock=secrets_store.load_kis() is None)
+            payload = run_cycle()
             self.root.after(100, self.refresh_status)
             return {"liquidated_positions": len(payload.get("positions", []))}
 
@@ -548,6 +552,42 @@ class SettingsApp:
             killswitch.reset()
             self.root.after(100, self.refresh_status)
             return {"reset": True}
+
+        if t == "RECONCILE_NOW":
+            # Phase 40 — 수동 reconcile 트리거 (HTS 수동 매매 직후 등)
+            if secrets_store.load_kis() is None:
+                return {"error": "KIS 자격증명 없음 — setup 후 다시 시도하세요"}
+            from .broker import Broker  # type 힌트용
+            from .runner import make_broker
+            from .trader import Trader
+            from .sync_client import push_snapshot
+            broker = make_broker()
+            trader = Trader(broker)
+            result = trader.reconcile_with_kis()
+            # 최신 잔고 함께 push해 서버 알림·UI 갱신
+            try:
+                snap = broker.account_snapshot()
+                payload = {
+                    "balance": snap.get("balance", {}),
+                    "positions": snap.get("positions", []),
+                    "reconciliation": result,
+                    "cycle_summary": {
+                        "kind": "manual_reconcile",
+                        "reconcile_drift": result.get("has_drift", False),
+                        "reconcile_applied": len(result.get("applied") or []),
+                    },
+                }
+                push_snapshot(payload)
+            except Exception as e:
+                log.warning("수동 reconcile push 실패: %s", e)
+            self.root.after(100, self.refresh_status)
+            return {
+                "has_drift": result.get("has_drift", False),
+                "applied_count": len(result.get("applied") or []),
+                "external_extras_count": result.get("external_extras_count", 0),
+                "in_sync_count": len(result.get("in_sync") or []),
+                "checked_at": result.get("checked_at"),
+            }
 
         return {"error": f"미지원 명령 타입: {t}"}
 
@@ -643,16 +683,27 @@ class SettingsApp:
         self.refresh_status()
 
     def _cycle_job(self):
+        if secrets_store.load_kis() is None:
+            import logging
+            logging.getLogger("localapp.gui").warning(
+                "KIS 자격증명 없음 — 자동 사이클 skip")
+            return
         from .runner import run_cycle
-        run_cycle(use_mock=secrets_store.load_kis() is None)
+        run_cycle()
 
     def _run_once(self):
+        if secrets_store.load_kis() is None:
+            messagebox.showwarning(
+                "자격증명 필요",
+                "KIS 자격증명을 먼저 등록하세요. (App Key/Secret/계좌번호)\n"
+                "KIS 모의투자 가입은 무료이며 즉시 발급됩니다.")
+            return
         self.btn_cycle.config(state="disabled")
         self.cycle_msg.config(text="실행 중... (시세 수집에 시간이 걸릴 수 있습니다)")
 
         def job():
             from .runner import run_cycle
-            return run_cycle(use_mock=secrets_store.load_kis() is None)
+            return run_cycle()
 
         def done(payload, err):
             self.btn_cycle.config(state="normal")

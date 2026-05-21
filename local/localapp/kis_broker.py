@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 import requests
 
 from .config import APP_DIR
+from .file_security import restrict_to_owner
 from .secrets_store import load_kis
 
 log = logging.getLogger("localapp.kis_broker")
@@ -76,6 +77,8 @@ class KisBroker:
             "expires_at": (datetime.now()
                            + timedelta(seconds=int(d.get("expires_in", 86400)))).isoformat(),
         }), encoding="utf-8")
+        # 토큰 파일은 같은 PC의 다른 사용자·프로세스가 읽으면 안 되는 자격증명.
+        restrict_to_owner(_TOKEN_CACHE)
         return d["access_token"]
 
     def _headers(self, tr_id: str) -> dict:
@@ -85,6 +88,28 @@ class KisBroker:
             "appkey": self.key, "appsecret": self.secret,
             "tr_id": tr_id, "custtype": "P",
         }
+
+    # ── WebSocket 인증 (실시간 시세용) ────────────────────────────────────────
+
+    def get_approval_key(self) -> str:
+        """KIS WebSocket용 일회성 approval_key 발급.
+
+        REST `/oauth2/Approval` 호출. 발급 후 KIS WebSocket 연결의 header에 포함.
+        토큰과는 별도 — 매 연결마다 새로 발급해도 무방.
+        """
+        r = requests.post(
+            f"{self.base}/oauth2/Approval",
+            json={"grant_type": "client_credentials",
+                  "appkey": self.key, "secretkey": self.secret},
+            timeout=10)
+        d = _kis_check(r)
+        return d["approval_key"]
+
+    @property
+    def ws_url(self) -> str:
+        """KIS WebSocket URL — 모의 31000, 실전 21000."""
+        return ("ws://ops.koreainvestment.com:31000" if self.virtual
+                else "ws://ops.koreainvestment.com:21000")
 
     # ── 조회 ──────────────────────────────────────────────────────────────────
 
@@ -239,8 +264,16 @@ class KisBroker:
             return {"success": False, "message": f"미지원 시장: {market}",
                     "msg_cd": "", "order_no": "", "filled_qty": 0}
         if unit_price <= 0:
-            # 시장가 의도 → 현재가로 대체 (해외는 지정가 강제)
-            unit_price = int(self._price_overseas(symbol, market)) or 1
+            # 시장가 의도 → 현재가로 대체 (해외는 지정가 강제).
+            # 가격 조회 실패 시 1원으로 fallback하면 비정상 발주 위험(재정 손실)이라
+            # 명시적 예외로 차단. 호출자(Trader._submit_buy/_submit_sell)는 이미
+            # try/except로 감싸고 있어 decision_log에 'error'로 기록되며 발주는 보류.
+            quoted = self._price_overseas(symbol, market)
+            if quoted <= 0:
+                raise RuntimeError(
+                    f"해외 {market} {symbol} 현재가 조회 실패 ({quoted}) — "
+                    f"지정가 발주를 위한 가격 없음. 주문 보류.")
+            unit_price = int(quoted)
         excd = self._OVERSEAS_EXCD.get(market, "NASD")
         body = {
             "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_cd,
