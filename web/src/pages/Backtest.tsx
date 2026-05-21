@@ -107,16 +107,16 @@ export default function Backtest() {
     }).catch((e) => setErr((e as Error).message));
   }, []);
 
-  useEffect(() => {
-    if (tab === "history" && !historyLoaded) loadHistory();
-  }, [tab]);   // eslint-disable-line react-hooks/exhaustive-deps
-
   function loadHistory() {
     api.listBacktestRuns()
       .then(setHistory)
       .catch((e) => setErr((e as Error).message))
       .finally(() => setHistoryLoaded(true));
   }
+
+  useEffect(() => {
+    if (tab === "history" && !historyLoaded) loadHistory();
+  }, [tab]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   function buildDef(): StrategyDef {
     const execution: ExecutionPolicy = {

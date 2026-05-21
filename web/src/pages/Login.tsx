@@ -89,10 +89,15 @@ export default function Login() {
           <div className="field">
             <label>비밀번호</label>
             <input
-              type="password" value={pw} required minLength={6}
+              type="password" value={pw} required minLength={8}
               style={{ width: "100%" }}
               onChange={(e) => setPw(e.target.value)}
             />
+            {mode === "signup" && (
+              <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                자동매매 자산 보호를 위해 8자 이상을 권장합니다. 영문·숫자·기호 혼용.
+              </p>
+            )}
           </div>
           {err && <div className="error">{err}</div>}
           <button type="submit" disabled={busy} style={{ width: "100%" }}>

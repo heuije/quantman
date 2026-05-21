@@ -1,6 +1,7 @@
 /* Monitor 페이지의 위험·성과·시장 카드 모음.
  * Phase 13.1~13.9의 visualization 컴포넌트들. */
 
+import { useEffect, useState } from "react";
 import type {
   DrawdownState, KillSwitchState, LocalHealth, MarketContext, PortfolioRisk,
   PositionRich, RejectionReason, SlippageBucket, StrategyPnlSummary,
@@ -252,8 +253,14 @@ export function ExecutionQuality({ buckets, reasons }: {
 export function HealthCard({ snapAt, health }: {
   snapAt?: string; health?: LocalHealth;
 }) {
+  // Date.now()를 render 중 직접 호출하면 React purity 위반 + 매 render 다른 값.
+  // state로 보관하고 30초마다 refresh.
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
   const items: { label: string; value: string; tone: "" | "warn" | "neg" }[] = [];
-  const now = Date.now();
   if (snapAt) {
     const ageMin = (now - new Date(snapAt).getTime()) / 60000;
     items.push({

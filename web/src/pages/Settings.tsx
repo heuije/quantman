@@ -99,7 +99,10 @@ export default function Settings() {
       <section className="panel">
         <h3>연결된 기기 ({devices.length})</h3>
         {devices.length === 0 ? (
-          <p className="muted">아직 연결된 기기가 없습니다.</p>
+          <div className="empty-state">
+            <p className="empty-title">아직 연결된 기기가 없습니다</p>
+            <p>위 칸에 로컬앱이 표시한 8자리 페어링 코드를 입력하면 기기가 등록됩니다.</p>
+          </div>
         ) : (
           <table>
             <thead>

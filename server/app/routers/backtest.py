@@ -5,7 +5,7 @@ from __future__ import annotations
 import quant_core as qc
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from .. import kis_master_cache
 from ..data_cache import get_dataset

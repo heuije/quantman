@@ -7,7 +7,6 @@ Phase 29: 로컬앱이 더 이상 yfinance/FDR을 직접 호출하지 않고 서
 
 from __future__ import annotations
 
-import io
 import logging
 from pathlib import Path
 

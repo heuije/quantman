@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
 import quant_core as qc
 from sqlmodel import Session, select
