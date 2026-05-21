@@ -37,6 +37,7 @@ def get_settings(user: User = Depends(get_current_user),
         kill_switch_daily_loss_pct=s.kill_switch_daily_loss_pct,
         max_drawdown_pct=s.max_drawdown_pct,
         preview_missing_alert_threshold=s.preview_missing_alert_threshold,
+        alert_on_reconcile_drift=s.alert_on_reconcile_drift,
     )
 
 
@@ -66,6 +67,7 @@ def put_settings(body: UserSettingsIO,
     s.kill_switch_daily_loss_pct = body.kill_switch_daily_loss_pct
     s.max_drawdown_pct = body.max_drawdown_pct
     s.preview_missing_alert_threshold = max(1, int(body.preview_missing_alert_threshold))
+    s.alert_on_reconcile_drift = body.alert_on_reconcile_drift
     s.updated_at = datetime.now(timezone.utc)
     session.add(s)
     session.commit()

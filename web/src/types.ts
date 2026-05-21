@@ -277,6 +277,14 @@ export interface UserSettingsIO {
   alert_on_killswitch: boolean;
   alert_on_daily_loss_pct: number;
   alert_on_unfilled_count: number;
+  // Phase 38.7 — kill switch 일일 손실 한도(%). null이면 글로벌 default(3.0).
+  kill_switch_daily_loss_pct: number | null;
+  // Phase 38.10 — 누적 drawdown 한도(%). null이면 글로벌 default(20.0).
+  max_drawdown_pct: number | null;
+  // Phase 38.5 — preview 연속 누락 일수 알림 임계 (1+)
+  preview_missing_alert_threshold: number;
+  // Phase 40 — KIS ↔ ledger 정합성 drift 알림
+  alert_on_reconcile_drift: boolean;
 }
 
 export interface SyncSnapshot {

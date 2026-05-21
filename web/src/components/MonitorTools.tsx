@@ -113,7 +113,43 @@ export function AlertSettings() {
 
   return (
     <div className="panel">
-      <h3 style={{ marginTop: 0 }}>알림 (Discord / Slack webhook)</h3>
+      <h3 style={{ marginTop: 0 }}>위험 한도 + 알림</h3>
+
+      <h4 style={{ marginTop: 16, marginBottom: 8 }}>
+        위험 한도 <span className="muted" style={{ fontWeight: 400, fontSize: 13 }}>
+          (비워두면 글로벌 default 사용)
+        </span>
+      </h4>
+      <div className="alert-form">
+        <div>
+          <label>Kill Switch — 일일 손실 한도 (%)</label>
+          <input
+            type="number" step="0.5" min={0.5} max={20}
+            placeholder="예: 3 (default 3.0)"
+            value={s.kill_switch_daily_loss_pct ?? ""}
+            onChange={(e) => update("kill_switch_daily_loss_pct",
+              e.target.value === "" ? null : Number(e.target.value))}
+          />
+          <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>
+            자본 대비 이 % 손실 시 신규 진입 차단 (청산은 계속)
+          </span>
+        </div>
+        <div>
+          <label>누적 Drawdown 한도 (%)</label>
+          <input
+            type="number" step="1" min={1} max={80}
+            placeholder="예: 20 (default 20.0)"
+            value={s.max_drawdown_pct ?? ""}
+            onChange={(e) => update("max_drawdown_pct",
+              e.target.value === "" ? null : Number(e.target.value))}
+          />
+          <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>
+            자본 고점 대비 이 % 하락 시 신규 진입 차단 (peak 회복 시 자동 해제)
+          </span>
+        </div>
+      </div>
+
+      <h4 style={{ marginTop: 20, marginBottom: 8 }}>알림 (Discord / Slack webhook)</h4>
       <div className="alert-form">
         <div>
           <label>Webhook URL</label>
@@ -128,7 +164,12 @@ export function AlertSettings() {
         <label className="alert-toggle">
           <input type="checkbox" checked={s.alert_on_killswitch}
                  onChange={(e) => update("alert_on_killswitch", e.target.checked)} />
-          Kill Switch 활성 시 알림
+          Kill Switch 활성/해제 시 알림
+        </label>
+        <label className="alert-toggle">
+          <input type="checkbox" checked={s.alert_on_reconcile_drift}
+                 onChange={(e) => update("alert_on_reconcile_drift", e.target.checked)} />
+          잔고 정합성 drift 알림 (HTS/MTS 수동 매매 감지)
         </label>
         <div>
           <label>일일 손실 알림 임계 (%)</label>
@@ -143,8 +184,18 @@ export function AlertSettings() {
                  onChange={(e) => update("alert_on_unfilled_count",
                                           Number(e.target.value))} />
         </div>
+        <div>
+          <label>Preview 연속 누락 알림 (일)</label>
+          <input type="number" min={1} max={14}
+                 value={s.preview_missing_alert_threshold}
+                 onChange={(e) => update("preview_missing_alert_threshold",
+                                          Math.max(1, Number(e.target.value)))} />
+          <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>
+            서버 cron이 N일 연속 preview 생성 실패 시 webhook
+          </span>
+        </div>
         <button disabled={busy} onClick={save}>
-          {busy ? "저장 중…" : "알림 설정 저장"}
+          {busy ? "저장 중…" : "설정 저장"}
         </button>
         {msg && <span className="muted">{msg}</span>}
       </div>
