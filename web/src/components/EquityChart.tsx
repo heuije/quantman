@@ -12,6 +12,17 @@ interface Props {
 
 /** 자산곡선 차트 — 전략 vs Buy&Hold. */
 export default function EquityChart({ equity, benchmark }: Props) {
+  // 데이터가 1점뿐이면 recharts가 x축에 같은 날짜를 반복 렌더해 버그처럼 보인다.
+  // 곡선이 그려질 만큼 쌓이기 전에는 안내 문구로 대체.
+  const distinctDates = new Set(equity.map((p) => p.date)).size;
+  if (distinctDates < 2) {
+    return (
+      <div className="empty" style={{ height: 120 }}>
+        데이터가 아직 충분하지 않습니다 — 사이클이 며칠 쌓이면 곡선이 그려집니다.
+      </div>
+    );
+  }
+
   const merged = equity.map((p, i) => ({
     date: p.date,
     전략: p.value,
