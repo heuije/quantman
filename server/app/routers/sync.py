@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import requests
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 from sqlmodel import Session, select
 
 from ..db import get_session
@@ -246,3 +247,49 @@ def latest_snapshot(
         return None
     return SyncSnapshotOut(payload=snap.payload, received_at=snap.received_at,
                            device_id=snap.device_id)
+
+
+# ── 로컬앱 → 서버 Parquet 데이터 동기화 업로드 ─────────────────────────────────────
+
+@router.post("/upload_parquet")
+async def upload_parquet(
+    category: str = "price",  # "price" or "fundamentals"
+    file: UploadFile = File(...),
+    device: Device = Depends(get_current_device),
+):
+    """로컬앱이 수집 완료된 .parquet 파일을 서버에 업로드하여 무결하게 적재."""
+    from quant_core import data_fetcher
+    from .. import data_cache
+
+    filename = file.filename
+    if not filename or not filename.endswith(".parquet"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="오직 .parquet 확장자의 파일만 업로드할 수 있습니다."
+        )
+
+    # 상위 경로 참조 공격(Path Traversal) 방지
+    safe_name = Path(filename).name
+
+    if category == "fundamentals":
+        dest_dir = data_fetcher.FUNDAMENTALS_DIR
+    else:
+        dest_dir = data_fetcher.DATA_DIR
+
+    dest_path = dest_dir / safe_name
+
+    try:
+        content = await file.read()
+        dest_path.write_bytes(content)
+        # 데이터가 갱신되었으므로 메모리 캐시를 무효화하여 다음 요청 시 디스크에서 새로 읽도록 함
+        data_cache.invalidate()
+        _log.info("Parquet 동기화 성공: %s (%s, %d bytes) -> device:%s", safe_name, category, len(content), device.id)
+    except Exception as e:
+        _log.error("Parquet 저장 실패 [%s]: %s", safe_name, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"서버에 Parquet 파일을 저장하는 중 오류가 발생했습니다: {e}"
+        )
+
+    return {"ok": True, "filename": safe_name, "category": category, "size": len(content)}
+

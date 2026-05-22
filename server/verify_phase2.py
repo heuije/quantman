@@ -125,6 +125,26 @@ def main():
         assert snap["payload"]["balance"]["total_eval"] == 5_200_000
         print("9) 동기화 (push -> pull strategies -> snapshot) OK")
 
+        # 9-1) Parquet 파일 업로드 동기화 API 검증
+        import io
+        test_file = io.BytesIO(b"dummy parquet data")
+        r = c.post(
+            "/sync/upload_parquet",
+            headers=DH,
+            params={"category": "price"},
+            files={"file": ("TEST_000000.parquet", test_file, "application/octet-stream")}
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"] is True
+        assert r.json()["filename"] == "TEST_000000.parquet"
+        
+        # 업로드한 임시 파일 정리
+        from quant_core import data_fetcher
+        uploaded_file = data_fetcher.DATA_DIR / "TEST_000000.parquet"
+        if uploaded_file.exists():
+            uploaded_file.unlink()
+        print("9-1) Parquet 업로드 동기화 API OK")
+
         # 11) 권한 격리 - 토큰 없이 접근 차단
         assert c.get("/strategies").status_code == 401
         assert c.get("/sync/strategies").status_code == 401

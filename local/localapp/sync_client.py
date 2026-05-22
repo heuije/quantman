@@ -216,3 +216,99 @@ def sync_dataset(local_data_dir: Path) -> dict:
             "skipped": n_skipped, "failed": n_failed}
 
 
+# ── 로컬앱 → 서버 Parquet 데이터 동기화 업로드 ─────────────────────────────────────
+
+def upload_single_parquet(file_path: Path, category: str = "price") -> bool:
+    """단일 parquet 파일을 서버에 업로드. 성공 시 True."""
+    headers = _headers()
+    with open(file_path, "rb") as f:
+        files = {"file": (file_path.name, f, "application/octet-stream")}
+        params = {"category": category}
+        r = requests.post(
+            f"{PLATFORM_URL}/sync/upload_parquet",
+            headers=headers,
+            params=params,
+            files=files,
+            timeout=60
+        )
+    r.raise_for_status()
+    return r.json().get("ok", False)
+
+
+def push_local_dataset(local_data_dir: Path) -> dict:
+    """로컬에 축적된 parquet 파일들을 서버의 영구 저장소로 업로드 (네이버 차단 완벽 우회).
+
+    로컬의 가격 데이터 및 펀더멘털 데이터를 비교하여 서버에 없거나 로컬 데이터가 더 최신인 경우 업로드합니다.
+    """
+    import pandas as pd
+
+    # 1. 서버 manifest 가져오기
+    try:
+        server_manifest = fetch_dataset_manifest()
+        server_map = {entry["key"]: entry for entry in server_manifest}
+    except Exception as e:
+        log.warning("서버 manifest 로드 실패. 전체 무조건 업로드 모드로 전환합니다: %s", e)
+        server_map = {}
+
+    n_total = 0
+    n_uploaded = 0
+    n_skipped = 0
+    n_failed = 0
+
+    # 2. 가격 데이터 업로드 (local_data_dir/*.parquet)
+    price_files = list(local_data_dir.glob("*.parquet"))
+    
+    for fp in price_files:
+        symbol = fp.stem
+        # manifest key와 비교
+        server_entry = server_map.get(symbol)
+        
+        need_upload = True
+        if server_entry:
+            try:
+                # 로컬 Parquet 파일의 마지막 날짜 확인
+                df_local = pd.read_parquet(fp)
+                local_last = str(df_local.index[-1])[:10] if len(df_local) else ""
+                server_last = server_entry.get("last_date", "")
+                if local_last and server_last and local_last <= server_last:
+                    need_upload = False
+            except Exception:
+                pass
+
+        n_total += 1
+        if not need_upload:
+            n_skipped += 1
+            continue
+
+        try:
+            log.info("Parquet 업로드 중: %s...", fp.name)
+            if upload_single_parquet(fp, category="price"):
+                n_uploaded += 1
+            else:
+                n_failed += 1
+        except Exception as e:
+            log.warning("Parquet 업로드 실패 [%s]: %s", fp.name, e)
+            n_failed += 1
+
+    # 3. 펀더멘털 데이터 업로드 (local_data_dir/fundamentals/*.parquet)
+    fund_dir = local_data_dir / "fundamentals"
+    if fund_dir.exists():
+        fund_files = list(fund_dir.glob("*.parquet"))
+        for fp in fund_files:
+            n_total += 1
+            try:
+                log.info("Fundamentals Parquet 업로드 중: %s...", fp.name)
+                if upload_single_parquet(fp, category="fundamentals"):
+                    n_uploaded += 1
+                else:
+                    n_failed += 1
+            except Exception as e:
+                log.warning("Fundamentals Parquet 업로드 실패 [%s]: %s", fp.name, e)
+                n_failed += 1
+
+    log.info("로컬 데이터 업로드 완료: 총 %d -> 업로드 %d · 최신 유지 %d · 실패 %d",
+             n_total, n_uploaded, n_skipped, n_failed)
+    return {"total": n_total, "uploaded": n_uploaded, "skipped": n_skipped, "failed": n_failed}
+
+
+
