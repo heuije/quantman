@@ -18,11 +18,23 @@ import logging
 import threading
 from datetime import datetime, timezone
 
+import pandas as pd
 from quant_core import data_fetcher
 
 from . import data_cache, kis_master_cache
 
 log = logging.getLogger("app.us_metrics")
+
+# dataset(compute_all)에서 surface할 기술지표 — 스크리너 V1 지원 필드 중 OHLCV로
+# 산출 가능한 것만. 펀더멘털(per/pbr/배당/외국인)·52주 고저·volume_ratio_20d는
+# 미국 데이터에서 산출되지 않으므로 제외(룰에 쓰면 graceful no-match).
+# df에 컬럼이 있을 때만 채운다(없으면 생략 → 안전).
+_TECH_FIELDS = (
+    "pct_change_5d", "pct_change_20d", "pct_change_252d", "log_return_1d",
+    "ma_dev_20d", "ma_dev_60d", "ma_dev_200d", "ma_gap_20_60",
+    "bb_width", "bb_pct", "rsi_14", "atr_14", "atr_14_pct",
+    "high_dev_20d", "streak", "momentum_12_1m",
+)
 
 _CAP_PATH = data_fetcher.DATA_DIR / "us_market_caps.json"
 _lock = threading.Lock()
@@ -120,6 +132,12 @@ def build_metrics(dataset: dict | None = None,
             "is_pref": False, "is_managed": False, "is_halt": False,
             "per": None, "pbr": None,
         }
+        # 기술지표 surface — df(compute_all)에 있는 컬럼만 채운다(없으면 생략).
+        m = metrics[code]
+        for f in _TECH_FIELDS:
+            if f in df.columns:
+                v = df[f].iloc[-1]
+                m[f] = float(v) if pd.notna(v) else None
     return metrics
 
 
