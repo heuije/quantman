@@ -55,7 +55,7 @@ export default function Login() {
           g.accounts.id.renderButton(googleBtn.current, {
             theme: "outline",
             size: "large",
-            width: 320,
+            width: 298,
             text: "continue_with",
             locale: "ko",
           });
