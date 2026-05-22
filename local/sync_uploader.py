@@ -32,11 +32,33 @@ except ImportError as e:
 
 
 def main():
+    import logging
+    # 로컬 콘솔 화면에 업로드 상황이 실시간 출력되도록 로깅 초기화
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     print("=" * 60)
     print(" [QuantPlatform Parquet 벌크 동기화 시스템] ")
     print("=" * 60)
     print(f"서버 주소: {PLATFORM_URL}")
-    print(f"로컬 데이터 경로: {data_fetcher.DATA_DIR}")
+    
+    # 0. 로컬 데이터 경로 확인 및 자동 교정 (환경변수 덮어쓰기 대비)
+    target_data_dir = data_fetcher.DATA_DIR
+    repo_data_dir = Path(__file__).parent.parent.resolve() / "core" / "data"
+    
+    def count_parquet(d: Path) -> int:
+        if not d.exists():
+            return 0
+        return len(list(d.glob("*.parquet")))
+        
+    n_target = count_parquet(target_data_dir)
+    n_repo = count_parquet(repo_data_dir)
+    
+    if n_repo > n_target:
+        print(f"💡 환경변수 경로({target_data_dir})보다 프로젝트 데이터 폴더({repo_data_dir})에 더 많은 Parquet 파일이 존재합니다.")
+        print(f"   ({n_repo}개 vs {n_target}개) -> 더 많은 데이터가 있는 폴더로 자동 전환하여 동기화합니다.")
+        target_data_dir = repo_data_dir
+        
+    print(f"로컬 데이터 경로: {target_data_dir} (총 {count_parquet(target_data_dir)}개 파일)")
     print("-" * 60)
 
     # 1. 기기 페어링 확인
@@ -54,7 +76,7 @@ def main():
     start_time = time.time()
     try:
         # 동기화 실행
-        result = push_local_dataset(data_fetcher.DATA_DIR)
+        result = push_local_dataset(target_data_dir)
         
         elapsed = time.time() - start_time
         print("-" * 60)
