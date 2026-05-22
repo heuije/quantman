@@ -135,6 +135,8 @@ def _evaluate_strategy(strat_def: dict, dataset: dict, cash: float,
         "signal_details": [],
         "signal_summary": "",
         "per_symbol_details": {},
+        # 리밸런싱용 — 자동 선택 상위 N 멤버십(매수신호 무관). 탈락 보유분 매도 판정에 사용.
+        "screener_members": [],
     }
 
     mode, targets = qc.parse_trade_symbols(strat_def.get("trade_symbol", ""))
@@ -147,12 +149,17 @@ def _evaluate_strategy(strat_def: dict, dataset: dict, cash: float,
     match_meta_by_symbol: dict[str, dict] = {}
     if mode == "screener":
         preset_key = targets[0] if targets else ""
+        custom_spec = strat_def.get("screener_spec")
         if not preset_key:
             out["skipped"].append({"reason": "자동 선택 preset key 없음"})
             return out
         try:
             from . import screener as screener_engine
-            matches = screener_engine.run_preset(preset_key)
+            # 커스텀 스펙이 있으면 프리셋 대신 사용 (trade_symbol='screener:custom')
+            if custom_spec:
+                matches = screener_engine.run(screener_engine.parse_spec(custom_spec))
+            else:
+                matches = screener_engine.run_preset(preset_key)
         except Exception as e:
             out["skipped"].append({
                 "reason": f"자동 선택 실행 실패 (preset={preset_key}): {e}"})
@@ -166,6 +173,9 @@ def _evaluate_strategy(strat_def: dict, dataset: dict, cash: float,
         match_meta_by_symbol = {m["symbol"]: m for m in matches}
         source = "screener"
         slots_left = screener_limit
+        # 리밸런싱 멤버십 — 스크리너 순위 상위 screener_limit 종목.
+        # 보유분이 이 집합에서 탈락하면 (rebalance ON 시) 로컬앱이 매도.
+        out["screener_members"] = eval_symbols[:screener_limit]
     else:
         if not targets:
             out["skipped"].append({"reason": "매수 대상 종목 없음"})

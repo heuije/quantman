@@ -22,7 +22,8 @@ import quant_core as qc
 from quant_core.exec_defaults import merged_execution
 
 from .broker import Broker
-from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH, TRADES_PATH)
+from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
+                     REBALANCE_PATH, TRADES_PATH)
 from . import analytics, killswitch, order_log
 
 log = logging.getLogger("localapp.trader")
@@ -78,6 +79,27 @@ def _evaluate_exit(strat: qc.Strategy, held_days: int,
     return None
 
 
+def _rebalance_due(period: str, last_iso: str | None, today: date) -> bool:
+    """리밸런싱 주기 게이팅 — 마지막 실행 일자 기준으로 오늘 회전할지 판정.
+
+    last_iso=None(첫 실행)이면 항상 True. daily=날짜 바뀌면, weekly=ISO주 바뀌면,
+    monthly=월 바뀌면 True. 같은 날 중복 실행은 항상 막는다.
+    """
+    if last_iso is None:
+        return True
+    try:
+        last = date.fromisoformat(last_iso)
+    except (TypeError, ValueError):
+        return True
+    if today <= last:
+        return False                      # 같은 날(또는 과거) — 중복 방지
+    if period == "weekly":
+        return today.isocalendar()[:2] != last.isocalendar()[:2]
+    if period == "monthly":
+        return (today.year, today.month) != (last.year, last.month)
+    return True                           # daily (기본) — 날짜만 바뀌면
+
+
 def _atr_qty(capital: float, atr: float, policy: dict, cur_price: float) -> int:
     """ATR 기반 포지션 사이징. cap에 의해 단일종목 한도로 클램프."""
     risk = capital * policy["atr_risk_pct"] / 100.0
@@ -102,6 +124,8 @@ class Trader:
         self.ledger: dict[str, dict] = _load_json(LEDGER_PATH, {})
         self.equity: list[dict] = _load_json(EQUITY_PATH, [])
         self.pending: dict[str, dict] = _load_json(PENDING_ORDERS_PATH, {})
+        # 전략별 마지막 리밸런싱 일자 (sid → "YYYY-MM-DD") — 주기 게이팅
+        self.rebalance_state: dict[str, str] = _load_json(REBALANCE_PATH, {})
 
     # ── 영속화 ────────────────────────────────────────────────────────────────
 
@@ -110,6 +134,7 @@ class Trader:
         EQUITY_PATH.write_text(json.dumps(self.equity, ensure_ascii=False),
                                 encoding="utf-8")
         _save_json(PENDING_ORDERS_PATH, self.pending)
+        _save_json(REBALANCE_PATH, self.rebalance_state)
 
     def _log_trade(self, event: dict):
         with open(TRADES_PATH, "a", encoding="utf-8") as f:
@@ -568,6 +593,36 @@ class Trader:
         log.info("preview 경로 진입 완료 — %d종목 발주 (신호 재평가 skip)",
                   n_preview_used)
 
+    def _rebalance_reason(self, ledger_key: str, strat, symbol: str,
+                          members_by_sid: dict, due_cache: dict,
+                          today: date) -> str | None:
+        """리밸런싱 매도 사유 — 자동선택 상위 N에서 탈락한 보유분이면 '리밸런싱'.
+
+        안전 가드:
+          - rebalance.enabled가 아니거나 자동선택 전략이 아니면 None.
+          - 멤버십 데이터가 없으면(서버 preview 누락/빈 값) None — 절대 매도 안 함.
+          - 주기(daily/weekly/monthly)가 아직 도래 안 했으면 None.
+          - 종목이 여전히 상위 N에 있으면 None(유지).
+        """
+        rb = getattr(strat, "rebalance", None)
+        if rb is None or not rb.enabled:
+            return None
+        mode, _ = qc.parse_trade_symbols(strat.trade_symbol or "")
+        if mode != "screener":
+            return None
+        sid = ledger_key.split(":", 1)[0]
+        members = members_by_sid.get(sid)
+        if not members:
+            return None                    # 멤버십 데이터 없음 — 안전상 매도 안 함
+        if sid not in due_cache:
+            due_cache[sid] = _rebalance_due(
+                rb.period, self.rebalance_state.get(sid), today)
+        if not due_cache[sid]:
+            return None
+        if symbol in members:
+            return None                    # 여전히 상위 N — 유지
+        return "리밸런싱"
+
     def cycle(self, strategies: list[dict], dataset: dict,
               today: date | None = None,
               buy_candidates: list[dict] | None = None,
@@ -639,6 +694,15 @@ class Trader:
                 drawdown_pct, max_drawdown_limit_pct)
 
         # ── 2. 청산 패스 (Phase 38.2: 신호·시간 기반만 — 가격은 intraday가 담당) ──
+        # 리밸런싱 멤버십 — 서버 preview의 자동선택 상위 N 종목 (sid → [symbols]).
+        # 데이터가 없으면(빈 dict) 리밸런싱 매도는 발동하지 않는다(안전).
+        members_by_sid: dict[str, list] = {}
+        for entry in (buy_candidates or []):
+            esid = str(entry.get("strategy_id", ""))
+            if esid:
+                members_by_sid[esid] = entry.get("screener_members") or []
+        rebalance_due_cache: dict[str, bool] = {}
+
         sold_this_cycle: set[str] = set()
         for sid, pos in list(self.ledger.items()):
             try:
@@ -652,6 +716,11 @@ class Trader:
             # kill switch 활성 시 모든 보유 강제 청산
             if ks_active and not reason:
                 reason = "kill-switch"
+            # 리밸런싱 — 자동선택 상위 N에서 탈락한 보유분 매도 (주기 게이팅)
+            if not reason and not ks_active:
+                reason = self._rebalance_reason(
+                    sid, strat, pos["symbol"],
+                    members_by_sid, rebalance_due_cache, today)
 
             if not reason:
                 continue
@@ -676,6 +745,12 @@ class Trader:
             self._submit_sell(sid, pos.get("strategy_name", ""), pos["symbol"],
                               pos["qty"], ref_price, policy, reason, decisions)
             sold_this_cycle.add(sid)
+
+        # 리밸런싱을 평가한(주기 도래) 전략은 오늘자로 기록 — 같은 주기 재발동 방지.
+        # 매도가 없었어도 주기는 소진된 것으로 본다.
+        for rsid, due in rebalance_due_cache.items():
+            if due:
+                self.rebalance_state[rsid] = today.isoformat()
 
         # ── 3. 진입 패스 (kill switch·drawdown 활성 시 건너뜀, preview 전용) ──
         if ks_active:

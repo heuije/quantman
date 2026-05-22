@@ -40,23 +40,25 @@ export default function MultiSymbolPicker({ symbols, value, onChange }: {
   const selected = value.split(",").map((s) => s.trim()).filter(Boolean);
   const list = symbols.filter((s) => s.tradable);
 
-  function add(sym: string) {
-    if (selected.includes(sym)) { setOpen(false); return; }
-    onChange([...selected, sym].join(","));
-    setOpen(false);
+  // 다중선택 — 팝오버를 닫지 않고 토글. 연속으로 여러 종목 체크 가능.
+  function toggle(sym: string) {
+    if (selected.includes(sym)) {
+      onChange(selected.filter((s) => s !== sym).join(","));
+    } else {
+      onChange([...selected, sym].join(","));
+    }
   }
   function remove(sym: string) {
     onChange(selected.filter((s) => s !== sym).join(","));
   }
 
-  const items = list
-    .filter((s) => !selected.includes(s.symbol))
-    .map((s) => ({
-      key: s.symbol,
-      label: s.name ? `${s.symbol} ${s.name}` : s.symbol,
-      cat: categoryFor(s.category),
-      badge: s.has_backtest_data === false ? "백테스트 불가" : undefined,
-    }));
+  // 선택된 종목도 리스트에 유지 — 체크 해제로 빼낼 수 있게.
+  const items = list.map((s) => ({
+    key: s.symbol,
+    label: s.name ? `${s.symbol} ${s.name}` : s.symbol,
+    cat: categoryFor(s.category),
+    badge: s.has_backtest_data === false ? "백테스트 불가" : undefined,
+  }));
 
   return (
     <div className="multi-picker" ref={ref}>
@@ -88,8 +90,16 @@ export default function MultiSymbolPicker({ symbols, value, onChange }: {
             items={items}
             order={TRADABLE_TAB_ORDER}
             placeholder="종목명 또는 코드 검색…"
-            onPick={add}
+            multiSelect
+            selectedKeys={selected}
+            onPick={toggle}
           />
+          <div className="multi-popover-foot">
+            <span className="muted small">{selected.length}개 선택됨</span>
+            <button type="button" className="sm" onClick={() => setOpen(false)}>
+              완료
+            </button>
+          </div>
         </div>
       )}
     </div>

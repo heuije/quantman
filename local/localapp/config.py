@@ -30,3 +30,4 @@ CYCLES_PATH = APP_DIR / "cycles.jsonl"           # 사이클별 의사결정 로
 KILLSWITCH_PATH = APP_DIR / "killswitch.json"    # kill switch 상태
 PENDING_ORDERS_PATH = APP_DIR / "pending_orders.json"  # 미체결 추적
 SLIPPAGE_PATH = APP_DIR / "slippage.json"        # 누적 슬리피지 통계
+REBALANCE_PATH = APP_DIR / "rebalance.json"      # 전략별 마지막 리밸런싱 일자 (주기 게이팅)

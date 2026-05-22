@@ -58,6 +58,11 @@ class Operand(BaseModel):
     stat: Optional[Stat] = None            # min/max/mean/percentile/lag
     window: Optional[int] = None           # 롤링 기간(일). lag면 N일 전
     percentile: Optional[float] = None     # stat="percentile"일 때 0~100
+    # G1 — 아핀 변환: 해석된 시계열에 (× mul + add) 적용. None이면 무변환.
+    # 예: MA20 × 1.05 (mul=1.05), 전일종가 × 0.95, 등락률 + 2 (add=2).
+    # indicator/history에만 적용. constant에는 무시 (값 자체로 표현).
+    mul: Optional[float] = None
+    add: Optional[float] = None
 
 
 class Modifier(BaseModel):
@@ -90,8 +95,20 @@ class Condition(BaseModel):
 
 
 class ConditionGroup(BaseModel):
-    conditions: list[Condition] = Field(default_factory=list)
+    """조건 묶음 — AND/OR 결합.
+
+    G2 — items는 단일 조건(Condition) 또는 하위 그룹(ConditionGroup)이 섞일 수
+    있다. 이를 통해 ``(A AND B) OR C`` 같은 중첩 결합을 표현한다. 평가 엔진
+    (analysis.build_signal_mask)이 재귀적으로 마스크를 결합한다.
+    하위호환: 기존 flat 구조(모든 원소가 단일 조건)는 동작·결과가 동일하다.
+    """
+    conditions: list[Union["Condition", "ConditionGroup"]] = Field(
+        default_factory=list)
     logic: Logic = "AND"
+
+
+# 재귀 self-ref(ConditionGroup 안의 ConditionGroup) 해소
+ConditionGroup.model_rebuild()
 
 
 class ExitRules(BaseModel):
@@ -116,8 +133,9 @@ class SellRules(BaseModel):
     trail_atr_mult: Optional[float] = None   # ATR 트레일링 (× ATR_14)
     # 시간 기반 트리거
     hold_days: Optional[int] = None          # 보유 일수 초과 시
-    # 조건 기반 트리거 (dataset 평가)
-    conditions: list[Condition] = Field(default_factory=list)
+    # 조건 기반 트리거 (dataset 평가) — G2 중첩 그룹 허용
+    conditions: list[Union[Condition, ConditionGroup]] = Field(
+        default_factory=list)
     logic: Logic = "AND"
     # 매도 시 청산 비율
     sell_amount_pct: float = 100.0           # 100 = 전량 매도
@@ -169,6 +187,16 @@ def parse_trade_symbols(trade_symbol: str) -> tuple[str, list[str]]:
     return ("manual", parts)
 
 
+class Rebalance(BaseModel):
+    """자동 선택 리밸런싱 — 상위 N 탈락 보유분 매도→교체.
+
+    라이브 전용 (백테스트는 자동 선택 미지원). enabled=False면 기존 동작
+    (빈 슬롯만 채움, 보유분은 sell_rules로만 매도)과 동일하다.
+    """
+    enabled: bool = False
+    period: Literal["daily", "weekly", "monthly"] = "daily"
+
+
 class Strategy(BaseModel):
     """매매 전략 — 백테스트/모의/실전 공용.
 
@@ -188,6 +216,11 @@ class Strategy(BaseModel):
     amount_pct: float = 100.0                          # 자본 대비 매수 투입 비율(%)
     # 자동 선택 (trade_symbol='screener:<key>') 한도 — 1이면 한 번에 1종목, N이면 N종목까지
     screener_limit: int = 5
+    # 커스텀 스크리너 스펙 — trade_symbol='screener:custom'일 때 프리셋 대신 이 spec 사용.
+    # screener.parse_spec이 받는 dict ({rules, sort, markets, limit, ...}). None이면 프리셋.
+    screener_spec: Optional[dict] = None
+    # 자동 선택 리밸런싱 — 켜면 상위 N 탈락 보유분을 매도→교체 (라이브 전용).
+    rebalance: Rebalance = Field(default_factory=Rebalance)
     fill: Fill = "next_open"                           # 백테스트 체결 모델
     commission: float = 0.00015
     slippage: float = 0.0005

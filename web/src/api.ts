@@ -1,7 +1,7 @@
 import type {
   AnalysisResult, BacktestResult, BacktestRunDetail, BacktestRunSummary,
   CommandRow, CommandType, DeviceRow, MarketContext, NextDayPreview, PortfolioRisk,
-  ScreenerMatch, ScreenerPreset,
+  ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO,
   StrategyDef, StrategyRow, SymbolInfo, SyncSnapshot, UserSettingsIO,
 } from "./types";
 
@@ -112,10 +112,15 @@ export const api = {
 
   // Phase 17~ — 종목 자동 선택 (스크리너)
   listScreenerPresets: () =>
-    req<{ presets: ScreenerPreset[] }>("/screener/presets"),
+    req<{ presets: ScreenerPreset[]; as_of: string | null }>("/screener/presets"),
   runScreenerPreset: (key: string) =>
-    req<{ preset: string; count: number; matches: ScreenerMatch[] }>(
+    req<{ preset: string; count: number; matches: ScreenerMatch[]; as_of: string | null }>(
       `/screener/preset/${key}/run`, { method: "POST" }),
+  screenerFields: () =>
+    req<{ fields: ScreenerField[] }>("/screener/fields"),
+  runScreenerCustom: (spec: ScreenerSpecIO) =>
+    req<{ count: number; matches: ScreenerMatch[]; as_of: string | null }>(
+      "/screener/run", { method: "POST", body: JSON.stringify(spec) }),
 
   // Phase 31 — 내일 매매 미리보기
   getNextDayPreview: () => req<NextDayPreview>("/preview/next-day"),

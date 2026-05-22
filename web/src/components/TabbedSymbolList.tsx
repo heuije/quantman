@@ -19,13 +19,18 @@ interface Props {
   onPick: (key: string) => void;
   emptyMessage?: string;         // 탭에 항목 없을 때 표시
   placeholder?: string;
+  // 다중선택 모드 — 체크박스로 여러 종목 연속 선택. 부모가 팝오버를 닫지 않는다.
+  multiSelect?: boolean;
+  selectedKeys?: string[];       // multiSelect일 때 현재 선택된 key 집합
 }
 
 const PER_PAGE = 60;
 
 export default function TabbedSymbolList({
   items, order, selected, onPick, emptyMessage, placeholder,
+  multiSelect, selectedKeys,
 }: Props) {
+  const selSet = useMemo(() => new Set(selectedKeys ?? []), [selectedKeys]);
   // 카테고리별 집계
   const grouped = useMemo(() => {
     const m: Record<string, TabItem[]> = {};
@@ -86,16 +91,25 @@ export default function TabbedSymbolList({
       />
       <div className="tabbed-items">
         {shown.length === 0 && <div className="cat-empty">결과 없음</div>}
-        {shown.map((it) => (
-          <button
-            key={it.key} type="button"
-            className={"cat-item" + (it.key === selected ? " sel" : "")}
-            onClick={() => onPick(it.key)}
-          >
-            <span>{it.label}</span>
-            {it.badge && <span className="cat-item-badge">{it.badge}</span>}
-          </button>
-        ))}
+        {shown.map((it) => {
+          const isSel = multiSelect ? selSet.has(it.key) : it.key === selected;
+          return (
+            <button
+              key={it.key} type="button"
+              className={"cat-item" + (isSel ? " sel" : "")
+                + (multiSelect ? " cat-item-check" : "")}
+              onClick={() => onPick(it.key)}
+            >
+              {multiSelect && (
+                <span className="cat-item-box" aria-hidden>
+                  {isSel ? "☑" : "☐"}
+                </span>
+              )}
+              <span>{it.label}</span>
+              {it.badge && <span className="cat-item-badge">{it.badge}</span>}
+            </button>
+          );
+        })}
         {hidden > 0 && (
           <div className="cat-empty" style={{ fontSize: 11 }}>
             +{hidden}개 더 — 검색으로 좁혀주세요

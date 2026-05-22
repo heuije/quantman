@@ -88,7 +88,7 @@ def _resolve_operand(data: dict[str, pd.DataFrame], operand: Optional[dict],
     series = data[sym][indic]
 
     if kind == "indicator":
-        return series
+        return _affine(series, operand)
 
     if kind == "history":
         stat = operand.get("stat")
@@ -99,17 +99,50 @@ def _resolve_operand(data: dict[str, pd.DataFrame], operand: Optional[dict],
         if win <= 0:
             return None
         if stat == "min":
-            return series.rolling(win).min()
-        if stat == "max":
-            return series.rolling(win).max()
-        if stat == "mean":
-            return series.rolling(win).mean()
-        if stat == "percentile":
+            out = series.rolling(win).min()
+        elif stat == "max":
+            out = series.rolling(win).max()
+        elif stat == "mean":
+            out = series.rolling(win).mean()
+        elif stat == "percentile":
             q = float(operand.get("percentile") or 50) / 100.0
-            return series.rolling(win).quantile(min(max(q, 0.0), 1.0))
-        if stat == "lag":
-            return series.shift(win)
+            out = series.rolling(win).quantile(min(max(q, 0.0), 1.0))
+        elif stat == "lag":
+            out = series.shift(win)
+        else:
+            return None
+        return _affine(out, operand)
     return None
+
+
+def _affine(series: pd.Series, operand: dict) -> pd.Series:
+    """G1 — 해석된 시계열에 (× mul + add) 아핀 변환을 적용한다.
+
+    mul/add가 모두 None이면 원본 그대로 반환(하위호환 — 결과 불변).
+    예: MA20 × 1.05 → mul=1.05 / 등락률 + 2 → add=2.
+    """
+    mul = operand.get("mul")
+    add = operand.get("add")
+    if mul is None and add is None:
+        return series
+    out = series
+    if mul is not None:
+        out = out * float(mul)
+    if add is not None:
+        out = out + float(add)
+    return out
+
+
+def _affine_suffix(operand: dict) -> str:
+    """아핀 변환을 사람 친화적 꼬리표로 — ' ×1.05', ' +2', ' ×1.05 +2'."""
+    mul = operand.get("mul")
+    add = operand.get("add")
+    parts = []
+    if mul is not None:
+        parts.append(f"×{mul:g}")
+    if add is not None:
+        parts.append(f"{'+' if add >= 0 else ''}{add:g}")
+    return (" " + " ".join(parts)) if parts else ""
 
 
 # ── 연산자 적용 ──────────────────────────────────────────────────────────────
@@ -215,7 +248,7 @@ def describe_condition(cond: dict, current_symbol: Optional[str] = None) -> str:
             return str(v)
         sym = o.get("symbol") or "?"
         if sym == SELF_SYMBOL:
-            sym = current_symbol or "[이 종목]"
+            sym = current_symbol or "[각 종목]"
         ind = o.get("indicator") or "?"
         base = f"{sym}.{ind}" if sym not in ("", None) else ind
         if kind == "history":
@@ -224,9 +257,10 @@ def describe_condition(cond: dict, current_symbol: Optional[str] = None) -> str:
             stat_label = _STAT_LABELS.get(stat, stat)
             if stat == "percentile":
                 pct = o.get("percentile", 50)
-                return f"{base}의 {win}일 {stat_label}({pct}%)"
-            return f"{base}의 {win}일 {stat_label}"
-        return base
+                base = f"{base}의 {win}일 {stat_label}({pct}%)"
+            else:
+                base = f"{base}의 {win}일 {stat_label}"
+        return f"{base}{_affine_suffix(o)}"
 
     left_s = _operand_str(cond.get("left"))
     right_s = _operand_str(cond.get("right"))
@@ -238,6 +272,19 @@ def describe_condition(cond: dict, current_symbol: Optional[str] = None) -> str:
             kind = mod["kind"]
             mod_suffix = f" ({days}일 연속)" if kind == "streak" else f" (최근 {days}일 내)"
     return f"{left_s} {op_label} {right_s}{mod_suffix}"
+
+
+def describe_group(group: dict, current_symbol: Optional[str] = None) -> str:
+    """G2 — 하위 그룹을 '(A 그리고 B)' / '(A 또는 B)' 형태의 한 줄로 표현."""
+    nodes = group.get("conditions") or []
+    sep = " 그리고 " if group.get("logic", "AND") == "AND" else " 또는 "
+    parts = []
+    for n in nodes:
+        if _is_group(n):
+            parts.append(describe_group(n, current_symbol))
+        else:
+            parts.append(describe_condition(n, current_symbol))
+    return "(" + sep.join(parts) + ")"
 
 
 def explain_buy_signal(
@@ -272,8 +319,13 @@ def explain_buy_signal(
     details = []
     final_mask: Optional[pd.Series] = None
     for cond in conditions:
-        label = describe_condition(cond, current_symbol)
-        m = _condition_mask(data, cond, current_symbol)
+        if _is_group(cond):
+            label = describe_group(cond, current_symbol)
+            m = _combine_nodes(data, cond.get("conditions") or [],
+                               cond.get("logic", "AND"), current_symbol)
+        else:
+            label = describe_condition(cond, current_symbol)
+            m = _condition_mask(data, cond, current_symbol)
         if m is None or m.empty:
             details.append({"label": label, "passed": None,
                               "reason": "데이터 부족 또는 지표 누락"})
@@ -311,12 +363,23 @@ def _partition_conditions(conditions: list[dict]) -> tuple[list[dict], list[dict
     common: list[dict] = []
     per: list[dict] = []
     for c in conditions:
-        n = _normalize_condition(c)
-        if is_self_ref(n.get("left")) or is_self_ref(n.get("right")):
+        if _node_has_self_ref(c):
             per.append(c)
         else:
             common.append(c)
     return common, per
+
+
+def _node_has_self_ref(node: dict) -> bool:
+    """노드(단일 조건 또는 그룹)가 [각 종목] placeholder를 하나라도 참조하는지.
+
+    G2 — 그룹은 자손을 재귀 탐색. 자손 중 하나라도 self-ref면 그 그룹 전체를
+    '종목별 조건'으로 분류한다 (그룹은 통째로 종목마다 평가).
+    """
+    if _is_group(node):
+        return any(_node_has_self_ref(n) for n in (node.get("conditions") or []))
+    n = _normalize_condition(node)
+    return is_self_ref(n.get("left")) or is_self_ref(n.get("right"))
 
 
 def explain_buy_signal_per_symbol(
@@ -389,19 +452,47 @@ def build_signal_mask(
     """
     if not conditions:
         return pd.Series(dtype=bool)
+    out = _combine_nodes(data, conditions, logic, current_symbol)
+    return out if out is not None else pd.Series(dtype=bool)
 
+
+def _is_group(node) -> bool:
+    """노드가 하위 그룹(ConditionGroup)인지 — 'conditions' 리스트 보유로 판별.
+
+    단일 조건(신/구버전)은 'conditions' 키가 없으므로 명확히 구분된다.
+    """
+    return isinstance(node, dict) and isinstance(node.get("conditions"), list)
+
+
+def _combine_nodes(
+    data: dict[str, pd.DataFrame],
+    nodes: list[dict],
+    logic: str,
+    current_symbol: Optional[str] = None,
+) -> Optional[pd.Series]:
+    """노드(단일 조건 또는 하위 그룹) 목록을 logic으로 결합. 실패 시 None.
+
+    G2 — 노드가 그룹이면 그 그룹의 logic으로 먼저 재귀 결합한 마스크를 만든다.
+    하위호환: 모든 노드가 단일 조건이면 기존 flat 평가와 결과가 동일하다.
+    """
+    if not nodes:
+        return None
     masks = []
-    for cond in conditions:
-        m = _condition_mask(data, cond, current_symbol)
-        if m is None:
-            return pd.Series(dtype=bool)
+    for node in nodes:
+        if _is_group(node):
+            m = _combine_nodes(data, node.get("conditions") or [],
+                               node.get("logic", "AND"), current_symbol)
+        else:
+            m = _condition_mask(data, node, current_symbol)
+        if m is None or m.empty:
+            return None
         masks.append(m)
 
     common_idx = masks[0].index
     for m in masks[1:]:
         common_idx = common_idx.intersection(m.index)
     if common_idx.empty:
-        return pd.Series(dtype=bool)
+        return None
 
     masks = [m.reindex(common_idx) for m in masks]
     combined = masks[0]

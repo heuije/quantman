@@ -8,9 +8,10 @@ import Verdict from "../components/Verdict";
 import { fmt2, wonReadable } from "../format";
 import type {
   AnalysisResult, BacktestResult, BacktestRunSummary, ConditionGroup,
-  ExecutionPolicy, StrategyDef, SymbolInfo,
+  ExecutionPolicy, RebalanceIO, ScreenerSpecIO, StrategyDef, SymbolInfo,
 } from "../types";
 import { EXECUTION_DEFAULTS, parseScreenerKey } from "../types";
+import ScreenerCustomizer from "../components/ScreenerCustomizer";
 
 type SizingMode = "pct_cash" | "atr_risk";
 
@@ -51,6 +52,10 @@ export default function Backtest() {
   const [buyAmountPct, setBuyAmountPct] = useState(100);
   const [sellAmountPct, setSellAmountPct] = useState(100);
   const [screenerLimit, setScreenerLimit] = useState(5);
+  // 커스텀 스크리너 스펙 (자동 선택 미세조정) — null이면 프리셋 사용
+  const [screenerSpec, setScreenerSpec] = useState<ScreenerSpecIO | null>(null);
+  // 자동 선택 리밸런싱 (라이브 전용)
+  const [rebalance, setRebalance] = useState<RebalanceIO>({ enabled: false, period: "daily" });
   // 리스크/사이징 — exec_defaults.py의 default와 동기
   const [sizingMode, setSizingMode] = useState<SizingMode>(EXECUTION_DEFAULTS.sizing_mode);
   const [atrRiskPct, setAtrRiskPct] = useState(EXECUTION_DEFAULTS.atr_risk_pct);
@@ -149,6 +154,9 @@ export default function Backtest() {
       },
       amount_pct: buyAmountPct,
       screener_limit: screenerLimit,
+      // 자동 선택이 커스텀이면 spec 저장 (trade_symbol='screener:custom')
+      screener_spec: tradeSymbol === "screener:custom" ? screenerSpec : null,
+      rebalance: tradeSymbol.startsWith("screener:") ? rebalance : null,
       execution,
     };
   }
@@ -279,6 +287,8 @@ export default function Backtest() {
           buyAmountPct={buyAmountPct} setBuyAmountPct={setBuyAmountPct}
           sellAmountPct={sellAmountPct} setSellAmountPct={setSellAmountPct}
           screenerLimit={screenerLimit} setScreenerLimit={setScreenerLimit}
+          screenerSpec={screenerSpec} setScreenerSpec={setScreenerSpec}
+          rebalance={rebalance} setRebalance={setRebalance}
           sizingMode={sizingMode} setSizingMode={setSizingMode}
           atrRiskPct={atrRiskPct} setAtrRiskPct={setAtrRiskPct}
           atrMult={atrMult} setAtrMult={setAtrMult}
@@ -336,6 +346,8 @@ function BuildTab(props: {
   buyAmountPct: number; setBuyAmountPct: (v: number) => void;
   sellAmountPct: number; setSellAmountPct: (v: number) => void;
   screenerLimit: number; setScreenerLimit: (v: number) => void;
+  screenerSpec: ScreenerSpecIO | null; setScreenerSpec: (s: ScreenerSpecIO | null) => void;
+  rebalance: RebalanceIO; setRebalance: (r: RebalanceIO) => void;
   sizingMode: SizingMode; setSizingMode: (v: SizingMode) => void;
   atrRiskPct: number; setAtrRiskPct: (v: number) => void;
   atrMult: number; setAtrMult: (v: number) => void;
@@ -360,6 +372,7 @@ function BuildTab(props: {
     buy, setBuy, sell, setSell, exits, setRule,
     buyAmountPct, setBuyAmountPct, sellAmountPct, setSellAmountPct,
     screenerLimit, setScreenerLimit,
+    screenerSpec, setScreenerSpec, rebalance, setRebalance,
     sizingMode, setSizingMode,
     atrRiskPct, setAtrRiskPct, atrMult, setAtrMult,
     maxPositionPct, setMaxPositionPct,
@@ -398,6 +411,8 @@ function BuildTab(props: {
         symbols={symbols}
         tradeSymbol={tradeSymbol} setTradeSymbol={setTradeSymbol}
         screenerLimit={screenerLimit} setScreenerLimit={setScreenerLimit}
+        screenerSpec={screenerSpec} setScreenerSpec={setScreenerSpec}
+        rebalance={rebalance} setRebalance={setRebalance}
       />
 
       <div className="panel">
@@ -407,7 +422,15 @@ function BuildTab(props: {
           가격·수익률 지표는 모두 <strong>정규장 종가</strong>(15:30 마감) 기준이며,
           시간외 단일가는 반영되지 않습니다.
         </p>
-        <ConditionBuilder symbols={symbols} group={buy} onChange={setBuy} />
+        <ConditionBuilder
+          symbols={symbols} group={buy} onChange={setBuy}
+          contextNote={
+            tradeSymbol.startsWith("screener:")
+              || tradeSymbol.split(",").map((s) => s.trim()).filter(Boolean).length > 1
+              ? "아래 조건을 만족하는 종목만 매수합니다. [각 종목]은 매수 후보 각각에 적용됩니다."
+              : "아래 조건이 충족되는 날 매수합니다."
+          }
+        />
 
         <div className={"amount-row" + (sizingMode === "atr_risk" ? " dim" : "")}>
           <label>1회 매수액 (자본의 %)</label>
@@ -726,11 +749,14 @@ function BuildTab(props: {
 function BuyTargetPanel({
   name, setName, symbols, tradeSymbol, setTradeSymbol,
   screenerLimit, setScreenerLimit,
+  screenerSpec, setScreenerSpec, rebalance, setRebalance,
 }: {
   name: string; setName: (v: string) => void;
   symbols: SymbolInfo[];
   tradeSymbol: string; setTradeSymbol: (v: string) => void;
   screenerLimit: number; setScreenerLimit: (v: number) => void;
+  screenerSpec: ScreenerSpecIO | null; setScreenerSpec: (s: ScreenerSpecIO | null) => void;
+  rebalance: RebalanceIO; setRebalance: (r: RebalanceIO) => void;
 }) {
   const isScreener = tradeSymbol.startsWith("screener:");
   // buyMode는 사용자 선택을 그대로 보존 — tradeSymbol이 비어도 모드는 유지된다.
@@ -786,9 +812,13 @@ function BuyTargetPanel({
             <SymbolPicker
               symbols={symbols} value={tradeSymbol} tradableOnly
               lockMode="screener"
-              onChange={setTradeSymbol}
+              onChange={(v) => { setTradeSymbol(v); setScreenerSpec(null); }}
             />
           </div>
+          <ScreenerCustomizer
+            tradeSymbol={tradeSymbol} setTradeSymbol={setTradeSymbol}
+            spec={screenerSpec} setSpec={setScreenerSpec}
+          />
         </>
       )}
 
@@ -802,6 +832,32 @@ function BuyTargetPanel({
               ? `자동 선택 결과 상위 ${screenerLimit}종목까지 매수 (매수 조건 충족 시 미보유 슬롯 채움)`
               : `선택한 ${manualSymbols.length}종목 중 최대 ${screenerLimit}개 동시 보유`}
           </span>
+        </div>
+      )}
+
+      {buyMode === "screener" && (
+        <div className="rebalance-row">
+          <label className="rebalance-toggle">
+            <input type="checkbox" checked={rebalance.enabled}
+                   onChange={(e) => setRebalance({ ...rebalance, enabled: e.target.checked })} />
+            <span>일일 리밸런싱 — 상위 N에서 탈락한 보유 종목을 매도하고 새 종목으로 교체</span>
+          </label>
+          {rebalance.enabled && (
+            <div className="rebalance-detail">
+              <label>주기</label>
+              <select value={rebalance.period}
+                      onChange={(e) => setRebalance({
+                        ...rebalance, period: e.target.value as RebalanceIO["period"],
+                      })}>
+                <option value="daily">매일</option>
+                <option value="weekly">매주</option>
+                <option value="monthly">매월</option>
+              </select>
+              <span className="muted small">
+                ⚠ 라이브 전용. 회전율↑ → 거래비용·세금↑. 모의투자로 충분히 검증 후 사용하세요.
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>

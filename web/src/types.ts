@@ -22,7 +22,7 @@ export type ModifierKind = "streak" | "within";
 /** Phase 41 — Operand.symbol에 이 sentinel을 넣으면 "각 매수 대상 종목" placeholder.
  *  평가 엔진이 current_symbol로 치환. 빌더 좌변 종목 드롭다운 첫 옵션. */
 export const SELF_SYMBOL = "__SELF__";
-export const SELF_LABEL = "[이 종목]";
+export const SELF_LABEL = "[각 종목]";
 export function isSelfRef(op?: Operand | null): boolean {
   return op?.symbol === SELF_SYMBOL;
 }
@@ -35,6 +35,9 @@ export interface Operand {
   stat?: Stat;                    // history
   window?: number;                // history — 롤링 기간(일)
   percentile?: number;            // history — stat="percentile"일 때 0~100
+  // G1 — 아핀 변환: 해석된 값에 (× mul + add) 적용. 미지정이면 무변환.
+  mul?: number | null;            // 예: MA20 × 1.05 → mul=1.05
+  add?: number | null;            // 예: 등락률 + 2 → add=2
 }
 export interface Modifier { kind: ModifierKind; days: number }
 export interface Condition {
@@ -43,7 +46,14 @@ export interface Condition {
   right?: Operand;
   modifier?: Modifier | null;
 }
-export interface ConditionGroup { conditions: Condition[]; logic: Logic }
+/** G2 — 그룹의 원소는 단일 조건 또는 하위 그룹. (A AND B) OR C 표현 가능. */
+export type ConditionNode = Condition | ConditionGroup;
+export interface ConditionGroup { conditions: ConditionNode[]; logic: Logic }
+
+/** 노드가 하위 그룹인지 — conditions 배열 보유로 판별 (단일 조건엔 없음). */
+export function isGroupNode(n: ConditionNode): n is ConditionGroup {
+  return (n as ConditionGroup).conditions !== undefined;
+}
 
 export interface ExitRules {
   hold_days?: number | null;
@@ -61,7 +71,7 @@ export interface SellRules {
   trail_pct?: number | null;          // %
   trail_atr_mult?: number | null;     // × ATR_14
   hold_days?: number | null;          // 보유 일수
-  conditions?: Condition[];           // 자유 매도 조건 (dataset 평가)
+  conditions?: ConditionNode[];       // 자유 매도 조건 (dataset 평가) — G2 중첩 허용
   logic?: Logic;
   sell_amount_pct?: number;           // 100=전량 매도
 }
@@ -115,8 +125,34 @@ export interface StrategyDef {
   sell_amount_pct?: number;
   amount_pct: number;              // 자본 대비 매수 비율 (%) — sizing_mode=pct_cash일 때만 사용
   screener_limit?: number;         // 자동 선택 시 동시 보유 한도 (기본 5)
+  // 커스텀 스크리너 — trade_symbol='screener:custom'일 때 프리셋 대신 사용.
+  screener_spec?: ScreenerSpecIO | null;
+  rebalance?: RebalanceIO | null;  // 자동 선택 리밸런싱 (라이브 전용)
   execution?: ExecutionPolicy | null;
   fill?: string;
+}
+
+export interface RebalanceIO {
+  enabled: boolean;
+  period: "daily" | "weekly" | "monthly";
+}
+
+// ── 스크리너 커스터마이징 ─────────────────────────────────────────────────────
+
+export type ScreenerOp = ">" | ">=" | "<" | "<=" | "between";
+export interface ScreenerRuleIO {
+  field: string;
+  op: ScreenerOp;
+  value: number | number[];        // between이면 [min, max]
+}
+export interface ScreenerSpecIO {
+  rules: ScreenerRuleIO[];
+  sort?: { field: string; order: "asc" | "desc" } | null;
+  markets?: string[];
+  limit?: number;
+}
+export interface ScreenerField {
+  key: string; label: string; unit: string; group: string;
 }
 
 export interface StrategyRow {
@@ -406,6 +442,7 @@ export interface ScreenerPreset {
   key: string;          // "marcap_top" 등
   title: string;        // "시가총액 상위"
   desc: string;
+  spec?: ScreenerSpecIO; // 편집 시작점 — 프리셋의 룰 (presets 엔드포인트가 포함)
 }
 
 export interface ScreenerMatch {

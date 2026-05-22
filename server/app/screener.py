@@ -368,10 +368,37 @@ PRESETS: dict[str, dict] = {
 }
 
 
+# ── 필드 카탈로그 (커스터마이징 UI용) ─────────────────────────────────────────
+# 사용자가 룰을 직접 조립할 때 빈칸형으로 노출할 필드 메타. (라벨·단위·그룹)
+FIELD_CATALOG: list[dict] = [
+    {"key": "market_cap", "label": "시가총액", "unit": "원", "group": "규모"},
+    {"key": "trade_value", "label": "거래대금", "unit": "원", "group": "규모"},
+    {"key": "volume", "label": "거래량", "unit": "주", "group": "규모"},
+    {"key": "close", "label": "현재가", "unit": "원", "group": "가격"},
+    {"key": "pct_change_1d", "label": "당일 등락률", "unit": "%", "group": "가격"},
+    {"key": "pct_change_5d", "label": "5일 등락률", "unit": "%", "group": "가격"},
+    {"key": "pct_change_20d", "label": "20일 등락률", "unit": "%", "group": "가격"},
+    {"key": "pct_change_252d", "label": "1년 등락률", "unit": "%", "group": "가격"},
+    {"key": "per", "label": "PER", "unit": "배", "group": "펀더멘털"},
+    {"key": "pbr", "label": "PBR", "unit": "배", "group": "펀더멘털"},
+    {"key": "dividend_yield", "label": "배당수익률", "unit": "%", "group": "펀더멘털"},
+    {"key": "foreign_rate", "label": "외국인 보유율", "unit": "%", "group": "펀더멘털"},
+    {"key": "rsi_14", "label": "RSI(14)", "unit": "", "group": "기술적"},
+    {"key": "ma_dev_20d", "label": "20일선 이격도", "unit": "%", "group": "기술적"},
+    {"key": "ma_gap_20_60", "label": "20-60일선 갭", "unit": "%", "group": "기술적"},
+    {"key": "volume_ratio_20d", "label": "거래량 비율(20일)", "unit": "배", "group": "기술적"},
+]
+
+
+def field_catalog() -> list[dict]:
+    """커스터마이징 UI가 노출할 필드 메타. parse_spec이 받는 필드의 부분집합."""
+    return FIELD_CATALOG
+
+
 def list_presets() -> list[dict]:
-    """프리셋 카탈로그 — UI에서 카드로 표시할 메타."""
+    """프리셋 카탈로그 — UI에서 카드로 표시할 메타 + 편집 가능한 spec."""
     return [
-        {"key": k, "title": p["title"], "desc": p["desc"]}
+        {"key": k, "title": p["title"], "desc": p["desc"], "spec": p["spec"]}
         for k, p in PRESETS.items()
     ]
 

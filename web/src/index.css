@@ -1,11 +1,24 @@
 :root {
-  --bg: #f4f5f7;
+  --bg: #faf9f6;
   --panel: #ffffff;
-  --border: #e3e5ea;
-  --text: #1a1d23;
-  --muted: #6b7280;
-  --accent: #4f46e5;
-  --accent-soft: #eef2ff;
+  --border: #e8e3db;
+  --text: #20201d;
+  --muted: #6f6a62;
+
+  /* 브랜드 — Claude 대표색 계열 따뜻한 테라코타 액센트(활성 nav·링크·포커스·문장빌더),
+     잉크(주요 버튼)는 따뜻한 차콜. 중성색도 살짝 따뜻하게 해 주황이 native하게 어울리도록. */
+  --accent: #d97757;
+  --accent-soft: #f7ece5;
+  --ink: #292524;
+  --ink-hover: #423c37;
+
+  /* 시장 방향 (한국식: 상승·수익=빨강, 하락·손실=파랑) */
+  --up: #e5383b;
+  --up-soft: #fdeceb;
+  --down: #1668c4;
+  --down-soft: #e7f0fa;
+
+  /* 상태/품질/위험 — 위험은 만국공통 빨강, 정상은 그린 (시장 방향과 별개) */
   --green: #15803d;
   --red: #b91c1c;
   --danger: #b91c1c;
@@ -13,9 +26,13 @@
   --green-soft: #ecfdf3;
   --red-soft: #fef2f2;
   --amber-soft: #fffbeb;
+
   --radius: 10px;
-  font-family: -apple-system, "Segoe UI", "Malgun Gothic", Roboto, sans-serif;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, "Segoe UI",
+    "Malgun Gothic", Roboto, sans-serif;
   color: var(--text);
+  /* 숫자를 고정폭으로 — 표·KPI·수익률이 세로로 정렬됨 */
+  font-variant-numeric: tabular-nums;
 }
 
 * { box-sizing: border-box; }
@@ -100,8 +117,8 @@ html[data-mode="live"] body::before {
 }
 .stat .label { font-size: 12px; color: var(--muted); }
 .stat .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
-.pos { color: var(--green); }
-.neg { color: var(--red); }
+.pos { color: var(--up); }
+.neg { color: var(--down); }
 
 /* 폼 */
 label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 5px; }
@@ -115,20 +132,21 @@ input:focus, select:focus { outline: 2px solid var(--accent-soft); border-color:
 
 button {
   font: inherit; font-weight: 600; padding: 9px 16px; border: none;
-  border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+  border-radius: 8px; background: var(--ink); color: #fff; cursor: pointer;
 }
-button:hover { filter: brightness(1.07); }
+button:hover { background: var(--ink-hover); }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.ghost { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
 button.sm { padding: 5px 10px; font-size: 13px; }
 
-/* 문장형 조건 빌더 */
+/* 문장형 조건 빌더 — 제품의 핵심 차별점. 시각적으로 "주인공"임을 드러낸다. */
 .sentence {
   display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
-  background: var(--bg); border: 1px solid var(--border);
-  border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px; padding: 12px 14px; margin-bottom: 8px;
 }
-.sentence .txt { color: var(--muted); font-size: 14px; }
+.sentence .txt { color: var(--muted); font-size: 15px; }
 .sentence select, .sentence input { padding: 5px 8px; }
 .sentence input { width: 80px; }
 .sentence .operand, .sentence .modifier {
@@ -161,19 +179,53 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   margin-top: 8px;
 }
 
+/* 맥락 문장 — "…를 만족하는 종목만 매수합니다" */
+.builder-note {
+  font-size: 13px; color: var(--muted);
+  padding: 8px 12px; margin-bottom: 10px;
+  background: var(--accent-soft); border-radius: 8px;
+}
+
+/* G2 — 중첩 묶음(괄호) 그룹 */
+.cond-subgroup-wrap {
+  border: 1px dashed var(--border); border-radius: 10px;
+  padding: 10px 12px; margin: 4px 0;
+  background: var(--bg);
+}
+.cond-subgroup-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 6px;
+}
+.cond-subgroup-tag {
+  font-size: 11px; font-weight: 600; color: var(--accent);
+  background: var(--accent-soft); padding: 2px 8px; border-radius: 999px;
+}
+
+/* G1 — 아핀(× / +) 입력 */
+.op-field.affine-row { flex-direction: column; align-items: stretch; gap: 4px; }
+.op-field.affine-row > label { font-size: 12px; font-weight: 600; }
+.affine-inputs { display: flex; align-items: center; gap: 6px; }
+.affine-inputs input { width: 64px; }
+
 /* 조건 칩 + 팝오버 */
 .chip-wrap { position: relative; display: inline-block; }
 .chip {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 6px 10px; font: inherit; font-size: 13px; color: var(--text);
-  background: var(--panel); border: 1px solid var(--border);
+  padding: 6px 11px; font: inherit; font-size: 14px; font-weight: 500;
+  color: var(--text);
+  background: var(--accent-soft); border: 1px solid var(--border);
   border-radius: 7px; cursor: pointer;
+  transition: border-color .12s, background .12s;
 }
-.chip:hover { border-color: var(--accent); }
+.chip:hover { border-color: var(--accent); background: rgba(217, 119, 87, 0.12); }
 .chip-caret { color: var(--muted); font-size: 9px; }
-.chip.ghost-chip { color: var(--muted); border-style: dashed; }
+.chip.ghost-chip {
+  color: var(--muted); border-style: dashed; background: transparent;
+  font-weight: 400;
+}
+.chip.ghost-chip:hover { background: var(--accent-soft); color: var(--accent); }
 .op-select {
-  padding: 6px 8px; font: inherit; font-size: 13px;
+  padding: 6px 8px; font: inherit; font-size: 14px;
   border: 1px solid var(--border); border-radius: 7px; background: var(--panel);
 }
 .x-btn {
@@ -193,24 +245,24 @@ button.sm { padding: 5px 10px; font-size: 13px; }
 .self-option { margin-bottom: 10px; }
 .self-option-btn {
   width: 100%; text-align: left; padding: 10px 12px;
-  background: rgba(80, 150, 255, 0.06);
-  border: 1px solid rgba(80, 150, 255, 0.28);
+  background: var(--accent-soft);
+  border: 1px solid rgba(217, 119, 87, 0.34);
   border-radius: 8px; cursor: pointer;
   display: flex; flex-direction: column; gap: 2px;
   font-size: 13px;
 }
-.self-option-btn:hover { background: rgba(80, 150, 255, 0.12); }
+.self-option-btn:hover { background: rgba(217, 119, 87, 0.12); }
 .self-option-btn.on {
-  background: rgba(80, 150, 255, 0.18);
-  border-color: rgba(80, 150, 255, 0.6);
+  background: rgba(217, 119, 87, 0.18);
+  border-color: rgba(217, 119, 87, 0.6);
 }
-.self-option-btn strong { color: var(--accent, #4488ff); }
+.self-option-btn strong { color: var(--accent); }
 
 /* [이 종목] placeholder 칩 — 좌변/우변 모두 동일 강조 */
 .chip-self {
-  background: rgba(80, 150, 255, 0.12);
-  border-color: rgba(80, 150, 255, 0.4);
-  color: var(--accent, #4488ff);
+  background: var(--accent-soft);
+  border-color: rgba(217, 119, 87, 0.4);
+  color: var(--accent);
 }
 
 /* 탭 기반 종목 리스트 */
@@ -311,6 +363,11 @@ button.sm { padding: 5px 10px; font-size: 13px; }
 .cat-item.sel .cat-item-badge { background: rgba(255,255,255,0.2); color: #fff; }
 .cat-item:hover { background: var(--bg); }
 .cat-item.sel { background: var(--accent); color: #fff; }
+/* 다중선택(체크박스) 모드 — 풀 하이라이트 대신 체크 표시로 선택을 나타낸다 */
+.cat-item-box { flex-shrink: 0; font-size: 14px; line-height: 1; opacity: 0.8; }
+.cat-item-check.sel { background: var(--bg); color: var(--text); }
+.cat-item-check.sel .cat-item-box { color: var(--accent); opacity: 1; }
+.cat-item-check.sel .cat-item-badge { background: var(--bg); color: var(--muted); }
 .cat-empty {
   padding: 12px; color: var(--muted); font-size: 12px; text-align: center;
 }
@@ -470,6 +527,10 @@ details.section-collapsible[open] > summary { margin-bottom: 14px; }
   left: 0;
   z-index: 10;
 }
+.multi-popover-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 8px 10px; border-top: 1px solid var(--border);
+}
 
 /* 결과 리포트 - 저장 버튼 영역 */
 .save-row {
@@ -547,8 +608,8 @@ details.section-collapsible[open] > summary { margin-bottom: 14px; }
 .dist-chip.danger {
   background: var(--red-soft); border-color: var(--red); color: var(--red);
 }
-.dist-chip.pos strong { color: var(--green); }
-.dist-chip.neg strong { color: var(--red); }
+.dist-chip.pos strong { color: var(--up); }
+.dist-chip.neg strong { color: var(--down); }
 .dist-chip.warn strong { color: var(--amber); }
 
 /* Monitor — 실행 품질 / 포트폴리오 위험 grid */
@@ -783,6 +844,45 @@ thead th { color: var(--muted); font-weight: 600; }
   display: flex; justify-content: space-between; gap: 8px;
 }
 
+/* 스크리너 커스터마이징 (기준 직접 조정) */
+.screener-customizer {
+  margin-top: 12px; padding: 12px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--bg);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.screener-customizer-head {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.screener-rule {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.screener-rule select, .screener-rule input { padding: 5px 8px; }
+.screener-rule input { width: 110px; }
+.screener-sort {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding-top: 6px; border-top: 1px dashed var(--border);
+}
+.screener-sort label { margin: 0; }
+.screener-sort input { width: 64px; }
+.screener-preview-actions {
+  display: flex; align-items: center; gap: 10px; margin-top: 4px;
+}
+
+/* 자동 선택 리밸런싱 토글 */
+.rebalance-row {
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.rebalance-toggle {
+  display: flex; align-items: center; gap: 8px; margin: 0;
+  font-size: 13px; color: var(--text); cursor: pointer;
+}
+.rebalance-toggle input { width: auto; }
+.rebalance-detail {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 8px; padding-left: 24px;
+}
+.rebalance-detail label { margin: 0; }
+
 /* ── 개요 페이지 (Dashboard) ──────────────────────────────────────────── */
 .dashboard { display: flex; flex-direction: column; }
 .page-title-row {
@@ -845,8 +945,8 @@ thead th { color: var(--muted); font-weight: 600; }
   display: flex; gap: 8px; align-items: center;
 }
 .bench-value { color: var(--text); font-weight: 600; }
-.bench-pct.pos { color: var(--green); }
-.bench-pct.neg { color: var(--red); }
+.bench-pct.pos { color: var(--up); }
+.bench-pct.neg { color: var(--down); }
 
 .dashboard-grid-2 {
   display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
@@ -878,8 +978,8 @@ thead th { color: var(--muted); font-weight: 600; }
   font-size: 12px; margin-top: 4px;
 }
 .sm-pnl { font-weight: 600; }
-.sm-pnl.pos { color: var(--green); }
-.sm-pnl.neg { color: var(--red); }
+.sm-pnl.pos { color: var(--up); }
+.sm-pnl.neg { color: var(--down); }
 .sm-pos { color: var(--muted); }
 .other-mode-hint {
   font-size: 11px; margin-top: 10px; text-align: center;
@@ -893,8 +993,8 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .pm-name { font-size: 13px; font-weight: 500; }
 .pm-return { font-size: 13px; font-weight: 600; text-align: right; }
-.pm-return.pos { color: var(--green); }
-.pm-return.neg { color: var(--red); }
+.pm-return.pos { color: var(--up); }
+.pm-return.neg { color: var(--down); }
 .pm-qty { font-size: 11px; text-align: right; min-width: 50px; }
 
 /* 최근 매매 */
@@ -907,8 +1007,8 @@ thead th { color: var(--muted); font-weight: 600; }
   display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
 }
 .trade-side { font-weight: 700; font-size: 12px; min-width: 36px; }
-.trade-side.buy  { color: var(--green); }
-.trade-side.sell { color: var(--red); }
+.trade-side.buy  { color: var(--up); }
+.trade-side.sell { color: var(--down); }
 .trade-symbol { font-weight: 600; }
 .trade-price { color: var(--text); }
 .trade-ts { margin-left: auto; font-size: 11px; }
@@ -1005,8 +1105,8 @@ thead th { color: var(--muted); font-weight: 600; }
 .sc-stat { display: flex; flex-direction: column; gap: 2px; }
 .sc-stat-label { font-size: 10px; color: var(--muted); }
 .sc-stat-value { font-size: 13px; font-weight: 600; }
-.sc-stat-value.pos { color: var(--green); }
-.sc-stat-value.neg { color: var(--red); }
+.sc-stat-value.pos { color: var(--up); }
+.sc-stat-value.neg { color: var(--down); }
 
 /* 상세 패널 (사이드 오버레이) */
 .detail-overlay {
@@ -1069,8 +1169,8 @@ thead th { color: var(--muted); font-weight: 600; }
 .perf-value {
   font-size: 16px; font-weight: 700; margin-top: 2px;
 }
-.perf-value.pos { color: var(--green); }
-.perf-value.neg { color: var(--red); }
+.perf-value.pos { color: var(--up); }
+.perf-value.neg { color: var(--down); }
 
 .mode-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
 .mode-row {
@@ -1082,10 +1182,10 @@ thead th { color: var(--muted); font-weight: 600; }
 
 .promote-btn {
   width: 100%; padding: 11px 14px;
-  background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+  background: var(--ink); color: #fff; border: 0; border-radius: 8px;
   font-size: 14px; font-weight: 700; cursor: pointer;
 }
-.promote-btn:hover { background: #4338ca; }
+.promote-btn:hover { background: var(--ink-hover); }
 
 .live-active {
   display: flex; align-items: center; gap: 10px;

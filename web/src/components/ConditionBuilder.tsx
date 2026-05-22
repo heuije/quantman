@@ -1,9 +1,9 @@
 import { useState } from "react";
 import type {
-  Condition, ConditionGroup, IndicatorInfo, ModifierKind, Op, Operand,
-  Stat, SymbolInfo,
+  Condition, ConditionGroup, ConditionNode, IndicatorInfo, ModifierKind,
+  Op, Operand, Stat, SymbolInfo,
 } from "../types";
-import { SELF_SYMBOL, SELF_LABEL, isSelfRef } from "../types";
+import { SELF_SYMBOL, SELF_LABEL, isSelfRef, isGroupNode } from "../types";
 import { CategoryList, usePopoverDismiss } from "./SymbolPicker";
 import TabbedSymbolList from "./TabbedSymbolList";
 
@@ -84,6 +84,14 @@ function compareGroupOf(symbols: SymbolInfo[], sym?: string, key?: string): stri
   return findIndicator(symbols, sym, key)?.compare_group ?? "other";
 }
 
+/** G1 — 아핀(× / +) 꼬리표. " ×1.05", " +2", " ×1.05 +2". */
+function affineSuffix(o: Operand): string {
+  const parts: string[] = [];
+  if (o.mul != null) parts.push(`×${o.mul}`);
+  if (o.add != null) parts.push(`${o.add >= 0 ? "+" : ""}${o.add}`);
+  return parts.length ? ` ${parts.join(" ")}` : "";
+}
+
 function operandSummary(o: Operand | undefined, symbols: SymbolInfo[]): string {
   if (!o) return "?";
   if (o.kind === "constant") {
@@ -93,9 +101,9 @@ function operandSummary(o: Operand | undefined, symbols: SymbolInfo[]): string {
   const symLabel = o.symbol === SELF_SYMBOL ? SELF_LABEL : (o.symbol ?? "");
   const lbl = indLabel(symbols, o.symbol, o.indicator);
   if (o.kind === "history") {
-    return `${symLabel} ${lbl} ${o.window ?? 20}일 ${STAT_LABEL[o.stat ?? "mean"]}`;
+    return `${symLabel} ${lbl} ${o.window ?? 20}일 ${STAT_LABEL[o.stat ?? "mean"]}${affineSuffix(o)}`;
   }
-  return `${symLabel} · ${lbl}`;
+  return `${symLabel} · ${lbl}${affineSuffix(o)}`;
 }
 
 // ── 메인 ──────────────────────────────────────────────────────────────────────
@@ -104,29 +112,59 @@ interface Props {
   symbols: SymbolInfo[];
   group: ConditionGroup;
   onChange: (g: ConditionGroup) => void;
+  /** 맥락 문장 — 다중/자동선택이면 "…를 만족하는 종목만 매수" 류를 상단에 표시. */
+  contextNote?: string;
 }
 
-/** 칩 + 분류·검색 팝오버 방식의 문장형 조건 빌더. */
-export default function ConditionBuilder({ symbols, group, onChange }: Props) {
-  function update(i: number, patch: Partial<Condition>) {
-    const conditions = group.conditions.map((c, idx) => {
-      if (idx !== i) return c;
-      const next = { ...c, ...patch };
-      // 좌측이 바뀌었고 우측이 지표/이력통계이며 새 좌측과 호환 그룹이 다르면 → 상수 0으로 reset
-      if (patch.left && (next.right?.kind === "indicator" || next.right?.kind === "history")) {
-        const lg = compareGroupOf(symbols, next.left.symbol, next.left.indicator);
-        const rg = compareGroupOf(symbols, next.right.symbol, next.right.indicator);
-        if (lg !== "other" && rg !== "other" && lg !== rg) {
-          next.right = { kind: "constant", value: 0 };
-        }
+/** 새 단일 조건의 기본값 — 좌변 [각 종목]·RSI, "30 미만". */
+function starterCondition(symbols: SymbolInfo[]): Condition {
+  const selfInds = _selfIndicators(symbols);
+  const ind = (selfInds.find((i) => i.key.includes("rsi")) ?? selfInds[0])?.key ?? "";
+  return {
+    left: { kind: "indicator", symbol: SELF_SYMBOL, indicator: ind },
+    op: "<",
+    right: { kind: "constant", value: 30 },
+    modifier: null,
+  };
+}
+
+/** 칩 + 분류·검색 팝오버 방식의 문장형 조건 빌더. G2 — 1단계 중첩 그룹 지원. */
+export default function ConditionBuilder({ symbols, group, onChange, contextNote }: Props) {
+  return (
+    <div>
+      {contextNote && <div className="builder-note">{contextNote}</div>}
+      <GroupEditor symbols={symbols} group={group} onChange={onChange} depth={0} />
+    </div>
+  );
+}
+
+/** 한 그룹(조건/하위그룹 묶음)을 렌더. depth=0이면 "묶음 추가" 노출(1단계 중첩 제한). */
+function GroupEditor({ symbols, group, onChange, depth }: {
+  symbols: SymbolInfo[];
+  group: ConditionGroup;
+  onChange: (g: ConditionGroup) => void;
+  depth: number;
+}) {
+  function setNode(i: number, node: ConditionNode) {
+    onChange({ ...group, conditions: group.conditions.map((n, idx) => idx === i ? node : n) });
+  }
+
+  function updateLeaf(i: number, patch: Partial<Condition>) {
+    const cur = group.conditions[i] as Condition;
+    const next = { ...cur, ...patch };
+    // 좌측이 바뀌고 우측이 지표/이력통계이며 호환 그룹이 다르면 → 상수 0으로 reset
+    if (patch.left && (next.right?.kind === "indicator" || next.right?.kind === "history")) {
+      const lg = compareGroupOf(symbols, next.left.symbol, next.left.indicator);
+      const rg = compareGroupOf(symbols, next.right.symbol, next.right.indicator);
+      if (lg !== "other" && rg !== "other" && lg !== rg) {
+        next.right = { kind: "constant", value: 0 };
       }
-      return next;
-    });
-    onChange({ ...group, conditions });
+    }
+    setNode(i, next);
   }
 
   function setOp(i: number, op: Op) {
-    const c = group.conditions[i];
+    const c = group.conditions[i] as Condition;
     let right = c.right;
     const wasBetween = c.op === "between";
     if (op === "between" && !wasBetween) {
@@ -134,28 +172,16 @@ export default function ConditionBuilder({ symbols, group, onChange }: Props) {
     } else if (op !== "between" && wasBetween) {
       right = { kind: "constant", value: 0 };
     }
-    update(i, { op, right });
+    updateLeaf(i, { op, right });
   }
 
-  function add() {
-    // Phase 41 — 새 조건 기본 좌변은 [이 종목] (가장 일반적 사용 패턴)
-    // 시장 트리거가 필요하면 사용자가 좌변 칩에서 명시적 종목 선택.
-    const selfInds = _selfIndicators(symbols);
-    const sym = SELF_SYMBOL;
-    const ind = (selfInds.find((i) => i.key.includes("rsi"))
-                  ?? selfInds[0])?.key ?? "";
-    onChange({
-      ...group,
-      conditions: [
-        ...group.conditions,
-        {
-          left: { kind: "indicator", symbol: sym, indicator: ind },
-          op: "<",
-          right: { kind: "constant", value: 30 },
-          modifier: null,
-        },
-      ],
-    });
+  function addCondition() {
+    onChange({ ...group, conditions: [...group.conditions, starterCondition(symbols)] });
+  }
+
+  function addGroup() {
+    const sub: ConditionGroup = { logic: "OR", conditions: [starterCondition(symbols)] };
+    onChange({ ...group, conditions: [...group.conditions, sub] });
   }
 
   function remove(i: number) {
@@ -163,94 +189,44 @@ export default function ConditionBuilder({ symbols, group, onChange }: Props) {
   }
 
   return (
-    <div>
-      {group.conditions.map((c, i) => {
-        const leftGroup = compareGroupOf(symbols, c.left.symbol, c.left.indicator);
-        return (
-          <div key={i}>
-            <div className="sentence">
-              {/* 좌측 — 종목과 지표를 두 chip으로 분리 (종목별로 지원 지표가 다름) */}
-              <LeftSymbolChip
-                symbols={symbols} operand={c.left}
-                onChange={(o) => update(i, { left: o })}
-              />
-              <LeftIndicatorChip
-                symbols={symbols} operand={c.left}
-                onChange={(o) => update(i, { left: o })}
-              />
-              <span className="txt">가(이)</span>
-
-              {/* 수식어 — 활성 시 "가(이)" 다음에 표시 ("OO가 3일 연속 OO 미만일 때") */}
-              {c.modifier && (
-                <ActiveModifierChip
-                  value={c.modifier}
-                  onChange={(m) => update(i, { modifier: m })}
-                />
-              )}
-
-              {c.op === "between" ? (
-                <RangeInline
-                  value={Array.isArray(c.right?.value) ? (c.right!.value as number[]) : [0, 0]}
-                  hintGroup={leftGroup}
-                  onChange={(v) => update(i, { right: { kind: "constant", value: v } })}
-                />
-              ) : (
-                <OperandChip
-                  symbols={symbols}
-                  value={c.right ?? { kind: "constant", value: 0 }}
-                  allowConstant
-                  compatGroup={leftGroup}
-                  onChange={(o) => update(i, { right: o })}
-                />
-              )}
-
-              <select className="op-select" value={c.op}
-                      onChange={(e) => setOp(i, e.target.value as Op)}>
-                {OP_GROUPS.map((g) => (
-                  <optgroup key={g.label} label={g.label}>
-                    {g.ops.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-
-              {/* 우측 끝 — + 수식어 (미활성 시) + 삭제 버튼 */}
-              <span className="sentence-tail">
-                {!c.modifier && (
-                  <button
-                    type="button" className="chip ghost-chip"
-                    onClick={() => update(i, {
-                      modifier: { kind: "streak", days: 3 },
-                    })}
-                  >
-                    + 수식어
-                  </button>
-                )}
-                <button
-                  type="button" className="ghost sm"
-                  onClick={() => remove(i)}
-                >
-                  삭제
+    <div className={depth > 0 ? "cond-subgroup" : undefined}>
+      {group.conditions.map((node, i) => (
+        <div key={i}>
+          {isGroupNode(node) ? (
+            <div className="cond-subgroup-wrap">
+              <div className="cond-subgroup-head">
+                <span className="cond-subgroup-tag">묶음 조건</span>
+                <button type="button" className="ghost sm" onClick={() => remove(i)}>
+                  묶음 삭제
                 </button>
-              </span>
-            </div>
-
-            {/* 조건 사이의 AND/OR 라벨 (마지막 조건엔 표시 안 함) */}
-            {i < group.conditions.length - 1 && (
-              <div className="logic-sep">
-                <span className="logic-sep-line" />
-                <span className="logic-sep-label">
-                  {group.logic === "AND" ? "그리고 (AND)" : "또는 (OR)"}
-                </span>
-                <span className="logic-sep-line" />
               </div>
-            )}
-          </div>
-        );
-      })}
+              <GroupEditor
+                symbols={symbols} group={node} depth={depth + 1}
+                onChange={(g) => setNode(i, g)}
+              />
+            </div>
+          ) : (
+            <ConditionRow
+              symbols={symbols} c={node}
+              onPatch={(patch) => updateLeaf(i, patch)}
+              onSetOp={(op) => setOp(i, op)}
+              onRemove={() => remove(i)}
+            />
+          )}
 
-      {/* 마지막 조건 아래에 AND/OR 토글 + 조건 추가 버튼 한 줄 */}
+          {/* 항목 사이의 AND/OR 라벨 (마지막 항목엔 표시 안 함) */}
+          {i < group.conditions.length - 1 && (
+            <div className="logic-sep">
+              <span className="logic-sep-line" />
+              <span className="logic-sep-label">
+                {group.logic === "AND" ? "그리고 (AND)" : "또는 (OR)"}
+              </span>
+              <span className="logic-sep-line" />
+            </div>
+          )}
+        </div>
+      ))}
+
       <div className="builder-foot">
         {group.conditions.length > 1 && (
           <div className="logic-toggle">
@@ -265,15 +241,124 @@ export default function ConditionBuilder({ symbols, group, onChange }: Props) {
             ))}
           </div>
         )}
-        <button type="button" className="ghost sm" onClick={add}>
+        <button type="button" className="ghost sm" onClick={addCondition}>
           + 조건 추가
         </button>
+        {depth === 0 && (
+          <button type="button" className="ghost sm" onClick={addGroup}>
+            + 묶음 추가 (괄호)
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
+/** 단일 조건 문장 한 줄 — 좌변(종목·지표) · 수식어 · 우변 · 연산자 · 삭제. */
+function ConditionRow({ symbols, c, onPatch, onSetOp, onRemove }: {
+  symbols: SymbolInfo[];
+  c: Condition;
+  onPatch: (patch: Partial<Condition>) => void;
+  onSetOp: (op: Op) => void;
+  onRemove: () => void;
+}) {
+  const leftGroup = compareGroupOf(symbols, c.left.symbol, c.left.indicator);
+  return (
+    <div className="sentence">
+      <LeftSymbolChip
+        symbols={symbols} operand={c.left}
+        onChange={(o) => onPatch({ left: o })}
+      />
+      <LeftIndicatorChip
+        symbols={symbols} operand={c.left}
+        onChange={(o) => onPatch({ left: o })}
+      />
+      <span className="txt">가(이)</span>
+
+      {c.modifier && (
+        <ActiveModifierChip
+          value={c.modifier}
+          onChange={(m) => onPatch({ modifier: m })}
+        />
+      )}
+
+      {c.op === "between" ? (
+        <RangeInline
+          value={Array.isArray(c.right?.value) ? (c.right!.value as number[]) : [0, 0]}
+          hintGroup={leftGroup}
+          onChange={(v) => onPatch({ right: { kind: "constant", value: v } })}
+        />
+      ) : (
+        <OperandChip
+          symbols={symbols}
+          value={c.right ?? { kind: "constant", value: 0 }}
+          allowConstant
+          compatGroup={leftGroup}
+          onChange={(o) => onPatch({ right: o })}
+        />
+      )}
+
+      <select className="op-select" value={c.op}
+              onChange={(e) => onSetOp(e.target.value as Op)}>
+        {OP_GROUPS.map((g) => (
+          <optgroup key={g.label} label={g.label}>
+            {g.ops.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+
+      <span className="sentence-tail">
+        {!c.modifier && (
+          <button
+            type="button" className="chip ghost-chip"
+            onClick={() => onPatch({ modifier: { kind: "streak", days: 3 } })}
+          >
+            + 수식어
+          </button>
+        )}
+        <button type="button" className="ghost sm" onClick={onRemove}>
+          삭제
+        </button>
+      </span>
+    </div>
+  );
+}
+
 // ── 피연산자 칩 + 팝오버 ───────────────────────────────────────────────────────
+
+/** G1 — 아핀 변환 입력 (× 배수 / + 가감). 지표·이력통계에만 노출. */
+function AffineFields({ value, onChange }: {
+  value: Operand;
+  onChange: (o: Operand) => void;
+}) {
+  if (value.kind === "constant") return null;
+  return (
+    <div className="op-field affine-row">
+      <label>값 조정 <span className="muted small">(선택)</span></label>
+      <div className="affine-inputs">
+        <span className="txt">×</span>
+        <input
+          type="number" step="any" placeholder="1"
+          value={value.mul ?? ""}
+          onChange={(e) => onChange({
+            ...value, mul: e.target.value === "" ? null : Number(e.target.value),
+          })}
+        />
+        <span className="txt">+</span>
+        <input
+          type="number" step="any" placeholder="0"
+          value={value.add ?? ""}
+          onChange={(e) => onChange({
+            ...value, add: e.target.value === "" ? null : Number(e.target.value),
+          })}
+        />
+      </div>
+      <div className="op-hint">예: MA20 ×1.05 = "5% 위", 등락률 +2</div>
+    </div>
+  );
+}
 
 function OperandChip({ symbols, value, allowConstant, compatGroup, onChange }: {
   symbols: SymbolInfo[];
@@ -485,6 +570,8 @@ function OperandEditor({ symbols, value, allowConstant, compatGroup, onChange }:
                   )}
                 </div>
               )}
+
+              {value.indicator && <AffineFields value={value} onChange={onChange} />}
             </>
           )}
         </>
@@ -688,6 +775,8 @@ function LeftIndicatorChip({ symbols, operand, onChange }: {
                   )}
                 </div>
               )}
+
+              {operand.indicator && <AffineFields value={operand} onChange={onChange} />}
             </>
           )}
         </div>
