@@ -61,8 +61,8 @@ export default function Settings() {
           입력하세요.
         </p>
         {DOWNLOAD_URL ? (
-          <a href={DOWNLOAD_URL}>
-            <button>Windows용 로컬앱 다운로드</button>
+          <a className="download-link" href={DOWNLOAD_URL}>
+            Windows용 로컬앱 다운로드
           </a>
         ) : (
           <button disabled title="베타 배포 준비 중">

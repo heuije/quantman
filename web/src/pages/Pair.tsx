@@ -54,8 +54,8 @@ export default function Pair() {
           전송되지 않습니다. 설치 후 로컬앱에서 KIS 모의투자 키를 입력하세요.
         </p>
         {DOWNLOAD_URL ? (
-          <a href={DOWNLOAD_URL}>
-            <button>Windows용 로컬앱 다운로드</button>
+          <a className="download-link" href={DOWNLOAD_URL}>
+            Windows용 로컬앱 다운로드
           </a>
         ) : (
           <button disabled title="베타 배포 준비 중">
