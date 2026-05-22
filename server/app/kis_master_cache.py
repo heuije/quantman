@@ -214,6 +214,17 @@ def refresh() -> dict:
     }
 
 
+def get_fetched_epoch() -> int:
+    """마지막 마스터 갱신 시각의 epoch(초). 미갱신이면 0.
+
+    dataset 버전과 함께 /symbols 응답 캐시의 무효화 키로 쓴다 — 마스터가 새로
+    받아지면 이 값이 바뀌어 캐시가 자동 재빌드된다.
+    """
+    with _lock:
+        fa = _state["fetched_at"]
+        return int(fa.timestamp()) if fa else 0
+
+
 def get_master_set() -> set[str]:
     with _lock:
         return set(_state["symbols"])

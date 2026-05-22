@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import quant_core as qc
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 from sqlmodel import Session, select
 
-from .. import kis_master_cache
+from .. import data_cache, kis_master_cache
 from ..data_cache import get_dataset
 from ..db import get_session
 from ..deps import get_current_user
@@ -19,9 +20,19 @@ from ..serialize import serialize_analysis, serialize_backtest
 router = APIRouter(tags=["backtest"])
 
 
-@router.get("/symbols")
-def list_symbols(user: User = Depends(get_current_user)):
-    """전략 빌더용 — 두 집합의 union을 반환:
+# /symbols 응답 캐시 — (dataset 버전, 마스터 갱신시각) 키로 1회 빌드·직렬화 후 재사용.
+# 데이터가 실제로 바뀔 때(=키 변동)만 재빌드되므로 하루 몇 번 갱신돼도 항상 최신.
+# 큰 페이로드라 dict가 아닌 인코딩된 bytes를 캐시해 재직렬화 비용까지 없앤다.
+_symbols_cache: tuple[tuple[int, int], bytes] | None = None
+
+
+def _symbols_version_key() -> tuple[int, int]:
+    return (data_cache.get_version(), kis_master_cache.get_fetched_epoch())
+
+
+def _build_symbols_payload() -> dict:
+    """빌더용 종목 union을 만든다. 비용이 커서 _symbols_cache로 결과를 재사용한다.
+
     1) KIS 마스터의 모든 매수 가능 종목 (trade_symbol 후보, tradable=True)
     2) 서버 dataset의 종목 (조건 평가/지표용, has indicators)
 
@@ -94,6 +105,27 @@ def list_symbols(user: User = Depends(get_current_user)):
 
     return {"symbols": out, "has_master": has_master,
             "master_status": kis_master_cache.get_status()}
+
+
+@router.get("/symbols")
+def list_symbols(request: Request, user: User = Depends(get_current_user)):
+    """전략 빌더용 종목 목록. 데이터 변경 시점에만 재빌드되는 캐시 + ETag.
+
+    같은 데이터에 대해선 서버가 재계산·재직렬화를 건너뛰고, 브라우저는
+    If-None-Match가 일치하면 304(본문 없음)로 받아 전송 비용도 사라진다.
+    """
+    global _symbols_cache
+    key = _symbols_version_key()
+    if _symbols_cache is None or _symbols_cache[0] != key:
+        body = JSONResponse(_build_symbols_payload()).body
+        _symbols_cache = (key, body)
+    body = _symbols_cache[1]
+
+    etag = f'W/"symbols-{key[0]}-{key[1]}"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/json", headers=headers)
 
 
 @router.post("/backtest/run")

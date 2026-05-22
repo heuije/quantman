@@ -13,6 +13,8 @@ import quant_core as qc
 
 _lock = threading.Lock()
 _dataset: dict[str, pd.DataFrame] | None = None
+# dataset이 바뀔 때마다 증가. /symbols 등 dataset 파생 응답 캐시의 키로 쓴다.
+_version: int = 0
 
 
 def get_dataset() -> dict[str, pd.DataFrame]:
@@ -24,8 +26,14 @@ def get_dataset() -> dict[str, pd.DataFrame]:
     return _dataset
 
 
+def get_version() -> int:
+    """현재 dataset 버전. invalidate() 호출마다 증가하므로 파생 캐시 무효화에 쓴다."""
+    return _version
+
+
 def invalidate() -> None:
     """캐시된 dataset을 비운다. 다음 get_dataset() 호출 시 parquet에서 재로드."""
-    global _dataset
+    global _dataset, _version
     with _lock:
         _dataset = None
+        _version += 1
