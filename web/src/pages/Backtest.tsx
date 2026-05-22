@@ -519,8 +519,8 @@ function BuildTab(props: {
         </div>
       </div>
 
-      <div className="panel">
-        <h3>4. 리스크 한도 <span className="muted">(선택 — 미설정 시 기본값 적용)</span></h3>
+      <details className="panel section-collapsible">
+        <summary><h3>4. 리스크 한도 <span className="muted">(선택 — 미설정 시 기본값 적용)</span></h3></summary>
 
         <div className="sub-h">4-1. 사이징 방식</div>
         <p className="muted" style={{ margin: "0 0 10px" }}>
@@ -609,11 +609,11 @@ function BuildTab(props: {
           ⓘ 발주가 = 전일 종가 × (1 + N%). 변동성 큰 종목은 N 키우면 잡힐 확률 ↑,
           {" "}작으면 갭상승 종목 자동 회피. default 1%.
         </div>
-      </div>
+      </details>
 
       {/* Phase 39 — 백테스트 비용 가정 (실매매 영향 없음) */}
-      <div className="panel">
-        <h3>5. 백테스트 가정 <span className="muted">(백테스트 결과의 보수성에만 영향 · 실매매(모의/실전) 영향 없음)</span></h3>
+      <details className="panel section-collapsible">
+        <summary><h3>5. 백테스트 가정 <span className="muted">(백테스트 결과의 보수성에만 영향 · 실매매(모의/실전) 영향 없음)</span></h3></summary>
         <div className="amount-row">
           <label>수수료 (편도)</label>
           <input type="number" min={0} max={200} step={1} value={btCommissionBps}
@@ -653,7 +653,7 @@ function BuildTab(props: {
           ⓘ 이 4 항목은 <strong>백테스트 결과의 보수성</strong>에만 영향을 줍니다.
           실제 모의투자·실전 매매에선 KIS 실 수수료·실 슬리피지가 적용됩니다.
         </div>
-      </div>
+      </details>
 
       <div className="panel">
         <h3>6. 자금</h3>
@@ -833,11 +833,24 @@ function ResultTab({ backtest, metrics, name, busy, onDraft, onApply, saveMsg }:
     return <div className="error">{backtest.error}</div>;
   }
 
+  // 백테스트가 손실/저조였던 전략을 무경고로 적용하지 않도록 사실 기반 확인.
+  const m = metrics;
+  function applyGuarded() {
+    const ret = m.total_return;
+    const excess = m.excess_return;
+    const poor = (ret != null && ret < 0) || (excess != null && excess < 0);
+    if (poor && !window.confirm(
+      "이 전략은 백테스트에서 손실이었거나 단순 보유 대비 저조했습니다.\n"
+      + "그래도 모의투자로 적용하시겠습니까?\n(실제 돈이 아닌 모의 계좌에서 실행됩니다)",
+    )) return;
+    onApply();
+  }
+
   return (
     <div className="panel">
       <h3>'{name}' 백테스트 결과</h3>
       <Verdict metrics={metrics} />
-      <div className="cards" style={{ marginBottom: 18 }}>
+      <div className="cards metrics" style={{ marginBottom: 18 }}>
         <Stat label="총수익률" value={`${fmt2(metrics.total_return)}%`}
               colorBy={metrics.total_return}
               hint="백테스트 전체 기간 동안 자산이 늘어난 비율입니다." />
@@ -892,7 +905,7 @@ function ResultTab({ backtest, metrics, name, busy, onDraft, onApply, saveMsg }:
         <button className="ghost" disabled={!!busy} onClick={onDraft}>
           {busy === "draft" ? "저장 중…" : "임시저장"}
         </button>
-        <button disabled={!!busy} onClick={onApply}>
+        <button disabled={!!busy} onClick={applyGuarded}>
           {busy === "apply" ? "적용 중…" : "내 전략에 적용 (모의투자)"}
         </button>
       </div>

@@ -333,6 +333,25 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   background: none;
 }
 
+/* 접을 수 있는 패널 섹션 (선택 항목 — 초보자 과부하 완화) */
+details.section-collapsible > summary {
+  list-style: none; cursor: pointer;
+  display: flex; align-items: center; gap: 8px;
+}
+details.section-collapsible > summary::-webkit-details-marker { display: none; }
+details.section-collapsible > summary::before {
+  content: "▸"; color: var(--muted); font-size: 12px; flex-shrink: 0;
+}
+details.section-collapsible[open] > summary::before { content: "▾"; }
+details.section-collapsible > summary h3 { margin: 0; }
+details.section-collapsible[open] > summary { margin-bottom: 14px; }
+
+/* 결과 지표 카드 — 균일 그리드 (마지막 카드가 혼자 전폭 차지하는 문제 방지) */
+.cards.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
 /* 매수 조건 / 매도 조건 패널 내부 sub-heading */
 .sub-h {
   font-size: 13px; font-weight: 700; color: var(--text);
