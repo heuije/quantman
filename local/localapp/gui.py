@@ -3,8 +3,8 @@
 KIS 자격증명 입력 · 기기 페어링 · 자동매매 시작/중지 · 상태/로그 확인을
 하나의 창에서 처리한다. 트레이 상주는 tray.py가 이 창을 감싼다.
 
-UI는 웹앱과 같은 인디고 톤으로 맞추고, 상단 상태 히어로 + 1-2-3 단계
-구성으로 초중급 사용자가 설정 순서를 헷갈리지 않도록 한다.
+UI는 웹앱과 같은 톤(브랜드 강조=따뜻한 테라코타, 주요 버튼=잉크)으로 맞추고, 상단 상태
+히어로 + 1-2-3 단계 구성으로 초중급 사용자가 설정 순서를 헷갈리지 않도록 한다.
 """
 
 from __future__ import annotations
@@ -32,18 +32,31 @@ def json_loads(s: str):
 
 _LOG_PATH_NAME = "logs/localapp.log"
 
-# 웹앱과 통일한 색상 팔레트
-BG = "#f4f5f7"
+# 색상 팔레트 — DESIGN.md / web index.css :root 와 동기화 (2026-05-22 정제)
+BG = "#faf9f6"            # 따뜻한 크림 배경
 PANEL = "#ffffff"
-BORDER = "#e3e5ea"
-TEXT = "#1a1d23"
-MUTED = "#6b7280"
-ACCENT = "#4f46e5"
-ACCENT_DARK = "#4338ca"
-GREEN = "#15803d"
-AMBER = "#b45309"
-SLATE = "#475569"
-RED = "#b91c1c"
+BORDER = "#e8e3db"        # 따뜻한 그레이
+TEXT = "#20201d"          # 따뜻한 근검정
+MUTED = "#6f6a62"         # 따뜻한 그레이
+
+# 브랜드 강조·활성 = Claude 계열 테라코타(주황) / 주요 버튼 = 잉크(따뜻한 차콜).
+# 주황은 UI 크롬에만, 수익 빨강(UP)은 숫자에만 써서 같은 난색이라도 맥락으로 분리.
+ACCENT = "#d97757"        # 테라코타 — 활성 탭·링크·포커스·페어링 코드 강조
+ACCENT_SOFT = "#f7ece5"   # 주황 배경 틴트(따뜻한 피치)
+INK = "#292524"           # 주요 버튼 채움(따뜻한 차콜)
+INK_HOVER = "#423c37"     # 주요 버튼 hover
+
+# 상태색 (시장 방향과 무관) — 정상/주의/위험. 그대로 유지.
+GREEN = "#15803d"         # 정상·완료·연결됨
+AMBER = "#b45309"         # 주의·설정 미완료
+SLATE = "#475569"         # 중립 — 준비·중지
+RED = "#b91c1c"           # 오류·위험·실전모드 경고
+
+# 시장 방향·손익 (한국 관례: 상승·수익·매수 = 빨강 / 하락·손실·매도 = 파랑)
+UP = "#e5383b"            # 상승·수익·매수
+UP_SOFT = "#fdeceb"
+DOWN = "#1668c4"          # 하락·손실·매도
+DOWN_SOFT = "#e7f0fa"
 
 
 def _read_json(path, default):
@@ -105,15 +118,16 @@ class SettingsApp:
                         bordercolor=BORDER, borderwidth=1, padding=(12, 7),
                         font=("Segoe UI", 10))
         style.map("TButton",
-                  background=[("active", "#eef0f3"),
-                              ("disabled", "#f0f1f3")],
-                  foreground=[("disabled", "#a8abb3")])
-        style.configure("Accent.TButton", background=ACCENT,
-                        foreground="#ffffff", bordercolor=ACCENT,
+                  background=[("active", "#f0ece6"),
+                              ("disabled", "#f2efe9")],
+                  foreground=[("disabled", "#aaa49b")])
+        # 주요 액션 버튼 — 잉크 채움(검정 계열), 틸 액센트와 분리
+        style.configure("Accent.TButton", background=INK,
+                        foreground="#ffffff", bordercolor=INK,
                         padding=(14, 8), font=("Segoe UI", 10, "bold"))
         style.map("Accent.TButton",
-                  background=[("active", ACCENT_DARK),
-                              ("disabled", "#c7c9d1")],
+                  background=[("active", INK_HOVER),
+                              ("disabled", "#cbc6bd")],
                   foreground=[("disabled", "#ffffff")])
         # 위험 액션 (kill switch reset 등) — 빨간 액센트
         style.configure("Danger.TButton", background=RED,
@@ -123,16 +137,16 @@ class SettingsApp:
                   background=[("active", "#991b1b")])
         # Notebook 탭 톤
         style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background="#e9eaee", foreground=TEXT,
+        style.configure("TNotebook.Tab", background="#ece8e1", foreground=TEXT,
                         padding=(14, 6))
         style.map("TNotebook.Tab",
-                  background=[("selected", PANEL)],
-                  foreground=[("selected", ACCENT_DARK)])
+                  background=[("selected", ACCENT_SOFT)],
+                  foreground=[("selected", ACCENT)])
         # Treeview (주문/사이클 표) 톤
         style.configure("Treeview", background=PANEL, fieldbackground=PANEL,
                         foreground=TEXT, bordercolor=BORDER, borderwidth=1,
                         rowheight=22, font=("Segoe UI", 9))
-        style.configure("Treeview.Heading", background="#eef0f3",
+        style.configure("Treeview.Heading", background="#f0ece6",
                         foreground=TEXT, font=("Segoe UI", 9, "bold"))
 
     # ── UI 구성 ───────────────────────────────────────────────────────────────
@@ -239,6 +253,9 @@ class SettingsApp:
         tree.configure(yscrollcommand=scroll.set)
         tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+        # 한국 관례: 매수 행 = 빨강 틴트, 매도 행 = 파랑 틴트 (국내 HTS 호가창과 일치)
+        tree.tag_configure("buy", background=UP_SOFT)
+        tree.tag_configure("sell", background=DOWN_SOFT)
         return tree
 
     def _build_tab_pending(self):
@@ -402,31 +419,33 @@ class SettingsApp:
         self.tv_pending.delete(*self.tv_pending.get_children())
         local = _read_json(PENDING_ORDERS_PATH, {})
         for p in local.values():
+            side = "buy" if p.get("side") == "buy" else "sell"
             self.tv_pending.insert("", "end", values=(
                 self._fmt_ts(p.get("submitted_ts_iso", "")) or "",
-                "매수" if p.get("side") == "buy" else "매도",
+                "매수" if side == "buy" else "매도",
                 p.get("symbol", ""), "",
                 p.get("qty", ""),
                 p.get("filled_so_far", 0),
                 int(p.get("qty", 0)) - int(p.get("filled_so_far", 0)),
                 f"{p.get('limit_price', 0):,}" if p.get("limit_price") else "—",
                 p.get("order_no", ""),
-            ))
+            ), tags=(side,))
 
     def _refresh_orders(self):
         self.tv_orders.delete(*self.tv_orders.get_children())
         for o in order_log.read_orders(100):
+            side = "buy" if o.get("side") == "buy" else "sell"
             self.tv_orders.insert("", "end", values=(
                 self._fmt_ts(o.get("ts", "")),
                 o.get("event", ""),
-                "매수" if o.get("side") == "buy" else "매도",
+                "매수" if side == "buy" else "매도",
                 o.get("symbol", ""),
                 o.get("qty", ""),
                 f"{o.get('limit_price') or 0:,.0f}" if o.get("limit_price") else "—",
                 f"{o.get('fill_price') or 0:,.0f}" if o.get("fill_price") else "—",
                 o.get("strategy", ""),
                 o.get("reason", ""),
-            ))
+            ), tags=(side,))
 
     def _refresh_cycles(self):
         self.tv_cycles.delete(*self.tv_cycles.get_children())
@@ -475,14 +494,15 @@ class SettingsApp:
                      f"· 최대 {s['max_bps']} bps")
         self.tv_slip.delete(*self.tv_slip.get_children())
         for r in s.get("recent", []):
+            side = "buy" if r.get("side") == "buy" else "sell"
             self.tv_slip.insert("", "end", values=(
                 self._fmt_ts(r.get("ts", "")),
-                "매수" if r.get("side") == "buy" else "매도",
+                "매수" if side == "buy" else "매도",
                 r.get("symbol", ""),
                 f"{r.get('intended', 0):,.0f}",
                 f"{r.get('fill', 0):,.0f}",
                 f"{r.get('bps', 0):+.1f}",
-            ))
+            ), tags=(side,))
 
     def _reset_killswitch(self):
         if not messagebox.askyesno(

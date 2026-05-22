@@ -11,12 +11,12 @@ import threading
 import pystray
 from PIL import Image, ImageDraw
 
-from .gui import SettingsApp
+from .gui import ACCENT, SettingsApp
 
 
 def _icon_image() -> Image.Image:
     """단색 배경에 'Q'를 그린 간단한 트레이 아이콘."""
-    img = Image.new("RGB", (64, 64), "#4f46e5")
+    img = Image.new("RGB", (64, 64), ACCENT)
     d = ImageDraw.Draw(img)
     d.ellipse((14, 14, 50, 50), outline="white", width=5)
     d.line((40, 40, 54, 54), fill="white", width=6)
