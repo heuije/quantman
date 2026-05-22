@@ -6,7 +6,7 @@ import {
   PositionDetailCards, RiskGauges, StrategyPnl,
 } from "../components/MonitorCards";
 import {
-  AlertSettings, BacktestLiveOverlay, CsvExportBar,
+  BacktestLiveOverlay, CsvExportBar,
 } from "../components/MonitorTools";
 import NextDayPreviewPanel from "../components/NextDayPreviewPanel";
 import type {
@@ -235,8 +235,12 @@ export default function Monitor() {
       {/* 로컬앱 헬스 */}
       <HealthCard snapAt={snap?.received_at} health={p?.health} />
 
-      {/* 알림 설정 */}
-      <AlertSettings />
+      {/* 알림·위험 한도 설정은 설정 페이지에서 일괄 관리 (중복 폼 제거) */}
+      <div className="panel" style={{ display: "flex", alignItems: "center",
+                                        justifyContent: "space-between", gap: 12 }}>
+        <span className="muted">위험 한도(킬스위치)·알림 webhook은 설정에서 관리합니다.</span>
+        <a href="/settings" className="link-btn">설정 → 알림·위험 한도</a>
+      </div>
 
       {/* Pending */}
       <div className="panel">
