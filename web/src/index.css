@@ -8,6 +8,7 @@
   --accent-soft: #eef2ff;
   --green: #15803d;
   --red: #b91c1c;
+  --danger: #b91c1c;
   --amber: #b45309;
   --green-soft: #ecfdf3;
   --red-soft: #fef2f2;
@@ -62,7 +63,7 @@ a { color: var(--accent); text-decoration: none; }
 .mode-toggle button {
   border: 0; background: transparent; padding: 6px 14px;
   font-size: 13px; font-weight: 600; color: var(--muted);
-  border-radius: 6px; cursor: pointer;
+  border-radius: 6px; cursor: pointer; white-space: nowrap;
   display: inline-flex; align-items: center; gap: 6px;
 }
 .mode-toggle button:hover { color: var(--text); }
@@ -1245,3 +1246,31 @@ thead th { color: var(--muted); font-weight: 600; }
   margin-top: 14px; padding: 8px 12px;
   background: var(--bg); border-radius: 6px; line-height: 1.5;
 }
+
+/* ── 모바일/태블릿 — 사이드바를 상단 가로 내비로 접기 ─────────────────────── */
+@media (max-width: 760px) {
+  .shell { flex-direction: column; }
+  .sidebar {
+    width: 100%; flex-direction: row; flex-wrap: wrap;
+    align-items: center; gap: 4px 6px;
+    padding: 8px 14px;
+    border-right: none; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 20;
+  }
+  .brand { padding: 4px 6px 4px 4px; font-size: 16px; }
+  .sidebar .navlink { padding: 7px 11px; font-size: 13px; }
+  /* 이메일은 숨기고 로그아웃만 우측으로 — 좁은 폭에서 공간 확보 */
+  .sidebar-foot {
+    margin-top: 0; margin-left: auto; padding: 0;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .sidebar-foot > div:first-child { display: none; }
+  .sidebar-foot .spacer { display: none; }
+  .main-inner { padding: 18px 16px; }
+  .topbar { padding: 8px 16px; }
+  /* 결과 지표 카드가 한 줄에 다 들어가도록 최소폭 완화 */
+  .stat { min-width: 120px; }
+  /* 넓은 표는 가로 스크롤 허용 (글자 깨짐 방지) */
+  .panel table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
