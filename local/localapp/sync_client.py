@@ -235,12 +235,13 @@ def upload_single_parquet(file_path: Path, category: str = "price") -> bool:
     return r.json().get("ok", False)
 
 
-def push_local_dataset(local_data_dir: Path) -> dict:
+def push_local_dataset(local_data_dir: Path, max_workers: int = 16) -> dict:
     """로컬에 축적된 parquet 파일들을 서버의 영구 저장소로 업로드 (네이버 차단 완벽 우회).
 
     로컬의 가격 데이터 및 펀더멘털 데이터를 비교하여 서버에 없거나 로컬 데이터가 더 최신인 경우 업로드합니다.
     """
     import pandas as pd
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     # 1. 서버 manifest 가져오기
     try:
@@ -255,8 +256,9 @@ def push_local_dataset(local_data_dir: Path) -> dict:
     n_skipped = 0
     n_failed = 0
 
-    # 2. 가격 데이터 업로드 (local_data_dir/*.parquet)
+    # 업로드 대상 선별
     price_files = list(local_data_dir.glob("*.parquet"))
+    tasks = [] # (file_path, category)
     
     for fp in price_files:
         symbol = fp.stem
@@ -279,32 +281,47 @@ def push_local_dataset(local_data_dir: Path) -> dict:
         if not need_upload:
             n_skipped += 1
             continue
+        tasks.append((fp, "price"))
 
-        try:
-            log.info("Parquet 업로드 중: %s...", fp.name)
-            if upload_single_parquet(fp, category="price"):
-                n_uploaded += 1
-            else:
-                n_failed += 1
-        except Exception as e:
-            log.warning("Parquet 업로드 실패 [%s]: %s", fp.name, e)
-            n_failed += 1
-
-    # 3. 펀더멘털 데이터 업로드 (local_data_dir/fundamentals/*.parquet)
+    # 3. 펀더멘털 데이터 추가 (local_data_dir/fundamentals/*.parquet)
     fund_dir = local_data_dir / "fundamentals"
     if fund_dir.exists():
         fund_files = list(fund_dir.glob("*.parquet"))
         for fp in fund_files:
             n_total += 1
+            tasks.append((fp, "fundamentals"))
+
+    # 4. 멀티스레드 업로드 실행
+    total_to_upload = len(tasks)
+    if total_to_upload > 0:
+        log.info("🚀 총 %d개의 파일을 %d개 스레드로 초고속 병렬 업로드 시작합니다...", total_to_upload, max_workers)
+        
+        def worker(item):
+            fp, cat = item
             try:
-                log.info("Fundamentals Parquet 업로드 중: %s...", fp.name)
-                if upload_single_parquet(fp, category="fundamentals"):
+                success = upload_single_parquet(fp, category=cat)
+                return fp.name, success, None
+            except Exception as e:
+                return fp.name, False, str(e)
+
+        completed_count = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {executor.submit(worker, task): task for task in tasks}
+            for future in as_completed(future_to_task):
+                fname, success, err = future.result()
+                completed_count += 1
+                if success:
                     n_uploaded += 1
                 else:
                     n_failed += 1
-            except Exception as e:
-                log.warning("Fundamentals Parquet 업로드 실패 [%s]: %s", fp.name, e)
-                n_failed += 1
+                    log.warning("Parquet 업로드 실패 [%s]: %s", fname, err)
+                
+                # 50개 단위 또는 마지막에 진행 상황 브리핑
+                if completed_count % 50 == 0 or completed_count == total_to_upload:
+                    log.info(" 진행 상황: %d/%d 완료 (성공: %d, 실패: %d)", 
+                             completed_count, total_to_upload, n_uploaded, n_failed)
+    else:
+        log.info("업로드할 신규 데이터가 없습니다. 모든 데이터가 최신 상태입니다.")
 
     log.info("로컬 데이터 업로드 완료: 총 %d -> 업로드 %d · 최신 유지 %d · 실패 %d",
              n_total, n_uploaded, n_skipped, n_failed)
