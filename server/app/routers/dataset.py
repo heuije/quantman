@@ -21,6 +21,9 @@ _log = logging.getLogger("app.dataset")
 
 router = APIRouter(prefix="/dataset", tags=["dataset"])
 
+# 메모리 캐시 딕셔너리: key -> {"mtime": float, "size": int, "n_rows": int, "last_date": str}
+_MANIFEST_CACHE: dict[str, dict] = {}
+
 
 def _data_dir() -> Path:
     """data_fetcher의 DATA_DIR를 동적으로 조회 (서버·로컬앱 환경변수 다를 수 있음)."""
@@ -35,6 +38,7 @@ def manifest(device: Device = Depends(get_current_device)) -> dict:
     로컬앱이 자기 캐시와 비교해 변경된 종목만 선택적으로 다운로드한다.
     """
     from quant_core import data_fetcher
+    global _MANIFEST_CACHE
 
     base_dir = _data_dir()
     items: list[dict] = []
@@ -44,17 +48,45 @@ def manifest(device: Device = Depends(get_current_device)) -> dict:
         if not p.exists():
             return
         try:
+            stat = p.stat()
+            mtime = stat.st_mtime
+            size = stat.st_size
+        except Exception:
+            return
+
+        # 캐시된 정보가 있고 파일이 수정되지 않았다면 디스크 읽기를 생략
+        cached = _MANIFEST_CACHE.get(key)
+        if cached and cached["mtime"] == mtime and cached["size"] == size:
+            items.append({
+                "key": key,
+                "n_rows": cached["n_rows"],
+                "last_date": cached["last_date"],
+            })
+            return
+
+        try:
             df = pd.read_parquet(p)
+            if df.empty:
+                return
+            n_rows = len(df)
+            last_date = str(df.index[-1])[:10]
+
+            # 캐시 업데이트
+            _MANIFEST_CACHE[key] = {
+                "mtime": mtime,
+                "size": size,
+                "n_rows": n_rows,
+                "last_date": last_date,
+            }
+
+            items.append({
+                "key": key,
+                "n_rows": n_rows,
+                "last_date": last_date,
+            })
         except Exception as e:
             _log.warning("manifest: parquet 읽기 실패 %s: %s", p, e)
             return
-        if df.empty:
-            return
-        items.append({
-            "key": key,
-            "n_rows": len(df),
-            "last_date": str(df.index[-1])[:10],
-        })
 
     # 매크로/자산 (ALL_SYMBOLS) + 사용자 종목 + 자동 관리 한국·해외
     for sym in data_fetcher.ALL_SYMBOLS:

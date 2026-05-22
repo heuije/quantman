@@ -147,11 +147,25 @@ def pull_preview() -> dict | None:
 # ── Phase 29: 서버 dataset 단일 진실 공급원 pull ─────────────────────────────────
 
 def fetch_dataset_manifest() -> list[dict]:
-    """서버 dataset의 종목 manifest. [{key, n_rows, last_date}, ...]"""
-    r = requests.get(f"{PLATFORM_URL}/dataset/manifest", headers=_headers(),
-                     timeout=15)
-    r.raise_for_status()
-    return r.json().get("symbols", [])
+    """서버 dataset의 종목 manifest. [{key, n_rows, last_date}, ...]
+
+    서버 캐싱 초기 부하 등으로 타임아웃이 발생할 수 있으므로, 제한을 120초로 상향하고 최대 3회 재시도를 구현합니다.
+    """
+    url = f"{PLATFORM_URL}/dataset/manifest"
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            log.info("서버 manifest 로드 시도 (%d/%d)...", attempt, max_retries)
+            r = requests.get(url, headers=_headers(), timeout=120)
+            r.raise_for_status()
+            return r.json().get("symbols", [])
+        except Exception as e:
+            if attempt == max_retries:
+                raise e
+            sleep_time = 5 * attempt
+            log.warning("서버 manifest 로드 실패 (%s). %d초 후 재시도합니다.", e, sleep_time)
+            time.sleep(sleep_time)
+    return []
 
 
 def fetch_dataset_symbol(key: str, dest_path: Path) -> bool:
@@ -219,23 +233,39 @@ def sync_dataset(local_data_dir: Path) -> dict:
 # ── 로컬앱 → 서버 Parquet 데이터 동기화 업로드 ─────────────────────────────────────
 
 def upload_single_parquet(file_path: Path, category: str = "price") -> bool:
-    """단일 parquet 파일을 서버에 업로드. 성공 시 True."""
+    """단일 parquet 파일을 서버에 업로드. 성공 시 True.
+
+    서버 일시적 부하 또는 프록시 502 에러에 대비하여 지수 백오프 기반 최대 3회 재시도를 수행합니다.
+    """
     headers = _headers()
-    with open(file_path, "rb") as f:
-        files = {"file": (file_path.name, f, "application/octet-stream")}
-        params = {"category": category}
-        r = requests.post(
-            f"{PLATFORM_URL}/sync/upload_parquet",
-            headers=headers,
-            params=params,
-            files=files,
-            timeout=60
-        )
-    r.raise_for_status()
-    return r.json().get("ok", False)
+    url = f"{PLATFORM_URL}/sync/upload_parquet"
+    params = {"category": category}
+    
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            with open(file_path, "rb") as f:
+                files = {"file": (file_path.name, f, "application/octet-stream")}
+                r = requests.post(
+                    url,
+                    headers=headers,
+                    params=params,
+                    files=files,
+                    timeout=60
+                )
+            r.raise_for_status()
+            return r.json().get("ok", False)
+        except Exception as e:
+            if attempt == max_retries:
+                raise e
+            sleep_time = 2 * attempt
+            log.warning("Parquet 업로드 지연/실패 [%s] (%d/%d): %s. %d초 후 재시도합니다.", 
+                        file_path.name, attempt, max_retries, e, sleep_time)
+            time.sleep(sleep_time)
+    return False
 
 
-def push_local_dataset(local_data_dir: Path, max_workers: int = 16) -> dict:
+def push_local_dataset(local_data_dir: Path, max_workers: int = 4) -> dict:
     """로컬에 축적된 parquet 파일들을 서버의 영구 저장소로 업로드 (네이버 차단 완벽 우회).
 
     로컬의 가격 데이터 및 펀더멘털 데이터를 비교하여 서버에 없거나 로컬 데이터가 더 최신인 경우 업로드합니다.
