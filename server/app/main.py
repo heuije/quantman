@@ -188,6 +188,13 @@ def _refresh_global_dataset() -> None:
     # 매크로/자산/사용자 종목 (yfinance, FDR ETF, FRED, Binance, 공포탐욕)
     data_fetcher.fetch_all(verbose=False)
 
+    # S&P500 큐레이션 유니버스를 fetch 전에 시드 — 콜드스타트 레이스 방지.
+    # 시드는 원래 _refresh_kr_dataset(18:15)에만 있어, 첫 부팅 때 글로벌 초기 갱신이
+    # kr보다 먼저 돌면 managed_overseas가 비어 US OHLCV를 못 받고 us_metrics가
+    # 0이 됐다(다음 07:30 cron까지). 글로벌에서도 시드해 항상 S&P500을 포함한다.
+    # save_managed_overseas가 union이라 멱등 — 중복 호출 안전.
+    _seed_sp500_overseas()
+
     # 해외 종목(S&P500 + on-demand) — yfinance 의존이라 글로벌 cron에 묶음
     n = data_fetcher.fetch_managed_overseas()
     if n:
@@ -197,6 +204,12 @@ def _refresh_global_dataset() -> None:
     # 미국 스크리너 metrics 재빌드 (방금 갱신된 S&P500 OHLCV + 기존 시총 캐시)
     try:
         from . import us_metrics_cache
+        # 콜드스타트 레이스 가드: 마스터가 아직 안 떴으면 먼저 로드. build_metrics는
+        # 거래소 메타(NAS/NYS/AMS) 없는 종목을 전부 skip하므로, 마스터 미로드 시
+        # us_metrics가 0이 된다. 멱등(이미 로드됐으면 무동작).
+        if not kis_master_cache.get_master_set():
+            _log.info("us_metrics 빌드 전 KIS 마스터 로드 (콜드스타트 가드)")
+            kis_master_cache.refresh()
         us_metrics_cache.refresh()
     except Exception:
         _log.exception("us_metrics 갱신 실패 (미국 스크리너 영향)")
