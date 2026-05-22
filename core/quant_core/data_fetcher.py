@@ -417,6 +417,26 @@ def sp500_yf_codes() -> list[str]:
     return [c["symbol"].replace(".", "-") for c in load_sp500() if c.get("symbol")]
 
 
+def fetch_managed_overseas(limit: int | None = None, sleep_sec: float = 0.3,
+                           verbose: bool = False) -> int:
+    """managed_overseas 등록 해외 종목 OHLCV를 yfinance로 일괄 수집.
+
+    글로벌 cron과 수동 갱신(manage)이 공유. limit=N이면 앞 N개만(개발/검증용).
+    Returns: 시도한 종목 수.
+    """
+    import time
+    codes = [s.get("code", "") for s in load_managed_overseas() if s.get("code")]
+    if limit is not None:
+        codes = codes[:limit]
+    for i, code in enumerate(codes):
+        fetch_yfinance(code, code)
+        if verbose and (i + 1) % 50 == 0:
+            print(f"  해외 fetch {i + 1}/{len(codes)}")
+        if sleep_sec:
+            time.sleep(sleep_sec)        # yfinance rate limit 완화
+    return len(codes)
+
+
 # ── Binance REST (비트코인) ───────────────────────────────────────────────────
 
 def fetch_bitcoin() -> pd.DataFrame:

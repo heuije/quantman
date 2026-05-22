@@ -31,18 +31,22 @@ _state: dict = {"metrics": {}, "fetched_at": None, "n": 0, "n_capped": 0}
 
 # ── 시가총액 (fast_info, 주1회) ───────────────────────────────────────────────
 
-def refresh_market_caps(timeout_each: float = 0.0) -> dict:
+def refresh_market_caps(timeout_each: float = 0.0, limit: int | None = None) -> dict:
     """S&P500 fast_info marketCap(USD) 수집 → 디스크 캐시. 주1회 호출 권장.
 
     fast_info는 분기재무 호출보다 가벼우나 종목당 1콜이라 ~500콜. rate 완화를 위해
     종목 간 짧은 sleep. 실패 종목은 직전 캐시 값 유지(부분 성공 허용).
+    limit=N이면 앞 N개만(개발/검증용).
     """
     import time
     import yfinance as yf
 
     caps = _load_caps()
+    codes = data_fetcher.sp500_yf_codes()
+    if limit is not None:
+        codes = codes[:limit]
     n_ok = 0
-    for code in data_fetcher.sp500_yf_codes():
+    for code in codes:
         try:
             mc = yf.Ticker(code).fast_info.market_cap
             if mc and float(mc) > 0:

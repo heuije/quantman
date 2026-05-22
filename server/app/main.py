@@ -183,19 +183,15 @@ def _refresh_global_dataset() -> None:
     외부 publish: 미국 마감(06:00 KST)·FRED(06:15)·Binance/공포탐욕(09:00 자정 UTC).
     cron 07:30이 모든 글로벌 소스 publish 후 안전 마진. 자동매매 사이클(08:55) 전.
     """
-    import time
     from quant_core import data_fetcher
 
     # 매크로/자산/사용자 종목 (yfinance, FDR ETF, FRED, Binance, 공포탐욕)
     data_fetcher.fetch_all(verbose=False)
 
-    # 해외 on-demand 종목 (Phase 29) — yfinance 의존이라 글로벌 cron에 묶음
-    overseas_all = data_fetcher.load_managed_overseas()
-    if overseas_all:
-        _log.info("해외 종목 fetch: %d 종목", len(overseas_all))
-        for stock in overseas_all:
-            data_fetcher.fetch_yfinance(stock["code"], stock["code"])
-            time.sleep(0.3)   # yfinance rate limit 완화
+    # 해외 종목(S&P500 + on-demand) — yfinance 의존이라 글로벌 cron에 묶음
+    n = data_fetcher.fetch_managed_overseas()
+    if n:
+        _log.info("해외 종목 fetch: %d 종목", n)
 
     data_cache.invalidate()
     # 미국 스크리너 metrics 재빌드 (방금 갱신된 S&P500 OHLCV + 기존 시총 캐시)
@@ -259,18 +255,24 @@ def _refresh_kr_dataset() -> None:
                     continue
                 overseas_new.append({"code": code, "name": meta.get("name", "")})
 
-    # 2b. S&P500 큐레이션 유니버스 시드 (미국 자동선택 스테이지1) — yf 코드(대시) 변환
-    for c in data_fetcher.load_sp500():
-        sym = (c.get("symbol") or "").strip()
-        if sym:
-            overseas_new.append({"code": sym.replace(".", "-"),
-                                  "name": c.get("name", "")})
-
     existing_overseas = data_fetcher.load_managed_overseas()
     data_fetcher.save_managed_overseas(existing_overseas + overseas_new)
+    _seed_sp500_overseas()      # S&P500 큐레이션 유니버스 추가 (미국 자동선택)
 
     data_cache.invalidate()
     _trigger_preview("dataset_kr")
+
+
+def _seed_sp500_overseas() -> int:
+    """S&P500 큐레이션 유니버스를 managed_overseas에 union (yf 대시 코드).
+
+    글로벌 cron이 다음 사이클에 OHLCV를 fetch. 수동 갱신(manage)도 공유.
+    """
+    from quant_core import data_fetcher
+    sp = [{"code": c["symbol"].replace(".", "-"), "name": c.get("name", "")}
+          for c in data_fetcher.load_sp500() if c.get("symbol")]
+    data_fetcher.save_managed_overseas(data_fetcher.load_managed_overseas() + sp)
+    return len(sp)
 
 
 def _initial_dataset_refresh():
