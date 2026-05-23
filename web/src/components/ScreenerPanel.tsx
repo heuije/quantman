@@ -90,6 +90,10 @@ export default function ScreenerPanel({
   const [previews, setPreviews] = useState<Record<string, ScreenerMatch[]>>({});
   const [loadingPrev, setLoadingPrev] = useState<string | null>(null);
 
+  // 기본 세트 카드 내부 inline 편집 분 — preset 키 → 사용자 조정 spec.
+  // 값이 있으면 그 preset은 "맞춤" 모드로 적용(custom). 없으면 preset 원본 적용.
+  const [presetEdits, setPresetEdits] = useState<Record<string, ScreenerSpecIO>>({});
+
   useEffect(() => {
     api.screenerFields().then((r) => setFields(r.fields)).catch(() => {});
     api.listMyScreenerPresets().then((r) => setMyPresets(r.presets)).catch(() => {});
@@ -180,33 +184,123 @@ export default function ScreenerPanel({
   const krPresets = presets.filter((p) => p.market_group !== "US");
   const usPresets = presets.filter((p) => p.market_group === "US");
 
+  // ── 기본 세트 카드 inline 편집 헬퍼 ──────────────────────────────────────────
+  // preset 원본 spec(없으면 DEFAULT) → 사용자 조정분이 있으면 그것을 우선.
+  function effectiveSpec(p: ScreenerPreset): ScreenerSpecIO {
+    const edited = presetEdits[p.key];
+    if (edited) return edited;
+    return p.spec ? p.spec : DEFAULT_SPEC;
+  }
+
+  // inline 값 수정 → presetEdits 갱신 + 즉시 "맞춤"으로 적용.
+  // 카드 클릭으로 preset 원본을 골랐다가 값 한 글자 바꾸면 자동으로 custom 전환.
+  function editPresetRuleValue(p: ScreenerPreset, idx: number, value: number | number[]) {
+    const base = effectiveSpec(p);
+    const next: ScreenerSpecIO = {
+      ...base,
+      rules: base.rules.map((r, i) => (i === idx ? { ...r, value } : r)),
+      label: `${p.title} 맞춤`,
+    };
+    setPresetEdits((prev) => ({ ...prev, [p.key]: next }));
+    setSpec(next);
+    setTradeSymbol("screener:custom");
+    setScreenerLimit(next.limit ?? 20);
+  }
+  function editPresetLimit(p: ScreenerPreset, limit: number) {
+    const base = effectiveSpec(p);
+    const next: ScreenerSpecIO = { ...base, limit, label: `${p.title} 맞춤` };
+    setPresetEdits((prev) => ({ ...prev, [p.key]: next }));
+    setSpec(next);
+    setTradeSymbol("screener:custom");
+    setScreenerLimit(limit);
+  }
+
+  // 카드 자체 클릭 → 이미 편집한 적 있으면 그 맞춤 spec 재적용, 없으면 preset 원본.
+  function selectPresetCard(p: ScreenerPreset) {
+    const edited = presetEdits[p.key];
+    if (edited) {
+      applyCustom(edited, edited.label ?? `${p.title} 맞춤`);
+    } else {
+      applyPreset(p.key);
+    }
+  }
+
+  function fieldOf(key: string): ScreenerField | undefined {
+    return fields.find((f) => f.key === key);
+  }
+
   function renderPresetCard(p: ScreenerPreset) {
     const isExp = expanded === p.key;
-    const isSel = selectedKey === p.key;
     const items = previews[p.key];
+    const spec = effectiveSpec(p);
+    // 미국 스펙이면 단위(원→$). SetEditor와 동일한 휴리스틱.
+    const isUsSpec = !!spec.markets && spec.markets.length > 0
+      && spec.markets.every((m) => m === "NAS" || m === "NYS" || m === "AMS");
+    const unitOf = (f: ScreenerField | undefined): string =>
+      f ? (isUsSpec && f.unit === "원" ? "$" : f.unit) : "";
+
+    // 선택 표시: edited면 그 preset의 맞춤이 현재 적용 중인지, 아니면 preset 원본 선택인지.
+    const isSel = presetEdits[p.key]
+      ? (isCustom && spec.label === presetEdits[p.key].label)
+      : selectedKey === p.key;
+
+    const stop = (e: React.MouseEvent | React.KeyboardEvent) => e.stopPropagation();
+
     return (
-      <div key={p.key} className={"screener-card" + (isSel ? " sel" : "")}>
+      <div key={p.key}
+           className={"screener-card clickable" + (isSel ? " sel" : "")}
+           role="button" tabIndex={0}
+           onClick={() => selectPresetCard(p)}
+           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectPresetCard(p); } }}>
         <div className="screener-card-head">
           <div className="screener-card-title">
             <strong>{p.title}</strong>
           </div>
-          <div className="screener-card-actions">
-            <button type="button" className="ghost sm" onClick={() => applyPreset(p.key)}>
-              {isSel ? "선택됨" : "선택"}
-            </button>
-            <button type="button" className="ghost sm" title="숫자 조정 (이 전략에만)"
-                    onClick={() => setEditor({
-                      kind: "preset", key: p.key, title: p.title,
-                      spec: p.spec ? JSON.parse(JSON.stringify(p.spec)) : JSON.parse(JSON.stringify(DEFAULT_SPEC)),
-                    })}>⚙</button>
-            <button type="button" className="ghost sm" title="미리보기" onClick={() => togglePreview(p.key)}>
-              {isExp ? "▾" : "▸"}
-            </button>
-          </div>
+          <button type="button" className="ghost sm" title="미리보기"
+                  onClick={(e) => { stop(e); togglePreview(p.key); }}>
+            {isExp ? "▾" : "▸"}
+          </button>
         </div>
         <div className="screener-card-desc">{p.desc}</div>
+
+        {/* inline 값 조정 — field/op는 fix, value만 편집 */}
+        <div className="screener-card-rules" onClick={stop}>
+          {spec.rules.map((r, i) => {
+            const f = fieldOf(r.field);
+            const u = unitOf(f);
+            const opLabel = OPS.find((o) => o.value === r.op)?.label ?? r.op;
+            return (
+              <div key={i} className="screener-card-rule">
+                <span className="rule-field">{f?.label ?? r.field}</span>
+                <span className="rule-op">{opLabel}</span>
+                {r.op === "between" ? (
+                  <>
+                    <input type="number" step="any" value={Array.isArray(r.value) ? r.value[0] : 0}
+                           onChange={(e) => editPresetRuleValue(p, i,
+                             [Number(e.target.value), Array.isArray(r.value) ? r.value[1] : 0])} />
+                    <span className="rule-sep">~</span>
+                    <input type="number" step="any" value={Array.isArray(r.value) ? r.value[1] : 0}
+                           onChange={(e) => editPresetRuleValue(p, i,
+                             [Array.isArray(r.value) ? r.value[0] : 0, Number(e.target.value)])} />
+                  </>
+                ) : (
+                  <input type="number" step="any" value={Array.isArray(r.value) ? 0 : r.value}
+                         onChange={(e) => editPresetRuleValue(p, i, Number(e.target.value))} />
+                )}
+                {u && <span className="rule-unit">{u}</span>}
+              </div>
+            );
+          })}
+          <div className="screener-card-limit">
+            상위
+            <input type="number" min={1} max={100} value={spec.limit ?? 20}
+                   onChange={(e) => editPresetLimit(p, Number(e.target.value))} />
+            개 보유
+          </div>
+        </div>
+
         {isExp && (
-          <div className="screener-preview">
+          <div className="screener-preview" onClick={stop}>
             {loadingPrev === p.key
               ? <span className="muted small">불러오는 중…</span>
               : items && items.length === 0

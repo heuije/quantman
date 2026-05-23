@@ -824,7 +824,29 @@ thead th { color: var(--muted); font-weight: 600; }
   background: var(--bg); border: 1px solid var(--border);
   border-radius: 8px; padding: 10px 12px;
 }
+.screener-card.clickable { cursor: pointer; }
+.screener-card.clickable:hover { border-color: var(--accent); }
 .screener-card.sel { border-color: var(--accent); background: var(--accent-soft); }
+
+/* 기본 세트 카드 내부 inline 값 조정 */
+.screener-card-rules {
+  display: flex; flex-direction: column; gap: 4px;
+  margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
+}
+.screener-card-rule, .screener-card-limit {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text); flex-wrap: wrap;
+}
+.screener-card-rule .rule-field { flex: 1; color: var(--text); }
+.screener-card-rule .rule-op,
+.screener-card-rule .rule-unit,
+.screener-card-rule .rule-sep { color: var(--muted); }
+.screener-card-rules input[type="number"] {
+  width: 110px; padding: 4px 8px; font-size: 12px;
+}
+.screener-card-limit input[type="number"] {
+  width: 60px;
+}
 .screener-card-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
