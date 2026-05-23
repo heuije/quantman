@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import {
   ExecutionQuality, HealthCard, MarketBar, PortfolioRiskCard,
-  PositionDetailCards, RiskGauges, StrategyPnl,
+  PositionDetailCards, RiskBanner, StrategyPnl,
 } from "../components/MonitorCards";
 import { CsvExportBar } from "../components/MonitorTools";
 import NextDayPreviewPanel from "../components/NextDayPreviewPanel";
@@ -112,6 +112,9 @@ export default function Monitor() {
       {/* Phase 31 — 내일 매매 미리보기 (페어링 후에만 의미) */}
       {paired && <NextDayPreviewPanel />}
 
+      {/* 위험 한도 banner — usagePct>=80 또는 drawdown<=-10일 때만 표시 */}
+      {paired && <RiskBanner ks={ks} dd={p?.drawdown} equityNow={equityNow} />}
+
       {/* Kill switch banner */}
       {ks?.active && (
         <div className="panel" style={{
@@ -189,9 +192,6 @@ export default function Monitor() {
         <PairingOnboarding />
       ) : (
         <>
-          {/* 위험 한도 게이지 + drawdown */}
-          <RiskGauges ks={ks} dd={p?.drawdown} equityNow={equityNow} />
-
           {/* 보유 종목 — 파이차트 + 표 + ledger/KIS 차이 통합 (Phase 40 reconciliation 흡수) */}
           <PositionDetailCards
             positions={positions}

@@ -18,9 +18,12 @@ const PIE_COLORS = [
   "#e8a87c", "#c38a5a", "#8b6f4e", "#a89077", "#d4b896",
 ];
 
-// ── 1. 일일 손실 한도 게이지 + drawdown ───────────────────────────────────────
+// ── 1. 위험 한도 banner — 임계 미달 평시엔 표시하지 않는다 ───────────────────
 
-export function RiskGauges({ ks, dd, equityNow }: {
+/** 일일 손실 한도 80% 이상 사용 또는 drawdown depth ≤ -10% 일 때만 banner 노출.
+ *  평시에 게이지 패널을 띄워두면 시각 노이즈만 되고 사용자 액션이 없다.
+ *  kill switch active는 별도 banner(Monitor.tsx)가 담당. */
+export function RiskBanner({ ks, dd, equityNow }: {
   ks?: KillSwitchState;
   dd?: DrawdownState;
   equityNow?: number;
@@ -31,43 +34,34 @@ export function RiskGauges({ ks, dd, equityNow }: {
   let dayChange = 0;
   if (dayStart && cur && dayStart > 0) dayChange = (cur - dayStart) / dayStart * 100;
   const usagePct = Math.min(100, Math.max(0, -dayChange / limitPct * 100));
+  const depth = dd?.depth_pct ?? 0;
+
+  const dayWarn = usagePct >= 80;
+  const ddWarn = depth <= -10;
+  if (!dayWarn && !ddWarn) return null;
 
   return (
-    <div className="panel">
-      <h3 style={{ marginTop: 0 }}>위험 한도</h3>
-      <div className="risk-grid">
-        <div>
-          <div className="risk-label">오늘 손익</div>
-          <div className={"risk-value " + (dayChange < 0 ? "neg" : "pos")}>
-            {dayChange >= 0 ? "+" : ""}{fmt2(dayChange)}%
+    <div className="panel" style={{
+      borderLeft: "4px solid var(--amber)",
+      background: "var(--amber-soft)", marginBottom: 14,
+    }}>
+      <div style={{ fontWeight: 700, color: "var(--amber)", marginBottom: 4 }}>
+        ⚠ 위험 한도 근접
+      </div>
+      <div className="muted small" style={{ lineHeight: 1.6 }}>
+        {dayWarn && (
+          <div>
+            오늘 손실 {fmt2(dayChange)}% (한도 -{limitPct}% 대비 사용{" "}
+            <b>{fmt2(usagePct)}%</b>) — 100% 도달 시 신규 진입 차단
           </div>
-          <div className="muted" style={{ fontSize: 12 }}>
-            시작: {dayStart ? wonReadable(dayStart) : "—"} · 현재:{" "}
-            {cur ? wonReadable(cur) : "—"}
+        )}
+        {ddWarn && (
+          <div>
+            현재 drawdown <b>{fmt2(depth)}%</b>
+            {dd?.days_since_high ? ` · 고점 후 ${dd.days_since_high}일` : ""}
+            {dd?.high_date ? ` (${dd.high_date})` : ""} — 자본 고점 대비 손실 누적
           </div>
-        </div>
-        <div>
-          <div className="risk-label">일일 손실 한도</div>
-          <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
-            오늘 한도 {limitPct}% · 현재 사용 {fmt2(usagePct)}%
-          </div>
-          <div className="gauge">
-            <div className={"gauge-fill " + (usagePct >= 80 ? "danger"
-                  : usagePct >= 50 ? "warn" : "")}
-                  style={{ width: `${usagePct}%` }} />
-            <span className="gauge-label">{fmt2(usagePct)}%</span>
-          </div>
-        </div>
-        <div>
-          <div className="risk-label">현재 Drawdown</div>
-          <div className={"risk-value " + ((dd?.depth_pct ?? 0) < 0 ? "neg" : "")}>
-            {dd ? fmt2(dd.depth_pct) : "—"}%
-          </div>
-          <div className="muted" style={{ fontSize: 12 }}>
-            {dd?.days_since_high ? `고점 후 ${dd.days_since_high}일` : "신고가 근접"}
-            {dd?.high_date ? ` (${dd.high_date})` : ""}
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
