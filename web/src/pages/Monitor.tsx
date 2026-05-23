@@ -209,6 +209,15 @@ export default function Monitor() {
             reconcileTooltip={pairTooltip}
           />
 
+      {/* 전략별 카드 그리드 — StrategyPnl + NextDayPreview + 보유 통합 (Step 4) */}
+      <StrategyCardGrid
+        pnl={p?.strategy_pnl}
+        preview={preview}
+        positions={positions}
+      />
+
+      {/* ── 하단: 사이클·실행 품질·미체결 등 부수 정보 ───────────────────── */}
+
       {/* 사이클 요약 */}
       {summary && (
         <div className="panel">
@@ -225,13 +234,6 @@ export default function Monitor() {
           </div>
         </div>
       )}
-
-      {/* 전략별 카드 그리드 — StrategyPnl + NextDayPreview + 보유 통합 (Step 4) */}
-      <StrategyCardGrid
-        pnl={p?.strategy_pnl}
-        preview={preview}
-        positions={positions}
-      />
 
       {/* 실행 품질 — 시간대별 슬리피지 + 거부 사유 */}
       <ExecutionQuality
@@ -253,14 +255,8 @@ export default function Monitor() {
       {/* 포트폴리오 위험 — 상관관계 + 섹터. W-02 — 로드 실패 시 카드 내부에 표시. */}
       <PortfolioRiskCard risk={risk} err={riskErr} />
 
-      {/* 로컬앱 상태는 페이지 상단 액션바 오른쪽 칩으로 이동 (Step 3) */}
-
-      {/* 알림·위험 한도 설정은 설정 페이지에서 일괄 관리 (중복 폼 제거) */}
-      <div className="panel" style={{ display: "flex", alignItems: "center",
-                                        justifyContent: "space-between", gap: 12 }}>
-        <span className="muted">위험 한도(킬스위치)·알림 webhook은 설정에서 관리합니다.</span>
-        <a href="/settings" className="link-btn">설정 → 알림·위험 한도</a>
-      </div>
+      {/* 로컬앱 상태는 페이지 상단 액션바 오른쪽 칩으로 이동 (Step 3).
+          알림·위험 한도 설정 안내는 페이지 footer로 이동 (Step 5). */}
 
       {/* Pending */}
       <div className="panel">
@@ -397,6 +393,13 @@ export default function Monitor() {
           </table>
         </div>
       )}
+
+      {/* Footer — 설정 페이지 안내 (마지막 위치, mental model: 일상 사용엔 불필요) */}
+      <div className="panel" style={{ display: "flex", alignItems: "center",
+                                        justifyContent: "space-between", gap: 12 }}>
+        <span className="muted">위험 한도(킬스위치)·알림 webhook은 설정에서 관리합니다.</span>
+        <a href="/settings" className="link-btn">설정 → 알림·위험 한도</a>
+      </div>
         </>
       )}
     </div>
