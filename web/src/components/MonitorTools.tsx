@@ -89,8 +89,22 @@ export function AlertSettings() {
   const [s, setS] = useState<UserSettingsIO | null>(null);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  // W-03 — 로드 실패와 "설정 없음"이 같은 null로 합쳐지면 폼이 안내 없이 사라져
+  // "기능 없음"으로 오인된다. 상태를 분리해 실패 시 재시도 UI를 보여준다.
+  const [loadState, setLoadState] = useState<"loading" | "error" | "loaded">("loading");
+  const [reloadKey, setReloadKey] = useState(0);
 
-  useEffect(() => { api.getSettings().then(setS).catch(() => {}); }, []);
+  // 데이터 패칭 효과 — 의도적. eslint set-state-in-effect 비활성 (W-05 정책).
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    let cancelled = false;
+    setLoadState("loading");
+    api.getSettings()
+      .then((v) => { if (!cancelled) { setS(v); setLoadState("loaded"); } })
+      .catch(() => { if (!cancelled) setLoadState("error"); });
+    return () => { cancelled = true; };
+  }, [reloadKey]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   function update<K extends keyof UserSettingsIO>(k: K, v: UserSettingsIO[K]) {
     if (s) setS({ ...s, [k]: v });
@@ -109,7 +123,23 @@ export function AlertSettings() {
     }
   }
 
-  if (!s) return null;
+  if (loadState === "loading") {
+    return (
+      <div className="panel">
+        <h3 style={{ marginTop: 0 }}>위험 한도 + 알림</h3>
+        <p className="muted">불러오는 중…</p>
+      </div>
+    );
+  }
+  if (loadState === "error" || !s) {
+    return (
+      <div className="panel">
+        <h3 style={{ marginTop: 0 }}>위험 한도 + 알림</h3>
+        <p className="muted">설정을 불러오지 못했습니다 (네트워크·서버 일시 장애).</p>
+        <button className="ghost" onClick={() => setReloadKey((k) => k + 1)}>다시 시도</button>
+      </div>
+    );
+  }
 
   return (
     <div className="panel">
@@ -167,8 +197,9 @@ export function AlertSettings() {
           </span>
         </div>
         <div className="warn-box" style={{
+          /* W-07 — amber 토큰만 사용 (이전: rgba(240,180,0,...) 하드코딩) */
           marginTop: 4, padding: "10px 12px", borderRadius: 8,
-          background: "rgba(240,180,0,0.10)", border: "1px solid rgba(240,180,0,0.4)",
+          background: "var(--amber-soft)", border: "1px solid var(--amber)",
           fontSize: 13, lineHeight: 1.6,
         }}>
           <strong>⚠ 미국 실시간 손절 안내</strong><br/>

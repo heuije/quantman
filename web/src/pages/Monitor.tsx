@@ -42,14 +42,23 @@ export default function Monitor() {
     }
   }
 
-  // 포트폴리오 위험은 비용이 좀 들어 30초 주기
+  // 포트폴리오 위험은 비용이 좀 들어 30초 주기.
+  // W-02 — 실패를 silent로 묻으면 카드가 빈 상태로 "위험 없음" 오인. 카드 내부에
+  // 표시할 수 있도록 별도 에러 상태를 둔다. 30초 폴링이라 "직전 성공 + 마지막 실패"
+  // 톤다운: setRisk(null)로 덮지 않고 riskErr만 set.
+  const [riskErr, setRiskErr] = useState("");
   async function loadRisk() {
     try {
       const r = await api.portfolioRisk(60);
       setRisk(r);
-    } catch {/* ignore */}
+      setRiskErr("");
+    } catch (e) {
+      setRiskErr((e as Error).message || "지표를 불러오지 못했습니다");
+    }
   }
 
+  // 데이터 패칭(폴링) 효과 — 의도적. (W-05: 정적 분석 규칙은 비활성.)
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     load();
     loadRisk();
@@ -57,6 +66,7 @@ export default function Monitor() {
     const t2 = setInterval(loadRisk, 30_000);
     return () => { clearInterval(t); clearInterval(t2); };
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function send(type: CommandType,
                       params: Record<string, string | number> = {}) {
@@ -137,10 +147,11 @@ export default function Monitor() {
       {/* 미국 실시간 시세 미신청 경고 — 장중 실시간 손절 미제공 */}
       {summary?.us_realtime_unavailable && (
         <div className="panel" style={{
-          borderLeft: "4px solid var(--amber, #f0b400)",
-          background: "rgba(240,180,0,0.10)", marginBottom: 14,
+          /* W-07 — amber 하드코딩 제거. 토큰만 사용(다른 ReconciliationPanel과 동일). */
+          borderLeft: "4px solid var(--amber)",
+          background: "var(--amber-soft)", marginBottom: 14,
         }}>
-          <div style={{ fontWeight: 700, color: "var(--amber, #c98a00)" }}>
+          <div style={{ fontWeight: 700, color: "var(--amber)" }}>
             ⚠ 미국 실시간 손절 미제공
           </div>
           <div className="muted" style={{ fontSize: 13, marginTop: 4, lineHeight: 1.6 }}>
@@ -246,8 +257,8 @@ export default function Monitor() {
         </div>
       )}
 
-      {/* 포트폴리오 위험 — 상관관계 + 섹터 */}
-      <PortfolioRiskCard risk={risk} />
+      {/* 포트폴리오 위험 — 상관관계 + 섹터. W-02 — 로드 실패 시 카드 내부에 표시. */}
+      <PortfolioRiskCard risk={risk} err={riskErr} />
 
       {/* 로컬앱 헬스 */}
       <HealthCard snapAt={snap?.received_at} health={p?.health} />

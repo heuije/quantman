@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../auth";
 import { useMode } from "../mode";
+import ErrorBoundary from "./ErrorBoundary";
 
 const NAV = [
   { to: "/", label: "개요" },
@@ -73,7 +74,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <ModeToggle />
           </div>
         </header>
-        <div className="main-inner">{children}</div>
+        {/* W-01 — 콘텐츠 영역만 ErrorBoundary. 한 페이지가 throw해도 사이드바·
+            상단바(킬스위치·LIVE 배지·로그아웃)는 그대로 살아 있어야 한다. */}
+        <div className="main-inner">
+          <ErrorBoundary>{children}</ErrorBoundary>
+        </div>
       </main>
     </div>
   );

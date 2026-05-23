@@ -29,12 +29,33 @@ export default function Login() {
   }
 
   // ── Google Identity Services 버튼 렌더링 ──────────────────────────────
+  // W-06 — `any` 제거. GSI(window.google.accounts.id)에서 우리가 쓰는 메서드만
+  // 좁게 타입을 선언한다. @types/google.accounts 도입 대신 surface area 최소화.
   useEffect(() => {
     if (!GOOGLE_CLIENT_ID) return;
     let tries = 0;
+    type GsiInitCfg = {
+      client_id: string;
+      callback: (resp: { credential: string }) => void;
+    };
+    type GsiBtnCfg = {
+      theme?: "outline" | "filled_blue" | "filled_black";
+      size?: "large" | "medium" | "small";
+      width?: number;
+      text?: "signin_with" | "signup_with" | "continue_with" | "signin";
+      locale?: string;
+    };
+    interface GsiNamespace {
+      accounts: {
+        id: {
+          initialize: (cfg: GsiInitCfg) => void;
+          renderButton: (el: HTMLElement, cfg: GsiBtnCfg) => void;
+        };
+      };
+    }
     const timer = setInterval(() => {
       // 비동기 로드되는 GSI 스크립트(window.google)를 기다린다
-      const g = (window as unknown as { google?: any }).google;
+      const g = (window as unknown as { google?: GsiNamespace }).google;
       if (g?.accounts?.id) {
         clearInterval(timer);
         g.accounts.id.initialize({

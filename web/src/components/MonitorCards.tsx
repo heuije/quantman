@@ -343,7 +343,20 @@ export function MarketBar({ ctx }: { ctx: MarketContext | null }) {
 
 // ── 7. 상관관계 + 섹터 노출 ───────────────────────────────────────────────────
 
-export function PortfolioRiskCard({ risk }: { risk: PortfolioRisk | null }) {
+export function PortfolioRiskCard({ risk, err }: {
+  risk: PortfolioRisk | null;
+  err?: string;
+}) {
+  // W-02 — 위험 카드 로드 실패를 silent하게 빈 상태로 두지 않는다.
+  // 직전 성공값이 있으면 그대로 표시(톤다운), 없을 때만 에러 카드 표시.
+  if (!risk && err) {
+    return (
+      <div className="panel">
+        <h3 style={{ marginTop: 0 }}>포트폴리오 위험</h3>
+        <p className="muted">지표를 불러오지 못했습니다 — {err}. 30초 후 자동 재시도.</p>
+      </div>
+    );
+  }
   if (!risk || risk.positions.length === 0) return null;
   const N = risk.positions.length;
   return (

@@ -34,6 +34,9 @@ export default function Pair() {
   }
 
   async function revoke(id: number) {
+    // W-04 — Settings 페이지에 있던 confirm 가드와 일치시킴. 페어 해제는
+    // 비가역적이므로 우발 클릭 방지가 필요.
+    if (!confirm("이 기기의 연결을 해제할까요?")) return;
     await api.revokeDevice(id);
     loadDevices();
   }

@@ -133,6 +133,18 @@ input:focus, select:focus {
   outline: 2px solid var(--accent); outline-offset: 1px;
   border-color: var(--accent);
 }
+
+/* A-01 — 키보드 포커스 가시화. 마우스 클릭엔 outline 안 보이고(:focus-visible),
+   Tab 키 등 키보드 포커스에만 brand outline. WCAG 2.1 SC 2.4.7. */
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible,
+[role="tab"]:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 .field { margin-bottom: 16px; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
 
