@@ -1,7 +1,7 @@
-# 퀀트 플랫폼 로컬앱
-# core 패키지(platform/core)도 함께 설치 필요: pip install -e ../core
+# Quant platform local app.
+# Also install the core package: pip install -e ../core
 keyring>=25.0
 APScheduler>=3.10
 requests>=2.31
-# 정식 배포 패키징용 (Stage 2~3):
+# For packaging (Stage 2-3 release):
 # pystray>=0.19   Pillow>=10.0   pyinstaller>=6.0

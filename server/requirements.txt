@@ -1,5 +1,5 @@
-# 퀀트 플랫폼 API 서버
-# core 패키지(platform/core)도 함께 설치 필요: pip install -e ../core
+# Quant platform API server.
+# Also install the core package: pip install -e ../core
 fastapi>=0.136
 uvicorn[standard]>=0.47
 sqlmodel>=0.0.38
@@ -7,11 +7,11 @@ PyJWT>=2.10
 bcrypt>=4.1
 email-validator>=2.1
 httpx>=0.27
-psycopg[binary]>=3.2          # PostgreSQL 드라이버 (프로덕션 DB)
-google-auth[requests]>=2.30   # Google 소셜 로그인 — ID 토큰 검증
-apscheduler>=3.10             # KIS 종목마스터 일일 갱신 cron
-requests>=2.31                # KIS .mst 다운로드 (이미 transitive로 있음, 명시)
-finance-datareader>=0.9       # NAVER 기반 한국 종목 데이터 (KRX 사이트 차단 우회)
-pandas>=2.0                   # fdr 결과는 pandas DataFrame
-python-multipart>=0.0.18      # FastAPI 파일 업로드 (multipart/form-data)
-exchange_calendars>=4.5       # Q2+Q8 — KR/US 시장 세션 일일 자동 갱신 (임시공휴일 반영)
+psycopg[binary]>=3.2          # PostgreSQL driver (production DB)
+google-auth[requests]>=2.30   # Google social login - ID token verification
+apscheduler>=3.10             # Daily KIS symbol-master refresh cron
+requests>=2.31                # KIS .mst download (also pulled transitively; explicit)
+finance-datareader>=0.9       # NAVER-backed Korean symbol data (KRX site blocks scraping)
+pandas>=2.0                   # fdr returns pandas DataFrame
+python-multipart>=0.0.18      # FastAPI file upload (multipart/form-data)
+exchange_calendars>=4.5       # Q2+Q8 - daily KR/US session refresh (incl. ad-hoc holidays)
