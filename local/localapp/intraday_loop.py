@@ -39,6 +39,7 @@ _state = {
     "broker": None,
     "stop_flag": None,
     "sync_thread": None,
+    "polling_thread": None,   # Q3 — REST 폴링 fallback thread
     # 해외 실시간 시세 entitlement 감지 (US loop 전용)
     "started_at": 0.0,
     "us_subscribed": 0,       # 시작 시 구독한 미국 보유종목 수
@@ -157,6 +158,99 @@ def _push_after_sell(broker: Broker, decisions: list[dict]) -> None:
 _us_realtime_warned = False
 
 
+# Q3: REST 폴링 fallback ─────────────────────────────────────────────────────
+#
+# WebSocket 정상 시 폴링 thread는 5초마다 ws.is_connected를 체크하고 skip.
+# 끊김 감지 시 보유 종목 현재가를 broker.price()로 주기 조회. 받은 가격을
+# manager.on_tick으로 전달하면 기존 stop loss 평가가 그대로 동작.
+#
+# 폴링 주기는 보유 종목 수에 따라 동적(KIS API 초당 ~20회 한도 보호).
+# 시세 호출 외 잔고·체결·ks monitor도 같은 한도를 공유하므로 시세 예산은
+# 초당 ~5회 안전 마진으로 잡는다.
+
+_POLLING_HEALTH_CHECK_SEC = 5.0   # WebSocket 정상일 때 ws.is_connected 폴링 주기
+
+
+def _polling_round_interval(n_held: int) -> float:
+    """보유 종목 수별 1라운드 소요 목표 시간(초). 종목당 호출 간격 = round / n.
+
+    | 종목수 | 라운드 | 종목당 | 초당 호출 |
+    |--------|--------|--------|-----------|
+    | ≤5     | 3s     | ≥0.6s  | ~1.67     |
+    | 6~15   | 5s     | ≥0.33s | ~3.0      |
+    | 16~30  | 10s    | ≥0.33s | ~3.0      |
+    | 31~50  | 15s    | ≥0.3s  | ~3.3      |
+    | >50    | 20s    | <0.4s  | <2.5      |
+    """
+    if n_held <= 5:
+        return 3.0
+    if n_held <= 15:
+        return 5.0
+    if n_held <= 30:
+        return 10.0
+    if n_held <= 50:
+        return 15.0
+    return 20.0
+
+
+def _rest_polling_loop(ws, broker, manager, in_market_fn,
+                        stop_flag: threading.Event, market: str) -> None:
+    """REST 폴링 fallback thread 본체.
+
+    상태 머신:
+      1. ws.is_connected=True → _POLLING_HEALTH_CHECK_SEC(5초) 대기 후 재확인
+      2. ws.is_connected=False → 보유 종목 전체에 broker.price() 1라운드
+         라운드 중 매 종목 후 ws.is_connected 재확인(복구 즉시 중단)
+         라운드 끝나면 다음 라운드 시작(rate limit 보호 위해 종목당 sleep)
+
+    stop_flag.set()으로 종료 (intraday_loop.stop이 호출).
+    장 마감까지 영구 실행 — WebSocket 복구 안 되면 그동안 계속 폴링.
+
+    예외 처리: broker.price 실패는 log만, 다음 종목 진행. KIS 토큰 만료 등
+    체계적 실패도 다음 iteration에서 다시 시도.
+    """
+    log.info("[%s] REST 폴링 fallback thread 시작", market)
+    try:
+        while not stop_flag.is_set():
+            # WebSocket 정상이면 폴링 skip + health check 주기로 대기
+            if ws is not None and ws.is_connected:
+                if stop_flag.wait(_POLLING_HEALTH_CHECK_SEC):
+                    break
+                continue
+
+            # WebSocket 끊김 → 1라운드 폴링
+            held = [s for s in manager.held_symbols() if in_market_fn(s)]
+            if not held:
+                # 보유 없음 — health check 주기로 대기
+                if stop_flag.wait(_POLLING_HEALTH_CHECK_SEC):
+                    break
+                continue
+
+            round_sec = _polling_round_interval(len(held))
+            per_symbol_sleep = round_sec / len(held)
+
+            for sym in held:
+                if stop_flag.is_set():
+                    break
+                # WebSocket 복구 감지 시 즉시 라운드 중단
+                if ws is not None and ws.is_connected:
+                    log.info("[%s] WebSocket 복구 감지 — 폴링 라운드 중단", market)
+                    break
+                try:
+                    price = broker.price(sym)
+                    if price > 0:
+                        manager.on_tick(sym, price)
+                except Exception as e:
+                    log.debug("[polling-fallback] %s price 실패: %s", sym, e)
+                if stop_flag.wait(per_symbol_sleep):
+                    return
+    except Exception as e:
+        # 본 thread는 daemon이라 예외로 종료해도 프로세스에 영향 없지만,
+        # 그 시점부터 fallback이 사라지므로 명시적으로 로그.
+        log.exception("[%s] REST 폴링 thread 종료 (예외): %s", market, e)
+    log.info("[%s] REST 폴링 fallback thread 종료", market)
+
+
 def _check_us_realtime(broker: Broker, manager) -> None:
     """미국 보유분이 있는데 grace 내내 해외 tick이 0이면 실시간 시세 미신청으로
     판정 → 사용자에게 '실시간 손절 미제공' 1회 고지(서버 push). 세션당 1회.
@@ -266,17 +360,24 @@ def start(market: str = "KRX") -> dict:
             manager.on_tick(sym, price)
 
         ws = KisWebSocket(broker, on_tick=_on_tick_detect)
+        ws_started = False
         try:
             ws.start()
+            ws_started = True
         except Exception as e:
-            log.error("WebSocket 시작 실패: %s", e)
-            return {"status": "ws_start_failed", "error": str(e)}
+            # Q3: WebSocket 시작 자체 실패해도 loop 중단하지 않음. REST 폴링 fallback
+            # thread가 ws.is_connected를 보고 폴링으로 stop loss 평가 유지.
+            log.error("[%s] WebSocket 시작 실패 — REST 폴링 fallback만으로 동작: %s",
+                       market, e)
 
-        # 초기 구독: 이번 시장의 보유 종목만
+        # 초기 구독: 이번 시장의 보유 종목만 (WebSocket 미동작이면 skip)
         held = [s for s in manager.held_symbols() if _in_market(s)]
-        if held:
+        if held and ws_started:
             ws.subscribe(list(held))
             log.info("[%s] 초기 구독: %s (%d종목)", market, held, len(held))
+        elif held:
+            log.info("[%s] 초기 보유 %d종목 — WebSocket 미동작, 폴링 fallback이 평가",
+                      market, len(held))
         us_subscribed = len(held) if market == "US" else 0
 
         # Phase 33 — 체결 통보 WebSocket (HTS ID 설정된 경우만)
@@ -379,11 +480,22 @@ def start(market: str = "KRX") -> dict:
                                           name="intraday-sync")
         sync_thread.start()
 
+        # Q3: REST 폴링 fallback thread. WebSocket 끊김 감지 시 보유 종목들의
+        # 현재가를 broker.price()로 주기 조회 → manager.on_tick으로 전달 → 기존
+        # stop loss 평가 그대로 동작. WebSocket 복구 시 폴링 자동 skip.
+        polling_thread = threading.Thread(
+            target=_rest_polling_loop, daemon=True, name="intraday-polling",
+            kwargs={"ws": ws, "broker": broker, "manager": manager,
+                     "in_market_fn": _in_market, "stop_flag": stop_flag,
+                     "market": market})
+        polling_thread.start()
+
         _state.update({
             "running": True, "market": market, "ws": ws, "order_ws": order_ws,
             "manager": manager,
             "trader": trader, "broker": broker,
             "stop_flag": stop_flag, "sync_thread": sync_thread,
+            "polling_thread": polling_thread,
             "started_at": time.time(), "us_subscribed": us_subscribed,
             "last_overseas_tick": 0.0,
         })
@@ -411,6 +523,10 @@ def stop() -> dict:
         thr = _state["sync_thread"]
         if thr:
             thr.join(timeout=5)
+        # Q3 — REST 폴링 thread 종료 대기
+        pt = _state.get("polling_thread")
+        if pt:
+            pt.join(timeout=5)
 
         manager = _state["manager"]
         broker = _state["broker"]
@@ -430,6 +546,7 @@ def stop() -> dict:
             "running": False, "ws": None, "manager": None,
             "trader": None, "broker": None,
             "stop_flag": None, "sync_thread": None,
+            "polling_thread": None,
         })
         return {"status": "stopped", "n_triggered": n_triggered}
 
