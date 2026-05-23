@@ -164,6 +164,14 @@ export function PositionDetailCards({
                       <strong>{p.name ?? p.symbol}</strong>
                       <div className="muted" style={{ fontSize: 11 }}>
                         {p.symbol} · 보유 {p.held_days ?? 0}일
+                        {(p.phases_total ?? 0) > 1 && (
+                          <>
+                            {" · "}
+                            <span title="분할매수 진행 — 진입한 차수 / 전체 차수">
+                              {(p.phases_executed?.length ?? 1)}/{p.phases_total}차
+                            </span>
+                          </>
+                        )}
                       </div>
                     </td>
                     <td className="muted">{p.strategy_name || "—"}</td>

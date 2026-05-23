@@ -500,6 +500,46 @@ details.section-collapsible[open] > summary { margin-bottom: 14px; }
   width: 70px; padding: 4px 8px;
 }
 
+/* 분할매수 (Phase 47 Cycle C) */
+.split-buy { margin-top: 4px; }
+.split-buy .sub-h {
+  display: flex; align-items: center; gap: 12px;
+}
+.split-buy-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 500; color: var(--fg);
+  margin-left: auto;
+}
+.phase-card {
+  margin: 10px 0;
+  padding: 12px 14px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.phase-head {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 8px; flex-wrap: wrap;
+}
+.phase-tag {
+  font-size: 12px; font-weight: 600;
+  padding: 2px 8px; border-radius: 4px;
+  background: var(--accent-soft, rgba(64, 158, 255, 0.08));
+  color: var(--accent);
+}
+.phase-ratio-input {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--fg);
+  margin-right: auto;
+}
+.phase-ratio-input input {
+  width: 70px; padding: 4px 8px;
+}
+.phase-foot {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 10px;
+}
+.phase-foot button { margin-left: auto; }
+.muted.small.warn { color: var(--danger); }
+
 /* 수동 다중 종목 선택기 */
 .multi-picker {
   position: relative;

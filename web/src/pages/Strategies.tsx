@@ -621,6 +621,10 @@ function RiskSummarySection({ definition: d }: { definition: StrategyDef }) {
         <ExitRow label="매수액 수정자"
                   v={`${(e.size_modifiers ?? []).length}개 — 조건 매치 시 배수 적용`} />
       )}
+      {e.split_buy?.enabled && (e.split_buy?.phases?.length ?? 0) > 1 && (
+        <ExitRow label="분할매수"
+                  v={`${e.split_buy!.phases.length}차 — ${e.split_buy!.phases.map((p) => `${p.ratio}%`).join(" · ")}`} />
+      )}
       <ExitRow label="단일 종목 상한" v={`${maxPos}%`} />
       <ExitRow label="일일 손실 한도" v={`${dailyLoss}%`} />
       <ExitRow label="누적 손실 한도" v={`${maxDd}%`} />

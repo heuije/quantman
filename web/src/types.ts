@@ -84,6 +84,20 @@ export interface SizingModifier {
   note?: string;                          // 사용자 메모 (선택)
 }
 
+/** 분할매수 (Phase 47 Cycle C) — 베이스 매수액을 N차로 분할.
+ *  1차는 매수 신호 발생 시 진입, 2차+는 trigger 조건 충족 시 진입.
+ *  ratio는 베이스 매수액에 대한 비중(%). 합이 100을 초과하면 베이스를 넘는 매수가 발생. */
+export interface SplitBuyPhase {
+  ratio: number;                          // 베이스 매수액 중 이 차수의 비중 (%)
+  trigger?: ConditionGroup;               // 추가 차수(2차+): trigger 충족 시 진입. 1차는 undefined
+  note?: string;                          // 차수 메모 (선택)
+}
+
+export interface SplitBuyRule {
+  enabled: boolean;
+  phases: SplitBuyPhase[];                // [0]=1차 (trigger 없음 — 매수 신호로 진입), [1..]=추가 차수
+}
+
 /** 체결 정책 — 모든 필드 optional, null/undefined는 글로벌 default 적용.
  *  Backend: quant_core.exec_defaults.DEFAULT_EXECUTION과 병합. */
 export interface ExecutionPolicy {
@@ -98,6 +112,9 @@ export interface ExecutionPolicy {
    *  여러 개 정의 시 매치된 모든 수정자의 multiplier를 누적 곱셈. 예: "KOSPI 약세장
    *  때 ×0.5", "VKOSPI 급등 시 ×0.3". ConditionGroup은 매수 조건과 동일 표현력. */
   size_modifiers?: SizingModifier[];
+  /** 분할매수 (Phase 47 Cycle C) — 활성 시 베이스 매수액을 차수별 비중으로 나눠 진입.
+   *  비활성 또는 phases가 1개면 기존 단일 진입 동작과 동일. */
+  split_buy?: SplitBuyRule;
   atr_risk_pct?: number;                  // atr_risk 모드: 트레이드당 자본의 N% 위험
   atr_mult?: number;                      // ATR × 이 배수 = 1주당 손절폭
   max_position_pct?: number;              // 단일 종목 비중 상한 (자본 %)
@@ -120,6 +137,7 @@ export const EXECUTION_DEFAULTS: Required<ExecutionPolicy> = {
   sizing_mode: "pct_cash",
   amount_krw: 1_000_000,                  // fixed_amount 전환 시 placeholder (100만원)
   size_modifiers: [],                     // 기본 비어 있음 (수정자 없음 → 베이스 매수액 그대로)
+  split_buy: { enabled: false, phases: [{ ratio: 100 }] },  // 기본 비활성 (단일 진입)
   atr_risk_pct: 1.0,
   atr_mult: 2.0,
   max_position_pct: 10.0,
@@ -289,6 +307,10 @@ export interface PositionRich {
     trail_gap_pct?: number;
     hold_days_left?: number;
   };
+  // Phase 47 Cycle C — 분할매수 진행 상황 (없으면 단일 진입)
+  phases_executed?: number[];
+  phases_total?: number;
+  base_qty?: number;
 }
 
 export interface StrategyPnlRow {

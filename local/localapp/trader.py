@@ -353,6 +353,12 @@ class Trader:
                 lg["entry_price"] = (lg["entry_price"] * lg["qty"]
                                       + fill_price * filled_qty) / total
                 lg["qty"] = total
+                # Phase 47 Cycle C — 분할매수 차수 추가 기록.
+                pi = p.get("phase_index")
+                if pi is not None:
+                    executed = lg.setdefault("phases_executed", [0])
+                    if pi not in executed:
+                        executed.append(int(pi))
             else:
                 self.ledger[sid] = {
                     "symbol": symbol, "qty": filled_qty,
@@ -360,6 +366,10 @@ class Trader:
                     "peak_price": fill_price,
                     "strategy_name": p.get("strategy_name", ""),
                     "definition": p.get("definition", {}),
+                    # Phase 47 Cycle C — 분할매수 추가 차수 산정 기준 + 진입된 차수 인덱스.
+                    # split_buy 비활성이어도 base_qty=filled_qty로 기록 (후속 활성화 대비).
+                    "base_qty": int(p.get("base_qty_for_split") or filled_qty),
+                    "phases_executed": [int(p.get("phase_index") or 0)],
                 }
             ev = {"ts": today, "action": "buy", "symbol": symbol,
                   "qty": filled_qty, "price": fill_price,
@@ -459,7 +469,8 @@ class Trader:
 
     def _submit_buy(self, sid: str, strat_name: str, strat_def: dict,
                     symbol: str, qty: int, ref_price: float, policy: dict,
-                    decisions: list[dict]) -> None:
+                    decisions: list[dict],
+                    extra_meta: dict | None = None) -> None:
         # L-01: 발주 직전 intent journal에 submitting 기록(fsync). 크래시-재기동
         # 시 reconcile이 KIS 당일 주문 조회로 매칭 → 중복 발주 방지.
         today_iso = kst_today().isoformat()
@@ -491,8 +502,13 @@ class Trader:
                 return
         # KIS 응답 수신 — submitted 마감(order_no가 빈 문자면 거부 처리는 _after_submit이 함)
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
+        # Phase 47 Cycle C — 분할매수 메타(차수, base_qty)를 pending → ledger로 전달.
+        reason = "매수신호"
+        if extra_meta and extra_meta.get("phase_index", 0) > 0:
+            reason = f"매수신호({extra_meta['phase_index'] + 1}차)"
         self._after_submit(r, sid, strat_name, strat_def, symbol, "buy", qty,
-                            ref_price, limit, policy, decisions, reason="매수신호")
+                            ref_price, limit, policy, decisions, reason=reason,
+                            extra_meta=extra_meta)
 
     def _submit_sell(self, sid: str, strat_name: str, symbol: str, qty: int,
                      ref_price: float, policy: dict, reason: str,
@@ -533,7 +549,8 @@ class Trader:
     def _after_submit(self, r: dict, sid: str, strat_name: str,
                       strat_def: dict | None, symbol: str, side: str, qty: int,
                       intended_price: float, limit_price: int,
-                      policy: dict, decisions: list[dict], reason: str) -> None:
+                      policy: dict, decisions: list[dict], reason: str,
+                      extra_meta: dict | None = None) -> None:
         """submit 결과를 후처리: pending 등록 / 즉시 체결 반영 / 거부 로깅."""
         order_no = r.get("order_no", "")
         if not r.get("success"):
@@ -558,6 +575,9 @@ class Trader:
             "definition": strat_def or {}, "reason": reason,
             "filled_so_far": 0,
         }
+        # Phase 47 Cycle C — 분할매수 메타 (phase_index, base_qty) 전달.
+        if extra_meta:
+            p.update(extra_meta)
         order_log.log_order("submitted", symbol, side, qty, order_no=order_no,
                              intended_price=intended_price,
                              limit_price=limit_price, strategy_name=strat_name,
@@ -719,6 +739,16 @@ class Trader:
                     f"수정자 {applied_count}개 매치 — 매수액 ×{multiplier:.3g} "
                     f"({old_qty}주 → {qty}주)"))
 
+        # Phase 47 Cycle C — 분할매수 1차 진입 (enabled면 베이스 qty를 1차 비중으로
+        # 축소). 추가 차수는 매일 EOD에서 trigger 평가 후 별도 발주(_evaluate_splits).
+        # base_qty_for_split은 ledger에 저장돼 추가 차수 산정 기준이 된다.
+        split_buy = policy.get("split_buy") or {}
+        base_qty_for_split = qty
+        if split_buy.get("enabled") and qty > 0:
+            phases = split_buy.get("phases") or [{"ratio": 100.0}]
+            first_ratio = float(phases[0].get("ratio", 100.0) or 100.0)
+            qty = max(0, int(qty * first_ratio / 100.0))
+
         # L-10 — 모든 모드에 단일 종목 비중 상한 클램프.
         # capital은 통화 일치(KRW/USD)된 값.
         qty = min(qty, cap_qty)
@@ -746,8 +776,11 @@ class Trader:
             return False
 
         # 발주가는 _submit_buy 내부에서 prev_close × (1 + tolerance%) 계산
+        # Phase 47 Cycle C — 분할매수 메타. base_qty_for_split은 추가 차수 산정 기준.
         self._submit_buy(ledger_key, strat_name, strat_def, symbol, qty,
-                          prev_close, policy, decisions)
+                          prev_close, policy, decisions,
+                          extra_meta={"phase_index": 0,
+                                       "base_qty_for_split": base_qty_for_split})
         return True
 
     # ── 메인 사이클 ───────────────────────────────────────────────────────────
@@ -877,6 +910,99 @@ class Trader:
         if symbol in members:
             return None                    # 여전히 상위 N — 유지
         return "리밸런싱"
+
+    def _evaluate_split_buy_additions(self, dataset: dict,
+                                          decisions: list[dict],
+                                          sold_this_cycle: set[str],
+                                          market: str) -> None:
+        """분할매수 추가 차수 평가·발주 (Phase 47 Cycle C).
+
+        보유 종목 중 split_buy 활성·미실행 차수가 있으면 trigger 평가, 매치되면
+        base_qty × ratio / 100 만큼 추가 매수. 한 cycle에 한 종목당 1개 차수만
+        진입(여러 차수가 동시 매치돼도 점진 진입).
+
+        미국 종목은 일단 지원하지 않음 — 통합증거금 + FX 처리는 별도 cycle에서.
+        """
+        from datetime import date as _date  # local import — 모듈 최상위 import 보호
+        today_iso = kst_today().isoformat()
+        for sid, pos in list(self.ledger.items()):
+            if sid in sold_this_cycle:
+                continue
+            symbol = pos["symbol"]
+            if _market_group_safe(symbol) != market:
+                continue
+            if _currency_of(symbol) != "KRW":
+                continue                       # 미국 분할매수 미지원
+            defn = pos.get("definition") or {}
+            execp = defn.get("execution") or {}
+            split = execp.get("split_buy") or {}
+            if not split.get("enabled"):
+                continue
+            phases = split.get("phases") or []
+            if len(phases) <= 1:
+                continue
+            executed = set(pos.get("phases_executed") or [0])
+            base_qty = int(pos.get("base_qty") or 0)
+            if base_qty <= 0:
+                continue
+            sdf = dataset.get(symbol)
+            if sdf is None or len(sdf) == 0 or "Close" not in sdf.columns:
+                continue
+            prev_close = float(sdf["Close"].iloc[-1])
+            if prev_close <= 0:
+                continue
+            policy = _policy(defn)
+            strat_name = pos.get("strategy_name", "")
+            # 미실행 차수를 인덱스 순으로 평가, 첫 매치만 발주 (점진 진입)
+            for idx, ph in enumerate(phases):
+                if idx == 0 or idx in executed:
+                    continue
+                trigger = ph.get("trigger") or {}
+                conds = trigger.get("conditions") or []
+                if not conds:
+                    continue
+                try:
+                    mask = qc.build_signal_mask(
+                        dataset, conds, trigger.get("logic", "AND"),
+                        current_symbol=symbol)
+                    matched = (not mask.empty) and bool(mask.iloc[-1])
+                except Exception as e:
+                    log.warning("split phase 평가 실패 [%s/%s/%d]: %s",
+                                  sid, symbol, idx, e)
+                    continue
+                if not matched:
+                    continue
+                ratio = float(ph.get("ratio") or 0.0)
+                add_qty = max(0, int(base_qty * ratio / 100.0))
+                if add_qty <= 0:
+                    continue
+                try:
+                    cash = float(self.broker.account_snapshot(
+                        overseas=False)["balance"]["cash"])
+                except Exception as e:
+                    log.error("split buy 가용자금 조회 실패 [%s]: %s", symbol, e)
+                    break
+                add_qty = min(add_qty, int(cash // prev_close))
+                # 단일 종목 비중 상한 — 추가매수도 같은 상한 (capital은 cash 근사).
+                cap_qty = int((cash * policy["max_position_pct"] / 100.0)
+                                // prev_close)
+                add_qty = min(add_qty, cap_qty)
+                if add_qty <= 0:
+                    decisions.append(order_log.decision(
+                        "skip_funds", sid, strat_name, symbol,
+                        f"{idx+1}차 추가매수 — 수량 부족 (현금 {cash:,.0f}/"
+                        f"종가 {prev_close:,.0f})"))
+                    break
+                # L-01 멱등 게이트
+                if intents.is_active(today_iso, sid, symbol, "buy"):
+                    log.info("[L-01] %d차 추가매수 중복 차단 %s/%s",
+                              idx + 1, sid, symbol)
+                    break
+                self._submit_buy(sid, strat_name, defn, symbol, add_qty,
+                                  prev_close, policy, decisions,
+                                  extra_meta={"phase_index": idx,
+                                               "base_qty_for_split": base_qty})
+                break   # 한 cycle에 한 종목당 1개 차수만
 
     def cycle(self, strategies: list[dict], dataset: dict,
               today: date | None = None,
@@ -1049,6 +1175,13 @@ class Trader:
         for rsid, due in rebalance_due_cache.items():
             if due:
                 self.rebalance_state[rsid] = today.isoformat()
+
+        # ── 2.5. 분할매수 추가 차수 평가 (Phase 47 Cycle C) ─────────────────
+        # 보유 종목 중 split_buy 활성 + 미실행 차수가 있으면 trigger 평가 후 추가매수.
+        # kill switch·drawdown 활성 시 건너뜀(신규 진입 차단과 동일 정책).
+        if not ks_active and not drawdown_active:
+            self._evaluate_split_buy_additions(
+                dataset, decisions, sold_this_cycle, market)
 
         # ── 3. 진입 패스 (kill switch·drawdown 활성 시 건너뜀, preview 전용) ──
         if ks_active:

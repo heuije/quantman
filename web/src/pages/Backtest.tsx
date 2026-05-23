@@ -9,7 +9,7 @@ import { fmt2, wonReadable } from "../format";
 import type {
   AnalysisResult, BacktestResult, BacktestRunSummary, ConditionGroup,
   ExecutionPolicy, RebalanceIO, ScreenerSpecIO, SizingModifier,
-  StrategyDef, SymbolInfo,
+  SplitBuyRule, StrategyDef, SymbolInfo,
 } from "../types";
 import { EXECUTION_DEFAULTS, parseScreenerKey } from "../types";
 
@@ -61,6 +61,9 @@ export default function Backtest() {
   const [amountKrw, setAmountKrw] = useState(EXECUTION_DEFAULTS.amount_krw);
   // Phase 47 Cycle B — 매수액 수정자 (0개 이상)
   const [sizeModifiers, setSizeModifiers] = useState<SizingModifier[]>([]);
+  // Phase 47 Cycle C — 분할매수
+  const [splitBuy, setSplitBuy] = useState<SplitBuyRule>(
+    EXECUTION_DEFAULTS.split_buy);
   const [atrRiskPct, setAtrRiskPct] = useState(EXECUTION_DEFAULTS.atr_risk_pct);
   const [atrMult, setAtrMult] = useState(EXECUTION_DEFAULTS.atr_mult);
   const [maxPositionPct, setMaxPositionPct] = useState(EXECUTION_DEFAULTS.max_position_pct);
@@ -135,6 +138,7 @@ export default function Backtest() {
       // Phase 47 Cycle B — 빈 condition.conditions만 가진 modifier는 백엔드에서 skip되지만
       // 직렬화 시 깨끗하게 전달하기 위해 비어있는 컨디션의 modifier는 필터링.
       size_modifiers: sizeModifiers.filter((m) => m.condition.conditions.length > 0),
+      split_buy: splitBuy,
       atr_risk_pct: atrRiskPct,
       atr_mult: atrMult,
       max_position_pct: maxPositionPct,
@@ -301,6 +305,7 @@ export default function Backtest() {
           sizingMode={sizingMode} setSizingMode={setSizingMode}
           amountKrw={amountKrw} setAmountKrw={setAmountKrw}
           sizeModifiers={sizeModifiers} setSizeModifiers={setSizeModifiers}
+          splitBuy={splitBuy} setSplitBuy={setSplitBuy}
           atrRiskPct={atrRiskPct} setAtrRiskPct={setAtrRiskPct}
           atrMult={atrMult} setAtrMult={setAtrMult}
           maxPositionPct={maxPositionPct} setMaxPositionPct={setMaxPositionPct}
@@ -358,6 +363,7 @@ function BuildTab(props: {
   sizingMode: SizingMode; setSizingMode: (v: SizingMode) => void;
   amountKrw: number; setAmountKrw: (v: number) => void;
   sizeModifiers: SizingModifier[]; setSizeModifiers: (v: SizingModifier[]) => void;
+  splitBuy: SplitBuyRule; setSplitBuy: (v: SplitBuyRule) => void;
   atrRiskPct: number; setAtrRiskPct: (v: number) => void;
   atrMult: number; setAtrMult: (v: number) => void;
   maxPositionPct: number; setMaxPositionPct: (v: number) => void;
@@ -386,6 +392,7 @@ function BuildTab(props: {
     sizingMode, setSizingMode,
     amountKrw, setAmountKrw,
     sizeModifiers, setSizeModifiers,
+    splitBuy, setSplitBuy,
     atrRiskPct, setAtrRiskPct, atrMult, setAtrMult,
     maxPositionPct, setMaxPositionPct,
     dailyLossLimitPct, setDailyLossLimitPct,
@@ -539,6 +546,11 @@ function BuildTab(props: {
 
         <SizeModifiersPanel
           modifiers={sizeModifiers} setModifiers={setSizeModifiers}
+          symbols={symbols}
+        />
+
+        <SplitBuyPanel
+          rule={splitBuy} setRule={setSplitBuy}
           symbols={symbols}
         />
       </div>
@@ -1185,6 +1197,92 @@ function SizeModifiersPanel({ modifiers, setModifiers, symbols }: {
       <button type="button" className="ghost sm" onClick={addModifier}>
         + 수정자 추가
       </button>
+    </div>
+  );
+}
+
+// ── 분할매수 (Phase 47 Cycle C — 베이스 매수액을 N차로 분할) ─────────────────
+function SplitBuyPanel({ rule, setRule, symbols }: {
+  rule: SplitBuyRule;
+  setRule: (v: SplitBuyRule) => void;
+  symbols: SymbolInfo[];
+}) {
+  const phases = rule.phases.length > 0 ? rule.phases : [{ ratio: 100 }];
+  const totalRatio = phases.reduce((s, p) => s + (p.ratio || 0), 0);
+
+  function setEnabled(on: boolean) { setRule({ ...rule, enabled: on }); }
+  function updatePhase(i: number, patch: Partial<SplitBuyRule["phases"][0]>) {
+    setRule({ ...rule, phases: phases.map((p, idx) => idx === i ? { ...p, ...patch } : p) });
+  }
+  function addPhase() {
+    setRule({ ...rule, phases: [
+      ...phases,
+      { ratio: 30, trigger: { conditions: [], logic: "AND" } },
+    ]});
+  }
+  function removePhase(i: number) {
+    if (i === 0) return;     // 1차는 삭제 불가 (필수)
+    setRule({ ...rule, phases: phases.filter((_, idx) => idx !== i) });
+  }
+
+  return (
+    <div className="split-buy">
+      <div className="sub-h" style={{ marginTop: 18 }}>
+        분할매수 (선택)
+        <label className="split-buy-toggle">
+          <input type="checkbox" checked={rule.enabled}
+                 onChange={(e) => setEnabled(e.target.checked)} />
+          활성
+        </label>
+      </div>
+      <p className="muted" style={{ margin: "0 0 8px" }}>
+        베이스 매수액을 차수별로 나눠 진입합니다. 1차는 매수 신호 발생 시,
+        2차 이후는 조건 충족 시 추가 매수. 평단은 차수 진입마다 가중평균으로 갱신.
+      </p>
+      {rule.enabled && (
+        <>
+          {phases.map((ph, i) => (
+            <div key={i} className="phase-card">
+              <div className="phase-head">
+                <span className="phase-tag">
+                  {i === 0 ? "1차 (매수 신호 발생 시)" : `${i + 1}차 (조건 충족 시)`}
+                </span>
+                <span className="phase-ratio-input">
+                  비중
+                  <input type="number" min={0} max={100} step={5}
+                         value={ph.ratio}
+                         onChange={(e) => updatePhase(i, {
+                           ratio: Number(e.target.value),
+                         })} />
+                  %
+                </span>
+                {i > 0 && (
+                  <button type="button" className="ghost sm"
+                          onClick={() => removePhase(i)}>삭제</button>
+                )}
+              </div>
+              {i > 0 && (
+                <ConditionBuilder
+                  symbols={symbols}
+                  group={ph.trigger ?? { conditions: [], logic: "AND" }}
+                  onChange={(g) => updatePhase(i, { trigger: g })}
+                  contextNote={`${i + 1}차 매수 트리거 — 보유 중에 이 조건이 충족되면 비중 ${ph.ratio}%만큼 추가 매수`}
+                />
+              )}
+            </div>
+          ))}
+          <div className="phase-foot">
+            <div className={"muted small" + (totalRatio > 100 ? " warn" : "")}>
+              합계 <b>{totalRatio.toFixed(0)}%</b>
+              {totalRatio < 100 && ` — 베이스의 ${(100 - totalRatio).toFixed(0)}%는 미사용`}
+              {totalRatio > 100 && " — 베이스 매수액을 초과 (현금 부족 시 일부 차수 미진입)"}
+            </div>
+            <button type="button" className="ghost sm" onClick={addPhase}>
+              + 차수 추가
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

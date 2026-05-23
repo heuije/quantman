@@ -393,6 +393,13 @@ def enrich_positions(positions: list[dict], ledger: dict,
         if ex.get("hold_days") is not None:
             distances["hold_days_left"] = max(0, int(ex["hold_days"]) - held)
 
+        # Phase 47 Cycle C — 분할매수 진행 상황
+        execp = defn.get("execution", {}) or {}
+        split = execp.get("split_buy") or {}
+        phases_total = len(split.get("phases") or [])
+        phases_executed = list(lg.get("phases_executed") or [])
+        base_qty = int(lg.get("base_qty") or 0)
+
         out.append({
             **p,
             "strategy_name": lg.get("strategy_name", ""),
@@ -401,6 +408,9 @@ def enrich_positions(positions: list[dict], ledger: dict,
             "cur_return_pct": round(cur_ret, 2),
             "held_days": held,
             "distances": distances,
+            "phases_executed": phases_executed,
+            "phases_total": phases_total if split.get("enabled") else 0,
+            "base_qty": base_qty,
         })
     return out
 

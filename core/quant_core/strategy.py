@@ -153,6 +153,28 @@ class SizingModifier(BaseModel):
     note: Optional[str] = None               # 사용자 메모 (선택)
 
 
+class SplitBuyPhase(BaseModel):
+    """분할매수 차수 — 베이스 매수액 중 이 차수의 비중과 진입 조건.
+
+    1차(phases[0])는 trigger 없음 — 매수 신호 발생 시 진입.
+    2차+는 trigger 충족 시 진입 (보통 가격 하락 트리거).
+    """
+    ratio: float = 100.0                     # 베이스 매수액 중 이 차수의 비중 (%)
+    trigger: Optional[ConditionGroup] = None # 추가 차수: trigger 충족 시 진입
+    note: Optional[str] = None               # 사용자 메모 (선택)
+
+
+class SplitBuyRule(BaseModel):
+    """분할매수 정책 — 베이스 매수액을 N차로 분할 진입.
+
+    enabled=False 또는 phases가 1개면 기존 단일 진입 동작과 동일.
+    매도 평가는 평단(ledger.entry_price) 기준 — 차수가 추가되면 가중평균으로 갱신.
+    """
+    enabled: bool = False
+    phases: list[SplitBuyPhase] = Field(
+        default_factory=lambda: [SplitBuyPhase(ratio=100.0)])
+
+
 class ExecutionPolicy(BaseModel):
     """체결 정책 — 모든 필드가 Optional. None이면 글로벌 default 사용.
 
@@ -174,6 +196,8 @@ class ExecutionPolicy(BaseModel):
     # Phase 47 Cycle B — 매수액 수정자 (0개 이상). 조건이 맞으면 베이스 매수액에 배수 곱.
     # 여러 개 매치 시 모두 누적 곱셈. ConditionGroup은 매수 조건과 동일 표현력.
     size_modifiers: Optional[list[SizingModifier]] = None
+    # Phase 47 Cycle C — 분할매수. enabled=False면 기존 단일 진입.
+    split_buy: Optional[SplitBuyRule] = None
     atr_risk_pct: Optional[float] = None
     atr_mult: Optional[float] = None
     max_position_pct: Optional[float] = None
