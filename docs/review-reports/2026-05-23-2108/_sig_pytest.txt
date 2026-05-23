@@ -1,0 +1,15 @@
+....................F...................                                 [100%]
+================================== FAILURES ===================================
+E   Failed: DID NOT RAISE <class 'quant_core.market_calendar.CalendarError'>
+C:\Users\USER\Desktop\Ã¢¾÷\ÄöÆ®\platform\tests\test_market_calendar.py:114: Failed: DID NOT RAISE <class 'quant_core.market_calendar.CalendarError'>
+============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google._upb._message.MessageMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google._upb._message.ScalarMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_market_calendar.py::test_unsupported_market - Failed: DID N...
+1 failed, 39 passed, 2 warnings in 6.54s

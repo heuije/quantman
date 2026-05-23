@@ -1,0 +1,50 @@
+163 |     if op == "<=": return v <= target
+    |                  ^
+164 |     if op == "between":
+165 |         lo, hi = target
+    |
+
+E701 Multiple statements on one line (colon)
+   --> app\screener.py:167:18
+    |
+165 |         lo, hi = target
+166 |         return lo <= v <= hi
+167 |     if op == "in":     return v in target
+    |                  ^
+168 |     if op == "not_in": return v not in target
+169 |     return False
+    |
+
+E701 Multiple statements on one line (colon)
+   --> app\screener.py:168:22
+    |
+166 |         return lo <= v <= hi
+167 |     if op == "in":     return v in target
+168 |     if op == "not_in": return v not in target
+    |                      ^
+169 |     return False
+    |
+
+F401 [*] `datetime.date` imported but unused
+  --> tests\test_calendar_cache.py:20:22
+   |
+19 | import sys
+20 | from datetime import date
+   |                      ^^^^
+21 | from pathlib import Path
+   |
+help: Remove unused import: `datetime.date`
+
+F401 [*] `pytest` imported but unused
+  --> tests\test_preview_stale_gate.py:20:8
+   |
+19 | import pandas as pd
+20 | import pytest
+   |        ^^^^^^
+21 |
+22 | _SERVER_DIR = Path(__file__).resolve().parent.parent
+   |
+help: Remove unused import: `pytest`
+
+Found 17 errors.
+[*] 2 fixable with the `--fix` option.

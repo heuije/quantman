@@ -1,0 +1,33 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.7, pytest-9.0.3, pluggy-1.6.0 -- C:\Users\USER\AppData\Local\Programs\Python\Python312\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\USER\Desktop\Ã¢¾÷\ÄöÆ®\platform
+plugins: anyio-4.9.0
+collecting ... collected 16 items
+
+tests/golden_backtest.py::TestGoldenBacktest::test_matches_baseline[01_buy_and_hold] PASSED [  6%]
+tests/golden_backtest.py::TestGoldenBacktest::test_matches_baseline[02_above_ma20] PASSED [ 12%]
+tests/golden_backtest.py::TestGoldenBacktest::test_matches_baseline[03_uptrend] PASSED [ 18%]
+tests/golden_backtest.py::TestGoldenBacktest::test_matches_baseline[04_oversold_bounce] PASSED [ 25%]
+tests/golden_backtest.py::TestGoldenBacktest::test_matches_baseline[05_dual_momentum] PASSED [ 31%]
+tests/golden_backtest.py::TestGoldenBacktest::test_idempotent[01_buy_and_hold] PASSED [ 37%]
+tests/golden_backtest.py::TestGoldenBacktest::test_idempotent[02_above_ma20] PASSED [ 43%]
+tests/golden_backtest.py::TestGoldenBacktest::test_idempotent[03_uptrend] PASSED [ 50%]
+tests/golden_backtest.py::TestGoldenBacktest::test_idempotent[04_oversold_bounce] PASSED [ 56%]
+tests/golden_backtest.py::TestGoldenBacktest::test_idempotent[05_dual_momentum] PASSED [ 62%]
+tests/golden_backtest.py::TestGoldenBacktest::test_no_lookahead_bias[01_buy_and_hold] PASSED [ 68%]
+tests/golden_backtest.py::TestGoldenBacktest::test_no_lookahead_bias[02_above_ma20] PASSED [ 75%]
+tests/golden_backtest.py::TestGoldenBacktest::test_no_lookahead_bias[03_uptrend] PASSED [ 81%]
+tests/golden_backtest.py::TestGoldenBacktest::test_no_lookahead_bias[04_oversold_bounce] PASSED [ 87%]
+tests/golden_backtest.py::TestGoldenBacktest::test_no_lookahead_bias[05_dual_momentum] PASSED [ 93%]
+tests/golden_backtest.py::test_regenerate_baseline_all SKIPPED (REGE...) [100%]
+
+============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google._upb._message.MessageMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google._upb._message.ScalarMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============ 15 passed, 1 skipped, 2 warnings in 213.84s (0:03:33) ============
