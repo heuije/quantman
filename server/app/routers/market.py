@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 
@@ -65,9 +66,8 @@ def market_context(user: User = Depends(get_current_user)):
 
 
 def _session_now() -> dict:
-    """한국 정규장 기준 현재 세션 표시. 시간은 서버 UTC → KST 변환."""
-    now_utc = datetime.utcnow()
-    kst = now_utc + timedelta(hours=9)
+    """한국 정규장 기준 현재 세션 표시. 서버 tz와 무관하게 KST로 계산."""
+    kst = datetime.now(ZoneInfo("Asia/Seoul"))
     hm = kst.hour * 60 + kst.minute
     dow = kst.weekday()    # 0=월 ... 6=일
     if dow >= 5:
