@@ -15,11 +15,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from . import (data_cache, kis_master_cache, krx_cache, naver_fundamentals,
-                technical_cache)
+from . import (calendar_cache, data_cache, kis_master_cache, krx_cache,
+                naver_fundamentals, technical_cache)
 from .config import settings
 from .db import create_db_and_tables
-from .routers import (auth, backtest, commands, dataset, market, portfolio,
+from .routers import (auth, backtest, calendars as calendars_router, commands,
+                       dataset, market, portfolio,
                        preview as preview_router,
                        screener as screener_router,
                        settings as settings_router, strategies, sync)
@@ -317,6 +318,18 @@ def _initial_us_market_caps():
         _log.exception("미국 시가총액 초기 fetch 예외 — 주간 cron 재시도")
 
 
+def _initial_calendar_refresh():
+    """Q2+Q8: 기동 시 1회 KR/US 캘린더 빌드. 외부 fetch와 달리 라이브러리 호출만이라
+    실패 가능성 매우 낮음 — 그러나 디스크 권한·import 실패는 가능하므로 try-except.
+    """
+    try:
+        _log.info("캘린더 초기 빌드 시작 (KR/US)")
+        result = calendar_cache.refresh()
+        _log.info("캘린더 초기 빌드 결과: %s", result)
+    except Exception:
+        _log.exception("캘린더 초기 빌드 예외 — 다음 03:00 cron 재시도")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _log.info("lifespan 시작 — DB 초기화")
@@ -325,6 +338,9 @@ async def lifespan(app: FastAPI):
     # ── 시작 시 1회 초기 fetch (백그라운드 thread, 부팅 차단 방지) ─────────────
     _log.info("KIS 마스터 초기 다운로드 thread 시작")
     threading.Thread(target=_initial_master_refresh, daemon=True).start()
+    # Q2+Q8: 캘린더 빌드는 매우 빠르고(<1s) 다른 fetch와 의존성 없어 별도 지연 없이 시작
+    _log.info("캘린더 초기 빌드 thread 시작 (KR/US)")
+    threading.Thread(target=_initial_calendar_refresh, daemon=True).start()
     _log.info("KRX 스냅샷 초기 fetch thread 시작")
     threading.Thread(target=_initial_krx_refresh, daemon=True).start()
     _log.info("NAVER 펀더멘털 초기 fetch thread 시작")
@@ -390,9 +406,17 @@ async def lifespan(app: FastAPI):
         CronTrigger(day_of_week="sun", hour=8, minute=0),
         id="us_market_caps", replace_existing=True)
 
+    # 03:00 — KR/US 시장 캘린더 일일 재빌드 (Q2+Q8).
+    # exchange_calendars 패치(임시공휴일 추가)를 매일 받아서 stale 캘린더 방지.
+    # 시각: 한국·미국 모두 새벽 — 사이클·시장 시간과 무관.
+    scheduler.add_job(
+        lambda: _run_with_retry("calendars", calendar_cache.refresh, scheduler),
+        CronTrigger(hour=3, minute=0),
+        id="calendars", replace_existing=True)
+
     scheduler.start()
     _log.info("cron 시작: "
-              "06:05 KIS-1 · 07:30 dataset글로벌 · 15:45 KRX · "
+              "03:00 캘린더 · 06:05 KIS-1 · 07:30 dataset글로벌 · 15:45 KRX · "
               "17:00 NAVER · 17:15 기술 · 18:15 dataset한국 · 18:58 KIS-2 KST "
               "(실패 시 backoff[5,15,30,60,120]분 재시도)")
     app.state.scheduler = scheduler
@@ -427,6 +451,7 @@ app.include_router(screener_router.router)
 app.include_router(settings_router.router)
 app.include_router(dataset.router)
 app.include_router(preview_router.router)
+app.include_router(calendars_router.router)
 
 
 @app.get("/health")
@@ -493,3 +518,15 @@ def technical_health():
 def technical_refresh(_: None = Depends(_require_health_token)):
     """기술적 지표 즉시 갱신 — 진단/검증용. production은 토큰 필요."""
     return technical_cache.refresh()
+
+
+@app.get("/health/calendars")
+def calendars_health():
+    """Q2+Q8 — 캘린더 캐시 상태 (built_at, KR/US 로드 여부)."""
+    return calendar_cache.get_status()
+
+
+@app.post("/health/calendars/refresh")
+def calendars_refresh(_: None = Depends(_require_health_token)):
+    """캘린더 즉시 재빌드 — 임시공휴일 발견 시 수동 트리거. production은 토큰 필요."""
+    return calendar_cache.refresh()

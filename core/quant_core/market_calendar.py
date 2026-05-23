@@ -1,11 +1,14 @@
 """시장 정규장 캘린더 — 런타임 (의존성: stdlib zoneinfo만).
 
-미국(NYSE/NASDAQ/AMEX) 정규장 세션을 `calendars/us_sessions.json`에서 읽어
-KST 기준 개장·폐장 시각을 돌려준다. JSON은 `gen_market_sessions.py`가
-exchange_calendars로 미리 생성한다(개발 전용). DST는 zoneinfo가 처리한다.
+미국(NYSE/NASDAQ/AMEX)·한국(KRX) 정규장 세션을 두 위치에서 우선순위로 로드:
+  1순위: 사용자 캐시 `~/.quantman/calendars/{m}_sessions.json` — 서버에서 일일 pull
+         된 최신 (Q2+Q8). 임시공휴일·신규 휴장 반영.
+  2순위: 번들 `quant_core/calendars/{m}_sessions.json` — PyInstaller에 포함된
+         정적 fallback. 사용자 캐시가 없는 첫 실행 시.
 
-서버 preview와 로컬앱 스케줄러가 이 모듈 하나를 공유해 "지금 미국장 열렸나",
-"오늘 밤 미국 세션이 몇 시에 열리나"를 동일하게 판정한다.
+DST는 zoneinfo가 런타임에 처리. JSON은 현지 wall-clock HH:MM만 저장.
+
+서버 preview와 로컬앱 스케줄러가 이 모듈을 공유해 동일 판정.
 
 KST 환산 예:
   - 여름(EDT): 개장 09:30 ET → 22:30 KST, 마감 16:00 ET → 익일 05:00 KST
@@ -16,42 +19,65 @@ KST 환산 예:
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
 
-_CAL_DIR = Path(__file__).parent / "calendars"
-_FILES = {
-    "US": _CAL_DIR / "us_sessions.json",
-    "KR": _CAL_DIR / "krx_sessions.json",
+_BUNDLE_DIR = Path(__file__).parent / "calendars"
+_BUNDLE_FILES = {
+    "US": _BUNDLE_DIR / "us_sessions.json",
+    "KR": _BUNDLE_DIR / "krx_sessions.json",
 }
+
+# Q2+Q8 — 사용자 캐시 (서버 pull 결과 저장). 환경변수로 override 가능 (테스트용).
+import os as _os
+_USER_CACHE_ENV = _os.environ.get("QUANTMAN_CALENDAR_DIR")
+USER_CACHE_DIR = (Path(_USER_CACHE_ENV) if _USER_CACHE_ENV
+                    else Path.home() / ".quantman" / "calendars")
 
 
 class CalendarError(RuntimeError):
     """세션 데이터 누락·만료 등 캘린더 사용 불가 상태."""
 
 
-@lru_cache(maxsize=4)
-def _load(market: str) -> dict:
-    """시장 세션 JSON을 로드(메모이즈). market은 'US' 등."""
-    path = _FILES.get(market)
-    if path is None:
-        raise CalendarError(f"지원하지 않는 시장: {market}")
-    if not path.exists():
-        raise CalendarError(
-            f"세션 데이터 없음: {path} — gen_market_sessions.py로 생성하세요.")
+def _parse(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     tz_local = ZoneInfo(data["tz_local"])
-    # 정렬된 세션일 + tz_local을 함께 캐시
     return {
         "tz_local": tz_local,
         "sessions": data["sessions"],
         "sorted_days": sorted(data["sessions"].keys()),
         "range": data.get("range", []),
     }
+
+
+@lru_cache(maxsize=4)
+def _load(market: str) -> dict:
+    """시장 세션 JSON을 로드(메모이즈). 사용자 캐시 우선, 번들 fallback.
+
+    캐시 무효화는 calendar_sync가 _load.cache_clear()를 호출 (pull 직후).
+    """
+    if market not in _BUNDLE_FILES:
+        raise CalendarError(f"지원하지 않는 시장: {market}")
+    # 1순위: 사용자 캐시 (서버 pull)
+    user_path = USER_CACHE_DIR / f"{market.lower()}_sessions.json"
+    if user_path.exists():
+        try:
+            return _parse(user_path)
+        except Exception:
+            # 손상 시 번들로 fallback (조용히 무시하지 않고 명시적 폴백)
+            import logging as _logging
+            _logging.getLogger("quant_core.market_calendar").warning(
+                "사용자 캘린더 캐시 손상 [%s] — 번들 fallback", user_path)
+    # 2순위: 번들 (PyInstaller 포함)
+    bundle_path = _BUNDLE_FILES[market]
+    if not bundle_path.exists():
+        raise CalendarError(
+            f"세션 데이터 없음 (사용자 캐시·번들 모두 부재): {bundle_path}")
+    return _parse(bundle_path)
 
 
 def _to_kst(day: date, hhmm: str, tz_local: ZoneInfo) -> datetime:
@@ -136,6 +162,32 @@ def coverage_range(market: str) -> tuple[str, str]:
     cal = _load(market)
     days = cal["sorted_days"]
     return (days[0], days[-1]) if days else ("", "")
+
+
+def check_fresh(market: str, today: date,
+                 lookahead_days: int = 7) -> tuple[bool, str]:
+    """Q2+Q8 — 캘린더가 today + lookahead_days 안의 세션을 가지는지 확인.
+
+    AL-3 결정: 만료가 의심되어도 사이클은 차단하지 않는다 (KIS API가 휴장이면
+    어차피 거부하므로 피해 없음. 반대로 정규장에 우리가 잘못 차단하면 기회손실).
+    호출자는 결과 False 시 로그·진단에만 사용.
+
+    반환: (fresh, message). fresh=False면 message에 사유.
+    """
+    try:
+        cal = _load(market)
+    except CalendarError as e:
+        return False, f"캘린더 로드 실패: {e}"
+    days = cal["sorted_days"]
+    if not days:
+        return False, "세션 데이터 비어 있음"
+    last = days[-1]
+    horizon = (today + timedelta(days=lookahead_days)).isoformat()
+    if last < horizon:
+        return False, (f"{market} 캘린더 만료 임박 — 마지막 {last}, "
+                       f"오늘 + {lookahead_days}일({horizon}) 미충족. "
+                       f"서버 일일 sync(/calendars/{market}) 또는 라이브러리 갱신 필요.")
+    return True, ""
 
 
 def is_session_day(market: str, day: date) -> bool:

@@ -93,6 +93,13 @@ def start() -> None:
     from . import sync_retry
     sync_retry.start()
 
+    # Q2+Q8: 기동 시 1회 캘린더 sync (백그라운드 — 페어링 안 됐으면 silent fail
+    # 후 다음 04:00 cron 재시도).
+    from . import calendar_sync
+    import threading
+    threading.Thread(target=calendar_sync.pull_all, daemon=True,
+                      name="calendar-sync-initial").start()
+
     sched = BlockingScheduler(timezone="Asia/Seoul")
 
     # ── 국내(KRX) 고정 cron ──────────────────────────────────────────────────
@@ -122,11 +129,19 @@ def start() -> None:
     # 기동 시 1회 — 정오를 지나 시작했어도 오늘 밤 세션을 놓치지 않도록
     _plan_us_session(sched)
 
+    # ── Q2+Q8: 캘린더 일일 sync (04:00 KST — 서버 03:00 cron 이후 안전 마진) ─
+    sched.add_job(
+        calendar_sync.pull_all,
+        CronTrigger(hour=4, minute=0, timezone="Asia/Seoul"),
+        id="calendar_sync", name="시장 캘린더 일일 sync",
+        misfire_grace_time=3600)
+
     print("=" * 52)
     print("  로컬앱 스케줄러 시작 (KST)")
     print("  [KRX] 08:50 loop · 08:55 사이클 · 15:30 loop종료 · 15:35 정산")
     print("  [US ] 매일 12:00 야간 플래너 → 세션 open−5분 사이클 / close+5분 정산")
     print("        (DST·휴장 자동 반영, 오늘 밤 세션은 기동 시 즉시 등록)")
+    print("  [캘린더] 04:00 시장 캘린더 일일 sync (임시공휴일 반영)")
     print("  브로커: KIS (실전/모의투자)")
     print("  Ctrl+C 로 종료")
     print("=" * 52)

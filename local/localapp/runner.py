@@ -108,6 +108,11 @@ def run_cycle(market: str = "KRX") -> dict:
         from quant_core import market_calendar as _mc
         from .trader import kst_today
         today = kst_today()
+        # Q2+Q8: 캘린더 만료 임박 시 경고 로그(AL-3: 사이클은 차단 안 함 — KIS가
+        # 휴장이면 거부, 잘못 차단 시 기회손실이 더 큼).
+        fresh, msg = _mc.check_fresh("KR", today, lookahead_days=7)
+        if not fresh:
+            log.warning("[calendar] %s", msg)
         if not _mc.is_session_day("KR", today):
             log.info("KRX 휴장일 — 사이클 skip (today=%s)", today.isoformat())
             return {"status": "skipped_holiday", "market": "KRX",
