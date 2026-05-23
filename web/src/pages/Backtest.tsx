@@ -30,7 +30,7 @@ const RULE_DEFS: {
   { key: "hold",  name: "보유기간",      suffix: "일 경과 시",       phase: "eod" },
 ];
 
-type TabKey = "build" | "result" | "history" | "market";
+type TabKey = "build" | "result" | "market";
 
 export default function Backtest() {
   const [tab, setTab] = useState<TabKey>("build");
@@ -120,7 +120,8 @@ export default function Backtest() {
   }
 
   useEffect(() => {
-    if (tab === "history" && !historyLoaded) loadHistory();
+    // 결과·보관함 탭 진입 시 이력 1회 로드 (HistoryListPanel이 result 탭 안에 통합됨).
+    if (tab === "result" && !historyLoaded) loadHistory();
   }, [tab]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   function buildDef(): StrategyDef {
@@ -261,8 +262,7 @@ export default function Backtest() {
       <div className="tabs">
         {([
           ["build",   "빌더"],
-          ["result",  "결과 리포트"],
-          ["history", "보관함"],
+          ["result",  "결과 · 보관함"],
           ["market",  "마켓플레이스"],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button key={k} type="button"
@@ -319,13 +319,8 @@ export default function Backtest() {
           onDraft={() => save("draft")}
           onApply={() => save("paper")}
           saveMsg={saveMsg}
-        />
-      )}
-
-      {tab === "history" && (
-        <HistoryTab
-          rows={history}
-          loaded={historyLoaded}
+          history={history}
+          historyLoaded={historyLoaded}
           onLoad={loadRun}
           onDelete={deleteRun}
         />
@@ -436,6 +431,55 @@ function BuildTab(props: {
           }
         />
 
+        <div className="sub-h" style={{ marginTop: 14 }}>사이징 방식</div>
+        <p className="muted" style={{ margin: "0 0 10px" }}>
+          매수 수량을 자본 비율로 단순 계산할지, 종목별 변동성(ATR)을 보정해 동일 리스크로 분배할지 선택합니다.
+        </p>
+        <div className="sizing-modes">
+          <label className={"sizing-mode" + (sizingMode === "pct_cash" ? " on" : "")}>
+            <input
+              type="radio" name="sizing" checked={sizingMode === "pct_cash"}
+              onChange={() => setSizingMode("pct_cash")}
+            />
+            <div>
+              <strong>자본 비율</strong>
+              <div className="muted small">아래 "1회 매수액"의 N%를 그대로 사용 — 단순하고 직관적</div>
+            </div>
+          </label>
+          <label className={"sizing-mode" + (sizingMode === "atr_risk" ? " on" : "")}>
+            <input
+              type="radio" name="sizing" checked={sizingMode === "atr_risk"}
+              onChange={() => setSizingMode("atr_risk")}
+            />
+            <div>
+              <strong>변동성 보정 (ATR)</strong>
+              <div className="muted small">종목 변동성에 반비례 — 변동성 큰 종목은 적게, 작은 종목은 많게</div>
+            </div>
+          </label>
+        </div>
+
+        {sizingMode === "atr_risk" && (
+          <div className="atr-detail">
+            <div className="amount-row">
+              <label>트레이드당 자본 위험</label>
+              <input type="number" min={0.1} max={10} step={0.1} value={atrRiskPct}
+                     onChange={(e) => setAtrRiskPct(Number(e.target.value))} />
+              <span className="muted">%</span>
+            </div>
+            <div className="amount-row">
+              <label>ATR 배수 (손절폭)</label>
+              <input type="number" min={0.5} max={5} step={0.1} value={atrMult}
+                     onChange={(e) => setAtrMult(Number(e.target.value))} />
+              <span className="muted">× ATR</span>
+            </div>
+            <div className="muted small" style={{ marginTop: 6 }}>
+              ⓘ 각 종목이 ATR×{fmt2(atrMult)} 만큼 하락하면 자본의 {fmt2(atrRiskPct)}% 손실
+              <br />
+              ⚠ ATR 데이터가 없는 종목은 자동 fallback하지 않고 매수를 건너뜁니다.
+            </div>
+          </div>
+        )}
+
         <div className={"amount-row" + (sizingMode === "atr_risk" ? " dim" : "")}>
           <label>1회 매수액 (자본의 %)</label>
           <input type="number" min={1} max={100} value={buyAmountPct}
@@ -447,8 +491,8 @@ function BuildTab(props: {
         </div>
         {sizingMode === "atr_risk" && (
           <div className="muted small" style={{ marginTop: -4 }}>
-            ⓘ 현재 사이징 방식이 <b>변동성 보정(ATR)</b>이라 이 값은 무시됩니다.
-            아래 "리스크 한도"에서 자본 비율로 전환하면 적용됩니다.
+            ⓘ 사이징 방식이 <b>변동성 보정(ATR)</b>이라 이 값은 무시됩니다.
+            위에서 자본 비율로 전환하면 적용됩니다.
           </div>
         )}
         {screenerLimit > 1 && sizingMode === "pct_cash" && (
@@ -466,9 +510,8 @@ function BuildTab(props: {
       <div className="panel">
         <h3>3. 매도 조건 <span className="muted">(하나 이상 설정 필수 · 먼저 트리거되는 규칙으로 매도)</span></h3>
 
-        {/* Phase 38.1 — 실시간 vs EOD 섹션 명시적 분리 */}
         <div className="sub-h" style={{ marginTop: 4 }}>
-          ① 장중 실시간 자동 매도 <span className="muted">— tick마다 평가, 즉시 발주</span>
+          실시간 매도 <span className="muted">— tick마다 평가, 즉시 발주</span>
         </div>
         <p className="muted" style={{ margin: "0 0 8px" }}>
           09:00 ~ 15:30 정규장 중 KIS 시세 WebSocket으로 매 tick 평가합니다. 가격이 닿는 즉시 매도 발주.
@@ -494,7 +537,7 @@ function BuildTab(props: {
         </div>
 
         <div className="sub-h" style={{ marginTop: 18 }}>
-          ② 장 마감 후(EOD) 평가 <span className="muted">— 매일 08:55 사이클에서 평가</span>
+          시가 매도 <span className="muted">— 매일 08:55 사이클에서 평가, 09:00 시초가 매도</span>
         </div>
         <p className="muted" style={{ margin: "0 0 8px" }}>
           정규장 종가 데이터로 일봉 단위 평가합니다. 보유기간 만료·지표 기반 조건이 여기 해당.
@@ -518,10 +561,8 @@ function BuildTab(props: {
             );
           })}
         </div>
-
-        <div className="sub-h" style={{ marginTop: 14 }}>추가 매도 조건 (선택, EOD 평가)</div>
-        <p className="muted" style={{ margin: "0 0 8px" }}>
-          dataset 지표 기반 조건. 매일 08:55에 정규장 종가로 평가됩니다.
+        <p className="muted" style={{ margin: "8px 0 4px" }}>
+          추가 조건 — dataset 지표 기반 매도 트리거. 위 룰과 함께 평가, 먼저 트리거되는 쪽으로 매도.
         </p>
         <ConditionBuilder symbols={symbols} group={sell} onChange={setSell} />
 
@@ -549,59 +590,7 @@ function BuildTab(props: {
       <details className="panel section-collapsible">
         <summary><h3>4. 리스크 한도 <span className="muted">(선택 — 미설정 시 기본값 적용)</span></h3></summary>
 
-        <div className="sub-h">4-1. 사이징 방식</div>
-        <p className="muted" style={{ margin: "0 0 10px" }}>
-          매수 수량을 자본 비율로 단순 계산할지, 종목별 변동성(ATR)을 보정해 동일 리스크로 분배할지 선택합니다.
-        </p>
-        <div className="sizing-modes">
-          <label className={"sizing-mode" + (sizingMode === "pct_cash" ? " on" : "")}>
-            <input
-              type="radio" name="sizing" checked={sizingMode === "pct_cash"}
-              onChange={() => setSizingMode("pct_cash")}
-            />
-            <div>
-              <strong>자본 비율</strong>
-              <div className="muted small">위 "1회 매수액"의 N%를 그대로 사용 — 단순하고 직관적</div>
-            </div>
-          </label>
-          <label className={"sizing-mode" + (sizingMode === "atr_risk" ? " on" : "")}>
-            <input
-              type="radio" name="sizing" checked={sizingMode === "atr_risk"}
-              onChange={() => setSizingMode("atr_risk")}
-            />
-            <div>
-              <strong>변동성 보정 (ATR)</strong>
-              <div className="muted small">종목 변동성에 반비례 — 변동성 큰 종목은 적게, 작은 종목은 많게</div>
-            </div>
-          </label>
-        </div>
-
-        {/* Phase 41 — 자동 선택 종목도 KR 전 종목 OHLCV가 dataset에 있으므로
-            ATR 계산 가능 — Phase 38.12의 경고는 더 이상 유효하지 않다. */}
-
-        {sizingMode === "atr_risk" && (
-          <div className="atr-detail">
-            <div className="amount-row">
-              <label>트레이드당 자본 위험</label>
-              <input type="number" min={0.1} max={10} step={0.1} value={atrRiskPct}
-                     onChange={(e) => setAtrRiskPct(Number(e.target.value))} />
-              <span className="muted">%</span>
-            </div>
-            <div className="amount-row">
-              <label>ATR 배수 (손절폭)</label>
-              <input type="number" min={0.5} max={5} step={0.1} value={atrMult}
-                     onChange={(e) => setAtrMult(Number(e.target.value))} />
-              <span className="muted">× ATR</span>
-            </div>
-            <div className="muted small" style={{ marginTop: 6 }}>
-              ⓘ 각 종목이 ATR×{fmt2(atrMult)} 만큼 하락하면 자본의 {fmt2(atrRiskPct)}% 손실
-              <br />
-              ⚠ ATR 데이터가 없는 종목은 자동 fallback하지 않고 매수를 건너뜁니다.
-            </div>
-          </div>
-        )}
-
-        <div className="sub-h" style={{ marginTop: 18 }}>4-2. 단일 종목 상한</div>
+        <div className="sub-h">4-1. 단일 종목 상한</div>
         <div className="amount-row">
           <label>한 종목 최대 비중</label>
           <input type="number" min={1} max={100} step={1} value={maxPositionPct}
@@ -609,7 +598,7 @@ function BuildTab(props: {
           <span className="muted">% (전체 자본 대비) — 사이징 결과가 이 한도 초과 시 강제 클램프</span>
         </div>
 
-        <div className="sub-h" style={{ marginTop: 18 }}>4-3. 시스템 킬스위치</div>
+        <div className="sub-h" style={{ marginTop: 18 }}>4-2. 시스템 킬스위치</div>
         <div className="amount-row">
           <label>일일 손실 한도</label>
           <input type="number" min={0.5} max={20} step={0.1} value={dailyLossLimitPct}
@@ -623,7 +612,7 @@ function BuildTab(props: {
           <span className="muted">% (자본 고점 대비) — 도달 시 알림 + 신규 진입 차단</span>
         </div>
 
-        <div className="sub-h" style={{ marginTop: 18 }}>4-4. 매수 발주 가격 범위</div>
+        <div className="sub-h" style={{ marginTop: 18 }}>4-3. 매수 발주 가격 범위</div>
         <div className="amount-row">
           <label>전일 종가 + 최대</label>
           <input type="number" min={0.1} max={5} step={0.1} value={buyTolerancePct}
@@ -874,7 +863,10 @@ function BuyTargetPanel({
 
 // ── 탭 2: 결과 리포트 ─────────────────────────────────────────────────────────
 
-function ResultTab({ backtest, metrics, name, busy, onDraft, onApply, saveMsg }: {
+function ResultTab({
+  backtest, metrics, name, busy, onDraft, onApply, saveMsg,
+  history, historyLoaded, onLoad, onDelete,
+}: {
   backtest: BacktestResult | null;
   metrics: Record<string, number | null> | undefined;
   name: string;
@@ -882,19 +874,33 @@ function ResultTab({ backtest, metrics, name, busy, onDraft, onApply, saveMsg }:
   onDraft: () => void;
   onApply: () => void;
   saveMsg: string;
+  history: BacktestRunSummary[];
+  historyLoaded: boolean;
+  onLoad: (id: number) => void;
+  onDelete: (id: number) => void;
 }) {
-  if (!backtest) {
+  // 빈 상태: 현재 결과도 없고 이력도 없음 → 안내만 표시.
+  if (!backtest && historyLoaded && history.length === 0) {
     return (
       <div className="panel empty-state">
         <div className="empty-title">아직 실행 결과가 없습니다</div>
         <p className="muted">
-          [전략 구성] 탭에서 조건을 만들고 백테스트를 실행하세요.
+          [빌더] 탭에서 조건을 만들고 백테스트를 실행하세요. 결과는 자동으로 저장되어 이 탭에 누적됩니다.
         </p>
       </div>
     );
   }
+  // 현재 결과는 없고 이력만 있는 상태 → 이력 리스트만 렌더 (load로 채움).
+  if (!backtest) {
+    return <HistoryListPanel rows={history} loaded={historyLoaded} onLoad={onLoad} onDelete={onDelete} />;
+  }
   if (!backtest.success || !metrics) {
-    return <div className="error">{backtest.error}</div>;
+    return (
+      <>
+        <div className="error">{backtest.error}</div>
+        <HistoryListPanel rows={history} loaded={historyLoaded} onLoad={onLoad} onDelete={onDelete} />
+      </>
+    );
   }
 
   // 백테스트가 손실/저조였던 전략을 무경고로 적용하지 않도록 사실 기반 확인.
@@ -974,31 +980,24 @@ function ResultTab({ backtest, metrics, name, busy, onDraft, onApply, saveMsg }:
         </button>
       </div>
       {saveMsg && <div className="ok">{saveMsg}</div>}
+      <HistoryListPanel rows={history} loaded={historyLoaded} onLoad={onLoad} onDelete={onDelete} />
     </div>
   );
 }
 
-// ── 탭 3: 실행 내역 ───────────────────────────────────────────────────────────
+// ── 보관함 (결과 리포트 안 통합) ─────────────────────────────────────────────
 
-function HistoryTab({ rows, loaded, onLoad, onDelete }: {
+function HistoryListPanel({ rows, loaded, onLoad, onDelete }: {
   rows: BacktestRunSummary[];
   loaded: boolean;
   onLoad: (id: number) => void;
   onDelete: (id: number) => void;
 }) {
-  if (!loaded) return <p className="muted">불러오는 중…</p>;
-  if (rows.length === 0) {
-    return (
-      <div className="panel empty-state">
-        <div className="empty-title">아직 실행한 백테스트가 없습니다</div>
-        <p className="muted">
-          [전략 구성] 탭에서 첫 백테스트를 실행해보세요. 결과는 자동으로 저장됩니다.
-        </p>
-      </div>
-    );
-  }
+  if (!loaded) return <p className="muted" style={{ marginTop: 16 }}>이력 불러오는 중…</p>;
+  if (rows.length === 0) return null;
   return (
-    <div className="panel">
+    <div className="panel" style={{ marginTop: 18 }}>
+      <h3>보관함 <span className="muted">({rows.length}건)</span></h3>
       <table>
         <thead>
           <tr>
