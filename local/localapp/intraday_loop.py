@@ -96,6 +96,22 @@ def _on_exec_event(trader: Trader, broker: Broker, evt: dict) -> None:
         return
 
     p = pending[order_no]
+
+    # L-09 — 체결 통보 중복 dedup. KIS가 같은 H0STCNI0 이벤트를 두 번
+    # 보내면 ledger qty가 이중 가산되어 over-position이 된다. KIS spec엔
+    # 별도 시퀀스/누계 필드가 없으므로 (체결시각, 수량, 가격) 3-tuple로
+    # dedup. 정상 부분 체결은 시각이 달라 정상 누적되고, 진짜 중복은 같은
+    # 시각·가격·수량이라 차단된다. pending[order_no]에 직접 보관하므로
+    # pending이 disk에 영속될 때 같이 저장 → 재기동 직후 중복 도착도 차단.
+    # 전량 체결 시 del pending[order_no]로 자동 회수.
+    dedup_key = [evt.get("STCK_CNTG_HOUR", ""), filled_qty, fill_price]
+    seen_keys = p.setdefault("_dedup_keys", [])
+    if dedup_key in seen_keys:
+        log.info("[order-ws] 중복 체결 통보 dedup: ODER_NO=%s key=%s",
+                  order_no, dedup_key)
+        return
+    seen_keys.append(dedup_key)
+
     already = int(p.get("filled_so_far", 0) or 0)
     decisions: list[dict] = []
 

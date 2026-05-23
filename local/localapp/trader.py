@@ -669,6 +669,13 @@ class Trader:
             qty = min(qty, int(cash // prev_close))
         else:
             qty = int(cash * strat.amount_pct / 100.0 // prev_close)
+            # L-10 — 단일 종목 비중 상한을 pct_cash 경로에도 적용. _atr_qty 내부엔
+            # 이미 cap이 있지만 pct_cash엔 누락돼 amount_pct=100 두면 한 종목에
+            # 전 자본이 들어갈 수 있었다. 기준은 _atr_qty와 동일(capital × cap%).
+            # capital은 통화 일치(KRW/USD)된 값.
+            cap_qty = int((capital * policy["max_position_pct"] / 100.0)
+                            // prev_close)
+            qty = min(qty, cap_qty)
 
         # 미국: 주문가능수량(통합증거금 상한) 초과 방지
         if max_cap is not None:
