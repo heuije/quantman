@@ -194,9 +194,18 @@ def run_post_close_settlement(market: str = "KRX") -> dict:
 
     Phase 40: ledger ↔ KIS 잔고 reconcile 실행 (매매가 끝난 직후라 안전).
     HTS/MTS 수동 매도분을 ledger에서 자동 차감.
+
+    Q5(AL-4): trader._CYCLE_LOCK으로 cycle·장중 ks 트리거와 직렬화. 장 마감
+    직전에 ks 트리거가 cycle을 돌리는 중이라면 settlement는 잠시 대기 후 진입.
     """
-    from .trader import kst_today
+    from .trader import kst_today, _CYCLE_LOCK
     setup_logging()
+    with _CYCLE_LOCK:
+        return _run_post_close_settlement_locked(market)
+
+
+def _run_post_close_settlement_locked(market: str) -> dict:
+    from .trader import kst_today
     _flush_pending()
 
     today_d = kst_today()  # L-06: PC tz와 무관한 KST 거래일

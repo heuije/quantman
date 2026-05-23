@@ -23,7 +23,7 @@ from .kis_order_websocket import KisOrderWebSocket
 from .kis_websocket import KisWebSocket
 from .runner import make_broker
 from .secrets_store import load_kis
-from .sync_client import push_snapshot
+from .sync_client import pull_risk_limits, push_snapshot
 from .trader import Trader
 
 log = logging.getLogger("localapp.intraday_loop")
@@ -307,6 +307,58 @@ def start(market: str = "KRX") -> dict:
         trader._submit_sell = _hook_submit
         manager._submit_sell = _hook_submit
 
+        # Q5 Tier 1+2 — 체결 직후 + 60초 monitor 평가 활성화.
+        # risk_limits 받아서 일일 손실 한도 결정 (글로벌 default fallback).
+        try:
+            rl = pull_risk_limits()
+        except Exception as e:
+            log.warning("risk_limits pull 실패 — 글로벌 default 사용: %s", e)
+            rl = {}
+        from quant_core.exec_defaults import DEFAULT_EXECUTION
+        daily_loss_limit_pct = (rl.get("kill_switch_daily_loss_pct")
+                                  if rl.get("kill_switch_daily_loss_pct") is not None
+                                  else DEFAULT_EXECUTION["daily_loss_limit_pct"])
+        trader._daily_loss_limit_pct = float(daily_loss_limit_pct)
+
+        def _on_ks_trigger(reason_source: str = "monitor") -> None:
+            """Q5: kill switch 발동 시 호출. 미체결 cancel + 빈 cycle 재호출(청산
+            패스) + 서버 push. reason_source는 'apply_fill' 또는 'monitor'."""
+            log.critical("[ks-trigger] 발동 source=%s — 즉시 청산 cycle 시작",
+                          reason_source)
+            try:
+                trader.cancel_all_pending(decisions=[])
+            except Exception as e:
+                log.error("[ks-trigger] cancel_all_pending 예외: %s", e)
+            try:
+                # 빈 strategies + 빈 candidates → 진입 0, 청산 패스만 실행.
+                # trader.cycle은 _CYCLE_LOCK을 acquire (현 thread가 이미 락을
+                # 쥐지 않은 상태로 호출).
+                trader.cycle(strategies=[], dataset=qc.load_dataset(
+                    with_indicators=True),
+                              buy_candidates=[], risk_limits=rl, market=market)
+            except Exception as e:
+                log.error("[ks-trigger] cycle 예외: %s", e)
+            try:
+                snap = broker.account_snapshot()
+                push_snapshot({
+                    "balance": snap.get("balance", {}),
+                    "positions": snap.get("positions", []),
+                    "decisions": [],
+                    "cycle_summary": {
+                        "today": kst_today().isoformat(),
+                        "kind": "kill_switch_triggered",
+                        "source": reason_source,
+                    },
+                })
+            except Exception as e:
+                log.warning("[ks-trigger] push 실패: %s", e)
+
+        # _apply_fill 끝에서도 동일 트리거 사용 (Tier 1).
+        trader._ks_trigger_hook = _on_ks_trigger
+        # 60초 monitor 시작 (Tier 2).
+        manager.start_monitor(daily_loss_limit_pct, _on_ks_trigger,
+                               period_sec=60.0)
+
         # 보유 종목 변화 추적 — 60초마다 sync_subscriptions
         stop_flag = threading.Event()
 
@@ -362,6 +414,12 @@ def stop() -> dict:
 
         manager = _state["manager"]
         broker = _state["broker"]
+        # Q5: ks monitor 종료
+        if manager is not None:
+            try:
+                manager.stop_monitor()
+            except Exception as e:
+                log.warning("ks-monitor stop 예외: %s", e)
         n_triggered = len(manager.decisions) if manager else 0
 
         # 마지막 sync push

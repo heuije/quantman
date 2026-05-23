@@ -84,6 +84,14 @@ class IntradayStopManager:
         self._snap_cache_ts: float = 0.0
         self._snap_ttl: float = 60.0
 
+        # Q5 Tier 2 — 장중 kill switch monitor. start_monitor() 호출 시 활성화.
+        # period: 60초(AL-2). on_trigger: ks 발동 시 호출되는 외부 핸들러
+        # (intraday_loop이 cycle 호출/push를 담당).
+        self._ks_monitor_thread: threading.Thread | None = None
+        self._ks_stop_flag: threading.Event | None = None
+        self._ks_daily_loss_limit_pct: float | None = None
+        self._ks_on_trigger: Callable[[], None] | None = None
+
     def _atr14_of(self, symbol: str) -> float | None:
         df = self.dataset.get(symbol)
         if df is None or "atr_14" not in getattr(df, "columns", []):
@@ -201,3 +209,105 @@ class IntradayStopManager:
         """현재 보유 종목 코드 셋 — WebSocket 구독 갱신용."""
         ledger = self._get_ledger()
         return {pos.get("symbol") for pos in ledger.values() if pos.get("symbol")}
+
+    # ── Q5 Tier 2: 장중 kill switch monitor ─────────────────────────────────
+    def start_monitor(self, daily_loss_limit_pct: float,
+                      on_trigger: Callable[[], None],
+                      period_sec: float = 60.0) -> None:
+        """장중 kill switch monitor thread 시작.
+
+        period_sec(기본 60초, AL-2)마다 account_snapshot으로 통합 자본 평가 →
+        day_start 대비 -daily_loss_limit_pct% 도달 시 on_trigger 호출.
+
+        on_trigger는 intraday_loop이 제공: trader.cancel_all_pending + 빈 cycle
+        재호출(청산 패스) + 서버 push를 담당.
+
+        snap_cache(L-04)와 cache_ts를 공유 — 60초 TTL이라 모니터 평가용으로도 사용.
+        """
+        if self._ks_monitor_thread and self._ks_monitor_thread.is_alive():
+            log.info("[ks-monitor] 이미 실행 중")
+            return
+        self._ks_daily_loss_limit_pct = float(daily_loss_limit_pct)
+        self._ks_on_trigger = on_trigger
+        self._ks_stop_flag = threading.Event()
+        t = threading.Thread(target=self._ks_monitor_loop, daemon=True,
+                              name="ks-monitor",
+                              kwargs={"period_sec": period_sec})
+        self._ks_monitor_thread = t
+        t.start()
+        log.info("[ks-monitor] 시작 — period=%.0fs, limit=-%.2f%%",
+                  period_sec, daily_loss_limit_pct)
+
+    def stop_monitor(self) -> None:
+        """장 마감(15:30) 시 호출. monitor thread 종료 대기."""
+        sf = self._ks_stop_flag
+        if sf is not None:
+            sf.set()
+        t = self._ks_monitor_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=5)
+        self._ks_monitor_thread = None
+        self._ks_stop_flag = None
+
+    def _ks_monitor_loop(self, period_sec: float) -> None:
+        """모니터 루프 — period_sec 주기로 _evaluate_once. 예외는 로그만 남기고 계속.
+
+        의도적으로 _broker_qty_of와 같은 캐시(self._snap_cache)를 갱신하므로 tick
+        핸들러도 신선한 잔고를 본다. 단, snap 호출 자체는 60초 TTL이라 rate limit
+        압박 약함.
+        """
+        sf = self._ks_stop_flag
+        limit = self._ks_daily_loss_limit_pct
+        on_trigger = self._ks_on_trigger
+        if sf is None or limit is None or on_trigger is None:
+            log.warning("[ks-monitor] 초기화 누락 — 종료")
+            return
+        # 시작 직후 즉시 1회 평가는 하지 않음 (cycle이 방금 평가했을 가능성).
+        while not sf.wait(period_sec):
+            try:
+                self._ks_evaluate_once(limit, on_trigger)
+            except Exception as e:
+                log.error("[ks-monitor] 평가 예외: %s", e)
+        log.info("[ks-monitor] 종료")
+
+    def _ks_evaluate_once(self, daily_loss_limit_pct: float,
+                          on_trigger: Callable[[], None]) -> bool:
+        """1회 평가. 발동되면 on_trigger 호출하고 monitor는 그대로 계속(중복 발동은
+        killswitch.is_active 게이트가 막음). 반환: 발동 여부.
+        """
+        from . import killswitch
+        if killswitch.is_active():
+            return False
+        # snap 캐시 강제 갱신 — monitor는 60초 주기라 캐시 TTL과 일치
+        now = time.monotonic()
+        if self._snap_cache is None or (now - self._snap_cache_ts) > self._snap_ttl:
+            try:
+                self._snap_cache = self.broker.account_snapshot()
+                self._snap_cache_ts = now
+            except Exception as e:
+                log.warning("[ks-monitor] snap 실패 — 다음 주기 재시도: %s", e)
+                return False
+        bal = self._snap_cache.get("balance", {})
+        equity = _ks_unified_equity_krw(bal)
+        reason = killswitch.check_daily_loss(equity, daily_loss_limit_pct)
+        if not reason:
+            return False
+        killswitch.activate(reason)
+        log.critical("[ks-monitor] kill switch 발동: %s", reason)
+        try:
+            on_trigger()
+        except Exception as e:
+            log.error("[ks-monitor] on_trigger 핸들러 실패: %s", e)
+        return True
+
+
+def _ks_unified_equity_krw(bal: dict) -> float:
+    """trader._unified_equity_krw와 동일 로직 (순환 import 회피용 사본).
+
+    국내 평가 + 해외 평가(KRW) + USD 현금(KRW 환산).
+    """
+    dom = float(bal.get("total_eval", 0) or 0)
+    foreign = float(bal.get("foreign_eval_krw", 0) or 0)
+    usd_cash = float(bal.get("cash_usd", 0) or 0)
+    fx = float(bal.get("fx_usdkrw", 0) or 0)
+    return dom + foreign + usd_cash * fx

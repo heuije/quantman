@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -29,6 +30,13 @@ from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
 from . import analytics, intents, killswitch, order_log
 
 log = logging.getLogger("localapp.trader")
+
+# Q5(AL-4): cycle ↔ settlement ↔ 장중 kill switch trigger의 직렬화 락.
+# 모듈 레벨로 두는 이유: trader 인스턴스가 cycle/settlement에서 매번 새로
+# 만들어지므로 인스턴스 lock으로는 직렬화가 안 된다. 같은 PC 단일 프로세스
+# 가정이라 모듈 락이 안전. 모든 진입(trader.cycle, run_post_close_settlement,
+# intraday monitor의 trigger 핸들러)이 이 락을 acquire 후 진입한다.
+_CYCLE_LOCK = threading.Lock()
 
 
 def _load_json(path: Path, default):
@@ -175,6 +183,18 @@ class Trader:
         self.rebalance_state: dict[str, str] = _load_json(REBALANCE_PATH, {})
         # 미국 매수여력 모드 (cycle에서 risk_limits로 설정). 기본 통합증거금.
         self._us_bp_mode: str = "integrated"
+        # Q5: 체결 후(_apply_fill) 즉시 kill switch 평가용 한도. cycle 진입 시
+        # risk_limits에서 채워진다. 호출자가 설정 안 했으면 평가 skip(보수적 무동작).
+        self._daily_loss_limit_pct: float | None = None
+        # Q5: kill switch 발동 시 추가 동작을 외부에 알리는 hook (intraday_loop이
+        # 보유 종목 강제 청산 cycle을 트리거하도록). None이면 발동만 기록.
+        self._ks_trigger_hook = None
+        # Q5(데드락 방지): cycle 진입 중 플래그. _apply_fill의 ks 평가/hook 호출은
+        # cycle 외부에서만 동작 — cycle 내부의 _apply_fill(이전 미체결 정리,
+        # _wait_pending 폴링)에서 hook이 cycle을 재호출하면 _CYCLE_LOCK 데드락 +
+        # 무한 재귀 위험. cycle은 진입부에서 이미 ks를 평가하므로 중복 평가 불필요.
+        # 진짜 필요 케이스는 intraday_loop의 _on_exec_event(별 thread).
+        self._in_cycle = False
 
     # ── 영속화 ────────────────────────────────────────────────────────────────
 
@@ -262,11 +282,12 @@ class Trader:
     def _resolve_pending(self, decisions: list[dict]) -> None:
         """이전 사이클에서 남은 미체결 주문의 현재 상태를 갱신.
 
-        체결 → 원장 반영. 타임아웃 → 취소. 부분체결 → 부분만 반영.
+        Q7(DAY 단일): 로컬 timeout cancel 제거. KIS가 정규장 마감(15:30)에 미체결
+        분을 자동 cancel하므로 우리는 상태 조회로 cancelled를 인지하고 ledger·
+        pending을 정리하기만 한다. 일중에 limit 도달 시 자연 체결 허용.
         """
         if not self.pending:
             return
-        now = time.time()
         for order_no, p in list(self.pending.items()):
             try:
                 st = self.broker.order_status(order_no, p.get("symbol"))
@@ -294,25 +315,12 @@ class Trader:
                                     intended_price=p.get("intended_price"),
                                     limit_price=p.get("limit_price"),
                                     strategy_name=p.get("strategy_name", ""))
+                decisions.append(order_log.decision(
+                    "unfilled", p.get("strategy_id", ""),
+                    p.get("strategy_name", ""), p["symbol"],
+                    "미체결 cancelled (KIS 마감 자동 취소 또는 외부 취소)"))
                 del self.pending[order_no]
-            else:
-                # 여전히 미체결: 타임아웃 검사
-                ts = float(p.get("submitted_ts", now))
-                if now - ts > p.get("timeout_sec", 300):
-                    try:
-                        self.broker.cancel(order_no, p["symbol"], p["qty"])
-                    except Exception as e:
-                        log.warning("타임아웃 취소 실패 [%s]: %s", order_no, e)
-                    order_log.log_order("timeout", p["symbol"], p["side"], p["qty"],
-                                        order_no=order_no,
-                                        intended_price=p.get("intended_price"),
-                                        limit_price=p.get("limit_price"),
-                                        strategy_name=p.get("strategy_name", ""))
-                    decisions.append(order_log.decision(
-                        "unfilled", p.get("strategy_id", ""),
-                        p.get("strategy_name", ""), p["symbol"],
-                        f"미체결 타임아웃 ({p.get('timeout_sec')}초)"))
-                    del self.pending[order_no]
+            # else: 여전히 미체결 — 다음 폴링/사이클에서 재확인. 로컬 timeout 없음.
 
     def _apply_fill(self, order_no: str, p: dict, filled_qty: int,
                     fill_price: float, decisions: list[dict],
@@ -370,6 +378,77 @@ class Trader:
             decisions.append(order_log.decision(
                 "sold", sid, p.get("strategy_name", ""), symbol,
                 f"{filled_qty}주 @ {fill_price:,.0f}원 ({p.get('reason', '')})"))
+
+        # Q5 Tier 1 — 체결 직후 kill switch 평가. 시초가 매수가 장중에 잡혀 자본이
+        # day_start 대비 -X% 도달하는 정확한 순간을 잡는다. _daily_loss_limit_pct가
+        # 설정되어 있을 때만 평가(cycle 또는 intraday_loop가 설정).
+        # 단, cycle 내부에서 호출된 _apply_fill은 skip — cycle이 진입부에서 이미
+        # 평가했고, hook이 cycle을 재호출하면 _CYCLE_LOCK 데드락 + 무한 재귀.
+        if self._daily_loss_limit_pct is not None and not self._in_cycle:
+            fired = self.evaluate_killswitch_now(
+                self._daily_loss_limit_pct, decisions)
+            if fired and self._ks_trigger_hook is not None:
+                try:
+                    self._ks_trigger_hook("apply_fill")
+                except Exception as e:
+                    log.error("[ks-hook] apply_fill 트리거 핸들러 실패: %s", e)
+
+    # ── Q5: 장중 kill switch (Tier 1·2 공용 평가/실행 helpers) ─────────────────
+
+    def evaluate_killswitch_now(self, daily_loss_limit_pct: float,
+                                  decisions: list[dict] | None = None) -> bool:
+        """현재 KIS 잔고 기반 통합 자본을 평가해 일일 손실 한도 초과 시 발동.
+
+        반환: 발동되어 새로 active 됐으면 True (이미 active였거나 미도달이면 False).
+        decisions가 주어지면 발동 사유를 결정 로그에 기록.
+
+        Q5: 사이클 시점(08:55/15:35)만 평가하던 기존 동작에 더해, 체결 후(_apply_fill)
+        와 장중 60초 monitor에서도 동일 임계로 평가하기 위한 공용 진입점.
+        """
+        if killswitch.is_active():
+            return False
+        try:
+            snap = self.broker.account_snapshot()
+            equity = _unified_equity_krw(snap["balance"])
+        except Exception as e:
+            log.warning("[ks-eval] account_snapshot 실패 — skip: %s", e)
+            return False
+        reason = killswitch.check_daily_loss(equity, daily_loss_limit_pct)
+        if not reason:
+            return False
+        killswitch.activate(reason)
+        log.critical("[ks-eval] kill switch 발동: %s", reason)
+        if decisions is not None:
+            decisions.append(order_log.decision(
+                "kill_switch", "", "", "", reason))
+        return True
+
+    def cancel_all_pending(self, decisions: list[dict] | None = None) -> int:
+        """미체결 주문 전체를 KIS에 즉시 cancel 발주. Q5 발동 시 자금 노출 차단용.
+
+        업계 표준(FCA): kill switch 발동 시 "cancel all outstanding orders". 보유분
+        강제 청산은 다음 사이클이 책임지지만, 미체결 매수가 늦게 잡혀 손실을 키우는
+        시나리오를 차단한다. cancel 자체 실패는 다음 사이클의 _resolve_pending이
+        KIS 상태 조회로 정리.
+
+        반환: cancel 시도한 주문 건수.
+        """
+        if not self.pending:
+            return 0
+        n = 0
+        for order_no, p in list(self.pending.items()):
+            try:
+                self.broker.cancel(order_no, p["symbol"], p["qty"])
+                n += 1
+                if decisions is not None:
+                    decisions.append(order_log.decision(
+                        "cancelled", p.get("strategy_id", ""),
+                        p.get("strategy_name", ""), p["symbol"],
+                        f"kill switch — 미체결 즉시 취소 ({order_no})"))
+            except Exception as e:
+                log.warning("[ks-cancel] %s 취소 실패: %s", order_no, e)
+        log.info("[ks-cancel] %d건 cancel 시도", n)
+        return n
 
     # ── 주문 발주 helpers ────────────────────────────────────────────────────
 
@@ -469,7 +548,8 @@ class Trader:
             "qty": qty, "limit_price": limit_price,
             "intended_price": intended_price,
             "submitted_ts": time.time(),
-            "timeout_sec": int(policy["unfilled_timeout_sec"]),
+            # Q7: timeout_sec 필드 제거 — _resolve_pending이 timeout cancel을
+            # 더 이상 사용하지 않음. KIS DAY 정책으로 마감 시 자동 cancel.
             "definition": strat_def or {}, "reason": reason,
             "filled_so_far": 0,
         }
@@ -756,7 +836,30 @@ class Trader:
         risk_limits(Phase 38.7/38.10): 사용자 위험 한도. 예:
           {"kill_switch_daily_loss_pct": 2.0, "max_drawdown_pct": 15.0}
         키가 없거나 None이면 글로벌 default 사용.
+
+        Q5(AL-4): cycle/settlement/장중 ks 트리거의 직렬화. _CYCLE_LOCK을 acquire
+        후 진입 — 동시 진입을 막아 broker.account_snapshot·발주 순서를 보존한다.
         """
+        # Q5: 외부 호출자가 이미 락을 쥔 채로 cycle을 호출하는 경우(예: 장중 ks
+        # 핸들러)도 대비해 RLock이 아닌 Lock을 쓰되, 모든 진입은 같은 thread가
+        # 중첩 호출하지 않도록 호출 규약으로 강제한다. timeout=None으로 blocking.
+        with _CYCLE_LOCK:
+            return self._cycle_locked(strategies, dataset, today,
+                                       buy_candidates, risk_limits, market)
+
+    def _cycle_locked(self, strategies, dataset, today, buy_candidates,
+                       risk_limits, market) -> dict:
+        # Q5(데드락 방지): _in_cycle 플래그를 try/finally로 보장 — 예외 발생 시에도
+        # 반드시 reset되어야 다음 cycle에서 _apply_fill의 평가가 정상 동작.
+        self._in_cycle = True
+        try:
+            return self._cycle_body(strategies, dataset, today,
+                                     buy_candidates, risk_limits, market)
+        finally:
+            self._in_cycle = False
+
+    def _cycle_body(self, strategies, dataset, today, buy_candidates,
+                     risk_limits, market) -> dict:
         today = today or kst_today()
         decisions: list[dict] = []
 
@@ -790,6 +893,9 @@ class Trader:
         max_drawdown_limit_pct = (rl.get("max_drawdown_pct")
                                     if rl.get("max_drawdown_pct") is not None
                                     else global_policy["max_drawdown_pct"])
+        # Q5: 체결 후 즉시 평가용으로 인스턴스에 저장. 같은 사이클 안의 모든
+        # _apply_fill 호출이 동일 한도를 본다.
+        self._daily_loss_limit_pct = float(daily_loss_limit_pct)
 
         if not ks_active:
             reason = killswitch.check_daily_loss(
@@ -900,7 +1006,9 @@ class Trader:
                                        market=market)
 
         # ── 4. 미체결 짧게 대기 (시초가 동시호가 직후 대부분 잡힘) ───────
-        self._wait_pending(global_policy["unfilled_timeout_sec"],
+        # Q7: 300초 → 60초 (post_submit_wait_sec). DAY 정책으로 못 잡힌 분은
+        # 다음 사이클 또는 KIS 마감 자동 cancel이 정리.
+        self._wait_pending(global_policy["post_submit_wait_sec"],
                            global_policy["poll_interval_sec"], decisions)
 
         # ── 5. 최종 스냅샷 ────────────────────────────────────────────────

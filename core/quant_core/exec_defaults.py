@@ -19,9 +19,15 @@ DEFAULT_EXECUTION: dict[str, Any] = {
     # 신호 기반 매도(매도조건·보유기간)와 청산(익절·손절·트레일)이 같은 값을 사용.
     # 위험 관리는 잡혀야 하므로 매수 tol보다 공격적인 default.
     "sell_tolerance_pct": 2.0,
-    # 미체결 주문 자동 취소 대기시간 (초). 5분.
-    "unfilled_timeout_sec": 300,
-    # 폴링 간격 (초)
+    # Q7: time-in-force = DAY (업계 표준). KIS가 정규장 마감(15:30) 시 미체결 주문을
+    # 자동 cancel하므로 로컬에서 별도 timeout cancel 없음. 5분 timeout이 비표준적
+    # 으로 짧다는 결론(2026-05-23 리뷰) — Alpaca/IB/Fidelity/KIS 모두 DAY 기본.
+    # 일중 limit 도달 시 자연 체결을 허용 (이전 정책에선 폐기됐던 케이스).
+    #
+    # _wait_pending이 cycle 끝에 짧게 폴링하는 윈도우(시초가 동시호가 직후 체결을
+    # 잡기 위함). 60초면 시초가 체결은 거의 다 잡힌다.
+    "post_submit_wait_sec": 60,
+    # 폴링 간격 (초). _resolve_pending이 N초마다 KIS order_status 조회.
     "poll_interval_sec": 20,
 
     # 갭 필터: 진입 시 전일 종가 vs 현재가 갭이 이 임계값 초과면 그 신호 폐기
