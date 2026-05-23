@@ -585,6 +585,7 @@ function ExitRow({ label, v }: { label: string; v: string }) {
 function RiskSummarySection({ definition: d }: { definition: StrategyDef }) {
   const e = d.execution ?? {};
   const mode = e.sizing_mode ?? EXECUTION_DEFAULTS.sizing_mode;
+  const amountKrw = e.amount_krw ?? EXECUTION_DEFAULTS.amount_krw;
   const atrPct = e.atr_risk_pct ?? EXECUTION_DEFAULTS.atr_risk_pct;
   const atrMul = e.atr_mult ?? EXECUTION_DEFAULTS.atr_mult;
   const maxPos = e.max_position_pct ?? EXECUTION_DEFAULTS.max_position_pct;
@@ -606,9 +607,15 @@ function RiskSummarySection({ definition: d }: { definition: StrategyDef }) {
       <h4>리스크 한도</h4>
       <ExitRow
         label="사이징"
-        v={mode === "atr_risk"
-          ? `변동성 보정 (자본 ${atrPct}% 위험 / ATR×${atrMul})`
-          : `자본 비율 (${d.amount_pct}%)`}
+        v={
+          mode === "atr_risk"
+            ? `리스크 기반 (자본 ${atrPct}% 위험 / ATR×${atrMul})`
+            : mode === "fixed_amount"
+              ? `정액 (한 종목당 ${amountKrw.toLocaleString()}원)`
+              : mode === "equal_weight"
+                ? `균등 분배 (${d.screener_limit ?? 5}종목)`
+                : `정률 (자본의 ${d.amount_pct}%)`
+        }
       />
       <ExitRow label="단일 종목 상한" v={`${maxPos}%`} />
       <ExitRow label="일일 손실 한도" v={`${dailyLoss}%`} />

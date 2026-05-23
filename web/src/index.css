@@ -445,32 +445,30 @@ details.section-collapsible[open] > summary { margin-bottom: 14px; }
   color: var(--danger);
 }
 
-/* 리스크 한도 — 사이징 모드 선택 카드 */
-.sizing-modes {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-  margin-bottom: 4px;
+/* 사이징 모드 4지 카드 셀렉터 (Phase 47) */
+.sizing-cards {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;
+  margin: 4px 0 12px;
 }
-.sizing-mode {
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 12px 14px;
-  background: var(--bg); border: 1px solid var(--border);
-  border-radius: 8px; cursor: pointer;
+@media (min-width: 1000px) {
+  .sizing-cards { grid-template-columns: repeat(4, 1fr); }
+}
+.sizing-card {
+  text-align: left; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); cursor: pointer; color: inherit;
   transition: border-color 0.15s, background 0.15s;
+  display: flex; flex-direction: column; gap: 4px;
+  font-family: inherit;
 }
-.sizing-mode:hover {
-  border-color: var(--accent);
-}
-.sizing-mode.on {
+.sizing-card:hover { border-color: var(--accent); }
+.sizing-card.on {
   border-color: var(--accent);
   background: var(--accent-soft, rgba(64, 158, 255, 0.08));
 }
-.sizing-mode input[type="radio"] {
-  margin-top: 3px; flex-shrink: 0;
-}
-.sizing-mode strong {
-  font-size: 14px;
-  display: block;
-}
+.sizing-card-title { font-size: 14px; font-weight: 600; }
+.sizing-card-desc { font-size: 12px; color: var(--muted); line-height: 1.45; }
+
 .atr-detail {
   margin-top: 8px; padding-left: 10px;
   border-left: 2px solid var(--accent);
@@ -1372,7 +1370,7 @@ thead th { color: var(--muted); font-weight: 600; }
   /* 넓은 표는 가로 스크롤 허용 (글자 깨짐 방지) */
   .panel table { display: block; overflow-x: auto; white-space: nowrap; }
   /* 터치 타깃 ≥44px (모바일) — 행 전체가 탭 영역 */
-  .rule-row, .mode-row, .alert-toggle, .rebalance-toggle, .sizing-mode { min-height: 44px; }
+  .rule-row, .mode-row, .alert-toggle, .rebalance-toggle, .sizing-card { min-height: 44px; }
   .rule-row input[type="checkbox"], .hist-toggle-row input[type="checkbox"] { width: 18px; height: 18px; }
   .multi-chip-x { width: 24px; height: 24px; font-size: 16px; }
   .multi-chips { min-height: 48px; }

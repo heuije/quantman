@@ -655,7 +655,12 @@ class Trader:
             return False
 
         # 사이징 — 전일 종가 기준 (cash·prev_close 모두 종목 통화)
-        if policy["sizing_mode"] == "atr_risk":
+        # Phase 47 — 4지 모드 (fixed_amount / pct_cash / equal_weight / atr_risk).
+        # 모든 모드는 max_position_pct로 단일 종목 비중 상한 클램프.
+        mode = policy["sizing_mode"]
+        cap_qty = int((capital * policy["max_position_pct"] / 100.0)
+                        // prev_close)
+        if mode == "atr_risk":
             atr_val = 0.0
             if "atr_14" in sdf.columns:
                 atr_val = float(sdf["atr_14"].iloc[-1] or 0.0)
@@ -663,19 +668,26 @@ class Trader:
                 decisions.append(order_log.decision(
                     "skip_no_atr", strategy_id, strat_name, symbol,
                     "ATR 데이터 없음 — atr_risk 모드 진입 불가 "
-                    "(사이징을 자본 비율로 변경하거나 dataset 보강 필요)"))
+                    "(사이징을 정률/정액으로 변경하거나 dataset 보강 필요)"))
                 return False
             qty = _atr_qty(capital, atr_val, policy, prev_close)
-            qty = min(qty, int(cash // prev_close))
-        else:
+        elif mode == "fixed_amount":
+            # 정액: 한 종목당 amount_krw 원. 통화 단위는 종목 통화와 일치한다고 가정
+            # (KRW 종목엔 KRW 금액). 미국 종목 fixed_amount는 별도 cycle 검토.
+            amount = float(policy.get("amount_krw") or 0)
+            qty = int(amount // prev_close)
+        elif mode == "equal_weight":
+            # 균등 분배: 자본 ÷ 동시 보유 한도. screener_limit이 1이면 정률 100%와 동일.
+            slot = capital / max(int(strat.screener_limit or 1), 1)
+            qty = int(slot // prev_close)
+        else:  # pct_cash (default) — 현행 정률
             qty = int(cash * strat.amount_pct / 100.0 // prev_close)
-            # L-10 — 단일 종목 비중 상한을 pct_cash 경로에도 적용. _atr_qty 내부엔
-            # 이미 cap이 있지만 pct_cash엔 누락돼 amount_pct=100 두면 한 종목에
-            # 전 자본이 들어갈 수 있었다. 기준은 _atr_qty와 동일(capital × cap%).
-            # capital은 통화 일치(KRW/USD)된 값.
-            cap_qty = int((capital * policy["max_position_pct"] / 100.0)
-                            // prev_close)
-            qty = min(qty, cap_qty)
+
+        # L-10 — 모든 모드에 단일 종목 비중 상한 클램프.
+        # capital은 통화 일치(KRW/USD)된 값.
+        qty = min(qty, cap_qty)
+        # 가용 현금 한도 (모든 모드 공통)
+        qty = min(qty, int(cash // prev_close))
 
         # 미국: 주문가능수량(통합증거금 상한) 초과 방지
         if max_cap is not None:

@@ -33,13 +33,20 @@ DEFAULT_EXECUTION: dict[str, Any] = {
     # 갭 필터: 진입 시 전일 종가 vs 현재가 갭이 이 임계값 초과면 그 신호 폐기
     "gap_filter_pct": 2.5,
 
-    # 사이징 모드: "pct_cash" (자본 비율) | "atr_risk" (ATR 변동성 보정)
-    "sizing_mode": "atr_risk",
+    # 사이징 모드 (Phase 47 — 4지 통합):
+    #   "fixed_amount": 한 종목당 amount_krw 원 (정액)
+    #   "pct_cash":     자본의 amount_pct % (정률, default)
+    #   "equal_weight": 자본을 screener_limit 종목에 균등 분배
+    #   "atr_risk":     트레이드당 atr_risk_pct% 위험, 손절폭 ATR×atr_mult
+    # default를 atr_risk → pct_cash로 변경 (ATR은 진입 장벽이 큼).
+    "sizing_mode": "pct_cash",
+    # fixed_amount 모드: 한 종목당 원 단위 금액. 0이면 발주 차단.
+    "amount_krw": 0,
     # atr_risk 모드: 자본의 X%만 1트레이드에 위험
     "atr_risk_pct": 1.0,
     # ATR × 이 배수 = 1주당 손절폭(원). 수량 = (자본×risk%) ÷ (ATR×mult)
     "atr_mult": 2.0,
-    # 단일 종목 비중 상한 (자본 대비 %). atr_risk 결과가 이 한도 초과 시 클램프.
+    # 단일 종목 비중 상한 (자본 대비 %). 모든 사이징 결과가 이 한도 초과 시 클램프.
     "max_position_pct": 10.0,
 
     # 일일 손실 한도 (자본 대비 %). 도달 시 kill switch 발동.

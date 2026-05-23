@@ -79,7 +79,13 @@ export interface SellRules {
 /** 체결 정책 — 모든 필드 optional, null/undefined는 글로벌 default 적용.
  *  Backend: quant_core.exec_defaults.DEFAULT_EXECUTION과 병합. */
 export interface ExecutionPolicy {
-  sizing_mode?: "pct_cash" | "atr_risk";  // pct_cash=amount_pct 사용, atr_risk=ATR 변동성 기반
+  /** 사이징 모드 (Phase 47 — 4지 통합):
+   *  - fixed_amount: 한 종목당 amount_krw 원 (정액)
+   *  - pct_cash:    자본의 amount_pct % (정률, default)
+   *  - equal_weight: 자본을 screener_limit 종목에 균등 분배
+   *  - atr_risk:    트레이드당 atr_risk_pct% 위험, 손절폭 ATR×atr_mult */
+  sizing_mode?: "fixed_amount" | "pct_cash" | "equal_weight" | "atr_risk";
+  amount_krw?: number;                    // fixed_amount 모드: 한 종목당 원 단위 금액
   atr_risk_pct?: number;                  // atr_risk 모드: 트레이드당 자본의 N% 위험
   atr_mult?: number;                      // ATR × 이 배수 = 1주당 손절폭
   max_position_pct?: number;              // 단일 종목 비중 상한 (자본 %)
@@ -97,7 +103,10 @@ export interface ExecutionPolicy {
 
 /** 사이징·리스크 default — exec_defaults.py와 동기. UI placeholder 및 신규 전략 default로 사용. */
 export const EXECUTION_DEFAULTS: Required<ExecutionPolicy> = {
-  sizing_mode: "atr_risk",
+  // Phase 47 — default를 atr_risk → pct_cash로 변경. ATR은 데이터·손절폭 설정
+  // 부담이 있어 신규 사용자 진입 장벽이 컸음. 가장 직관적인 정률을 default로.
+  sizing_mode: "pct_cash",
+  amount_krw: 1_000_000,                  // fixed_amount 전환 시 placeholder (100만원)
   atr_risk_pct: 1.0,
   atr_mult: 2.0,
   max_position_pct: 10.0,
@@ -125,7 +134,7 @@ export interface StrategyDef {
   exit_rules?: ExitRules;
   /** [DEPRECATED — sell_rules.sell_amount_pct로 통합] */
   sell_amount_pct?: number;
-  amount_pct: number;              // 자본 대비 매수 비율 (%) — sizing_mode=pct_cash일 때만 사용
+  amount_pct: number;              // 자본 대비 매수 비율 (%) — sizing_mode=pct_cash일 때 사용
   screener_limit?: number;         // 자동 선택 시 동시 보유 한도 (기본 5)
   // 커스텀 스크리너 — trade_symbol='screener:custom'일 때 프리셋 대신 사용.
   screener_spec?: ScreenerSpecIO | null;

@@ -156,8 +156,9 @@ class ExecutionPolicy(BaseModel):
     poll_interval_sec: Optional[int] = None
     # 갭 필터
     gap_filter_pct: Optional[float] = None
-    # 사이징
-    sizing_mode: Optional[str] = None              # "pct_cash" | "atr_risk"
+    # 사이징 (Phase 47 — fixed_amount·equal_weight 추가)
+    sizing_mode: Optional[str] = None              # "fixed_amount" | "pct_cash" | "equal_weight" | "atr_risk"
+    amount_krw: Optional[float] = None             # fixed_amount 모드: 한 종목당 원 단위 금액
     atr_risk_pct: Optional[float] = None
     atr_mult: Optional[float] = None
     max_position_pct: Optional[float] = None

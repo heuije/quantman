@@ -12,7 +12,7 @@ import type {
 } from "../types";
 import { EXECUTION_DEFAULTS, parseScreenerKey } from "../types";
 
-type SizingMode = "pct_cash" | "atr_risk";
+type SizingMode = "fixed_amount" | "pct_cash" | "equal_weight" | "atr_risk";
 
 /** 청산 규칙 정의 — 켜진 규칙 중 먼저 트리거되는 것으로 청산. */
 type RuleKey = "hold" | "tp" | "sl" | "trail" | "atr";
@@ -55,8 +55,9 @@ export default function Backtest() {
   const [screenerSpec, setScreenerSpec] = useState<ScreenerSpecIO | null>(null);
   // 자동 선택 리밸런싱 (라이브 전용)
   const [rebalance, setRebalance] = useState<RebalanceIO>({ enabled: false, period: "daily" });
-  // 리스크/사이징 — exec_defaults.py의 default와 동기
+  // 리스크/사이징 — exec_defaults.py의 default와 동기 (Phase 47 — 4지 통합)
   const [sizingMode, setSizingMode] = useState<SizingMode>(EXECUTION_DEFAULTS.sizing_mode);
+  const [amountKrw, setAmountKrw] = useState(EXECUTION_DEFAULTS.amount_krw);
   const [atrRiskPct, setAtrRiskPct] = useState(EXECUTION_DEFAULTS.atr_risk_pct);
   const [atrMult, setAtrMult] = useState(EXECUTION_DEFAULTS.atr_mult);
   const [maxPositionPct, setMaxPositionPct] = useState(EXECUTION_DEFAULTS.max_position_pct);
@@ -127,6 +128,7 @@ export default function Backtest() {
   function buildDef(): StrategyDef {
     const execution: ExecutionPolicy = {
       sizing_mode: sizingMode,
+      amount_krw: amountKrw,
       atr_risk_pct: atrRiskPct,
       atr_mult: atrMult,
       max_position_pct: maxPositionPct,
@@ -291,6 +293,7 @@ export default function Backtest() {
           screenerSpec={screenerSpec} setScreenerSpec={setScreenerSpec}
           rebalance={rebalance} setRebalance={setRebalance}
           sizingMode={sizingMode} setSizingMode={setSizingMode}
+          amountKrw={amountKrw} setAmountKrw={setAmountKrw}
           atrRiskPct={atrRiskPct} setAtrRiskPct={setAtrRiskPct}
           atrMult={atrMult} setAtrMult={setAtrMult}
           maxPositionPct={maxPositionPct} setMaxPositionPct={setMaxPositionPct}
@@ -346,6 +349,7 @@ function BuildTab(props: {
   screenerSpec: ScreenerSpecIO | null; setScreenerSpec: (s: ScreenerSpecIO | null) => void;
   rebalance: RebalanceIO; setRebalance: (r: RebalanceIO) => void;
   sizingMode: SizingMode; setSizingMode: (v: SizingMode) => void;
+  amountKrw: number; setAmountKrw: (v: number) => void;
   atrRiskPct: number; setAtrRiskPct: (v: number) => void;
   atrMult: number; setAtrMult: (v: number) => void;
   maxPositionPct: number; setMaxPositionPct: (v: number) => void;
@@ -372,6 +376,7 @@ function BuildTab(props: {
     screenerLimit, setScreenerLimit,
     screenerSpec, setScreenerSpec, rebalance, setRebalance,
     sizingMode, setSizingMode,
+    amountKrw, setAmountKrw,
     atrRiskPct, setAtrRiskPct, atrMult, setAtrMult,
     maxPositionPct, setMaxPositionPct,
     dailyLossLimitPct, setDailyLossLimitPct,
@@ -431,32 +436,75 @@ function BuildTab(props: {
           }
         />
 
-        <div className="sub-h" style={{ marginTop: 14 }}>사이징 방식</div>
+        <div className="sub-h" style={{ marginTop: 14 }}>한 종목당 매수액</div>
         <p className="muted" style={{ margin: "0 0 10px" }}>
-          매수 수량을 자본 비율로 단순 계산할지, 종목별 변동성(ATR)을 보정해 동일 리스크로 분배할지 선택합니다.
+          한 종목에 얼마를 투입할지 결정합니다. 4가지 방식 중 하나를 선택하세요.
         </p>
-        <div className="sizing-modes">
-          <label className={"sizing-mode" + (sizingMode === "pct_cash" ? " on" : "")}>
-            <input
-              type="radio" name="sizing" checked={sizingMode === "pct_cash"}
-              onChange={() => setSizingMode("pct_cash")}
-            />
-            <div>
-              <strong>자본 비율</strong>
-              <div className="muted small">아래 "1회 매수액"의 N%를 그대로 사용 — 단순하고 직관적</div>
-            </div>
-          </label>
-          <label className={"sizing-mode" + (sizingMode === "atr_risk" ? " on" : "")}>
-            <input
-              type="radio" name="sizing" checked={sizingMode === "atr_risk"}
-              onChange={() => setSizingMode("atr_risk")}
-            />
-            <div>
-              <strong>변동성 보정 (ATR)</strong>
-              <div className="muted small">종목 변동성에 반비례 — 변동성 큰 종목은 적게, 작은 종목은 많게</div>
-            </div>
-          </label>
+        <div className="sizing-cards">
+          <SizingCard
+            on={sizingMode === "pct_cash"} title="정률"
+            desc={`자본의 N%를 한 종목에 — 자본이 늘면 매수액도 자동 증가`}
+            onPick={() => setSizingMode("pct_cash")} />
+          <SizingCard
+            on={sizingMode === "fixed_amount"} title="정액"
+            desc={`한 종목당 고정 금액 — "이 종목 100만원어치 사라"`}
+            onPick={() => setSizingMode("fixed_amount")} />
+          <SizingCard
+            on={sizingMode === "equal_weight"} title="균등 분배"
+            desc={`자본을 동시 보유 종목 수로 나눔 — 종목당 동일 금액`}
+            onPick={() => setSizingMode("equal_weight")} />
+          <SizingCard
+            on={sizingMode === "atr_risk"} title="리스크 기반 (ATR)"
+            desc={`변동성에 반비례 — 종목별 동일 손실 위험`}
+            onPick={() => setSizingMode("atr_risk")} />
         </div>
+
+        {/* 선택한 모드에 필요한 입력만 노출 — dim/disabled 패턴 제거 (Phase 47). */}
+        {sizingMode === "pct_cash" && (
+          <>
+            <div className="amount-row">
+              <label>자본의</label>
+              <input type="number" min={1} max={100} value={buyAmountPct}
+                     onChange={(e) => setBuyAmountPct(Number(e.target.value))} />
+              <span className="muted">
+                % &nbsp;=&nbsp; {wonReadable(capital * buyAmountPct / 100)}
+              </span>
+            </div>
+            {screenerLimit > 1 && (
+              <div
+                className={"muted small" + (screenerLimit * buyAmountPct > 100 ? " warn" : "")}
+                style={{ marginTop: 4 }}
+              >
+                ⚠ 자동 선택 {screenerLimit}종목 × {fmt2(buyAmountPct)}% ={" "}
+                <b>{fmt2(screenerLimit * buyAmountPct)}%</b> 전체 노출
+                {screenerLimit * buyAmountPct > 100 && " (100% 초과 — 현금 부족 시 일부 종목 매수 실패)"}
+              </div>
+            )}
+          </>
+        )}
+
+        {sizingMode === "fixed_amount" && (
+          <div className="amount-row">
+            <label>한 종목당</label>
+            <input type="number" min={0} step={10000} value={amountKrw}
+                   onChange={(e) => setAmountKrw(Number(e.target.value))} />
+            <span className="muted">
+              원 &nbsp;=&nbsp; {wonReadable(amountKrw)}
+              {amountKrw > 0 && capital > 0
+                && ` (자본의 ${fmt2(amountKrw / capital * 100)}%)`}
+            </span>
+          </div>
+        )}
+
+        {sizingMode === "equal_weight" && (
+          <div className="muted small">
+            동시 보유 한도 <b>{screenerLimit}종목</b> 기준 한 종목당{" "}
+            <b>{wonReadable(capital / Math.max(screenerLimit, 1))}</b>
+            ({fmt2(100 / Math.max(screenerLimit, 1))}%) 투입.
+            <br />
+            동시 보유 한도는 아래 "매수 대상 — 자동 선택" 섹션에서 조정합니다.
+          </div>
+        )}
 
         {sizingMode === "atr_risk" && (
           <div className="atr-detail">
@@ -477,32 +525,6 @@ function BuildTab(props: {
               <br />
               ⚠ ATR 데이터가 없는 종목은 자동 fallback하지 않고 매수를 건너뜁니다.
             </div>
-          </div>
-        )}
-
-        <div className={"amount-row" + (sizingMode === "atr_risk" ? " dim" : "")}>
-          <label>1회 매수액 (자본의 %)</label>
-          <input type="number" min={1} max={100} value={buyAmountPct}
-                 disabled={sizingMode === "atr_risk"}
-                 onChange={(e) => setBuyAmountPct(Number(e.target.value))} />
-          <span className="muted">
-            {wonReadable(capital * buyAmountPct / 100)} ({fmt2(buyAmountPct)}%)
-          </span>
-        </div>
-        {sizingMode === "atr_risk" && (
-          <div className="muted small" style={{ marginTop: -4 }}>
-            ⓘ 사이징 방식이 <b>변동성 보정(ATR)</b>이라 이 값은 무시됩니다.
-            위에서 자본 비율로 전환하면 적용됩니다.
-          </div>
-        )}
-        {screenerLimit > 1 && sizingMode === "pct_cash" && (
-          <div
-            className={"muted small" + (screenerLimit * buyAmountPct > 100 ? " warn" : "")}
-            style={{ marginTop: 4 }}
-          >
-            ⚠ 자동 선택 {screenerLimit}종목 × {fmt2(buyAmountPct)}% ={" "}
-            <b>{fmt2(screenerLimit * buyAmountPct)}%</b> 전체 노출
-            {screenerLimit * buyAmountPct > 100 && " (100% 초과 — 현금 부족 시 일부 종목 매수 실패)"}
           </div>
         )}
       </div>
@@ -1076,6 +1098,20 @@ function Stat({ label, value, hint, colorBy }: {
       </div>
       <div className={"value" + tone}>{value}</div>
     </div>
+  );
+}
+
+// ── 사이징 모드 카드 (Phase 47 — 4지 통합 셀렉터) ───────────────────────────
+function SizingCard({ on, title, desc, onPick }: {
+  on: boolean; title: string; desc: string; onPick: () => void;
+}) {
+  return (
+    <button type="button"
+            className={"sizing-card" + (on ? " on" : "")}
+            onClick={onPick}>
+      <div className="sizing-card-title">{title}</div>
+      <div className="sizing-card-desc">{desc}</div>
+    </button>
   );
 }
 
