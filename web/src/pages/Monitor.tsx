@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { useMode } from "../mode";
 import {
   ExecutionQuality, HealthCard, MarketBar, PortfolioRiskCard,
   PositionDetailCards, RiskGauges, StrategyPnl,
@@ -17,7 +16,6 @@ import type {
 const REFRESH_MS = 5000;
 
 export default function Monitor() {
-  const { mode, isLive } = useMode();
   const [snap, setSnap] = useState<SyncSnapshot | null>(null);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [cmds, setCmds] = useState<CommandRow[]>([]);
@@ -102,7 +100,7 @@ export default function Monitor() {
     <div>
       <h1 className="page-title">트레이딩</h1>
       <p className="page-sub">
-        {mode === "live" ? "실전" : "모의"} 계좌 · 평일 <strong>08:55 KST</strong> 자동 사이클 —
+        평일 <strong>08:55 KST</strong> 자동 사이클 —
         전일 종가 기준 평가 → <strong>09:00 시초가 동시호가</strong> 체결.
         잔고·포지션은 매 사이클 종료 시점 기준이며 장중 실시간 변동은 표시되지 않습니다.
       </p>
@@ -184,10 +182,11 @@ export default function Monitor() {
           재개
         </button>
         <button className="ghost sm" onClick={() => {
-          const msg = isLive
-            ? "⚠ 실전 계좌입니다.\n실제 보유 종목을 모두 청산하고 신규 진입을 차단합니다.\n계속하시겠습니까?"
-            : "정말 모든 보유 종목을 청산하고 신규 진입을 차단하시겠습니까?";
-          if (confirm(msg)) send("LIQUIDATE_ALL");
+          // 실전·모의 구분은 각 포지션·전략 카드의 run_mode 배지가 담당.
+          // 청산 확인은 단일 메시지로 통합한다.
+          if (confirm("정말 모든 보유 종목을 청산하고 신규 진입을 차단하시겠습니까?")) {
+            send("LIQUIDATE_ALL");
+          }
         }} disabled={actionDisabled} title={pairTooltip}
                 style={{ color: "var(--red)" }}>
           전량 청산 + 차단

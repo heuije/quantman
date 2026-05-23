@@ -1,5 +1,5 @@
 /**
- * 개요 — 매일 첫 진입 페이지. 모의/실전 토글에 따라 데이터 필터.
+ * 개요 — 매일 첫 진입 페이지. 페이지 내부 모의/실전 토글에 따라 활성 전략을 필터.
  *
  * 6개 섹션: 액션 아이템 · 자산곡선 · 활성 전략 · 포트폴리오 · 최근 매매 · 시스템 상태.
  * 사용자가 가장 자주 보는 페이지라 5초 안에 "오늘 뭘 봐야 하나"를 답해야 한다.
@@ -9,7 +9,6 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import EquityChart from "../components/EquityChart";
-import { useMode } from "../mode";
 import type {
   DeviceRow, MarketContext, OrderEvent, StrategyRow, SyncSnapshot,
 } from "../types";
@@ -30,7 +29,9 @@ interface ActionItem {
 }
 
 export default function Dashboard() {
-  const { mode } = useMode();
+  // 페이지 내부 모드 토글 — 활성 전략 필터링용. 전역 mode가 의미 불일치
+  // (뷰 필터인데 매매 모드 스위치처럼 거짓 경고)였던 것을 제거하고 페이지로 옮겼다.
+  const [mode, setMode] = useState<"paper" | "live">("paper");
   const [snap, setSnap] = useState<SyncSnapshot | null>(null);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [strategies, setStrategies] = useState<StrategyRow[]>([]);
@@ -173,6 +174,24 @@ export default function Dashboard() {
             {mode === "live" ? "실전 계좌" : "모의 계좌"} · 오늘 한눈에 ·
             매일 평일 08:55 KST 자동 사이클 (시초가 동시호가 체결)
           </p>
+          <div className="mode-filter" role="tablist" aria-label="활성 전략 모드 필터">
+            <button
+              role="tab"
+              aria-selected={mode === "paper"}
+              className={"mode-filter-btn" + (mode === "paper" ? " on" : "")}
+              onClick={() => setMode("paper")}
+            >
+              모의
+            </button>
+            <button
+              role="tab"
+              aria-selected={mode === "live"}
+              className={"mode-filter-btn" + (mode === "live" ? " on" : "")}
+              onClick={() => setMode("live")}
+            >
+              실전
+            </button>
+          </div>
         </div>
         <div className="kpi-strip">
           <KpiBox label="총 평가" value={won(bal?.total_eval)} />

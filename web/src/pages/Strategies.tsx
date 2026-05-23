@@ -11,7 +11,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { useMode } from "../mode";
 import type { StrategyDef, StrategyRow, SyncSnapshot } from "../types";
 import { EXECUTION_DEFAULTS, parseScreenerKey, parseTradeSymbols } from "../types";
 
@@ -36,22 +35,11 @@ const pct = (v?: number | null) =>
   v == null ? "-" : (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
 
 export default function Strategies() {
-  const { mode } = useMode();
   const [rows, setRows] = useState<StrategyRow[]>([]);
   const [snap, setSnap] = useState<SyncSnapshot | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
-  // W-05 — 모드 변경 시 필터 자동 동기화를 effect+setFilter에서 파생값화.
-  // "사용자 수동 변경" 우선, "모드가 변하면 수동값 리셋"의 React 권장 패턴
-  // (https://react.dev/learn/you-might-not-need-an-effect#resetting-all-state-when-a-prop-changes).
-  const [manualFilter, setManualFilter] = useState<Filter | null>(null);
-  const [lastMode, setLastMode] = useState(mode);
-  if (mode !== lastMode) {
-    setLastMode(mode);
-    setManualFilter(null);   // mode 변경 시 수동 override 리셋
-  }
-  const filter: Filter = manualFilter ?? (mode === "live" ? "live" : "paper");
-  const setFilter = (f: Filter) => setManualFilter(f);
+  const [filter, setFilter] = useState<Filter>("paper");
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [promoteFor, setPromoteFor] = useState<StrategyRow | null>(null);

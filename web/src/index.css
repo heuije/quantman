@@ -62,49 +62,21 @@ a:hover { text-decoration: underline; }
 .page-title { font-size: 22px; font-weight: 700; margin: 0 0 4px; }
 .page-sub { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
 
-/* 상단 토픽바 — 모의/실전 토글 + 시각 경고 */
-.topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 28px; border-bottom: 1px solid var(--border);
-  background: var(--panel); position: sticky; top: 0; z-index: 10;
-  min-height: 52px;
-}
-.topbar.live { border-bottom: 3px solid var(--red); }
-.topbar-left { display: flex; align-items: center; gap: 10px; }
-.topbar-right { display: flex; align-items: center; gap: 14px; }
-.live-badge {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
-  color: #fff; background: var(--red); padding: 3px 8px; border-radius: 4px;
-}
-.mode-toggle {
+/* 페이지 내부 모드 필터 — Dashboard 활성 전략 paper/live 토글 */
+.mode-filter {
   display: inline-flex; background: var(--bg);
   border: 1px solid var(--border); border-radius: 8px; padding: 2px;
+  margin-top: 10px;
 }
-.mode-toggle button {
-  border: 0; background: transparent; padding: 6px 14px;
-  font-size: 13px; font-weight: 600; color: var(--muted);
-  border-radius: 6px; cursor: pointer; white-space: nowrap;
-  display: inline-flex; align-items: center; gap: 6px;
+.mode-filter-btn {
+  border: 0; background: transparent; padding: 5px 14px;
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  border-radius: 6px; cursor: pointer;
 }
-.mode-toggle button:hover { color: var(--text); }
-.mode-toggle button.on {
+.mode-filter-btn:hover { color: var(--text); }
+.mode-filter-btn.on {
   background: var(--panel); color: var(--text);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
-}
-.mode-toggle.live button.on { background: var(--red); color: #fff; }
-.live-dot {
-  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-  background: var(--red); animation: pulse 1.6s ease-in-out infinite;
-}
-.mode-toggle.live button.on .live-dot { background: #fff; }
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-html[data-mode="live"] body::before {
-  content: ""; position: fixed; inset: 0; pointer-events: none;
-  border: 3px solid var(--red); border-radius: 0; z-index: 9999;
-  box-shadow: inset 0 0 0 1px rgba(185, 28, 28, 0.12);
 }
 
 /* 패널/카드 */
@@ -1451,7 +1423,6 @@ thead th { color: var(--muted); font-weight: 600; }
   .sidebar-foot > div:first-child { display: none; }
   .sidebar-foot .spacer { display: none; }
   .main-inner { padding: 18px 16px; }
-  .topbar { padding: 8px 16px; }
   /* 결과 지표 카드가 한 줄에 다 들어가도록 최소폭 완화 */
   .stat { min-width: 120px; }
   /* 넓은 표는 가로 스크롤 허용 (글자 깨짐 방지) */
