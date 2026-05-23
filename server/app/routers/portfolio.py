@@ -58,9 +58,9 @@ def portfolio_risk(window: int = 60,
 
     syms = [s for s, _, _ in valid]
     matrix = []
-    for i, (a, ra, _) in enumerate(valid):
+    for i, (_a, ra, _) in enumerate(valid):
         row = []
-        for j, (b, rb, _) in enumerate(valid):
+        for j, (_b, rb, _) in enumerate(valid):
             if i == j:
                 row.append(1.0)
             else:

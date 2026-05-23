@@ -17,7 +17,6 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 _SERVER_DIR = Path(__file__).resolve().parent.parent
 if str(_SERVER_DIR) not in sys.path:

@@ -157,15 +157,21 @@ def _eval_rule(metric: dict, rule: ScreenerRule) -> bool:
         return False
     op = rule.op
     target = rule.value
-    if op == ">":  return v > target
-    if op == ">=": return v >= target
-    if op == "<":  return v < target
-    if op == "<=": return v <= target
+    if op == ">":
+        return v > target
+    if op == ">=":
+        return v >= target
+    if op == "<":
+        return v < target
+    if op == "<=":
+        return v <= target
     if op == "between":
         lo, hi = target
         return lo <= v <= hi
-    if op == "in":     return v in target
-    if op == "not_in": return v not in target
+    if op == "in":
+        return v in target
+    if op == "not_in":
+        return v not in target
     return False
 
 

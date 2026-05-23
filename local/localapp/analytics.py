@@ -308,7 +308,7 @@ def local_health() -> dict:
         except Exception as e:
             log.warning("마지막 사이클 읽기 실패: %s", e)
 
-    # KIS 토큰 만료 (.kis_token.json)
+    # KIS 토큰 만료 (.kis_token.json) — 자체 캐시 파일 손상 시 health에서 누락만 시키고 사이클은 계속.
     if _KIS_TOKEN_CACHE.exists():
         try:
             tk = json.loads(_KIS_TOKEN_CACHE.read_text(encoding="utf-8"))
@@ -324,16 +324,16 @@ def local_health() -> dict:
                         health["warnings"].append("KIS 토큰 만료 — 재발급 필요")
                     elif exp_dt < _now() + timedelta(hours=2):
                         health["warnings"].append("KIS 토큰이 2시간 이내 만료 예정")
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+            log.debug("KIS 토큰 만료 파싱 실패: %s", e)
 
-    # 마지막 KIS 마스터 push
+    # 마지막 KIS 마스터 push — 자체 stamp 파일 IO 실패는 무시(파일 미존재는 위 if로 차단).
     if _MASTER_STAMP.exists():
         try:
             health["kis_master_pushed_date"] = _MASTER_STAMP.read_text(
                 encoding="utf-8").strip()
-        except Exception:
-            pass
+        except OSError as e:
+            log.debug("KIS 마스터 stamp 읽기 실패: %s", e)
 
     return health
 
@@ -372,15 +372,15 @@ def enrich_positions(positions: list[dict], ledger: dict,
 
         cur_ret = ((cur - entry) / entry * 100) if entry > 0 else 0.0
 
-        # 보유일수
+        # 보유일수 — entry_date가 비표준 형식이면 held=0 유지(카드 표시용이라 무방).
         held = 0
         if lg.get("entry_date"):
             try:
                 d1 = datetime.fromisoformat(lg["entry_date"]).date()
                 d2 = datetime.fromisoformat(today).date()
                 held = (d2 - d1).days
-            except Exception:
-                pass
+            except (ValueError, TypeError) as e:
+                log.debug("entry_date 파싱 실패 (%s): %s", lg.get("entry_date"), e)
 
         distances = {}
         if ex.get("take_profit") is not None and entry > 0:
