@@ -72,6 +72,20 @@ def _migrate() -> None:
                 conn.execute(text(
                     "ALTER TABLE \"usersettings\" ADD COLUMN IF NOT EXISTS "
                     "us_buying_power_mode VARCHAR DEFAULT 'integrated'"))
+                # Phase 48 P1-C — 슬리피지 임계 알림 (PG 분기 누락 보정)
+                conn.execute(text(
+                    'ALTER TABLE "usersettings" ADD COLUMN IF NOT EXISTS '
+                    'alert_on_slippage_bps INTEGER DEFAULT 30'))
+                conn.execute(text(
+                    'ALTER TABLE "usersettings" ADD COLUMN IF NOT EXISTS '
+                    'last_alerted_slippage TIMESTAMP'))
+                # Phase 48 P1-D — 일일 거래 금액·횟수 한도 (0=비활성)
+                conn.execute(text(
+                    'ALTER TABLE "usersettings" ADD COLUMN IF NOT EXISTS '
+                    'daily_turnover_limit_krw BIGINT DEFAULT 0'))
+                conn.execute(text(
+                    'ALTER TABLE "usersettings" ADD COLUMN IF NOT EXISTS '
+                    'daily_trade_count_limit INTEGER DEFAULT 0'))
             else:
                 # SQLite - user 테이블 보정
                 cols = [r[1] for r in conn.exec_driver_sql(
