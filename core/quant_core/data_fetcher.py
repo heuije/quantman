@@ -263,12 +263,12 @@ def fetch_fdr(symbol_name: str, ticker: str, start: str = "2010-01-01") -> pd.Da
 
 
 def fetch_korean_stocks(codes: list[str], start: str = "2015-01-01",
-                         verbose: bool = False) -> dict[str, pd.DataFrame]:
+                         verbose: bool = False) -> dict[str, int]:
     """한국 거래소 종목 OHLC 일괄 수집 (FinanceDataReader, KRX 직접 소스).
 
     각 코드(예: "005930")로 fdr.DataReader 호출 → parquet incremental append.
     실패한 종목은 skip하고 로그 — 한 종목 실패가 전체를 막지 않는다.
-    호출자(서버 cron)가 한국 거래 가능 종목 ~2,800개를 매일 1회 호출.
+    호출자(서버 cron)가 한국 거래 가능 종목 ~4,300개를 매일 1회 호출.
 
     **컬럼 의미** — FDR(NAVER 백엔드)의 OHLC는 모두 정규장(09:00~15:30) 기준:
       Open/High/Low/Close = 정규장 시초가/고가/저가/마감가
@@ -276,11 +276,15 @@ def fetch_korean_stocks(codes: list[str], start: str = "2015-01-01",
       Change              = 정규장 종가 전일 대비 등락률
     시간외 단일가(16:00~18:00)는 별도 endpoint이며 본 fetch에 포함되지 않음.
 
+    저장은 종목별 parquet에 직접 — in-memory aggregation은 하지 않는다(메모리
+    누적이 4,000+ 종목 × ~2,500행 DataFrame으로 ~2 GB까지 dead allocation 발생).
+    호출자는 결과 DataFrame을 받지 않고, count 통계만 받는다.
+
     Args:
         codes: KRX 종목 코드 리스트 (6자리)
         start: 새 종목 첫 fetch 시 시작일. 기존 parquet 있으면 무시되고 이어받음.
     Returns:
-        {code: DataFrame} — 성공한 것만
+        {"ok": int, "skip": int, "fail": int} — count 통계만
     """
     import gc
     from datetime import timezone
@@ -302,21 +306,19 @@ def fetch_korean_stocks(codes: list[str], start: str = "2015-01-01",
     else:  # 일요일
         last_closed_market_date = today_kst - timedelta(days=2)  # 금요일
 
-    results: dict[str, pd.DataFrame] = {}
     n_ok = n_skip = n_fail = 0
     for i, code in enumerate(codes):
-        # 100개 단위 명시적 가비지 컬렉션 수행으로 메모리 누수 방지
         if i > 0 and i % 100 == 0:
             gc.collect()
 
         existing = _load_existing(code)
-        
+
         # 지능형 최신 상태 체크 (이미 마지막 마감장 데이터까지 다 갖고 있다면 fdr 호출 스킵)
         if not existing.empty:
             last_date = existing.index[-1].date()
             if last_date >= last_closed_market_date:
-                results[code] = existing
                 n_skip += 1
+                del existing
                 continue
 
         s = (existing.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d") \
@@ -327,26 +329,25 @@ def fetch_korean_stocks(codes: list[str], start: str = "2015-01-01",
             if verbose:
                 print(f"  [{i+1}/{len(codes)}] {code}: 오류 {e}")
             n_fail += 1
-            if not existing.empty:
-                results[code] = existing
+            del existing
             continue
         if df.empty:
-            # 신규 데이터 없음 — 기존 그대로
-            if not existing.empty:
-                results[code] = existing
             n_skip += 1
+            del existing, df
             continue
         cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
         df = df[cols].copy()
         df.index = pd.to_datetime(df.index).tz_localize(None)
         merged = _merge(existing, df)
         _save(code, merged)
-        results[code] = merged
         n_ok += 1
+        del existing, df, merged
+
         if verbose and (i + 1) % 200 == 0:
             print(f"  진행: {i+1}/{len(codes)} (성공 {n_ok} · 신규없음 {n_skip} · 실패 {n_fail})")
+
     print(f"한국 종목 fetch 완료: 총 {len(codes)} → 성공 {n_ok} · 신규없음 {n_skip} · 실패 {n_fail}")
-    return results
+    return {"ok": n_ok, "skip": n_skip, "fail": n_fail}
 
 
 # ── 자동 관리 종목 목록 ───────────────────────────────────────────────────────
