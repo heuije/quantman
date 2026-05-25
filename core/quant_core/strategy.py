@@ -275,9 +275,20 @@ class Strategy(BaseModel):
 
         - sell_rules 명시 → 그대로 사용 (legacy 필드 무시)
         - sell_rules 없음 → legacy 필드들을 합쳐 sell_rules 구성
+
+        Phase 53 fix — rebalance/screener_spec: None pop. 옛 전략 정의 또는
+        프론트 수동 모드(자동 선택 아닐 때 null 전송)에서 비-Optional 필드를
+        None으로 받으면 pydantic 거부 → "Input should be a valid dictionary or
+        instance of Rebalance" 오류. None을 pop해 default_factory가 동작하게.
         """
         if not isinstance(values, dict):
             return values
+        # rebalance/screener_spec None → pop. default 또는 Optional이 적용됨.
+        if values.get("rebalance") is None:
+            values.pop("rebalance", None)
+        if values.get("screener_spec") is None:
+            values.pop("screener_spec", None)
+
         if values.get("sell_rules"):
             return values
 

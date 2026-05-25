@@ -173,7 +173,9 @@ export default function Backtest() {
       screener_limit: screenerLimit,
       // 자동 선택이 커스텀이면 spec 저장 (trade_symbol='screener:custom')
       screener_spec: tradeSymbol === "screener:custom" ? screenerSpec : null,
-      rebalance: tradeSymbol.startsWith("screener:") ? rebalance : null,
+      // Phase 53 fix — backend Rebalance field는 non-Optional이므로 null 전송 시
+      // pydantic validation 실패. 수동 모드면 undefined로 omit해 backend default 사용.
+      rebalance: tradeSymbol.startsWith("screener:") ? rebalance : undefined,
       execution,
     };
   }
