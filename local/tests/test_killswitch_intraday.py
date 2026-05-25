@@ -294,7 +294,7 @@ def test_in_cycle_flag_reset_on_exception():
         raise RuntimeError("forced")
     trader._cycle_body = boom
     with pytest.raises(RuntimeError):
-        trader._cycle_locked([], {}, None, None, None, "KRX")
+        trader._cycle_locked([], {}, None, None, None, "KRX", None)
     assert trader._in_cycle is False
 
 
