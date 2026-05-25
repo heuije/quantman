@@ -374,15 +374,19 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   padding: 6px 10px; font: inherit; font-size: 13px;
   background: none; border: none; cursor: pointer; color: var(--text);
 }
+/* 라벨은 좌측 정렬 + 가용 공간 차지 → badge·체크박스가 자연스럽게 우측에 모임 */
+.cat-item-label {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .cat-item-badge {
   font-size: 9px; padding: 1px 6px; border-radius: 999px;
   background: var(--bg); color: var(--muted); flex-shrink: 0;
-  margin-left: 8px;
 }
 .cat-item.sel .cat-item-badge { background: rgba(0,0,0,0.10); color: var(--ink); }
 .cat-item:hover { background: var(--bg); }
 .cat-item.sel { background: var(--accent); color: var(--ink); }
-/* 다중선택(체크박스) 모드 — 풀 하이라이트 대신 체크 표시로 선택을 나타낸다 */
+/* 다중선택(체크박스) 모드 — 체크박스는 항상 행 우측 끝에 위치 */
 .cat-item-box { flex-shrink: 0; font-size: 14px; line-height: 1; opacity: 0.8; }
 .cat-item-check.sel { background: var(--bg); color: var(--text); }
 .cat-item-check.sel .cat-item-box { color: var(--accent-strong); opacity: 1; }
@@ -434,6 +438,15 @@ details.section-collapsible > summary .sect-summary-meta {
   font-weight: 400; font-variant-numeric: tabular-nums;
 }
 details.section-collapsible[open] > summary .sect-summary-meta { display: none; }
+
+/* Phase 56 — Progressive disclosure 안내 hint (이전 섹션 미완료 시 다음 단계 안내) */
+.next-step-hint {
+  margin: 14px 0; padding: 14px 18px;
+  text-align: center; color: var(--muted); font-size: 13px;
+  background: var(--bg); border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+.next-step-hint b { color: var(--text); font-weight: 600; }
 
 /* 결과 지표 카드 — 균일 그리드 (마지막 카드가 혼자 전폭 차지하는 문제 방지) */
 .cards.metrics {
@@ -500,71 +513,35 @@ details.section-collapsible[open] > summary .sect-summary-meta { display: none; 
   border-left: 2px solid var(--accent);
 }
 
-/* 매수액 수정자 (Phase 47 Cycle B) */
-.size-modifiers { margin-top: 4px; }
-.modifier-card {
-  margin: 10px 0;
-  padding: 12px 14px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-}
-.modifier-head {
-  display: flex; align-items: center; gap: 12px;
-  margin-bottom: 10px; flex-wrap: wrap;
-}
-.modifier-tag {
-  font-size: 12px; font-weight: 600;
-  padding: 2px 8px; border-radius: 4px;
-  background: var(--accent-soft, rgba(64, 158, 255, 0.08));
-  color: var(--accent);
-}
-.modifier-mul-input {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 13px; color: var(--fg);
-  margin-right: auto;
-}
-.modifier-mul-input input {
-  width: 70px; padding: 4px 8px;
-}
-
-/* 분할매수 (Phase 47 Cycle C) */
-.split-buy { margin-top: 4px; }
-.split-buy .sub-h {
-  display: flex; align-items: center; gap: 12px;
-}
-.split-buy-toggle {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 13px; font-weight: 500; color: var(--fg);
-  margin-left: auto;
-}
-.phase-card {
-  margin: 10px 0;
-  padding: 12px 14px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-}
-.phase-head {
-  display: flex; align-items: center; gap: 12px;
-  margin-bottom: 8px; flex-wrap: wrap;
-}
-.phase-tag {
-  font-size: 12px; font-weight: 600;
-  padding: 2px 8px; border-radius: 4px;
-  background: var(--accent-soft, rgba(64, 158, 255, 0.08));
-  color: var(--accent);
-}
-.phase-ratio-input {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 13px; color: var(--fg);
-  margin-right: auto;
-}
-.phase-ratio-input input {
-  width: 70px; padding: 4px 8px;
-}
-.phase-foot {
-  display: flex; align-items: center; gap: 12px;
-  margin-top: 10px;
-}
-.phase-foot button { margin-left: auto; }
 .muted.small.warn { color: var(--danger); }
+
+/* Phase 56 — 매도 카테고리 2종 토글 (다중선택, 실시간/일일 시가) */
+.sell-category-toggles {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  margin: 4px 0 12px;
+}
+.sell-category-toggle {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px; cursor: pointer;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.sell-category-toggle:hover { border-color: var(--accent); }
+.sell-category-toggle.on {
+  border-color: var(--accent); background: var(--accent-soft, var(--bg));
+}
+.sell-category-toggle input[type="checkbox"] {
+  width: 16px; height: 16px; margin-top: 2px; cursor: pointer; flex-shrink: 0;
+}
+.sell-category-text { display: flex; flex-direction: column; gap: 2px; }
+.sell-category-text strong { font-size: 14px; color: var(--text); }
+.sell-category-detail {
+  padding: 12px 14px; margin-top: 4px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+@media (max-width: 560px) {
+  .sell-category-toggles { grid-template-columns: 1fr; }
+}
 
 /* 수동 다중 종목 선택기 */
 .multi-picker {
@@ -774,18 +751,39 @@ details.section-collapsible[open] > summary .sect-summary-meta { display: none; 
   border: 1px solid var(--border); cursor: pointer;
 }
 
-/* 청산 규칙 리스트 */
-.rule-list { display: flex; flex-direction: column; gap: 5px; }
-.rule-row {
-  display: flex; align-items: center; gap: 9px;
-  padding: 8px 11px; font-size: 13px; cursor: pointer;
+/* 매도 규칙 리스트 — Phase 56 polish (rule-list 컨테이너 한정 — Strategies.tsx의 .rule-row 충돌 회피)
+   columns: 체크박스 · 라벨 · 임계값 input · suffix(가변) · 매도% input */
+.rule-list { display: flex; flex-direction: column; gap: 6px; }
+.rule-list .rule-row {
+  display: grid;
+  grid-template-columns: auto 110px 90px 1fr auto;
+  align-items: center; gap: 12px;
+  padding: 10px 14px; font-size: 13px; cursor: pointer;
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  transition: border-color 0.15s, background 0.15s;
 }
-.rule-row input[type="checkbox"] { width: 15px; height: 15px; margin: 0; cursor: pointer; }
-.rule-row .rule-name { width: 104px; font-weight: 600; }
-.rule-row input[type="number"] { width: 78px; padding: 6px 8px; }
-.rule-row .rule-suffix { color: var(--muted); }
-.rule-row input:disabled { opacity: 0.45; }
+.rule-list .rule-row:hover { border-color: var(--accent); }
+.rule-list .rule-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0; cursor: pointer; }
+.rule-list .rule-row .rule-name { font-weight: 600; color: var(--text); }
+.rule-list .rule-row input[type="number"] {
+  width: 100%; padding: 6px 10px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.rule-list .rule-row .rule-suffix { color: var(--muted); font-size: 12px; }
+.rule-list .rule-row .rule-sell-pct {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: var(--muted); font-size: 12px; white-space: nowrap;
+}
+.rule-list .rule-row .rule-sell-pct input { width: 56px; padding: 4px 6px; }
+.rule-list .rule-row input:disabled { opacity: 0.4; cursor: not-allowed; }
+.rule-list .rule-row:has(input[type="checkbox"]:not(:checked)) .rule-name,
+.rule-list .rule-row:has(input[type="checkbox"]:not(:checked)) .rule-suffix,
+.rule-list .rule-row:has(input[type="checkbox"]:not(:checked)) .rule-sell-pct { opacity: 0.5; }
+@media (max-width: 560px) {
+  .rule-list .rule-row { grid-template-columns: auto 1fr 90px; }
+  .rule-list .rule-row .rule-suffix { grid-column: 2 / 4; font-size: 11px; }
+  .rule-list .rule-row .rule-sell-pct { grid-column: 1 / 4; justify-self: end; }
+}
 
 /* 테이블 */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -1545,8 +1543,10 @@ thead th { color: var(--muted); font-weight: 600; }
   padding: 10px 14px; border-radius: 8px;
   background: var(--bg); border: 1px solid var(--border);
   font-size: 13px; color: var(--ink);
+  /* 2줄 안전망 — 종목명이 매우 길어도 panel 높이 폭주 방지 (cap 6 + 외 N개로 이미 양 제한) */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; line-height: 1.5;
 }
-.buy-target-summary.empty { color: var(--muted); font-style: italic; }
 @media (max-width: 560px) {
   .buy-target-buttons { grid-template-columns: 1fr; }
 }
@@ -1570,23 +1570,13 @@ thead th { color: var(--muted); font-weight: 600; }
   background: var(--bg); padding: 14px; border-radius: 8px;
   border-top: 1px dashed var(--border);
 }
-.sentence-advanced {
-  margin-top: 16px; padding: 12px 14px;
-  border: 1px dashed var(--border); border-radius: 8px; background: var(--bg);
+/* Phase 56 — 매수 1문장 요약 sentence (③ 완료 후 ④ 위치). 강조 + 부드러운 강조. */
+.sentence-clause-summary {
+  background: linear-gradient(180deg, var(--accent-soft, var(--bg)) 0%, var(--bg) 100%);
+  border-left: 3px solid var(--accent);
+  font-size: 14px; color: var(--text);
 }
-.sentence-advanced > summary {
-  cursor: pointer; font-weight: 600; padding: 4px 0;
-  color: var(--accent-strong); list-style: none;
-}
-.sentence-advanced > summary::-webkit-details-marker { display: none; }
-.sentence-advanced > summary::before { content: "▸ "; transition: transform 0.15s; display: inline-block; }
-.sentence-advanced[open] > summary::before { content: "▾ "; }
-/* Phase 53 — 펼쳤을 때 summary가 viewport 위로 사라지지 않게 sticky (요청자 인지: "위로 펼침"). */
-.sentence-advanced[open] > summary {
-  position: sticky; top: 0; z-index: 5;
-  background: var(--bg);
-  padding: 8px 0 6px;
-}
+.sentence-clause-summary strong { color: var(--accent-strong, var(--ink)); }
 
 /* Phase 49 — 매수 가격 모드 (시장가/지정가) */
 .price-mode-row {
@@ -1734,8 +1724,7 @@ thead th { color: var(--muted); font-weight: 600; }
 
   /* Phase 53 — 모바일에서 mobile-header sticky(top:0)가 details summary 가림.
      summary sticky top을 mobile-header 높이만큼 offset해 가려지지 않게. */
-  details.section-collapsible[open] > summary,
-  .sentence-advanced[open] > summary {
+  details.section-collapsible[open] > summary {
     top: 60px;
   }
   /* 결과 지표 카드가 한 줄에 다 들어가도록 최소폭 완화 */

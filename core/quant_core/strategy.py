@@ -125,6 +125,10 @@ class SellRules(BaseModel):
 
     Phase 32: 기존 sell(ConditionGroup) + exit_rules(익절/손절/...)가 같은
     "매도" 개념의 두 측면이라 하나로 일원화. 먼저 트리거되는 규칙으로 매도.
+
+    Phase 56: rule_sell_pcts로 룰별 매도 비율 지정 (TP partial 등 업계 표준).
+    매핑 keys = "tp"/"sl"/"trail"/"atr"/"hold". sell_amount_pct는 conditions
+    및 미지정 룰의 fallback default.
     """
     # 가격 기반 트리거
     take_profit: Optional[float] = None      # 익절선 (%, 양수)
@@ -137,42 +141,39 @@ class SellRules(BaseModel):
     conditions: list[Union[Condition, ConditionGroup]] = Field(
         default_factory=list)
     logic: Logic = "AND"
-    # 매도 시 청산 비율
+    # 매도 시 청산 비율 — conditions(자유 매도 신호) + 미지정 룰의 fallback
     sell_amount_pct: float = 100.0           # 100 = 전량 매도
+    # 룰별 매도 비율 (Phase 56). 빈 dict면 모든 룰에 sell_amount_pct 적용.
+    rule_sell_pcts: dict[str, float] = Field(default_factory=dict)
 
 
-class SizingModifier(BaseModel):
-    """매수액 수정자 — "조건이 맞으면 매수액에 ×N" (Phase 47 Cycle B).
+# reason → 룰 key 매핑. intraday/EOD/backtest 공통.
+_REASON_TO_RULE_KEY = (
+    ("익절", "tp"),
+    ("손절", "sl"),
+    ("ATR트레일링", "atr"),     # 위 ↑ (트레일링스톱보다 먼저 매칭)
+    ("ATR 트레일", "atr"),
+    ("트레일링", "trail"),
+    ("보유기간", "hold"),
+)
 
-    여러 개 정의 시 매치된 모든 수정자의 multiplier가 누적 곱셈된다.
-    ConditionGroup은 매수/매도 조건과 동일 평가 엔진(build_signal_mask)을 사용해
-    매크로 종목·이력통계·중첩 그룹을 모두 지원한다.
+
+def sell_pct_for_reason(sell_rules: "SellRules", reason: str | None) -> float:
+    """매도 사유 → 적용할 매도 비율(%) 반환.
+
+    트리거된 룰별 rule_sell_pcts lookup. 매핑 안 되는 사유(매도조건·리밸런싱·
+    kill-switch·사용자청산 등)는 sell_amount_pct로 fallback.
     """
-    condition: ConditionGroup = Field(default_factory=ConditionGroup)
-    multiplier: float = 1.0                  # 0 = 진입 차단, 1 = 그대로, <1 = 축소, >1 = 확대
-    note: Optional[str] = None               # 사용자 메모 (선택)
-
-
-class SplitBuyPhase(BaseModel):
-    """분할매수 차수 — 베이스 매수액 중 이 차수의 비중과 진입 조건.
-
-    1차(phases[0])는 trigger 없음 — 매수 신호 발생 시 진입.
-    2차+는 trigger 충족 시 진입 (보통 가격 하락 트리거).
-    """
-    ratio: float = 100.0                     # 베이스 매수액 중 이 차수의 비중 (%)
-    trigger: Optional[ConditionGroup] = None # 추가 차수: trigger 충족 시 진입
-    note: Optional[str] = None               # 사용자 메모 (선택)
-
-
-class SplitBuyRule(BaseModel):
-    """분할매수 정책 — 베이스 매수액을 N차로 분할 진입.
-
-    enabled=False 또는 phases가 1개면 기존 단일 진입 동작과 동일.
-    매도 평가는 평단(ledger.entry_price) 기준 — 차수가 추가되면 가중평균으로 갱신.
-    """
-    enabled: bool = False
-    phases: list[SplitBuyPhase] = Field(
-        default_factory=lambda: [SplitBuyPhase(ratio=100.0)])
+    if not reason:
+        return float(sell_rules.sell_amount_pct or 100.0)
+    pcts = sell_rules.rule_sell_pcts or {}
+    for needle, key in _REASON_TO_RULE_KEY:
+        if needle in reason:
+            v = pcts.get(key)
+            if v is not None:
+                return float(v)
+            break
+    return float(sell_rules.sell_amount_pct or 100.0)
 
 
 class ExecutionPolicy(BaseModel):
@@ -193,11 +194,6 @@ class ExecutionPolicy(BaseModel):
     # 사이징 (Phase 47 — fixed_amount·equal_weight 추가)
     sizing_mode: Optional[str] = None              # "fixed_amount" | "pct_cash" | "equal_weight" | "atr_risk"
     amount_krw: Optional[float] = None             # fixed_amount 모드: 한 종목당 원 단위 금액
-    # Phase 47 Cycle B — 매수액 수정자 (0개 이상). 조건이 맞으면 베이스 매수액에 배수 곱.
-    # 여러 개 매치 시 모두 누적 곱셈. ConditionGroup은 매수 조건과 동일 표현력.
-    size_modifiers: Optional[list[SizingModifier]] = None
-    # Phase 47 Cycle C — 분할매수. enabled=False면 기존 단일 진입.
-    split_buy: Optional[SplitBuyRule] = None
     atr_risk_pct: Optional[float] = None
     atr_mult: Optional[float] = None
     max_position_pct: Optional[float] = None
@@ -229,13 +225,43 @@ def parse_trade_symbols(trade_symbol: str) -> tuple[str, list[str]]:
 
 
 class Rebalance(BaseModel):
-    """자동 선택 리밸런싱 — 상위 N 탈락 보유분 매도→교체.
+    """자동 선택 리밸런싱 — 후보 재평가 + 보유 종목 처리.
 
-    라이브 전용 (백테스트는 자동 선택 미지원). enabled=False면 기존 동작
-    (빈 슬롯만 채움, 보유분은 sell_rules로만 매도)과 동일하다.
+    라이브 전용 (백테스트는 자동 선택 미지원).
+
+    mode:
+      - "off"      : 후보 재평가·신규 매수 OFF. 초기 N개 매수 후 lock-in.
+                     빈 슬롯 안 채움. 매도 룰만 동작 (패시브 ETF식, Vanguard).
+      - "hold"     : 주기마다 후보 재평가. 보유 탈락해도 매도 X. 빈 슬롯만
+                     새 후보로 채움 (로보어드바이저식, Wealthfront·Betterment).
+      - "replace"  : 주기마다 후보 재평가. 상위 N 탈락 보유 매도 + 신규 매수
+                     (ETF reconstitution, 스마트베타·모멘텀 ETF식).
+
+    period: 재평가 주기. "every_n_days"면 every_n_days(영업일) 간격. 그 외는
+    캘린더 의미 (daily=날짜, weekly=ISO주, monthly=달). off일 때는 무시.
     """
-    enabled: bool = False
-    period: Literal["daily", "weekly", "monthly"] = "daily"
+    mode: Literal["off", "hold", "replace"] = "hold"
+    period: Literal["daily", "weekly", "monthly", "every_n_days"] = "weekly"
+    every_n_days: Optional[int] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy(cls, data):
+        """legacy enabled bool → mode enum.
+
+        Phase 54 (이전): enabled=True/False 2-way.
+        Phase 55: mode 3-way로 교체. 옛 정의는 자동 변환.
+        enabled=True  → mode="replace" (탈락 매도 + 신규)
+        enabled=False → mode="hold"    (빈 슬롯만 채움)
+        """
+        if not isinstance(data, dict):
+            return data
+        if "mode" in data:
+            return data
+        if "enabled" in data:
+            data = dict(data)
+            data["mode"] = "replace" if data.pop("enabled") else "hold"
+        return data
 
 
 class Strategy(BaseModel):
@@ -254,9 +280,11 @@ class Strategy(BaseModel):
     sell: Optional[ConditionGroup] = None
     exit_rules: ExitRules = Field(default_factory=ExitRules)
     sell_amount_pct: float = 100.0
-    amount_pct: float = 100.0                          # 자본 대비 매수 투입 비율(%)
-    # 자동 선택 (trade_symbol='screener:<key>') 한도 — 1이면 한 번에 1종목, N이면 N종목까지
-    screener_limit: int = 5
+    # 자본 대비 매수 투입 비율(%) — default 10%/종목. 분산 원칙·max_position_pct(=10%) cap과 일치.
+    amount_pct: float = 10.0
+    # 동시 보유 한도 — 1=한 번에 1종목, N=N종목까지. 시스템 전역 cap 30.
+    # 수동 다중: 선택한 종목 수와 같음. 자동: 세트의 상위 N개.
+    screener_limit: int = Field(default=5, ge=1, le=30)
     # 커스텀 스크리너 스펙 — trade_symbol='screener:custom'일 때 프리셋 대신 이 spec 사용.
     # screener.parse_spec이 받는 dict ({rules, sort, markets, limit, ...}). None이면 프리셋.
     screener_spec: Optional[dict] = None

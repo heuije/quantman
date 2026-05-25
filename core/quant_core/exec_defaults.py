@@ -42,11 +42,6 @@ DEFAULT_EXECUTION: dict[str, Any] = {
     "sizing_mode": "pct_cash",
     # fixed_amount 모드: 한 종목당 원 단위 금액. 0이면 발주 차단.
     "amount_krw": 0,
-    # Phase 47 Cycle B — 매수액 수정자 (0개 이상). 조건이 맞으면 베이스 매수액에 배수 곱.
-    # 비어 있으면 베이스 그대로 사용 (수정자 없음 == 동작 변화 없음).
-    "size_modifiers": [],
-    # Phase 47 Cycle C — 분할매수. enabled=False면 기존 단일 진입.
-    "split_buy": {"enabled": False, "phases": [{"ratio": 100.0}]},
     # atr_risk 모드: 자본의 X%만 1트레이드에 위험
     "atr_risk_pct": 1.0,
     # ATR × 이 배수 = 1주당 손절폭(원). 수량 = (자본×risk%) ÷ (ATR×mult)
@@ -144,3 +139,35 @@ def round_to_tick(price: float, direction: str = "nearest",
     if direction == "down":
         return int((price // t) * t)
     return int(round(price / t) * t)
+
+
+# ── ±30% 가격제한폭 cap (KOSPI/KOSDAQ 일반 종목) ─────────────────────────────
+
+KRW_DAILY_LIMIT_PCT = 30.0
+
+
+def apply_daily_price_limit(price: float, prev_close: float, side: str,
+                             currency: str = "KRW") -> float:
+    """한국 주식 ±30% 가격제한폭 사전 클램프.
+
+    KIS 서버가 거부하기 전에 클라이언트에서 미리 cap → API 거부 누적 방지.
+    side='buy'  → 상한가(prev_close ×1.30) 위 limit는 상한가로.
+    side='sell' → 하한가(prev_close ×0.70) 아래 limit는 하한가로.
+    USD/그 외 통화는 무가공 (미국 NMS는 일일 한도 다름).
+
+    예외 (이 함수가 못 잡는 케이스 → KIS 서버 거부에 fallback):
+      - 신규 상장일 ±60% (KRX 규정)
+      - 일부 ETF/ETN/레버리지 종목의 다른 한도
+      - VI(변동성완화장치) 단일가
+    """
+    if currency != "KRW" or prev_close <= 0 or price <= 0:
+        return price
+    if side == "buy":
+        ceiling = round_to_tick(prev_close * (1 + KRW_DAILY_LIMIT_PCT / 100.0),
+                                direction="down", currency="KRW")
+        return min(price, ceiling)
+    if side == "sell":
+        floor_p = round_to_tick(prev_close * (1 - KRW_DAILY_LIMIT_PCT / 100.0),
+                                direction="up", currency="KRW")
+        return max(price, floor_p)
+    return price

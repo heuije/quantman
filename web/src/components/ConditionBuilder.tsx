@@ -7,13 +7,30 @@ import { SELF_SYMBOL, SELF_LABEL, isSelfRef, isGroupNode } from "../types";
 import { CategoryList, usePopoverDismiss } from "./SymbolPicker";
 import TabbedSymbolList from "./TabbedSymbolList";
 
+/** Phase 56 — 매도 conditions 전용 가상 indicator. backend로 가지 않고
+ *  Backtest.tsx buildDef에서 sell_rules.hold_days로 transcode됨. */
+export const HELD_DAYS_KEY = "_held_days";
+const HELD_DAYS_INDICATOR: IndicatorInfo = {
+  key: HELD_DAYS_KEY,
+  label: "보유기간(일)",
+  group: "상태",
+  unit: "일",
+  compare_group: "_int",
+};
+
 /** [이 종목] placeholder가 어떤 종목의 지표를 노출할지 결정.
  *  Phase 53 — 옛 "개별종목"(테스트용 애플·삼성전자 사용자 추가 종목) 제외하고
- *  일반 카테고리(자산·거시지표 등) 첫 indicators 가용 종목 사용. KR 종목 간 동일. */
-function _selfIndicators(symbols: SymbolInfo[]): IndicatorInfo[] {
+ *  일반 카테고리(자산·거시지표 등) 첫 indicators 가용 종목 사용. KR 종목 간 동일.
+ *  Phase 56 — context="sell"이면 가상 "보유기간(일)" indicator prepend. */
+function _selfIndicators(symbols: SymbolInfo[],
+                          context?: "buy" | "sell"): IndicatorInfo[] {
   const stock = symbols.find(
     (s) => s.category !== "개별종목" && s.indicators.length > 0);
-  return stock?.indicators ?? [];
+  const base = stock?.indicators ?? [];
+  if (context === "sell") {
+    return [HELD_DAYS_INDICATOR, ...base];
+  }
+  return base;
 }
 
 const OPERAND_TAB_ORDER = [
@@ -99,10 +116,16 @@ interface Props {
   onChange: (g: ConditionGroup) => void;
   /** 맥락 문장 — 다중/자동선택이면 "…를 만족하는 종목만 매수" 류를 상단에 표시. */
   contextNote?: string;
+  /** Phase 56 — 각 조건 row에 [추가] 버튼 노출. 매수 조건 progressive disclosure용.
+   *  버튼 click 시 callback 호출 + 부모가 다음 단계로. undefined면 버튼 없음. */
+  onAddCondition?: () => void;
+  /** Phase 56 — "sell"이면 SELF_SYMBOL indicators에 "보유기간(일)" 가상 indicator 노출.
+   *  default "buy". */
+  context?: "buy" | "sell";
 }
 
 /** 새 단일 조건의 기본값 — 좌변 [각 종목]·RSI, "30 미만". */
-function starterCondition(symbols: SymbolInfo[]): Condition {
+export function starterCondition(symbols: SymbolInfo[]): Condition {
   const selfInds = _selfIndicators(symbols);
   const ind = (selfInds.find((i) => i.key.includes("rsi")) ?? selfInds[0])?.key ?? "";
   return {
@@ -114,21 +137,24 @@ function starterCondition(symbols: SymbolInfo[]): Condition {
 }
 
 /** 칩 + 분류·검색 팝오버 방식의 문장형 조건 빌더. G2 — 1단계 중첩 그룹 지원. */
-export default function ConditionBuilder({ symbols, group, onChange, contextNote }: Props) {
+export default function ConditionBuilder({ symbols, group, onChange, contextNote, onAddCondition, context }: Props) {
   return (
     <div>
       {contextNote && <div className="builder-note">{contextNote}</div>}
-      <GroupEditor symbols={symbols} group={group} onChange={onChange} depth={0} />
+      <GroupEditor symbols={symbols} group={group} onChange={onChange}
+                   depth={0} onAddCondition={onAddCondition} context={context} />
     </div>
   );
 }
 
 /** 한 그룹(조건/하위그룹 묶음)을 렌더. depth=0이면 "묶음 추가" 노출(1단계 중첩 제한). */
-function GroupEditor({ symbols, group, onChange, depth }: {
+function GroupEditor({ symbols, group, onChange, depth, onAddCondition, context }: {
   symbols: SymbolInfo[];
   group: ConditionGroup;
   onChange: (g: ConditionGroup) => void;
   depth: number;
+  onAddCondition?: () => void;
+  context?: "buy" | "sell";
 }) {
   function setNode(i: number, node: ConditionNode) {
     onChange({ ...group, conditions: group.conditions.map((n, idx) => idx === i ? node : n) });
@@ -193,6 +219,8 @@ function GroupEditor({ symbols, group, onChange, depth }: {
               <GroupEditor
                 symbols={symbols} group={node} depth={depth + 1}
                 onChange={(g) => setNode(i, g)}
+                onAddCondition={onAddCondition}
+                context={context}
               />
             </div>
           ) : (
@@ -201,6 +229,8 @@ function GroupEditor({ symbols, group, onChange, depth }: {
               onPatch={(patch) => updateLeaf(i, patch)}
               onSetOp={(op) => setOp(i, op)}
               onRemove={() => remove(i)}
+              onAdd={onAddCondition}
+              context={context}
             />
           )}
 
@@ -271,13 +301,17 @@ function boundaryAlwaysFalse(op: Op, right: Operand | undefined, leftGroup: stri
   return null;
 }
 
-/** 단일 조건 문장 한 줄 — 좌변(종목·지표) · 수식어 · 우변(종목·지표 또는 숫자) · 연산자 · 삭제. */
-function ConditionRow({ symbols, c, onPatch, onSetOp, onRemove }: {
+/** 단일 조건 문장 한 줄 — 좌변(종목·지표) · 수식어 · 우변(종목·지표 또는 숫자) · 연산자 · 삭제 · 추가(선택). */
+function ConditionRow({ symbols, c, onPatch, onSetOp, onRemove, onAdd, context }: {
   symbols: SymbolInfo[];
   c: Condition;
   onPatch: (patch: Partial<Condition>) => void;
   onSetOp: (op: Op) => void;
   onRemove: () => void;
+  /** Phase 56 — 정의되면 [추가] 버튼이 [삭제] 옆에 표시됨. 매수조건 progressive disclosure용. */
+  onAdd?: () => void;
+  /** Phase 56 — context="sell"면 SELF_SYMBOL indicators에 보유기간 가상 indicator 노출. */
+  context?: "buy" | "sell";
 }) {
   const leftGroup = compareGroupOf(symbols, c.left.symbol, c.left.indicator);
   // Phase 56 — 좌변=우변 완전 동일 detection. 항상 false 평가 = 무의미 조건.
@@ -293,6 +327,7 @@ function ConditionRow({ symbols, c, onPatch, onSetOp, onRemove }: {
       <IndicatorChip
         symbols={symbols} operand={c.left}
         onChange={(o) => onPatch({ left: o })}
+        context={context}
       />
       <span className="txt">가(이)</span>
 
@@ -358,6 +393,11 @@ function ConditionRow({ symbols, c, onPatch, onSetOp, onRemove }: {
         <button type="button" className="ghost sm" onClick={onRemove}>
           삭제
         </button>
+        {onAdd && (
+          <button type="button" className="sm" onClick={onAdd}>
+            적용
+          </button>
+        )}
       </span>
     </div>
   );
@@ -583,17 +623,19 @@ function SymbolChip({ symbols, operand, onChange, compatGroup }: {
 }
 
 /** 지표 chip — 좌·우 공용. compatGroup 지정(우변) 시 호환 지표만 노출 + history 토글 + affine. */
-function IndicatorChip({ symbols, operand, onChange, compatGroup }: {
+function IndicatorChip({ symbols, operand, onChange, compatGroup, context }: {
   symbols: SymbolInfo[];
   operand: Operand;
   onChange: (o: Operand) => void;
   compatGroup?: string;
+  context?: "buy" | "sell";
 }) {
   const [open, setOpen] = useState(false);
   const ref = usePopoverDismiss<HTMLSpanElement>(open, setOpen);
   // Phase 41 — SELF_SYMBOL은 KR 개별종목 indicators fallback
+  // Phase 56 — context="sell"이면 "보유기간(일)" 가상 indicator prepend.
   const allInds = operand.symbol === SELF_SYMBOL
-    ? _selfIndicators(symbols)
+    ? _selfIndicators(symbols, context)
     : symbols.find((s) => s.symbol === operand.symbol)?.indicators ?? [];
   const inds = compatGroup && compatGroup !== "other"
     ? allInds.filter((i) => (i.compare_group ?? "other") === compatGroup)

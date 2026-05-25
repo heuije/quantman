@@ -293,7 +293,7 @@ export default function ScreenerPanel({
           })}
           <div className="screener-card-limit">
             상위
-            <input type="number" min={1} max={100} value={spec.limit ?? 20}
+            <input type="number" min={1} max={30} value={Math.min(spec.limit ?? 20, 30)}
                    onChange={(e) => editPresetLimit(p, Number(e.target.value))} />
             개 보유
           </div>
@@ -512,7 +512,7 @@ function SetEditor({
           </select>
         )}
         <label>상위</label>
-        <input type="number" min={1} max={100} value={spec.limit ?? 20}
+        <input type="number" min={1} max={30} value={Math.min(spec.limit ?? 20, 30)}
                onChange={(e) => setSpec({ ...spec, limit: Number(e.target.value) })} />
         <span className="txt">개 보유</span>
       </div>

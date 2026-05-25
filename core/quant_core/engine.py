@@ -14,7 +14,7 @@ import pandas as pd
 from .analysis import build_signal_mask, run_analysis
 from .backtest import run_backtest
 from .exec_defaults import merged_execution
-from .strategy import Strategy
+from .strategy import Strategy, parse_trade_symbols
 
 
 def _conds(group) -> list[dict]:
@@ -40,8 +40,10 @@ def run_strategy_backtest(
     commission = pol["bt_commission_bps"] / 10_000.0
     slippage = pol["bt_slippage_bps"] / 10_000.0
     sell_tax = pol.get("bt_sell_tax_bps", 0) / 10_000.0   # C-01
-    # C-03 통화: trade_symbol이 6자리 숫자(005930)면 KRW, 아니면 USD로 추정.
-    currency = "KRW" if (strategy.trade_symbol or "").isdigit() else "USD"
+    # C-03 통화: 모든 종목이 6자리 숫자(005930)면 KRW, 아니면 USD로 추정.
+    # 다종목(콤마 split) 케이스 — 첫 종목이 아니라 "모두 한국이면 KRW" 정책. mixed market이면 USD.
+    _mode, _syms = parse_trade_symbols(strategy.trade_symbol or "")
+    currency = "KRW" if _syms and all(s.isdigit() for s in _syms) else "USD"
     sell_conds = [c.model_dump() for c in sr.conditions] if sr.conditions else None
     return run_backtest(
         data=data,
@@ -55,12 +57,23 @@ def run_strategy_backtest(
         trail_pct=sr.trail_pct,
         sell_conditions=sell_conds,
         sell_logic=sr.logic,
+        sell_amount_pct=sr.sell_amount_pct,
+        rule_sell_pcts=sr.rule_sell_pcts,
         fill=strategy.fill,
         commission=commission,
         slippage=slippage,
         sell_tax=sell_tax,
         currency=currency,
         initial_capital=initial_capital,
+        # Phase 57 — portfolio mode에서만 사용 (다종목 자본 배분).
+        # 1종목 single path는 cash 전액 투입(기존 동작) 유지.
+        amount_pct=float(strategy.amount_pct),
+        # Phase 57-B — screener 모드 전용. trade_symbol이 "screener:..."일 때만 사용됨.
+        screener_spec=strategy.screener_spec,
+        screener_limit=int(strategy.screener_limit),
+        rebalance_mode=strategy.rebalance.mode,
+        rebalance_period=strategy.rebalance.period,
+        rebalance_every_n_days=strategy.rebalance.every_n_days,
         start=start,
         end=end,
         gap_extra_cost=bool(pol["bt_gap_extra_cost"]),

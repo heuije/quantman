@@ -144,6 +144,18 @@ def run_backtest(body: BacktestIn,
     except ValidationError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             f"전략 정의 오류: {e.errors()[0]['msg']}")
+    # Phase 57-B — screener:preset_key 자동선택은 PRESETS의 spec으로 resolve.
+    # "screener:custom"이면 strategy.screener_spec(사용자 입력) 그대로 사용.
+    ts = strategy.trade_symbol or ""
+    if ts.startswith("screener:") and not strategy.screener_spec:
+        key = ts[len("screener:"):]
+        from ..screener import PRESETS
+        preset = PRESETS.get(key)
+        if preset and isinstance(preset.get("spec"), dict):
+            strategy = strategy.model_copy(update={"screener_spec": preset["spec"]})
+        elif key != "custom":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                f"알 수 없는 screener preset: '{key}'")
     result = qc.run_strategy_backtest(
         strategy, get_dataset(),
         initial_capital=body.initial_capital,

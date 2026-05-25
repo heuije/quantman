@@ -188,14 +188,19 @@ class IntradayStopManager:
                              symbol, qty, bqty)
                     qty = bqty
 
+                # Phase 56 — 매도 룰별 sell_pct (intraday tp/sl/trail/atr).
+                sell_pct = qc.sell_pct_for_reason(sr, reason)
+                sell_qty = max(1, int(qty * sell_pct / 100.0))
+                sell_qty = min(sell_qty, qty)
+
                 strat_name = pos.get("strategy_name", "")
                 try:
                     self._submit_sell(
-                        ledger_key, strat_name, symbol, qty, price,
+                        ledger_key, strat_name, symbol, sell_qty, price,
                         policy, reason, self.decisions)
                     self._sold_today.add(ledger_key)
                     log.info("[intraday-stop] %s 매도 발주: %s @ %s원 (사유 %s)",
-                              symbol, qty, price, reason)
+                              symbol, sell_qty, price, reason)
                 except Exception as e:
                     log.error("[intraday-stop] %s 매도 발주 실패: %s", symbol, e)
 

@@ -133,8 +133,8 @@ def parse_spec(raw: dict) -> ScreenerSpec:
         raise ScreenerError("exclude must be a list")
 
     limit = int(raw.get("limit") or 20)
-    if not (1 <= limit <= 100):
-        raise ScreenerError("limit must be 1..100")
+    if not (1 <= limit <= 30):
+        raise ScreenerError("limit must be 1..30 (시스템 전역 보유 한도)")
 
     # 거래대금 최소 임계: 국내 5억원(KRW) / 미국 0(USD, S&P500은 이미 유동성 큐레이션)
     default_mtv = 0.0 if is_us else 500_000_000.0

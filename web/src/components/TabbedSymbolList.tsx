@@ -100,13 +100,13 @@ export default function TabbedSymbolList({
                 + (multiSelect ? " cat-item-check" : "")}
               onClick={() => onPick(it.key)}
             >
+              <span className="cat-item-label">{it.label}</span>
+              {it.badge && <span className="cat-item-badge">{it.badge}</span>}
               {multiSelect && (
                 <span className="cat-item-box" aria-hidden>
                   {isSel ? "☑" : "☐"}
                 </span>
               )}
-              <span>{it.label}</span>
-              {it.badge && <span className="cat-item-badge">{it.badge}</span>}
             </button>
           );
         })}

@@ -73,29 +73,9 @@ export interface SellRules {
   hold_days?: number | null;          // 보유 일수
   conditions?: ConditionNode[];       // 자유 매도 조건 (dataset 평가) — G2 중첩 허용
   logic?: Logic;
-  sell_amount_pct?: number;           // 100=전량 매도
-}
-
-/** 매수액 수정자 (Phase 47 Cycle B) — "조건이 맞으면 매수액에 ×N" 한 줄.
- *  ConditionGroup은 매수/매도 조건과 동일 표현력 (지표·매크로·이력통계·중첩). */
-export interface SizingModifier {
-  condition: ConditionGroup;              // 빈칸 채우기 조건식 (ConditionBuilder 재사용)
-  multiplier: number;                     // 매치 시 매수액에 곱할 배수 (0 = 진입 차단, 0.5 = 절반 등)
-  note?: string;                          // 사용자 메모 (선택)
-}
-
-/** 분할매수 (Phase 47 Cycle C) — 베이스 매수액을 N차로 분할.
- *  1차는 매수 신호 발생 시 진입, 2차+는 trigger 조건 충족 시 진입.
- *  ratio는 베이스 매수액에 대한 비중(%). 합이 100을 초과하면 베이스를 넘는 매수가 발생. */
-export interface SplitBuyPhase {
-  ratio: number;                          // 베이스 매수액 중 이 차수의 비중 (%)
-  trigger?: ConditionGroup;               // 추가 차수(2차+): trigger 충족 시 진입. 1차는 undefined
-  note?: string;                          // 차수 메모 (선택)
-}
-
-export interface SplitBuyRule {
-  enabled: boolean;
-  phases: SplitBuyPhase[];                // [0]=1차 (trigger 없음 — 매수 신호로 진입), [1..]=추가 차수
+  sell_amount_pct?: number;           // 100=전량 매도 — 매도조건·미지정 룰의 fallback
+  /** Phase 56 — 룰별 매도 비율. keys: "tp"/"sl"/"trail"/"atr"/"hold". 미설정 룰은 sell_amount_pct 적용. */
+  rule_sell_pcts?: Record<string, number>;
 }
 
 /** 체결 정책 — 모든 필드 optional, null/undefined는 글로벌 default 적용.
@@ -108,13 +88,6 @@ export interface ExecutionPolicy {
    *  - atr_risk:    트레이드당 atr_risk_pct% 위험, 손절폭 ATR×atr_mult */
   sizing_mode?: "fixed_amount" | "pct_cash" | "equal_weight" | "atr_risk";
   amount_krw?: number;                    // fixed_amount 모드: 한 종목당 원 단위 금액
-  /** 매수액 수정자 (Phase 47 Cycle B) — 조건이 충족되면 베이스 매수액에 배수 적용.
-   *  여러 개 정의 시 매치된 모든 수정자의 multiplier를 누적 곱셈. 예: "KOSPI 약세장
-   *  때 ×0.5", "VKOSPI 급등 시 ×0.3". ConditionGroup은 매수 조건과 동일 표현력. */
-  size_modifiers?: SizingModifier[];
-  /** 분할매수 (Phase 47 Cycle C) — 활성 시 베이스 매수액을 차수별 비중으로 나눠 진입.
-   *  비활성 또는 phases가 1개면 기존 단일 진입 동작과 동일. */
-  split_buy?: SplitBuyRule;
   atr_risk_pct?: number;                  // atr_risk 모드: 트레이드당 자본의 N% 위험
   atr_mult?: number;                      // ATR × 이 배수 = 1주당 손절폭
   max_position_pct?: number;              // 단일 종목 비중 상한 (자본 %)
@@ -139,8 +112,6 @@ export const EXECUTION_DEFAULTS: Required<ExecutionPolicy> = {
   // 부담이 있어 신규 사용자 진입 장벽이 컸음. 가장 직관적인 정률을 default로.
   sizing_mode: "pct_cash",
   amount_krw: 1_000_000,                  // fixed_amount 전환 시 placeholder (100만원)
-  size_modifiers: [],                     // 기본 비어 있음 (수정자 없음 → 베이스 매수액 그대로)
-  split_buy: { enabled: false, phases: [{ ratio: 100 }] },  // 기본 비활성 (단일 진입)
   atr_risk_pct: 1.0,
   atr_mult: 2.0,
   max_position_pct: 10.0,
@@ -179,8 +150,10 @@ export interface StrategyDef {
 }
 
 export interface RebalanceIO {
-  enabled: boolean;
-  period: "daily" | "weekly" | "monthly";
+  // off: lock-in (재평가·신규 매수 X) / hold: 빈 슬롯만 채움 / replace: 탈락 매도 + 신규
+  mode: "off" | "hold" | "replace";
+  period: "daily" | "weekly" | "monthly" | "every_n_days";
+  every_n_days?: number | null;     // period="every_n_days"일 때만 사용 (영업일)
 }
 
 // ── 스크리너 커스터마이징 ─────────────────────────────────────────────────────
