@@ -99,9 +99,9 @@ export default function Backtest() {
     api.symbols().then((r) => {
       setSymbols(r.symbols);
       setHasMaster(r.has_master);
-      // 매수 대상 default: 첫 tradable 종목 (백테스트 데이터 유무 무관)
-      const firstTradable = r.symbols.find((s) => s.tradable);
-      if (firstTradable) setTradeSymbol(firstTradable.symbol);
+      // Phase 53 — 매수 대상 default 자동 설정 제거. 사용자가 빈 칸 보고 직접
+      // 매수후보를 선택할 때까지 비워둠. 옛 동작은 첫 tradable 종목(예: 000020
+      // 동화약품)을 자동 채워서 "왜 이게 선택돼 있지?" 혼란.
       // 매수 조건 default: indicators 있는 첫 종목 (매크로/자산 등)
       const firstWithInd = r.symbols.find((s) => s.indicators.length > 0);
       if (firstWithInd) {
