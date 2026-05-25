@@ -7,18 +7,17 @@ import { SELF_SYMBOL, SELF_LABEL, isSelfRef, isGroupNode } from "../types";
 import { CategoryList, usePopoverDismiss } from "./SymbolPicker";
 import TabbedSymbolList from "./TabbedSymbolList";
 
-/** Phase 41 — [이 종목] placeholder가 어떤 종목의 지표를 노출할지 결정.
- *  KR 개별종목 첫 항목의 indicators를 사용 (compute_all 결과는 KR 종목 간 동일).
- *  KR 종목이 없으면 첫 가용 종목으로 fallback. */
+/** [이 종목] placeholder가 어떤 종목의 지표를 노출할지 결정.
+ *  Phase 53 — 옛 "개별종목"(테스트용 애플·삼성전자 사용자 추가 종목) 제외하고
+ *  일반 카테고리(자산·거시지표 등) 첫 indicators 가용 종목 사용. KR 종목 간 동일. */
 function _selfIndicators(symbols: SymbolInfo[]): IndicatorInfo[] {
   const stock = symbols.find(
-    (s) => s.category === "개별종목" && s.indicators.length > 0)
-    ?? symbols.find((s) => s.indicators.length > 0);
+    (s) => s.category !== "개별종목" && s.indicators.length > 0);
   return stock?.indicators ?? [];
 }
 
 const OPERAND_TAB_ORDER = [
-  "자산", "변동성", "금리·환율", "신용", "거시지표", "심리", "개별종목",
+  "자산", "변동성", "금리·환율", "신용", "거시지표", "심리",
 ];
 
 // ── 상수 ──────────────────────────────────────────────────────────────────────
@@ -435,9 +434,11 @@ function SymbolChip({ symbols, operand, onChange, compatGroup }: {
   const compat = (i: { compare_group?: string | null }) =>
     !compatGroup || compatGroup === "other"
       || (i.compare_group ?? "other") === compatGroup;
+  // Phase 53 — "개별종목"(옛 테스트용 사용자 추가) 카테고리 제외.
   const symList = symbols.filter((s) =>
-    s.indicators.length > 0 && (!compatGroup || compatGroup === "other"
-      || s.indicators.some(compat)));
+    s.category !== "개별종목"
+    && s.indicators.length > 0
+    && (!compatGroup || compatGroup === "other" || s.indicators.some(compat)));
   const isSelf = isSelfRef(operand);
   const sel = symbols.find((s) => s.symbol === operand.symbol);
   // Phase 41 — SELF_SYMBOL이면 [이 종목] 라벨로 표시

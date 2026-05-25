@@ -228,7 +228,7 @@ const TRADABLE_TAB_ORDER = [
 ];
 
 const OPERAND_TAB_ORDER = [
-  "자산", "변동성", "금리·환율", "신용", "거시지표", "심리", "개별종목",
+  "자산", "변동성", "금리·환율", "신용", "거시지표", "심리",
 ];
 
 function tabCategoryFor(s: SymbolInfo, tradable?: boolean): string {
