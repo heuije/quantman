@@ -1,4 +1,5 @@
-import { NavLink } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
 import ErrorBoundary from "./ErrorBoundary";
 
@@ -12,10 +13,27 @@ const NAV = [
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { email, logout } = useAuth();
+  // Phase 51 — 모바일 hamburger drawer. 데스크탑(≥760px)은 CSS로 sidebar 유지.
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const location = useLocation();
+  // 라우트 변경 시 drawer 자동 close (NavLink onClick은 일부 경로에서 race condition 있음).
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { setDrawerOpen(false); }, [location.pathname]);
   return (
     <div className="shell">
-      <aside className="sidebar">
+      {/* 모바일 상단 헤더 — 데스크탑에선 hidden (CSS) */}
+      <header className="mobile-header">
         <div className="brand">퀀트<span>플랫폼</span></div>
+        <button type="button" className="hamburger-btn"
+                onClick={() => setDrawerOpen((o) => !o)}
+                aria-label={drawerOpen ? "메뉴 닫기" : "메뉴 열기"}
+                aria-expanded={drawerOpen}>
+          {drawerOpen ? "✕" : "☰"}
+        </button>
+      </header>
+
+      <aside className={"sidebar" + (drawerOpen ? " drawer-open" : "")}>
+        <div className="brand sidebar-brand">퀀트<span>플랫폼</span></div>
         {NAV.map((n) => (
           <NavLink
             key={n.to}
@@ -32,6 +50,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <button className="ghost sm" onClick={logout}>로그아웃</button>
         </div>
       </aside>
+
+      {/* 모바일 drawer 배경 — 클릭 시 close */}
+      {drawerOpen && (
+        <div className="drawer-overlay" onClick={() => setDrawerOpen(false)} />
+      )}
+
       <main className="main">
         {/* W-01 — 콘텐츠 영역만 ErrorBoundary. 한 페이지가 throw해도 사이드바는
             그대로 살아 있어야 한다. 모의/실전 토글은 페이지별 내부 토글로 이동. */}

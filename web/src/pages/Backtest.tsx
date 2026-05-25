@@ -610,8 +610,21 @@ function BuildTab(props: {
         </section>
       </div>
 
-      <div className="panel">
-        <h3>3. 매도 조건 <span className="muted">(하나 이상 설정 필수 · 먼저 트리거되는 규칙으로 매도)</span></h3>
+      {/* Phase 51 — 3. 매도 조건 details. default 매도 룰(익절10·손절-5·보유5)이
+          ON이라 접혀도 매매 안전. summary에 활성 룰 미리보기. */}
+      <details className="panel section-collapsible">
+        <summary>
+          <h3>3. 매도 조건 <span className="muted">(하나 이상 설정 필수 · 먼저 트리거되는 규칙으로 매도)</span></h3>
+          <span className="sect-summary-meta">
+            {(() => {
+              const active = Object.values(exits).filter((v) => v.on).length;
+              const cond = sell.conditions.length;
+              return active + cond > 0
+                ? `${active}개 매도 룰${cond ? ` · 추가 조건 ${cond}` : ""}`
+                : "(설정 필요)";
+            })()}
+          </span>
+        </summary>
 
         <div className="sub-h" style={{ marginTop: 4 }}>
           실시간 매도 <span className="muted">— tick마다 평가, 즉시 발주</span>
@@ -688,7 +701,7 @@ function BuildTab(props: {
             매도 지정가 = 전일 종가 × (1 − {fmt2(sellTolerancePct)}%) — 갭하락 허용 범위
           </span>
         </div>
-      </div>
+      </details>
 
       <details className="panel section-collapsible">
         <summary><h3>4. 리스크 한도 <span className="muted">(선택 — 미설정 시 기본값 적용)</span></h3></summary>
@@ -770,8 +783,12 @@ function BuildTab(props: {
         </div>
       </details>
 
-      <div className="panel">
-        <h3>6. 자금</h3>
+      {/* Phase 51 — 6. 자금 details. default 1,000만원이라 접혀도 백테스트 가능. */}
+      <details className="panel section-collapsible">
+        <summary>
+          <h3>6. 자금</h3>
+          <span className="sect-summary-meta">{wonReadable(capital)}</span>
+        </summary>
         <div className="row">
           <div>
             <label>초기자본(원)</label>
@@ -781,7 +798,7 @@ function BuildTab(props: {
             </div>
           </div>
         </div>
-      </div>
+      </details>
 
       <div className="action-bar">
         <div className="action-bar-info">
