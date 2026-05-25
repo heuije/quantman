@@ -43,7 +43,10 @@ export default function Settings() {
     loadDevices();
   }
 
-  const DOWNLOAD_URL = import.meta.env.VITE_LOCAL_APP_URL ?? "";
+  // 기본은 GitHub Releases의 latest — 매 release 시 코드 수정 없이 자동 최신.
+  // 환경변수(VITE_LOCAL_APP_URL)로 override 가능(특정 버전 핀 시).
+  const DOWNLOAD_URL = import.meta.env.VITE_LOCAL_APP_URL
+    || "https://github.com/MercKR/quantman-releases/releases/latest";
 
   return (
     <div>
