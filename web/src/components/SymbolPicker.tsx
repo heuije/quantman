@@ -98,7 +98,7 @@ export function CategoryList({ items, order, selected, search, onPick }: {
  */
 export default function SymbolPicker({
   symbols, value, tradableOnly, lockMode, onChange,
-  screenerSpec, setScreenerSpec, setScreenerLimit,
+  screenerSpec, setScreenerSpec, setScreenerLimit, inline,
 }: {
   symbols: SymbolInfo[];
   value: string;
@@ -111,6 +111,8 @@ export default function SymbolPicker({
   setScreenerSpec?: (s: ScreenerSpecIO | null) => void;
   /** 세트 적용 시 최대 동시 보유 종목 수 = 세트의 상위 N개로 동기화. */
   setScreenerLimit?: (n: number) => void;
+  /** inline=true: chip 버튼 없이 picker 본문 항상 노출 (모달 등 큰 영역 전용). */
+  inline?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = usePopoverDismiss<HTMLSpanElement>(open, setOpen);
@@ -149,6 +151,61 @@ export default function SymbolPicker({
       ? `[자동] ${screenerLabel}`
       : sel?.name ? `${value} ${sel.name}` : value;
 
+  // body — segmented (tradableOnly && !lockMode일 때만) + 본문 영역
+  const body = (
+    <>
+      {tradableOnly && !lockMode && (
+        <div className="seg" style={{ marginBottom: 10 }}>
+          <button type="button"
+                  className={mode === "manual" ? "on" : ""}
+                  onClick={() => setMode("manual")}>
+            수동 선택
+          </button>
+          <button type="button"
+                  className={mode === "screener" ? "on" : ""}
+                  onClick={() => setMode("screener")}>
+            자동 선택
+          </button>
+        </div>
+      )}
+
+      {empty ? (
+        <div className="cat-empty" style={{ padding: 16, lineHeight: 1.6 }}>
+          매수 가능 종목 목록을 준비 중입니다.<br/>
+          서버가 KIS 공식 마스터를 다운로드 중입니다. 잠시 후 다시 시도해주세요.
+        </div>
+      ) : mode === "screener" && tradableOnly ? (
+        <ScreenerPanel
+          presets={presets}
+          asOf={asOf}
+          tradeSymbol={value}
+          setTradeSymbol={onChange}
+          spec={screenerSpec ?? null}
+          setSpec={setScreenerSpec ?? (() => {})}
+          setScreenerLimit={setScreenerLimit ?? (() => {})}
+          onClose={inline ? (() => {}) : (() => setOpen(false))}
+        />
+      ) : (
+        <TabbedSymbolList
+          items={list.map((s) => ({
+            key: s.symbol,
+            label: s.name ? `${s.symbol} ${s.name}` : s.symbol,
+            cat: tabCategoryFor(s, tradableOnly),
+            badge: tradableOnly && s.has_backtest_data === false
+              ? "백테스트 불가" : undefined,
+          }))}
+          order={tabOrder}
+          selected={value}
+          placeholder={tradableOnly ? "종목명 또는 코드 검색…" : "종목 검색…"}
+          onPick={(k) => { onChange(k); if (!inline) setOpen(false); }}
+        />
+      )}
+    </>
+  );
+
+  // Inline 모드 — chip 트리거 없이 본문 항상 노출 (모달 등에서 사용).
+  if (inline) return <div className="symbol-picker-inline">{body}</div>;
+
   return (
     <span className="chip-wrap" ref={ref}>
       <button type="button" className="chip" onClick={() => setOpen((v) => !v)}>
@@ -156,54 +213,7 @@ export default function SymbolPicker({
         <span className="chip-caret">▾</span>
       </button>
       {open && (
-        <div className="popover popover-wide">
-          {tradableOnly && !lockMode && (
-            <div className="seg" style={{ marginBottom: 10 }}>
-              <button type="button"
-                      className={mode === "manual" ? "on" : ""}
-                      onClick={() => setMode("manual")}>
-                수동 선택
-              </button>
-              <button type="button"
-                      className={mode === "screener" ? "on" : ""}
-                      onClick={() => setMode("screener")}>
-                자동 선택
-              </button>
-            </div>
-          )}
-
-          {empty ? (
-            <div className="cat-empty" style={{ padding: 16, lineHeight: 1.6 }}>
-              매수 가능 종목 목록을 준비 중입니다.<br/>
-              서버가 KIS 공식 마스터를 다운로드 중입니다. 잠시 후 다시 시도해주세요.
-            </div>
-          ) : mode === "screener" && tradableOnly ? (
-            <ScreenerPanel
-              presets={presets}
-              asOf={asOf}
-              tradeSymbol={value}
-              setTradeSymbol={onChange}
-              spec={screenerSpec ?? null}
-              setSpec={setScreenerSpec ?? (() => {})}
-              setScreenerLimit={setScreenerLimit ?? (() => {})}
-              onClose={() => setOpen(false)}
-            />
-          ) : (
-            <TabbedSymbolList
-              items={list.map((s) => ({
-                key: s.symbol,
-                label: s.name ? `${s.symbol} ${s.name}` : s.symbol,
-                cat: tabCategoryFor(s, tradableOnly),
-                badge: tradableOnly && s.has_backtest_data === false
-                  ? "백테스트 불가" : undefined,
-              }))}
-              order={tabOrder}
-              selected={value}
-              placeholder={tradableOnly ? "종목명 또는 코드 검색…" : "종목 검색…"}
-              onPick={(k) => { onChange(k); setOpen(false); }}
-            />
-          )}
-        </div>
+        <div className="popover popover-wide">{body}</div>
       )}
     </span>
   );

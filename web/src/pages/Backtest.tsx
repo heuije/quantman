@@ -974,6 +974,7 @@ function ManualPickerModal({
             symbols={symbols}
             value={tradeSymbol}
             onChange={setTradeSymbol}
+            inline
           />
           {manualSymbols.length > 1 && (
             <div className="amount-row" style={{ marginTop: 14 }}>
@@ -1029,6 +1030,7 @@ function ScreenerPickerModal({
             onChange={setTradeSymbol}
             screenerSpec={screenerSpec} setScreenerSpec={setScreenerSpec}
             setScreenerLimit={setScreenerLimit}
+            inline
           />
           <div className="rebalance-row" style={{ marginTop: 14 }}>
             <label className="rebalance-toggle">

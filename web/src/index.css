@@ -621,6 +621,22 @@ details.section-collapsible[open] > summary .sect-summary-meta { display: none; 
   gap: 10px; padding: 8px 10px; border-top: 1px solid var(--border);
 }
 
+/* Phase 52 — inline 모드: 모달 안에서 picker 본문 항상 노출. chip/buttons 없이 즉시. */
+.multi-picker-inline { margin-top: 0; }
+.multi-picker-inline .multi-chips {
+  margin-bottom: 10px; background: var(--bg);
+}
+.multi-inline-list {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel); overflow: hidden;
+}
+.multi-inline-foot {
+  margin-top: 8px; padding: 4px 4px 0;
+}
+.symbol-picker-inline {
+  /* SymbolPicker가 chip 트리거 없이 segmented + 본문 직접 노출 */
+}
+
 /* 결과 리포트 - 저장 버튼 영역 */
 .save-row {
   display: flex; gap: 10px; align-items: center; flex-wrap: wrap;

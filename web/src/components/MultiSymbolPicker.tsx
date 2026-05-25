@@ -29,10 +29,12 @@ function categoryFor(cat: string): string {
   return cat;
 }
 
-export default function MultiSymbolPicker({ symbols, value, onChange }: {
+export default function MultiSymbolPicker({ symbols, value, onChange, inline }: {
   symbols: SymbolInfo[];
   value: string;                   // 콤마 분리 — "005930,000660"
   onChange: (v: string) => void;
+  /** inline=true: "+ 종목 추가" 버튼 없이 종목 리스트 항상 노출 (모달 등 큰 영역 전용). */
+  inline?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = usePopoverDismiss<HTMLDivElement>(open, setOpen);
@@ -59,6 +61,44 @@ export default function MultiSymbolPicker({ symbols, value, onChange }: {
     cat: categoryFor(s.category),
     badge: s.has_backtest_data === false ? "백테스트 불가" : undefined,
   }));
+
+  // Inline 모드 — chips 영역 + 종목 리스트 항상 노출. "+ 종목 추가" 버튼 없음.
+  if (inline) {
+    return (
+      <div className="multi-picker multi-picker-inline">
+        <div className="multi-chips">
+          {selected.length === 0 && (
+            <span className="muted small">아직 선택된 종목이 없습니다.</span>
+          )}
+          {selected.map((sym) => {
+            const info = list.find((s) => s.symbol === sym);
+            const label = info?.name ? `${sym} ${info.name}` : sym;
+            return (
+              <span key={sym} className="multi-chip">
+                {label}
+                <button type="button" className="multi-chip-x"
+                        aria-label={`${sym} 제거`}
+                        onClick={() => remove(sym)}>×</button>
+              </span>
+            );
+          })}
+        </div>
+        <div className="multi-inline-list">
+          <TabbedSymbolList
+            items={items}
+            order={TRADABLE_TAB_ORDER}
+            placeholder="종목명 또는 코드 검색…"
+            multiSelect
+            selectedKeys={selected}
+            onPick={toggle}
+          />
+        </div>
+        <div className="multi-inline-foot muted small">
+          {selected.length}개 선택됨 — 종목명을 클릭해 추가/제거
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="multi-picker" ref={ref}>
