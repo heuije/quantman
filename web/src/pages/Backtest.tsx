@@ -1034,14 +1034,41 @@ function ScreenerPickerModal({
             setScreenerLimit={setScreenerLimit}
             inline
           />
-          <div className="rebalance-row" style={{ marginTop: 14 }}>
-            <label className="rebalance-toggle">
-              <input type="checkbox" checked={rebalance.enabled}
-                     onChange={(e) => setRebalance({ ...rebalance, enabled: e.target.checked })} />
-              <span>일일 리밸런싱 — 상위 N에서 탈락한 보유 종목을 매도하고 새 종목으로 교체</span>
-            </label>
+          {/* Phase 54 — 리밸런싱 두 모드 명시 선택 (라디오 카드).
+              enabled=false=보유 / enabled=true=매도 교체. 업계 표준 부합:
+              default 보유(trigger-based, ETF 산업도 사실상 이쪽), 옵션 매도(스마트베타·로보어드바이저). */}
+          <div className="rebalance-section" style={{ marginTop: 16 }}>
+            <div className="sub-h" style={{ marginBottom: 8 }}>
+              자동 선택 리밸런싱 <span className="muted small">— 평가 시 상위 N에서 탈락한 보유 종목 처리</span>
+            </div>
+            <div className="price-mode-row">
+              <label className={"price-mode-btn" + (!rebalance.enabled ? " on" : "")}>
+                <input type="radio" name="rebalance-mode"
+                       checked={!rebalance.enabled}
+                       onChange={() => setRebalance({ ...rebalance, enabled: false })} />
+                <div className="price-mode-text">
+                  <strong>보유 유지 (Trigger-based)</strong>
+                  <span className="muted small">
+                    탈락해도 보유. 사용자 매도 룰(익절·손절·트레일 등) 트리거 시에만 매도.
+                    회전율↓ · 거래비용↓ · 추세 추종 효과. <b>업계 표준 default.</b>
+                  </span>
+                </div>
+              </label>
+              <label className={"price-mode-btn" + (rebalance.enabled ? " on" : "")}>
+                <input type="radio" name="rebalance-mode"
+                       checked={rebalance.enabled}
+                       onChange={() => setRebalance({ ...rebalance, enabled: true })} />
+                <div className="price-mode-text">
+                  <strong>탈락 시 매도 → 신규 교체</strong>
+                  <span className="muted small">
+                    정기 평가일에 상위 N 탈락 보유 종목 전량 매도 + 신규 편입 종목 매수.
+                    포트폴리오 최신 신호 반영. 회전율↑ · 거래비용·세금↑.
+                  </span>
+                </div>
+              </label>
+            </div>
             {rebalance.enabled && (
-              <div className="rebalance-detail">
+              <div className="rebalance-detail" style={{ marginTop: 10 }}>
                 <label>주기</label>
                 <select value={rebalance.period}
                         onChange={(e) => setRebalance({
@@ -1052,7 +1079,8 @@ function ScreenerPickerModal({
                   <option value="monthly">매월</option>
                 </select>
                 <span className="muted small">
-                  ⚠ 라이브 전용. 회전율↑ → 거래비용·세금↑. 모의투자로 충분히 검증 후 사용하세요.
+                  ⚠ 라이브 전용. 매일 리밸런싱은 회전율 매우 높음 (~200%+/년). 월간 이하 권장.
+                  모의투자로 충분히 검증 후 사용하세요.
                 </span>
               </div>
             )}
