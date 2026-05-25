@@ -187,7 +187,9 @@ export default function Monitor() {
           전량 매도 후 매수 중지
         </button>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-          {paired && <HealthCard snapAt={snap?.received_at} health={p?.health} />}
+          {paired && <HealthCard snapAt={snap?.received_at}
+                                  heartbeatAt={snap?.last_heartbeat_at}
+                                  health={p?.health} />}
           <span className="muted" style={{ fontSize: 12 }}>
             {paired
               ? `대상 기기: ${devices[0].name} (#${devices[0].id})`

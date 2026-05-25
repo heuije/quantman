@@ -136,6 +136,20 @@ def start() -> None:
         id="calendar_sync", name="시장 캘린더 일일 sync",
         misfire_grace_time=3600)
 
+    # ── Phase 58 — heartbeat (5분 주기, alive 신호) ─────────────────────────
+    # cycle 외 시간(새벽 등)에도 웹앱 "끊김" 표시 회피.
+    # KIS API 호출 X — 단순 alive ping. 페어링 안 됐으면 silent fail.
+    from . import sync_client
+    sched.add_job(
+        sync_client.push_heartbeat,
+        CronTrigger(minute="*/5", timezone="Asia/Seoul"),
+        id="heartbeat", name="로컬앱 alive heartbeat",
+        misfire_grace_time=120)
+    # 기동 시 1회 — 첫 cron까지 대기 안 하고 즉시 alive 표시
+    import threading
+    threading.Thread(target=sync_client.push_heartbeat,
+                      daemon=True, name="heartbeat-initial").start()
+
     print("=" * 52)
     print("  로컬앱 스케줄러 시작 (KST)")
     print("  [KRX] 08:50 loop · 08:55 사이클 · 15:30 loop종료 · 15:35 정산")

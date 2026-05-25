@@ -24,6 +24,10 @@ _log = logging.getLogger("app.sync")
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
+# Phase 58 — 로컬앱 heartbeat (5분 주기). 메모리 dict라 worker 1개 가정 + restart
+# 시 다음 heartbeat까지 stale. Railway single-worker라 OK.
+_last_heartbeat: dict[int, datetime] = {}
+
 
 # ── 로컬앱 → 서버 (기기 토큰 인증) ─────────────────────────────────────────────
 
@@ -317,6 +321,17 @@ def push_tradable_symbols(
 
 # ── 서버 → 웹 (JWT 인증) ───────────────────────────────────────────────────────
 
+@router.post("/heartbeat")
+def push_heartbeat(device: Device = Depends(get_current_device)):
+    """Phase 58 — 로컬앱 alive 신호. 5분 주기, KIS API 호출 없음.
+
+    cycle 외 시간(새벽 등)에도 웹앱이 로컬앱 살아있음을 알 수 있도록
+    user_id별 last_heartbeat_at 메모리 dict 갱신.
+    """
+    _last_heartbeat[device.user_id] = datetime.now(timezone.utc)
+    return {"ok": True}
+
+
 @router.get("/snapshot", response_model=SyncSnapshotOut | None)
 def latest_snapshot(
     user: User = Depends(get_current_user),
@@ -328,10 +343,15 @@ def latest_snapshot(
         .where(SyncSnapshot.user_id == user.id)
         .order_by(SyncSnapshot.received_at.desc())
     ).first()
-    if snap is None:
+    last_hb = _last_heartbeat.get(user.id)
+    if snap is None and last_hb is None:
         return None
+    if snap is None:
+        # snapshot 없지만 heartbeat 있음 — 새 가동 + 첫 cycle 전 케이스
+        return SyncSnapshotOut(payload={}, received_at=last_hb,
+                                device_id=None, last_heartbeat_at=last_hb)
     return SyncSnapshotOut(payload=snap.payload, received_at=snap.received_at,
-                           device_id=snap.device_id)
+                           device_id=snap.device_id, last_heartbeat_at=last_hb)
 
 
 # ── 로컬앱 → 서버 Parquet 데이터 동기화 업로드 ─────────────────────────────────────

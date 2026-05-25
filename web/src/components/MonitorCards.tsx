@@ -487,8 +487,8 @@ export function ExecutionQuality({ buckets, reasons }: {
 /** 동기화 지연·토큰 만료·warnings를 결합해 단일 상태로 환원.
  *  로컬앱이 살아있는지(=자동매매가 실제 도는지) 한눈에 보여주는 게 핵심.
  *  자세한 timestamp는 tooltip(title)으로만 제공 — raw 시각 노출은 의미 약함. */
-export function HealthCard({ snapAt, health }: {
-  snapAt?: string; health?: LocalHealth;
+export function HealthCard({ snapAt, heartbeatAt, health }: {
+  snapAt?: string; heartbeatAt?: string | null; health?: LocalHealth;
 }) {
   const [now, setNow] = useState<number>(() => Date.now());
   useEffect(() => {
@@ -496,10 +496,14 @@ export function HealthCard({ snapAt, health }: {
     return () => clearInterval(t);
   }, []);
 
-  if (!snapAt && !health) return null;
+  if (!snapAt && !heartbeatAt && !health) return null;
 
-  // 동기화 지연 평가
-  const syncAgeSec = snapAt ? (now - new Date(snapAt).getTime()) / 1000 : Infinity;
+  // Phase 58 — alive 시각은 snapshot received_at과 heartbeat 중 최신 사용.
+  // cycle 외 시간(새벽 등)에도 heartbeat가 5분 주기로 갱신 → 살아있음 표시.
+  const snapMs = snapAt ? new Date(snapAt).getTime() : 0;
+  const hbMs = heartbeatAt ? new Date(heartbeatAt).getTime() : 0;
+  const aliveMs = Math.max(snapMs, hbMs);
+  const syncAgeSec = aliveMs > 0 ? (now - aliveMs) / 1000 : Infinity;
   // KIS 토큰 만료
   const tokenHoursLeft = health?.kis_token_expires_at
     ? (new Date(health.kis_token_expires_at).getTime() - now) / 3600000 : null;

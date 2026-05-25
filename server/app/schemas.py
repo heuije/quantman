@@ -135,7 +135,11 @@ class SyncPushIn(BaseModel):
 class SyncSnapshotOut(BaseModel):
     payload: dict[str, Any]
     received_at: datetime
-    device_id: int
+    device_id: Optional[int] = None
+    # Phase 58 — cycle 외 시간(새벽 등) 로컬앱 alive 신호. snapshot 갱신과 별도로
+    # 5분 주기로 갱신. 웹앱이 last_heartbeat_at 또는 received_at 중 최신을 사용해
+    # "끊김" 판단. 메모리 dict 기반이라 server restart 시 최대 5분 stale 가능.
+    last_heartbeat_at: Optional[datetime] = None
 
 
 # ── 종목마스터 sync ───────────────────────────────────────────────────────────

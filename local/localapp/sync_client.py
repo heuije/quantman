@@ -35,6 +35,25 @@ def push_snapshot(payload: dict) -> None:
     r.raise_for_status()
 
 
+def push_heartbeat() -> None:
+    """Phase 58 — 5분 주기 alive 신호. KIS API 호출 없음(잔고 query X).
+
+    cycle 외 시간(새벽 등)에도 server에 살아있음 통지 → 웹앱 "끊김" 표시 회피.
+    페어링 안 됐거나 네트워크 실패 시 silent fail — alive 신호일 뿐 fatal 아님.
+    """
+    try:
+        token = load_device_token()
+        if not token:
+            return
+        r = requests.post(f"{PLATFORM_URL}/sync/heartbeat",
+                          headers={"Authorization": f"Bearer {token}"},
+                          timeout=10)
+        if not r.ok:
+            log.debug("heartbeat 실패: %s %s", r.status_code, r.text[:100])
+    except Exception as e:
+        log.debug("heartbeat 예외: %s", e)
+
+
 def pull_strategies() -> list[dict]:
     """모의/실전으로 배정된 전략 목록을 가져온다."""
     r = requests.get(f"{PLATFORM_URL}/sync/strategies", headers=_headers(),

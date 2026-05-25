@@ -383,7 +383,10 @@ export interface SyncSnapshot {
     // Phase 40 — KIS 잔고 ↔ ledger 정합성
     reconciliation?: ReconciliationResult;
   };
-  received_at: string; device_id: number;
+  received_at: string; device_id: number | null;
+  // Phase 58 — 5분 주기 heartbeat. snapshot보다 최신이면 "살아있음" 지표로
+  // 사용. 정규장 외(새벽 등) cycle 없을 때도 alive 표시 가능.
+  last_heartbeat_at?: string | null;
 }
 
 /** Phase 40 — KIS 잔고 ↔ ledger drift 점검 결과 */
