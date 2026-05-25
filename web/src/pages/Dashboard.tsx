@@ -194,15 +194,30 @@ export default function Dashboard() {
           </div>
         </div>
         <div className="kpi-strip">
-          <KpiBox label="총 평가" value={won(bal?.total_eval)} />
-          <KpiBox label="가용 현금" value={won(bal?.cash)} />
-          <KpiBox
-            label="오늘 P&L"
-            value={pnlSigned(todayPnl)}
-            valueClass={
-              todayPnl == null ? "" : todayPnl >= 0 ? "pos" : "neg"
-            }
-          />
+          {bal ? (
+            <>
+              <KpiBox label="총 평가" value={won(bal.total_eval)} />
+              <KpiBox label="가용 현금" value={won(bal.cash)} />
+              <KpiBox
+                label="오늘 P&L"
+                value={pnlSigned(todayPnl)}
+                valueClass={
+                  todayPnl == null ? "" : todayPnl >= 0 ? "pos" : "neg"
+                }
+              />
+            </>
+          ) : (
+            // Phase 50 — 빈 KPI 카드 "-" 3개는 "왜 비어있지?" 혼란만 줌.
+            // 모의 계좌 연결 안 됐다는 사실 + CTA로 대체.
+            <div className="kpi-empty">
+              <span className="kpi-empty-msg">
+                {mode === "live" ? "실전" : "모의"} 계좌 데이터가 아직 없습니다
+              </span>
+              <Link to="/settings" className="kpi-empty-cta">
+                로컬앱 연결 →
+              </Link>
+            </div>
+          )}
         </div>
       </div>
 
@@ -228,15 +243,35 @@ export default function Dashboard() {
         )}
       </section>
 
-      {/* 2. 자산곡선 */}
+      {/* 2. 자산곡선 — Phase 50: KOSPI 벤치마크를 panel-header h3 옆으로 (떠 있던 bench-row 제거),
+          빈 데이터 시 range-toggle disabled (의미 없는 클릭 차단). */}
       <section className="panel">
         <div className="panel-header">
-          <h3>자산곡선</h3>
+          <h3 className="panel-header-title">
+            자산곡선
+            {kospi && (
+              <span className="bench-inline">
+                <span className="bench-inline-label">vs {kospi.label}</span>
+                <span className="bench-inline-value">
+                  {kospi.value?.toLocaleString() ?? "-"}
+                </span>
+                <span
+                  className={
+                    "bench-inline-pct " +
+                    ((kospi.change_pct ?? 0) >= 0 ? "pos" : "neg")
+                  }
+                >
+                  {pct(kospi.change_pct)}
+                </span>
+              </span>
+            )}
+          </h3>
           <div className="range-toggle">
             {(["1w", "1m", "3m", "all"] as const).map((r) => (
               <button
                 key={r}
                 className={range === r ? "on" : ""}
+                disabled={equity.length === 0}
                 onClick={() => setRange(r)}
               >
                 {labelRange(r)}
@@ -250,22 +285,6 @@ export default function Dashboard() {
           </div>
         ) : (
           <EquityChart equity={equitySliced} />
-        )}
-        {kospi && (
-          <div className="bench-row">
-            <span className="bench-label">{kospi.label}</span>
-            <span className="bench-value">
-              {kospi.value?.toLocaleString() ?? "-"}
-            </span>
-            <span
-              className={
-                "bench-pct " +
-                ((kospi.change_pct ?? 0) >= 0 ? "pos" : "neg")
-              }
-            >
-              {pct(kospi.change_pct)}
-            </span>
-          </div>
         )}
       </section>
 

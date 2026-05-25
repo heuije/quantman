@@ -30,13 +30,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div>{email}</div>
           <div className="spacer" />
           <button className="ghost sm" onClick={logout}>로그아웃</button>
-          <div className="sidebar-legal">
-            <NavLink to="/legal/terms" className="legal-mini">약관</NavLink>
-            <span>·</span>
-            <NavLink to="/legal/privacy" className="legal-mini">개인정보</NavLink>
-            <span>·</span>
-            <NavLink to="/legal/usage" className="legal-mini">이용안내</NavLink>
-          </div>
         </div>
       </aside>
       <main className="main">
@@ -45,6 +38,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="main-inner">
           <ErrorBoundary>{children}</ErrorBoundary>
         </div>
+        {/* Phase 50 — 법적 fine print는 페이지 하단 footer로 (모바일 nav wrap 해소,
+            데스크탑 사이드바 깔끔). 표준 SaaS 패턴. */}
+        <footer className="page-footer">
+          <NavLink to="/legal/terms">약관</NavLink>
+          <span>·</span>
+          <NavLink to="/legal/privacy">개인정보처리방침</NavLink>
+          <span>·</span>
+          <NavLink to="/legal/usage">이용안내</NavLink>
+        </footer>
       </main>
     </div>
   );

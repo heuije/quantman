@@ -59,6 +59,19 @@ a:hover { text-decoration: underline; }
 .sidebar-foot { margin-top: auto; font-size: 12px; color: var(--muted); padding: 10px; }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .main-inner { padding: 28px 32px; max-width: 1100px; width: 100%; flex: 1; }
+
+/* Phase 50 — 법적 fine print는 페이지 footer로 (sidebar에서 제거). */
+.page-footer {
+  display: flex; justify-content: center; gap: 10px;
+  padding: 16px 32px 20px;
+  border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--muted);
+}
+.page-footer a {
+  color: var(--muted); text-decoration: none;
+}
+.page-footer a:hover { color: var(--accent-strong); text-decoration: underline; }
+.page-footer span { color: var(--border); }
 .page-title { font-size: 22px; font-weight: 700; margin: 0 0 4px; }
 .page-sub { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
 
@@ -1096,6 +1109,21 @@ thead th { color: var(--muted); font-weight: 600; }
   gap: 20px; margin-bottom: 22px; flex-wrap: wrap;
 }
 .kpi-strip { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* Phase 50 — bal 미수신 시 "-" 카드 3개 대신 안내 + CTA. */
+.kpi-empty {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; min-height: 56px;
+  background: var(--panel); border: 1px dashed var(--border);
+  border-radius: 8px; font-size: 13px;
+}
+.kpi-empty-msg { color: var(--muted); }
+.kpi-empty-cta {
+  color: var(--accent-strong); font-weight: 600; text-decoration: none;
+  padding: 4px 10px; border-radius: 6px;
+}
+.kpi-empty-cta:hover { background: var(--accent-soft); }
+
 .kpi-box {
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 8px; padding: 10px 16px; min-width: 130px;
@@ -1124,9 +1152,21 @@ thead th { color: var(--muted); font-weight: 600; }
 
 .panel-header {
   display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 14px;
+  margin-bottom: 14px; flex-wrap: wrap; gap: 10px;
 }
 .panel-header h3 { margin: 0; font-size: 15px; }
+.panel-header-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+
+/* Phase 50 — 자산곡선 h3 옆 KOSPI 벤치마크 inline (bench-row 떠 있던 것 제거). */
+.bench-inline {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  font-size: 12px; font-weight: 400; color: var(--muted);
+}
+.bench-inline-label { color: var(--muted); }
+.bench-inline-value { color: var(--text); font-variant-numeric: tabular-nums; }
+.bench-inline-pct { font-weight: 600; font-variant-numeric: tabular-nums; }
+.bench-inline-pct.pos { color: var(--up); }
+.bench-inline-pct.neg { color: var(--down); }
 .panel-more {
   font-size: 12px; color: var(--accent-strong); cursor: pointer;
 }
@@ -1141,6 +1181,7 @@ thead th { color: var(--muted); font-weight: 600; }
   padding: 6px 14px; border-radius: 6px; cursor: pointer;
   color: var(--muted); font-weight: 600;
 }
+.range-toggle button:disabled { opacity: 0.4; cursor: not-allowed; }
 .range-toggle button.on {
   background: var(--panel); color: var(--text);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
