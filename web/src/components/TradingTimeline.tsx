@@ -12,9 +12,12 @@ import { api } from "../api";
 import type { TimelineEvent, TradingTimeline } from "../types";
 
 const KIND_LABEL: Record<TimelineEvent["kind"], string> = {
-  krx_cycle: "KRX 사이클",
-  us_cycle: "US 사이클",
-  preview: "매매 후보 결정",
+  krx_preview:    "국장 매매 후보 결정",
+  krx_cycle:      "국장 자동매매 시작",
+  krx_settlement: "국장 자동매매 종료",
+  us_preview:     "미장 매매 후보 결정",
+  us_cycle:       "미장 자동매매 시작",
+  us_settlement:  "미장 자동매매 종료",
 };
 
 const STATUS_BADGE: Record<TimelineEvent["status"], { icon: string; cls: string }> = {

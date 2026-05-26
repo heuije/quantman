@@ -40,13 +40,18 @@ KST = ZoneInfo("Asia/Seoul")
 # 사용자 시야 윈도우 — 과거/미래 24시간씩.
 WINDOW_HOURS = 24
 
-# Preview 최종 결정 cron(서버 main.py) — 매매 후보 webhook 발송 시각.
-# 07:30·17:15도 preview를 갱신하지만 18:15 직후가 최종이며 webhook은 여기서만.
-# 사용자에게 노출하는 "후보 결정" 표상은 단일 시각으로 단순화.
-PREVIEW_DECISION_TIME = time(18, 15)
+# 서버 cron 시각(main.py 와 동일 출처). 두 preview는 시장별 다른 데이터에 기반:
+#   · 07:30 KST: 미국 마감(06:00) 직후 yfinance/FRED publish 반영 → 국장 매매 후보
+#                ("S&P 500이 X 이상이면 KRX 매수" 같은 전략이 fresh US 종가 사용)
+#   · 18:15 KST: KRX 종가(15:30) + NAVER + technical + parquet 영구 저장 직후
+#                → 미장 매매 후보 (KRX 종가 기반 전략용. 같은 cron이 webhook 발송)
+KRX_PREVIEW_TIME = time(7, 30)
+US_PREVIEW_TIME = time(18, 15)
 
-# KRX 자동매매 사이클 (로컬앱 scheduler.py 와 동일 출처).
+# 로컬앱 scheduler.py 와 동일 출처. cycle = 주문 발주, settlement = 미체결 정리·reconcile.
 KRX_CYCLE_TIME = time(8, 55)
+KRX_SETTLEMENT_TIME = time(15, 35)
+# US cycle·settlement는 캘린더 기반 동적 — 함수 내에서 계산.
 
 
 def _now_kst() -> datetime:
@@ -128,122 +133,146 @@ def _summarize_cycle(snap: SyncSnapshot) -> str:
     return " · ".join(parts)
 
 
-def _krx_cycle_events(snaps: list[SyncSnapshot], now: datetime,
-                       window_start: datetime, window_end: datetime) -> list[dict]:
-    """KRX 08:55 KST 평일 cycle — 윈도우 안의 occurrences."""
+def _emit_scheduled(events: list[dict], sched: datetime, kind: str,
+                     now: datetime, window_start: datetime, window_end: datetime,
+                     done_summary: str = "", scheduled_or_done: bool = False,
+                     missed_detail: str = "", holiday: tuple[str, str] | None = None
+                     ) -> None:
+    """공통 emitter — sched가 윈도우 안이면 status에 맞춰 event 1개 push.
+
+    holiday=(summary, detail) 지정 시 즉시 holiday event (cycle·settlement에서 쓴다).
+    scheduled_or_done=True이면 sched > now → scheduled, 아니면 외부에서 done/missed
+    판정해 done_summary를 사전 채워 호출(예: cycle은 _match_snapshot, preview는
+    generated_at 비교).
+    """
+    if not (window_start <= sched <= window_end):
+        return
+    if holiday is not None:
+        events.append(_build_event(sched, kind, "holiday", *holiday))
+        return
+    if sched > now:
+        events.append(_build_event(sched, kind, "scheduled"))
+        return
+    # 호출자가 외부 신호(snapshot match 등)로 done 판정해 done_summary를 줬으면 done,
+    # 아니면 missed.
+    if done_summary:
+        events.append(_build_event(sched, kind, "done", done_summary))
+    else:
+        events.append(_build_event(sched, kind, "missed", "", missed_detail))
+
+
+def _krx_events(snaps: list[SyncSnapshot], now: datetime,
+                 window_start: datetime, window_end: datetime) -> list[dict]:
+    """KRX 사이클(08:55) + 정산(15:35) 평일 occurrences."""
     events: list[dict] = []
-    # 윈도우 시작 날짜부터 끝 날짜까지 순회
     d = window_start.date()
     end_d = window_end.date()
     while d <= end_d:
-        sched = datetime.combine(d, KRX_CYCLE_TIME, tzinfo=KST)
-        if window_start <= sched <= window_end:
-            if d.weekday() >= 5:                         # 토·일
-                events.append(_build_event(sched, "krx_cycle", "holiday",
-                                            "주말", "토·일 거래 없음"))
-            elif not _is_session_day_safe("KR", d):
-                events.append(_build_event(sched, "krx_cycle", "holiday",
-                                            "휴장", "KRX 휴장일"))
-            elif sched > now:
-                events.append(_build_event(sched, "krx_cycle", "scheduled"))
+        is_weekend = d.weekday() >= 5
+        is_holiday = not is_weekend and not _is_session_day_safe("KR", d)
+        for sched_time, kind, missed_msg, snapshot_market in [
+            (KRX_CYCLE_TIME, "krx_cycle",
+             "로컬앱이 시각에 실행 중이 아니었거나 grace(5분) 초과", "KRX"),
+            (KRX_SETTLEMENT_TIME, "krx_settlement",
+             "로컬앱이 15:35에 실행 중이 아니었습니다 — 미체결 정리·잔고 reconcile 누락", "KRX"),
+        ]:
+            sched = datetime.combine(d, sched_time, tzinfo=KST)
+            if is_weekend:
+                _emit_scheduled(events, sched, kind, now, window_start, window_end,
+                                 holiday=("주말", "토·일 거래 없음"))
+            elif is_holiday:
+                _emit_scheduled(events, sched, kind, now, window_start, window_end,
+                                 holiday=("휴장", "KRX 휴장일"))
             else:
-                snap = _match_snapshot(snaps, sched, "KRX")
-                if snap:
-                    events.append(_build_event(sched, "krx_cycle", "done",
-                                                _summarize_cycle(snap)))
-                else:
-                    events.append(_build_event(
-                        sched, "krx_cycle", "missed", "",
-                        "로컬앱이 시각에 실행 중이 아니었거나 grace(5분) 초과"))
+                snap = _match_snapshot(snaps, sched, snapshot_market) if sched <= now else None
+                summary = _summarize_cycle(snap) if (snap and kind == "krx_cycle") else (
+                    "정산 완료" if snap else "")
+                _emit_scheduled(events, sched, kind, now, window_start, window_end,
+                                 done_summary=summary, missed_detail=missed_msg)
         d += timedelta(days=1)
     return events
 
 
-def _us_cycle_events(snaps: list[SyncSnapshot], now: datetime,
-                      window_start: datetime, window_end: datetime) -> list[dict]:
-    """US cycle — open-5min, 캘린더 기반 동적. 윈도우 안의 occurrences."""
+def _us_events(snaps: list[SyncSnapshot], now: datetime,
+                window_start: datetime, window_end: datetime) -> list[dict]:
+    """US 사이클(open-5min) + 정산(close+5min) 캘린더 기반 동적 occurrences."""
     events: list[dict] = []
-    # 윈도우 안의 US 세션을 모두 모은다 — next_session_kst를 cursor로 사용.
-    cursor = window_start - timedelta(minutes=10)  # 직전 세션이 윈도우에 걸쳐있을 가능성
-    for _ in range(5):  # 24h에 US 세션은 최대 1개. 안전 마진 5회.
+    cursor = window_start - timedelta(hours=2)  # 직전 세션이 윈도우 걸칠 수 있어 마진
+    for _ in range(5):       # 24h 안에 US 세션 최대 1, 안전 5회
         try:
             sess = mc.next_session_kst("US", cursor)
         except mc.CalendarError:
             break
         if sess is None:
             break
-        open_kst, _close = sess
+        open_kst, close_kst = sess
         if open_kst > window_end + timedelta(hours=1):
             break
-        sched = open_kst - timedelta(minutes=5)        # scheduler.py와 동일
-        if window_start <= sched <= window_end:
-            if sched > now:
-                events.append(_build_event(sched, "us_cycle", "scheduled"))
-            else:
-                snap = _match_snapshot(snaps, sched, "US")
-                if snap:
-                    events.append(_build_event(sched, "us_cycle", "done",
-                                                _summarize_cycle(snap)))
-                else:
-                    events.append(_build_event(
-                        sched, "us_cycle", "missed", "",
-                        "로컬앱이 시각에 실행 중이 아니었거나 grace(10분) 초과"))
-        cursor = open_kst  # next iter는 다음 세션
+
+        cycle_sched = open_kst - timedelta(minutes=5)
+        settle_sched = close_kst + timedelta(minutes=5)
+        cycle_snap = _match_snapshot(snaps, cycle_sched, "US") if cycle_sched <= now else None
+        settle_snap = _match_snapshot(snaps, settle_sched, "US") if settle_sched <= now else None
+
+        _emit_scheduled(events, cycle_sched, "us_cycle", now, window_start, window_end,
+                         done_summary=_summarize_cycle(cycle_snap) if cycle_snap else "",
+                         missed_detail="로컬앱이 시각에 실행 중이 아니었거나 grace(10분) 초과")
+        _emit_scheduled(events, settle_sched, "us_settlement", now, window_start, window_end,
+                         done_summary="정산 완료" if settle_snap else "",
+                         missed_detail="로컬앱이 close+5min에 실행 중이 아니었습니다")
+        cursor = open_kst
     return events
 
 
-def _preview_decision_events(snaps: list[SyncSnapshot], now: datetime,
-                              window_start: datetime,
-                              window_end: datetime) -> list[dict]:
-    """매일 18:15 KST 매매 후보 결정 cron — 가장 최신 snapshot의 preview를 본다."""
+def _preview_events(snaps: list[SyncSnapshot], now: datetime,
+                     window_start: datetime, window_end: datetime) -> list[dict]:
+    """매매 후보 결정 — 시장별 다른 데이터에 의존하므로 2 event로 분리.
+
+    · krx_preview (07:30 KST): yfinance/FRED publish 직후 → 국장 cycle 8:55용
+    · us_preview  (18:15 KST): KRX 종가·NAVER·technical 완성 직후 → 미장 cycle용
+    """
     events: list[dict] = []
-    d = window_start.date()
-    end_d = window_end.date()
-    # 최신 next_day_preview generated_at — 모든 sched와 비교에 사용
+    # 가장 최신 next_day_preview generated_at + 시장별 후보 수.
     latest_gen: Optional[datetime] = None
-    candidates_summary = ""
+    krx_n = us_n = 0
     for s in reversed(snaps):
         pv = (s.payload or {}).get("next_day_preview") or {}
         gen = pv.get("generated_at")
         if not gen:
             continue
         try:
-            gdt = datetime.fromisoformat(gen.replace("Z", "+00:00"))
-            latest_gen = gdt.astimezone(KST)
+            latest_gen = datetime.fromisoformat(gen.replace("Z", "+00:00")).astimezone(KST)
         except ValueError:
             continue
-        # 후보 수 요약
-        by_strat = pv.get("by_strategy") or []
-        krx_n = us_n = 0
-        for bs in by_strat:
+        for bs in pv.get("by_strategy") or []:
             for c in bs.get("candidates") or []:
                 sym = c.get("symbol", "")
                 if sym.isdigit():
                     krx_n += 1
                 else:
                     us_n += 1
-        parts = []
-        if krx_n:
-            parts.append(f"KRX {krx_n}건")
-        if us_n:
-            parts.append(f"US {us_n}건")
-        candidates_summary = " · ".join(parts) if parts else "후보 0건"
         break
 
+    d = window_start.date()
+    end_d = window_end.date()
     while d <= end_d:
-        sched = datetime.combine(d, PREVIEW_DECISION_TIME, tzinfo=KST)
-        if window_start <= sched <= window_end:
+        for sched_time, kind, market_n in [
+            (KRX_PREVIEW_TIME, "krx_preview", krx_n),
+            (US_PREVIEW_TIME, "us_preview", us_n),
+        ]:
+            sched = datetime.combine(d, sched_time, tzinfo=KST)
+            if not (window_start <= sched <= window_end):
+                continue
             if sched > now:
-                events.append(_build_event(sched, "preview", "scheduled"))
+                events.append(_build_event(sched, kind, "scheduled"))
+            elif latest_gen and latest_gen >= sched - timedelta(minutes=2):
+                events.append(_build_event(
+                    sched, kind, "done",
+                    f"{market_n}건" if market_n else "후보 0건"))
             else:
-                # latest_gen이 sched 이후라면 이 시각의 결과로 본다.
-                if latest_gen and latest_gen >= sched - timedelta(minutes=2):
-                    events.append(_build_event(sched, "preview", "done",
-                                                candidates_summary))
-                else:
-                    events.append(_build_event(
-                        sched, "preview", "missed", "",
-                        "서버 preview 갱신 cron 결과를 받지 못했습니다"))
+                events.append(_build_event(
+                    sched, kind, "missed", "",
+                    "서버 preview 갱신 cron 결과를 받지 못했습니다"))
         d += timedelta(days=1)
     return events
 
@@ -276,9 +305,9 @@ def get_timeline(
     snaps = _snapshots_in_window(session, user.id, window_start, window_end)
 
     events = (
-        _krx_cycle_events(snaps, now, window_start, window_end)
-        + _us_cycle_events(snaps, now, window_start, window_end)
-        + _preview_decision_events(snaps, now, window_start, window_end)
+        _krx_events(snaps, now, window_start, window_end)
+        + _us_events(snaps, now, window_start, window_end)
+        + _preview_events(snaps, now, window_start, window_end)
     )
     events.sort(key=lambda e: e["at"])
 

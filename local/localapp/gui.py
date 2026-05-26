@@ -203,18 +203,24 @@ class SettingsApp:
         # 뒤에 배치되어 사용자에게 안 보임.
         self.next_frame = tk.Frame(self.root, bg=PANEL,
                                     highlightbackground=BORDER, highlightthickness=1)
-        self.next_krx_label = tk.Label(self.next_frame, bg=PANEL, fg=TEXT,
-                                        font=("Segoe UI", 9), anchor="w",
-                                        text="")
-        self.next_us_label = tk.Label(self.next_frame, bg=PANEL, fg=TEXT,
-                                       font=("Segoe UI", 9), anchor="w",
-                                       text="")
+        # 4 라벨: 국장 시작/종료 + 미장 시작/종료. 시작=주문 발주(cycle),
+        # 종료=정산(미체결 정리·잔고 reconcile).
+        self.next_krx_cycle_label = tk.Label(self.next_frame, bg=PANEL, fg=TEXT,
+                                              font=("Segoe UI", 9), anchor="w", text="")
+        self.next_krx_settle_label = tk.Label(self.next_frame, bg=PANEL, fg=MUTED,
+                                               font=("Segoe UI", 9), anchor="w", text="")
+        self.next_us_cycle_label = tk.Label(self.next_frame, bg=PANEL, fg=TEXT,
+                                             font=("Segoe UI", 9), anchor="w", text="")
+        self.next_us_settle_label = tk.Label(self.next_frame, bg=PANEL, fg=MUTED,
+                                              font=("Segoe UI", 9), anchor="w", text="")
         # 누락 알림 — 오늘 예정 cycle이 지났는데 cycles.jsonl에 기록 없을 때만 표시.
         self.miss_alert_label = tk.Label(self.next_frame, bg=PANEL, fg=RED,
                                           font=("Segoe UI", 9, "bold"), anchor="w",
                                           text="")
-        self.next_krx_label.pack(fill="x", padx=12, pady=(6, 0))
-        self.next_us_label.pack(fill="x", padx=12, pady=(2, 0))
+        self.next_krx_cycle_label.pack(fill="x", padx=12, pady=(6, 0))
+        self.next_krx_settle_label.pack(fill="x", padx=12, pady=(0, 0))
+        self.next_us_cycle_label.pack(fill="x", padx=12, pady=(2, 0))
+        self.next_us_settle_label.pack(fill="x", padx=12, pady=(0, 0))
         self.miss_alert_label.pack(fill="x", padx=12, pady=(2, 6))
         # hero 직후 위치 확보 — refresh_status가 pack_forget으로 일단 숨김 처리.
         self.next_frame.pack(fill="x", padx=12, pady=(0, 6))
@@ -425,23 +431,27 @@ class SettingsApp:
             self.root.after(60_000, self._schedule_minute_tick)
 
     def _refresh_next_run_labels(self):
-        """APScheduler에 등록된 krx_cycle·us_cycle 잡의 next_run_time을 표시.
+        """APScheduler에 등록된 cycle·settlement 잡의 next_run_time을 표시.
 
-        사용자가 "다음 자동매매가 언제인지" 추측하지 않게 한다.
-        매분 1회 root.after로 자동 갱신 (countdown 의미 있게 유지).
+        4종 표시 — 국장/미장 × 시작/종료. 매분 1회 root.after로 countdown 갱신.
         + 오늘 예정 cycle이 지났는데 cycles.jsonl에 기록 없으면 누락 알림.
         """
         if not self.scheduler:
             return
-        try:
-            krx_job = self.scheduler.get_job("krx_cycle")
-            us_job = self.scheduler.get_job("us_cycle")
-        except Exception:
-            krx_job = us_job = None
-        self.next_krx_label.configure(
-            text="다음 KRX 사이클:  " + self._format_next_run(krx_job))
-        self.next_us_label.configure(
-            text="다음 US 사이클:    " + self._format_next_run(us_job, fallback_us=True))
+        jobs = {}
+        for jid in ("krx_cycle", "krx_settlement", "us_cycle", "us_settlement"):
+            try:
+                jobs[jid] = self.scheduler.get_job(jid)
+            except Exception:
+                jobs[jid] = None
+        self.next_krx_cycle_label.configure(
+            text="다음 국장 자동매매 시작:  " + self._format_next_run(jobs["krx_cycle"]))
+        self.next_krx_settle_label.configure(
+            text="          국장 자동매매 종료:  " + self._format_next_run(jobs["krx_settlement"]))
+        self.next_us_cycle_label.configure(
+            text="다음 미장 자동매매 시작:  " + self._format_next_run(jobs["us_cycle"], fallback_us=True))
+        self.next_us_settle_label.configure(
+            text="          미장 자동매매 종료:  " + self._format_next_run(jobs["us_settlement"], fallback_us=True))
 
         # 누락 알림 — 오늘 예정 cycle 시각이 지났는데 cycles.jsonl에 기록 없음 = missed
         missed = self._detect_missed_today()

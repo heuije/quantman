@@ -569,8 +569,12 @@ export interface CommandRow {
 }
 
 // 자동매매 타임라인 — /trading/timeline 응답.
-// 서버 routers/trading.py 와 동기. status 추가 시 양쪽 같이 갱신.
-export type TimelineEventKind = "krx_cycle" | "us_cycle" | "preview";
+// 서버 routers/trading.py 와 동기. event kind 추가 시 양쪽 같이 갱신.
+// 시작=cycle(주문 발주), 종료=settlement(미체결 정리·잔고 reconcile).
+// preview 시장별 분리: krx_preview(07:30 — US 종가 반영), us_preview(18:15 — KRX 종가 반영).
+export type TimelineEventKind =
+  | "krx_cycle" | "krx_settlement" | "krx_preview"
+  | "us_cycle"  | "us_settlement"  | "us_preview";
 export type TimelineEventStatus = "done" | "scheduled" | "missed" | "holiday";
 
 export interface TimelineEvent {
