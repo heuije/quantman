@@ -327,9 +327,13 @@ def push_heartbeat(
     UserSettings.last_heartbeat_at(latest 1건) + HeartbeatEvent(history row 1건).
     Latest는 "현재 살아있는지" 빠른 조회용, history는 "과거 임의 시점에 살아있었는지"
     판정용(missed cycle 원인 A vs B 분류에 필수).
+
+    Phase A(latest)·Phase B(history) 분리 commit — history 테이블 누락·DDL 지연 시
+    latest 갱신은 무조건 성공시켜 웹앱 "끊김" false alarm 방지(근본 원인: history
+    insert 한 번이 실패하면 sqlmodel transaction 전체 rollback돼 latest까지 못 받는다).
     """
     now = datetime.now(timezone.utc)
-    # latest 갱신
+    # ── Phase A: latest 갱신 (primary, 절대 실패시키면 안 됨) ──────────────
     settings = session.exec(
         select(UserSettings).where(UserSettings.user_id == device.user_id)
     ).first()
@@ -338,9 +342,17 @@ def push_heartbeat(
         session.add(settings)
     else:
         settings.last_heartbeat_at = now
-    # history row
-    session.add(HeartbeatEvent(user_id=device.user_id, device_id=device.id, at=now))
     session.commit()
+
+    # ── Phase B: history row (보조, 실패 허용 — 진단용 데이터) ──────────────
+    try:
+        session.add(HeartbeatEvent(user_id=device.user_id, device_id=device.id, at=now))
+        session.commit()
+    except Exception as e:
+        # 테이블 미생성·DDL 지연·DB 일시 장애 등 — latest는 이미 commit됨, alive 신호엔 문제 없음.
+        # missed cycle 진단 정확도가 잠시 떨어지지만 핵심 기능엔 영향 X.
+        session.rollback()
+        _log.warning("[heartbeat] history insert 실패 (진단 정확도만 영향): %s", e)
     return {"ok": True}
 
 
