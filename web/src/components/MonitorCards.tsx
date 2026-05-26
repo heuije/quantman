@@ -562,19 +562,31 @@ export function HealthCard({ snapAt, heartbeatAt, health }: {
 
 export function MarketBar({ ctx }: { ctx: MarketContext | null }) {
   if (!ctx) return null;
+  // as_of 포맷 — "YYYY-MM-DD HH:mm" 등 표시. 빈 값/null이면 "—"
+  const fmtAsOf = (s?: string): string => {
+    if (!s) return "—";
+    // ISO datetime → "MM/DD HH:mm" (간결, 같은 해 가정)
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/);
+    if (!m) return s;
+    const [, , mo, d, h, mi] = m;
+    return h ? `${mo}/${d} ${h}:${mi}` : `${mo}/${d}`;
+  };
   return (
     <div className="market-bar">
       <span className="badge" style={{ background: "var(--accent-soft)" }}>
         {ctx.session.phase}
       </span>
       {ctx.indicators.filter((i) => i.available).map((i) => (
-        <span key={i.label} className="mkt-chip">
+        <span key={i.label} className="mkt-chip" title={i.as_of ? `기준: ${i.as_of}` : undefined}>
           <span className="muted">{i.label}</span>{" "}
           <strong>{i.value != null ? fmt2(i.value) : "—"}</strong>
           {" "}
           <span className={(i.change_pct ?? 0) >= 0 ? "pos" : "neg"}>
             {(i.change_pct ?? 0) >= 0 ? "+" : ""}{fmt2(i.change_pct)}%
           </span>
+          {i.as_of && (
+            <span className="muted small mkt-asof"> · {fmtAsOf(i.as_of)}</span>
+          )}
         </span>
       ))}
     </div>

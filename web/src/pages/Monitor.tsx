@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import {
-  ExecutionQuality, HealthCard, MarketBar, PortfolioRiskCard,
+  HealthCard, MarketBar,
   PositionDetailCards, RiskBanner, StrategyCardGrid,
 } from "../components/MonitorCards";
 import { CsvExportBar } from "../components/MonitorTools";
 import type {
   CommandRow, CommandType, DeviceRow, MarketContext, NextDayPreview,
-  PortfolioRisk, SyncSnapshot,
+  SyncSnapshot,
 } from "../types";
 
 const REFRESH_MS = 5000;
@@ -17,7 +17,6 @@ export default function Monitor() {
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [cmds, setCmds] = useState<CommandRow[]>([]);
   const [market, setMarket] = useState<MarketContext | null>(null);
-  const [risk, setRisk] = useState<PortfolioRisk | null>(null);
   const [preview, setPreview] = useState<NextDayPreview | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -38,21 +37,6 @@ export default function Monitor() {
     }
   }
 
-  // 포트폴리오 위험은 비용이 좀 들어 30초 주기.
-  // W-02 — 실패를 silent로 묻으면 카드가 빈 상태로 "위험 없음" 오인. 카드 내부에
-  // 표시할 수 있도록 별도 에러 상태를 둔다. 30초 폴링이라 "직전 성공 + 마지막 실패"
-  // 톤다운: setRisk(null)로 덮지 않고 riskErr만 set.
-  const [riskErr, setRiskErr] = useState("");
-  async function loadRisk() {
-    try {
-      const r = await api.portfolioRisk(60);
-      setRisk(r);
-      setRiskErr("");
-    } catch (e) {
-      setRiskErr((e as Error).message || "지표를 불러오지 못했습니다");
-    }
-  }
-
   // 매매 예정(NextDayPreview) — 30초 polling. 페어링 여부와 무관하게 fetch
   // (페어링 안 됐을 땐 server가 available=false 응답).
   function loadPreview() {
@@ -63,12 +47,10 @@ export default function Monitor() {
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     load();
-    loadRisk();
     loadPreview();
     const t = setInterval(load, REFRESH_MS);
-    const t2 = setInterval(loadRisk, 30_000);
     const t3 = setInterval(loadPreview, 30_000);
-    return () => { clearInterval(t); clearInterval(t2); clearInterval(t3); };
+    return () => { clearInterval(t); clearInterval(t3); };
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
 
@@ -93,7 +75,6 @@ export default function Monitor() {
   const p = paired ? snap?.payload : undefined;
   const ks = p?.kill_switch;
   const summary = p?.cycle_summary;
-  const slip = p?.slippage;
   const pending = p?.broker_pending ?? p?.pending_local ?? [];
   const orders = p?.recent_orders ?? [];
   const cycles = p?.recent_cycles ?? [];
@@ -198,7 +179,11 @@ export default function Monitor() {
         </div>
       </div>
 
-      {!paired ? (
+      {!loaded ? (
+        <p className="muted" style={{ textAlign: "center", padding: "32px 0" }}>
+          기기 연결 정보 불러오는 중…
+        </p>
+      ) : !paired ? (
         <PairingOnboarding />
       ) : (
         <>
@@ -237,25 +222,7 @@ export default function Monitor() {
         </div>
       )}
 
-      {/* 실행 품질 — 시간대별 슬리피지 + 거부 사유 */}
-      <ExecutionQuality
-        buckets={p?.slippage_by_hour?.buckets}
-        reasons={p?.rejection_reasons?.reasons} />
-
-      {/* 슬리피지 요약 */}
-      {slip && slip.n > 0 && (
-        <div className="panel">
-          <h3 style={{ marginTop: 0 }}>슬리피지 요약</h3>
-          <p className="muted" style={{ fontSize: 13 }}>
-            의도가 vs 체결가의 차이(bps). 양수 = 불리한 체결.
-            표본 {slip.n}건 · 평균 {slip.avg_bps} bps · 중앙값 {slip.p50_bps} bps ·
-            p95 {slip.p95_bps} bps · 최대 {slip.max_bps} bps
-          </p>
-        </div>
-      )}
-
-      {/* 포트폴리오 위험 — 상관관계 + 섹터. W-02 — 로드 실패 시 카드 내부에 표시. */}
-      <PortfolioRiskCard risk={risk} err={riskErr} />
+      {/* 실행 품질·슬리피지 요약·포트폴리오 위험 섹션 제거됨 (요청 #YYYYMMDD). */}
 
       {/* 로컬앱 상태는 페이지 상단 액션바 오른쪽 칩으로 이동 (Step 3).
           알림·위험 한도 설정 안내는 페이지 footer로 이동 (Step 5). */}

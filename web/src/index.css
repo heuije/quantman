@@ -1976,6 +1976,7 @@ thead th { color: var(--muted); font-weight: 600; }
   background: var(--panel);
   color: var(--text);
 }
+.mkt-chip .mkt-asof { font-size: 11px; opacity: 0.7; }
 .step-next-btn {
   padding: 10px 22px;
   font-size: 14px;
