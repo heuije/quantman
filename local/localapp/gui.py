@@ -197,7 +197,10 @@ class SettingsApp:
         self.hero_sub.pack(pady=(0, 14))
 
         # mini 자동매매 일정 — hero 바로 아래. "다음 자동매매가 언제인지" 한 줄.
-        # scheduler가 가동 중일 때만 표시(중지 상태에선 비활성).
+        # scheduler가 가동 중일 때만 표시(중지 상태에선 비활성). 가시성을 위해
+        # _build에서 일단 packed 위치를 확보(이후 refresh_status가 pack_forget·
+        # repack 토글) — 안 그러면 refresh_status의 pack 호출이 다른 모든 위젯
+        # 뒤에 배치되어 사용자에게 안 보임.
         self.next_frame = tk.Frame(self.root, bg=PANEL,
                                     highlightbackground=BORDER, highlightthickness=1)
         self.next_krx_label = tk.Label(self.next_frame, bg=PANEL, fg=TEXT,
@@ -206,9 +209,16 @@ class SettingsApp:
         self.next_us_label = tk.Label(self.next_frame, bg=PANEL, fg=TEXT,
                                        font=("Segoe UI", 9), anchor="w",
                                        text="")
+        # 누락 알림 — 오늘 예정 cycle이 지났는데 cycles.jsonl에 기록 없을 때만 표시.
+        self.miss_alert_label = tk.Label(self.next_frame, bg=PANEL, fg=RED,
+                                          font=("Segoe UI", 9, "bold"), anchor="w",
+                                          text="")
         self.next_krx_label.pack(fill="x", padx=12, pady=(6, 0))
-        self.next_us_label.pack(fill="x", padx=12, pady=(2, 6))
-        # 평소엔 숨김 — refresh_status가 scheduler 가동 시 .pack 호출
+        self.next_us_label.pack(fill="x", padx=12, pady=(2, 0))
+        self.miss_alert_label.pack(fill="x", padx=12, pady=(2, 6))
+        # hero 직후 위치 확보 — refresh_status가 pack_forget으로 일단 숨김 처리.
+        self.next_frame.pack(fill="x", padx=12, pady=(0, 6))
+        self.next_frame.pack_forget()
 
         # Kill switch 배너 — 활성 시에만 표시
         self.ks_banner = tk.Frame(self.root, bg=RED)
@@ -419,6 +429,7 @@ class SettingsApp:
 
         사용자가 "다음 자동매매가 언제인지" 추측하지 않게 한다.
         매분 1회 root.after로 자동 갱신 (countdown 의미 있게 유지).
+        + 오늘 예정 cycle이 지났는데 cycles.jsonl에 기록 없으면 누락 알림.
         """
         if not self.scheduler:
             return
@@ -431,6 +442,78 @@ class SettingsApp:
             text="다음 KRX 사이클:  " + self._format_next_run(krx_job))
         self.next_us_label.configure(
             text="다음 US 사이클:    " + self._format_next_run(us_job, fallback_us=True))
+
+        # 누락 알림 — 오늘 예정 cycle 시각이 지났는데 cycles.jsonl에 기록 없음 = missed
+        missed = self._detect_missed_today()
+        if missed:
+            self.miss_alert_label.configure(
+                text="⚠ 오늘 누락된 cycle: " + " · ".join(missed))
+            self.miss_alert_label.pack(fill="x", padx=12, pady=(2, 6))
+        else:
+            self.miss_alert_label.pack_forget()
+
+    def _detect_missed_today(self) -> list[str]:
+        """오늘 자동매매 cycle 누락 여부. 반환: 누락된 시장명 list (예: ['KRX'])."""
+        from datetime import datetime, time as dtime, timedelta
+        from zoneinfo import ZoneInfo
+        kst = ZoneInfo("Asia/Seoul")
+        now = datetime.now(kst)
+        today = now.date()
+
+        # 오늘 평일이면 KRX 08:55, 미국 세션이 오늘 한국시각에 있었으면 US도 체크.
+        checks: list[tuple[str, datetime]] = []
+        # KRX — 평일만, 08:55 KST 이후
+        if today.weekday() < 5:    # 월~금
+            krx_sched = datetime.combine(today, dtime(8, 55), tzinfo=kst)
+            if now > krx_sched + timedelta(minutes=5):  # grace 5분 지나야 누락 판정
+                checks.append(("KRX", krx_sched))
+        # US — 캘린더에서 오늘 KST 안에 끝난 세션 있으면. 보통 오늘 새벽까지.
+        # 간단화: 어제 22:25~오늘 06:00 사이 미국 cycle이 있었는지만 본다(DST 변동 마진).
+        # 더 정확한 판정은 server timeline에 위임.
+        try:
+            from quant_core import market_calendar as mc
+            sess_prev = mc.next_session_kst("US", now - timedelta(days=2))
+            if sess_prev:
+                open_kst, _close_kst = sess_prev
+                us_sched = open_kst - timedelta(minutes=5)
+                # 오늘(또는 새벽이라면 어제) 안에 있던 세션만 — 24h 안.
+                if 0 < (now - us_sched).total_seconds() < 86400:
+                    checks.append(("US", us_sched))
+        except Exception:
+            pass
+
+        if not checks:
+            return []
+
+        # cycles.jsonl 읽어 각 sched 직후 entry 있는지 확인. 없으면 누락.
+        from .config import CYCLES_PATH
+        recent_ts: list[datetime] = []
+        try:
+            import json
+            with open(CYCLES_PATH, encoding="utf-8") as f:
+                # 마지막 100줄만 — 충분히 오늘+어제 커버.
+                lines = f.readlines()[-100:]
+            for line in lines:
+                try:
+                    d = json.loads(line)
+                    ts_s = d.get("ts")
+                    if not ts_s:
+                        continue
+                    ts = datetime.fromisoformat(ts_s.replace("Z", "+00:00"))
+                    recent_ts.append(ts.astimezone(kst))
+                except (ValueError, json.JSONDecodeError):
+                    continue
+        except FileNotFoundError:
+            pass
+
+        missed = []
+        for market, sched in checks:
+            # sched-1min ~ sched+30min 사이 entry 있으면 정상.
+            window_lo = sched - timedelta(minutes=1)
+            window_hi = sched + timedelta(minutes=30)
+            if not any(window_lo <= t <= window_hi for t in recent_ts):
+                missed.append(market)
+        return missed
 
     def _format_next_run(self, job, fallback_us: bool = False) -> str:
         """job.next_run_time을 사람이 읽는 형태로. None이면 적절한 fallback 메시지."""
@@ -531,9 +614,10 @@ class SettingsApp:
 
         # mini 자동매매 일정 — scheduler 가동 중일 때만 표시.
         # scheduler가 멈춰있으면 "다음 자동매매" 자체가 의미 없음.
+        # after=self.hero로 hero 직후 위치 강제(repack 시 root 끝으로 밀리는 것 방지).
         if running and not ks_active:
             self._refresh_next_run_labels()
-            self.next_frame.pack(fill="x", padx=12, pady=(0, 6))
+            self.next_frame.pack(fill="x", padx=12, pady=(0, 6), after=self.hero)
         else:
             self.next_frame.pack_forget()
 
