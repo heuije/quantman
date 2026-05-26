@@ -162,8 +162,9 @@ export function PositionDetailCards({
                   <tr key={p.symbol} className={driftClass}>
                     <td>
                       <strong>{p.name ?? p.symbol}</strong>
-                      <div className="muted" style={{ fontSize: 11 }}>
-                        {p.symbol} · 보유 {p.held_days ?? 0}일
+                      <div style={{ fontSize: 12, marginTop: 2 }}>
+                        <span className="muted">{p.symbol}</span>
+                        <span> · 보유 {p.held_days ?? 0}일</span>
                         {(p.phases_total ?? 0) > 1 && (
                           <>
                             {" · "}
@@ -174,7 +175,7 @@ export function PositionDetailCards({
                         )}
                       </div>
                     </td>
-                    <td className="muted">{p.strategy_name || "—"}</td>
+                    <td>{p.strategy_name || <span className="muted">—</span>}</td>
                     <td style={{ textAlign: "right" }}>{p.qty.toLocaleString()}</td>
                     <td style={{ textAlign: "right" }}>
                       {ledger !== undefined ? ledger.toLocaleString() : p.qty.toLocaleString()}

@@ -365,7 +365,10 @@ def enrich_positions(positions: list[dict], ledger: dict,
         sym = p.get("symbol", "")
         cur = float(p.get("eval_price", 0) or 0)
         lg = by_symbol.get(sym, {})
-        entry = float(lg.get("entry_price", 0) or 0)
+        # entry_price fallback — ledger 우선, 없으면 KIS 응답의 avg_price 사용.
+        # (KIS에서 직접 매수한 종목은 ledger에 없어 entry_price=0이 되는 문제 해결)
+        kis_avg = float(p.get("avg_price", 0) or 0)
+        entry = float(lg.get("entry_price", 0) or 0) or kis_avg
         peak = float(lg.get("peak_price", entry) or entry or cur)
         defn = lg.get("definition", {}) or {}
         ex = defn.get("exit_rules", {}) or {}
@@ -393,9 +396,13 @@ def enrich_positions(positions: list[dict], ledger: dict,
         if ex.get("hold_days") is not None:
             distances["hold_days_left"] = max(0, int(ex["hold_days"]) - held)
 
+        # strategy_name fallback — ledger에 없으면 "(수동 매수)" 표시.
+        # 자동매매 ledger 외 KIS에서 직접 매수한 종목 구분 명시.
+        strategy_name = lg.get("strategy_name", "") or "(수동 매수)"
+
         out.append({
             **p,
-            "strategy_name": lg.get("strategy_name", ""),
+            "strategy_name": strategy_name,
             "entry_date": lg.get("entry_date"),
             "entry_price": entry, "peak_price": peak,
             "cur_return_pct": round(cur_ret, 2),

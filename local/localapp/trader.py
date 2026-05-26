@@ -174,15 +174,18 @@ def _rebalance_due(period: str, last_iso: str | None, today: date,
 
 
 def _atr_qty(capital: float, atr: float, policy: dict, cur_price: float) -> int:
-    """ATR 기반 포지션 사이징. cap에 의해 단일종목 한도로 클램프."""
+    """ATR 기반 포지션 사이징. cap에 의해 단일종목 한도로 클램프(설정된 경우만)."""
     risk = capital * policy["atr_risk_pct"] / 100.0
     risk_per_share = atr * policy["atr_mult"]
     if risk_per_share <= 0:
         return 0
     qty = int(risk // risk_per_share)
-    # 단일 종목 비중 상한
-    cap_qty = int((capital * policy["max_position_pct"] / 100.0) // cur_price)
-    return max(0, min(qty, cap_qty))
+    # 단일 종목 비중 상한 — None이면 한도 없음(OFF).
+    mp = policy.get("max_position_pct")
+    if mp is not None and cur_price > 0:
+        cap_qty = int((capital * float(mp) / 100.0) // cur_price)
+        qty = min(qty, cap_qty)
+    return max(0, qty)
 
 
 class Trader:
@@ -712,10 +715,12 @@ class Trader:
 
         # 사이징 — 전일 종가 기준 (cash·prev_close 모두 종목 통화)
         # Phase 47 — 4지 모드 (fixed_amount / pct_cash / equal_weight / atr_risk).
-        # 모든 모드는 max_position_pct로 단일 종목 비중 상한 클램프.
+        # 모든 모드는 max_position_pct가 설정된 경우 단일 종목 비중 상한 클램프
+        # (None = OFF, 한도 없음).
         mode = policy["sizing_mode"]
-        cap_qty = int((capital * policy["max_position_pct"] / 100.0)
-                        // prev_close)
+        _mp = policy.get("max_position_pct")
+        cap_qty = (int((capital * float(_mp) / 100.0) // prev_close)
+                     if _mp is not None and prev_close > 0 else None)
         if mode == "atr_risk":
             atr_val = 0.0
             if "atr_14" in sdf.columns:
@@ -739,9 +744,10 @@ class Trader:
         else:  # pct_cash (default) — 현행 정률
             qty = int(cash * strat.amount_pct / 100.0 // prev_close)
 
-        # L-10 — 모든 모드에 단일 종목 비중 상한 클램프.
-        # capital은 통화 일치(KRW/USD)된 값.
-        qty = min(qty, cap_qty)
+        # L-10 — max_position_pct가 설정된 경우만 단일 종목 비중 상한 클램프.
+        # capital은 통화 일치(KRW/USD)된 값. cap_qty=None이면 한도 없음(OFF).
+        if cap_qty is not None:
+            qty = min(qty, cap_qty)
         # 가용 현금 한도 (모든 모드 공통)
         qty = min(qty, int(cash // prev_close))
 
@@ -1059,9 +1065,10 @@ class Trader:
         # 일일 손실 한도: user 모니터링 설정에서만 가져옴. None이면 OFF.
         # (ExecutionPolicy.daily_loss_limit_pct 제거됨 — 종목 단위 실시간 매도로 위험 처리.)
         daily_loss_limit_pct = rl.get("kill_switch_daily_loss_pct")
-        max_drawdown_limit_pct = (rl.get("max_drawdown_pct")
-                                    if rl.get("max_drawdown_pct") is not None
-                                    else global_policy["max_drawdown_pct"])
+        # max_drawdown 한도: user setting 우선, 없으면 global_policy. None이면 OFF.
+        _user_dd = rl.get("max_drawdown_pct")
+        _global_dd = global_policy.get("max_drawdown_pct")
+        max_drawdown_limit_pct = _user_dd if _user_dd is not None else _global_dd
         # Q5: 체결 후 즉시 평가용으로 인스턴스에 저장. None이면 평가 skip.
         self._daily_loss_limit_pct = (float(daily_loss_limit_pct)
                                         if daily_loss_limit_pct is not None else None)
@@ -1087,12 +1094,14 @@ class Trader:
         drawdown_pct = 0.0
         if peak_equity > 0:
             drawdown_pct = (equity_now - peak_equity) / peak_equity * 100
-        drawdown_active = drawdown_pct <= -abs(max_drawdown_limit_pct)
+        # max_drawdown_limit_pct=None이면 한도 없음(OFF) — drawdown 차단 평가 skip.
+        drawdown_active = (max_drawdown_limit_pct is not None
+                            and drawdown_pct <= -abs(float(max_drawdown_limit_pct)))
         if drawdown_active:
             log.warning(
                 "drawdown 한도 도달 — 자본 고점 %s원 → 현재 %s원 (%.2f%%, 한도 -%.2f%%)",
                 f"{peak_equity:,.0f}", f"{equity_now:,.0f}",
-                drawdown_pct, max_drawdown_limit_pct)
+                drawdown_pct, float(max_drawdown_limit_pct))
 
         # ── 2. 청산 패스 (Phase 38.2: 신호·시간 기반만 — 가격은 intraday가 담당) ──
         # 리밸런싱 멤버십 — 서버 preview의 자동선택 상위 N 종목 (sid → [symbols]).
@@ -1176,7 +1185,7 @@ class Trader:
             decisions.append(order_log.decision(
                 "skip_drawdown", "", "", "",
                 f"신규 진입 차단 — 누적 drawdown {drawdown_pct:.2f}% "
-                f"(한도 -{max_drawdown_limit_pct:.1f}%)"))
+                f"(한도 -{float(max_drawdown_limit_pct):.1f}%)"))
         elif buy_candidates is not None:
             self._enter_from_preview(buy_candidates, strategies, dataset,
                                        equity_now, decisions, sold_this_cycle,
@@ -1218,7 +1227,8 @@ class Trader:
             "drawdown_pct": round(drawdown_pct, 3),
             "peak_equity": round(peak_equity, 2),
             "drawdown_active": drawdown_active,
-            "max_drawdown_limit_pct": float(max_drawdown_limit_pct),
+            "max_drawdown_limit_pct": (float(max_drawdown_limit_pct)
+                                          if max_drawdown_limit_pct is not None else None),
         }
         order_log.log_cycle(decisions, cycle_summary)
 

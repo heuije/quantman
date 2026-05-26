@@ -83,9 +83,12 @@ export default function Settings() {
         </p>
         <form onSubmit={approve}>
           <div className="row">
+            <label htmlFor="pair-code" className="visually-hidden">페어링 코드</label>
             <input
+              id="pair-code"
               value={code}
               placeholder="예: 7K3Q-9F2A"
+              aria-label="페어링 코드"
               style={{ flex: 1, textTransform: "uppercase" }}
               onChange={(e) => setCode(e.target.value)}
               required
