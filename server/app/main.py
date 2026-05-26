@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from contextlib import asynccontextmanager
+import time
 from datetime import datetime, timedelta
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -349,6 +350,19 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_technical_refresh, daemon=True).start()
     _log.info("dataset 초기 갱신 thread 시작")
     threading.Thread(target=_initial_dataset_refresh, daemon=True).start()
+    # Phase 58-C — dataset 초기 갱신 후 bundle 한 번 packaging (사용자가 다음
+    # cron 도래 전에도 bundle 받을 수 있게). dataset thread가 끝난 후 호출.
+    def _initial_bundle_after_dataset():
+        # dataset 초기 fetch가 끝날 때까지 충분히 기다림 (보수적 5분).
+        # 길게 잡아도 사용자 영향 없음 — daemon thread.
+        time.sleep(300)
+        try:
+            from .routers import dataset as dataset_router
+            dataset_router.build_bundle()
+        except Exception as e:
+            _log.warning("초기 bundle packaging 실패: %s", e)
+    threading.Thread(target=_initial_bundle_after_dataset,
+                     daemon=True, name="bundle-initial").start()
     _log.info("미국 시가총액 초기 fetch thread 시작")
     threading.Thread(target=_initial_us_market_caps, daemon=True).start()
 
