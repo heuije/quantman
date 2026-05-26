@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, fetchLocalAppDownloadUrl } from "../api";
 import { AlertSettings } from "../components/MonitorTools";
 import type { DeviceRow } from "../types";
 
@@ -43,11 +43,11 @@ export default function Settings() {
     loadDevices();
   }
 
-  // 기본은 GitHub Releases의 latest zip 직접 다운로드 — 클릭 시 redirect되어
-  // 파일 다운로드 시작. 매 release 시 고정 이름 `QuantPlatformLocal.zip` 첨부
-  // 정책 유지하면 코드 수정 없이 영구 동작.
-  const DOWNLOAD_URL = import.meta.env.VITE_LOCAL_APP_URL
-    || "https://github.com/MercKR/quantman-releases/releases/latest/download/QuantPlatformLocal.zip";
+  // GitHub releases API로 최신 zip asset URL 동적 획득 (api.ts:fetchLocalAppDownloadUrl).
+  // release마다 asset 이름이 버전 포함으로 바뀌므로 정적 URL 불가.
+  const [downloadUrl, setDownloadUrl] = useState(
+    "https://github.com/MercKR/quantman-releases/releases/latest");
+  useEffect(() => { fetchLocalAppDownloadUrl().then(setDownloadUrl); }, []);
 
   return (
     <div>
@@ -64,8 +64,8 @@ export default function Settings() {
           플랫폼으로 전송되지 않습니다. 설치 후 로컬앱에서 KIS 모의투자 키를
           입력하세요.
         </p>
-        {DOWNLOAD_URL ? (
-          <a className="download-link" href={DOWNLOAD_URL}>
+        {downloadUrl ? (
+          <a className="download-link" href={downloadUrl}>
             Windows용 로컬앱 다운로드
           </a>
         ) : (

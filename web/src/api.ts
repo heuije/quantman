@@ -160,3 +160,29 @@ export const api = {
   regenerateNextDayPreview: () =>
     req<NextDayPreview>("/preview/regenerate", { method: "POST" }),
 };
+
+// 로컬앱 다운로드 URL 조회.
+//
+// 매 release마다 asset 이름이 버전 포함(QuantPlatformLocal-v{ver}.zip)으로 바뀌므로
+// `/releases/latest/download/<고정파일명>` 식 URL은 사용 불가. GitHub releases API로
+// 최신 release의 zip asset URL을 동적 획득한다. 실패 시 release 페이지 URL fallback.
+const RELEASES_API =
+  "https://api.github.com/repos/MercKR/quantman-releases/releases/latest";
+const RELEASES_PAGE =
+  "https://github.com/MercKR/quantman-releases/releases/latest";
+
+export async function fetchLocalAppDownloadUrl(): Promise<string> {
+  if (import.meta.env.VITE_LOCAL_APP_URL) {
+    return import.meta.env.VITE_LOCAL_APP_URL as string;
+  }
+  try {
+    const r = await fetch(RELEASES_API);
+    if (!r.ok) return RELEASES_PAGE;
+    const data = await r.json();
+    const assets = (data?.assets ?? []) as { name?: string; browser_download_url?: string }[];
+    const zip = assets.find(a => (a.name ?? "").toLowerCase().endsWith(".zip"));
+    return zip?.browser_download_url ?? RELEASES_PAGE;
+  } catch {
+    return RELEASES_PAGE;
+  }
+}
