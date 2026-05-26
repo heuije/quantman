@@ -5,6 +5,7 @@ import {
   PositionDetailCards, RiskBanner, StrategyCardGrid,
 } from "../components/MonitorCards";
 import { CsvExportBar } from "../components/MonitorTools";
+import TradingTimeline from "../components/TradingTimeline";
 import type {
   CommandRow, CommandType, DeviceRow, MarketContext, NextDayPreview,
   SyncSnapshot,
@@ -94,6 +95,9 @@ export default function Monitor() {
 
       {err && <div className="error">{err}</div>}
       {!loaded && <p className="muted">불러오는 중…</p>}
+
+      {/* 자동매매 타임라인 — 다음 cycle·preview까지 남은 시간 + 누락 가시화 */}
+      {loaded && <TradingTimeline />}
 
       {/* 시장 컨텍스트 */}
       <MarketBar ctx={market} />

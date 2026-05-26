@@ -567,3 +567,23 @@ export interface CommandRow {
   created_at: string; delivered_at: string | null;
   completed_at: string | null; result: Record<string, unknown>;
 }
+
+// 자동매매 타임라인 — /trading/timeline 응답.
+// 서버 routers/trading.py 와 동기. status 추가 시 양쪽 같이 갱신.
+export type TimelineEventKind = "krx_cycle" | "us_cycle" | "preview";
+export type TimelineEventStatus = "done" | "scheduled" | "missed" | "holiday";
+
+export interface TimelineEvent {
+  at: string;                 // ISO datetime (KST offset 포함)
+  kind: TimelineEventKind;
+  status: TimelineEventStatus;
+  summary: string;            // 1줄 표시 (e.g. "1건 매수", "US 7건", "")
+  detail: string;             // hover 시 자세한 설명 (e.g. missed 이유)
+}
+
+export interface TradingTimeline {
+  now: string;
+  heartbeat_at: string | null;
+  heartbeat_status: "normal" | "warning" | "error";
+  events: TimelineEvent[];
+}

@@ -2036,3 +2036,59 @@ thead th { color: var(--muted); font-weight: 600; }
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* 자동매매 타임라인 (components/TradingTimeline.tsx).
+   가독성 우선 — table 같은 lock-step grid + 색은 status에만 사용. */
+.trading-timeline {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px;
+}
+.trading-timeline .tl-header {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.trading-timeline .tl-header h3 { margin: 0; font-size: 15px; font-weight: 700; }
+.trading-timeline .tl-status { font-size: 13px; font-weight: 600; }
+.trading-timeline .tl-status-sub { color: var(--muted); font-weight: 400; }
+.trading-timeline .tl-status-normal  { color: var(--green); }
+.trading-timeline .tl-status-warning { color: var(--amber); }
+.trading-timeline .tl-status-error   { color: var(--red);   }
+
+.trading-timeline .tl-group { margin-top: 10px; }
+.trading-timeline .tl-group:first-of-type { margin-top: 0; }
+.trading-timeline .tl-group-label {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 6px 0 6px; border-bottom: 1px solid var(--border);
+}
+.trading-timeline .tl-list { list-style: none; margin: 0; padding: 0; }
+.trading-timeline .tl-item {
+  display: grid;
+  grid-template-columns: 72px 1fr auto;
+  align-items: center; gap: 12px;
+  padding: 9px 0; border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.trading-timeline .tl-item:last-child { border-bottom: none; }
+.trading-timeline .tl-time {
+  font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text);
+}
+.trading-timeline .tl-kind { color: var(--text); }
+.trading-timeline .tl-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px;
+}
+.trading-timeline .tl-icon { font-weight: 700; }
+.trading-timeline .tl-summary { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.trading-timeline .tl-done      .tl-icon { color: var(--green); }
+.trading-timeline .tl-scheduled .tl-icon { color: var(--muted); }
+.trading-timeline .tl-missed    .tl-icon { color: var(--red);   }
+.trading-timeline .tl-missed    .tl-summary { color: var(--red); font-weight: 600; }
+.trading-timeline .tl-holiday   .tl-icon,
+.trading-timeline .tl-holiday   .tl-kind,
+.trading-timeline .tl-holiday   .tl-time { color: var(--muted); }
+
+.trading-timeline .tl-loading,
+.trading-timeline .tl-empty   { color: var(--muted); font-size: 13px; padding: 8px 0; }
+.trading-timeline .tl-error   { color: var(--red); font-size: 13px; }

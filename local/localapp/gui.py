@@ -89,6 +89,7 @@ class SettingsApp:
         self._apply_theme()
         self._build()
         self.refresh_status()
+        self._schedule_minute_tick()       # 다음 자동매매 countdown 매분 갱신
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # 페어링돼 있으면 user email을 백그라운드로 조회(서버 응답 도착 시 hero 갱신)
@@ -191,6 +192,20 @@ class SettingsApp:
         self.hero_sub = tk.Label(self.hero, text="", bg=SLATE, fg="#e5e7eb",
                                  font=("Segoe UI", 9))
         self.hero_sub.pack(pady=(0, 14))
+
+        # mini 자동매매 일정 — hero 바로 아래. "다음 자동매매가 언제인지" 한 줄.
+        # scheduler가 가동 중일 때만 표시(중지 상태에선 비활성).
+        self.next_frame = tk.Frame(self.root, bg=PANEL,
+                                    highlightbackground=BORDER, highlightthickness=1)
+        self.next_krx_label = tk.Label(self.next_frame, bg=PANEL, fg=TEXT,
+                                        font=("Segoe UI", 9), anchor="w",
+                                        text="")
+        self.next_us_label = tk.Label(self.next_frame, bg=PANEL, fg=TEXT,
+                                       font=("Segoe UI", 9), anchor="w",
+                                       text="")
+        self.next_krx_label.pack(fill="x", padx=12, pady=(6, 0))
+        self.next_us_label.pack(fill="x", padx=12, pady=(2, 6))
+        # 평소엔 숨김 — refresh_status가 scheduler 가동 시 .pack 호출
 
         # Kill switch 배너 — 활성 시에만 표시
         self.ks_banner = tk.Frame(self.root, bg=RED)
@@ -388,6 +403,82 @@ class SettingsApp:
         self.hero_label.configure(text=text, bg=color)
         self.hero_sub.configure(text=sub, bg=color)
 
+    # ── 다음 자동매매 일정 (mini timeline) ────────────────────────────────────
+    def _schedule_minute_tick(self):
+        """매분 next-run countdown 갱신. refresh_status 안에서 next_run 라벨 다시 그림."""
+        try:
+            self.refresh_status()
+        finally:
+            self.root.after(60_000, self._schedule_minute_tick)
+
+    def _refresh_next_run_labels(self):
+        """APScheduler에 등록된 krx_cycle·us_cycle 잡의 next_run_time을 표시.
+
+        사용자가 "다음 자동매매가 언제인지" 추측하지 않게 한다.
+        매분 1회 root.after로 자동 갱신 (countdown 의미 있게 유지).
+        """
+        if not self.scheduler:
+            return
+        try:
+            krx_job = self.scheduler.get_job("krx_cycle")
+            us_job = self.scheduler.get_job("us_cycle")
+        except Exception:
+            krx_job = us_job = None
+        self.next_krx_label.configure(
+            text="다음 KRX 사이클:  " + self._format_next_run(krx_job))
+        self.next_us_label.configure(
+            text="다음 US 사이클:    " + self._format_next_run(us_job, fallback_us=True))
+
+    def _format_next_run(self, job, fallback_us: bool = False) -> str:
+        """job.next_run_time을 사람이 읽는 형태로. None이면 적절한 fallback 메시지."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        kst = ZoneInfo("Asia/Seoul")
+        now = datetime.now(kst)
+
+        if job is None or job.next_run_time is None:
+            if fallback_us:
+                # us_cycle 잡은 하루에 한 번 동적 등록(_plan_us_session). 정오 plan 전이거나
+                # 휴장 안내 시 명시.
+                return "오늘 정오에 결정됩니다 (개장 5분 전 자동 등록)"
+            return "예정 없음"
+
+        nrt = job.next_run_time.astimezone(kst)
+        delta = nrt - now
+        secs = int(delta.total_seconds())
+        if secs <= 0:
+            return f"{nrt.strftime('%H:%M KST')} (곧)"
+
+        # 절대 시각 + 상대 시각.
+        # 오늘/내일/모레: 한국어 라벨, 그 외: MM-DD
+        today = now.date()
+        target = nrt.date()
+        days = (target - today).days
+        if days == 0:
+            day_label = "오늘"
+        elif days == 1:
+            day_label = "내일"
+        elif days == 2:
+            day_label = "모레"
+        else:
+            day_label = nrt.strftime("%m-%d")
+
+        # 상대 시간 — 분/시간/일 단위
+        if secs < 60:
+            rel = "곧"
+        elif secs < 3600:
+            rel = f"{secs // 60}분 후"
+        elif secs < 86400:
+            h = secs // 3600
+            m = (secs % 3600) // 60
+            rel = f"{h}h {m}m 후" if m else f"{h}h 후"
+        else:
+            d = secs // 86400
+            h = (secs % 86400) // 3600
+            rel = f"{d}일 {h}h 후" if h else f"{d}일 후"
+
+        return f"{day_label} {nrt.strftime('%H:%M KST')}  ({rel})"
+
     def _render_setup_area(self, kis_ok: bool, dev_ok: bool):
         """자격증명+페어링 둘 다 완료면 한 줄 bar, 아니면 LabelFrame 펼침.
 
@@ -434,6 +525,14 @@ class SettingsApp:
         running = bool(self.scheduler and self.scheduler.running)
         ks = killswitch.load()
         ks_active = bool(ks.get("active"))
+
+        # mini 자동매매 일정 — scheduler 가동 중일 때만 표시.
+        # scheduler가 멈춰있으면 "다음 자동매매" 자체가 의미 없음.
+        if running and not ks_active:
+            self._refresh_next_run_labels()
+            self.next_frame.pack(fill="x", padx=12, pady=(0, 6))
+        else:
+            self.next_frame.pack_forget()
 
         # hero 부제목: 버전 + 이메일(있을 때) + 상태 메시지
         ident = f"v{__version__}"

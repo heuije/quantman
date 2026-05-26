@@ -24,7 +24,8 @@ from .routers import (auth, backtest, calendars as calendars_router, commands,
                        dataset, market, portfolio,
                        preview as preview_router,
                        screener as screener_router,
-                       settings as settings_router, strategies, sync)
+                       settings as settings_router, strategies, sync,
+                       trading as trading_router)
 
 _log = logging.getLogger("app.main")
 
@@ -482,6 +483,7 @@ app.include_router(settings_router.router)
 app.include_router(dataset.router)
 app.include_router(preview_router.router)
 app.include_router(calendars_router.router)
+app.include_router(trading_router.router)
 
 
 @app.get("/health")

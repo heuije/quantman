@@ -3,7 +3,7 @@ import type {
   CommandRow, CommandType, DeviceRow, MarketContext, NextDayPreview, PortfolioRisk,
   ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO, ScreenerUserPreset,
   StrategyDef, StrategyRow, StrategyStats, StrategyVersionRow,
-  SymbolInfo, SyncSnapshot, UserSettingsIO,
+  SymbolInfo, SyncSnapshot, TradingTimeline, UserSettingsIO,
 } from "./types";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -159,6 +159,9 @@ export const api = {
   getNextDayPreview: () => req<NextDayPreview>("/preview/next-day"),
   regenerateNextDayPreview: () =>
     req<NextDayPreview>("/preview/regenerate", { method: "POST" }),
+
+  // 자동매매 타임라인 — [now-24h, now+24h] 이벤트 + heartbeat 상태
+  getTradingTimeline: () => req<TradingTimeline>("/trading/timeline"),
 };
 
 // 로컬앱 다운로드 URL 조회.
