@@ -17,7 +17,7 @@ import webbrowser
 from tkinter import messagebox, ttk
 
 from . import (__version__, killswitch, order_log, pairing, secrets_store,
-                sync_client, user_settings)
+                sync_client)
 from .commands_client import CommandClient
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
                        PLATFORM_URL)
@@ -246,20 +246,6 @@ class SettingsApp:
         self.btn_cycle.pack(side="left", padx=8)
         self.cycle_msg = ttk.Label(self.af, style="Muted.TLabel", text="")
         self.cycle_msg.pack(anchor="w", padx=12, pady=(2, 8))
-
-        # 미국 실시간 시세 toggle — KIS HTS [7781] 무료 신청 후 체크.
-        # 미체크 시 BAQ/BAY/BAA 지연시세(15분 지연) — 미국 종목 실시간 손절 불가.
-        # 체크 시 DNAS/DNYS/DAMS 실시간 — 미국 종목 장중 실시간 익절/손절 동작.
-        us_row = ttk.Frame(self.af)
-        us_row.pack(fill="x", padx=12, pady=(0, 8))
-        self.us_realtime_var = tk.BooleanVar(
-            value=bool(user_settings.get("us_realtime_enabled")))
-        cb = ttk.Checkbutton(us_row, variable=self.us_realtime_var,
-                              text="🇺🇸 미국 실시간 시세 사용 (KIS HTS [7781] 신청 완료)",
-                              command=self._toggle_us_realtime)
-        cb.pack(side="left")
-        ttk.Button(us_row, text="신청 방법", command=self._show_us_realtime_howto
-                   ).pack(side="left", padx=8)
 
         # 거래 모니터링 — Notebook: 주문 현황 / 주문 내역 / 사이클 로그 / 슬리피지 / 활동 로그
         self.nb = ttk.Notebook(self.root)
@@ -587,53 +573,6 @@ class SettingsApp:
                 f"{r.get('fill', 0):,.0f}",
                 f"{r.get('bps', 0):+.1f}",
             ), tags=(side,))
-
-    def _toggle_us_realtime(self):
-        """미국 실시간 시세 toggle. 즉시 저장 + 다음 US loop start부터 적용.
-        진행 중인 US loop가 있으면 재시작 안내."""
-        enabled = bool(self.us_realtime_var.get())
-        user_settings.save({"us_realtime_enabled": enabled})
-        if enabled:
-            messagebox.showinfo(
-                "미국 실시간 시세 ON",
-                "다음 미국 장 세션(개장 5분 전 cycle)부터 진짜 실시간 시세를\n"
-                "사용합니다 (D-prefix: DNAS/DNYS/DAMS).\n\n"
-                "⚠ KIS HTS [7781]에서 무료 신청을 안 했으면 시세가 안 옵니다.\n"
-                "120초 내 tick 0건이면 자동 감지해 웹앱에 알림이 갑니다 —\n"
-                "그 경우 신청 후 다시 시도하세요.")
-        else:
-            messagebox.showinfo(
-                "미국 실시간 시세 OFF",
-                "지연시세(15분 지연, BAQ/BAY/BAA)를 사용합니다.\n"
-                "미국 종목 장중 실시간 손절은 동작하지 않습니다.\n"
-                "(장 마감 후 settlement cycle에서만 청산 평가)")
-
-    def _show_us_realtime_howto(self):
-        """KIS HTS [7781] 미국 실시간 시세 무료 신청 방법 안내."""
-        msg = (
-            "미국 실시간 시세 무료 신청 (NYSE/Nasdaq/AMEX Level 1)\n"
-            "─────────────────────────────────────────\n\n"
-            "■ 비용\n"
-            "  • 신청 자체는 무료. 일회성 처리 비용 ~1,500원 발생할 수 있음.\n"
-            "  • 월 정기 결제 없음.\n\n"
-            "■ 신청 방법 (둘 중 하나)\n\n"
-            "  1. HTS (eFriend Plus)\n"
-            "     해외증권 → [7781] 시세신청(실시간) → 미국 무료 시세 선택\n\n"
-            "  2. 모바일앱 (한국투자 / 한투앱)\n"
-            "     고객지원 → 거래서비스 신청 → 해외증권 → 해외 실시간시세 신청\n\n"
-            "■ 신청 후\n"
-            "  • 처리 1영업일 정도 걸릴 수 있음.\n"
-            "  • 처리 완료 후 위 체크박스를 켜면 본 앱이 D-prefix로 진짜\n"
-            "    실시간 시세를 받아 미국 종목도 장중 실시간 손절 동작.\n\n"
-            "■ 안 켜면\n"
-            "  • 미국 시세는 15분 지연. 미국 종목 익절·손절·트레일링이\n"
-            "    장 마감 후에만 평가됨.\n\n"
-            "■ 참고\n"
-            "  • Nasdaq TotalView(20호가) 같은 deep order book은 별도\n"
-            "    유료 옵션(키움은 무료 공개, KIS는 일부 유료).\n"
-            "  • 한국 시장은 별 신청 없이 기본 실시간."
-        )
-        messagebox.showinfo("미국 실시간 시세 신청 안내", msg)
 
     def _reset_killswitch(self):
         if not messagebox.askyesno(

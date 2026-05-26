@@ -26,15 +26,15 @@ import websocket as ws_lib
 log = logging.getLogger("localapp.kis_websocket")
 
 TR_ID_PRICE_DOMESTIC = "H0STCNT0"   # 국내 주식 체결가 실시간
-TR_ID_PRICE_OVERSEAS = "HDFSCNT0"   # 해외 주식 체결가 (지연·실시간 공용 tr_id)
+TR_ID_PRICE_OVERSEAS = "HDFSCNT0"   # 해외 주식 체결가
 SUBSCRIBE_MAX = 20                  # KIS 동시 구독 한도 (체결가+호가 합산)
 
-# 해외 시세 tr_key 접두 — KIS 공식 spec.
-#   지연시세 (default, 무료·신청 불필요): BAQ/BAY/BAA
-#   실시간시세 (KIS HTS [7781] 무료 신청 필요): DNAS/DNYS/DAMS
-# user_settings.us_realtime_enabled=True 일 때 실시간 prefix 사용.
-_OVERSEAS_DELAYED_PREFIX = {"NAS": "BAQ", "NYS": "BAY", "AMS": "BAA"}
-_OVERSEAS_REALTIME_PREFIX = {"NAS": "DNAS", "NYS": "DNYS", "AMS": "DAMS"}
+# 미국 시세 tr_key prefix — KIS 공식 spec ([해외주식] 실시간시세.xlsx HDFSCNT0).
+#   • D + 시장구분(NAS/NYS/AMS) + 종목코드  → 무료시세 (미국 0분지연 = 사실상 실시간).
+#     예: DNASAAPL = D + NAS(나스닥) + AAPL. 신청 불필요.
+#   • R + 시장구분 + 종목코드  → 유료시세. KIS 포럼 FAQ "해외주식 유료시세 신청방법"
+#     별도 신청 시에만 사용. 일반 사용자는 D-prefix만으로 충분.
+_OVERSEAS_PREFIX = {"NAS": "DNAS", "NYS": "DNYS", "AMS": "DAMS"}
 
 
 class KisWebSocket:
@@ -68,21 +68,18 @@ class KisWebSocket:
     # ── 메시지 builder ────────────────────────────────────────────────────────
 
     def _tr_for(self, symbol: str) -> tuple[str, str]:
-        """심볼 → (tr_id, tr_key). 미국은 해외 시세(HDFSCNT0 + prefix+티커),
+        """심볼 → (tr_id, tr_key). 미국은 HDFSCNT0 + D-prefix+티커 (무료 실시간),
         그 외는 국내(H0STCNT0 + 코드).
 
-        미국 prefix는 user_settings.us_realtime_enabled에 따라 분기:
-          True  → DNAS/DNYS/DAMS (KIS HTS 7781 신청자 — 진짜 실시간)
-          False → BAQ/BAY/BAA  (기본 — 15분 지연, 신청 불필요)
+        미국 D-prefix는 KIS 공식 spec상 0분지연 무료시세 = 사실상 실시간.
+        별도 신청 불필요. 유료시세(R-prefix)는 거의 사용 안 함.
         """
-        from . import market_index, user_settings
+        from . import market_index
         exch = market_index.exchange_of(symbol)
-        if exch in _OVERSEAS_DELAYED_PREFIX:
-            realtime = bool(user_settings.get("us_realtime_enabled"))
-            pmap = _OVERSEAS_REALTIME_PREFIX if realtime else _OVERSEAS_DELAYED_PREFIX
+        if exch in _OVERSEAS_PREFIX:
             kt = market_index.kis_ticker_of(symbol)
             self._symb_to_orig[kt] = symbol      # 역매핑 (tick SYMB → 원본)
-            return TR_ID_PRICE_OVERSEAS, pmap[exch] + kt
+            return TR_ID_PRICE_OVERSEAS, _OVERSEAS_PREFIX[exch] + kt
         return TR_ID_PRICE_DOMESTIC, symbol
 
     def _sub_msg(self, symbol: str, sub: bool = True) -> str:

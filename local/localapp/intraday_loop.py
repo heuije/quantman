@@ -268,17 +268,16 @@ def _rest_polling_loop(ws, broker, manager, in_market_fn,
 
 
 def _check_us_realtime(broker: Broker, manager) -> None:
-    """미국 보유분이 있는데 grace 내내 해외 tick이 0이면 실시간 손절 불가 상태 →
-    사용자에게 1회 고지(서버 push). 세션당 1회.
+    """미국 보유분이 있는데 grace 내내 해외 tick이 0이면 KIS/네트워크 이슈로
+    판정 → 사용자에게 1회 고지(서버 push). 세션당 1회.
 
-    user_settings.us_realtime_enabled로 분기 메시지:
-      • False → "지연시세 사용 중 + 실시간 신청 안내"
-      • True  → "실시간 prefix 보냈는데 tick 없음 + 신청 처리 대기 확인 요청"
+    v0.8.4부터 D-prefix(DNAS/DNYS/DAMS)로 구독 = KIS 무료 실시간(0분지연).
+    별도 신청 불필요한데도 tick이 안 오면 KIS 측 issue 또는 WebSocket 끊김.
     """
     global _us_realtime_warned
     if _us_realtime_warned:
         return
-    from . import market_index, user_settings
+    from . import market_index
     now = time.time()
     with _lock:
         started = _state["started_at"]
@@ -292,31 +291,19 @@ def _check_us_realtime(broker: Broker, manager) -> None:
         return                              # 미국 보유 없음 — 감지 불가/불필요
 
     _us_realtime_warned = True
-    rt_on = bool(user_settings.get("us_realtime_enabled"))
-    if rt_on:
-        log.warning("미국 실시간 tick 미수신(%ds) — 사용자가 실시간 toggle ON 했지만 "
-                    "KIS [7781] 신청이 미처리 또는 거부 상태일 수 있음.",
-                    _US_REALTIME_GRACE_SEC)
-        message = ("미국 실시간 시세를 켜두셨는데(D-prefix 구독), tick이 한 건도 "
-                   "수신되지 않습니다.\n\n"
-                   "원인 추정:\n"
-                   "  • KIS HTS [7781] 신청이 아직 처리 중 (1영업일 소요)\n"
-                   "  • 신청이 거부 / 결제 미완료 상태\n\n"
-                   "확인 방법:\n"
-                   "  HTS → 해외증권 → [7781] 신청 현황 또는 모바일앱 거래서비스 신청 내역.\n"
-                   "  처리 완료 다음 미국 세션부터 자동 정상화됩니다.")
-        kind = "us_realtime_subscribed_but_no_tick"
-    else:
-        log.warning("미국 시세 tick 미수신(%ds) — 지연시세(BAQ) 모드. 실시간 손절 불가.",
-                    _US_REALTIME_GRACE_SEC)
-        message = ("미국 종목 장중 실시간 손절(익절/손절/트레일링)이 동작하지 않습니다.\n"
-                   "현재 15분 지연시세(BAQ/BAY/BAA)로 구독 중이라 정확한 가격 평가 불가.\n\n"
-                   "해결 (무료):\n"
-                   "  1. KIS HTS [7781] 또는 모바일앱에서 미국 실시간 시세 신청\n"
-                   "     (월 정기 결제 없음, 일회성 ~1,500원)\n"
-                   "  2. 로컬앱 GUI에서 '🇺🇸 미국 실시간 시세 사용' 체크\n\n"
-                   "현재는 장 마감 후 settlement cycle에서만 미국 종목 청산 평가됩니다.")
-        kind = "us_realtime_unavailable"
+    log.warning("미국 시세 tick 미수신(%ds) — D-prefix 무료 실시간 구독 중인데 "
+                "tick 0. KIS WebSocket 이슈 또는 네트워크 단절 가능성.",
+                _US_REALTIME_GRACE_SEC)
+    message = ("미국 종목 장중 실시간 손절이 동작하지 않습니다.\n"
+               "현재 KIS 무료 실시간 시세(D-prefix)로 구독 중인데 tick이 한 건도\n"
+               "수신되지 않습니다.\n\n"
+               "추정 원인:\n"
+               "  • KIS WebSocket 일시 장애\n"
+               "  • 네트워크 단절 / 방화벽\n"
+               "  • KIS API 토큰 만료 → 다음 cycle 자동 재발급 대기\n\n"
+               "REST 폴링 fallback이 backup으로 동작 중이지만, 폴링 주기상\n"
+               "실시간 손절 응답이 느려질 수 있습니다.\n"
+               "장 마감 후 settlement cycle에서도 청산 평가가 정상 진행됩니다.")
     try:
         snap = broker.account_snapshot()
         push_snapshot({
@@ -325,7 +312,7 @@ def _check_us_realtime(broker: Broker, manager) -> None:
             "decisions": [],
             "cycle_summary": {
                 "today": kst_today().isoformat(),
-                "kind": kind,
+                "kind": "us_tick_unavailable",
                 "us_realtime_unavailable": True,
                 "message": message,
             },
