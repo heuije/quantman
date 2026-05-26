@@ -263,7 +263,7 @@ PRESETS: dict[str, dict] = {
         "desc": "오늘 가장 활발하게 거래된 종목. 유동성 보장.",
         "spec": {
             "rules": [
-                {"field": "market_cap", "op": ">=", "value": 100_000_000_000},   # 시총 1000억+
+                {"field": "trade_value", "op": ">=", "value": 10_000_000_000},   # 100억+
             ],
             "sort": {"field": "trade_value", "order": "desc"},
             "limit": 20,
@@ -408,11 +408,11 @@ PRESETS: dict[str, dict] = {
     },
     "us_trade_value_top": {
         "title": "미국 거래대금 상위",
-        "desc": "S&P500 중 오늘 거래대금 상위 — 유동성 큰 종목 (시총 $100억+).",
+        "desc": "S&P500 중 오늘 거래대금 상위 — 유동성 큰 종목.",
         "spec": {
             "markets": ["NAS", "NYS", "AMS"],
             "rules": [
-                {"field": "market_cap", "op": ">=", "value": 10_000_000_000},  # $10B
+                {"field": "trade_value", "op": ">=", "value": 100_000_000},  # $100M
             ],
             "sort": {"field": "trade_value", "order": "desc"},
             "limit": 20,

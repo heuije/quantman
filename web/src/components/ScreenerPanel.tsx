@@ -256,38 +256,38 @@ export default function ScreenerPanel({
           <div className="screener-card-title">
             <strong>{p.title}</strong>
           </div>
-          <button type="button" className="ghost sm" title="미리보기"
-                  onClick={(e) => { stop(e); togglePreview(p.key); }}>
-            {isExp ? "▾" : "▸"}
-          </button>
         </div>
-        <div className="screener-card-desc">{p.desc}</div>
 
-        {/* inline 값 조정 — field/op는 fix, value만 편집 */}
+        {/* inline 값 조정 — field/op는 fix, value만 편집. 지표명 옆에 숫자·단위·op 순으로 노출. */}
         <div className="screener-card-rules" onClick={stop}>
           {spec.rules.map((r, i) => {
             const f = fieldOf(r.field);
             const u = unitOf(f);
             const opLabel = OPS.find((o) => o.value === r.op)?.label ?? r.op;
+            // 단위가 "원" (KRW 금액)이면 백만원 단위로 표시·입력 받음 (가독성).
+            const isMillionKrw = u === "원";
+            const display = (v: number) => isMillionKrw ? v / 1_000_000 : v;
+            const store = (v: number) => isMillionKrw ? Math.round(v * 1_000_000) : v;
+            const displayUnit = isMillionKrw ? "백만원" : u;
             return (
               <div key={i} className="screener-card-rule">
                 <span className="rule-field">{f?.label ?? r.field}</span>
-                <span className="rule-op">{opLabel}</span>
                 {r.op === "between" ? (
                   <>
-                    <input type="number" step="any" value={Array.isArray(r.value) ? r.value[0] : 0}
+                    <input type="number" step="any" value={display(Array.isArray(r.value) ? r.value[0] : 0)}
                            onChange={(e) => editPresetRuleValue(p, i,
-                             [Number(e.target.value), Array.isArray(r.value) ? r.value[1] : 0])} />
+                             [store(Number(e.target.value)), Array.isArray(r.value) ? r.value[1] : 0])} />
                     <span className="rule-sep">~</span>
-                    <input type="number" step="any" value={Array.isArray(r.value) ? r.value[1] : 0}
+                    <input type="number" step="any" value={display(Array.isArray(r.value) ? r.value[1] : 0)}
                            onChange={(e) => editPresetRuleValue(p, i,
-                             [Array.isArray(r.value) ? r.value[0] : 0, Number(e.target.value)])} />
+                             [Array.isArray(r.value) ? r.value[0] : 0, store(Number(e.target.value))])} />
                   </>
                 ) : (
-                  <input type="number" step="any" value={Array.isArray(r.value) ? 0 : r.value}
-                         onChange={(e) => editPresetRuleValue(p, i, Number(e.target.value))} />
+                  <input type="number" step="any" value={display(Array.isArray(r.value) ? 0 : r.value)}
+                         onChange={(e) => editPresetRuleValue(p, i, store(Number(e.target.value)))} />
                 )}
-                {u && <span className="rule-unit">{u}</span>}
+                {displayUnit && <span className="rule-unit">{displayUnit}</span>}
+                <span className="rule-op">{opLabel}</span>
               </div>
             );
           })}
@@ -296,6 +296,10 @@ export default function ScreenerPanel({
             <input type="number" min={1} max={30} value={Math.min(spec.limit ?? 20, 30)}
                    onChange={(e) => editPresetLimit(p, Number(e.target.value))} />
             개 보유
+            <button type="button" className="ghost sm preview-toggle" title="미리보기"
+                    onClick={(e) => { stop(e); togglePreview(p.key); }}>
+              {isExp ? "▾ 미리보기" : "▸ 미리보기"}
+            </button>
           </div>
         </div>
 
@@ -328,7 +332,7 @@ export default function ScreenerPanel({
   return (
     <div className="screener-panel">
       <div className="screener-panel-top">
-        <button type="button" className="sm"
+        <button type="button" className="screener-new-btn"
                 onClick={() => setEditor({ kind: "new", name: "", spec: JSON.parse(JSON.stringify(DEFAULT_SPEC)) })}>
           + 새로운 세트 만들기
         </button>
@@ -343,53 +347,39 @@ export default function ScreenerPanel({
         </div>
       )}
 
-      {myPresets.length > 0 && (
-        <>
-          <div className="screener-section-h">내 세트</div>
-          {myPresets.map((p) => (
-            <div key={p.id} className={"screener-card" + (isCustom && spec?.label === p.name ? " sel" : "")}>
-              <div className="screener-card-head">
-                <div className="screener-card-title">
-                  <strong>{p.name}</strong>
-                  <span className="muted small">{p.spec.rules.length}개 조건 · {p.spec.limit ?? 20}종목 보유</span>
-                </div>
-                {confirmDelete === p.id ? (
-                  <div className="screener-card-actions">
-                    <span className="muted small">삭제?</span>
-                    <button type="button" className="ghost sm danger" onClick={() => deleteMyset(p)}>삭제</button>
-                    <button type="button" className="ghost sm" onClick={() => setConfirmDelete(null)}>취소</button>
-                  </div>
-                ) : (
-                  <div className="screener-card-actions">
-                    <button type="button" className="ghost sm" onClick={() => applyCustom(p.spec, p.name)}>선택</button>
-                    <button type="button" className="ghost sm" title="수정"
-                            onClick={() => setEditor({ kind: "myset", id: p.id, name: p.name, spec: JSON.parse(JSON.stringify(p.spec)) })}>⚙</button>
-                    <button type="button" className="ghost sm" title="삭제" onClick={() => setConfirmDelete(p.id)}>🗑</button>
-                  </div>
-                )}
-              </div>
+      {myPresets.map((p) => (
+        <div key={p.id} className={"screener-card" + (isCustom && spec?.label === p.name ? " sel" : "")}>
+          <div className="screener-card-head">
+            <div className="screener-card-title">
+              <strong>{p.name}</strong>
+              <span className="muted small">{p.spec.rules.length}개 조건 · {p.spec.limit ?? 20}종목 보유</span>
             </div>
-          ))}
-        </>
-      )}
+            {confirmDelete === p.id ? (
+              <div className="screener-card-actions">
+                <span className="muted small">삭제?</span>
+                <button type="button" className="ghost sm danger" onClick={() => deleteMyset(p)}>삭제</button>
+                <button type="button" className="ghost sm" onClick={() => setConfirmDelete(null)}>취소</button>
+              </div>
+            ) : (
+              <div className="screener-card-actions">
+                <button type="button" className="ghost sm" onClick={() => applyCustom(p.spec, p.name)}>선택</button>
+                <button type="button" className="ghost sm" title="수정"
+                        onClick={() => setEditor({ kind: "myset", id: p.id, name: p.name, spec: JSON.parse(JSON.stringify(p.spec)) })}>⚙</button>
+                <button type="button" className="ghost sm" title="삭제" onClick={() => setConfirmDelete(p.id)}>🗑</button>
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
 
       {presets.length === 0 ? (
-        <>
-          <div className="screener-section-h">기본 세트</div>
-          <div className="cat-empty" style={{ padding: 12, lineHeight: 1.6 }}>
-            기본 세트를 불러오는 중입니다…
-          </div>
-        </>
+        <div className="cat-empty" style={{ padding: 12, lineHeight: 1.6 }}>
+          기본 세트를 불러오는 중입니다…
+        </div>
       ) : (
         <>
-          <div className="screener-section-h">기본 세트 · 국내</div>
           {krPresets.map(renderPresetCard)}
-          {usPresets.length > 0 && (
-            <>
-              <div className="screener-section-h">기본 세트 · 미국 <span className="muted small">(USD)</span></div>
-              {usPresets.map(renderPresetCard)}
-            </>
-          )}
+          {usPresets.map(renderPresetCard)}
         </>
       )}
     </div>

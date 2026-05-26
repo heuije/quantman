@@ -330,10 +330,18 @@ export default function Backtest() {
 
   return (
     <div>
-      <h1 className="page-title">전략 만들기</h1>
-      <p className="page-sub">
-        조건을 문장으로 채우고 → 통계로 발견하고 → 과거 데이터로 검증하세요.
-      </p>
+      {tab === "build" && (
+        <input
+          className="strategy-name-input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="전략 이름 (예: 코스피 모멘텀 상위 20)"
+          aria-label="전략 이름"
+        />
+      )}
+      {tab !== "build" && (
+        <h1 className="page-title">{name || "전략"}</h1>
+      )}
       {/* Phase 48 — 자문 아님 명시 (가입 동의 외에 전략 빌더 진입 시에도 재고지) */}
       <div className="self-direction-banner">
         ℹ 본 도구는 <b>본인이 직접 입력한 조건·룰</b>만 실행하는 셀프서비스형 자동매매
@@ -455,7 +463,7 @@ function BuildTab(props: {
   analysis: AnalysisResult | null;
 }) {
   const {
-    symbols, hasMaster, name, setName, tradeSymbol, setTradeSymbol,
+    symbols, hasMaster, name, tradeSymbol, setTradeSymbol,
     buy, setBuy, sell, setSell, exits, setRule,
     sellRealtimeEnabled, setSellRealtimeEnabled,
     sellEodEnabled, setSellEodEnabled,
@@ -536,7 +544,6 @@ function BuildTab(props: {
         </div>
       )}
       <BuyTargetPanel
-        name={name} setName={setName}
         symbols={symbols}
         tradeSymbol={tradeSymbol} setTradeSymbol={setTradeSymbol}
         screenerLimit={screenerLimit} setScreenerLimit={setScreenerLimit}
@@ -1012,11 +1019,10 @@ function BuildTab(props: {
 
 /** 매수후보 panel — 두 큰 버튼(수동/자동)으로 모달 호출. 모달 안 탭으로 모드 전환. */
 function BuyTargetPanel({
-  name, setName, symbols, tradeSymbol, setTradeSymbol,
+  symbols, tradeSymbol, setTradeSymbol,
   screenerLimit, setScreenerLimit,
   screenerSpec, setScreenerSpec, rebalance, setRebalance,
 }: {
-  name: string; setName: (v: string) => void;
   symbols: SymbolInfo[];
   tradeSymbol: string; setTradeSymbol: (v: string) => void;
   screenerLimit: number; setScreenerLimit: (v: number) => void;
@@ -1059,13 +1065,6 @@ function BuyTargetPanel({
   return (
     <div className="panel">
       <h3>1. 매수후보</h3>
-      <div className="row" style={{ marginBottom: 12 }}>
-        <div style={{ flex: 1 }}>
-          <label>전략 이름</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} />
-        </div>
-      </div>
-
       <div className="sub-h">선정 방식</div>
       <div className="buy-target-buttons">
         <button type="button"
@@ -1200,9 +1199,6 @@ function ScreenerPickerModal({
           <button className="ghost sm" onClick={onClose}>✕</button>
         </header>
         <div className="modal-body">
-          <p className="muted small" style={{ marginTop: 0, marginBottom: 10 }}>
-            매일 시가총액·등락률·거래대금 등 조건으로 후보를 자동 선정합니다 (라이브 전용).
-          </p>
           <SymbolPicker
             symbols={symbols} value={draftSymbol} tradableOnly
             lockMode="screener"
@@ -1211,85 +1207,76 @@ function ScreenerPickerModal({
             setScreenerLimit={setDraftLimit}
             inline
           />
-          {/* Phase 55 — 리밸런싱 3-way mode (off/hold/replace).
-              업계 표준: off=패시브 ETF(Vanguard), hold=로보어드바이저(Wealthfront),
-              replace=ETF reconstitution(S&P·MSCI·스마트베타). */}
+          {/* Phase 55/57-C — 리밸런싱: 체크박스로 켜고, 켜진 후에 hold/replace 선택.
+              off=패시브(Vanguard), hold=로보어드바이저(Wealthfront), replace=ETF reconstitution. */}
           <div className="rebalance-section" style={{ marginTop: 16 }}>
-            <div className="sub-h" style={{ marginBottom: 8 }}>
-              자동 선택 리밸런싱 <span className="muted small">— 후보 재평가 + 보유 종목 처리</span>
-            </div>
-            <div className="price-mode-row">
-              <label className={"price-mode-btn" + (draftRebalance.mode === "off" ? " on" : "")}>
-                <input type="radio" name="rebalance-mode"
-                       checked={draftRebalance.mode === "off"}
-                       onChange={() => setDraftRebalance({ ...draftRebalance, mode: "off" })} />
-                <div className="price-mode-text">
-                  <strong>OFF — Buy-and-hold</strong>
-                  <span className="muted small">
-                    초기 N개 매수 후 lock-in. 후보 재평가·신규 매수 안 함. 매도 룰만 동작.
-                    패시브 인덱스(Vanguard식). 회전율 최저.
-                  </span>
-                </div>
-              </label>
-              <label className={"price-mode-btn" + (draftRebalance.mode === "hold" ? " on" : "")}>
-                <input type="radio" name="rebalance-mode"
-                       checked={draftRebalance.mode === "hold"}
-                       onChange={() => setDraftRebalance({ ...draftRebalance, mode: "hold" })} />
-                <div className="price-mode-text">
-                  <strong>보유 유지 + 빈 슬롯 채움</strong>
-                  <span className="muted small">
-                    주기마다 후보 재평가. 보유 탈락해도 매도 X. 매도 룰로 빠진 자리만 신규 후보로 채움.
-                    로보어드바이저(Wealthfront·Betterment)식. <b>default.</b>
-                  </span>
-                </div>
-              </label>
-              <label className={"price-mode-btn" + (draftRebalance.mode === "replace" ? " on" : "")}>
-                <input type="radio" name="rebalance-mode"
-                       checked={draftRebalance.mode === "replace"}
-                       onChange={() => setDraftRebalance({ ...draftRebalance, mode: "replace" })} />
-                <div className="price-mode-text">
-                  <strong>정기 교체 (탈락 매도 + 신규)</strong>
-                  <span className="muted small">
-                    정기 평가일에 상위 N 탈락 보유 매도 + 신규 편입 매수. 포트폴리오 최신 신호 반영.
-                    ETF reconstitution(스마트베타·모멘텀)식. 회전율↑·세금↑.
-                  </span>
-                </div>
-              </label>
-            </div>
+            <label className="rebalance-toggle">
+              <input type="checkbox"
+                     checked={draftRebalance.mode !== "off"}
+                     onChange={(e) => setDraftRebalance({
+                       ...draftRebalance,
+                       mode: e.target.checked ? "hold" : "off",
+                     })} />
+              <strong>리밸런싱 사용</strong>
+              <span className="info-tip"
+                    title="OFF: 초기 N개 매수 후 lock-in (매도 룰만 동작). ON: 주기마다 후보 재평가.">ⓘ</span>
+            </label>
             {draftRebalance.mode !== "off" && (
-              <div className="rebalance-detail" style={{ marginTop: 10 }}>
-                <label>{draftRebalance.mode === "hold" ? "후보 재평가 주기" : "리밸런싱 주기"}</label>
-                <select value={draftRebalance.period}
-                        onChange={(e) => {
-                          const period = e.target.value as RebalanceIO["period"];
-                          setDraftRebalance({
-                            ...draftRebalance, period,
-                            every_n_days: period === "every_n_days"
-                              ? (draftRebalance.every_n_days ?? 5) : null,
-                          });
-                        }}>
-                  <option value="daily">매일</option>
-                  <option value="weekly">매주</option>
-                  <option value="monthly">매월</option>
-                  <option value="every_n_days">N영업일마다</option>
-                </select>
-                {draftRebalance.period === "every_n_days" && (
-                  <>
-                    <input type="number" min={1} max={252} step={1}
-                           value={draftRebalance.every_n_days ?? 5}
-                           onChange={(e) => setDraftRebalance({
-                             ...draftRebalance,
-                             every_n_days: Math.max(1, Number(e.target.value) || 1),
-                           })}
-                           style={{ width: 64 }} />
-                    <span className="muted small">영업일마다</span>
-                  </>
-                )}
-                <span className="muted small">
-                  ⚠ 라이브 전용. 짧은 주기는 회전율 매우 높음 (~200%+/년). 월간 이하 권장.
-                  모의투자로 충분히 검증 후 사용하세요.
-                </span>
-              </div>
+              <>
+                <div className="price-mode-row" style={{ marginTop: 10 }}>
+                  <label className={"price-mode-btn" + (draftRebalance.mode === "hold" ? " on" : "")}>
+                    <input type="radio" name="rebalance-mode"
+                           checked={draftRebalance.mode === "hold"}
+                           onChange={() => setDraftRebalance({ ...draftRebalance, mode: "hold" })} />
+                    <div className="price-mode-text">
+                      <strong>보유 유지 + 빈 슬롯 채움</strong>
+                      <span className="info-tip"
+                            title="주기마다 후보 재평가. 보유 탈락해도 매도 안 함. 매도 룰로 빠진 자리만 신규 후보로 채움. 로보어드바이저(Wealthfront·Betterment)식. default.">ⓘ</span>
+                    </div>
+                  </label>
+                  <label className={"price-mode-btn" + (draftRebalance.mode === "replace" ? " on" : "")}>
+                    <input type="radio" name="rebalance-mode"
+                           checked={draftRebalance.mode === "replace"}
+                           onChange={() => setDraftRebalance({ ...draftRebalance, mode: "replace" })} />
+                    <div className="price-mode-text">
+                      <strong>정기 교체 (탈락 매도 + 신규)</strong>
+                      <span className="info-tip"
+                            title="정기 평가일에 상위 N 탈락 보유 매도 + 신규 편입 매수. 포트폴리오 최신 신호 반영. ETF reconstitution(스마트베타·모멘텀)식. 회전율↑·세금↑.">ⓘ</span>
+                    </div>
+                  </label>
+                </div>
+                <div className="rebalance-detail" style={{ marginTop: 10 }}>
+                  <label>{draftRebalance.mode === "hold" ? "후보 재평가 주기" : "리밸런싱 주기"}</label>
+                  <select value={draftRebalance.period}
+                          onChange={(e) => {
+                            const period = e.target.value as RebalanceIO["period"];
+                            setDraftRebalance({
+                              ...draftRebalance, period,
+                              every_n_days: period === "every_n_days"
+                                ? (draftRebalance.every_n_days ?? 5) : null,
+                            });
+                          }}>
+                    <option value="daily">매일</option>
+                    <option value="weekly">매주</option>
+                    <option value="monthly">매월</option>
+                    <option value="every_n_days">N영업일마다</option>
+                  </select>
+                  {draftRebalance.period === "every_n_days" && (
+                    <>
+                      <input type="number" min={1} max={252} step={1}
+                             value={draftRebalance.every_n_days ?? 5}
+                             onChange={(e) => setDraftRebalance({
+                               ...draftRebalance,
+                               every_n_days: Math.max(1, Number(e.target.value) || 1),
+                             })}
+                             style={{ width: 64 }} />
+                      <span className="muted small">영업일마다</span>
+                    </>
+                  )}
+                  <span className="info-tip"
+                        title="라이브 전용. 짧은 주기는 회전율 매우 높음 (~200%+/년). 월간 이하 권장. 모의투자로 충분히 검증 후 사용하세요.">ⓘ</span>
+                </div>
+              </>
             )}
           </div>
         </div>

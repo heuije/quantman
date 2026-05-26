@@ -75,6 +75,27 @@ a:hover { text-decoration: underline; }
 .page-title { font-size: 22px; font-weight: 700; margin: 0 0 4px; }
 .page-sub { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
 
+/* 전략 만들기 — 페이지 상단 제목 자리에 전략 이름 입력란 */
+.strategy-name-input {
+  display: block; width: 100%;
+  font-size: 22px; font-weight: 700; color: var(--text);
+  background: transparent; border: 0; border-bottom: 2px solid transparent;
+  padding: 2px 0 6px; margin: 0 0 18px;
+  outline: none; transition: border-color 0.12s ease;
+}
+.strategy-name-input:hover { border-bottom-color: var(--border); }
+.strategy-name-input:focus { border-bottom-color: var(--accent); }
+.strategy-name-input::placeholder { color: var(--muted); font-weight: 500; }
+
+/* ⓘ 호버 정보 아이콘 (텍스트 비중 축소용) */
+.info-tip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; margin-left: 6px;
+  border-radius: 50%; background: var(--border); color: var(--muted);
+  font-size: 11px; font-weight: 600; cursor: help; user-select: none;
+}
+.info-tip:hover { background: var(--accent-soft); color: var(--accent); }
+
 /* 페이지 내부 모드 필터 — Dashboard 활성 전략 paper/live 토글 */
 .mode-filter {
   display: inline-flex; background: var(--bg);
@@ -1082,9 +1103,22 @@ thead th { color: var(--muted); font-weight: 600; }
 
 /* 자동 선택 세트 — 통합 팝오버 */
 .screener-panel-top {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding-bottom: 6px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  padding: 8px 0 12px; border-bottom: 1px solid var(--border);
 }
+.screener-new-btn {
+  padding: 10px 20px; font-size: 14px; font-weight: 600;
+  background: var(--accent); color: #fff; border: 1px solid var(--accent);
+  border-radius: 8px; cursor: pointer;
+}
+.screener-new-btn:hover { background: var(--accent-hover, var(--accent)); }
+.preview-toggle {
+  margin-left: auto; padding: 3px 8px; font-size: 11px; color: var(--muted);
+}
+.screener-card-actions button,
+.screener-card-actions { gap: 6px; }
+.screener-card { padding: 12px 14px; }
+.screener-card-actions button { padding: 6px 12px; }
 .screener-active-banner {
   font-size: 12px; color: var(--text);
   background: var(--accent-soft); border: 1px solid var(--accent);
