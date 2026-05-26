@@ -87,21 +87,20 @@ def _plan_us_session(sched: BlockingScheduler, now: datetime | None = None) -> N
              close_kst.strftime("%m-%d %H:%M"), settle_at.strftime("%H:%M"))
 
 
-def start() -> None:
-    # Q1: 잔고 push 실패분의 백그라운드 retry thread. 정시 cron의 _flush_pending
-    # 첫 시도와 별개로 60초 idle 폴링 + 실패 시 backoff [10~600s] 재시도.
-    from . import sync_retry
-    sync_retry.start()
+def register_jobs(sched) -> None:
+    """모든 자동매매 cron을 sched에 등록 — BlockingScheduler / BackgroundScheduler 공용.
 
-    # Q2+Q8: 기동 시 1회 캘린더 sync (백그라운드 — 페어링 안 됐으면 silent fail
-    # 후 다음 04:00 cron 재시도).
-    from . import calendar_sync
-    import threading
-    threading.Thread(target=calendar_sync.pull_all, daemon=True,
-                      name="calendar-sync-initial").start()
+    Phase 60+ — 이전엔 BlockingScheduler 가정으로 start()에 인라인됐다. GUI 모드
+    (BackgroundScheduler)에서 동일 cron이 필요해 helper로 추출. cron 정의는 단일
+    출처(여기) — gui._start_scheduler·headless start() 모두 이걸 호출.
 
-    sched = BlockingScheduler(timezone="Asia/Seoul")
-
+    등록 항목:
+      · KRX 08:50 loop / 08:55 cycle / 15:30 loop stop / 15:35 settlement
+      · US 매일 12:00 야간 플래너 + 기동 시 즉시 1회 plan
+      · 캘린더 04:00 일일 sync
+      · heartbeat 5분 주기 + 기동 시 1회
+      · dataset 08:00·08:20·08:40 시도 + 기동 시 1회
+    """
     # ── 국내(KRX) 고정 cron ──────────────────────────────────────────────────
     sched.add_job(
         intraday_loop.start,
@@ -130,6 +129,7 @@ def start() -> None:
     _plan_us_session(sched)
 
     # ── Q2+Q8: 캘린더 일일 sync (04:00 KST — 서버 03:00 cron 이후 안전 마진) ─
+    from . import calendar_sync
     sched.add_job(
         calendar_sync.pull_all,
         CronTrigger(hour=4, minute=0, timezone="Asia/Seoul"),
@@ -163,6 +163,24 @@ def start() -> None:
             misfire_grace_time=1800)
     threading.Thread(target=datafetch.refresh_market_data,
                       daemon=True, name="dataset-initial").start()
+
+    log.info("scheduler jobs registered — KRX cron + US planner + heartbeat + dataset")
+
+
+def start() -> None:
+    """headless 모드 진입점 — `python -m localapp.scheduler` 또는 별도 process."""
+    # Q1: 잔고 push 실패분의 백그라운드 retry thread.
+    from . import sync_retry
+    sync_retry.start()
+
+    # 캘린더 기동 시 1회 sync
+    from . import calendar_sync
+    import threading
+    threading.Thread(target=calendar_sync.pull_all, daemon=True,
+                      name="calendar-sync-initial").start()
+
+    sched = BlockingScheduler(timezone="Asia/Seoul")
+    register_jobs(sched)
 
     print("=" * 52)
     print("  로컬앱 스케줄러 시작 (KST)")

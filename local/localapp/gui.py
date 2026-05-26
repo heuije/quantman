@@ -783,14 +783,28 @@ class SettingsApp:
             self.scheduler = None
             self.refresh_status()
             return
+        # Phase 60+ — GUI 모드도 scheduler.register_jobs를 그대로 호출.
+        # 이전엔 KRX 08:55만 등록해 미국 cycle·heartbeat·dataset·intraday loop가
+        # 모두 누락됐었다 (미장 자동매매 작동 안 한 근본 원인).
         from apscheduler.schedulers.background import BackgroundScheduler
-        from apscheduler.triggers.cron import CronTrigger
+        from . import scheduler as _scheduler_mod
         self.scheduler = BackgroundScheduler(timezone="Asia/Seoul")
-        self.scheduler.add_job(
-            self._cycle_job,
-            CronTrigger(day_of_week="mon-fri", hour=8, minute=55,
-                        timezone="Asia/Seoul"),
-            id="paper_cycle", misfire_grace_time=300)
+        _scheduler_mod.register_jobs(self.scheduler)
+
+        # GUI 모드 보조 — sync retry · 캘린더 기동 시 1회 sync (headless start()와 동등).
+        import threading
+        try:
+            from . import sync_retry
+            sync_retry.start()
+        except Exception:
+            pass
+        try:
+            from . import calendar_sync
+            threading.Thread(target=calendar_sync.pull_all, daemon=True,
+                              name="calendar-sync-initial").start()
+        except Exception:
+            pass
+
         self.scheduler.start()
         self.refresh_status()
 

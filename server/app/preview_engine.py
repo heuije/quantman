@@ -141,8 +141,36 @@ def _size_and_append_candidate(symbol: str, prev_close: float, dataset: dict,
 
     수동/자동 선택 공통 — 매수 후보 종목 1개에 대한 사이징·예상 발주가 계산.
     source는 후보 origin 표시용 ('manual' | 'screener').
+
+    미국 종목 (Phase 60+):
+      server는 사용자의 USD 주문가능액·실시간 환율을 정확히 모름 (보안 원칙 —
+      KIS 자격증명은 로컬앱 전용). cash(KRW)를 prev_close(USD)로 나누면 통화
+      불일치로 비정상 qty 발생. 따라서 미국 종목은 qty·est_total을 null로 두고
+      "발주 시점에 trader가 USD 잔고로 사이징" 표시. 신호 통과 사실은 그대로
+      보이도록 candidates에 append하되 사이징 정보는 비움.
     """
+    is_us = not _is_kr_symbol(symbol)
     sizing_mode = exec_pol.get("sizing_mode", "atr_risk")
+    meta = master_by_code.get(symbol, {})
+
+    if is_us:
+        # 미국 종목 — 사이징 skip, 표시만.
+        out["candidates"].append({
+            "symbol": symbol,
+            "name": meta.get("name", ""),
+            "qty": None,
+            "prev_close": round(prev_close, 2),
+            "est_limit_price": None,
+            "est_total": None,
+            "sizing_mode": sizing_mode,
+            "data_as_of": _last_date(dataset, symbol),
+            "source": source,
+            "currency": "USD",
+            "note": "미국 종목 — 발주 시점 USD 잔고로 사이징 (preview 미지원)",
+        })
+        return True
+
+    # 한국 종목 — cash(KRW)로 정확한 사이징
     if sizing_mode == "atr_risk":
         atr_val = _atr14(dataset, symbol)
         if atr_val is None:
@@ -168,7 +196,6 @@ def _size_and_append_candidate(symbol: str, prev_close: float, dataset: dict,
         return False
 
     est_price = int(prev_close * (1 + buy_tolerance_pct / 100.0))
-    meta = master_by_code.get(symbol, {})
     out["candidates"].append({
         "symbol": symbol,
         "name": meta.get("name", ""),
@@ -179,6 +206,7 @@ def _size_and_append_candidate(symbol: str, prev_close: float, dataset: dict,
         "sizing_mode": sizing_mode,
         "data_as_of": _last_date(dataset, symbol),
         "source": source,
+        "currency": "KRW",
     })
     return True
 

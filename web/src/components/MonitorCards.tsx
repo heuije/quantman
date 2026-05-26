@@ -343,18 +343,37 @@ function StrategyCard({ name, pnlRow, previewRow, heldPositions }: {
                 </tr>
               </thead>
               <tbody>
-                {previewRow.candidates.map((c) => (
-                  <tr key={c.symbol}>
-                    <td>{c.name || c.symbol}</td>
-                    <td style={{ textAlign: "right" }}>{c.qty.toLocaleString()}</td>
-                    <td style={{ textAlign: "right" }}>
-                      {c.est_limit_price.toLocaleString()}원
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <strong>{c.est_total.toLocaleString()}원</strong>
-                    </td>
-                  </tr>
-                ))}
+                {previewRow.candidates.map((c) => {
+                  const isUsd = c.currency === "USD";
+                  // 미국 종목 — server는 USD 잔고·환율 정확 모름, qty/총액 null.
+                  // 발주 시점에 로컬앱 trader가 USD 잔고로 사이징.
+                  return (
+                    <tr key={c.symbol}>
+                      <td>
+                        {c.name || c.symbol}
+                        {isUsd && (
+                          <span className="muted small" style={{ marginLeft: 6 }}
+                                title="미국 종목 — 발주 시점 USD 잔고로 사이징 (preview 미지원)">
+                            (USD)
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        {c.qty != null ? c.qty.toLocaleString() : <span className="muted">—</span>}
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        {c.est_limit_price != null
+                          ? `${c.est_limit_price.toLocaleString()}${isUsd ? "$" : "원"}`
+                          : <span className="muted">발주 시 결정</span>}
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        {c.est_total != null
+                          ? <strong>{c.est_total.toLocaleString()}{isUsd ? "$" : "원"}</strong>
+                          : <span className="muted">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           ) : (

@@ -480,12 +480,16 @@ export interface PreviewByStrategy {
 export interface PreviewBuyCandidate {
   symbol: string;
   name: string;
-  qty: number;
+  // 미국 종목(Phase 60+)은 server에서 사이징 불가 → qty/est_limit_price/est_total
+  // 모두 null. trader가 발주 시점에 USD 잔고로 결정. currency="USD" 표시.
+  qty: number | null;
   prev_close: number;
-  est_limit_price: number;
-  est_total: number;
+  est_limit_price: number | null;
+  est_total: number | null;
   sizing_mode: string;
   data_as_of: string | null;
+  currency?: "KRW" | "USD";
+  note?: string;
 }
 
 export interface PreviewExit {
