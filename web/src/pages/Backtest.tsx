@@ -84,7 +84,9 @@ export default function Backtest() {
   const [btCommissionBps, setBtCommissionBps] = useState(() => loadDraft("btCommissionBps", EXECUTION_DEFAULTS.bt_commission_bps));
   const [btSellTaxBps, setBtSellTaxBps] = useState(() => loadDraft("btSellTaxBps", EXECUTION_DEFAULTS.bt_sell_tax_bps));
   const [btSlippageBps, setBtSlippageBps] = useState(() => loadDraft("btSlippageBps", EXECUTION_DEFAULTS.bt_slippage_bps));
-  const [capital, setCapital] = useState(() => loadDraft("capital", 10_000_000));
+  const [capital, setCapital] = useState(() => loadDraft("capital", 0));
+  const [backtestStart, setBacktestStart] = useState<string>(() => loadDraft("backtestStart", ""));
+  const [backtestEnd, setBacktestEnd] = useState<string>(() => loadDraft("backtestEnd", ""));
   const [forwardDays, setForwardDays] = useState(() => loadDraft("forwardDays", 1));
 
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
@@ -121,7 +123,7 @@ export default function Backtest() {
       maxPositionPct, maxPositionEnabled, maxDrawdownPct, maxDrawdownEnabled,
       useLimit, buyTolerancePct, sellTolerancePct,
       btCommissionBps, btSellTaxBps, btSlippageBps,
-      capital, forwardDays,
+      capital, forwardDays, backtestStart, backtestEnd,
     };
     try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); }
     catch { /* quota 초과 등 — 단순 무시 */ }
@@ -132,7 +134,7 @@ export default function Backtest() {
       maxPositionPct, maxPositionEnabled, maxDrawdownPct, maxDrawdownEnabled,
       useLimit, buyTolerancePct, sellTolerancePct,
       btCommissionBps, btSellTaxBps, btSlippageBps,
-      capital, forwardDays]);
+      capital, forwardDays, backtestStart, backtestEnd]);
 
   function buildDef(): StrategyDef {
     const execution: ExecutionPolicy = {
@@ -265,7 +267,9 @@ export default function Backtest() {
     try {
       // Phase 59 — 빌더 임시 백테스트는 strategy_id 없이 실행 (orphan 즉시 삭제 정책).
       // 결과는 페이지 하단 inline result에 표시.
-      const r = await api.runBacktest(buildDef(), capital);
+      const r = await api.runBacktest(buildDef(), capital,
+                                        backtestStart || undefined,
+                                        backtestEnd || undefined);
       setBacktest(r);
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
@@ -339,6 +343,8 @@ export default function Backtest() {
         btSlippageBps={btSlippageBps} setBtSlippageBps={setBtSlippageBps}
         capital={capital} setCapital={setCapital}
         forwardDays={forwardDays} setForwardDays={setForwardDays}
+        backtestStart={backtestStart} setBacktestStart={setBacktestStart}
+        backtestEnd={backtestEnd} setBacktestEnd={setBacktestEnd}
         busy={busy} runAnalysis={runAnalysis} runBacktest={runBacktest}
         analysis={analysis}
         resetStrategy={resetStrategy}
@@ -394,6 +400,8 @@ export function BuildTab(props: {
   btSlippageBps: number; setBtSlippageBps: (v: number) => void;
   capital: number; setCapital: (v: number) => void;
   forwardDays: number; setForwardDays: (v: number) => void;
+  backtestStart: string; setBacktestStart: (v: string) => void;
+  backtestEnd: string; setBacktestEnd: (v: string) => void;
   busy: string;
   runAnalysis: () => void;
   runBacktest: () => void;
@@ -422,6 +430,7 @@ export function BuildTab(props: {
     btSellTaxBps, setBtSellTaxBps,
     btSlippageBps, setBtSlippageBps,
     capital, setCapital, forwardDays, setForwardDays,
+    backtestStart, setBacktestStart, backtestEnd, setBacktestEnd,
     busy, runAnalysis, runBacktest, analysis, resetStrategy,
   } = props;
 
@@ -503,13 +512,24 @@ export function BuildTab(props: {
   // ④ 요약 노출: 모드 카드 + 모드별 값 입력까지 완료
   const showBuySummary = showBuySize && sizingTouched && sizingValueOk;
 
+  // preset 라벨 매핑용 (자동선택 collapsed summary에 한국어 title 표시)
+  const [presetMap, setPresetMap] = useState<Record<string, string>>({});
+  useEffect(() => {
+    api.listScreenerPresets().then((r) => {
+      const m: Record<string, string> = {};
+      r.presets.forEach((p) => { m[p.key] = p.title; });
+      setPresetMap(m);
+    }).catch(() => {});
+  }, []);
+
   // ── 섹션 collapsed 요약 텍스트 ───────────────────────────────────────────────
   const buyTargetSummary = (() => {
     if (!tradeSymbol) return "";
     if (tradeSymbol.startsWith("screener:")) {
       const key = tradeSymbol.slice("screener:".length);
       if (key === "custom") return `${screenerSpec?.label || "커스텀 스펙"} (상위 ${screenerLimit}종목)`;
-      return `자동 선택 · ${key} (상위 ${screenerLimit}종목)`;
+      const label = presetMap[key] ?? key;
+      return `자동 선택 · ${label} (상위 ${screenerLimit}종목)`;
     }
     const syms = tradeSymbol.split(",").map((s) => s.trim()).filter(Boolean);
     if (syms.length === 0) return "";
@@ -559,7 +579,7 @@ export function BuildTab(props: {
     return parts.length > 0 ? parts.join(" · ") : "한도 없음";
   })();
   const btAssumeSummary = `수수료 ${btCommissionBps}·세 ${btSellTaxBps}·슬리 ${btSlippageBps}bps`;
-  const capitalSummary = wonReadable(capital);
+  const capitalSummary = capital > 0 ? wonReadable(capital) : "(미입력)";
 
   return (
     <>
@@ -700,7 +720,7 @@ export function BuildTab(props: {
                        }} />
                 <span className="muted">
                   {buyAmountPctTouched
-                    ? `%  =  ${wonReadable(capital * buyAmountPct / 100)}`
+                    ? "%"
                     : "% ← 직접 입력 (보통 5 ~ 20%)"}
                 </span>
               </div>
@@ -751,7 +771,7 @@ export function BuildTab(props: {
               </span>
               <span className="muted small">
                 {amountKrwTouched
-                  ? `= ${wonReadable(amountKrw)}${amountKrw > 0 && capital > 0 ? ` (자본의 ${fmt2(amountKrw / capital * 100)}%)` : ""}`
+                  ? `= ${wonReadable(amountKrw)}`
                   : "← 직접 입력 (예: 100 = 100만원)"}
               </span>
             </div>
@@ -760,8 +780,7 @@ export function BuildTab(props: {
           {sizingTouched && sizingMode === "equal_weight" && (
             <div className="muted small">
               동시 보유 한도 <b>{screenerLimit}종목</b> 기준 한 종목당{" "}
-              <b>{wonReadable(capital / Math.max(screenerLimit, 1))}</b>
-              ({fmt2(100 / Math.max(screenerLimit, 1))}%) 투입.
+              <b>{fmt2(100 / Math.max(screenerLimit, 1))}%</b> 투입.
               <br />
               한도는 수동 선택 시 선택 종목 수, 자동 선택 시 세트의 상위 N개로 결정됩니다 (시스템 최대 30).
             </div>
@@ -818,11 +837,11 @@ export function BuildTab(props: {
             로{" "}
             <strong>
               {sizingMode === "pct_cash"
-                && `자본의 ${fmt2(buyAmountPct)}% (${wonReadable(capital * buyAmountPct / 100)})`}
+                && `자본의 ${fmt2(buyAmountPct)}%`}
               {sizingMode === "fixed_amount"
                 && `한 종목당 ${wonReadable(amountKrw)}`}
               {sizingMode === "equal_weight"
-                && `자본 ÷ ${screenerLimit}종목 균등 (${wonReadable(capital / Math.max(screenerLimit, 1))})`}
+                && `자본 ÷ ${screenerLimit}종목 균등`}
               {sizingMode === "atr_risk"
                 && `ATR×${fmt2(atrMult)} 손절폭, 자본 위험 ${fmt2(atrRiskPct)}%`}
             </strong>
@@ -1051,19 +1070,21 @@ export function BuildTab(props: {
       <details className="panel section-collapsible" open>
         <summary>
           <h3>6. 자금</h3>
-          <span className="sect-summary-meta">{wonReadable(capital)}</span>
+          <span className="sect-summary-meta">{capital > 0 ? wonReadable(capital) : "(미입력)"}</span>
         </summary>
         <div className="row">
           <div>
             <label>초기자본(원)</label>
             <CapitalInput value={capital} onChange={setCapital} />
-            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              = {wonReadable(capital)}
-            </div>
+            {capital > 0 && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                = {wonReadable(capital)}
+              </div>
+            )}
           </div>
         </div>
         <SectionNextRow
-          valid={true}
+          valid={capital > 0}
           editing={editStep === 6}
           isLast={true}
           onNext={() => advanceStep(6)}
@@ -1071,10 +1092,32 @@ export function BuildTab(props: {
       </details>
       ) : null}
 
-      {furthestStep >= 6 && editStep === null && (
+      {furthestStep >= 2 && (() => {
+        const allDone = furthestStep >= 6 && editStep === null && capital > 0;
+        const blockReason = !allDone
+          ? (capital <= 0 ? "자금 입력 후 완료 ✓를 눌러주세요"
+              : (editStep !== null ? "편집 중인 섹션 확인 후 다음 단계로"
+                  : "모든 섹션 완료 후 실행 가능"))
+          : undefined;
+        return (
       <div className="action-bar">
         <div className="action-bar-info">
           <strong>{name || "새 전략"}</strong> · {tradeSymbol || "종목 미선택"} 매수
+        </div>
+        <div className="action-bar-period">
+          <label>백테스트 기간</label>
+          <input type="date" value={backtestStart}
+                 onChange={(e) => setBacktestStart(e.target.value)}
+                 title="시작일 (빈 값 = 데이터셋 시작)" />
+          <span>~</span>
+          <input type="date" value={backtestEnd}
+                 onChange={(e) => setBacktestEnd(e.target.value)}
+                 title="종료일 (빈 값 = 데이터셋 끝)" />
+          {(backtestStart || backtestEnd) && (
+            <button type="button" className="ghost sm"
+                    onClick={() => { setBacktestStart(""); setBacktestEnd(""); }}
+                    title="전체 기간으로 초기화">전체</button>
+          )}
         </div>
         <div className="action-bar-actions">
           <span className="fwd">
@@ -1083,15 +1126,17 @@ export function BuildTab(props: {
                    onChange={(e) => setForwardDays(Number(e.target.value))} />
             일 뒤 수익률
             <button className="ghost"
-                    disabled={!!busy || !!parseScreenerKey(tradeSymbol)}
+                    disabled={!!busy || !!parseScreenerKey(tradeSymbol) || !allDone}
                     title={parseScreenerKey(tradeSymbol)
-                      ? "자동 선택 전략은 통계 미리보기 미지원 — 수동 종목으로 분석하세요." : undefined}
+                      ? "자동 선택 전략은 통계 미리보기 미지원 — 수동 종목으로 분석하세요."
+                      : blockReason}
                     onClick={runAnalysis}>
               {busy === "analysis" ? "분석 중…" : "통계 미리보기"}
             </button>
           </span>
           <button
-            disabled={!!busy}
+            disabled={!!busy || !allDone}
+            title={blockReason}
             onClick={runBacktest}>
             {busy === "backtest" ? "실행 중…" : "백테스트 실행"}
           </button>
@@ -1104,7 +1149,8 @@ export function BuildTab(props: {
           </button>
         </div>
       </div>
-      )}
+        );
+      })()}
 
       {analysis && (
         <div className="panel">

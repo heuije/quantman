@@ -1959,6 +1959,23 @@ thead th { color: var(--muted); font-weight: 600; }
   user-select: none;
 }
 .risk-toggle input[type="checkbox"] { width: 18px; height: 18px; }
+.action-bar-period {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.action-bar-period label { color: var(--muted); margin: 0; }
+.action-bar-period input[type="date"] {
+  padding: 4px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+}
 .step-next-btn {
   padding: 10px 22px;
   font-size: 14px;
