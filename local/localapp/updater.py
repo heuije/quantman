@@ -214,14 +214,15 @@ def perform_update(zip_url: str,
         bat_path = tmp_root / "updater.bat"
         _write_updater_bat(bat_path, src_dir, app_root, app_exe)
 
-        # detached subprocess — 부모(우리 앱)가 종료해도 .bat은 계속 동작.
-        DETACHED_PROCESS = 0x00000008
+        # background subprocess — 부모(우리 앱)가 종료해도 .bat은 계속 동작 (Windows는
+        # Unix와 달리 부모 종료 시 자식을 자동 kill 안 함). CREATE_NO_WINDOW로
+        # console 창 안 뜸. DETACHED_PROCESS는 CREATE_NO_WINDOW와 상호배타라
+        # 같이 쓰면 후자가 무시되어 cmd 창이 visible해진다 — 빼야 함.
         CREATE_NEW_PROCESS_GROUP = 0x00000200
         CREATE_NO_WINDOW = 0x08000000
         subprocess.Popen(
             ["cmd.exe", "/c", str(bat_path)],
-            creationflags=(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-                            | CREATE_NO_WINDOW),
+            creationflags=(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP),
             close_fds=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

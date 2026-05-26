@@ -1045,17 +1045,21 @@ class SettingsApp:
         def worker():
             try:
                 updater.perform_update(info["url"], progress_cb=progress_cb)
-                # 성공 — updater.bat이 백그라운드에서 돌고 있음.
-                # 앱 종료. tray가 있으면 _quit, 없으면 root.destroy.
+                # 성공 — updater.bat이 백그라운드에서 robocopy 대기 중. 앱이 빨리
+                # 종료돼야 exe 잠금이 풀려 bat이 즉시 복사 시작. messagebox.showinfo는
+                # modal blocking이라 사용자가 [확인] 누를 때까지 self.root.quit()
+                # 도달 X → bat 무한 retry 발생 → 사용자 터미널 retry 로그 봄.
+                # 진행 다이얼로그 안에 완료 메시지 표시 후 1.5s 자동 quit.
                 def finish():
-                    dlg.destroy()
-                    messagebox.showinfo(
-                        "업데이트", "새 버전 설치를 시작합니다. 잠시 후 자동 재실행됩니다.")
-                    if self.scheduler and self.scheduler.running:
-                        self.scheduler.shutdown(wait=False)
-                    if hasattr(self, "cmd_client") and self.cmd_client:
-                        self.cmd_client.stop()
-                    self.root.quit()    # mainloop 종료 → 프로세스 종료 → bat이 교체 시작
+                    status.config(text="✓ 설치 완료 — 곧 자동 재시작됩니다…")
+                    progress.config(value=100)
+                    def real_quit():
+                        if self.scheduler and self.scheduler.running:
+                            self.scheduler.shutdown(wait=False)
+                        if hasattr(self, "cmd_client") and self.cmd_client:
+                            self.cmd_client.stop()
+                        self.root.quit()    # mainloop 종료 → 프로세스 종료 → bat이 교체 시작
+                    self.root.after(1500, real_quit)
                 self.root.after(0, finish)
             except Exception as e:
                 err = str(e)
