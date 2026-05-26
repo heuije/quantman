@@ -88,12 +88,15 @@ a:hover { text-decoration: underline; }
 .strategy-name-input:focus { border-bottom-color: var(--accent); }
 .strategy-name-input::placeholder { color: var(--muted); font-weight: 500; }
 
-/* ⓘ 호버 정보 아이콘 (텍스트 비중 축소용) */
+/* ⓘ 호버 정보 아이콘 (텍스트 비중 축소용)
+   터치 타깃 ≥24px 데스크탑·≥44px 모바일 (모바일 미디어쿼리에서 확장) */
 .info-tip {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 16px; height: 16px; margin-left: 6px;
+  min-width: 20px; min-height: 20px; padding: 2px;
+  margin-left: 6px;
   border-radius: 50%; background: var(--border); color: var(--muted);
   font-size: 11px; font-weight: 600; cursor: help; user-select: none;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 .info-tip:hover {
   background: var(--accent-soft); color: var(--accent-strong);
@@ -163,7 +166,7 @@ a:hover { text-decoration: underline; }
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 18px; height: 18px; margin-left: 6px; padding: 0 5px;
   background: var(--border); color: var(--muted);
-  border-radius: 999px; font-size: 10px; font-weight: 700;
+  border-radius: 999px; font-size: 11px; font-weight: 700;
 }
 .tab.active .tab-count { background: var(--accent-soft); color: var(--accent-strong); }
 
@@ -274,6 +277,8 @@ button {
 button:hover { background: var(--ink-hover); }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.ghost { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+button.ghost:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+button.ghost:disabled:hover { background: var(--bg); border-color: var(--border); }
 button.sm { padding: 5px 10px; font-size: 13px; }
 
 /* 버튼처럼 보이는 링크 (a>button 중첩 대체 — 다운로드 등) */
@@ -367,15 +372,19 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   color: var(--muted); border-style: dashed; background: transparent;
   font-weight: 400;
 }
-.chip.ghost-chip:hover { background: var(--accent-soft); color: var(--accent); }
+.chip.ghost-chip:hover { background: var(--accent-soft); color: var(--accent-strong); }
 .op-select {
   padding: 6px 8px; font: inherit; font-size: 14px;
   border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
 }
 .x-btn {
   border: none; background: none; cursor: pointer; color: var(--muted);
-  font-size: 14px; padding: 0 2px; line-height: 1;
+  font-size: 14px; padding: 4px 8px; line-height: 1;
+  min-width: 28px; min-height: 28px;
+  border-radius: 4px;
+  transition: background 0.12s ease, color 0.12s ease;
 }
+.x-btn:hover { color: var(--red); background: var(--red-soft); }
 
 .popover {
   position: absolute; top: calc(100% + 5px); left: 0; z-index: 50;
@@ -390,22 +399,24 @@ button.sm { padding: 5px 10px; font-size: 13px; }
 .self-option-btn {
   width: 100%; text-align: left; padding: 10px 12px;
   background: var(--accent-soft);
-  border: 1px solid rgba(217, 119, 87, 0.34);
+  border: 1px solid var(--accent);
   border-radius: 8px; cursor: pointer;
   display: flex; flex-direction: column; gap: 2px;
   font-size: 13px;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
-.self-option-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+.self-option-btn:hover { background: var(--accent-soft); border-color: var(--accent-strong); }
 .self-option-btn.on {
-  background: rgba(217, 119, 87, 0.18);
-  border-color: rgba(217, 119, 87, 0.6);
+  background: var(--accent-soft);
+  border-color: var(--accent-strong);
+  border-width: 2px;
 }
 .self-option-btn strong { color: var(--accent-strong); }
 
 /* [이 종목] placeholder 칩 — 좌변/우변 모두 동일 강조 */
 .chip-self {
   background: var(--accent-soft);
-  border-color: rgba(217, 119, 87, 0.4);
+  border-color: var(--accent);
   color: var(--accent-strong);
 }
 
@@ -451,6 +462,8 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   border-radius: 6px; color: var(--muted); font-weight: 600;
 }
 .seg button:hover { background: var(--accent-soft); color: var(--text); }
+.seg button:disabled { opacity: 0.4; cursor: not-allowed; }
+.seg button:disabled:hover { background: transparent; color: var(--muted); }
 .seg button.on {
   background: var(--panel); color: var(--text);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
@@ -633,10 +646,14 @@ details.section-collapsible[open] > summary .sect-summary-meta { display: none; 
   display: flex; flex-direction: column; gap: 4px;
   font-family: inherit;
 }
-.sizing-card:hover { border-color: var(--accent); }
-.sizing-card.on {
+.sizing-card:hover {
   border-color: var(--accent);
-  background: var(--accent-soft, rgba(64, 158, 255, 0.08));
+  background: var(--accent-soft);
+}
+.sizing-card.on {
+  border-color: var(--accent-strong);
+  border-width: 2px;
+  background: var(--accent-soft);
 }
 .sizing-card-title { font-size: 14px; font-weight: 600; }
 .sizing-card-desc { font-size: 12px; color: var(--muted); line-height: 1.45; }
@@ -693,7 +710,7 @@ details.section-collapsible[open] > summary .sect-summary-meta { display: none; 
 .multi-chip {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 4px 8px 4px 10px;
-  background: var(--accent-soft, rgba(64, 158, 255, 0.12));
+  background: var(--accent-soft);
   color: var(--text);
   border: 1px solid var(--accent);
   border-radius: 999px;
@@ -701,19 +718,19 @@ details.section-collapsible[open] > summary .sect-summary-meta { display: none; 
 }
 .multi-chip-x {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 16px; height: 16px;
+  width: 22px; height: 22px;
   background: transparent;
   border: none;
-  color: var(--text);
+  color: var(--muted);
   font-size: 14px; line-height: 1;
   cursor: pointer;
   border-radius: 50%;
   padding: 0;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .multi-chip-x:hover {
-  background: var(--danger, #ef4444);
-  border: 1px solid var(--red);
-  color: white;
+  background: var(--red);
+  color: #ffffff;
 }
 .multi-add {
   padding: 4px 10px;
@@ -765,8 +782,13 @@ details.section-collapsible[open] > summary .sect-summary-meta { display: none; 
 .link-btn {
   background: none; border: none; color: var(--accent-strong);
   font: inherit; font-weight: 600; cursor: pointer; padding: 0;
+  border-radius: 2px;
 }
 .link-btn:hover { text-decoration: underline; }
+.link-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 /* Monitor — 시장 컨텍스트 바 */
 .market-bar {
@@ -795,7 +817,13 @@ details.section-collapsible[open] > summary .sect-summary-meta { display: none; 
   text-align: left; font-weight: 600; color: var(--muted);
   font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--border);
 }
-.position-table td { padding: 8px; border-bottom: 1px solid var(--border); }
+.position-table td {
+  padding: 8px; border-bottom: 1px solid var(--border);
+  max-width: 220px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.position-table td strong { display: inline-block; max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .position-table tr.drift td { background: var(--amber-soft); }
 
 /* Monitor — 실행 품질 / 포트폴리오 위험 grid */
@@ -981,11 +1009,12 @@ thead th { color: var(--muted); font-weight: 600; }
   border-bottom: 2px solid transparent; margin-bottom: -2px;
   font-size: 13px; font-weight: 500;
 }
-.legal-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+.legal-tab.on { color: var(--accent-strong); border-bottom-color: var(--accent); }
+.legal-tab:hover { color: var(--text); }
 .legal-tab:hover { color: var(--fg); }
 .legal-template-banner {
   padding: 12px 16px; margin-bottom: 24px; border-radius: 6px;
-  background: var(--amber-soft, rgba(240, 180, 0, 0.1));
+  background: var(--amber-soft);
   border: 1px solid var(--amber, #f59e0b);
   font-size: 13px; line-height: 1.6;
 }
@@ -1018,7 +1047,7 @@ thead th { color: var(--muted); font-weight: 600; }
 /* Phase 48 — NFA 2-29 수준 가정적 수익률 배너 (동일 prominence 강조) */
 .hypothetical-banner {
   padding: 12px 16px; margin: 0 0 16px; border-radius: 6px;
-  background: var(--amber-soft, rgba(240, 180, 0, 0.1));
+  background: var(--amber-soft);
   border: 1px solid var(--amber, #f59e0b);
   font-size: 13px; line-height: 1.6;
 }
@@ -1044,7 +1073,7 @@ thead th { color: var(--muted); font-weight: 600; }
 .or-divider::after { margin-left: 12px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .dot.on { background: var(--green); }
-.dot.off { background: #cbd5e1; }
+.dot.off { background: var(--border); }
 
 /* 지표 설명 툴팁 */
 .metric-hint {
@@ -1581,7 +1610,9 @@ thead th { color: var(--muted); font-weight: 600; }
   background: transparent; border: 0; padding: 9px 16px;
   font-size: 14px; font-weight: 600; color: var(--muted);
   cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color 0.12s ease, border-bottom-color 0.12s ease;
 }
+.detail-tab:hover { color: var(--text); }
 .detail-tab.on { color: var(--accent-strong); border-bottom-color: var(--accent); }
 
 .detail-body {
