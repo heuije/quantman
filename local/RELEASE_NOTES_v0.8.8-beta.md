@@ -25,6 +25,22 @@
 
 heartbeat (로컬앱 alive 여부)도 상단에 배지로.
 
+### 🐛 인앱 업데이트 — 터미널 안 뜨게 + 재시작 팝업 modal 제거
+
+**증상 (v0.8.7 → v0.8.8 자동 업데이트 시):**
+1. cmd 터미널 창이 visible 떠서 robocopy retry 로그 노출
+2. "잠시 후 자동 재실행됩니다" 팝업이 modal blocking — 사용자가 [확인]
+   클릭할 때까지 앱 종료 안 됨 → exe 잠겨있어 bat의 robocopy가 못 복사 →
+   "오류 32 다른 프로세스가 파일을 사용 중" + 2초 retry 반복
+
+**Fix:**
+1. [updater.py](localapp/updater.py)의 `DETACHED_PROCESS | CREATE_NO_WINDOW` 조합
+   제거. Microsoft 공식 문서상 두 flag는 상호배타 — 같이 쓰면 console이 visible.
+   `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`만 사용. Windows는 부모 종료 시
+   자식 자동 kill 안 함이라 detach 안 해도 bat은 살아남음.
+2. [gui.py](localapp/gui.py)의 `messagebox.showinfo` 제거. 진행 다이얼로그 안에
+   "✓ 설치 완료 — 곧 자동 재시작됩니다…" + 1.5s 후 자동 quit. 사용자 클릭 불필요.
+
 ### 🐛 인앱 업데이트 — 사용자가 창에 돌아올 때마다 재체크
 
 **증상:** v0.8.7에선 앱 시작 시 1회만 GitHub 버전 조회. PC를 며칠 안 끄면
