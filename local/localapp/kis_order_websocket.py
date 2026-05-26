@@ -136,6 +136,11 @@ class KisOrderWebSocket:
             return
         hdr = d.get("header") or {}
         if hdr.get("tr_id") == "PINGPONG":
+            # KIS application-level PINGPONG — 받은 메시지를 그대로 echo. spec: wikidocs/164066.
+            try:
+                self._ws.send(message)
+            except Exception as e:
+                log.warning("[order-ws] PINGPONG echo 실패: %s", e)
             return
         body = d.get("body") or {}
         rt_cd = body.get("rt_cd")

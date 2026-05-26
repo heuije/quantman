@@ -448,16 +448,18 @@ class KisBroker:
             "filled_qty": 0,
         }
 
-    # 해외 매수/매도 TR_ID 매핑
-    # ord_dvsn은 무시 (해외는 지정가만 지원, 시장가 별도 ORD_DVSN 코드)
+    # 해외 매수/매도 TR_ID 매핑 — KIS 공식 spec ([해외주식] 주문_계좌.xlsx 해외주식 주문)
+    # 실전 미국 매수: TTTT1002U, 미국 매도: TTTT1006U (1001 아님 — v0.8.5 이전 잘못)
+    # 실전 미국 J-prefix는 spec에 없음 — v0.8.5 이전 잘못된 옛 형식
+    # 모의 V-prefix 매수=1002U / 매도=1001U는 spec 그대로
     _OVERSEAS_TR = {
         # (market, side, virtual): TR_ID
-        ("NAS", "buy",  True): "VTTT1002U", ("NAS", "buy",  False): "JTTT1002U",
-        ("NAS", "sell", True): "VTTT1001U", ("NAS", "sell", False): "JTTT1001U",
-        ("NYS", "buy",  True): "VTTT1002U", ("NYS", "buy",  False): "JTTT1002U",
-        ("NYS", "sell", True): "VTTT1001U", ("NYS", "sell", False): "JTTT1001U",
-        ("AMS", "buy",  True): "VTTT1002U", ("AMS", "buy",  False): "JTTT1002U",
-        ("AMS", "sell", True): "VTTT1001U", ("AMS", "sell", False): "JTTT1001U",
+        ("NAS", "buy",  True): "VTTT1002U", ("NAS", "buy",  False): "TTTT1002U",
+        ("NAS", "sell", True): "VTTT1001U", ("NAS", "sell", False): "TTTT1006U",
+        ("NYS", "buy",  True): "VTTT1002U", ("NYS", "buy",  False): "TTTT1002U",
+        ("NYS", "sell", True): "VTTT1001U", ("NYS", "sell", False): "TTTT1006U",
+        ("AMS", "buy",  True): "VTTT1002U", ("AMS", "buy",  False): "TTTT1002U",
+        ("AMS", "sell", True): "VTTT1001U", ("AMS", "sell", False): "TTTT1006U",
         ("TSE", "buy",  True): "VTTS0308U", ("TSE", "buy",  False): "TTTS0308U",
         ("TSE", "sell", True): "VTTS0307U", ("TSE", "sell", False): "TTTS0307U",
         ("HKS", "buy",  True): "VTTS1002U", ("HKS", "buy",  False): "TTTS1002U",
@@ -677,12 +679,15 @@ class KisBroker:
                 "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
 
     def _overseas_pending(self) -> list[dict]:
-        """해외 미체결 목록 (inquire-nccs, VTTS3018R/TTTS3018R).
+        """해외 미체결 목록 (inquire-nccs, TTTS3018R).
 
-        모의(VTS)는 OVRS_EXCG_CD=NASD가 미국 전체. 실전은 거래소별 조회.
+        KIS 공식 spec: 모의투자 미지원. v0.8.5 이전엔 VTTS3018R 사용했으나
+        spec 미명시 — 호출 실패 위험. virtual=True 면 빈 결과 반환.
         """
-        tr = "VTTS3018R" if self.virtual else "TTTS3018R"
-        excgs = ["NASD"] if self.virtual else ["NASD", "NYSE", "AMEX"]
+        if self.virtual:
+            return []   # KIS 모의는 inquire-nccs 미지원 (spec)
+        tr = "TTTS3018R"
+        excgs = ["NASD", "NYSE", "AMEX"]
         out = []
         for excd in excgs:
             try:

@@ -29,6 +29,10 @@ TR_ID_PRICE_DOMESTIC = "H0STCNT0"   # 국내 주식 체결가 실시간
 TR_ID_PRICE_OVERSEAS = "HDFSCNT0"   # 해외 주식 체결가
 SUBSCRIBE_MAX = 20                  # KIS 동시 구독 한도 (체결가+호가 합산)
 
+# KIS 공식 spec — 한 메시지의 record 당 필드 개수 (data_cnt > 1 시 N개 record 묶여 옴)
+_FIELDS_PER_RECORD_DOMESTIC = 46    # H0STCNT0: MKSC_SHRN_ISCD ~ VI_STND_PRC
+_FIELDS_PER_RECORD_OVERSEAS = 26    # HDFSCNT0: RSYM ~ MTYP
+
 # 미국 시세 tr_key prefix — KIS 공식 spec ([해외주식] 실시간시세.xlsx HDFSCNT0).
 #   • D + 시장구분(NAS/NYS/AMS) + 종목코드  → 무료시세 (미국 0분지연 = 사실상 실시간).
 #     예: DNASAAPL = D + NAS(나스닥) + AAPL. 신청 불필요.
@@ -120,7 +124,14 @@ class KisWebSocket:
                 d = json.loads(message)
                 hdr = d.get("header") or {}
                 if hdr.get("tr_id") == "PINGPONG":
-                    # 시스템 ping → pong 응답 필요 없음, websocket-client가 자동 처리
+                    # KIS application-level PINGPONG — 받은 메시지를 그대로 echo해서
+                    # pong 응답. frame-level ping/pong은 ping_interval로 자동 처리
+                    # 되지만 application JSON PINGPONG은 별개 layer.
+                    # spec: wikidocs/164066. 응답 안 보내면 KIS가 일정 시간 후 끊음.
+                    try:
+                        ws.send(message)
+                    except Exception as e:
+                        log.warning("[ws] PINGPONG echo 실패: %s", e)
                     return
                 body = d.get("body") or {}
                 msg = body.get("msg1") or body.get("rt_cd")
@@ -130,42 +141,52 @@ class KisWebSocket:
                 log.debug("[ws] non-tick non-json msg: %s", message[:100])
 
     def _parse_tick(self, message: str) -> None:
-        """PIPE 구분 tick 메시지 파싱 → on_tick 콜백 호출.
+        """PIPE 구분 tick 메시지 파싱 → on_tick 콜백 호출 (record당 1회).
 
-        국내 H0STCNT0: "0|H0STCNT0|n|<코드>^<시간>^<현재가>^..." (field[0]=코드, [2]=현재가)
-        해외 HDFSCNT0: "0|HDFSCNT0|n|<RSYM>^<SYMB>^<소수>^...^<현재가>^..."
-          field[1]=SYMB(종목코드), field[11]=LAST(현재가). 지연시세 동일 레이아웃.
+        KIS spec: "암호화여부|tr_id|data_cnt|body" — body는 ^ 구분 필드.
+        data_cnt > 1이면 한 메시지에 N개 체결 record 묶여 옴.
+        각 record는 spec 명시 필드 개수(국내 46, 해외 26) 단위로 분할.
+
+        국내 H0STCNT0: record[0]=MKSC_SHRN_ISCD, record[2]=STCK_PRPR
+        해외 HDFSCNT0: record[1]=SYMB, record[11]=LAST
         """
         parts = message.split("|")
         if len(parts) < 4:
             return
         tr_id = parts[1]
-        fields = parts[3].split("^")
+        try:
+            data_cnt = int(parts[2])
+        except ValueError:
+            data_cnt = 1
+        all_fields = parts[3].split("^")
 
         if tr_id == TR_ID_PRICE_DOMESTIC:
-            if len(fields) < 3:
-                return
-            symbol = fields[0]
-            price_str = fields[2]
+            rec_size = _FIELDS_PER_RECORD_DOMESTIC
+            symbol_idx, price_idx = 0, 2
         elif tr_id == TR_ID_PRICE_OVERSEAS:
-            if len(fields) < 12:
-                return
-            symb = fields[1]
-            symbol = self._symb_to_orig.get(symb, symb)  # 원본 심볼로 환원
-            price_str = fields[11]
+            rec_size = _FIELDS_PER_RECORD_OVERSEAS
+            symbol_idx, price_idx = 1, 11
         else:
             return
 
-        try:
-            price = float(price_str)
-        except (ValueError, IndexError):
-            return
-        if price <= 0:
-            return
-        try:
-            self.on_tick(symbol, price)
-        except Exception as e:
-            log.exception("[ws] on_tick 콜백 오류 %s: %s", symbol, e)
+        for i in range(max(1, data_cnt)):
+            rec = all_fields[i * rec_size : (i + 1) * rec_size]
+            if len(rec) <= max(symbol_idx, price_idx):
+                continue
+            if tr_id == TR_ID_PRICE_OVERSEAS:
+                symbol = self._symb_to_orig.get(rec[symbol_idx], rec[symbol_idx])
+            else:
+                symbol = rec[symbol_idx]
+            try:
+                price = float(rec[price_idx])
+            except (ValueError, IndexError):
+                continue
+            if price <= 0:
+                continue
+            try:
+                self.on_tick(symbol, price)
+            except Exception as e:
+                log.exception("[ws] on_tick 콜백 오류 %s: %s", symbol, e)
 
     def _on_error(self, ws, error):
         log.warning("[ws] error: %s", error)
