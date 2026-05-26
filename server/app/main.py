@@ -400,6 +400,22 @@ async def lifespan(app: FastAPI):
         CronTrigger(hour=18, minute=15),
         id="dataset_kr", replace_existing=True)
 
+    # Phase 58-C — Dataset bundle packaging.
+    # 글로벌 dataset(07:30) + 한국 dataset(18:15) 갱신 직후 packaging.
+    # 사용자 로컬앱은 08:00 KST sync로 글로벌 + 어제 한국 close 묶음을 받음.
+    # 한국 close(18:15) 후 packaging은 다음 날 사용자 sync에 반영.
+    def _do_package_bundle():
+        from .routers import dataset as dataset_router
+        return dataset_router.build_bundle()
+    scheduler.add_job(
+        lambda: _run_with_retry("bundle_morning", _do_package_bundle, scheduler),
+        CronTrigger(hour=7, minute=45),
+        id="bundle_morning", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("bundle_evening", _do_package_bundle, scheduler),
+        CronTrigger(hour=18, minute=30),
+        id="bundle_evening", replace_existing=True)
+
     # 일요일 08:00 — 미국 S&P500 시가총액 (fast_info). 분기 변동 낮아 주1회.
     scheduler.add_job(
         lambda: _run_with_retry("us_market_caps", _refresh_us_market_caps, scheduler),

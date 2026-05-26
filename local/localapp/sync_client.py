@@ -35,6 +35,65 @@ def push_snapshot(payload: dict) -> None:
     r.raise_for_status()
 
 
+def fetch_dataset_bundle(local_data_dir: Path) -> dict:
+    """Phase 58-C — server tar.zst bundle 단일 다운로드 + 압축 해제.
+
+    종목별 4445 req 직렬 다운로드(~114분) → 단일 파일(~140MB, 1분)으로 단축.
+    ETag로 변경 시만 다운로드, 동일 ETag면 server 304 → skip.
+
+    실패 시 ValueError raise → 호출자가 manifest fallback으로 폴백.
+    """
+    import io
+    import tarfile
+
+    import zstandard
+
+    etag_cache = local_data_dir.parent / "dataset-bundle.etag"
+    cached_etag = ""
+    if etag_cache.exists():
+        try:
+            cached_etag = etag_cache.read_text(encoding="utf-8").strip()
+        except Exception:
+            cached_etag = ""
+
+    headers = _headers()
+    if cached_etag:
+        headers["If-None-Match"] = cached_etag
+
+    t0 = time.time()
+    log.info("dataset bundle 다운로드 시도 (etag=%s)...",
+             cached_etag[:12] if cached_etag else "(없음)")
+    r = requests.get(f"{PLATFORM_URL}/dataset/bundle",
+                     headers=headers, timeout=300, stream=True)
+    if r.status_code == 304:
+        log.info("dataset bundle: 변경 없음 (ETag 일치) — skip")
+        return {"ok": True, "skipped": True}
+    if r.status_code == 410:
+        raise ValueError("server bundle 미준비")
+    r.raise_for_status()
+    new_etag = (r.headers.get("ETag") or "").strip('"')
+
+    # tar.zst stream을 메모리에서 해제 → DATA_DIR 추출
+    local_data_dir.mkdir(parents=True, exist_ok=True)
+    dctx = zstandard.ZstdDecompressor()
+    n_extracted = 0
+    with dctx.stream_reader(r.raw) as zr, \
+            tarfile.open(fileobj=zr, mode="r|") as tar:
+        for member in tar:
+            if not member.isfile() or not member.name.endswith(".parquet"):
+                continue
+            tar.extract(member, path=local_data_dir,
+                         set_attrs=False, filter="data")
+            n_extracted += 1
+    if new_etag:
+        etag_cache.write_text(new_etag, encoding="utf-8")
+    elapsed = time.time() - t0
+    log.info("dataset bundle 적용: %d parquet, %.1fs, etag=%s",
+              n_extracted, elapsed, new_etag[:12])
+    return {"ok": True, "skipped": False, "n_files": n_extracted,
+            "elapsed_sec": elapsed}
+
+
 def push_heartbeat() -> None:
     """Phase 58 — 5분 주기 alive 신호. KIS API 호출 없음(잔고 query X).
 

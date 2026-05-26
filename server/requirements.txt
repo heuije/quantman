@@ -15,3 +15,4 @@ finance-datareader>=0.9       # NAVER-backed Korean symbol data (KRX site blocks
 pandas>=2.0                   # fdr returns pandas DataFrame
 python-multipart>=0.0.18      # FastAPI file upload (multipart/form-data)
 exchange_calendars>=4.5       # Q2+Q8 - daily KR/US session refresh (incl. ad-hoc holidays)
+zstandard>=0.22               # Phase 58-C - dataset bundle (tar.zst) packaging

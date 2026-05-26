@@ -16,7 +16,7 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 datas, binaries, hiddenimports = [], [], []
 
 # 동적 import·백엔드가 있는 (작은) 패키지만 통째로 수집
-for pkg in ("keyring", "pystray", "apscheduler", "FinanceDataReader"):
+for pkg in ("keyring", "pystray", "apscheduler", "FinanceDataReader", "zstandard"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b

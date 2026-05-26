@@ -145,10 +145,24 @@ def start() -> None:
         CronTrigger(minute="*/5", timezone="Asia/Seoul"),
         id="heartbeat", name="로컬앱 alive heartbeat",
         misfire_grace_time=120)
-    # 기동 시 1회 — 첫 cron까지 대기 안 하고 즉시 alive 표시
     import threading
     threading.Thread(target=sync_client.push_heartbeat,
                       daemon=True, name="heartbeat-initial").start()
+
+    # ── Phase 58-C — dataset bundle 다운로드 (08:00 KST + 재시도) ──────────
+    # server packaging cron 07:45 직후 가져옴. KRX cycle 08:55까지 55분 마진.
+    # 실패 시 08:20, 08:40에 재시도 (cycle 시작 5분 전 마지노선).
+    # 기동 시 1회 background 실행 — 첫 가동/PC 재부팅 시 즉시 fresh.
+    from . import datafetch
+    for hm in [(8, 0), (8, 20), (8, 40)]:
+        sched.add_job(
+            datafetch.refresh_market_data,
+            CronTrigger(hour=hm[0], minute=hm[1], timezone="Asia/Seoul"),
+            id=f"dataset_sync_{hm[0]:02d}{hm[1]:02d}",
+            name=f"dataset bundle sync ({hm[0]:02d}:{hm[1]:02d})",
+            misfire_grace_time=1800)
+    threading.Thread(target=datafetch.refresh_market_data,
+                      daemon=True, name="dataset-initial").start()
 
     print("=" * 52)
     print("  로컬앱 스케줄러 시작 (KST)")
