@@ -16,7 +16,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import messagebox, ttk
 
-from . import killswitch, order_log, pairing, secrets_store
+from . import __version__, killswitch, order_log, pairing, secrets_store, sync_client
 from .commands_client import CommandClient
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
                        PLATFORM_URL)
@@ -77,15 +77,21 @@ class SettingsApp:
         self.scheduler = None
         self.on_close_to_tray = None     # tray.py가 주입
         self.auto_paused = False         # 웹의 PAUSE_AUTO 명령으로 일시정지된 상태
+        # 자격증명+페어링 둘 다 완료 시 ①② 영역 자동 접기 (사용자 toggle 가능)
+        self.setup_collapsed = True
+        self.user_email = ""
 
         self.root = tk.Tk()
         self.root.title("퀀트 플랫폼 — 로컬앱")
-        self.root.geometry("760x900")
+        self.root.geometry("880x980")
         self.root.resizable(True, True)
         self._apply_theme()
         self._build()
         self.refresh_status()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # 페어링돼 있으면 user email을 백그라운드로 조회(서버 응답 도착 시 hero 갱신)
+        self._fetch_user_info_async()
 
         # 웹에서 발행한 명령 수신 시작 (페어링돼 있으면 즉시 연결)
         self.cmd_client = CommandClient(self._handle_command)
@@ -174,8 +180,23 @@ class SettingsApp:
                                         command=self._reset_killswitch)
         self.btn_ks_reset.pack(side="right", padx=12, pady=6)
 
+        # 접힌 설정 바 — 자격증명+페어링 둘 다 완료된 정상 운영 상태에서 표시.
+        # ①② 펼친 LabelFrame 대신 한 줄로 압축 → Notebook(주문/사이클 등) 공간 확보.
+        self.setup_bar = tk.Frame(self.root, bg=PANEL, highlightbackground=BORDER,
+                                   highlightthickness=1)
+        self.setup_bar_label = tk.Label(self.setup_bar, bg=PANEL, fg=TEXT,
+                                         font=("Segoe UI", 9), anchor="w",
+                                         text="")
+        self.setup_bar_label.pack(side="left", padx=12, pady=8)
+        ttk.Button(self.setup_bar, text="⚙ 자격증명·페어링 변경",
+                   command=self._toggle_setup_expanded).pack(side="right",
+                                                              padx=8, pady=4)
+
+        # ①② 묶음 frame — 토글 시 한 번에 펼침/숨김
+        self.setup_expanded = tk.Frame(self.root, bg=BG)
+
         # ① KIS 자격증명
-        self.kf = ttk.LabelFrame(self.root, text="① KIS 모의투자 자격증명")
+        self.kf = ttk.LabelFrame(self.setup_expanded, text="① KIS 모의투자 자격증명")
         self.kf.pack(fill="x", **pad)
         ttk.Label(self.kf, style="Muted.TLabel", wraplength=500, justify="left",
                   text="한국투자증권 모의투자 계좌의 App Key·Secret을 입력하세요. "
@@ -188,7 +209,7 @@ class SettingsApp:
                    command=self._save_kis).pack(anchor="e", padx=12, pady=10)
 
         # ② 기기 페어링
-        self.pf = ttk.LabelFrame(self.root, text="② 플랫폼 계정 연결")
+        self.pf = ttk.LabelFrame(self.setup_expanded, text="② 플랫폼 계정 연결")
         self.pf.pack(fill="x", **pad)
         ttk.Label(self.pf, style="Muted.TLabel",
                   text=f"플랫폼: {PLATFORM_URL}"
@@ -345,6 +366,46 @@ class SettingsApp:
         self.hero_label.configure(text=text, bg=color)
         self.hero_sub.configure(text=sub, bg=color)
 
+    def _render_setup_area(self, kis_ok: bool, dev_ok: bool):
+        """자격증명+페어링 둘 다 완료면 한 줄 bar, 아니면 LabelFrame 펼침.
+
+        사용자가 ⚙ 변경 버튼으로 강제 펼침한 상태(self.setup_collapsed=False)이면
+        bar 대신 펼쳐진 LabelFrame을 우선 표시.
+        """
+        both_ok = kis_ok and dev_ok
+        show_collapsed = both_ok and self.setup_collapsed
+        if show_collapsed:
+            # bar 노출 / 펼친 frame 숨김
+            parts = []
+            parts.append("✓ KIS 자격증명 등록됨")
+            parts.append("✓ 플랫폼 계정 연결됨")
+            self.setup_bar_label.configure(text="  ·  ".join(parts))
+            self.setup_expanded.pack_forget()
+            self.setup_bar.pack(fill="x", padx=12, pady=(4, 6),
+                                 before=self.af)
+        else:
+            self.setup_bar.pack_forget()
+            self.setup_expanded.pack(fill="x", before=self.af)
+
+    def _toggle_setup_expanded(self):
+        """⚙ 변경 버튼 — 한 줄 bar ↔ 펼친 LabelFrame 토글."""
+        self.setup_collapsed = not self.setup_collapsed
+        self.refresh_status()
+
+    def _fetch_user_info_async(self):
+        """페어링된 user의 email을 백그라운드로 조회 → hero 갱신.
+
+        서버 응답이 늦어도 GUI를 막지 않도록 별도 thread. 실패하면 email은 빈
+        문자열로 남고 hero는 v.X.Y.Z 만 표시.
+        """
+        def worker():
+            info = sync_client.fetch_user_info()
+            if info and info.get("email"):
+                self.user_email = info["email"]
+                self.root.after(0, self.refresh_status)
+        threading.Thread(target=worker, daemon=True,
+                          name="user-info-fetch").start()
+
     def refresh_status(self):
         kis = secrets_store.load_kis()
         dev = secrets_store.load_device_token()
@@ -352,10 +413,15 @@ class SettingsApp:
         ks = killswitch.load()
         ks_active = bool(ks.get("active"))
 
+        # hero 부제목: 버전 + 이메일(있을 때) + 상태 메시지
+        ident = f"v{__version__}"
+        if self.user_email:
+            ident += f"  ·  {self.user_email}"
+
         # 히어로 — 전체 상태 한 줄
         if ks_active:
             self._set_hero("⚠ Kill Switch 활성",
-                           "자동매매 중단 — 사용자가 해제해야 재개됩니다", RED)
+                           f"{ident}  ·  자동매매 중단 — 사용자가 해제해야 재개됩니다", RED)
         elif not kis or not dev:
             missing = []
             if not kis:
@@ -363,13 +429,16 @@ class SettingsApp:
             if not dev:
                 missing.append("기기 페어링")
             self._set_hero("설정 미완료",
-                           " · ".join(missing) + " 을(를) 완료하세요", AMBER)
+                           f"{ident}  ·  " + " · ".join(missing) + " 을(를) 완료하세요", AMBER)
         elif running:
             self._set_hero("자동매매 실행 중",
-                           "평일 장 시작 전 자동으로 매매합니다", GREEN)
+                           f"{ident}  ·  평일 장 시작 전 자동으로 매매합니다", GREEN)
         else:
             self._set_hero("준비 완료 · 중지됨",
-                           "‘자동매매 시작’을 누르면 가동됩니다", SLATE)
+                           f"{ident}  ·  ‘자동매매 시작’을 누르면 가동됩니다", SLATE)
+
+        # 설정 영역 toggle — 둘 다 완료 + 사용자가 펼치라고 안 했으면 collapse
+        self._render_setup_area(kis_ok=bool(kis), dev_ok=bool(dev))
 
         # Kill switch 배너
         if ks_active:
@@ -679,6 +748,7 @@ class SettingsApp:
                 else:
                     self.pair_code.config(text="")
                     self.pair_msg.config(text="페어링 완료.")
+                    self._fetch_user_info_async()
                     self.refresh_status()
 
             self._run_bg(poll, polled)

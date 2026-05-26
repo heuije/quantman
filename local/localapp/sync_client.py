@@ -94,6 +94,27 @@ def fetch_dataset_bundle(local_data_dir: Path) -> dict:
             "elapsed_sec": elapsed}
 
 
+def fetch_user_info() -> dict | None:
+    """페어링된 user 정보(email)를 server에서 1회 조회.
+
+    GUI hero에 "v0.x · email@example.com" 형태로 표시하기 위해서만 사용.
+    페어링 안 됐거나 네트워크 실패 시 None — 표시만 건너뛰면 됨.
+    """
+    try:
+        token = load_device_token()
+        if not token:
+            return None
+        r = requests.get(f"{PLATFORM_URL}/auth/device/me",
+                         headers={"Authorization": f"Bearer {token}"},
+                         timeout=10)
+        if not r.ok:
+            return None
+        return r.json()
+    except Exception as e:
+        log.debug("user info 조회 실패: %s", e)
+        return None
+
+
 def push_heartbeat() -> None:
     """Phase 58 — 5분 주기 alive 신호. KIS API 호출 없음(잔고 query X).
 

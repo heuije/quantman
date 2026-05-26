@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 
 from ..config import settings
 from ..db import get_session
-from ..deps import get_current_user
+from ..deps import get_current_device, get_current_user
 from ..models import Device, PairingRequest, User
 from ..schemas import (DeviceApproveIn, DeviceOut, DeviceStartIn, DeviceStartOut,
                        DeviceTokenIn, DeviceTokenOut, GoogleLoginIn, LoginIn,
@@ -84,6 +84,18 @@ def google_login(body: GoogleLoginIn, session: Session = Depends(get_session)):
 
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
+    return UserOut(id=user.id, email=user.email, created_at=user.created_at)
+
+
+@router.get("/device/me", response_model=UserOut)
+def device_me(
+    device: Device = Depends(get_current_device),
+    session: Session = Depends(get_session),
+):
+    """로컬앱이 device_token으로 연결된 사용자 정보 조회 — GUI에 표시용."""
+    user = session.get(User, device.user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "사용자를 찾을 수 없습니다.")
     return UserOut(id=user.id, email=user.email, created_at=user.created_at)
 
 
