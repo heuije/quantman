@@ -258,8 +258,9 @@ export default function ScreenerPanel({
           </div>
         </div>
 
-        {/* inline 값 조정 — field/op는 fix, value만 편집. 지표명 옆에 숫자·단위·op 순으로 노출. */}
-        <div className="screener-card-rules" onClick={stop}>
+        {/* inline 값 조정 — field/op는 fix, value만 편집. 지표명 옆에 숫자·단위·op 순으로 노출.
+            카드 전체 클릭 영역 확장: input·button만 stop, 라벨·여백 클릭 시 카드 선택. */}
+        <div className="screener-card-rules">
           {spec.rules.map((r, i) => {
             const f = fieldOf(r.field);
             const u = unitOf(f);
@@ -275,15 +276,18 @@ export default function ScreenerPanel({
                 {r.op === "between" ? (
                   <>
                     <input type="number" step="any" value={display(Array.isArray(r.value) ? r.value[0] : 0)}
+                           onClick={stop}
                            onChange={(e) => editPresetRuleValue(p, i,
                              [store(Number(e.target.value)), Array.isArray(r.value) ? r.value[1] : 0])} />
                     <span className="rule-sep">~</span>
                     <input type="number" step="any" value={display(Array.isArray(r.value) ? r.value[1] : 0)}
+                           onClick={stop}
                            onChange={(e) => editPresetRuleValue(p, i,
                              [Array.isArray(r.value) ? r.value[0] : 0, store(Number(e.target.value))])} />
                   </>
                 ) : (
                   <input type="number" step="any" value={display(Array.isArray(r.value) ? 0 : r.value)}
+                         onClick={stop}
                          onChange={(e) => editPresetRuleValue(p, i, store(Number(e.target.value)))} />
                 )}
                 {displayUnit && <span className="rule-unit">{displayUnit}</span>}
@@ -294,6 +298,7 @@ export default function ScreenerPanel({
           <div className="screener-card-limit">
             상위
             <input type="number" min={1} max={30} value={Math.min(spec.limit ?? 20, 30)}
+                   onClick={stop}
                    onChange={(e) => editPresetLimit(p, Number(e.target.value))} />
             개 보유
             <button type="button" className="ghost sm preview-toggle" title="미리보기"

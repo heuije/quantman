@@ -35,6 +35,26 @@ class Strategy(SQLModel, table=True):
     definition: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
+    # Phase 59 — run_mode 전환 시점 기록. "적용 기간" 계산에 사용.
+    paper_started_at: Optional[datetime] = None
+    live_started_at: Optional[datetime] = None
+    live_capital_at_start: Optional[float] = None    # 실전 전환 시점 자본 (수익률 기준점)
+
+
+class StrategyVersion(SQLModel, table=True):
+    """전략 정의 이력 — PUT /strategies/{id}에서 자동 스냅샷.
+
+    매 PUT마다 변경 전 정의를 보존. 30일 또는 50건 초과분은 자동 회전(삭제).
+    사용자가 잘못 수정한 후 특정 버전으로 복원 가능.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    strategy_id: int = Field(index=True, foreign_key="strategy.id")
+    version_no: int                   # 1, 2, 3... strategy당 sequential
+    name: str                         # 스냅샷 시점의 이름
+    definition: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_now)
+    # "manual_edit" | "restore_from_vN" | "initial"
+    created_reason: str = "manual_edit"
 
 
 class Device(SQLModel, table=True):
@@ -103,9 +123,15 @@ class UserSettings(SQLModel, table=True):
 
 
 class BacktestRun(SQLModel, table=True):
-    """백테스트 실행 내역 — 자동으로 저장되어 '실행 내역' 탭에서 조회 가능."""
+    """백테스트 실행 내역 — 저장된 전략과 연결되면 strategy_id 보관.
+
+    Phase 59: strategy_id NULL 이면 빌더에서 저장 안 한 시범 실행 → 즉시 삭제 대상.
+    저장 시점에 strategy_id 확정. 전략 detail "백테스트 내역" 탭의 데이터 소스.
+    """
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(index=True, foreign_key="user.id")
+    strategy_id: Optional[int] = Field(default=None, index=True, foreign_key="strategy.id")
+    version_no: Optional[int] = None        # 어떤 버전 시점의 백테스트인지
     name: str = ""                          # 전략 이름 스냅샷
     definition: dict = Field(default_factory=dict, sa_column=Column(JSON))
     result: dict = Field(default_factory=dict, sa_column=Column(JSON))  # 메트릭+요약만 (trades는 별도)

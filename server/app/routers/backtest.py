@@ -163,21 +163,31 @@ def run_backtest(body: BacktestIn,
     )
     payload = serialize_backtest(result)
 
-    # 실행 내역 자동 저장 — 응답에 run_id를 포함해 클라이언트가 단일 결과 페이지로 이동 가능
-    run = BacktestRun(
-        user_id=user.id,
-        name=strategy.name,
-        definition=body.strategy,
-        result=payload,
-        initial_capital=body.initial_capital,
-        start=body.start,
-        end=body.end,
-    )
-    session.add(run)
-    session.commit()
-    session.refresh(run)
-    payload["run_id"] = run.id
-    payload["run_created_at"] = run.created_at.isoformat()
+    # Phase 59 — strategy_id가 있을 때만 저장 (orphan 백테스트 즉시 삭제 정책).
+    # 빌더에서 임시 실행은 응답만 반환, DB row 안 만듦.
+    if body.strategy_id is not None:
+        # 사용자 본인 소유 검증
+        from ..models import Strategy as _Strategy
+        s = session.get(_Strategy, body.strategy_id)
+        if s is None or s.user_id != user.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                "지정한 전략을 찾을 수 없습니다.")
+        run = BacktestRun(
+            user_id=user.id,
+            strategy_id=body.strategy_id,
+            version_no=body.version_no,
+            name=strategy.name,
+            definition=body.strategy,
+            result=payload,
+            initial_capital=body.initial_capital,
+            start=body.start,
+            end=body.end,
+        )
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        payload["run_id"] = run.id
+        payload["run_created_at"] = run.created_at.isoformat()
     return payload
 
 

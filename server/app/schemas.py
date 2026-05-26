@@ -84,6 +84,36 @@ class StrategyOut(BaseModel):
     definition: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+    # Phase 59 — 적용 기간 계산용
+    paper_started_at: Optional[datetime] = None
+    live_started_at: Optional[datetime] = None
+
+
+class StrategyVersionOut(BaseModel):
+    """전략 버전 이력 한 항목."""
+    version_no: int
+    name: str
+    created_at: datetime
+    created_reason: str
+    definition: Optional[dict[str, Any]] = None     # list endpoint에선 omit
+
+
+class StrategyStatsOut(BaseModel):
+    """전략 현황 — 적용 기간, 누적 P&L 요약. /strategies/{id}/stats."""
+    paper_started_at: Optional[datetime] = None
+    live_started_at: Optional[datetime] = None
+    days_paper: Optional[int] = None
+    days_live: Optional[int] = None
+    pnl_total: Optional[float] = None              # 누적 손익 (KRW)
+    pnl_pct: Optional[float] = None                # 누적 손익률 (%)
+    win_rate: Optional[float] = None
+    n_trades: Optional[int] = None
+    n_positions: int = 0                            # 현재 보유 종목 수
+    last_snapshot_at: Optional[datetime] = None
+
+
+class StrategyRestoreIn(BaseModel):
+    version_no: int
 
 
 # ── 백테스트 / 분석 ────────────────────────────────────────────────────────────
@@ -93,6 +123,10 @@ class BacktestIn(BaseModel):
     start: Optional[str] = None
     end: Optional[str] = None
     initial_capital: float = 10_000_000.0
+    # Phase 59 — 저장된 전략 기준 백테스트. 빌더에서 임시 실행이면 None.
+    # Note: strategy_id가 None이면 BacktestRun 자체를 저장하지 않음 (orphan 즉시 삭제 정책).
+    strategy_id: Optional[int] = None
+    version_no: Optional[int] = None
 
 
 class BacktestRunOut(BaseModel):

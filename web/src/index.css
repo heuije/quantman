@@ -11,6 +11,7 @@
   --accent: #d97757;
   --accent-soft: #f7ece5;
   --accent-strong: #ad5019;  /* 링크·소형 텍스트용 — 흰 위 5.3:1, accent-soft 위 4.6:1 (AA) */
+  --accent-hover: #c25c40;   /* 채움 accent 호버 — 흰 위 4.2:1, accent보다 진해 hover affordance */
   --ink: #292524;
   --ink-hover: #423c37;
 
@@ -54,7 +55,7 @@ a:hover { text-decoration: underline; }
   padding: 9px 12px; border-radius: 8px; color: var(--text);
   font-size: 14px; cursor: pointer;
 }
-.navlink:hover { background: var(--bg); }
+.navlink:hover { background: var(--accent-soft); color: var(--accent-strong); }
 .navlink.active { background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
 .sidebar-foot { margin-top: auto; font-size: 12px; color: var(--muted); padding: 10px; }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -94,7 +95,10 @@ a:hover { text-decoration: underline; }
   border-radius: 50%; background: var(--border); color: var(--muted);
   font-size: 11px; font-weight: 600; cursor: help; user-select: none;
 }
-.info-tip:hover { background: var(--accent-soft); color: var(--accent); }
+.info-tip:hover {
+  background: var(--accent-soft); color: var(--accent-strong);
+  border: 1px solid var(--accent);
+}
 
 /* 입력칸 + suffix (% / 만원) — input 내부 우측에 단위 표시 */
 .input-suffix {
@@ -128,6 +132,15 @@ a:hover { text-decoration: underline; }
 }
 .sentence.draft:focus-within { opacity: 0.85; }
 
+/* 적용 버튼 — accent 채움으로 명확히 강조 (draft row에서 사용자 행동 유도) */
+.apply-btn {
+  background: var(--accent); color: #ffffff;
+  border: 1px solid var(--accent); font-weight: 600;
+}
+.apply-btn:hover {
+  background: var(--accent-hover); border-color: var(--accent-hover);
+}
+
 /* 페이지 내부 모드 필터 — Dashboard 활성 전략 paper/live 토글 */
 .mode-filter {
   display: inline-flex; background: var(--bg);
@@ -139,7 +152,7 @@ a:hover { text-decoration: underline; }
   font-size: 12px; font-weight: 600; color: var(--muted);
   border-radius: 6px; cursor: pointer;
 }
-.mode-filter-btn:hover { color: var(--text); }
+.mode-filter-btn:hover { background: var(--accent-soft); color: var(--text); }
 .mode-filter-btn.on {
   background: var(--panel); color: var(--text);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
@@ -203,11 +216,10 @@ button.sm { padding: 5px 10px; font-size: 13px; }
 }
 .download-link:hover { background: var(--ink-hover); text-decoration: none; color: #fff; }
 
-/* 문장형 조건 빌더 — 제품의 핵심 차별점. 시각적으로 "주인공"임을 드러낸다. */
+/* 문장형 조건 빌더 — 제품의 핵심 차별점. row는 균일 카드, 적용 상태는 sentence.draft opacity로 표현. */
 .sentence {
   display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
   background: var(--panel); border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
   border-radius: 8px; padding: 12px 14px; margin-bottom: 8px;
 }
 .sentence .txt { color: var(--muted); font-size: 15px; }
@@ -281,7 +293,7 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   border-radius: 8px; cursor: pointer;
   transition: border-color .12s, background .12s;
 }
-.chip:hover { border-color: var(--accent); background: rgba(217, 119, 87, 0.12); }
+.chip:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
 .chip-caret { color: var(--muted); font-size: 9px; }
 .chip.ghost-chip {
   color: var(--muted); border-style: dashed; background: transparent;
@@ -315,7 +327,7 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   display: flex; flex-direction: column; gap: 2px;
   font-size: 13px;
 }
-.self-option-btn:hover { background: rgba(217, 119, 87, 0.12); }
+.self-option-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
 .self-option-btn.on {
   background: rgba(217, 119, 87, 0.18);
   border-color: rgba(217, 119, 87, 0.6);
@@ -370,7 +382,7 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   background: transparent; border: 0;
   border-radius: 6px; color: var(--muted); font-weight: 600;
 }
-.seg button:hover { color: var(--text); }
+.seg button:hover { background: var(--accent-soft); color: var(--text); }
 .seg button.on {
   background: var(--panel); color: var(--text);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
@@ -437,7 +449,7 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   background: var(--bg); color: var(--muted); flex-shrink: 0;
 }
 .cat-item.sel .cat-item-badge { background: rgba(0,0,0,0.10); color: var(--ink); }
-.cat-item:hover { background: var(--bg); }
+.cat-item:hover { background: var(--accent-soft); color: var(--text); }
 .cat-item.sel { background: var(--accent); color: var(--ink); }
 /* 다중선택(체크박스) 모드 — 체크박스는 항상 행 우측 끝에 위치 */
 .cat-item-box { flex-shrink: 0; font-size: 14px; line-height: 1; opacity: 0.8; }
@@ -460,7 +472,7 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
 }
-.tab:hover { background: var(--bg); color: var(--text); }
+.tab:hover { background: var(--accent-soft); color: var(--accent-strong); border-bottom-color: var(--accent); }
 .tab.active {
   color: var(--accent-strong); border-bottom-color: var(--accent);
   background: none;
@@ -632,6 +644,7 @@ details.section-collapsible[open] > summary .sect-summary-meta { display: none; 
 }
 .multi-chip-x:hover {
   background: var(--danger, #ef4444);
+  border: 1px solid var(--red);
   color: white;
 }
 .multi-add {
@@ -1545,7 +1558,7 @@ thead th { color: var(--muted); font-weight: 600; }
   border: 1px solid var(--red); padding: 8px 14px; border-radius: 8px;
   font-size: 13px; font-weight: 600; cursor: pointer;
 }
-.danger-btn:hover { background: var(--red-soft); }
+.danger-btn:hover { background: var(--red); color: #ffffff; }
 .danger-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* 모달 (승격 등) */

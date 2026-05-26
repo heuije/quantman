@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import ConditionBuilder, { starterCondition, HELD_DAYS_KEY } from "../components/ConditionBuilder";
 import SymbolPicker from "../components/SymbolPicker";
@@ -7,7 +8,7 @@ import EquityChart from "../components/EquityChart";
 import Verdict from "../components/Verdict";
 import { fmt2, wonReadable } from "../format";
 import type {
-  AnalysisResult, BacktestResult, BacktestRunSummary, ConditionGroup, ConditionNode,
+  AnalysisResult, BacktestResult, ConditionGroup, ConditionNode,
   ExecutionPolicy, RebalanceIO, ScreenerPreset, ScreenerSpecIO,
   StrategyDef, SymbolInfo,
 } from "../types";
@@ -30,10 +31,8 @@ const RULE_DEFS: {
   { key: "atr",   name: "ATR 트레일링",   suffix: "× ATR 만큼 고점에서 하락 시" },
 ];
 
-type TabKey = "build" | "result" | "market";
-
 // Phase 56 — 사이드바 페이지 이동·새로고침 후 작업 보존. 모든 빌더 state localStorage persist.
-// API 응답·UI transient state는 제외(symbols·analysis·backtest·busy·err·history).
+// API 응답·UI transient state는 제외(symbols·analysis·backtest·busy·err).
 const DRAFT_KEY = "backtest_draft_v1";
 
 function loadDraft<T>(key: string, fallback: T): T {
@@ -46,7 +45,7 @@ function loadDraft<T>(key: string, fallback: T): T {
 }
 
 export default function Backtest() {
-  const [tab, setTab] = useState<TabKey>("build");
+  const navigate = useNavigate();
 
   const [symbols, setSymbols] = useState<SymbolInfo[]>([]);
   const [hasMaster, setHasMaster] = useState<boolean>(true);
@@ -95,9 +94,6 @@ export default function Backtest() {
   const [err, setErr] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
 
-  const [history, setHistory] = useState<BacktestRunSummary[]>([]);
-  const [historyLoaded, setHistoryLoaded] = useState(false);
-
   function setRule(key: RuleKey, patch: Partial<{ on: boolean; v: number; sell_pct: number }>) {
     setExits((e) => ({ ...e, [key]: { ...e[key], ...patch } }));
   }
@@ -140,18 +136,6 @@ export default function Backtest() {
       btCommissionBps, btSellTaxBps, btSlippageBps,
       btGapExtraCost, btGapThresholdPct,
       capital, forwardDays]);
-
-  function loadHistory() {
-    api.listBacktestRuns()
-      .then(setHistory)
-      .catch((e) => setErr((e as Error).message))
-      .finally(() => setHistoryLoaded(true));
-  }
-
-  useEffect(() => {
-    // 결과·보관함 탭 진입 시 이력 1회 로드 (HistoryListPanel이 result 탭 안에 통합됨).
-    if (tab === "result" && !historyLoaded) loadHistory();
-  }, [tab]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   function buildDef(): StrategyDef {
     const execution: ExecutionPolicy = {
@@ -285,12 +269,18 @@ export default function Backtest() {
     if (whipsawWarn && !window.confirm(whipsawWarn)) return;
     setBusy("backtest"); setBacktest(null);
     try {
+      // Phase 59 — 빌더 임시 백테스트는 strategy_id 없이 실행 (orphan 즉시 삭제 정책).
+      // 결과는 페이지 하단 inline result에 표시.
       const r = await api.runBacktest(buildDef(), capital);
       setBacktest(r);
-      setHistoryLoaded(false);     // 다음 history 탭 진입 시 새로고침
-      setTab("result");            // 결과 탭으로 자동 이동
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
+  }
+
+  function resetStrategy() {
+    if (!window.confirm("작성 중인 전략을 초기화할까요?\n저장 안 된 모든 변경이 사라집니다.")) return;
+    localStorage.removeItem(DRAFT_KEY);
+    window.location.reload();
   }
 
   async function save(runMode: "draft" | "paper") {
@@ -299,112 +289,72 @@ export default function Backtest() {
     if (sellErr) { setErr(sellErr); return; }
     setBusy(runMode === "draft" ? "draft" : "apply");
     try {
-      await api.createStrategy(buildDef(), runMode);
-      setSaveMsg(runMode === "draft"
-        ? `'${name}' 전략을 임시저장했습니다.`
-        : `'${name}' 전략을 내 전략에 적용했습니다 (모의투자).`);
+      const created = await api.createStrategy(buildDef(), runMode);
+      // Phase 59 — 저장 후 detail 페이지로 이동
+      navigate(`/strategies/${created.id}`);
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(""); }
-  }
-
-  async function loadRun(id: number) {
-    setErr("");
-    try {
-      const r = await api.getBacktestRun(id);
-      setBacktest(r.result);
-      setName(r.definition.name);
-      setTab("result");
-    } catch (e) { setErr((e as Error).message); }
-  }
-
-  async function deleteRun(id: number) {
-    if (!confirm("이 실행 내역을 삭제할까요?")) return;
-    setErr("");
-    try {
-      await api.deleteBacktestRun(id);
-      setHistory((rows) => rows.filter((r) => r.id !== id));
-    } catch (e) { setErr((e as Error).message); }
   }
 
   const m = backtest?.metrics;
 
   return (
     <div>
-      {tab === "build" && (
-        <input
-          className="strategy-name-input"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="전략 이름 (예: 코스피 모멘텀 상위 20)"
-          aria-label="전략 이름"
-        />
-      )}
-      {tab !== "build" && (
-        <h1 className="page-title">{name || "전략"}</h1>
-      )}
+      <input
+        className="strategy-name-input"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="전략 이름 (예: 코스피 모멘텀 상위 20)"
+        aria-label="전략 이름"
+      />
       {/* Phase 48 — 자문 아님 명시 (가입 동의 외에 전략 빌더 진입 시에도 재고지) */}
       <div className="self-direction-banner">
         ℹ 본 도구는 <b>본인이 직접 입력한 조건·룰</b>만 실행하는 셀프서비스형 자동매매
         도구이며, 회사가 종목을 추천하거나 매매 판단을 일임받지 않습니다 (투자자문업·일임업 아님).
       </div>
 
-      <div className="tabs">
-        {([
-          ["build",   "빌더"],
-          ["result",  "결과 · 보관함"],
-          ["market",  "마켓플레이스"],
-        ] as [TabKey, string][]).map(([k, label]) => (
-          <button key={k} type="button"
-                  className={"tab" + (tab === k ? " active" : "")
-                    + (k === "market" ? " soon" : "")}
-                  onClick={() => setTab(k)}>
-            {label}
-            {k === "market" && <span className="soon-tag">V2</span>}
-          </button>
-        ))}
-      </div>
-
       {err && <div className="error">{err}</div>}
 
-      {tab === "build" && (
-        <BuildTab
-          symbols={symbols} hasMaster={hasMaster}
-          name={name} setName={setName}
-          tradeSymbol={tradeSymbol} setTradeSymbol={setTradeSymbol}
-          buy={buy} setBuy={setBuy}
-          sell={sell} setSell={setSell}
-          exits={exits} setRule={setRule}
-          sellRealtimeEnabled={sellRealtimeEnabled} setSellRealtimeEnabled={setSellRealtimeEnabled}
-          sellEodEnabled={sellEodEnabled} setSellEodEnabled={setSellEodEnabled}
-          buyAmountPct={buyAmountPct} setBuyAmountPct={setBuyAmountPct}
-          sellAmountPct={sellAmountPct} setSellAmountPct={setSellAmountPct}
-          screenerLimit={screenerLimit} setScreenerLimit={setScreenerLimit}
-          screenerSpec={screenerSpec} setScreenerSpec={setScreenerSpec}
-          rebalance={rebalance} setRebalance={setRebalance}
-          sizingMode={sizingMode} setSizingMode={setSizingMode}
-          amountKrw={amountKrw} setAmountKrw={setAmountKrw}
-          atrRiskPct={atrRiskPct} setAtrRiskPct={setAtrRiskPct}
-          atrMult={atrMult} setAtrMult={setAtrMult}
-          maxPositionPct={maxPositionPct} setMaxPositionPct={setMaxPositionPct}
-          dailyLossLimitPct={dailyLossLimitPct} setDailyLossLimitPct={setDailyLossLimitPct}
-          maxDrawdownPct={maxDrawdownPct} setMaxDrawdownPct={setMaxDrawdownPct}
-          useLimit={useLimit} setUseLimit={setUseLimit}
-          buyTolerancePct={buyTolerancePct} setBuyTolerancePct={setBuyTolerancePct}
-          sellTolerancePct={sellTolerancePct} setSellTolerancePct={setSellTolerancePct}
-          btCommissionBps={btCommissionBps} setBtCommissionBps={setBtCommissionBps}
-          btSellTaxBps={btSellTaxBps} setBtSellTaxBps={setBtSellTaxBps}
-          btSlippageBps={btSlippageBps} setBtSlippageBps={setBtSlippageBps}
-          btGapExtraCost={btGapExtraCost} setBtGapExtraCost={setBtGapExtraCost}
-          btGapThresholdPct={btGapThresholdPct} setBtGapThresholdPct={setBtGapThresholdPct}
-          capital={capital} setCapital={setCapital}
-          forwardDays={forwardDays} setForwardDays={setForwardDays}
-          busy={busy} runAnalysis={runAnalysis} runBacktest={runBacktest}
-          analysis={analysis}
-        />
-      )}
+      <BuildTab
+        symbols={symbols} hasMaster={hasMaster}
+        name={name} setName={setName}
+        tradeSymbol={tradeSymbol} setTradeSymbol={setTradeSymbol}
+        buy={buy} setBuy={setBuy}
+        sell={sell} setSell={setSell}
+        exits={exits} setRule={setRule}
+        sellRealtimeEnabled={sellRealtimeEnabled} setSellRealtimeEnabled={setSellRealtimeEnabled}
+        sellEodEnabled={sellEodEnabled} setSellEodEnabled={setSellEodEnabled}
+        buyAmountPct={buyAmountPct} setBuyAmountPct={setBuyAmountPct}
+        sellAmountPct={sellAmountPct} setSellAmountPct={setSellAmountPct}
+        screenerLimit={screenerLimit} setScreenerLimit={setScreenerLimit}
+        screenerSpec={screenerSpec} setScreenerSpec={setScreenerSpec}
+        rebalance={rebalance} setRebalance={setRebalance}
+        sizingMode={sizingMode} setSizingMode={setSizingMode}
+        amountKrw={amountKrw} setAmountKrw={setAmountKrw}
+        atrRiskPct={atrRiskPct} setAtrRiskPct={setAtrRiskPct}
+        atrMult={atrMult} setAtrMult={setAtrMult}
+        maxPositionPct={maxPositionPct} setMaxPositionPct={setMaxPositionPct}
+        dailyLossLimitPct={dailyLossLimitPct} setDailyLossLimitPct={setDailyLossLimitPct}
+        maxDrawdownPct={maxDrawdownPct} setMaxDrawdownPct={setMaxDrawdownPct}
+        useLimit={useLimit} setUseLimit={setUseLimit}
+        buyTolerancePct={buyTolerancePct} setBuyTolerancePct={setBuyTolerancePct}
+        sellTolerancePct={sellTolerancePct} setSellTolerancePct={setSellTolerancePct}
+        btCommissionBps={btCommissionBps} setBtCommissionBps={setBtCommissionBps}
+        btSellTaxBps={btSellTaxBps} setBtSellTaxBps={setBtSellTaxBps}
+        btSlippageBps={btSlippageBps} setBtSlippageBps={setBtSlippageBps}
+        btGapExtraCost={btGapExtraCost} setBtGapExtraCost={setBtGapExtraCost}
+        btGapThresholdPct={btGapThresholdPct} setBtGapThresholdPct={setBtGapThresholdPct}
+        capital={capital} setCapital={setCapital}
+        forwardDays={forwardDays} setForwardDays={setForwardDays}
+        busy={busy} runAnalysis={runAnalysis} runBacktest={runBacktest}
+        analysis={analysis}
+        resetStrategy={resetStrategy}
+      />
 
-      {tab === "result" && (
-        <ResultTab
+      {/* Phase 59 — 백테스트 결과를 빌더 페이지 하단에 inline 표시. 보관함은
+          전략 detail의 "백테스트 내역" 탭으로 이전 (strategy_id 매칭만 보관). */}
+      {backtest && (
+        <InlineResult
           backtest={backtest}
           metrics={m}
           name={name}
@@ -412,20 +362,15 @@ export default function Backtest() {
           onDraft={() => save("draft")}
           onApply={() => save("paper")}
           saveMsg={saveMsg}
-          history={history}
-          historyLoaded={historyLoaded}
-          onLoad={loadRun}
-          onDelete={deleteRun}
         />
       )}
-      {tab === "market" && <MarketplacePlaceholder />}
     </div>
   );
 }
 
 // ── 탭 1: 전략 구성 ───────────────────────────────────────────────────────────
 
-function BuildTab(props: {
+export function BuildTab(props: {
   symbols: SymbolInfo[]; hasMaster: boolean;
   name: string; setName: (v: string) => void;
   tradeSymbol: string; setTradeSymbol: (v: string) => void;
@@ -461,6 +406,7 @@ function BuildTab(props: {
   runAnalysis: () => void;
   runBacktest: () => void;
   analysis: AnalysisResult | null;
+  resetStrategy: () => void;
 }) {
   const {
     symbols, hasMaster, name, tradeSymbol, setTradeSymbol,
@@ -485,7 +431,7 @@ function BuildTab(props: {
     btGapExtraCost, setBtGapExtraCost,
     btGapThresholdPct, setBtGapThresholdPct,
     capital, setCapital, forwardDays, setForwardDays,
-    busy, runAnalysis, runBacktest, analysis,
+    busy, runAnalysis, runBacktest, analysis, resetStrategy,
   } = props;
 
   // Phase 56 — Progressive disclosure. 이전 섹션이 채워져야 다음 섹션 노출.
@@ -555,8 +501,8 @@ function BuildTab(props: {
       <>
       {/* Phase 49 — 매수 조건 통합 문장 sentence. ①조건 · ②가격 · ③수량 · ④종목 4 절. */}
       <div className="panel buy-sentence-panel">
-        <h3>2. 일일 장초 매수
-          <span className="metric-hint lg" data-tip="매일 장 시작 시 평가·발주 — ① 조건이 충족되는 날 · ② 정해진 가격으로 · ③ 정해진 금액만큼 · ④ 매수후보를 매수합니다.">ⓘ</span>
+        <h3>2. 매수방식
+          <span className="info-tip" title="매일 장 시작 시 평가·발주 (일일 장초 매수) — ① 조건이 충족된 후 개장 시 · ② 정해진 가격으로 · ③ 정해진 금액만큼 · ④ 매수후보를 매수합니다.">ⓘ</span>
         </h3>
 
         {/* ① 조건 절 */}
@@ -1004,6 +950,13 @@ function BuildTab(props: {
             onClick={runBacktest}>
             {busy === "backtest" ? "실행 중…" : "백테스트 실행"}
           </button>
+          <button
+            type="button" className="ghost"
+            disabled={!!busy}
+            onClick={resetStrategy}
+            title="작성 중인 전략을 초기화해 처음부터 다시 시작합니다.">
+            초기화
+          </button>
         </div>
       </div>
       </>
@@ -1308,44 +1261,19 @@ function ScreenerPickerModal({
 
 // ── 탭 2: 결과 리포트 ─────────────────────────────────────────────────────────
 
-function ResultTab({
+function InlineResult({
   backtest, metrics, name, busy, onDraft, onApply, saveMsg,
-  history, historyLoaded, onLoad, onDelete,
 }: {
-  backtest: BacktestResult | null;
+  backtest: BacktestResult;
   metrics: Record<string, number | null> | undefined;
   name: string;
   busy: string;
   onDraft: () => void;
   onApply: () => void;
   saveMsg: string;
-  history: BacktestRunSummary[];
-  historyLoaded: boolean;
-  onLoad: (id: number) => void;
-  onDelete: (id: number) => void;
 }) {
-  // 빈 상태: 현재 결과도 없고 이력도 없음 → 안내만 표시.
-  if (!backtest && historyLoaded && history.length === 0) {
-    return (
-      <div className="panel empty-state">
-        <div className="empty-title">아직 실행 결과가 없습니다</div>
-        <p className="muted">
-          [빌더] 탭에서 조건을 만들고 백테스트를 실행하세요. 결과는 자동으로 저장되어 이 탭에 누적됩니다.
-        </p>
-      </div>
-    );
-  }
-  // 현재 결과는 없고 이력만 있는 상태 → 이력 리스트만 렌더 (load로 채움).
-  if (!backtest) {
-    return <HistoryListPanel rows={history} loaded={historyLoaded} onLoad={onLoad} onDelete={onDelete} />;
-  }
   if (!backtest.success || !metrics) {
-    return (
-      <>
-        <div className="error">{backtest.error}</div>
-        <HistoryListPanel rows={history} loaded={historyLoaded} onLoad={onLoad} onDelete={onDelete} />
-      </>
-    );
+    return <div className="error">{backtest.error}</div>;
   }
 
   // 백테스트가 손실/저조였던 전략을 무경고로 적용하지 않도록 사실 기반 확인.
@@ -1437,61 +1365,10 @@ function ResultTab({
         </button>
       </div>
       {saveMsg && <div className="ok">{saveMsg}</div>}
-      <HistoryListPanel rows={history} loaded={historyLoaded} onLoad={onLoad} onDelete={onDelete} />
     </div>
   );
 }
 
-// ── 보관함 (결과 리포트 안 통합) ─────────────────────────────────────────────
-
-function HistoryListPanel({ rows, loaded, onLoad, onDelete }: {
-  rows: BacktestRunSummary[];
-  loaded: boolean;
-  onLoad: (id: number) => void;
-  onDelete: (id: number) => void;
-}) {
-  if (!loaded) return <p className="muted" style={{ marginTop: 16 }}>이력 불러오는 중…</p>;
-  if (rows.length === 0) return null;
-  return (
-    <div className="panel" style={{ marginTop: 18 }}>
-      <h3>보관함 <span className="muted">({rows.length}건)</span></h3>
-      <table>
-        <thead>
-          <tr>
-            <th>전략</th><th>실행일</th>
-            <th>총수익률</th><th>CAGR</th><th>MDD</th><th>샤프</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => {
-            const m = r.metrics ?? {};
-            const dt = new Date(r.created_at);
-            return (
-              <tr key={r.id}>
-                <td>
-                  <button className="link-btn" onClick={() => onLoad(r.id)}>
-                    {r.name || "(이름 없음)"}
-                  </button>
-                </td>
-                <td>{dt.toLocaleString()}</td>
-                <td>{fmt2(m.total_return as number)}%</td>
-                <td>{fmt2(m.cagr as number)}%</td>
-                <td>{fmt2(m.mdd as number)}%</td>
-                <td>{fmt2(m.sharpe as number)}</td>
-                <td>
-                  <button className="ghost sm" onClick={() => onDelete(r.id)}>
-                    삭제
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 /** 초기자본 입력 — focus 시 raw 숫자, blur 시 콤마 포맷. */
 function CapitalInput({ value, onChange }: {
@@ -1627,33 +1504,3 @@ function SizingCard({ on, title, tip, onPick }: {
   );
 }
 
-// ── 탭 4: 마켓플레이스 (V2 placeholder) ──────────────────────────────────────
-function MarketplacePlaceholder() {
-  return (
-    <div className="panel marketplace-placeholder">
-      <div className="soon-banner">🚧 V2 예정</div>
-      <h3>전략 마켓플레이스</h3>
-      <p className="muted">
-        검증된 전략을 둘러보고, 마음에 드는 전략을 fork해서 내 전략으로 가져옵니다.
-        다른 사용자의 성과·승률·드로우다운을 한눈에 비교할 수 있게 됩니다.
-      </p>
-      <ul className="soon-list">
-        <li>큐레이션된 무료 전략 5~10종 (RSI 역추세 · 모멘텀 · 골든크로스 등)</li>
-        <li>한 번의 클릭으로 내 전략으로 가져오기 (fork)</li>
-        <li>마켓플레이스 전략의 라이브 성과 추적</li>
-        <li>유료 전략 · 정산 · 환불 · 평가 (Phase V3)</li>
-      </ul>
-      {/* Phase 48 P2-A — 카피트레이딩·시그널 자동 복제 정책 명시 (가이드라인 §A.4) */}
-      <div className="warn-box" style={{ marginTop: 14 }}>
-        ⚠ <b>카피트레이딩·시그널 자동 복제는 본 플랫폼에서 제공되지 않습니다.</b><br/>
-        "특정 트레이더와 동일하게 거래" 형태의 자동 복제는 자본시장법상 <b>투자일임업
-        인가</b>가 필요한 영역입니다. 마켓플레이스는 <b>fork(전략 정의 복사) → 본인이
-        직접 룰 검토·수정 → 본인 책임으로 자동매매</b> 흐름으로만 제공될 예정입니다.
-      </div>
-      <p className="muted small">
-        지금은 [빌더]에서 직접 전략을 만들거나, 다른 트레이더의 글·블로그를 참고해
-        조건을 수동 구성해 주세요.
-      </p>
-    </div>
-  );
-}

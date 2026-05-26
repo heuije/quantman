@@ -59,6 +59,12 @@ _NEW_COLS: list[tuple[str, str, str]] = [
     # Phase 48 P1-D — 일일 거래 금액·횟수 한도 (0=비활성)
     ("usersettings", "daily_turnover_limit_krw",         "BIGINT DEFAULT 0"),
     ("usersettings", "daily_trade_count_limit",          "INTEGER DEFAULT 0"),
+    # Phase 59 — 전략 버전 이력·현황 컬럼
+    ("strategy",     "paper_started_at",                 "TIMESTAMP"),
+    ("strategy",     "live_started_at",                  "TIMESTAMP"),
+    ("strategy",     "live_capital_at_start",            "DOUBLE PRECISION"),
+    ("backtestrun",  "strategy_id",                      "INTEGER"),
+    ("backtestrun",  "version_no",                       "INTEGER"),
 ]
 
 
@@ -108,6 +114,14 @@ def _migrate() -> None:
             # 통합 컬럼 보정 — _NEW_COLS 한 곳에만 추가하면 PG/SQLite 모두 적용.
             for table, column, ddl in _NEW_COLS:
                 _ensure_column(conn, table, column, ddl)
+            # Phase 59 — orphan BacktestRun(strategy_id가 NULL인 row) 즉시 삭제.
+            # 사용자 결정: 저장 안 한 시범 백테스트는 보관 X. backtestrun.strategy_id
+            # 컬럼이 막 추가됐으면 기존 row는 모두 NULL — 일괄 삭제.
+            try:
+                conn.execute(text(
+                    "DELETE FROM backtestrun WHERE strategy_id IS NULL"))
+            except Exception:
+                _log.exception("[migrate] orphan BacktestRun 삭제 실패")
     except Exception:  # noqa: BLE001  — 마이그레이션 실패가 기동을 막지 않도록
         # S-11 — print는 로그 수집기에 안 잡혀 배포 "성공"인데 스키마 손상이
         # 침묵하는 위험. exception 레벨로 traceback까지 남겨야 운영에서 보임.

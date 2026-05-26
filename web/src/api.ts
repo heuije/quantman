@@ -2,7 +2,8 @@ import type {
   AnalysisResult, BacktestResult, BacktestRunDetail, BacktestRunSummary,
   CommandRow, CommandType, DeviceRow, MarketContext, NextDayPreview, PortfolioRisk,
   ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO, ScreenerUserPreset,
-  StrategyDef, StrategyRow, SymbolInfo, SyncSnapshot, UserSettingsIO,
+  StrategyDef, StrategyRow, StrategyStats, StrategyVersionRow,
+  SymbolInfo, SyncSnapshot, UserSettingsIO,
 } from "./types";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -49,6 +50,7 @@ export const api = {
   symbols: () => req<{ symbols: SymbolInfo[]; has_master: boolean }>("/symbols"),
 
   listStrategies: () => req<StrategyRow[]>("/strategies"),
+  getStrategy: (id: number) => req<StrategyRow>(`/strategies/${id}`),
   createStrategy: (definition: StrategyDef, run_mode: string) =>
     req<StrategyRow>("/strategies", {
       method: "POST", body: JSON.stringify({ definition, run_mode }),
@@ -60,11 +62,28 @@ export const api = {
   deleteStrategy: (id: number) =>
     req<{ ok: boolean }>(`/strategies/${id}`, { method: "DELETE" }),
 
+  // Phase 59 — 버전·현황·백테스트 내역
+  listStrategyVersions: (id: number) =>
+    req<StrategyVersionRow[]>(`/strategies/${id}/versions`),
+  getStrategyVersion: (id: number, versionNo: number) =>
+    req<StrategyVersionRow>(`/strategies/${id}/versions/${versionNo}`),
+  restoreStrategyVersion: (id: number, versionNo: number) =>
+    req<StrategyRow>(`/strategies/${id}/restore`, {
+      method: "POST", body: JSON.stringify({ version_no: versionNo }),
+    }),
+  getStrategyStats: (id: number) =>
+    req<StrategyStats>(`/strategies/${id}/stats`),
+  listStrategyBacktests: (id: number) =>
+    req<BacktestRunSummary[]>(`/strategies/${id}/backtests`),
+
   runBacktest: (strategy: StrategyDef, initial_capital: number,
-                start?: string, end?: string) =>
+                start?: string, end?: string,
+                strategy_id?: number, version_no?: number) =>
     req<BacktestResult>("/backtest/run", {
       method: "POST",
-      body: JSON.stringify({ strategy, initial_capital, start, end }),
+      body: JSON.stringify({
+        strategy, initial_capital, start, end, strategy_id, version_no,
+      }),
     }),
   runAnalysis: (body: {
     conditions: unknown[]; logic: string; target_symbol: string;

@@ -5,6 +5,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Backtest from "./pages/Backtest";
 import Strategies from "./pages/Strategies";
+import StrategyDetail from "./pages/StrategyDetail";
 import Monitor from "./pages/Monitor";
 import Pair from "./pages/Pair";
 import Settings from "./pages/Settings";
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/backtest" element={<Backtest />} />
         <Route path="/strategies" element={<Strategies />} />
+        <Route path="/strategies/:id" element={<StrategyDetail />} />
         <Route path="/monitor" element={<Monitor />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/pair" element={<Pair />} />

@@ -390,18 +390,19 @@ function ConditionRow({ symbols, c, onPatch, onSetOp, onRemove, onAdd, onWrap, i
         {onWrap && (
           <button
             type="button" className="chip ghost-chip"
-            title="이 조건을 괄호로 묶어 새 묶음을 시작합니다. 묶음 안에 + 조건 추가로 묶을 조건을 더할 수 있습니다. 다시 풀려면 묶음 삭제."
+            title="이 조건을 묶어 우선순위가 다른 묶음을 시작합니다. 묶음 안에서 + 조건 추가로 더 묶을 수 있습니다. 풀려면 묶음 삭제."
             onClick={onWrap}
           >
-            ( 괄호
+            + 묶음
           </button>
         )}
         <button type="button" className="ghost sm" onClick={onRemove}>
           삭제
         </button>
         {onAdd && (
-          <button type="button" className="sm" onClick={onAdd}>
-            적용
+          <button type="button" className="sm apply-btn" onClick={onAdd}
+                  title="이 조건을 확정해 다음 단계로 진행">
+            ✓ 적용
           </button>
         )}
       </span>

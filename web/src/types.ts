@@ -179,6 +179,32 @@ export interface ScreenerField {
 export interface StrategyRow {
   id: number; name: string; run_mode: string;
   definition: StrategyDef; created_at: string; updated_at: string;
+  // Phase 59 — run_mode 전환 시점 기록
+  paper_started_at?: string | null;
+  live_started_at?: string | null;
+}
+
+// Phase 59 — 전략 버전 이력
+export interface StrategyVersionRow {
+  version_no: number;
+  name: string;
+  created_at: string;
+  created_reason: string;     // "manual_edit" | "restore_from_vN" | "initial"
+  definition?: StrategyDef;   // list endpoint에선 omit, single에선 포함
+}
+
+// Phase 59 — 전략 현황 (적용 기간 + 누적 손익 요약)
+export interface StrategyStats {
+  paper_started_at: string | null;
+  live_started_at: string | null;
+  days_paper: number | null;
+  days_live: number | null;
+  pnl_total: number | null;
+  pnl_pct: number | null;
+  win_rate: number | null;
+  n_trades: number | null;
+  n_positions: number;
+  last_snapshot_at: string | null;
 }
 
 export interface BacktestResult {
@@ -197,7 +223,11 @@ export interface BacktestRunSummary {
   created_at: string;
   initial_capital: number;
   metrics: Record<string, number | null>;
-  success: boolean;
+  success?: boolean;
+  // Phase 59 — 전략 detail의 "백테스트 내역" 응답
+  version_no?: number | null;
+  start?: string | null;
+  end?: string | null;
 }
 
 export interface BacktestRunDetail {
