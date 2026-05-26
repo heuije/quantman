@@ -564,7 +564,7 @@ function BuildTab(props: {
           <div className="sentence-clause-head">
             <span className="sentence-clause-num">①</span>
             <span className="sentence-clause-label">매수조건 —</span>
-            <span className="muted small">아래 조건이 충족되는 날</span>
+            <span className="muted small">아래 조건이 충족된 후 개장 시</span>
             <span className="metric-hint lg" data-tip="가격·수익률 지표는 모두 정규장 종가(15:30 마감) 기준. 시간외 단일가는 반영되지 않습니다.">ⓘ</span>
           </div>
           <ConditionBuilder
