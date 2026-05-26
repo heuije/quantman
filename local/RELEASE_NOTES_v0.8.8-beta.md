@@ -25,6 +25,16 @@
 
 heartbeat (로컬앱 alive 여부)도 상단에 배지로.
 
+### 🐛 인앱 업데이트 — 사용자가 창에 돌아올 때마다 재체크
+
+**증상:** v0.8.7에선 앱 시작 시 1회만 GitHub 버전 조회. PC를 며칠 안 끄면
+새 release가 publish돼도 인앱 알림이 영영 안 옴 — 사용자가 수동 재시작
+해야 발견.
+
+**Fix:** [gui.py](localapp/gui.py)에서 `<FocusIn>` 이벤트 binding 추가. 트레이
+복원·alt-tab·다른 창에서 돌아옴 모두 자동 재체크. polling 없음 — 사용자가
+보지 않을 땐 트리거 안 됨. 60s throttle로 위젯 사이 빠른 클릭 시 중복 차단.
+
 ### 🐛 release 운영 fix (v0.8.7 발견)
 
 **zip 폴더명에 버전 명시**

@@ -99,12 +99,15 @@ class SettingsApp:
         self.cmd_client = CommandClient(self._handle_command)
         self.cmd_client.start()
 
-        # Phase 60 — GitHub releases 최신 버전 체크 (background, frozen 환경만).
-        # 새 버전 있으면 상단 배너로 알림.
+        # Phase 60 — GitHub releases 최신 버전 체크.
+        # 시작 시 1회 + 사용자가 창에 focus 줄 때마다 (트레이 복원·alt-tab 등). 폴링 없음.
+        # 60s throttle로 빠른 위젯 클릭 시 중복 호출 방지. 이미 새 버전 감지 후엔 skip.
         self._update_info: dict | None = None
+        self._last_update_check = 0.0
         if updater.is_frozen():
             threading.Thread(target=self._check_updates_async,
                               daemon=True, name="update-check").start()
+            self.root.bind("<FocusIn>", self._on_focus_in_check_updates, add="+")
 
     # ── 테마 ──────────────────────────────────────────────────────────────────
 
@@ -957,15 +960,37 @@ class SettingsApp:
     # ── Phase 60: 자동 업데이트 ────────────────────────────────────────────────
 
     def _check_updates_async(self):
-        """background에서 GitHub releases 최신 버전 조회. 새 버전이면 배너 표시."""
+        """background에서 GitHub releases 최신 버전 조회. 새 버전이면 배너 표시.
+
+        호출 경로: 시작 시 1회 + FocusIn 이벤트(사용자가 창에 돌아올 때).
+        예외는 명시적으로 debug log — silent pass는 4원칙 위반이라 디버깅 가능하게.
+        """
+        import time
+        self._last_update_check = time.time()
         try:
             info = updater.check_latest_version()
-            if info and updater.is_newer(__version__, info["tag"]):
-                self._update_info = info
-                self.root.after(0, self._show_update_banner)
-        except Exception:
-            # 네트워크 실패 등 — 조용히 무시 (alive 신호 같은 부수 기능)
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("localapp.updater").debug("최신 버전 조회 실패: %s", e)
+            return
+        if info and updater.is_newer(__version__, info["tag"]):
+            self._update_info = info
+            self.root.after(0, self._show_update_banner)
+
+    def _on_focus_in_check_updates(self, event):
+        """사용자가 창에 focus 줄 때 재체크. throttle·guard로 낭비 차단."""
+        import time
+        # FocusIn은 child 위젯에도 발생 — root 외엔 무시.
+        if event.widget is not self.root:
+            return
+        # 이미 새 버전 감지·배너 표시 중이면 재체크 불필요.
+        if self._update_info is not None:
+            return
+        # 1분 throttle — 위젯 사이 빠른 클릭 시 중복 호출 방지.
+        if time.time() - self._last_update_check < 60.0:
+            return
+        threading.Thread(target=self._check_updates_async,
+                          daemon=True, name="update-recheck").start()
 
     def _show_update_banner(self):
         """업데이트 배너를 최상단에 표시."""
