@@ -28,33 +28,48 @@ import requests
 
 _log = logging.getLogger("updater")
 
-GITHUB_API = "https://api.github.com/repos/MercKR/quantman-releases/releases/latest"
+# /releases/latest는 pre-release를 제외(GitHub 사양). 우리는 pre-release로 올린
+# 빌드도 자동 업데이트 알림이 뜨길 원하므로 /releases 전체를 받아 SemVer 내림차순
+# 정렬 후 첫 항목을 선택한다 — draft·zip-asset 없는 release는 건너뜀.
+GITHUB_API = "https://api.github.com/repos/MercKR/quantman-releases/releases"
 HTTP_TIMEOUT_S = 10
 DOWNLOAD_TIMEOUT_S = 300
 
 
 def check_latest_version() -> Optional[dict]:
-    """GitHub releases API로 최신 release 조회. 실패 시 None.
+    """모든 GitHub release 중 SemVer 기준 최신(비-draft·zip 있는) release 조회.
 
     Returns: {"tag": "v0.8.7-beta", "url": "https://.../*.zip", "html_url": "..."}
+    실패 또는 후보 없음 시 None.
     """
     try:
-        r = requests.get(GITHUB_API, timeout=HTTP_TIMEOUT_S)
+        r = requests.get(GITHUB_API, params={"per_page": 30}, timeout=HTTP_TIMEOUT_S)
         r.raise_for_status()
-        data = r.json()
-        tag = (data.get("tag_name") or "").strip()
-        if not tag:
+        releases = r.json()
+        if not isinstance(releases, list):
             return None
-        assets = data.get("assets") or []
-        zip_asset = next((a for a in assets
-                          if (a.get("name") or "").lower().endswith(".zip")), None)
-        if not zip_asset:
-            _log.debug("최신 release에 zip asset 없음 — tag=%s", tag)
+        candidates = []
+        for rel in releases:
+            if rel.get("draft"):
+                continue
+            tag = (rel.get("tag_name") or "").strip()
+            if not tag:
+                continue
+            assets = rel.get("assets") or []
+            zip_asset = next((a for a in assets
+                              if (a.get("name") or "").lower().endswith(".zip")), None)
+            if not zip_asset:
+                continue
+            candidates.append((_parse_version(tag), rel, zip_asset))
+        if not candidates:
+            _log.debug("zip asset 있는 release 후보 없음")
             return None
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        _, rel, zip_asset = candidates[0]
         return {
-            "tag": tag,
+            "tag": (rel.get("tag_name") or "").strip(),
             "url": zip_asset.get("browser_download_url"),
-            "html_url": data.get("html_url"),
+            "html_url": rel.get("html_url"),
         }
     except Exception as e:
         _log.debug("최신 버전 조회 실패: %s", e)
