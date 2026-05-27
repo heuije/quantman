@@ -1035,10 +1035,11 @@ class Trader:
         with _CYCLE_LOCK:
             return self._cycle_locked(strategies, dataset, today,
                                        buy_candidates, risk_limits, market,
-                                       krx_status)
+                                       krx_status, catchup=catchup)
 
     def _cycle_locked(self, strategies, dataset, today, buy_candidates,
-                       risk_limits, market, krx_status) -> dict:
+                       risk_limits, market, krx_status,
+                       catchup: bool = False) -> dict:
         # Q5(데드락 방지): _in_cycle 플래그를 try/finally로 보장 — 예외 발생 시에도
         # 반드시 reset되어야 다음 cycle에서 _apply_fill의 평가가 정상 동작.
         self._in_cycle = True
@@ -1047,12 +1048,13 @@ class Trader:
         self._krx_status: dict[str, dict] = krx_status or {}
         try:
             return self._cycle_body(strategies, dataset, today,
-                                     buy_candidates, risk_limits, market)
+                                     buy_candidates, risk_limits, market,
+                                     catchup=catchup)
         finally:
             self._in_cycle = False
 
     def _cycle_body(self, strategies, dataset, today, buy_candidates,
-                     risk_limits, market) -> dict:
+                     risk_limits, market, catchup: bool = False) -> dict:
         today = today or kst_today()
         decisions: list[dict] = []
 

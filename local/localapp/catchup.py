@@ -381,8 +381,10 @@ def _catchup_stop_loss(market: str, broker, trader,
         log.info("catch-up stop-loss [%s] 보유 종목 0건 — skip", market)
         return {"checked": 0, "fired": 0, "decisions": [], "error": None}
 
+    # v0.9.4-beta — IntradayStopManager는 submit_sell_fn 인자가 필수.
+    # trader._submit_sell이 over-sell·intent journal·sold_today 처리하므로 그대로 전달.
     manager = IntradayStopManager(broker, lambda: trader.ledger,
-                                    get_strat_def)
+                                    get_strat_def, trader._submit_sell)
     fired_before = len(manager.decisions)
 
     # Q5(AL-4): _CYCLE_LOCK으로 정상 cycle·settlement과 직렬화.
