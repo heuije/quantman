@@ -273,9 +273,12 @@ summary:focus-visible {
 button {
   font: inherit; font-weight: 600; padding: 9px 16px; border: none;
   border-radius: 8px; background: var(--ink); color: #fff; cursor: pointer;
+  transition: background 0.12s ease;
 }
-button:hover { background: var(--ink-hover); }
+button:hover { background: var(--accent); }
+button:active { background: var(--accent-strong); }
 button:disabled { opacity: .5; cursor: not-allowed; }
+button:disabled:hover { background: var(--ink); }
 button.ghost { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
 button.ghost:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
 button.ghost:disabled:hover { background: var(--bg); border-color: var(--border); }
@@ -286,8 +289,9 @@ button.sm { padding: 5px 10px; font-size: 13px; }
   display: inline-block; text-decoration: none;
   font: inherit; font-weight: 600; padding: 9px 16px;
   border-radius: 8px; background: var(--ink); color: #fff;
+  transition: background 0.12s ease;
 }
-.download-link:hover { background: var(--ink-hover); text-decoration: none; color: #fff; }
+.download-link:hover { background: var(--accent); text-decoration: none; color: #fff; }
 
 /* 문장형 조건 빌더 — 제품의 핵심 차별점. row는 균일 카드, 적용 상태는 sentence.draft opacity로 표현. */
 .sentence {
@@ -1659,8 +1663,9 @@ thead th { color: var(--muted); font-weight: 600; }
   width: 100%; padding: 11px 14px;
   background: var(--ink); color: #fff; border: 0; border-radius: 8px;
   font-size: 14px; font-weight: 700; cursor: pointer;
+  transition: background 0.12s ease;
 }
-.promote-btn:hover { background: var(--ink-hover); }
+.promote-btn:hover { background: var(--accent); }
 
 .live-active {
   display: flex; align-items: center; gap: 10px;
