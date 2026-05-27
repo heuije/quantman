@@ -16,8 +16,8 @@ import tkinter as tk
 import webbrowser
 from tkinter import messagebox, ttk
 
-from . import (__version__, killswitch, order_log, pairing, secrets_store,
-                sync_client, updater)
+from . import (__version__, killswitch, kis_health, order_log, pairing,
+                secrets_store, sync_client, updater)
 from .commands_client import CommandClient
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
                        PLATFORM_URL)
@@ -245,18 +245,12 @@ class SettingsApp:
         # ①② 묶음 frame — 토글 시 한 번에 펼침/숨김
         self.setup_expanded = tk.Frame(self.root, bg=BG)
 
-        # ① KIS 자격증명
-        self.kf = ttk.LabelFrame(self.setup_expanded, text="① KIS 모의투자 자격증명")
+        # ① KIS 자격증명 — 3-step wizard
+        # Step 1: 안내·KIS 포털 deep-link  Step 2: 모의/실전 모드  Step 3: 입력+테스트+저장
+        # 자격증명 미등록 시 Step 1부터, 재진입(⚙ 변경) 시 Step 3 직행.
+        self.kf = ttk.LabelFrame(self.setup_expanded, text="① KIS 자격증명")
         self.kf.pack(fill="x", **pad)
-        ttk.Label(self.kf, style="Muted.TLabel", wraplength=500, justify="left",
-                  text="한국투자증권 모의투자 계좌의 App Key·Secret을 입력하세요. "
-                       "키는 이 PC에만 저장되며 플랫폼 서버로 전송되지 않습니다."
-                  ).pack(anchor="w", padx=12, pady=(8, 4))
-        self.e_key = self._labeled_entry(self.kf, "App Key")
-        self.e_secret = self._labeled_entry(self.kf, "App Secret", show="*")
-        self.e_acct = self._labeled_entry(self.kf, "계좌번호 (예: 50001234-01)")
-        ttk.Button(self.kf, text="자격증명 저장", style="Accent.TButton",
-                   command=self._save_kis).pack(anchor="e", padx=12, pady=10)
+        self._build_kis_wizard(self.kf)
 
         # ② 기기 페어링
         self.pf = ttk.LabelFrame(self.setup_expanded, text="② 플랫폼 계정 연결")
@@ -306,8 +300,10 @@ class SettingsApp:
         self._build_tab_slippage()
         self._build_tab_log()
 
-        ttk.Button(self.root, text="새로고침", command=self.refresh_status).pack(
-            anchor="e", padx=14, pady=(0, 10))
+        # 새로고침 버튼 — ref 보관 (wizard 변경 모드 진입 시 숨김)
+        self.refresh_btn = ttk.Button(self.root, text="새로고침",
+                                       command=self.refresh_status)
+        self.refresh_btn.pack(anchor="e", padx=14, pady=(0, 10))
 
     # ── Notebook 탭들 ─────────────────────────────────────────────────────────
 
@@ -594,29 +590,71 @@ class SettingsApp:
         return f"{base} {'후' if future else '전'}"
 
     def _render_setup_area(self, kis_ok: bool, dev_ok: bool):
-        """자격증명+페어링 둘 다 완료면 한 줄 bar, 아니면 LabelFrame 펼침.
+        """3가지 모드 layout — 한 번에 하나씩 진행:
 
-        사용자가 ⚙ 변경 버튼으로 강제 펼침한 상태(self.setup_collapsed=False)이면
-        bar 대신 펼쳐진 LabelFrame을 우선 표시.
+          - normal:      hero · setup_bar · af · nb · refresh_btn
+          - wizard_kis:  hero · ① wizard (kf)만           ※ pf/af/nb/refresh 숨김
+          - wizard_pair: hero · ② 페어링 (pf)만           ※ kf/af/nb/refresh 숨김
+
+        모드 결정:
+          - 둘 다 완료 + setup_collapsed=True              → normal
+          - kis 미등록                                      → wizard_kis (신규 1단계)
+          - kis 등록, dev 미등록                            → wizard_pair (신규 2단계)
+          - 둘 다 등록인데 ⚙로 펼침(setup_collapsed=False) → wizard_kis (자격증명 변경)
+
+        ① wizard 완료 (Step 3 저장) → setup_collapsed=True 자동 설정 +
+        kis_ok=True, dev_ok=False → wizard_pair로 자연 전환.
         """
         both_ok = kis_ok and dev_ok
-        show_collapsed = both_ok and self.setup_collapsed
-        if show_collapsed:
-            # bar 노출 / 펼친 frame 숨김
+        if both_ok and self.setup_collapsed:
+            new_mode = "normal"
+        elif not kis_ok:
+            new_mode = "wizard_kis"
+        elif not dev_ok:
+            new_mode = "wizard_pair"
+        else:
+            # both_ok이지만 사용자가 ⚙ 클릭으로 펼침 → 자격증명 변경 모드
+            new_mode = "wizard_kis"
+
+        if getattr(self, "_setup_mode", None) != new_mode:
+            # 모드 전환 — 관련 위젯 모두 pack_forget 후 새 모드 순서로 재pack
+            for w in (self.setup_bar, self.setup_expanded, self.kf, self.pf,
+                       self.af, self.nb, self.refresh_btn):
+                w.pack_forget()
+            if new_mode == "normal":
+                self.setup_bar.pack(fill="x", padx=12, pady=(4, 6))
+                self.af.pack(fill="x", padx=12, pady=(4, 6))
+                self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 4))
+                self.refresh_btn.pack(anchor="e", padx=14, pady=(0, 10))
+            elif new_mode == "wizard_kis":
+                self.setup_expanded.pack(fill="x")
+                self.kf.pack(fill="x", padx=12, pady=(4, 6))
+            else:  # wizard_pair
+                self.setup_expanded.pack(fill="x")
+                self.pf.pack(fill="x", padx=12, pady=(4, 6))
+            self._setup_mode = new_mode
+
+        # normal 모드 — bar 라벨 매번 갱신 (모드·키 변경 즉시 반영)
+        if new_mode == "normal":
+            kis = secrets_store.load_kis()
+            mode = ""
+            if kis:
+                mode = "모의" if kis.get("virtual", True) else "실전"
             parts = []
-            parts.append("✓ KIS 자격증명 등록됨")
+            parts.append(f"✓ KIS 자격증명 ({mode})" if mode else "✓ KIS 자격증명 등록됨")
             parts.append("✓ 플랫폼 계정 연결됨")
             self.setup_bar_label.configure(text="  ·  ".join(parts))
-            self.setup_expanded.pack_forget()
-            self.setup_bar.pack(fill="x", padx=12, pady=(4, 6),
-                                 before=self.af)
-        else:
-            self.setup_bar.pack_forget()
-            self.setup_expanded.pack(fill="x", before=self.af)
 
     def _toggle_setup_expanded(self):
-        """⚙ 변경 버튼 — 한 줄 bar ↔ 펼친 LabelFrame 토글."""
+        """⚙ 변경 버튼 — 한 줄 bar ↔ 펼친 LabelFrame 토글.
+
+        펼칠 때 wizard는 Step 3(입력)로 직행 — 이미 자격증명 있는 사용자가
+        Step 1·2 안내를 다시 거치지 않도록.
+        """
+        was_collapsed = self.setup_collapsed
         self.setup_collapsed = not self.setup_collapsed
+        if was_collapsed and secrets_store.load_kis():
+            self._wizard_jump_to_input()
         self.refresh_status()
 
     def _fetch_user_info_async(self):
@@ -685,10 +723,13 @@ class SettingsApp:
         else:
             self.ks_banner.pack_forget()
 
-        # 단계 헤더에 진행 상태 표시
-        self.kf.configure(
-            text="① KIS 모의투자 자격증명        "
-                 + ("✓ 등록됨" if kis else "입력 필요"))
+        # 단계 헤더에 진행 상태 표시 — 저장된 모드(virtual) 기반 라벨
+        if kis:
+            mode = "모의투자" if kis.get("virtual", True) else "실전투자"
+            kis_header = f"① KIS 자격증명 ({mode})        ✓ 등록됨"
+        else:
+            kis_header = "① KIS 자격증명        입력 필요"
+        self.kf.configure(text=kis_header)
         self.pf.configure(
             text="② 플랫폼 계정 연결        "
                  + ("✓ 완료" if dev else "미완료"))
@@ -713,6 +754,11 @@ class SettingsApp:
         self._refresh_orders()
         self._refresh_cycles()
         self._refresh_slippage()
+
+        # wizard sub-card variant 갱신 — init 시점 keyring race 방어 +
+        # 사용자가 자격증명 저장·삭제 직후 즉시 active↔done 반영.
+        if hasattr(self, "_sub1_active"):
+            self._wizard_show_substep(self.wizard_substep)
 
     # ── Notebook 탭 데이터 갱신 ──────────────────────────────────────────────
 
@@ -942,18 +988,574 @@ class SettingsApp:
 
     # ── 동작 ──────────────────────────────────────────────────────────────────
 
-    def _save_kis(self):
+    # ── KIS 자격증명 wizard ────────────────────────────────────────────────────
+
+    def _build_kis_wizard(self, parent):
+        """3-step wizard 구성.
+
+        Step 1: KIS 계좌·Open API 신청 안내 + deep-link
+        Step 2: 모의/실전 모드 선택 (기본 모의, 실전은 빨강 경고)
+        Step 3: 자격증명 입력 + 연결 테스트 + 저장
+
+        Wizard state는 GUI 인스턴스에 직접 보관:
+          self.wizard_step (1-3)
+          self.wizard_virtual (bool, Step 2에서 결정 — 기본 True)
+          self.wizard_test_ok (bool, Step 3 연결 테스트 통과 여부)
+
+        e_key/e_secret/e_acct는 기존 코드(refresh_status 등)와의 호환 위해
+        instance attr로 유지.
+        """
+        self.wizard_step = 1
+        self.wizard_virtual = True
+        self.wizard_test_ok = False
+
+        # 단일 컨테이너 — 각 step은 안에서 grid_remove로 토글
+        self.wizard_box = tk.Frame(parent, bg=PANEL)
+        self.wizard_box.pack(fill="x", padx=12, pady=8)
+
+        self._wizard_step_frames = {
+            1: self._build_wizard_step1(self.wizard_box),
+            2: self._build_wizard_step2(self.wizard_box),
+            3: self._build_wizard_step3(self.wizard_box),
+        }
+        self._wizard_show_step(1)
+
+    def _build_wizard_step1(self, parent) -> tk.Frame:
+        """Step 1 — KIS Open API 준비 (3개 sub-card 순차).
+
+        한꺼번에 모든 안내를 던지지 않고 ‘있나요? → 있으면 다음 / 없으면 신청 페이지’
+        분기형으로 1-1(증권계좌) → 1-2(API신청·키발급) → 1-3(모의계좌) 진행.
+        """
+        f = tk.Frame(parent, bg=PANEL)
+        # 동적 헤더 — sub-step 변경 시 갱신
+        self._wizard_step1_header = ttk.Label(
+            f, text="1 / 3   ·   KIS Open API 준비   (1-1)",
+            font=("Segoe UI", 11, "bold"),
+            background=PANEL, foreground=TEXT)
+        self._wizard_step1_header.pack(anchor="w")
+
+        # sub-card 컨테이너 — 안에 3개 card 중 하나만 pack
+        sub_container = tk.Frame(f, bg=PANEL)
+        sub_container.pack(fill="x", pady=(10, 0))
+
+        self.wizard_substep = 1
+        self._wizard_substep_frames = {
+            1: self._build_substep_account(sub_container),
+            2: self._build_substep_api(sub_container),
+            3: self._build_substep_mock(sub_container),
+        }
+        self._wizard_show_substep(1)
+        return f
+
+    def _build_substep_account(self, parent) -> tk.Frame:
+        """1-1: 한국투자증권 증권계좌. active + done 두 variant.
+
+        한 sub-card 안에 두 frame을 만들고 _wizard_show_substep이 등록 상태 보고 토글.
+        등록된 사용자에게는 "✓ 이미 완료" 압축 UI 노출.
+        """
+        f = tk.Frame(parent, bg=PANEL)
+        self._sub1_active = self._build_sub_active(
+            f, idx="①",
+            question="한국투자증권 계좌가 있으신가요?",
+            description="KIS Open API는 한투 증권 계좌가 있어야 사용할 수 있습니다. "
+                        "없으면 비대면으로 무료·즉시 개설할 수 있습니다.",
+            link_text="🌐 비대면 계좌개설",
+            link_url="https://www.truefriend.com/main/customer/guide/_static/TF04ac010000.shtm",
+            prev_sub=None,
+            next_text="✓ 계좌 있어요, 다음 →",
+            next_cmd=lambda: self._wizard_show_substep(2))
+        self._sub1_done = self._build_sub_done(
+            f, idx="①", title="한국투자증권 계좌",
+            link_text="🌐 비대면 계좌개설 (변경 시)",
+            link_url="https://www.truefriend.com/main/customer/guide/_static/TF04ac010000.shtm",
+            prev_sub=None,
+            next_cmd=lambda: self._wizard_show_substep(2))
+        return f
+
+    def _build_substep_api(self, parent) -> tk.Frame:
+        """1-2: KIS Open API 서비스 신청·키 발급. active + done 두 variant."""
+        f = tk.Frame(parent, bg=PANEL)
+        self._sub2_active = self._build_sub_active(
+            f, idx="②",
+            question="KIS Open API 신청·키 발급하셨나요?",
+            description="KIS Open API 포털에서 서비스 신청 후, 마이페이지에서 "
+                        "App Key · App Secret을 발급받습니다. (신청 즉시 발급)",
+            link_text="🌐 KIS Open API 신청",
+            link_url="https://apiportal.koreainvestment.com/intro",
+            prev_sub=1,
+            next_text="✓ 키 발급받았어요, 다음 →",
+            next_cmd=lambda: self._wizard_show_substep(3))
+        self._sub2_done = self._build_sub_done(
+            f, idx="②", title="KIS Open API · App Key/Secret 발급",
+            link_text="🌐 KIS Open API 포털 (키 재발급 시)",
+            link_url="https://apiportal.koreainvestment.com/intro",
+            prev_sub=1,
+            next_cmd=lambda: self._wizard_show_substep(3))
+        return f
+
+    def _build_substep_mock(self, parent) -> tk.Frame:
+        """1-3: 모의투자 가상계좌. active + done 두 variant."""
+        f = tk.Frame(parent, bg=PANEL)
+        self._sub3_active = self._build_sub_active(
+            f, idx="③",
+            question="모의투자 가상계좌 발급받으셨나요?",
+            description="모의투자는 실제 자금 없이 전략을 검증할 수 있는 가상계좌입니다. "
+                        "별도 신청이 필요하지만 무료·즉시 발급됩니다. "
+                        "실전만 사용할 거면 이 단계는 건너뛰셔도 됩니다.",
+            link_text="🌐 모의투자 신청",
+            link_url="https://securities.koreainvestment.com/main/customer/systemdown/MockInvest.jsp",
+            prev_sub=2,
+            next_text="✓ 발급받았어요, 다음 →",
+            next_cmd=lambda: self._wizard_show_step(2))
+        self._sub3_done = self._build_sub_done(
+            f, idx="③", title="모의투자 가상계좌",
+            link_text="🌐 모의투자 신청 (변경 시)",
+            link_url="https://securities.koreainvestment.com/main/customer/systemdown/MockInvest.jsp",
+            prev_sub=2,
+            next_cmd=lambda: self._wizard_show_step(2))
+        return f
+
+    def _build_sub_active(self, parent, *, idx: str, question: str,
+                           description: str, link_text: str, link_url: str,
+                           prev_sub: int | None, next_text: str, next_cmd) -> tk.Frame:
+        """신규 사용자용 sub-card — 질문 + 설명 + 신청 링크 + nav (한 row).
+
+        link 버튼과 [다음 →]을 같은 row에 두어 시선 흐름 단축.
+        """
+        f = tk.Frame(parent, bg=PANEL)
+        ttk.Label(f, text=f"{idx}  {question}",
+                  font=("Segoe UI", 10, "bold"),
+                  background=PANEL, foreground=TEXT).pack(anchor="w", pady=(0, 4))
+        ttk.Label(f, style="Muted.TLabel", wraplength=560, justify="left",
+                  text=description).pack(anchor="w", pady=(0, 12))
+
+        # link 버튼과 nav 버튼을 같은 row에 — link는 좌측, nav는 우측
+        row = ttk.Frame(f)
+        row.pack(fill="x", pady=(0, 2))
+        ttk.Button(row, text=link_text,
+                   command=lambda: webbrowser.open(link_url)
+                   ).pack(side="left")
+        # 우측에 [다음 →] (Accent), 그 옆에 [← 이전] (있으면)
+        ttk.Button(row, text=next_text, style="Accent.TButton",
+                   command=next_cmd).pack(side="right")
+        if prev_sub is not None:
+            ttk.Button(row, text="← 이전",
+                       command=lambda: self._wizard_show_substep(prev_sub)
+                       ).pack(side="right", padx=(0, 6))
+        return f
+
+    def _build_sub_done(self, parent, *, idx: str, title: str,
+                         link_text: str, link_url: str,
+                         prev_sub: int | None, next_cmd) -> tk.Frame:
+        """등록된 사용자용 sub-card — ✓ 완료 chip + 변경 시 신청 링크 + nav (한 row).
+
+        ✓ 표시에 ACCENT_SOFT 배경 chip을 둘러 ‘완료’ 시각적 강조. 신청 페이지
+        링크는 ‘변경 시’ 보조 액션으로 작게.
+        """
+        f = tk.Frame(parent, bg=PANEL)
+        # ✓ chip — ACCENT_SOFT 배경에 GREEN ✓ + 제목 + 보조 설명
+        chip = tk.Frame(f, bg=ACCENT_SOFT, highlightbackground=BORDER,
+                         highlightthickness=1)
+        chip.pack(fill="x", pady=(0, 10))
+        tk.Label(chip, text=f"{idx}  ", bg=ACCENT_SOFT, fg=MUTED,
+                  font=("Segoe UI", 10, "bold")).pack(side="left",
+                                                       padx=(10, 0), pady=8)
+        tk.Label(chip, text="✓", bg=ACCENT_SOFT, fg=GREEN,
+                  font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 6),
+                                                      pady=8)
+        tk.Label(chip, text=title, bg=ACCENT_SOFT, fg=TEXT,
+                  font=("Segoe UI", 10, "bold")).pack(side="left", pady=8)
+        tk.Label(chip, text="  ·  이미 완료되어 있습니다",
+                  bg=ACCENT_SOFT, fg=MUTED,
+                  font=("Segoe UI", 9)).pack(side="left", pady=8, padx=(0, 10))
+
+        # 변경 시 신청 페이지 링크 + nav 한 row
+        row = ttk.Frame(f)
+        row.pack(fill="x")
+        ttk.Button(row, text=link_text,
+                   command=lambda: webbrowser.open(link_url)
+                   ).pack(side="left")
+        ttk.Button(row, text="다음 →", style="Accent.TButton",
+                   command=next_cmd).pack(side="right")
+        if prev_sub is not None:
+            ttk.Button(row, text="← 이전",
+                       command=lambda: self._wizard_show_substep(prev_sub)
+                       ).pack(side="right", padx=(0, 6))
+        return f
+
+    _SUBSTEP_TITLES = {
+        1: "한국투자증권 계좌",
+        2: "KIS Open API 신청",
+        3: "모의투자 가상계좌",
+    }
+
+    def _wizard_show_substep(self, sub: int) -> None:
+        """Step 1 내부 sub-card 토글 + sub-step별 단계명 헤더 갱신.
+
+        등록된 사용자(load_kis() not None)에게는 sub-card의 done variant 노출,
+        신규 사용자에게는 active variant.
+        """
+        self.wizard_substep = sub
+        is_registered = bool(secrets_store.load_kis())
+        for s, frame in self._wizard_substep_frames.items():
+            if s == sub:
+                frame.pack(fill="x")
+            else:
+                frame.pack_forget()
+        # 현재 sub-card 안의 active/done variant 토글
+        active_map = {1: self._sub1_active, 2: self._sub2_active, 3: self._sub3_active}
+        done_map = {1: self._sub1_done, 2: self._sub2_done, 3: self._sub3_done}
+        if is_registered:
+            active_map[sub].pack_forget()
+            done_map[sub].pack(fill="x")
+            for other in (1, 2, 3):
+                if other != sub:
+                    active_map[other].pack_forget()
+                    done_map[other].pack_forget()
+        else:
+            done_map[sub].pack_forget()
+            active_map[sub].pack(fill="x")
+            for other in (1, 2, 3):
+                if other != sub:
+                    active_map[other].pack_forget()
+                    done_map[other].pack_forget()
+        title = self._SUBSTEP_TITLES.get(sub, "")
+        self._wizard_step1_header.configure(
+            text=f"1 / 3 (1-{sub})   ·   {title}")
+
+    def _build_wizard_step2(self, parent) -> tk.Frame:
+        """Step 2 — 모의/실전 모드 선택 (카드 hover/select 반응)."""
+        f = tk.Frame(parent, bg=PANEL)
+        ttk.Label(f, text="2 / 3   ·   거래 모드 선택",
+                  font=("Segoe UI", 11, "bold"),
+                  background=PANEL, foreground=TEXT).pack(anchor="w")
+        ttk.Label(f, style="Muted.TLabel", wraplength=580, justify="left",
+                  text="자동매매를 어느 모드에서 실행할지 선택하세요. "
+                       "나중에 변경할 수 있지만, 모드별로 KIS App Key·Secret이 다릅니다."
+                  ).pack(anchor="w", pady=(8, 12))
+
+        self._wizard_virtual_var = tk.StringVar(value="virtual")
+        self._wizard_hover_v = False
+        self._wizard_hover_r = False
+
+        # 모의 카드 — 권장
+        self._card_v = tk.Frame(f, bg=PANEL, highlightbackground=BORDER,
+                                 highlightthickness=1, cursor="hand2")
+        self._card_v.pack(fill="x", pady=(0, 8))
+        self._head_v = tk.Frame(self._card_v, bg=PANEL, cursor="hand2")
+        self._head_v.pack(fill="x", padx=12, pady=(10, 0))
+        ttk.Radiobutton(
+            self._head_v, text="🧪  모의투자",
+            variable=self._wizard_virtual_var, value="virtual",
+            command=self._wizard_on_mode_change).pack(side="left")
+        tk.Label(self._head_v, text="권장", bg=ACCENT_SOFT, fg=ACCENT,
+                  font=("Segoe UI", 9, "bold"),
+                  padx=8, pady=2).pack(side="left", padx=(8, 0))
+        self._desc_v = tk.Label(
+            self._card_v, bg=PANEL, fg=MUTED,
+            font=("Segoe UI", 9), wraplength=540, justify="left",
+            cursor="hand2",
+            text="가상 자금으로 거래. KIS 모의투자 계좌의 App Key·Secret 필요. "
+                 "실거래 없이 전략 검증에 사용합니다.")
+        self._desc_v.pack(anchor="w", padx=36, pady=(2, 10))
+
+        # 실전 카드
+        self._card_r = tk.Frame(f, bg=PANEL, highlightbackground=BORDER,
+                                 highlightthickness=1, cursor="hand2")
+        self._card_r.pack(fill="x", pady=(0, 4))
+        self._head_r = tk.Frame(self._card_r, bg=PANEL, cursor="hand2")
+        self._head_r.pack(fill="x", padx=12, pady=(10, 0))
+        ttk.Radiobutton(
+            self._head_r, text="🔥  실전투자",
+            variable=self._wizard_virtual_var, value="real",
+            command=self._wizard_on_mode_change).pack(side="left")
+        tk.Label(self._head_r, text="주의", bg="#fef2f2", fg=RED,
+                  font=("Segoe UI", 9, "bold"),
+                  padx=8, pady=2).pack(side="left", padx=(8, 0))
+        # 실전 모드 경고 — 카드 배경 따라 색 갱신되므로 ref 보관
+        self._wizard_real_warn = tk.Label(
+            self._card_r, bg=PANEL, fg=RED, wraplength=540, justify="left",
+            font=("Segoe UI", 9), cursor="hand2",
+            text="⚠ 실전 모드는 사용자 실제 자금으로 거래합니다. "
+                 "전략·조건을 충분히 모의에서 검증한 뒤에만 사용하세요.")
+        self._wizard_real_warn.pack(anchor="w", padx=36, pady=(2, 10))
+
+        # 카드 전체 클릭 → 라디오 선택. hover → 시각 강조.
+        def select_v(_e=None):
+            self._wizard_virtual_var.set("virtual")
+            self._wizard_on_mode_change()
+
+        def select_r(_e=None):
+            self._wizard_virtual_var.set("real")
+            self._wizard_on_mode_change()
+
+        for w in (self._card_v, self._head_v, self._desc_v):
+            w.bind("<Button-1>", select_v)
+            w.bind("<Enter>", lambda _e: self._set_card_hover("v", True))
+            w.bind("<Leave>", lambda _e: self._set_card_hover("v", False))
+        for w in (self._card_r, self._head_r, self._wizard_real_warn):
+            w.bind("<Button-1>", select_r)
+            w.bind("<Enter>", lambda _e: self._set_card_hover("r", True))
+            w.bind("<Leave>", lambda _e: self._set_card_hover("r", False))
+
+        self._refresh_step2_cards()  # 초기 색상 적용
+
+        nav = ttk.Frame(f)
+        nav.pack(fill="x", pady=(14, 0))
+        ttk.Button(nav, text="← 이전",
+                   command=lambda: self._wizard_show_step(1)).pack(side="left")
+        ttk.Button(nav, text="다음 →", style="Accent.TButton",
+                   command=self._wizard_step2_next).pack(side="right")
+        return f
+
+    def _set_card_hover(self, which: str, hover: bool) -> None:
+        """Step 2 카드 hover state 토글 + 색상 갱신."""
+        if which == "v":
+            self._wizard_hover_v = hover
+        else:
+            self._wizard_hover_r = hover
+        self._refresh_step2_cards()
+
+    def _refresh_step2_cards(self) -> None:
+        """선택·hover 상태에 따라 두 카드의 색상 갱신.
+
+        - 선택됨: ACCENT_SOFT 배경 + ACCENT 테두리 2px (강조)
+        - hover  : 옅은 hover 톤 + BORDER 2px
+        - default: PANEL + BORDER 1px
+        """
+        selected = self._wizard_virtual_var.get()
+        # 모의 카드
+        if selected == "virtual":
+            self._paint_card(self._card_v, self._head_v, self._desc_v,
+                              bg=ACCENT_SOFT, border=ACCENT, thickness=2)
+        elif self._wizard_hover_v:
+            self._paint_card(self._card_v, self._head_v, self._desc_v,
+                              bg="#f5f0e9", border=ACCENT, thickness=2)
+        else:
+            self._paint_card(self._card_v, self._head_v, self._desc_v,
+                              bg=PANEL, border=BORDER, thickness=1)
+        # 실전 카드
+        if selected == "real":
+            self._paint_card(self._card_r, self._head_r, self._wizard_real_warn,
+                              bg="#fef2f2", border=RED, thickness=2)
+        elif self._wizard_hover_r:
+            self._paint_card(self._card_r, self._head_r, self._wizard_real_warn,
+                              bg="#fef7f7", border=RED, thickness=2)
+        else:
+            self._paint_card(self._card_r, self._head_r, self._wizard_real_warn,
+                              bg=PANEL, border=BORDER, thickness=1)
+
+    def _paint_card(self, card, head, desc, *, bg: str, border: str,
+                     thickness: int) -> None:
+        """카드 frame + 안의 widget bg/border 일괄 갱신."""
+        card.configure(bg=bg, highlightbackground=border,
+                        highlightthickness=thickness)
+        head.configure(bg=bg)
+        desc.configure(bg=bg)
+
+    def _build_wizard_step3(self, parent) -> tk.Frame:
+        """Step 3 — 자격증명 입력 + 단일 액션 버튼 (연결 테스트 → 저장).
+
+        UI 단순화: nav 우측에 버튼 1개만. 처음엔 [🔌 연결 테스트], 성공하면 같은
+        자리가 [💾 저장]으로 변신. 입력값 바뀌면 다시 [🔌 연결 테스트]로 reset.
+        """
+        f = tk.Frame(parent, bg=PANEL)
+        self._wizard_step3_title = ttk.Label(
+            f, text="3 / 3   ·   자격증명 입력 (모의투자)",
+            font=("Segoe UI", 11, "bold"),
+            background=PANEL, foreground=TEXT)
+        self._wizard_step3_title.pack(anchor="w")
+        ttk.Label(
+            f, style="Muted.TLabel", wraplength=580, justify="left",
+            text="KIS 마이페이지에서 발급받은 App Key · App Secret · 계좌번호를 입력하세요. "
+                 "키는 이 PC의 Windows 자격증명 저장소에만 저장되며, 플랫폼 서버로 "
+                 "전송되지 않습니다."
+        ).pack(anchor="w", pady=(8, 8))
+
+        # 입력란
+        self.e_key = self._make_wizard_entry(f, "App Key")
+        self.e_secret = self._make_wizard_entry(f, "App Secret", show="*")
+        self.e_acct = self._make_wizard_entry(f, "계좌번호 (예: 50001234-01)")
+
+        # 입력 변경 시 결과·버튼 reset (다시 테스트해야 저장 가능)
+        for ent in (self.e_key, self.e_secret, self.e_acct):
+            ent.bind("<KeyRelease>", lambda _e: self._wizard_on_input_change())
+
+        # 결과·진행 상태 (한 줄 안내)
+        self._wizard_test_status = tk.Label(
+            f, bg=PANEL, fg=MUTED, font=("Segoe UI", 9),
+            text="App Key·Secret·계좌번호 입력 후 ‘연결 테스트’를 누르세요.",
+            wraplength=580, justify="left", anchor="w")
+        self._wizard_test_status.pack(anchor="w", pady=(12, 0))
+
+        # nav — [← 이전]과 [🔌 연결 테스트 / 💾 저장] 한 버튼
+        nav = ttk.Frame(f)
+        nav.pack(fill="x", pady=(14, 0))
+        ttk.Button(nav, text="← 이전",
+                   command=lambda: self._wizard_show_step(2)).pack(side="left")
+        self._wizard_action_btn = ttk.Button(
+            nav, text="🔌 연결 테스트", style="Accent.TButton",
+            command=self._wizard_test_connection)
+        self._wizard_action_btn.pack(side="right")
+        return f
+
+    def _make_wizard_entry(self, parent, label: str, show: str | None = None) -> ttk.Entry:
+        """Wizard 전용 labeled entry — _labeled_entry는 LabelFrame 가정이라 자체 헬퍼.
+
+        붙여넣기 자동 정화: focus out 시 \\n·\\r·공백 trim.
+        """
+        row = ttk.Frame(parent)
+        row.pack(fill="x", pady=4)
+        ttk.Label(row, text=label, width=22, anchor="w").pack(side="left")
+        ent = ttk.Entry(row)
+        if show:
+            ent.configure(show=show)
+        ent.pack(side="left", fill="x", expand=True)
+
+        def _sanitize(_e=None):
+            v = ent.get()
+            # 줄바꿈·탭·앞뒤 공백 제거 (KIS 키 복사 시 흔한 오염)
+            cleaned = v.replace("\r", "").replace("\n", "").replace("\t", "").strip()
+            if cleaned != v:
+                ent.delete(0, "end")
+                ent.insert(0, cleaned)
+        ent.bind("<FocusOut>", _sanitize)
+        # 붙여넣기 직후에도 정화
+        ent.bind("<<Paste>>", lambda _e: ent.after(1, _sanitize))
+        return ent
+
+    def _wizard_show_step(self, step: int) -> None:
+        """Step 1-3 중 하나만 보이게 토글."""
+        self.wizard_step = step
+        for s, frame in self._wizard_step_frames.items():
+            if s == step:
+                frame.pack(fill="x")
+            else:
+                frame.pack_forget()
+
+    def _wizard_on_mode_change(self) -> None:
+        """Step 2 라디오 변경 시 호출 — 카드 색상 갱신 + 모드 state 동기화."""
+        val = self._wizard_virtual_var.get()
+        self.wizard_virtual = (val == "virtual")
+        self._refresh_step2_cards()
+
+    def _wizard_step2_next(self) -> None:
+        """Step 2 → 3 전환. 실전 선택 시 confirm dialog."""
+        val = self._wizard_virtual_var.get()
+        self.wizard_virtual = (val == "virtual")
+        if not self.wizard_virtual:
+            ok = messagebox.askyesno(
+                "실전 모드 확인",
+                "실전 모드는 사용자 실제 자금으로 거래합니다.\n\n"
+                "전략·조건이 모의에서 충분히 검증되었습니까?\n"
+                "계속하시려면 ‘예’를 누르세요.")
+            if not ok:
+                self._wizard_virtual_var.set("virtual")
+                self.wizard_virtual = True
+                self._wizard_on_mode_change()
+                return
+        # Step 3 제목·테스트 결과 모드별로 갱신
+        mode = "모의투자" if self.wizard_virtual else "실전투자"
+        self._wizard_step3_title.configure(text=f"3 / 3   ·   자격증명 입력 ({mode})")
+        self._wizard_reset_test_state()
+        self._wizard_show_step(3)
+
+    def _wizard_on_input_change(self) -> None:
+        """Step 3 입력 변경 시 — 이전 테스트 결과 무효화."""
+        if self.wizard_test_ok:
+            self._wizard_reset_test_state()
+
+    def _wizard_reset_test_state(self) -> None:
+        """버튼·결과 라벨을 입력 직후 초기 상태로 — 다시 연결 테스트부터."""
+        self.wizard_test_ok = False
+        self._wizard_action_btn.configure(
+            text="🔌 연결 테스트", command=self._wizard_test_connection)
+        self._wizard_test_status.configure(
+            fg=MUTED,
+            text="App Key·Secret·계좌번호 입력 후 ‘연결 테스트’를 누르세요.")
+
+    def _wizard_test_connection(self) -> None:
+        """Step 3 액션 버튼이 [🔌 연결 테스트]인 상태에서 클릭됨.
+
+        성공 시 같은 버튼이 [💾 저장]으로 변신하고 command가 _wizard_save로 교체.
+        실패·입력 변경 시 다시 [🔌 연결 테스트]로 reset.
+        """
         key = self.e_key.get().strip()
         secret = self.e_secret.get().strip()
         acct = self.e_acct.get().strip()
         if not (key and secret and acct):
-            messagebox.showwarning("입력 확인", "App Key/Secret/계좌번호를 모두 입력하세요.")
+            self._wizard_test_status.configure(
+                fg=AMBER,
+                text="App Key·Secret·계좌번호를 모두 입력하세요.")
             return
-        secrets_store.save_kis(key, secret, acct, virtual=True)
+
+        self._wizard_action_btn.configure(state="disabled")
+        self._wizard_test_status.configure(
+            fg=MUTED, text="KIS 서버 호출 중...")
+
+        def work():
+            return kis_health.test_credentials(key, secret, acct,
+                                                virtual=self.wizard_virtual)
+
+        def done(result, err):
+            self._wizard_action_btn.configure(state="normal")
+            if err is not None:
+                self.wizard_test_ok = False
+                self._wizard_test_status.configure(
+                    fg=RED, text=f"❌ 테스트 실패: {err}")
+                return
+            if result and result.get("ok"):
+                # 성공 — 버튼을 저장으로 변신
+                self.wizard_test_ok = True
+                self._wizard_test_status.configure(
+                    fg=GREEN, text=f"✓ {result['msg']}")
+                self._wizard_action_btn.configure(
+                    text="💾 저장", command=self._wizard_save)
+            else:
+                self.wizard_test_ok = False
+                self._wizard_test_status.configure(
+                    fg=RED,
+                    text=f"❌ {result.get('msg', '알 수 없는 오류') if result else '알 수 없는 오류'}")
+
+        self._run_bg(work, done)
+
+    def _wizard_save(self) -> None:
+        """Step 3 [저장] — 연결 테스트 통과 상태에서만 활성.
+
+        저장 후 setup_collapsed=True → 페어링도 끝났으면 자동으로 정상 모드 복귀
+        (③ 자동매매/Notebook 다시 표시). 페어링이 아직 안 끝났으면 ② 페어링만 펼친
+        wizard 모드 유지.
+        """
+        if not self.wizard_test_ok:
+            return
+        key = self.e_key.get().strip()
+        secret = self.e_secret.get().strip()
+        acct = self.e_acct.get().strip()
+        secrets_store.save_kis(key, secret, acct, virtual=self.wizard_virtual)
         self.e_secret.delete(0, "end")
-        messagebox.showinfo("저장 완료",
-                            "KIS 자격증명을 저장했습니다. 키는 이 PC를 떠나지 않습니다.")
+        self.setup_collapsed = True
+        mode = "모의투자" if self.wizard_virtual else "실전투자"
+        messagebox.showinfo(
+            "저장 완료",
+            f"KIS 자격증명을 저장했습니다 ({mode}). "
+            "키는 이 PC를 떠나지 않습니다.\n\n"
+            "다음 단계: ② 플랫폼 계정 연결.")
         self.refresh_status()
+
+    def _wizard_jump_to_input(self) -> None:
+        """⚙ 변경 클릭 시 — Step 1 안내·모드 선택 건너뛰고 Step 3 직행.
+
+        기존 자격증명 있으면 모드(virtual)도 그대로 유지. 사용자는 키 재발급
+        받았을 때 Step 3만 다시 입력하면 됨.
+        """
+        kis = secrets_store.load_kis()
+        if kis:
+            self.wizard_virtual = bool(kis.get("virtual", True))
+            self._wizard_virtual_var.set("virtual" if self.wizard_virtual else "real")
+            mode = "모의투자" if self.wizard_virtual else "실전투자"
+            self._wizard_step3_title.configure(text=f"3 / 3   ·   자격증명 입력 ({mode})")
+        self._wizard_reset_test_state()
+        self._wizard_show_step(3)
 
     def _pair(self):
         self.btn_pair.config(state="disabled")
@@ -984,6 +1586,7 @@ class SettingsApp:
                 else:
                     self.pair_code.config(text="")
                     self.pair_msg.config(text="페어링 완료.")
+                    self.setup_collapsed = True  # 페어링 후 자동 정상 모드 복귀
                     self._fetch_user_info_async()
                     self.refresh_status()
 
