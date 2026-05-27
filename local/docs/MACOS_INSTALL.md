@@ -1,38 +1,68 @@
 # macOS 설치 가이드 (Apple Silicon)
 
 > **대상**: M1·M2·M3·M4 Mac (Apple Silicon). Intel Mac은 지원하지 않습니다.
-> **macOS 요구사항**: Sonoma 14.0 이상.
+> **macOS 요구사항**: Sonoma 14.0 이상 (Sequoia 15.0+ 권장).
 
-## ⚠️ 미서명 앱 — 첫 실행만 다른 절차
+## ⚠️ 미서명 앱 — 첫 실행만 별도 절차
 
 이 앱은 **코드 서명되어 있지 않습니다** (Apple Developer Program 미가입).
-첫 실행 시 macOS Gatekeeper가 "확인되지 않은 개발자" 경고를 띄웁니다.
+첫 실행 시 macOS Gatekeeper가 거부 경고를 띄웁니다 — 사용자가 본 화면은
+macOS 버전에 따라 다릅니다:
 
-**그냥 더블클릭하면 안 열립니다.** 아래 둘 중 하나로 첫 실행하면, 다음부터는
-일반 더블클릭으로 정상 실행됩니다.
+| macOS 버전 | 화면 | 진행 방법 |
+|---|---|---|
+| **Sonoma (14.x)** | `[취소]` + `[열기]` 버튼 | 방법 1(우클릭→열기) 사용 가능 |
+| **Sequoia (15.x+)** | `[휴지통으로 이동]` + `[완료]`만 | **방법 1 불가** → 방법 2 또는 방법 3 사용 |
+
+**가장 확실한 단일 경로는 방법 2 (터미널 명령 1줄)** — 모든 macOS 버전에서
+동작합니다.
 
 ---
 
-## 방법 1 — Finder (권장)
+## 방법 2 — Terminal 한 줄 (모든 macOS 버전 권장)
 
 1. [최신 release](https://github.com/MercKR/quantman-releases/releases/latest)에서
    `QuantPlatformLocal-vX.Y.Z-macos-arm64.zip` 다운로드.
 2. zip 더블클릭 → `QuantPlatformLocal-vX.Y.Z.app` 생성.
-3. 생긴 `.app`을 **`/Applications` 폴더로 드래그**해 옮김.
-4. **Finder에서** `/Applications/QuantPlatformLocal-vX.Y.Z.app`에 **마우스 우클릭** → **[열기]**.
-5. 경고 dialog의 **[열기]** 버튼 클릭. (그냥 더블클릭하면 [취소]만 가능 — 우클릭이 핵심.)
-6. 다음부터는 더블클릭·Dock·Spotlight 어떤 방식으로든 실행 가능.
-
-## 방법 2 — Terminal 한 줄
-
-zip 압축 해제 후 `/Applications`로 옮긴 다음 터미널에서:
+3. `.app`을 `/Applications`로 드래그(권장) 또는 그대로 사용.
+4. **Spotlight(`Cmd+Space`) → "터미널"** 검색해 열기.
+5. 아래 명령 붙여넣고 Enter (경로는 실제 위치로 치환):
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/QuantPlatformLocal-vX.Y.Z.app
 ```
 
-이후 더블클릭으로 그냥 열립니다. (위 명령은 quarantine 속성을 제거 — Gatekeeper가
-"인터넷에서 받은 앱"으로 인식하지 않게 합니다.)
+   `~/Downloads`에 있으면:
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/QuantPlatformLocal-vX.Y.Z.app
+```
+
+6. 이후 더블클릭으로 그냥 열립니다. (quarantine 속성 제거 → Gatekeeper가
+   "인터넷에서 받은 앱"으로 인식하지 않게 됩니다.)
+
+## 방법 3 — 시스템 설정 GUI (Sequoia 15.x+)
+
+Sequoia부터 우클릭→열기 우회가 막혔습니다. GUI로만 처리하려면:
+
+1. .app 더블클릭 → 거부 다이얼로그 뜨면 **[완료]** 클릭.
+2. **시스템 설정 → 개인정보 보호 및 보안** 열기.
+3. 페이지 아래로 스크롤 → "보안" 섹션에서 다음 문구 찾기:
+   > "'QuantPlatformLocal-vX.Y.Z'은(는) 확인된 개발자가 배포한 것이
+   > 아니므로 차단되었습니다"
+4. 오른쪽 **[그래도 열기]** (또는 영어 "Open Anyway") 버튼 클릭.
+5. Touch ID 또는 사용자 암호 인증.
+6. 확인 다이얼로그에서 **[열기]** 클릭.
+7. 이후 더블클릭으로 그냥 열립니다.
+
+## 방법 1 — Finder 우클릭 (Sonoma 14.x 한정)
+
+⚠️ Sequoia 15.x+에서는 **이 방법이 동작하지 않습니다** (Apple이 우회 경로
+제거). Sonoma 사용자만 사용 가능:
+
+1. zip 다운로드·압축 해제·`/Applications` 이동.
+2. **Finder에서** `.app`에 **마우스 우클릭** → **[열기]**.
+3. 경고 dialog의 **[열기]** 버튼 클릭.
+4. 이후 더블클릭 가능.
 
 ---
 

@@ -109,6 +109,16 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller QuantPlatformLocal.spec --noconfirm --clean
 
+      - name: Ad-hoc code sign (.app)
+        # v0.9.3-beta — 무료 ad-hoc 서명. Apple Developer ID 없음.
+        # quarantine 우회는 안 되지만 (xattr이 OS-level), 미서명 PyInstaller .app이
+        # 일부 macOS에서 "손상됨"으로 강한 거부 되는 케이스를 완화. Sequoia 15+의
+        # 시스템 설정 → 개인정보 보호 및 보안 흐름이 더 안정적으로 동작함.
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          codesign --force --deep --sign - "dist/QuantPlatformLocal-v$v.app"
+          codesign --verify --deep --strict --verbose=2 "dist/QuantPlatformLocal-v$v.app" || true
+
       - name: Package .app as zip (ditto preserves resource forks)
         run: |
           v="${{ steps.ver.outputs.version }}"

@@ -67,20 +67,37 @@ export function LocalAppDownload({ downloads, os }: Props) {
       )}
 
       {isMac && (
-        <p className="muted small" style={{ marginTop: 12, lineHeight: 1.5 }}>
-          ⚠️ 미서명 빌드라 첫 실행 시 Finder에서 <b>우클릭 → [열기]</b>.
-          더블클릭으로는 안 열립니다.{" "}
-          {downloads.tag && (
-            <a
-              href={`https://github.com/MercKR/quantman-releases/releases/tag/${downloads.tag}`}
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: "inherit", textDecoration: "underline" }}
-            >
-              설치 가이드 →
-            </a>
-          )}
-        </p>
+        <div className="muted small" style={{ marginTop: 12, lineHeight: 1.5 }}>
+          <p style={{ margin: "0 0 6px 0" }}>
+            ⚠️ 미서명 빌드라 첫 실행 시 Gatekeeper가 거부합니다.
+            <b>터미널에 아래 명령 1줄</b>이 가장 빠릅니다 (모든 macOS 버전 동작):
+          </p>
+          <code style={{
+            display: "block",
+            padding: "6px 10px",
+            background: "var(--panel, #f6f3ec)",
+            border: "1px solid var(--border, #ddd)",
+            borderRadius: 4,
+            fontFamily: "ui-monospace, Menlo, monospace",
+            fontSize: 12,
+            whiteSpace: "nowrap",
+            overflow: "auto",
+          }}>
+            xattr -dr com.apple.quarantine ~/Downloads/QuantPlatformLocal-{downloads.tag || "vX.Y.Z"}.app
+          </code>
+          <p style={{ margin: "6px 0 0 0" }}>
+            {downloads.tag && (
+              <a
+                href={`https://github.com/MercKR/quantman-releases/releases/tag/${downloads.tag}`}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: "inherit", textDecoration: "underline" }}
+              >
+                전체 설치 가이드 (Sonoma·Sequoia 분기) →
+              </a>
+            )}
+          </p>
+        </div>
       )}
     </div>
   );
