@@ -24,13 +24,12 @@ on:
       - 'v*-beta'
       - 'v*-rc*'
 
-defaults:
-  run:
-    working-directory: local
-
 jobs:
   build-windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: local
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
@@ -79,6 +78,9 @@ jobs:
 
   build-macos:
     runs-on: macos-14   # Apple Silicon (M-series). Intel은 macos-13.
+    defaults:
+      run:
+        working-directory: local
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
