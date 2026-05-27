@@ -109,6 +109,12 @@ class SettingsApp:
                               daemon=True, name="update-check").start()
             self.root.bind("<FocusIn>", self._on_focus_in_check_updates, add="+")
 
+        # Phase 7 — Catch-up 결과 polling. scheduler가 background thread로 catchup
+        # 실행 → 결과 catchup_result.json. 5초 후 첫 read 시도(catch-up이 진행
+        # 중이거나 끝났을 시점). 최대 12회 (1분) polling — 그 안에 끝남.
+        self._catchup_poll_count = 0
+        self.root.after(5_000, self._check_catchup_result_polling)
+
     # ── 테마 ──────────────────────────────────────────────────────────────────
 
     def _apply_theme(self):
@@ -185,6 +191,22 @@ class SettingsApp:
             command=self._start_update)
         self.update_banner_btn.pack(side="right", padx=12, pady=6)
         # 평소엔 숨김.
+
+        # Phase 7 — Catch-up 결과 알림 배너 (PC 꺼져 있어 missed된 cycle/settlement
+        # 을 기동 시 자동 보완 결과). scheduler.register_jobs의 background thread가
+        # catchup_result.json에 기록 → gui가 polling으로 읽어 표시.
+        self.catchup_banner = tk.Frame(self.root, bg=AMBER)
+        self.catchup_banner_label = tk.Label(
+            self.catchup_banner, text="", bg=AMBER, fg="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+            justify="left", anchor="w", wraplength=900)
+        self.catchup_banner_label.pack(side="left", padx=12, pady=8, fill="x",
+                                         expand=True)
+        self.catchup_banner_btn = ttk.Button(
+            self.catchup_banner, text="확인",
+            command=self._dismiss_catchup_banner)
+        self.catchup_banner_btn.pack(side="right", padx=12, pady=6)
+        # 평소엔 숨김. _check_catchup_result_polling이 5초 후 첫 체크 시작.
 
         # 상태 히어로 — 한눈에 현재 상태를 보여준다
         self.hero = tk.Frame(self.root, bg=SLATE)
@@ -1716,6 +1738,80 @@ class SettingsApp:
             text=f"새 버전 {info['tag']} 사용 가능 — 한 번 클릭으로 업데이트")
         # 최상단 (hero보다 위)
         self.update_banner.pack(side="top", fill="x", before=self.hero)
+
+    # ── Phase 7: Catch-up 결과 알림 ───────────────────────────────────────
+
+    def _check_catchup_result_polling(self):
+        """catchup_result.json polling — scheduler thread가 끝나면 파일 생성.
+
+        5초 간격으로 최대 12회 (1분) 체크. 파일 있으면 amber 배너 표시.
+        없으면 (catch-up plan 자체가 없었거나 결과 없음) 조용히 종료.
+        """
+        from . import catchup
+        if catchup.CATCHUP_RESULT_PATH.exists():
+            try:
+                import json as _json
+                data = _json.loads(
+                    catchup.CATCHUP_RESULT_PATH.read_text(encoding="utf-8"))
+                self._show_catchup_banner(data)
+            except Exception as e:
+                import logging
+                logging.getLogger("localapp.gui").warning(
+                    "catch-up 결과 파일 읽기 실패: %s", e)
+            return
+        self._catchup_poll_count += 1
+        if self._catchup_poll_count < 12:
+            self.root.after(5_000, self._check_catchup_result_polling)
+
+    def _show_catchup_banner(self, data: dict):
+        """catch-up 결과 amber 배너 표시 — hero 위, update_banner 아래."""
+        msg = self._format_catchup_summary(data)
+        if not msg:
+            return
+        self.catchup_banner_label.config(text=msg)
+        # update_banner 있으면 그 아래, 없으면 hero 바로 위.
+        if self.update_banner.winfo_ismapped():
+            self.catchup_banner.pack(side="top", fill="x",
+                                       before=self.hero)
+        else:
+            self.catchup_banner.pack(side="top", fill="x",
+                                       before=self.hero)
+
+    def _format_catchup_summary(self, data: dict) -> str:
+        """결과 dict → 한 줄 사용자 메시지."""
+        results = data.get("results") or {}
+        if not results:
+            return ""
+        parts = ["⏰ 자동 catch-up 실행됨:"]
+        for k, v in results.items():
+            if v.get("error"):
+                parts.append(f"  · {k}: ❌ {v['error']}")
+            elif k.endswith("_stop_loss"):
+                checked = v.get("checked", 0)
+                fired = v.get("fired", 0)
+                if checked == 0:
+                    continue  # 보유 종목 0건 — 표시 생략
+                fire_mark = f"🔴 {fired}건 손절 발주" if fired > 0 else "✓ 손절선 안전"
+                parts.append(f"  · {k}: 보유 {checked}건 → {fire_mark}")
+            elif k.endswith("_cycle"):
+                nb = v.get("n_bought", 0)
+                ns = v.get("n_sold", 0)
+                parts.append(f"  · {k}: 매수 {nb}건 매도 {ns}건")
+            elif k.endswith("_settle"):
+                applied = v.get("reconcile_applied", 0)
+                drift = v.get("reconcile_drift", False)
+                drift_mark = f"drift {applied}건 정정" if drift else "차이 없음"
+                parts.append(f"  · {k}: reconcile {drift_mark}")
+        return "\n".join(parts) if len(parts) > 1 else ""
+
+    def _dismiss_catchup_banner(self):
+        """사용자 [확인] 클릭 — 배너 숨김 + 결과 파일 삭제."""
+        from . import catchup
+        self.catchup_banner.pack_forget()
+        try:
+            catchup.CATCHUP_RESULT_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def _start_update(self):
         """진행률 다이얼로그 + background 다운로드/설치."""

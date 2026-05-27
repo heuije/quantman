@@ -93,11 +93,15 @@ def _wait_for_order_ws() -> None:
                  "시초가 체결 통보는 REST 폴링으로 반영됨 (push 지연 가능)")
 
 
-def run_cycle(market: str = "KRX") -> dict:
+def run_cycle(market: str = "KRX", catchup: bool = False) -> dict:
     """1회 자동매매 사이클을 실행하고 동기화 스냅샷을 반환한다.
 
     market: 이번 사이클이 다룰 시장 그룹('KRX' 또는 'US'). 스케줄러가 각 시장의
     정규장 시각에 맞춰 호출한다. 청산·진입은 해당 시장 종목만 처리.
+
+    catchup: PC가 꺼져 있어 missed된 cycle을 기동 시 뒤늦게 실행하는 경우 True.
+    catchup.run_catchup_on_startup이 호출하며, trader가 시장가 매수를 시초가
+    limit으로 자동 변환 (백테스트 alignment + selection bias 없음).
     """
     setup_logging()
     _flush_pending()
@@ -179,7 +183,7 @@ def run_cycle(market: str = "KRX") -> dict:
         krx_status = pull_krx_status()
         payload = trader.cycle(strategies, dataset, buy_candidates=buy_candidates,
                                  risk_limits=risk_limits, market=market,
-                                 krx_status=krx_status)
+                                 krx_status=krx_status, catchup=catchup)
         if preview_missing:
             payload.setdefault("cycle_summary", {})["preview_missing"] = True
     except Exception as cycle_err:
@@ -268,11 +272,20 @@ def _run_post_close_settlement_locked(market: str) -> dict:
         "reconciliation": reconcile_result,
         "cycle_summary": {
             "today": today,
+            "market": market,                     # Phase 7 catch-up — 시장 식별
             "kind": "post_close_settlement",
             "reconcile_drift": reconcile_result.get("has_drift", False),
             "reconcile_applied": len(reconcile_result.get("applied") or []),
         },
     }
+    # post_close_settlement은 cycle entry처럼 cycles.jsonl에 명시적 기록.
+    # trader.cycle은 자체적으로 log_cycle 호출하지만 settlement는 trader 외부에서
+    # 일어나므로 여기서 명시. catch-up이 cycles.jsonl로 idempotency 판단.
+    try:
+        from . import order_log
+        order_log.log_cycle(decisions, payload["cycle_summary"])
+    except Exception as e:
+        log.warning("settlement cycle 기록 실패 (catch-up 판단에 영향): %s", e)
 
     try:
         push_snapshot(payload)

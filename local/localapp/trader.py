@@ -480,7 +480,7 @@ class Trader:
 
     def _submit_buy(self, sid: str, strat_name: str, strat_def: dict,
                     symbol: str, qty: int, ref_price: float, policy: dict,
-                    decisions: list[dict]) -> None:
+                    decisions: list[dict], catchup: bool = False) -> None:
         # L-01: 발주 직전 intent journal에 submitting 기록(fsync). 크래시-재기동
         # 시 reconcile이 KIS 당일 주문 조회로 매칭 → 중복 발주 방지.
         today_iso = kst_today().isoformat()
@@ -488,7 +488,41 @@ class Trader:
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "buy",
                       qty, ref_price)
         use_limit = bool(policy["use_limit"])
-        if use_limit:
+
+        # catch-up + 시장가 매수: 시초가 limit으로 변환.
+        # 이유: 정상 cycle의 시장가는 09:00 시초가에 체결되나 catch-up은 09:30
+        # 현재가에 체결 → 백테스트 가정(시가 + slippage)과 어긋남. 시가 × (1 +
+        # bt_slippage_bps) limit으로 변환하면 백테스트 모델과 alignment + selection
+        # bias 없음(가격은 시가 fixed). ref_price(어제 종가)는 유지 — apply_daily_
+        # price_limit이 prev_close 기준 ±30% cap 정확히 계산하도록.
+        if catchup and not use_limit:
+            open_price = self.broker.today_open(symbol)
+            if open_price <= 0:
+                log.warning("[catch-up] %s 시가 조회 실패 — 매수 skip", symbol)
+                intents.mark_failed(today_iso, intent_id, "no_open_price")
+                decisions.append(order_log.decision(
+                    "skip_no_open_price", sid, strat_name, symbol,
+                    "catch-up: 당일 시가 조회 실패"))
+                return
+            slip = qc.DEFAULT_EXECUTION["bt_slippage_bps"] / 10_000.0
+            limit = qc.round_to_tick(open_price * (1 + slip),
+                                       direction="up",
+                                       currency=_currency_of(symbol))
+            limit = qc.apply_daily_price_limit(
+                limit, ref_price, "buy", _currency_of(symbol))
+            try:
+                r = self.broker.buy_limit(symbol, qty, limit)
+            except Exception as e:
+                intents.mark_failed(today_iso, intent_id,
+                                      f"buy_limit (catchup): {e}")
+                log.error("[catch-up] %s 시초가 limit 발주 실패: %s", symbol, e)
+                decisions.append(order_log.decision(
+                    "error", sid, strat_name, symbol,
+                    f"catch-up 발주 예외: {e}"))
+                return
+            log.info("[catch-up] %s 시장가→시초가 limit: open=%s limit=%s",
+                      symbol, open_price, limit)
+        elif use_limit:
             limit = qc.round_to_tick(
                 ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
                 direction="up", currency=_currency_of(symbol))
@@ -618,7 +652,8 @@ class Trader:
                               strat_name: str, strat_def: dict,
                               strat: "qc.Strategy", symbol: str,
                               dataset: dict, equity_now: float,
-                              decisions: list[dict]) -> bool:
+                              decisions: list[dict],
+                              catchup: bool = False) -> bool:
         """수동(단일/다중) 종목 1개에 대해 사이징 + 발주 (EOD-순수 모델).
 
         Phase 30: 매수 path는 전일 종가만으로 결정. KIS 현재가 호출 없음.
@@ -771,9 +806,10 @@ class Trader:
             log.info("[L-01] 중복 매수 차단 %s/%s", ledger_key, symbol)
             return False
 
-        # 발주가는 _submit_buy 내부에서 prev_close × (1 + tolerance%) 계산
+        # 발주가는 _submit_buy 내부에서 prev_close × (1 + tolerance%) 계산.
+        # catchup=True면 시장가 매수만 시초가 limit으로 변환 (지정가는 그대로).
         self._submit_buy(ledger_key, strat_name, strat_def, symbol, qty,
-                          prev_close, policy, decisions)
+                          prev_close, policy, decisions, catchup=catchup)
         return True
 
     # ── 메인 사이클 ───────────────────────────────────────────────────────────
@@ -782,7 +818,8 @@ class Trader:
                               dataset: dict, equity_now: float,
                               decisions: list[dict],
                               sold_this_cycle: set[str],
-                              market: str = "KRX") -> None:
+                              market: str = "KRX",
+                              catchup: bool = False) -> None:
         """Phase 37: 서버 preview의 candidates 종목을 직접 발주.
 
         매수 신호 재평가는 skip (preview가 어제 18:15에 이미 평가).
@@ -877,7 +914,8 @@ class Trader:
                     continue
                 if self._try_buy_one_symbol(
                         ledger_key, sid, strat_name, strat_def, strat,
-                        symbol, dataset, equity_now, decisions):
+                        symbol, dataset, equity_now, decisions,
+                        catchup=catchup):
                     bought += 1
                     n_preview_used += 1
 
@@ -972,7 +1010,8 @@ class Trader:
               buy_candidates: list[dict] | None = None,
               risk_limits: dict | None = None,
               market: str = "KRX",
-              krx_status: dict[str, dict] | None = None) -> dict:
+              krx_status: dict[str, dict] | None = None,
+              catchup: bool = False) -> dict:
         """전략 목록을 1회 평가하고 매매한 뒤 동기화용 스냅샷을 반환한다.
 
         market: 이번 사이클이 다룰 시장 그룹('KRX' 또는 'US'). 청산은 해당 시장
@@ -1189,7 +1228,7 @@ class Trader:
         elif buy_candidates is not None:
             self._enter_from_preview(buy_candidates, strategies, dataset,
                                        equity_now, decisions, sold_this_cycle,
-                                       market=market)
+                                       market=market, catchup=catchup)
 
         # ── 4. 미체결 짧게 대기 (시초가 동시호가 직후 대부분 잡힘) ───────
         # Q7: 300초 → 60초 (post_submit_wait_sec). DAY 정책으로 못 잡힌 분은
@@ -1211,6 +1250,8 @@ class Trader:
 
         cycle_summary = {
             "today": today.isoformat(),
+            "market": market,                        # Phase 7 catch-up — 시장 식별
+            "kind": "catchup_cycle" if catchup else "cycle",   # catch-up 구분
             "n_strategies": len(strategies),
             "n_bought": sum(1 for d in decisions if d["action"] == "bought"),
             "n_sold": sum(1 for d in decisions if d["action"] == "sold"),

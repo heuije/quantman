@@ -164,7 +164,16 @@ def register_jobs(sched) -> None:
     threading.Thread(target=datafetch.refresh_market_data,
                       daemon=True, name="dataset-initial").start()
 
-    log.info("scheduler jobs registered — KRX cron + US planner + heartbeat + dataset")
+    # ── Phase 7 — Catch-up on startup ────────────────────────────────────
+    # PC가 꺼져 있어 missed된 cycle/settlement/장중 손절을 기동 시 자동 보완.
+    # cycles.jsonl 기반 idempotency — 이미 실행된 cycle은 다시 안 함.
+    # background thread (다른 initial들과 동일 패턴) — UI block 방지.
+    from . import catchup
+    threading.Thread(target=catchup.run_catchup_on_startup,
+                      daemon=True, name="catchup-startup").start()
+
+    log.info("scheduler jobs registered — KRX cron + US planner + heartbeat + "
+              "dataset + catchup")
 
 
 def start() -> None:

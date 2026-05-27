@@ -378,12 +378,59 @@ class KisBroker:
             return self._price_domestic(symbol)
         return self._price_overseas(symbol, market)
 
+    def today_open(self, symbol: str) -> float:
+        """당일 시가 조회 — 시장에 따라 다른 endpoint.
+
+        catch-up cycle에서 시장가 매수를 시초가 limit으로 변환할 때 사용.
+        백테스트의 시장가 모델("시가 + slippage")과 alignment 위해 시초가
+        기준 limit 발주.
+
+        시가 못 받으면(장 시작 전·휴장·종목 코드 오류 등) 0.0 반환 — 호출자가
+        catch-up skip 결정.
+        """
+        market = self._detect_market(symbol)
+        if market == "DOMESTIC":
+            return self._open_domestic(symbol)
+        return self._open_overseas(symbol, market)
+
     def _price_domestic(self, symbol: str) -> float:
         body = self._get_retry(
             "/uapi/domestic-stock/v1/quotations/inquire-price", "FHKST01010100",
             {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol},
             base=self.quote_base)
         return float(body.get("output", {}).get("stck_prpr", 0))
+
+    def _open_domestic(self, symbol: str) -> float:
+        """국내 당일 시가 — inquire-price 응답의 stck_oprc."""
+        body = self._get_retry(
+            "/uapi/domestic-stock/v1/quotations/inquire-price", "FHKST01010100",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol},
+            base=self.quote_base)
+        try:
+            return float(body.get("output", {}).get("stck_oprc", 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _open_overseas(self, symbol: str, market: str) -> float:
+        """해외 당일 시가 — overseas/price 응답의 open. 응답 키는 KIS spec에서
+        'open' 또는 'opening_price' (시장별로 다름) — 안전하게 둘 다 시도."""
+        from . import market_index
+        excd_map = {"NAS": "NAS", "NYS": "NYS", "AMS": "AMS",
+                     "TSE": "TSE", "HKS": "HKS"}
+        excd = excd_map.get(market, "NAS")
+        body = self._get_retry(
+            "/uapi/overseas-price/v1/quotations/price", "HHDFS00000300",
+            {"AUTH": "", "EXCD": excd, "SYMB": market_index.kis_ticker_of(symbol)},
+            base=self.quote_base)
+        output = body.get("output", {})
+        for key in ("open", "opening_price", "oprc"):
+            v = output.get(key)
+            if v not in (None, "", "0"):
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
 
     def _price_overseas(self, symbol: str, market: str) -> float:
         # KIS overseas 시장 코드: NAS/NYS/AMS = 실시간(NASD/NYSE/AMEX) 또는 지연(NAS/NYS/AMS).
