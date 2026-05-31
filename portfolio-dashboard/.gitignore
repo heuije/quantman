@@ -1,0 +1,14 @@
+# 캐시·로그·임시 (배포 불필요)
+cache/
+snapshot_log.txt
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+
+# 비공개 키 (절대 커밋 금지)
+dart_key.txt
+
+# 개인 금융 데이터 — PUBLIC 리포라 제외 (로컬에서만 보유)
+holdings.csv
+performance_history.csv
+flows_history.csv
