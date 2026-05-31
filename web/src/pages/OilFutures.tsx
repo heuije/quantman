@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
+  Brush,
   CartesianGrid,
   Cell,
   ComposedChart,
@@ -449,19 +450,19 @@ export default function OilFutures() {
   );
 }
 
-// BUY/SELL Scatter 점 — 작은 원 + 흰 테두리 (가독성 + 시각 깔끔)
+// BUY/SELL Scatter 점 — 적당한 원 + 흰 테두리 (가독성 ↑, 호버시 강조)
 function buySellShape(color: string) {
   return function Shape(props: { cx?: number; cy?: number }) {
     if (props.cx == null || props.cy == null) return null;
     return (
-      <circle
-        cx={props.cx}
-        cy={props.cy}
-        r={2.5}
-        fill={color}
-        stroke="#fff"
-        strokeWidth={1}
-      />
+      <g>
+        {/* 바깥 흰 후광 — 점 분리감 ↑ */}
+        <circle cx={props.cx} cy={props.cy} r={5.5} fill="#fff" opacity={0.85} />
+        <circle
+          cx={props.cx} cy={props.cy} r={4.5}
+          fill={color} stroke="#fff" strokeWidth={1.5}
+        />
+      </g>
     );
   };
 }
@@ -737,38 +738,63 @@ function HeatmapBlock({
 // ── 백테스트 상세 ──────────────────────────────────────────────────
 function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" }) {
   const s = bt.summary;
-  const eq = bt.equity_curve;
   // Long: entry=BUY, exit=SELL.  Short: entry=SELL(공매), exit=BUY(환매).
   const entryLabel = side === "long" ? "BUY" : "SELL";
   const exitLabel = side === "long" ? "SELL" : "BUY";
 
-  // BUY/SELL 점 데이터: 시가평가 곡선의 entry/exit 시점 값 위에 dot 표시
-  // 보유 기간(days) = 청산일 - 진입일 (캘린더 일수)
+  // 연도 필터 — "all" 또는 "YYYY"
+  const [yearFilter, setYearFilter] = useState<string>("all");
+
+  // 사용 가능한 연도 목록
+  const availableYears = useMemo(() => {
+    const ys = new Set<string>();
+    for (const p of bt.portfolio_equity_curve) ys.add(p.date.slice(0, 4));
+    return Array.from(ys).sort();
+  }, [bt.portfolio_equity_curve]);
+
+  // 필터 적용한 곡선·점
+  const filtered = useMemo(() => {
+    const matches = (d: string) =>
+      yearFilter === "all" || d.startsWith(yearFilter);
+    return {
+      portfolio: bt.portfolio_equity_curve.filter((p) => matches(p.date)),
+      realized: bt.equity_curve.filter((p) => matches(p.date)),
+    };
+  }, [bt.portfolio_equity_curve, bt.equity_curve, yearFilter]);
+
+  // BUY/SELL 점 데이터: 시가평가 곡선의 entry/exit 시점 값 위에 dot 표시.
+  // 연도 필터 적용 — 필터된 곡선 안에 진입/청산이 있는 trade만.
   const tradeDots = useMemo(() => {
     const map = new Map<string, number>();
-    for (const p of bt.portfolio_equity_curve) map.set(p.date, p.cumulative_usd);
+    for (const p of filtered.portfolio) map.set(p.date, p.cumulative_usd);
     const dayDiff = (a: string, b: string) =>
       Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
-    const buy = bt.trades.map((t) => ({
-      date: t.entry_date,
-      value: map.get(t.entry_date) ?? 0,
-      kind: "BUY" as const,
-      days: dayDiff(t.entry_date, t.exit_date),
-      return_pct: t.return_pct,
-      net_pnl_usd: t.net_pnl_usd,
-      exit_reason: t.exit_reason,
-    }));
-    const sell = bt.trades.map((t) => ({
-      date: t.exit_date,
-      value: map.get(t.exit_date) ?? 0,
-      kind: "SELL" as const,
-      days: dayDiff(t.entry_date, t.exit_date),
-      return_pct: t.return_pct,
-      net_pnl_usd: t.net_pnl_usd,
-      exit_reason: t.exit_reason,
-    }));
+    const inRange = (d: string) =>
+      yearFilter === "all" || d.startsWith(yearFilter);
+    const buy = bt.trades
+      .filter((t) => inRange(t.entry_date))
+      .map((t) => ({
+        date: t.entry_date,
+        value: map.get(t.entry_date) ?? 0,
+        kind: "BUY" as const,
+        days: dayDiff(t.entry_date, t.exit_date),
+        return_pct: t.return_pct,
+        net_pnl_usd: t.net_pnl_usd,
+        exit_reason: t.exit_reason,
+      }));
+    const sell = bt.trades
+      .filter((t) => inRange(t.exit_date))
+      .map((t) => ({
+        date: t.exit_date,
+        value: map.get(t.exit_date) ?? 0,
+        kind: "SELL" as const,
+        days: dayDiff(t.entry_date, t.exit_date),
+        return_pct: t.return_pct,
+        net_pnl_usd: t.net_pnl_usd,
+        exit_reason: t.exit_reason,
+      }));
     return { buy, sell };
-  }, [bt.trades, bt.portfolio_equity_curve]);
+  }, [bt.trades, filtered.portfolio, yearFilter]);
 
   return (
     <>
@@ -838,12 +864,42 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
         <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
           등 자산 곡선 — <b style={{ color: "#62c884" }}>녹: realized (청산 시점)</b>{" "}
           vs <b style={{ color: "#6c9ce9" }}>파랑: 시가평가 (매일 MTM)</b>
-          {" / "}
-          <span style={{ color: "#3b82f6" }}>● BUY (진입)</span>{" "}
-          <span style={{ color: "#ef4444" }}>● SELL (청산)</span> · 호버 시 보유일수
+          {" · "}
+          <span style={{ color: "#3b82f6", fontWeight: 700 }}>● BUY</span>{" "}
+          <span style={{ color: "#ef4444", fontWeight: 700 }}>● SELL</span>
         </div>
-        <ResponsiveContainer width="100%" height={280}>
-          <ComposedChart>
+
+        {/* 연도 필터 + Brush 안내 */}
+        <div className="oil-toolbar" style={{ marginBottom: 8 }}>
+          <label>
+            연도:&nbsp;
+            <select
+              value={yearFilter}
+              onChange={(e) => setYearFilter(e.target.value)}
+            >
+              <option value="all">전체 ({availableYears.length}년)</option>
+              {availableYears.map((y) => (
+                <option key={y} value={y}>{y}년</option>
+              ))}
+            </select>
+          </label>
+          <button
+            onClick={() => setYearFilter("all")}
+            disabled={yearFilter === "all"}
+            style={{
+              padding: "4px 12px", fontSize: 12,
+              opacity: yearFilter === "all" ? 0.5 : 1,
+            }}
+          >
+            전체 보기
+          </button>
+          <span className="muted" style={{ fontSize: 11 }}>
+            💡 차트 아래 회색 막대(Brush) 양끝을 끌어 zoom · 마우스 휠 안 됨 (드래그로 범위 조정)
+          </span>
+        </div>
+
+        <ResponsiveContainer width="100%" height={340}>
+          <ComposedChart data={filtered.portfolio}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
             <XAxis dataKey="date" type="category" allowDuplicatedCategory={false}
                    tick={{ fontSize: 10, fill: "#9aa" }} minTickGap={50} />
@@ -851,10 +907,11 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                    tickFormatter={(v) => (v / 1000).toFixed(0) + "k"} />
             <Tooltip content={<EquityTooltip />} />
             <ReferenceLine y={0} stroke="#666" />
-            <Line data={bt.portfolio_equity_curve} type="monotone"
-                  dataKey="cumulative_usd" name="시가평가(MTM)"
+            {/* 시가평가 line — 부모 ComposedChart의 data 사용 */}
+            <Line type="monotone" dataKey="cumulative_usd" name="시가평가(MTM)"
                   stroke="#6c9ce9" dot={false} strokeWidth={2} />
-            <Line data={eq} type="stepAfter"
+            {/* Realized line — 별도 data prop (sparse, exit 시점만) */}
+            <Line data={filtered.realized} type="stepAfter"
                   dataKey="cumulative_usd" name="Realized"
                   stroke={s.net_pnl_usd >= 0 ? "#62c884" : "#d96265"}
                   dot={false} strokeWidth={2} />
@@ -862,6 +919,15 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                      fill="#3b82f6" shape={buySellShape("#3b82f6")} />
             <Scatter data={tradeDots.sell} dataKey="value" name="SELL"
                      fill="#ef4444" shape={buySellShape("#ef4444")} />
+            {/* Brush — 차트 하단 zoom slider. 양끝 traveller 드래그로 zoom */}
+            <Brush
+              dataKey="date"
+              height={28}
+              stroke="#6c9ce9"
+              fill="rgba(108,156,233,0.08)"
+              travellerWidth={10}
+              tickFormatter={(v) => String(v).slice(0, 7)}
+            />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
