@@ -34,9 +34,10 @@ import {
   type OilWalkForward,
 } from "../api";
 
-// 임계값 $1 단위 grid (조밀 히트맵). 서버 default와 일치.
-const DEFAULT_SHORTS = Array.from({ length: 71 }, (_, i) => 80 + i);   // 80~150
-const DEFAULT_LONGS = Array.from({ length: 51 }, (_, i) => 10 + i);    // 10~60
+// 임계값 grid — $10 단위 (Railway 무료 티어 메모리 호환). $1 단위는
+// 488 셀 컴퓨팅 시 OOM 발생, 추후 캐시 layer 추가 후 복원 예정.
+const DEFAULT_SHORTS = [80, 90, 100, 110, 120, 130, 140, 150];
+const DEFAULT_LONGS = [10, 20, 30, 40, 50, 60];
 const DEFAULT_HORIZONS = [20, 40, 60, 120];
 
 // 색 스케일: 음수→빨강, 양수→녹색.
