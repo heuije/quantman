@@ -36,9 +36,9 @@ from quant_core.oil_futures import (
 
 router = APIRouter(prefix="/oil-futures", tags=["oil-futures"])
 
-# 엑셀과 동일한 기본 임계값/horizon (UI 디폴트와도 일치)
-DEFAULT_SHORTS = [80, 90, 100, 110, 120, 130, 140, 150]
-DEFAULT_LONGS = [10, 20, 30, 40, 50, 60]
+# 임계값 $1 단위 grid (조밀 히트맵용). Short $80~$150 (71개), Long $10~$60 (51개).
+DEFAULT_SHORTS = list(range(80, 151))          # [80, 81, 82, ..., 150]
+DEFAULT_LONGS = list(range(10, 61))            # [10, 11, 12, ..., 60]
 DEFAULT_HORIZONS = [20, 40, 60, 120]
 
 

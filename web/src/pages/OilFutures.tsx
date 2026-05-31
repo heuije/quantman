@@ -15,10 +15,11 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
   Line,
-  LineChart,
   ReferenceLine,
   ResponsiveContainer,
+  Scatter,
   Tooltip,
   XAxis,
   YAxis,
@@ -33,8 +34,9 @@ import {
   type OilWalkForward,
 } from "../api";
 
-const DEFAULT_SHORTS = [80, 90, 100, 110, 120, 130, 140, 150];
-const DEFAULT_LONGS = [10, 20, 30, 40, 50, 60];
+// 임계값 $1 단위 grid (조밀 히트맵). 서버 default와 일치.
+const DEFAULT_SHORTS = Array.from({ length: 71 }, (_, i) => 80 + i);   // 80~150
+const DEFAULT_LONGS = Array.from({ length: 51 }, (_, i) => 10 + i);    // 10~60
 const DEFAULT_HORIZONS = [20, 40, 60, 120];
 
 // 색 스케일: 음수→빨강, 양수→녹색.
@@ -430,6 +432,69 @@ export default function OilFutures() {
   );
 }
 
+// 등 자산 차트 커스텀 tooltip — BUY/SELL Scatter일 때 보유일수·수익률 표시
+type EquityTooltipPayload = {
+  name?: string;
+  value?: number;
+  payload?: {
+    date?: string;
+    kind?: "BUY" | "SELL";
+    days?: number;
+    return_pct?: number;
+    net_pnl_usd?: number;
+    exit_reason?: string;
+  };
+};
+
+function EquityTooltip({ active, payload, label }: {
+  active?: boolean;
+  payload?: EquityTooltipPayload[];
+  label?: string;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  // BUY/SELL Scatter 우선 — payload에 kind 있는 항목 찾기
+  const ev = payload.find((p) => p.payload?.kind);
+  if (ev && ev.payload) {
+    const k = ev.payload.kind;
+    const color = k === "BUY" ? "#3b82f6" : "#ef4444";
+    const reasonKo = ev.payload.exit_reason === "stop_loss" ? "손절(SL)"
+                  : ev.payload.exit_reason === "take_profit" ? "익절(TP)"
+                  : "horizon 만기";
+    return (
+      <div className="chart-tooltip">
+        <div style={{ color, fontWeight: 700 }}>● {k}</div>
+        <div>{ev.payload.date}</div>
+        <div className="muted" style={{ fontSize: 11 }}>
+          보유: <b>{ev.payload.days} day</b>
+        </div>
+        <div className="muted" style={{ fontSize: 11 }}>
+          수익률: <b style={{ color: (ev.payload.return_pct ?? 0) >= 0 ? "#16a34a" : "#dc2626" }}>
+            {((ev.payload.return_pct ?? 0) >= 0 ? "+" : "") +
+              (((ev.payload.return_pct ?? 0) * 100).toFixed(2))}%
+          </b>
+        </div>
+        <div className="muted" style={{ fontSize: 11 }}>
+          PnL: <b>{((ev.payload.net_pnl_usd ?? 0) >= 0 ? "+" : "-") + "$" +
+            Math.abs(ev.payload.net_pnl_usd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}</b>
+        </div>
+        {k === "SELL" && <div className="muted" style={{ fontSize: 11 }}>청산사유: {reasonKo}</div>}
+      </div>
+    );
+  }
+  // 일반 line hover: 날짜 + 곡선 값들
+  return (
+    <div className="chart-tooltip">
+      <div style={{ fontWeight: 600 }}>{label}</div>
+      {payload.map((p, i) => (
+        <div key={i} style={{ fontSize: 11 }}>
+          {p.name}: $
+          {Number(p.value ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Helper components: ExitReason 뱃지/요약 + Macro 뷰 ───────────
 function ExitReasonBadge({ reason }: { reason: "horizon" | "stop_loss" | "take_profit" }) {
   if (reason === "stop_loss")
@@ -643,6 +708,34 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
   const entryLabel = side === "long" ? "BUY" : "SELL";
   const exitLabel = side === "long" ? "SELL" : "BUY";
 
+  // BUY/SELL 점 데이터: 시가평가 곡선의 entry/exit 시점 값 위에 dot 표시
+  // 보유 기간(days) = 청산일 - 진입일 (캘린더 일수)
+  const tradeDots = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const p of bt.portfolio_equity_curve) map.set(p.date, p.cumulative_usd);
+    const dayDiff = (a: string, b: string) =>
+      Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
+    const buy = bt.trades.map((t) => ({
+      date: t.entry_date,
+      value: map.get(t.entry_date) ?? 0,
+      kind: "BUY" as const,
+      days: dayDiff(t.entry_date, t.exit_date),
+      return_pct: t.return_pct,
+      net_pnl_usd: t.net_pnl_usd,
+      exit_reason: t.exit_reason,
+    }));
+    const sell = bt.trades.map((t) => ({
+      date: t.exit_date,
+      value: map.get(t.exit_date) ?? 0,
+      kind: "SELL" as const,
+      days: dayDiff(t.entry_date, t.exit_date),
+      return_pct: t.return_pct,
+      net_pnl_usd: t.net_pnl_usd,
+      exit_reason: t.exit_reason,
+    }));
+    return { buy, sell };
+  }, [bt.trades, bt.portfolio_equity_curve]);
+
   return (
     <>
       <div className="bt-metrics">
@@ -710,17 +803,19 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
       <div style={{ marginTop: 16 }}>
         <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
           등 자산 곡선 — <b style={{ color: "#62c884" }}>녹: realized (청산 시점)</b>{" "}
-          vs <b style={{ color: "#6c9ce9" }}>파랑: 시가평가 (매일 mark-to-market)</b>
+          vs <b style={{ color: "#6c9ce9" }}>파랑: 시가평가 (매일 MTM)</b>
+          {" / "}
+          <span style={{ color: "#3b82f6" }}>● BUY (진입)</span>{" "}
+          <span style={{ color: "#ef4444" }}>● SELL (청산)</span> · 호버 시 보유일수
         </div>
-        <ResponsiveContainer width="100%" height={260}>
-          <LineChart>
-            <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+        <ResponsiveContainer width="100%" height={280}>
+          <ComposedChart>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
             <XAxis dataKey="date" type="category" allowDuplicatedCategory={false}
                    tick={{ fontSize: 10, fill: "#9aa" }} minTickGap={50} />
             <YAxis tick={{ fontSize: 10, fill: "#9aa" }}
                    tickFormatter={(v) => (v / 1000).toFixed(0) + "k"} />
-            <Tooltip labelStyle={{ color: "#333" }}
-                     formatter={(v) => "$" + Number(v).toLocaleString()} />
+            <Tooltip content={<EquityTooltip />} />
             <ReferenceLine y={0} stroke="#666" />
             <Line data={bt.portfolio_equity_curve} type="monotone"
                   dataKey="cumulative_usd" name="시가평가(MTM)"
@@ -729,7 +824,11 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                   dataKey="cumulative_usd" name="Realized"
                   stroke={s.net_pnl_usd >= 0 ? "#62c884" : "#d96265"}
                   dot={false} strokeWidth={2} />
-          </LineChart>
+            <Scatter data={tradeDots.buy} dataKey="value" name="BUY"
+                     fill="#3b82f6" shape="circle" />
+            <Scatter data={tradeDots.sell} dataKey="value" name="SELL"
+                     fill="#ef4444" shape="circle" />
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
 

@@ -2343,3 +2343,24 @@ thead th { color: var(--muted); font-weight: 600; }
   font-size: 13px; padding: 8px 12px;
   background: rgba(0,0,0,0.03); border-radius: 6px;
 }
+
+/* 차트 커스텀 tooltip */
+.chart-tooltip {
+  background: rgba(255,255,255,0.98);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  min-width: 140px;
+}
+
+/* $1 단위 히트맵 — 셀 압축 (더 촘촘하게) */
+.heatmap-table td { padding: 2px 1px; min-width: 36px; }
+.heatmap-table th { padding: 2px 4px; font-size: 10px; }
+.heatmap-table th:first-child { width: 38px; min-width: 38px; }
+.heat-cell > div:first-child { font-size: 10px !important; line-height: 1.15; }
+.heat-cell > div:nth-child(2) { font-size: 9px !important; line-height: 1.1; opacity: 0.85; }
+/* 히트맵 컨테이너 높이 늘려서 스크롤 여유 */
+.heatmap-block .sticky-table { max-height: 540px; }
