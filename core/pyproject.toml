@@ -24,7 +24,7 @@ dependencies = [
 calendar-gen = ["exchange_calendars>=4.5"]
 
 [tool.setuptools]
-packages = ["quant_core"]
+packages = ["quant_core", "quant_core.oil_futures"]
 
 [tool.setuptools.package-data]
 # 시장 세션 캘린더 + S&P500 유니버스 JSON을 패키지에 포함.
