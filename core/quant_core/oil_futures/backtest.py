@@ -252,11 +252,10 @@ def _compute_portfolio_mtm(
     # 인덱스 빠른 lookup
     df_idx = df.set_index("date")["close"]
     dates = df_idx.index
-    # 첫 trade entry부터 마지막 trade exit까지만 그림
-    start = min(t.entry_date for t in trades)
-    end = max(t.exit_date for t in trades)
-    mask = (dates >= start) & (dates <= end)
-    relevant_dates = dates[mask]
+    # 데이터 전체 기간 (2004-01-05 ~ 데이터 끝) 으로 곡선을 그림.
+    # 첫 trade 이전 = 평평한 0, 마지막 trade 청산 이후 = 마지막 누적값 평평하게 유지.
+    # 차트 x축이 항상 전체 기간을 보여줌 (예: 2025·2026도 보임 — 활동 없으면 평평).
+    relevant_dates = dates
 
     closes = df_idx.loc[relevant_dates]
 
