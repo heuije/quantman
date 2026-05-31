@@ -22,6 +22,7 @@ from .backtest import (
     Trade,
     BacktestResult,
     CostModel,
+    ExitRules,
     WTI_TICK,
     WTI_MULTIPLIER,
     run_backtest,
@@ -38,7 +39,8 @@ from .optimizer import (
 __all__ = [
     "load_wti",
     "Signal", "Side", "generate_signals",
-    "Trade", "BacktestResult", "CostModel", "WTI_TICK", "WTI_MULTIPLIER", "run_backtest",
+    "Trade", "BacktestResult", "CostModel", "ExitRules",
+    "WTI_TICK", "WTI_MULTIPLIER", "run_backtest",
     "Summary", "LOW_SAMPLE_THRESHOLD", "summarize",
     "GridCell", "WalkForwardResult", "grid_search", "grid_to_dataframe", "walk_forward",
 ]

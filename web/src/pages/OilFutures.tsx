@@ -28,6 +28,7 @@ import {
   type OilBacktest,
   type OilDataInfo,
   type OilGridCell,
+  type OilMacroContext,
   type OilSeasonality,
   type OilWalkForward,
 } from "../api";
@@ -99,11 +100,18 @@ export default function OilFutures() {
 
   // 🅒 Seasonality
   const [season, setSeason] = useState<OilSeasonality | null>(null);
+  // 🅔 Macro
+  const [macro, setMacro] = useState<OilMacroContext | null>(null);
+
+  // 🅒 SL/TP — null이면 비활성. 백테스트 재호출 트리거.
+  const [sl, setSl] = useState<number | "">("");        // 예: 10 = -10%
+  const [tp, setTp] = useState<number | "">("");        // 예: 20 = +20%
 
   // ── 초기 로드 ─────────────────────────────────────────────────────
   useEffect(() => {
     oilApi.dataInfo().then(setInfo).catch((e) => console.error("data-info", e));
     oilApi.seasonality().then(setSeason).catch((e) => console.error("seasonality", e));
+    oilApi.macroContext().then(setMacro).catch((e) => console.error("macro", e));
     setGridLoading(true);
     oilApi
       .grid()
@@ -126,11 +134,13 @@ export default function OilFutures() {
         side: selected.side,
         threshold: selected.threshold,
         horizon_days: selected.horizon,
+        stop_loss_pct: sl === "" ? null : sl / 100,
+        take_profit_pct: tp === "" ? null : tp / 100,
       })
       .then(setBacktest)
       .catch((e) => console.error("backtest", e))
       .finally(() => setBtLoading(false));
-  }, [selected]);
+  }, [selected, sl, tp]);
 
   // 정렬·필터된 그리드
   const gridSorted = useMemo(() => {
@@ -264,6 +274,40 @@ export default function OilFutures() {
         <h2 className="section-title">
           ③ 백테스트 상세 {selected && `— ${selected.side} $${selected.threshold} × ${selected.horizon}일`}
         </h2>
+
+        {/* 🅒 SL/TP 시뮬레이터 */}
+        <div className="oil-toolbar sltp-toolbar">
+          <span style={{ fontWeight: 600 }}>SL/TP 시뮬레이터:</span>
+          <label>
+            Stop-Loss&nbsp;
+            <input
+              type="number" min={0} max={100} step={1}
+              value={sl}
+              placeholder="off"
+              onChange={(e) => setSl(e.target.value === "" ? "" : Number(e.target.value))}
+              style={{ width: 64 }}
+            />
+            &nbsp;%
+          </label>
+          <label>
+            Take-Profit&nbsp;
+            <input
+              type="number" min={0} max={200} step={1}
+              value={tp}
+              placeholder="off"
+              onChange={(e) => setTp(e.target.value === "" ? "" : Number(e.target.value))}
+              style={{ width: 64 }}
+            />
+            &nbsp;%
+          </label>
+          <button onClick={() => { setSl(""); setTp(""); }} className="ghost">
+            리셋 (horizon 만기 보유)
+          </button>
+          <span className="muted">
+            진입가 대비 % — 장중 high/low 기준 hit 즉시 청산. 둘 다 비우면 기존 horizon 보유.
+          </span>
+        </div>
+
         {!selected ? (
           <div className="muted">위 히트맵/아래 순위표에서 한 셀을 클릭하면 상세가 표시됩니다.</div>
         ) : btLoading || !backtest ? (
@@ -362,7 +406,7 @@ export default function OilFutures() {
       </section>
 
       {/* ⑥ Seasonality */}
-      <section className="panel">
+      <section className="panel" style={{ marginBottom: 16 }}>
         <h2 className="section-title">⑥ 🅒 계절성 패턴 — 월별 / 요일별</h2>
         {!season ? (
           <div className="muted">로딩 중…</div>
@@ -370,6 +414,126 @@ export default function OilFutures() {
           <SeasonalityView data={season} />
         )}
       </section>
+
+      {/* ⑦ Macro context (VIX·DXY) */}
+      <section className="panel">
+        <h2 className="section-title">⑦ 🅔 외생 변수 — VIX(변동성) · DXY(달러)</h2>
+        {!macro ? (
+          <div className="muted">로딩 중…</div>
+        ) : !macro.available ? (
+          <div className="muted">macro_daily.csv 미배포 — 데이터 갱신 필요</div>
+        ) : (
+          <MacroView m={macro} />
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ── Helper components: ExitReason 뱃지/요약 + Macro 뷰 ───────────
+function ExitReasonBadge({ reason }: { reason: "horizon" | "stop_loss" | "take_profit" }) {
+  if (reason === "stop_loss")
+    return <span className="bs-badge bs-sell" title="손절(SL hit)">SL</span>;
+  if (reason === "take_profit")
+    return <span className="bs-badge bs-buy" title="익절(TP hit)">TP</span>;
+  return <span className="bs-badge bs-horizon" title="horizon 만기 보유 종료">H</span>;
+}
+
+function ExitReasonSummary({ trades }: { trades: import("../api").OilTrade[] }) {
+  const counts = { horizon: 0, stop_loss: 0, take_profit: 0 };
+  for (const t of trades) counts[t.exit_reason]++;
+  const total = trades.length || 1;
+  if (counts.stop_loss === 0 && counts.take_profit === 0) {
+    return (
+      <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+        청산 사유: 전부 horizon 만기 보유 (SL/TP 비활성)
+      </div>
+    );
+  }
+  return (
+    <div className="exit-summary">
+      <span>
+        <ExitReasonBadge reason="horizon" /> Horizon 만기:{" "}
+        <b>{counts.horizon}</b> ({((counts.horizon / total) * 100).toFixed(0)}%)
+      </span>
+      <span>
+        <ExitReasonBadge reason="stop_loss" /> 손절(SL):{" "}
+        <b>{counts.stop_loss}</b> ({((counts.stop_loss / total) * 100).toFixed(0)}%)
+      </span>
+      <span>
+        <ExitReasonBadge reason="take_profit" /> 익절(TP):{" "}
+        <b>{counts.take_profit}</b> ({((counts.take_profit / total) * 100).toFixed(0)}%)
+      </span>
+    </div>
+  );
+}
+
+function MacroView({ m }: { m: OilMacroContext }) {
+  return (
+    <>
+      <p className="muted" style={{ marginBottom: 12 }}>
+        WTI 일간 수익률과 VIX(공포지수)/DXY(달러지수)의 관계. 외생 변수가 신호 가치에
+        어떤 영향을 주는지 측정 (전통적 가설: WTI ↔ VIX 음, WTI ↔ DXY 음). 일별 종가 기준,{" "}
+        <b>{m.coverage_days.toLocaleString()}</b>일 표본.
+      </p>
+
+      <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
+        상관관계 (Pearson, -1 ~ +1)
+      </div>
+      <table className="oil-table" style={{ marginBottom: 16 }}>
+        <thead><tr><th>변수 쌍</th><th>Pearson r</th><th>방향</th></tr></thead>
+        <tbody>
+          {m.correlations.map((c) => (
+            <tr key={c.pair}>
+              <td>{c.pair}</td>
+              <td className={c.pearson >= 0 ? "pos" : "neg"}>{c.pearson.toFixed(3)}</td>
+              <td>
+                {Math.abs(c.pearson) < 0.05
+                  ? "거의 무상관"
+                  : Math.abs(c.pearson) < 0.15
+                    ? (c.pearson > 0 ? "약한 양" : "약한 음")
+                    : (c.pearson > 0 ? "유의미 양" : "유의미 음")}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="season-grid">
+        <RegimeTable title="VIX 체제별 WTI 평균 일간 수익률" rows={m.vix_regime} />
+        <RegimeTable title="DXY(달러) 체제별 WTI 평균 일간 수익률" rows={m.dxy_regime} />
+      </div>
+
+      <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+        💡 해석: 고VIX 구간 평균수익이 명확히 음수면 "공포 구간 진입 회피" 필터,
+        강달러 구간이 약하면 "약달러 시기만 long 진입" 필터를 신호에 추가하는 식의 전략 강화 가능.
+        OPEC 회의 일정은 별도 캘린더 필요 → 추후 추가 예정.
+      </div>
+    </>
+  );
+}
+
+function RegimeTable({ title, rows }: { title: string; rows: import("../api").OilMacroRegimeCell[] }) {
+  return (
+    <div>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>{title}</div>
+      <table className="oil-table">
+        <thead>
+          <tr><th>체제 구간</th><th>표본일수</th><th>평균수익</th><th>승률</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.bucket}>
+              <td>{r.bucket}</td>
+              <td>{r.n_days.toLocaleString()}</td>
+              <td className={r.wti_avg_return >= 0 ? "pos" : "neg"}>
+                {(r.wti_avg_return >= 0 ? "+" : "") + (r.wti_avg_return * 100).toFixed(3)}%
+              </td>
+              <td>{(r.wti_win_rate * 100).toFixed(1)}%</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -489,7 +653,10 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
         <Metric label="Sharpe (연환산)" value={s.sharpe.toFixed(2)} />
         <Metric label="Profit Factor"
                 value={s.profit_factor == null ? "∞" : s.profit_factor.toFixed(2)} />
-        <Metric label="MDD (realized, USD)" value={usd(s.mdd_usd)} highlight="bad" />
+        <Metric label="MDD (realized, USD)" value={usd(s.mdd_usd)} highlight="bad"
+                sub="청산 시점 누적 PnL 곡선의 peak-trough" />
+        <Metric label="MDD (시가평가, USD)" value={usd(bt.portfolio_mdd_usd)} highlight="bad"
+                sub="🅓 매일 mark-to-market 포트폴리오 가치 곡선의 peak-trough" />
         <Metric label="Profit (USD)" value={usd(s.gross_profit_usd)} highlight="good" />
         <Metric label="Loss (USD)" value={usd(s.gross_loss_usd)} highlight="bad" />
         <Metric label="Net PnL (USD)" value={usd(s.net_pnl_usd)}
@@ -542,23 +709,32 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
 
       <div style={{ marginTop: 16 }}>
         <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
-          등 자산 곡선 (1계약 기준, 누적 USD)
+          등 자산 곡선 — <b style={{ color: "#62c884" }}>녹: realized (청산 시점)</b>{" "}
+          vs <b style={{ color: "#6c9ce9" }}>파랑: 시가평가 (매일 mark-to-market)</b>
         </div>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={eq.map((p) => ({ ...p, idx: p.date }))}>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart>
             <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-            <XAxis dataKey="idx" tick={{ fontSize: 10, fill: "#9aa" }} minTickGap={50} />
+            <XAxis dataKey="date" type="category" allowDuplicatedCategory={false}
+                   tick={{ fontSize: 10, fill: "#9aa" }} minTickGap={50} />
             <YAxis tick={{ fontSize: 10, fill: "#9aa" }}
                    tickFormatter={(v) => (v / 1000).toFixed(0) + "k"} />
             <Tooltip labelStyle={{ color: "#333" }}
                      formatter={(v) => "$" + Number(v).toLocaleString()} />
             <ReferenceLine y={0} stroke="#666" />
-            <Line type="monotone" dataKey="cumulative_usd"
+            <Line data={bt.portfolio_equity_curve} type="monotone"
+                  dataKey="cumulative_usd" name="시가평가(MTM)"
+                  stroke="#6c9ce9" dot={false} strokeWidth={2} />
+            <Line data={eq} type="stepAfter"
+                  dataKey="cumulative_usd" name="Realized"
                   stroke={s.net_pnl_usd >= 0 ? "#62c884" : "#d96265"}
                   dot={false} strokeWidth={2} />
           </LineChart>
         </ResponsiveContainer>
       </div>
+
+      {/* 🅒 청산 사유 분포 (SL/TP 활성 시 의미) */}
+      <ExitReasonSummary trades={bt.trades} />
 
       <details style={{ marginTop: 16 }} open>
         <summary className="muted" style={{ cursor: "pointer" }}>
@@ -575,6 +751,7 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                 <th>청산일</th>
                 <th>액션</th>
                 <th>청산가</th>
+                <th>청산사유</th>
                 <th>수익률</th>
                 <th>MAE($)</th>
                 <th>MFE($)</th>
@@ -591,6 +768,7 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                   <td>{t.exit_date}</td>
                   <td><span className={`bs-badge bs-${exitLabel.toLowerCase()}`}>{exitLabel}</span></td>
                   <td>${t.exit_price.toFixed(2)}</td>
+                  <td><ExitReasonBadge reason={t.exit_reason} /></td>
                   <td className={t.return_pct >= 0 ? "pos" : "neg"}>{pct(t.return_pct, 2)}</td>
                   <td className="neg" title="장중 최악 평가손실">{usd(t.mae_usd)}</td>
                   <td className="pos" title="장중 최고 평가이익">{usd(t.mfe_usd)}</td>

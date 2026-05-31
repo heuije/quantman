@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from quant_core.oil_futures import (
     CostModel,
+    ExitRules,
     Side,
     generate_signals,
     grid_search,
@@ -127,12 +128,15 @@ class TradeOut(BaseModel):
     net_pnl_usd: float
     mae_usd: float    # 🅐 보유 중 최악 평가손실 (음수, 1계약)
     mfe_usd: float    # 🅐 보유 중 최고 평가이익 (양수, 1계약)
+    exit_reason: str  # 'horizon' | 'stop_loss' | 'take_profit'
 
 
 class BacktestResponse(BaseModel):
     summary: SummaryOut
     trades: list[TradeOut]
-    equity_curve: list[EquityPoint]
+    equity_curve: list[EquityPoint]                # realized (기존)
+    portfolio_equity_curve: list[EquityPoint]      # 🅓 mark-to-market 시가평가
+    portfolio_mdd_usd: float                       # 🅓 시가평가 MDD
 
 
 class BestCellOut(BaseModel):
@@ -271,6 +275,9 @@ class BacktestRequest(BaseModel):
     horizon_days: int = Field(..., ge=1, le=500)
     commission: float = 2.5
     slippage_ticks: int = 1
+    # 🅒 SL/TP 시뮬레이터 — None이면 기존 horizon 고정 보유
+    stop_loss_pct: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    take_profit_pct: Optional[float] = Field(default=None, ge=0.0, le=2.0)
 
 
 @router.post("/backtest", response_model=BacktestResponse)
@@ -282,7 +289,9 @@ def backtest(req: BacktestRequest):
     if not sigs:
         raise HTTPException(404, "신호가 발생하지 않음 — 임계값/타입 확인")
     res = run_backtest(
-        df, sigs, req.horizon_days, CostModel(req.commission, req.slippage_ticks)
+        df, sigs, req.horizon_days,
+        CostModel(req.commission, req.slippage_ticks),
+        ExitRules(req.stop_loss_pct, req.take_profit_pct),
     )
     s = summarize(res)
     return BacktestResponse(
@@ -319,6 +328,7 @@ def backtest(req: BacktestRequest):
                 net_pnl_usd=t.net_pnl_usd,
                 mae_usd=t.mae_usd,
                 mfe_usd=t.mfe_usd,
+                exit_reason=t.exit_reason,
             )
             for t in res.trades
         ],
@@ -326,6 +336,11 @@ def backtest(req: BacktestRequest):
             EquityPoint(date=str(idx.date()), cumulative_usd=float(val))
             for idx, val in res.equity_curve.items()
         ],
+        portfolio_equity_curve=[
+            EquityPoint(date=str(idx.date()), cumulative_usd=float(val))
+            for idx, val in res.portfolio_equity_curve.items()
+        ],
+        portfolio_mdd_usd=res.portfolio_mdd_usd,
     )
 
 
@@ -462,3 +477,117 @@ def seasonality():
         ))
 
     return SeasonalityResponse(monthly=monthly, weekday=weekday)
+
+
+# ───── 🅔 Macro context (VIX·DXY 외생 변수) ─────────────────────────
+
+from pathlib import Path  # noqa: E402
+
+_MACRO_CSV = Path(__file__).resolve().parents[3] / "core" / "data" / "macro_daily.csv"
+
+
+@lru_cache(maxsize=1)
+def _macro_df() -> Optional[pd.DataFrame]:
+    if not _MACRO_CSV.exists():
+        return None
+    m = pd.read_csv(_MACRO_CSV, parse_dates=["date"])
+    return m
+
+
+class MacroRegimeCell(BaseModel):
+    bucket: str           # 예: "VIX < 15", "VIX >= 25"
+    n_days: int
+    wti_avg_return: float
+    wti_win_rate: float
+
+
+class MacroCorrelation(BaseModel):
+    pair: str             # 예: "WTI vs VIX"
+    pearson: float        # -1 ~ +1
+
+
+class MacroResponse(BaseModel):
+    available: bool
+    coverage_days: int
+    correlations: list[MacroCorrelation]
+    vix_regime: list[MacroRegimeCell]    # 3 buckets
+    dxy_regime: list[MacroRegimeCell]    # 3 buckets
+
+
+@router.get("/macro-context", response_model=MacroResponse)
+def macro_context():
+    """WTI 일간 수익률과 VIX·DXY 관계 — 외생 변수 신호 가치 측정.
+
+    - 상관관계: WTI vs VIX (음의 상관 예상 — risk-off에 유가 약세),
+              WTI vs DXY (음의 상관 — 강달러에 commodity 약세)
+    - 체제 분할: VIX 저/중/고 / DXY 저/중/고 구간별 WTI 평균수익·승률
+    """
+    wti = _df().copy()
+    macro = _macro_df()
+    if macro is None or macro.empty:
+        return MacroResponse(
+            available=False, coverage_days=0,
+            correlations=[], vix_regime=[], dxy_regime=[],
+        )
+
+    wti["ret"] = wti["close"].pct_change()
+    merged = wti.merge(macro, on="date", how="inner").dropna(
+        subset=["ret", "vix_close", "dxy_close"]
+    )
+    if len(merged) == 0:
+        return MacroResponse(
+            available=False, coverage_days=0,
+            correlations=[], vix_regime=[], dxy_regime=[],
+        )
+
+    # 1) 상관관계
+    correlations = [
+        MacroCorrelation(pair="WTI vs VIX", pearson=float(merged["ret"].corr(merged["vix_close"].pct_change()))),
+        MacroCorrelation(pair="WTI vs DXY", pearson=float(merged["ret"].corr(merged["dxy_close"].pct_change()))),
+        MacroCorrelation(pair="WTI vs VIX(level)", pearson=float(merged["ret"].corr(merged["vix_close"]))),
+        MacroCorrelation(pair="WTI vs DXY(level)", pearson=float(merged["ret"].corr(merged["dxy_close"]))),
+    ]
+
+    # 2) VIX 체제 (3분위: 저/중/고)
+    vix_q33 = merged["vix_close"].quantile(0.33)
+    vix_q66 = merged["vix_close"].quantile(0.66)
+    vix_buckets = [
+        (f"VIX < {vix_q33:.1f} (저변동)", merged[merged["vix_close"] < vix_q33]),
+        (f"{vix_q33:.1f} ≤ VIX < {vix_q66:.1f} (중변동)",
+         merged[(merged["vix_close"] >= vix_q33) & (merged["vix_close"] < vix_q66)]),
+        (f"VIX ≥ {vix_q66:.1f} (고변동)", merged[merged["vix_close"] >= vix_q66]),
+    ]
+    vix_regime = [
+        MacroRegimeCell(
+            bucket=name, n_days=len(df_b),
+            wti_avg_return=float(df_b["ret"].mean()) if len(df_b) else 0.0,
+            wti_win_rate=float((df_b["ret"] > 0).mean()) if len(df_b) else 0.0,
+        )
+        for name, df_b in vix_buckets
+    ]
+
+    # 3) DXY 체제 (강·중·약달러 — 같은 3분위)
+    dxy_q33 = merged["dxy_close"].quantile(0.33)
+    dxy_q66 = merged["dxy_close"].quantile(0.66)
+    dxy_buckets = [
+        (f"DXY < {dxy_q33:.1f} (약달러)", merged[merged["dxy_close"] < dxy_q33]),
+        (f"{dxy_q33:.1f} ≤ DXY < {dxy_q66:.1f} (중간)",
+         merged[(merged["dxy_close"] >= dxy_q33) & (merged["dxy_close"] < dxy_q66)]),
+        (f"DXY ≥ {dxy_q66:.1f} (강달러)", merged[merged["dxy_close"] >= dxy_q66]),
+    ]
+    dxy_regime = [
+        MacroRegimeCell(
+            bucket=name, n_days=len(df_b),
+            wti_avg_return=float(df_b["ret"].mean()) if len(df_b) else 0.0,
+            wti_win_rate=float((df_b["ret"] > 0).mean()) if len(df_b) else 0.0,
+        )
+        for name, df_b in dxy_buckets
+    ]
+
+    return MacroResponse(
+        available=True,
+        coverage_days=len(merged),
+        correlations=correlations,
+        vix_regime=vix_regime,
+        dxy_regime=dxy_regime,
+    )

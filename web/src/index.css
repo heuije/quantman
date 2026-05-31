@@ -2234,7 +2234,8 @@ thead th { color: var(--muted); font-weight: 600; }
   position: sticky;
   top: 0;
   z-index: 2;
-  background: var(--panel-bg, #161b22);
+  background: var(--bg);             /* 프로젝트 라이트 테마와 동일 (#faf9f6) */
+  color: var(--muted);
   box-shadow: 0 1px 0 var(--border);
 }
 /* 첫 번째 컬럼도 가로 스크롤 시 고정 */
@@ -2243,19 +2244,22 @@ thead th { color: var(--muted); font-weight: 600; }
   position: sticky;
   left: 0;
   z-index: 1;
-  background: var(--panel-bg, #161b22);
+  background: var(--bg);
 }
 .sticky-table thead th:first-child {
   z-index: 3;   /* 코너: 헤더 행 + 첫 열 둘 다 고정이라 우선순위 ↑ */
 }
 .sticky-table tbody tr.selected-row td:first-child,
 .sticky-table tbody tr.selected-row th:first-child {
-  background: rgba(108, 156, 233, 0.15);
+  background: rgba(108, 156, 233, 0.10);
 }
 .sticky-table tbody tr:hover td:first-child,
 .sticky-table tbody tr:hover th:first-child {
-  background: rgba(255,255,255,0.06);
+  background: rgba(0, 0, 0, 0.03);
 }
+
+/* 날짜 컬럼은 한 줄로 (줄바꿈 방지) */
+.oil-table td, .oil-table th { white-space: nowrap; }
 
 /* 정렬 가능 헤더 */
 .oil-table th.sortable:hover { color: var(--text); }
@@ -2309,3 +2313,33 @@ thead th { color: var(--muted); font-weight: 600; }
   display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
 }
 @media (max-width: 760px) { .season-tables { grid-template-columns: 1fr; } }
+
+/* SL/TP toolbar */
+.sltp-toolbar {
+  background: rgba(108, 156, 233, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+}
+.sltp-toolbar input[type=number] {
+  padding: 4px 8px;
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* Exit reason 뱃지 — horizon 추가 */
+.bs-horizon {
+  background: rgba(150, 150, 150, 0.15);
+  color: #666;
+  border: 1px solid rgba(150, 150, 150, 0.4);
+}
+
+.exit-summary {
+  margin-top: 10px;
+  display: flex; flex-wrap: wrap; gap: 16px;
+  font-size: 13px; padding: 8px 12px;
+  background: rgba(0,0,0,0.03); border-radius: 6px;
+}

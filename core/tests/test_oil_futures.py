@@ -172,7 +172,12 @@ def test_summary_marks_low_sample(small_df: pd.DataFrame) -> None:
 
 def test_summary_empty_trades_safe() -> None:
     from quant_core.oil_futures.backtest import BacktestResult
-    s = summarize(BacktestResult(trades=[], equity_curve=pd.Series(dtype=float)))
+    s = summarize(BacktestResult(
+        trades=[],
+        equity_curve=pd.Series(dtype=float),
+        portfolio_equity_curve=pd.Series(dtype=float),
+        portfolio_mdd_usd=0.0,
+    ))
     assert s.n_trades == 0
     assert s.win_rate == 0.0
     assert s.profit_factor == 0.0

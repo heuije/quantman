@@ -322,6 +322,7 @@ export interface OilTrade {
   net_pnl_usd: number;
   mae_usd: number;   // 🅐 보유 중 최악 평가손실 (음수)
   mfe_usd: number;   // 🅐 보유 중 최고 평가이익 (양수)
+  exit_reason: "horizon" | "stop_loss" | "take_profit";
 }
 
 // 🅒 Seasonality
@@ -346,7 +347,28 @@ export interface OilEquityPoint {
 export interface OilBacktest {
   summary: OilSummary;
   trades: OilTrade[];
-  equity_curve: OilEquityPoint[];
+  equity_curve: OilEquityPoint[];                  // realized
+  portfolio_equity_curve: OilEquityPoint[];        // 🅓 시가평가 (mark-to-market)
+  portfolio_mdd_usd: number;                       // 🅓 시가평가 MDD
+}
+
+// 🅔 Macro context (VIX, DXY)
+export interface OilMacroRegimeCell {
+  bucket: string;
+  n_days: number;
+  wti_avg_return: number;
+  wti_win_rate: number;
+}
+export interface OilMacroCorrelation {
+  pair: string;
+  pearson: number;
+}
+export interface OilMacroContext {
+  available: boolean;
+  coverage_days: number;
+  correlations: OilMacroCorrelation[];
+  vix_regime: OilMacroRegimeCell[];
+  dxy_regime: OilMacroRegimeCell[];
 }
 
 export interface OilWalkForward {
@@ -400,6 +422,8 @@ export const oilApi = {
     horizon_days: number;
     commission?: number;
     slippage_ticks?: number;
+    stop_loss_pct?: number | null;       // 🅒 SL/TP 시뮬레이터
+    take_profit_pct?: number | null;
   }) =>
     req<OilBacktest>("/oil-futures/backtest", {
       method: "POST",
@@ -418,4 +442,5 @@ export const oilApi = {
       body: JSON.stringify(body),
     }),
   seasonality: () => req<OilSeasonality>("/oil-futures/seasonality"),
+  macroContext: () => req<OilMacroContext>("/oil-futures/macro-context"),
 };
