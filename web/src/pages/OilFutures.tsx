@@ -255,6 +255,7 @@ export default function OilFutures() {
             <div><div className="muted">실시간 현재가</div>
               <div className="meta-value">
                 {price ? `$${price.price.toFixed(2)}` : "—"}
+                <span className="meta-unit">/배럴</span>
                 {price?.change_pct != null && (
                   <span className={"meta-delta " + (price.change_pct >= 0 ? "pos" : "neg")}>
                     {price.change_pct >= 0 ? "▲" : "▼"} {Math.abs(price.change_pct * 100).toFixed(2)}%
@@ -268,7 +269,7 @@ export default function OilFutures() {
               )}
             </div>
             <div><div className="muted">기간</div>
-              <div className="meta-value">{info.start_date} ~ {info.end_date}</div></div>
+              <div className="meta-value meta-value-range">{info.start_date} ~ {info.end_date}</div></div>
             <div><div className="muted">영업일</div>
               <div className="meta-value">D+{info.n_rows.toLocaleString()} <span className="meta-sub-inline">(~{Math.round(info.n_rows / 252)}년)</span></div></div>
             <div><div className="muted">가격 범위 (23년)</div>

@@ -2473,3 +2473,12 @@ thead th { color: var(--muted); font-weight: 600; }
   padding: 10px 12px;
   margin-top: 8px;
 }
+
+/* 메타 — 가격 단위(/배럴) + 기간 한 줄 표기 */
+.meta-unit { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 2px; }
+.meta-value-range {
+  white-space: nowrap;       /* 한 줄 강제 */
+  font-size: 15px;           /* 기본 meta-value보다 축소해 한 줄에 맞춤 */
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
