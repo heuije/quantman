@@ -2097,3 +2097,125 @@ thead th { color: var(--muted); font-weight: 600; }
 .trading-timeline .tl-loading,
 .trading-timeline .tl-empty   { color: var(--muted); font-size: 13px; padding: 8px 0; }
 .trading-timeline .tl-error   { color: var(--red); font-size: 13px; }
+
+/* ─── Oil Futures 대시보드 (Phase 2) ──────────────────────────────── */
+.oil-page { max-width: 1200px; margin: 0 auto; }
+.oil-header { margin-bottom: 20px; }
+.oil-header h1 { margin: 0 0 6px; font-size: 22px; }
+.oil-header p { margin: 0; font-size: 13px; }
+
+.section-title { font-size: 16px; margin: 0 0 12px; font-weight: 600; }
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+.meta-value { font-size: 18px; font-weight: 600; margin-top: 4px; }
+
+.heatmap-wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 760px) {
+  .heatmap-wrap { grid-template-columns: 1fr; }
+}
+.heatmap-block { min-width: 0; }
+.heatmap-title { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.heatmap-table { width: 100%; border-collapse: separate; border-spacing: 2px; }
+.heatmap-table th {
+  font-size: 11px; color: var(--muted); padding: 4px; font-weight: 500;
+}
+.heatmap-table th:first-child { width: 50px; }
+.heatmap-table td {
+  text-align: center;
+  border-radius: 4px;
+  padding: 4px 2px;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  transition: outline-color 0.1s;
+}
+.heat-cell { display: flex; flex-direction: column; align-items: center; }
+
+.oil-toolbar {
+  display: flex; gap: 16px; align-items: center; margin-bottom: 12px;
+  flex-wrap: wrap; font-size: 13px;
+}
+.oil-toolbar select, .oil-toolbar input[type=date] {
+  padding: 4px 8px; background: var(--panel-bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.oil-toolbar button {
+  padding: 6px 14px; background: var(--accent); color: #fff;
+  border: none; border-radius: 4px; cursor: pointer;
+}
+.oil-toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.table-scroll { overflow-x: auto; }
+.oil-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.oil-table th, .oil-table td {
+  padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--border);
+}
+.oil-table th { font-weight: 600; color: var(--muted); text-align: right; }
+.oil-table th:first-child, .oil-table td:first-child { text-align: left; }
+.oil-table tbody tr { cursor: pointer; }
+.oil-table tbody tr:hover { background: rgba(255,255,255,0.04); }
+.oil-table tr.selected-row { background: rgba(108, 156, 233, 0.15); }
+.oil-table .short { color: var(--red); font-weight: 600; }
+.oil-table .long { color: var(--green); font-weight: 600; }
+.oil-table .pos { color: var(--green); }
+.oil-table .neg { color: var(--red); }
+
+.bt-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+.metric-card {
+  background: rgba(255,255,255,0.03);
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.metric-value {
+  font-size: 18px; font-weight: 600; margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.warn-banner {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: rgba(230, 194, 89, 0.12);
+  border: 1px solid rgba(230, 194, 89, 0.4);
+  border-radius: 6px;
+  color: #e6c259;
+  font-size: 13px;
+}
+
+.wf-view { display: flex; flex-direction: column; gap: 12px; }
+.wf-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .wf-row { grid-template-columns: 1fr; } }
+.wf-block {
+  padding: 12px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+.summary-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 6px 16px; margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.summary-grid .muted { font-size: 11px; }
+.wf-badge {
+  padding: 10px 14px;
+  border-radius: 6px;
+  text-align: center;
+  font-weight: 600;
+  color: #1a1a1a;
+}

@@ -21,7 +21,7 @@ from . import (calendar_cache, data_cache, kis_master_cache, krx_cache,
 from .config import settings
 from .db import create_db_and_tables
 from .routers import (auth, backtest, calendars as calendars_router, commands,
-                       dataset, market, portfolio,
+                       dataset, market, oil_futures, portfolio,
                        preview as preview_router,
                        screener as screener_router,
                        settings as settings_router, strategies, sync,
@@ -484,6 +484,7 @@ app.include_router(dataset.router)
 app.include_router(preview_router.router)
 app.include_router(calendars_router.router)
 app.include_router(trading_router.router)
+app.include_router(oil_futures.router)
 
 
 @app.get("/health")

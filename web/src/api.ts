@@ -243,3 +243,151 @@ export function detectOS(): "mac" | "windows" | "other" {
   if (/Windows/.test(ua)) return "windows";
   return "other";
 }
+
+// ─── Oil Futures (WTI) 분석 ──────────────────────────────────────────
+// quant_core.oil_futures 백엔드(/oil-futures/*) 호출 + 응답 타입.
+
+export type OilSide = "short" | "long";
+
+export interface OilDataInfo {
+  n_rows: number;
+  start_date: string;
+  end_date: string;
+  price_min: number;
+  price_max: number;
+}
+
+export interface OilPricePoint {
+  date: string;
+  close: number;
+  high: number;
+  low: number;
+}
+
+export interface OilGridCell {
+  side: OilSide;
+  threshold: number;
+  horizon: number;
+  n_trades: number;
+  win_rate: number;
+  avg_return: number;
+  sharpe: number;
+  mdd_usd: number;
+  net_pnl_usd: number;
+  profit_factor: number | null;   // null = 손실 0건 (∞)
+  low_sample: boolean;
+}
+
+export interface OilSignal {
+  date: string;
+  side: OilSide;
+  threshold: number;
+  entry_ref_close: number;
+}
+
+export interface OilSummary {
+  n_trades: number;
+  win_rate: number;
+  avg_return: number;
+  avg_win: number;
+  avg_loss: number;
+  profit_factor: number | null;
+  sharpe: number;
+  mdd_usd: number;
+  net_pnl_usd: number;
+  low_sample: boolean;
+}
+
+export interface OilTrade {
+  signal_date: string;
+  side: OilSide;
+  threshold: number;
+  entry_date: string;
+  entry_price: number;
+  exit_date: string;
+  exit_price: number;
+  horizon_days: number;
+  return_pct: number;
+  net_pnl_usd: number;
+}
+
+export interface OilEquityPoint {
+  date: string;
+  cumulative_usd: number;
+}
+
+export interface OilBacktest {
+  summary: OilSummary;
+  trades: OilTrade[];
+  equity_curve: OilEquityPoint[];
+}
+
+export interface OilWalkForward {
+  train_start: string;
+  train_end: string;
+  test_start: string;
+  test_end: string;
+  best_in_sample: {
+    side: OilSide;
+    threshold: number;
+    horizon: number;
+    summary: OilSummary;
+  };
+  out_of_sample: OilSummary;
+}
+
+export const oilApi = {
+  dataInfo: () => req<OilDataInfo>("/oil-futures/data-info"),
+  prices: (start?: string, end?: string) => {
+    const qs = new URLSearchParams();
+    if (start) qs.set("start", start);
+    if (end) qs.set("end", end);
+    const q = qs.toString();
+    return req<OilPricePoint[]>("/oil-futures/prices" + (q ? "?" + q : ""));
+  },
+  grid: (opts: {
+    shorts?: number[];
+    longs?: number[];
+    horizons?: number[];
+    commission?: number;
+    slippage_ticks?: number;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.shorts?.length) qs.set("shorts", opts.shorts.join(","));
+    if (opts.longs?.length) qs.set("longs", opts.longs.join(","));
+    if (opts.horizons?.length) qs.set("horizons", opts.horizons.join(","));
+    if (opts.commission !== undefined) qs.set("commission", String(opts.commission));
+    if (opts.slippage_ticks !== undefined)
+      qs.set("slippage_ticks", String(opts.slippage_ticks));
+    const q = qs.toString();
+    return req<OilGridCell[]>("/oil-futures/grid" + (q ? "?" + q : ""));
+  },
+  signals: (type: OilSide, threshold: number, since?: string) => {
+    const qs = new URLSearchParams({ type, threshold: String(threshold) });
+    if (since) qs.set("since", since);
+    return req<OilSignal[]>("/oil-futures/signals?" + qs.toString());
+  },
+  backtest: (body: {
+    side: OilSide;
+    threshold: number;
+    horizon_days: number;
+    commission?: number;
+    slippage_ticks?: number;
+  }) =>
+    req<OilBacktest>("/oil-futures/backtest", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  walkforward: (body: {
+    shorts?: number[];
+    longs?: number[];
+    horizons?: number[];
+    split_date: string;
+    commission?: number;
+    slippage_ticks?: number;
+  }) =>
+    req<OilWalkForward>("/oil-futures/walkforward", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
