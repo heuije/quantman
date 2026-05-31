@@ -250,17 +250,19 @@ def run_backtest(
         entry_d = pd.Timestamp(entry_row["date"])
         exit_d = pd.Timestamp(exit_row["date"])
         num_rolls = sum(1 for e in expiries if entry_d < e <= exit_d)
+        # 만기 롤오버 비용/이익 (1계약 USD, ≤0 비용 / ≥0 이익).
+        # roll_cost_pct: 양수=contango 비용, 음수=backwardation 이익.
+        # pct==0 이면 베이스라인 보존 위해 비용 미적용 (횟수만 num_rollovers로 기록).
         roll_cost = 0.0
-        if num_rolls > 0 and roll.roll_cost_pct > 0:
-            # 롤 1회당: notional(진입가×멀티플) 대비 roll_cost_pct + (옵션) 왕복 거래비용
+        if num_rolls > 0 and roll.roll_cost_pct != 0:
             notional = entry_price * WTI_MULTIPLIER
+            # term-structure 성분 (부호 반영): pct>0 → 비용(음수)
             roll_cost = -(num_rolls * roll.roll_cost_pct * notional)
+            # 거래 마찰: 매 롤 왕복 수수료·슬리피지 (항상 비용)
             if roll.apply_txn_per_roll:
-                # 각 롤 = 청산+재진입 = 왕복 (수수료 2회 + 슬리피지 2회분)
                 txn = 2 * cost.commission_per_contract + 2 * slip * WTI_MULTIPLIER
                 roll_cost -= num_rolls * txn
             net += roll_cost
-            # 수익률에도 반영 (notional 대비)
             ret += roll_cost / notional if notional else 0.0
 
         trades.append(

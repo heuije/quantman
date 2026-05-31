@@ -409,8 +409,9 @@ class BacktestRequest(BaseModel):
     # 🅒 SL/TP 시뮬레이터 — None이면 기존 horizon 고정 보유
     stop_loss_pct: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     take_profit_pct: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    # 선물 만기 롤오버 비용 (%/회, 추정 가정) — 0이면 비용 미적용
-    roll_cost_pct: float = Field(default=0.0, ge=0.0, le=0.1)
+    # 선물 만기 롤오버 비용 (%/회, 추정 가정) — 0이면 미적용.
+    # 양수=contango 비용, 음수=backwardation 이익 (현재 WTI는 backwardation).
+    roll_cost_pct: float = Field(default=0.0, ge=-0.1, le=0.1)
 
 
 @router.post("/backtest", response_model=BacktestResponse)

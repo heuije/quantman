@@ -2482,3 +2482,8 @@ thead th { color: var(--muted); font-weight: 600; }
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
+
+/* 롤 비용 빠른 입력 버튼 + 도움말 */
+.roll-quick { display: inline-flex; gap: 6px; }
+.roll-quick .ghost { padding: 3px 8px; font-size: 11px; }
+.roll-help { font-size: 11px; line-height: 1.5; margin-top: 6px; flex-basis: 100%; }

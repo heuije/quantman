@@ -369,20 +369,28 @@ export default function OilFutures() {
           <label>
             롤 비용&nbsp;
             <input
-              type="number" min={0} max={5} step={0.1}
+              type="number" min={-5} max={5} step={0.1}
               value={rollCost}
               placeholder="0"
               onChange={(e) => setRollCost(e.target.value === "" ? "" : Number(e.target.value))}
-              style={{ width: 64 }}
+              style={{ width: 72 }}
             />
             &nbsp;% / 롤
           </label>
-          <button onClick={() => setRollCost("")} className="ghost">리셋</button>
-          <span className="muted">
-            WTI는 실물 인수도 → 만기마다 강제 롤오버. 매 롤 contango/backwardation
-            드래그 추정 비용(%/회)을 차감. <b>⚠️ 추정 가정</b> — 정확한 롤 yield는
-            만기물별 데이터 필요. 보유기간 ÷ 21일 ≈ 롤 횟수.
+          <span className="roll-quick">
+            <button className="ghost" onClick={() => setRollCost(0.5)}>콘탱고 +0.5%</button>
+            <button className="ghost" onClick={() => setRollCost(-2)}>backwardation −2%</button>
+            <button className="ghost" onClick={() => setRollCost("")}>리셋(0%)</button>
           </span>
+          <div className="muted roll-help">
+            WTI는 실물 인수도 → 만기마다 강제 롤오버 (보유 ÷ 21일 ≈ 롤 횟수).
+            <b> 양수 = contango 비용(차감), 음수 = backwardation 이익(가산).</b><br />
+            현재(2026-05) WTI는 <b style={{ color: "var(--green)" }}>backwardation(역조)</b> —
+            근월 $87.4 vs 8월물 $85.3(−2.4%), 12월물 $78.3(−10%) → 롤 시 오히려 이익이라
+            <b> −2% 정도</b> 입력이 현실적. 역사적 평균은 국면마다 달라(콘탱고 +0.3~1%/월 ~
+            슈퍼콘탱고 +10%, 또는 backwardation 시 이익) <b>고정값 없음</b>.
+            <span style={{ color: "#c9a227" }}> ⚠️ 추정 가정 — 정확한 롤 yield는 만기물별 데이터 필요.</span>
+          </div>
         </div>
 
         {!selected ? (
@@ -944,15 +952,19 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
             sub={`전체 거래 합산 (trade당 평균 ${s.n_trades ? (s.total_rollovers / s.n_trades).toFixed(1) : 0}회)`}
           />
           <Metric
-            label="롤 비용 합계 (USD)"
+            label="롤 손익 합계 (USD)"
             value={usd(s.total_roll_cost_usd)}
-            highlight={s.total_roll_cost_usd < 0 ? "bad" : null}
-            sub={s.total_roll_cost_usd < 0 ? "Net PnL에 이미 차감 반영됨" : "롤 비용 0% (미적용)"}
+            highlight={s.total_roll_cost_usd < 0 ? "bad" : s.total_roll_cost_usd > 0 ? "good" : null}
+            sub={
+              s.total_roll_cost_usd < 0 ? "contango 비용 — Net PnL에 차감 반영됨"
+              : s.total_roll_cost_usd > 0 ? "backwardation 이익 — Net PnL에 가산 반영됨"
+              : "롤 비용 0% (미적용 — 횟수만 표시)"
+            }
           />
         </div>
-        {s.total_roll_cost_usd < 0 && (
+        {s.total_roll_cost_usd !== 0 && (
           <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-            ⚠️ 롤 비용은 <b>추정 가정</b>입니다. 우리 데이터는 연속물 단일 시계열이라
+            ⚠️ 롤 손익은 <b>추정 가정</b>입니다. 우리 데이터는 연속물 단일 시계열이라
             실제 근월/원월 가격차(term structure)가 없어, 정확한 contango/backwardation
             yield는 만기물별 데이터가 필요합니다.
           </div>
