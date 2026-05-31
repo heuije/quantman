@@ -53,6 +53,25 @@ class ExitRules:
 
 
 @dataclass(frozen=True)
+class RollModel:
+    """선물 만기 강제 롤오버 모델 (A-2: 만기 청산 → 재진입 → horizon까지 유지).
+
+    WTI는 실물 인수도라 만기 전 강제 청산/롤오버 필수. 보유기간에 만기가 끼면
+    그 횟수만큼 롤오버가 발생하고, 매 롤마다 contango/backwardation 롤 비용 +
+    거래 마찰이 든다.
+
+    roll_cost_pct: 롤오버 1회당 추정 비용 (notional 대비, 양수=비용).
+      ⚠️ 추정 가정 — 우리 데이터는 연속물 단일 시계열이라 실제 근월/원월
+      가격차(term structure)가 없다. 정확한 롤 yield 계산엔 만기물별 데이터 필요.
+      예: 0.005 = 롤 1회당 0.5% 비용 (contango 평균적 드래그 가정).
+    apply_txn_per_roll: 롤마다 진입/청산 왕복 거래비용도 부과할지.
+    """
+
+    roll_cost_pct: float = 0.0
+    apply_txn_per_roll: bool = True
+
+
+@dataclass(frozen=True)
 class Trade:
     """완결된 단일 거래.
 
@@ -68,11 +87,36 @@ class Trade:
     exit_date: pd.Timestamp
     exit_price: float        # 청산가 (horizon_days 후 종가)
     gross_pnl_usd: float     # 1계약 기준, 비용 차감 전
-    net_pnl_usd: float       # 1계약 기준, 비용 차감 후
-    return_pct: float        # gross 수익률 (sign 적용)
+    net_pnl_usd: float       # 1계약 기준, 비용 차감 후 (롤 비용 포함)
+    return_pct: float        # gross 수익률 (sign 적용, 롤 비용 차감 후)
     mae_usd: float           # 보유 중 최악 평가손실 (음수 또는 0, 1계약)
     mfe_usd: float           # 보유 중 최고 평가이익 (양수 또는 0, 1계약)
     exit_reason: str         # 'horizon' | 'stop_loss' | 'take_profit'
+    num_rollovers: int = 0   # 보유 중 통과한 만기(=강제 롤오버) 횟수
+    roll_cost_usd: float = 0.0  # 롤 비용 총합 (음수 또는 0, 1계약)
+
+
+def wti_expiry_dates(start: pd.Timestamp, end: pd.Timestamp) -> list[pd.Timestamp]:
+    """WTI(CL) 월물 만기일 추정 리스트.
+
+    CME 규칙: 인도월 전월 25일의 3영업일 전 거래 종료.
+    → 각 캘린더 월마다 1개 만기 (대략 20~22일경).
+    start~end 범위를 덮는 모든 월의 만기일을 반환.
+    """
+    out: list[pd.Timestamp] = []
+    # 범위보다 한 달 여유 두고 순회
+    cur = pd.Timestamp(start.year, start.month, 1) - pd.DateOffset(months=1)
+    last = pd.Timestamp(end.year, end.month, 1) + pd.DateOffset(months=2)
+    while cur <= last:
+        # 이 달(cur) 25일에서 3영업일 전 = 인도월(cur+1)물의 만기
+        twenty_fifth = pd.Timestamp(cur.year, cur.month, 25)
+        # 25일 포함 직전 영업일들 카운트 (주말 제외, 공휴일은 근사 무시)
+        bd = pd.bdate_range(end=twenty_fifth, periods=4)
+        expiry = bd[0]  # 3영업일 전 (4개 중 첫째 = 25일 포함 시 -3)
+        if start - pd.Timedelta(days=40) <= expiry <= end + pd.Timedelta(days=40):
+            out.append(expiry)
+        cur = cur + pd.DateOffset(months=1)
+    return sorted(set(out))
 
 
 @dataclass(frozen=True)
@@ -91,6 +135,7 @@ def run_backtest(
     horizon_days: int,
     cost: CostModel = CostModel(),
     exits: ExitRules = ExitRules(),
+    roll: RollModel = RollModel(),
 ) -> BacktestResult:
     """신호 리스트에 horizon_days 보유 정책 적용 → BacktestResult.
 
@@ -98,6 +143,7 @@ def run_backtest(
     horizon_days 후 데이터가 부족한 신호는 거래로 잡지 않는다 (미실현 포지션).
 
     exits.stop_loss_pct / take_profit_pct 지정 시 horizon 전에 조기 청산.
+    roll.roll_cost_pct > 0 시: 보유 중 통과한 만기 횟수만큼 롤 비용을 차감 (A-2).
     """
     if horizon_days < 1:
         raise ValueError(f"horizon_days >= 1 이어야 함 (입력: {horizon_days})")
@@ -109,6 +155,11 @@ def run_backtest(
     slip = cost.slippage_ticks * WTI_TICK
     sl_pct = exits.stop_loss_pct
     tp_pct = exits.take_profit_pct
+
+    # 만기 스케줄 — 데이터 전체 범위 1회 생성 후 재사용
+    expiries = wti_expiry_dates(
+        pd.Timestamp(df["date"].iloc[0]), pd.Timestamp(df["date"].iloc[-1])
+    ) if len(df) else []
 
     trades: list[Trade] = []
     for sig in signals:
@@ -195,13 +246,30 @@ def run_backtest(
         net = net_price_diff * WTI_MULTIPLIER - 2 * cost.commission_per_contract
         ret = sign * (exit_price / entry_price - 1)
 
+        # ── 만기 강제 롤오버 (A-2) ─────────────────────────────────────
+        entry_d = pd.Timestamp(entry_row["date"])
+        exit_d = pd.Timestamp(exit_row["date"])
+        num_rolls = sum(1 for e in expiries if entry_d < e <= exit_d)
+        roll_cost = 0.0
+        if num_rolls > 0 and roll.roll_cost_pct > 0:
+            # 롤 1회당: notional(진입가×멀티플) 대비 roll_cost_pct + (옵션) 왕복 거래비용
+            notional = entry_price * WTI_MULTIPLIER
+            roll_cost = -(num_rolls * roll.roll_cost_pct * notional)
+            if roll.apply_txn_per_roll:
+                # 각 롤 = 청산+재진입 = 왕복 (수수료 2회 + 슬리피지 2회분)
+                txn = 2 * cost.commission_per_contract + 2 * slip * WTI_MULTIPLIER
+                roll_cost -= num_rolls * txn
+            net += roll_cost
+            # 수익률에도 반영 (notional 대비)
+            ret += roll_cost / notional if notional else 0.0
+
         trades.append(
             Trade(
                 signal=sig,
                 horizon_days=horizon_days,
-                entry_date=pd.Timestamp(entry_row["date"]),
+                entry_date=entry_d,
                 entry_price=entry_price,
-                exit_date=pd.Timestamp(exit_row["date"]),
+                exit_date=exit_d,
                 exit_price=exit_price,
                 gross_pnl_usd=gross,
                 net_pnl_usd=net,
@@ -209,6 +277,8 @@ def run_backtest(
                 mae_usd=mae_usd,
                 mfe_usd=mfe_usd,
                 exit_reason=exit_reason,
+                num_rollovers=num_rolls,
+                roll_cost_usd=roll_cost,
             )
         )
 

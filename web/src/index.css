@@ -2464,3 +2464,12 @@ thead th { color: var(--muted); font-weight: 600; }
 .oil-radio-group input[type=radio] {
   display: none;   /* 라디오 자체는 숨기고 label 스타일링으로 토글 보이기 */
 }
+
+/* 만기 롤오버 비용 시뮬레이터 툴바 */
+.roll-toolbar {
+  background: rgba(201, 162, 39, 0.07);
+  border: 1px solid rgba(201, 162, 39, 0.25);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 8px;
+}

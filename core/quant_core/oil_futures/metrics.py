@@ -44,6 +44,9 @@ class Summary:
     # 🅑 연속 streak
     max_win_streak: int              # 최장 연속 승
     max_loss_streak: int             # 최장 연속 패
+    # 선물 만기 강제 롤오버
+    total_rollovers: int             # 모든 trade의 만기 통과 횟수 합
+    total_roll_cost_usd: float       # 롤 비용 총합 (음수 또는 0)
     low_sample: bool                 # n_trades < LOW_SAMPLE_THRESHOLD
 
 
@@ -69,6 +72,8 @@ def summarize(result: BacktestResult) -> Summary:
             avg_mfe_usd=0.0,
             max_win_streak=0,
             max_loss_streak=0,
+            total_rollovers=0,
+            total_roll_cost_usd=0.0,
             low_sample=True,
         )
 
@@ -152,5 +157,7 @@ def summarize(result: BacktestResult) -> Summary:
         avg_mfe_usd=avg_mfe_usd,
         max_win_streak=max_win_streak,
         max_loss_streak=max_loss_streak,
+        total_rollovers=sum(t.num_rollovers for t in trades),
+        total_roll_cost_usd=float(sum(t.roll_cost_usd for t in trades)),
         low_sample=(n < LOW_SAMPLE_THRESHOLD),
     )

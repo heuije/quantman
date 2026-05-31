@@ -219,6 +219,9 @@ class SummaryOut(BaseModel):
     # 🅑 streak
     max_win_streak: int
     max_loss_streak: int
+    # 선물 만기 강제 롤오버
+    total_rollovers: int
+    total_roll_cost_usd: float
     low_sample: bool
 
 
@@ -236,6 +239,8 @@ class TradeOut(BaseModel):
     mae_usd: float    # 🅐 보유 중 최악 평가손실 (음수, 1계약)
     mfe_usd: float    # 🅐 보유 중 최고 평가이익 (양수, 1계약)
     exit_reason: str  # 'horizon' | 'stop_loss' | 'take_profit'
+    num_rollovers: int       # 보유 중 만기 통과(강제 롤오버) 횟수
+    roll_cost_usd: float     # 롤 비용 (음수 또는 0)
 
 
 class BacktestResponse(BaseModel):
@@ -404,10 +409,13 @@ class BacktestRequest(BaseModel):
     # 🅒 SL/TP 시뮬레이터 — None이면 기존 horizon 고정 보유
     stop_loss_pct: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     take_profit_pct: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    # 선물 만기 롤오버 비용 (%/회, 추정 가정) — 0이면 비용 미적용
+    roll_cost_pct: float = Field(default=0.0, ge=0.0, le=0.1)
 
 
 @router.post("/backtest", response_model=BacktestResponse)
 def backtest(req: BacktestRequest):
+    from quant_core.oil_futures import RollModel
     df = _df()
     short_th = [req.threshold] if req.side == "short" else []
     long_th = [req.threshold] if req.side == "long" else []
@@ -418,6 +426,7 @@ def backtest(req: BacktestRequest):
         df, sigs, req.horizon_days,
         CostModel(req.commission, req.slippage_ticks),
         ExitRules(req.stop_loss_pct, req.take_profit_pct),
+        RollModel(roll_cost_pct=req.roll_cost_pct),
     )
     s = summarize(res)
     return BacktestResponse(
@@ -438,6 +447,8 @@ def backtest(req: BacktestRequest):
             avg_mfe_usd=s.avg_mfe_usd,
             max_win_streak=s.max_win_streak,
             max_loss_streak=s.max_loss_streak,
+            total_rollovers=s.total_rollovers,
+            total_roll_cost_usd=s.total_roll_cost_usd,
             low_sample=s.low_sample,
         ),
         trades=[
@@ -455,6 +466,8 @@ def backtest(req: BacktestRequest):
                 mae_usd=t.mae_usd,
                 mfe_usd=t.mfe_usd,
                 exit_reason=t.exit_reason,
+                num_rollovers=t.num_rollovers,
+                roll_cost_usd=t.roll_cost_usd,
             )
             for t in res.trades
         ],
@@ -523,6 +536,8 @@ def walkforward_endpoint(req: WalkForwardRequest):
                 avg_mfe_usd=bs.avg_mfe_usd,
                 max_win_streak=bs.max_win_streak,
                 max_loss_streak=bs.max_loss_streak,
+                total_rollovers=bs.total_rollovers,
+                total_roll_cost_usd=bs.total_roll_cost_usd,
                 low_sample=bs.low_sample,
             ),
         ),
@@ -543,6 +558,8 @@ def walkforward_endpoint(req: WalkForwardRequest):
             avg_mfe_usd=oos.avg_mfe_usd,
             max_win_streak=oos.max_win_streak,
             max_loss_streak=oos.max_loss_streak,
+            total_rollovers=oos.total_rollovers,
+            total_roll_cost_usd=oos.total_roll_cost_usd,
             low_sample=oos.low_sample,
         ),
     )

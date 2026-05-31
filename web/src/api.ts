@@ -315,6 +315,9 @@ export interface OilSummary {
   // 🅑 streak
   max_win_streak: number;
   max_loss_streak: number;
+  // 선물 만기 롤오버
+  total_rollovers: number;
+  total_roll_cost_usd: number;
   low_sample: boolean;
 }
 
@@ -332,6 +335,8 @@ export interface OilTrade {
   mae_usd: number;   // 🅐 보유 중 최악 평가손실 (음수)
   mfe_usd: number;   // 🅐 보유 중 최고 평가이익 (양수)
   exit_reason: "horizon" | "stop_loss" | "take_profit";
+  num_rollovers: number;     // 보유 중 만기 통과(강제 롤오버) 횟수
+  roll_cost_usd: number;     // 롤 비용 (음수 또는 0)
 }
 
 // 🅒 Seasonality
@@ -434,6 +439,7 @@ export const oilApi = {
     slippage_ticks?: number;
     stop_loss_pct?: number | null;       // 🅒 SL/TP 시뮬레이터
     take_profit_pct?: number | null;
+    roll_cost_pct?: number;              // 선물 만기 롤오버 비용 (%/회, 소수)
   }) =>
     req<OilBacktest>("/oil-futures/backtest", {
       method: "POST",

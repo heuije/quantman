@@ -116,6 +116,7 @@ export default function OilFutures() {
   // 🅒 SL/TP — null이면 비활성. 백테스트 재호출 트리거.
   const [sl, setSl] = useState<number | "">("");        // 예: 10 = -10%
   const [tp, setTp] = useState<number | "">("");        // 예: 20 = +20%
+  const [rollCost, setRollCost] = useState<number | "">("");  // 롤 비용 %/회 (예: 0.5)
 
   // ── 초기 로드 ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -154,11 +155,12 @@ export default function OilFutures() {
         horizon_days: selected.horizon,
         stop_loss_pct: sl === "" ? null : sl / 100,
         take_profit_pct: tp === "" ? null : tp / 100,
+        roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
       })
       .then(setBacktest)
       .catch((e) => console.error("backtest", e))
       .finally(() => setBtLoading(false));
-  }, [selected, sl, tp]);
+  }, [selected, sl, tp, rollCost]);
 
   // 정렬·필터된 그리드
   const gridSorted = useMemo(() => {
@@ -357,6 +359,28 @@ export default function OilFutures() {
           </button>
           <span className="muted">
             진입가 대비 % — 장중 high/low 기준 hit 즉시 청산. 둘 다 비우면 기존 horizon 보유.
+          </span>
+        </div>
+
+        {/* 선물 만기 강제 롤오버 비용 시뮬레이터 */}
+        <div className="oil-toolbar sltp-toolbar roll-toolbar">
+          <span style={{ fontWeight: 600 }}>🛢 만기 롤오버 비용:</span>
+          <label>
+            롤 비용&nbsp;
+            <input
+              type="number" min={0} max={5} step={0.1}
+              value={rollCost}
+              placeholder="0"
+              onChange={(e) => setRollCost(e.target.value === "" ? "" : Number(e.target.value))}
+              style={{ width: 64 }}
+            />
+            &nbsp;% / 롤
+          </label>
+          <button onClick={() => setRollCost("")} className="ghost">리셋</button>
+          <span className="muted">
+            WTI는 실물 인수도 → 만기마다 강제 롤오버. 매 롤 contango/backwardation
+            드래그 추정 비용(%/회)을 차감. <b>⚠️ 추정 가정</b> — 정확한 롤 yield는
+            만기물별 데이터 필요. 보유기간 ÷ 21일 ≈ 롤 횟수.
           </span>
         </div>
 
@@ -908,6 +932,32 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
           />
         </div>
       </div>
+
+      {/* 🛢 선물 만기 강제 롤오버 */}
+      <div className="bt-subgrid">
+        <div className="subgrid-title">🛢 선물 만기 강제 롤오버 — 실물 인수도 회피</div>
+        <div className="bt-metrics">
+          <Metric
+            label="총 롤오버 횟수"
+            value={s.total_rollovers}
+            sub={`전체 거래 합산 (trade당 평균 ${s.n_trades ? (s.total_rollovers / s.n_trades).toFixed(1) : 0}회)`}
+          />
+          <Metric
+            label="롤 비용 합계 (USD)"
+            value={usd(s.total_roll_cost_usd)}
+            highlight={s.total_roll_cost_usd < 0 ? "bad" : null}
+            sub={s.total_roll_cost_usd < 0 ? "Net PnL에 이미 차감 반영됨" : "롤 비용 0% (미적용)"}
+          />
+        </div>
+        {s.total_roll_cost_usd < 0 && (
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            ⚠️ 롤 비용은 <b>추정 가정</b>입니다. 우리 데이터는 연속물 단일 시계열이라
+            실제 근월/원월 가격차(term structure)가 없어, 정확한 contango/backwardation
+            yield는 만기물별 데이터가 필요합니다.
+          </div>
+        )}
+      </div>
+
       {s.low_sample && (
         <div className="warn-banner">
           ⚠️ 거래 수 {s.n_trades}건 (&lt;30) — 통계적 유의성 낮음. 평균이 좋아 보여도 신중히 해석.
@@ -1006,6 +1056,7 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                 <th>청산가</th>
                 <th>청산사유</th>
                 <th>수익률</th>
+                <th title="보유 중 만기 통과(강제 롤오버) 횟수">롤</th>
                 <th>MAE($)</th>
                 <th>MFE($)</th>
                 <th>Net PnL($)</th>
@@ -1023,6 +1074,9 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                   <td>${t.exit_price.toFixed(2)}</td>
                   <td><ExitReasonBadge reason={t.exit_reason} /></td>
                   <td className={t.return_pct >= 0 ? "pos" : "neg"}>{pct(t.return_pct, 2)}</td>
+                  <td title={t.roll_cost_usd < 0 ? `롤 비용 ${usd(t.roll_cost_usd)}` : ""}>
+                    {t.num_rollovers}{t.roll_cost_usd < 0 ? "🛢" : ""}
+                  </td>
                   <td className="neg" title="장중 최악 평가손실">{usd(t.mae_usd)}</td>
                   <td className="pos" title="장중 최고 평가이익">{usd(t.mfe_usd)}</td>
                   <td className={t.net_pnl_usd >= 0 ? "pos" : "neg"}>{usd(t.net_pnl_usd)}</td>
