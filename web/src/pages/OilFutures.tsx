@@ -11,7 +11,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
+  Cell,
   Line,
   LineChart,
   ReferenceLine,
@@ -25,6 +28,7 @@ import {
   type OilBacktest,
   type OilDataInfo,
   type OilGridCell,
+  type OilSeasonality,
   type OilWalkForward,
 } from "../api";
 
@@ -93,9 +97,13 @@ export default function OilFutures() {
   const [wfLoading, setWfLoading] = useState(false);
   const [wfError, setWfError] = useState<string | null>(null);
 
+  // 🅒 Seasonality
+  const [season, setSeason] = useState<OilSeasonality | null>(null);
+
   // ── 초기 로드 ─────────────────────────────────────────────────────
   useEffect(() => {
     oilApi.dataInfo().then(setInfo).catch((e) => console.error("data-info", e));
+    oilApi.seasonality().then(setSeason).catch((e) => console.error("seasonality", e));
     setGridLoading(true);
     oilApi
       .grid()
@@ -332,7 +340,7 @@ export default function OilFutures() {
       </section>
 
       {/* ⑤ Walk-forward */}
-      <section className="panel">
+      <section className="panel" style={{ marginBottom: 16 }}>
         <h2 className="section-title">⑤ Walk-forward 검증 (overfit 체크)</h2>
         <div className="oil-toolbar">
           <label>
@@ -351,6 +359,16 @@ export default function OilFutures() {
         </div>
         {wfError && <div className="error">{wfError}</div>}
         {wf && <WalkForwardView wf={wf} />}
+      </section>
+
+      {/* ⑥ Seasonality */}
+      <section className="panel">
+        <h2 className="section-title">⑥ 🅒 계절성 패턴 — 월별 / 요일별</h2>
+        {!season ? (
+          <div className="muted">로딩 중…</div>
+        ) : (
+          <SeasonalityView data={season} />
+        )}
       </section>
     </div>
   );
@@ -471,11 +489,50 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
         <Metric label="Sharpe (연환산)" value={s.sharpe.toFixed(2)} />
         <Metric label="Profit Factor"
                 value={s.profit_factor == null ? "∞" : s.profit_factor.toFixed(2)} />
-        <Metric label="MDD (USD)" value={usd(s.mdd_usd)} highlight="bad" />
+        <Metric label="MDD (realized, USD)" value={usd(s.mdd_usd)} highlight="bad" />
         <Metric label="Profit (USD)" value={usd(s.gross_profit_usd)} highlight="good" />
         <Metric label="Loss (USD)" value={usd(s.gross_loss_usd)} highlight="bad" />
         <Metric label="Net PnL (USD)" value={usd(s.net_pnl_usd)}
                 highlight={s.net_pnl_usd >= 0 ? "good" : "bad"} />
+      </div>
+
+      {/* 🅐 MAE/MFE 분석 (장중 평가손익) */}
+      <div className="bt-subgrid">
+        <div className="subgrid-title">🅐 장중 평가손익 (MAE/MFE) — 시가평가 위험 가시화</div>
+        <div className="bt-metrics">
+          <Metric
+            label="Worst MAE (장중 최악)"
+            value={usd(s.worst_mae_usd)}
+            highlight="bad"
+            sub="모든 trade 중 가장 깊은 평가손실 — 시가평가 MDD에 근접"
+          />
+          <Metric
+            label="Avg MAE (평균 평가손실)"
+            value={usd(s.avg_mae_usd)}
+            highlight="bad"
+            sub="거래당 평균 장중 최악 평가손실"
+          />
+          <Metric
+            label="Avg MFE (평균 평가이익)"
+            value={usd(s.avg_mfe_usd)}
+            highlight="good"
+            sub="평균 보유 중 최고점 — 익절 룰 설계 근거"
+          />
+        </div>
+      </div>
+
+      {/* 🅑 Streak */}
+      <div className="bt-subgrid">
+        <div className="subgrid-title">🅑 연속 streak — 심리·자금관리 척도</div>
+        <div className="bt-metrics">
+          <Metric label="최장 연승" value={s.max_win_streak} highlight="good" />
+          <Metric
+            label="최장 연패"
+            value={s.max_loss_streak}
+            highlight="bad"
+            sub="이 만큼 연속으로 진 적 있음 — 자금 견딜지 검토"
+          />
+        </div>
       </div>
       {s.low_sample && (
         <div className="warn-banner">
@@ -519,6 +576,8 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                 <th>액션</th>
                 <th>청산가</th>
                 <th>수익률</th>
+                <th>MAE($)</th>
+                <th>MFE($)</th>
                 <th>Net PnL($)</th>
               </tr>
             </thead>
@@ -533,6 +592,8 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                   <td><span className={`bs-badge bs-${exitLabel.toLowerCase()}`}>{exitLabel}</span></td>
                   <td>${t.exit_price.toFixed(2)}</td>
                   <td className={t.return_pct >= 0 ? "pos" : "neg"}>{pct(t.return_pct, 2)}</td>
+                  <td className="neg" title="장중 최악 평가손실">{usd(t.mae_usd)}</td>
+                  <td className="pos" title="장중 최고 평가이익">{usd(t.mfe_usd)}</td>
                   <td className={t.net_pnl_usd >= 0 ? "pos" : "neg"}>{usd(t.net_pnl_usd)}</td>
                 </tr>
               ))}
@@ -595,11 +656,12 @@ function SummaryGrid({ s }: { s: import("../api").OilSummary }) {
 }
 
 function Metric({
-  label, value, highlight = null,
+  label, value, highlight = null, sub = null,
 }: {
   label: string;
   value: React.ReactNode;
   highlight?: "good" | "bad" | "warn" | null;
+  sub?: string | null;
 }) {
   const color = highlight === "good" ? "#62c884"
               : highlight === "bad" ? "#d96265"
@@ -609,6 +671,132 @@ function Metric({
     <div className="metric-card">
       <div className="muted" style={{ fontSize: 12 }}>{label}</div>
       <div className="metric-value" style={{ color }}>{value}</div>
+      {sub && <div className="metric-sub">{sub}</div>}
+    </div>
+  );
+}
+
+// ── 🅒 Seasonality 섹션 ─────────────────────────────────────────────
+function SeasonalityView({ data }: { data: OilSeasonality }) {
+  const monthly = data.monthly.map((c) => ({
+    name: c.name,
+    avg_return_pct: c.avg_return * 100,
+    win_rate_pct: c.win_rate * 100,
+    n_days: c.n_days,
+  }));
+  const weekday = data.weekday.map((c) => ({
+    name: c.name,
+    avg_return_pct: c.avg_return * 100,
+    win_rate_pct: c.win_rate * 100,
+    n_days: c.n_days,
+  }));
+
+  // 색: 양수 녹색 / 음수 빨강
+  const barColor = (v: number) => (v >= 0 ? "#62c884" : "#d96265");
+
+  return (
+    <>
+      <p className="muted" style={{ marginBottom: 12 }}>
+        신호 무관 단순 통계 — 일간 종가-종가 수익률을 월별/요일별로 집계.
+        구조적 약세 시즌(예: 10월 음수)·요일 효과 발견용.
+      </p>
+      <div className="season-grid">
+        <div>
+          <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
+            월별 평균 일간 수익률 (%)
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={monthly}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#9aa" }} />
+              <YAxis tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v.toFixed(2)} />
+              <Tooltip
+                labelStyle={{ color: "#333" }}
+                formatter={(v, _name, item) => {
+                  const p = item.payload as { win_rate_pct: number; n_days: number };
+                  return [
+                    `${Number(v).toFixed(3)}% (승률 ${p.win_rate_pct.toFixed(1)}%, n=${p.n_days})`,
+                    "평균 일간 수익률",
+                  ];
+                }}
+              />
+              <ReferenceLine y={0} stroke="#666" />
+              <Bar dataKey="avg_return_pct">
+                {monthly.map((m, i) => (
+                  <Cell key={i} fill={barColor(m.avg_return_pct)} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div>
+          <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
+            요일별 평균 일간 수익률 (%)
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={weekday}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#9aa" }} />
+              <YAxis tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v.toFixed(2)} />
+              <Tooltip
+                labelStyle={{ color: "#333" }}
+                formatter={(v, _name, item) => {
+                  const p = item.payload as { win_rate_pct: number; n_days: number };
+                  return [
+                    `${Number(v).toFixed(3)}% (승률 ${p.win_rate_pct.toFixed(1)}%, n=${p.n_days})`,
+                    "평균 일간 수익률",
+                  ];
+                }}
+              />
+              <ReferenceLine y={0} stroke="#666" />
+              <Bar dataKey="avg_return_pct">
+                {weekday.map((d, i) => (
+                  <Cell key={i} fill={barColor(d.avg_return_pct)} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+      <div className="season-tables">
+        <SeasonTable title="월별 통계" rows={monthly} />
+        <SeasonTable title="요일별 통계" rows={weekday} />
+      </div>
+    </>
+  );
+}
+
+function SeasonTable({
+  title, rows,
+}: {
+  title: string;
+  rows: { name: string; avg_return_pct: number; win_rate_pct: number; n_days: number }[];
+}) {
+  return (
+    <div>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>{title}</div>
+      <table className="oil-table">
+        <thead>
+          <tr>
+            <th>구간</th>
+            <th>평균수익</th>
+            <th>승률</th>
+            <th>표본일수</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.name}>
+              <td>{r.name}</td>
+              <td className={r.avg_return_pct >= 0 ? "pos" : "neg"}>
+                {(r.avg_return_pct >= 0 ? "+" : "") + r.avg_return_pct.toFixed(3)}%
+              </td>
+              <td>{r.win_rate_pct.toFixed(1)}%</td>
+              <td>{r.n_days.toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

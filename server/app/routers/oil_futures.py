@@ -87,19 +87,6 @@ class SignalEvent(BaseModel):
     entry_ref_close: float
 
 
-class TradeOut(BaseModel):
-    signal_date: str
-    side: str
-    threshold: float
-    entry_date: str
-    entry_price: float
-    exit_date: str
-    exit_price: float
-    horizon_days: int
-    return_pct: float
-    net_pnl_usd: float
-
-
 class EquityPoint(BaseModel):
     date: str
     cumulative_usd: float
@@ -117,7 +104,29 @@ class SummaryOut(BaseModel):
     gross_profit_usd: float
     gross_loss_usd: float
     net_pnl_usd: float
+    # 🅐 MAE/MFE (장중 평가손익)
+    worst_mae_usd: float
+    avg_mae_usd: float
+    avg_mfe_usd: float
+    # 🅑 streak
+    max_win_streak: int
+    max_loss_streak: int
     low_sample: bool
+
+
+class TradeOut(BaseModel):
+    signal_date: str
+    side: str
+    threshold: float
+    entry_date: str
+    entry_price: float
+    exit_date: str
+    exit_price: float
+    horizon_days: int
+    return_pct: float
+    net_pnl_usd: float
+    mae_usd: float    # 🅐 보유 중 최악 평가손실 (음수, 1계약)
+    mfe_usd: float    # 🅐 보유 중 최고 평가이익 (양수, 1계약)
 
 
 class BacktestResponse(BaseModel):
@@ -289,6 +298,11 @@ def backtest(req: BacktestRequest):
             gross_profit_usd=s.gross_profit_usd,
             gross_loss_usd=s.gross_loss_usd,
             net_pnl_usd=s.total_net_pnl_usd,
+            worst_mae_usd=s.worst_mae_usd,
+            avg_mae_usd=s.avg_mae_usd,
+            avg_mfe_usd=s.avg_mfe_usd,
+            max_win_streak=s.max_win_streak,
+            max_loss_streak=s.max_loss_streak,
             low_sample=s.low_sample,
         ),
         trades=[
@@ -303,6 +317,8 @@ def backtest(req: BacktestRequest):
                 horizon_days=t.horizon_days,
                 return_pct=t.return_pct,
                 net_pnl_usd=t.net_pnl_usd,
+                mae_usd=t.mae_usd,
+                mfe_usd=t.mfe_usd,
             )
             for t in res.trades
         ],
@@ -361,6 +377,11 @@ def walkforward_endpoint(req: WalkForwardRequest):
                 gross_profit_usd=bs.gross_profit_usd,
                 gross_loss_usd=bs.gross_loss_usd,
                 net_pnl_usd=bs.total_net_pnl_usd,
+                worst_mae_usd=bs.worst_mae_usd,
+                avg_mae_usd=bs.avg_mae_usd,
+                avg_mfe_usd=bs.avg_mfe_usd,
+                max_win_streak=bs.max_win_streak,
+                max_loss_streak=bs.max_loss_streak,
                 low_sample=bs.low_sample,
             ),
         ),
@@ -376,6 +397,68 @@ def walkforward_endpoint(req: WalkForwardRequest):
             gross_profit_usd=oos.gross_profit_usd,
             gross_loss_usd=oos.gross_loss_usd,
             net_pnl_usd=oos.total_net_pnl_usd,
+            worst_mae_usd=oos.worst_mae_usd,
+            avg_mae_usd=oos.avg_mae_usd,
+            avg_mfe_usd=oos.avg_mfe_usd,
+            max_win_streak=oos.max_win_streak,
+            max_loss_streak=oos.max_loss_streak,
             low_sample=oos.low_sample,
         ),
     )
+
+
+# ───── 🅒 Seasonality 엔드포인트 ─────────────────────────────────────
+
+class SeasonalityCell(BaseModel):
+    key: int           # month(1~12) or weekday(0~4)
+    name: str          # "1월", "월" 같이 사람이 보는 라벨
+    n_days: int
+    avg_return: float  # 일별 수익률 평균 (close-to-close 일간)
+    win_rate: float    # 양수 수익 비율
+
+
+class SeasonalityResponse(BaseModel):
+    monthly: list[SeasonalityCell]
+    weekday: list[SeasonalityCell]
+
+
+@router.get("/seasonality", response_model=SeasonalityResponse)
+def seasonality():
+    """일간 close-to-close 수익률을 월별 / 요일별로 집계 (신호 무관 구조 패턴).
+
+    "10월에 평균 음수 수익" / "월요일이 약함" 같은 시장 구조 발견용.
+    """
+    df = _df().copy()
+    df["ret"] = df["close"].pct_change()
+    df = df.dropna(subset=["ret"])
+    df["month"] = df["date"].dt.month
+    df["weekday"] = df["date"].dt.weekday   # Mon=0, Sun=6
+
+    KO_MONTHS = [f"{m}월" for m in range(1, 13)]
+    KO_WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
+
+    monthly = []
+    for m in range(1, 13):
+        s = df[df["month"] == m]["ret"]
+        if len(s) == 0:
+            continue
+        monthly.append(SeasonalityCell(
+            key=m, name=KO_MONTHS[m - 1],
+            n_days=len(s),
+            avg_return=float(s.mean()),
+            win_rate=float((s > 0).mean()),
+        ))
+
+    weekday = []
+    for w in range(0, 5):  # 평일만 (영업일이라 토/일 거의 없음)
+        s = df[df["weekday"] == w]["ret"]
+        if len(s) == 0:
+            continue
+        weekday.append(SeasonalityCell(
+            key=w, name=KO_WEEKDAYS[w],
+            n_days=len(s),
+            avg_return=float(s.mean()),
+            win_rate=float((s > 0).mean()),
+        ))
+
+    return SeasonalityResponse(monthly=monthly, weekday=weekday)

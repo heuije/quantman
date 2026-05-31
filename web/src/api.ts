@@ -299,6 +299,13 @@ export interface OilSummary {
   gross_profit_usd: number;
   gross_loss_usd: number;
   net_pnl_usd: number;
+  // 🅐 MAE/MFE
+  worst_mae_usd: number;
+  avg_mae_usd: number;
+  avg_mfe_usd: number;
+  // 🅑 streak
+  max_win_streak: number;
+  max_loss_streak: number;
   low_sample: boolean;
 }
 
@@ -313,6 +320,22 @@ export interface OilTrade {
   horizon_days: number;
   return_pct: number;
   net_pnl_usd: number;
+  mae_usd: number;   // 🅐 보유 중 최악 평가손실 (음수)
+  mfe_usd: number;   // 🅐 보유 중 최고 평가이익 (양수)
+}
+
+// 🅒 Seasonality
+export interface OilSeasonCell {
+  key: number;
+  name: string;
+  n_days: number;
+  avg_return: number;
+  win_rate: number;
+}
+
+export interface OilSeasonality {
+  monthly: OilSeasonCell[];
+  weekday: OilSeasonCell[];
 }
 
 export interface OilEquityPoint {
@@ -394,4 +417,5 @@ export const oilApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  seasonality: () => req<OilSeasonality>("/oil-futures/seasonality"),
 };

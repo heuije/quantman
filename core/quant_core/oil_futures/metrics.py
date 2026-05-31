@@ -37,6 +37,13 @@ class Summary:
     gross_loss_usd: float            # 진 거래만 net PnL 합 (USD, 음수)
     sharpe_annualized: float         # 거래 수익률 기반 연환산 Sharpe (rf=0)
     max_drawdown_usd: float          # equity curve 최대낙폭 (음수)
+    # 🅐 MAE/MFE 집계 (장중 평가손익 — horizon 청산 PnL과 별개)
+    worst_mae_usd: float             # 모든 trade 중 최악 평가손실(가장 음수)
+    avg_mae_usd: float               # 평균 MAE (음수 또는 0)
+    avg_mfe_usd: float               # 평균 MFE (양수 또는 0)
+    # 🅑 연속 streak
+    max_win_streak: int              # 최장 연속 승
+    max_loss_streak: int             # 최장 연속 패
     low_sample: bool                 # n_trades < LOW_SAMPLE_THRESHOLD
 
 
@@ -57,6 +64,11 @@ def summarize(result: BacktestResult) -> Summary:
             gross_loss_usd=0.0,
             sharpe_annualized=0.0,
             max_drawdown_usd=0.0,
+            worst_mae_usd=0.0,
+            avg_mae_usd=0.0,
+            avg_mfe_usd=0.0,
+            max_win_streak=0,
+            max_loss_streak=0,
             low_sample=True,
         )
 
@@ -80,6 +92,31 @@ def summarize(result: BacktestResult) -> Summary:
     pnls = pd.Series([t.net_pnl_usd for t in trades])
     gross_profit_usd = float(pnls[pnls > 0].sum())
     gross_loss_usd = float(pnls[pnls < 0].sum())   # 음수
+
+    # 🅐 MAE/MFE 집계 — 장중 평가손익 통계
+    maes = [t.mae_usd for t in trades]
+    mfes = [t.mfe_usd for t in trades]
+    worst_mae_usd = float(min(maes)) if maes else 0.0
+    avg_mae_usd = float(sum(maes) / len(maes)) if maes else 0.0
+    avg_mfe_usd = float(sum(mfes) / len(mfes)) if mfes else 0.0
+
+    # 🅑 연속 win/loss streak (시간 순서 — trades 가 entry/exit 순서대로 들어옴)
+    max_win_streak = 0
+    max_loss_streak = 0
+    cur_win = 0
+    cur_loss = 0
+    for t in trades:
+        if t.net_pnl_usd > 0:
+            cur_win += 1
+            cur_loss = 0
+            max_win_streak = max(max_win_streak, cur_win)
+        elif t.net_pnl_usd < 0:
+            cur_loss += 1
+            cur_win = 0
+            max_loss_streak = max(max_loss_streak, cur_loss)
+        else:  # 정확히 0 (드물지만 정의)
+            cur_win = 0
+            cur_loss = 0
 
     # Sharpe (annualized) — trade returns 기반.
     # 가정: 보유기간(horizon) 동안 자본 노출. 연중 거래 가능 회수 ≈ 252 / horizon.
@@ -110,5 +147,10 @@ def summarize(result: BacktestResult) -> Summary:
         gross_loss_usd=gross_loss_usd,
         sharpe_annualized=sharpe,
         max_drawdown_usd=mdd,
+        worst_mae_usd=worst_mae_usd,
+        avg_mae_usd=avg_mae_usd,
+        avg_mfe_usd=avg_mfe_usd,
+        max_win_streak=max_win_streak,
+        max_loss_streak=max_loss_streak,
         low_sample=(n < LOW_SAMPLE_THRESHOLD),
     )

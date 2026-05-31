@@ -37,7 +37,12 @@ class CostModel:
 
 @dataclass(frozen=True)
 class Trade:
-    """완결된 단일 거래."""
+    """완결된 단일 거래.
+
+    MAE/MFE: 보유 기간 중의 *장중* 최악·최고 가격 기준 평가손익(미실현).
+    horizon 만기 청산 PnL만 보는 한계 해소 — 시가평가 위험 가시화.
+    1계약 기준 USD. MAE는 음수(불리), MFE는 양수(유리).
+    """
 
     signal: Signal
     horizon_days: int
@@ -48,6 +53,8 @@ class Trade:
     gross_pnl_usd: float     # 1계약 기준, 비용 차감 전
     net_pnl_usd: float       # 1계약 기준, 비용 차감 후
     return_pct: float        # gross 수익률 (sign 적용)
+    mae_usd: float           # 보유 중 최악 평가손실 (음수 또는 0, 1계약)
+    mfe_usd: float           # 보유 중 최고 평가이익 (양수 또는 0, 1계약)
 
 
 @dataclass(frozen=True)
@@ -95,6 +102,20 @@ def run_backtest(
         entry_price = float(entry_row["open"])
         exit_price = float(exit_row["close"])
 
+        # MAE/MFE: 진입~청산 사이 모든 영업일의 장중 high/low 추적
+        # (진입일 시가는 이미 잡았으니 다음날부터 청산일까지)
+        held = df.iloc[entry_i : exit_i + 1]
+        held_high = float(held["high"].max())
+        held_low = float(held["low"].min())
+        if sig.side == Side.LONG:
+            mfe_price = held_high - entry_price       # 최고가 - 진입가 (이익 가능 최대)
+            mae_price = held_low - entry_price        # 최저가 - 진입가 (손실 가능 최대, 음수)
+        else:  # SHORT
+            mfe_price = entry_price - held_low        # 진입가 - 최저가 (숏 이익)
+            mae_price = entry_price - held_high       # 진입가 - 최고가 (숏 손실, 음수)
+        mfe_usd = max(0.0, mfe_price) * WTI_MULTIPLIER
+        mae_usd = min(0.0, mae_price) * WTI_MULTIPLIER
+
         sign = -1.0 if sig.side == Side.SHORT else 1.0
 
         # 슬리피지: 진입/청산 모두 불리하게.
@@ -122,6 +143,8 @@ def run_backtest(
                 gross_pnl_usd=gross,
                 net_pnl_usd=net,
                 return_pct=ret,
+                mae_usd=mae_usd,
+                mfe_usd=mfe_usd,
             )
         )
 
