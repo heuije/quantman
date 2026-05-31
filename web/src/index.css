@@ -2364,3 +2364,33 @@ thead th { color: var(--muted); font-weight: 600; }
 .heat-cell > div:nth-child(2) { font-size: 9px !important; line-height: 1.1; opacity: 0.85; }
 /* 히트맵 컨테이너 높이 늘려서 스크롤 여유 */
 .heatmap-block .sticky-table { max-height: 540px; }
+
+/* 히트맵 사이드 선택 라디오 */
+.oil-radio-group {
+  display: inline-flex;
+  gap: 0;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.oil-radio-group label {
+  padding: 8px 18px;
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  transition: background 0.15s, color 0.15s;
+}
+.oil-radio-group label:last-child { border-right: none; }
+.oil-radio-group label:hover { background: rgba(0,0,0,0.04); }
+.oil-radio-group label.active {
+  background: var(--accent, #6c9ce9);
+  color: #fff;
+  font-weight: 600;
+}
+.oil-radio-group input[type=radio] {
+  display: none;   /* 라디오 자체는 숨기고 label 스타일링으로 토글 보이기 */
+}

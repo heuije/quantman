@@ -91,6 +91,9 @@ export default function OilFutures() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [hideLowSample, setHideLowSample] = useState(false);
 
+  // 히트맵에서 어느 사이드 보여줄지 (한 번에 하나)
+  const [heatmapSide, setHeatmapSide] = useState<"short" | "long">("short");
+
   const [selected, setSelected] = useState<OilGridCell | null>(null);
   const [backtest, setBacktest] = useState<OilBacktest | null>(null);
   const [btLoading, setBtLoading] = useState(false);
@@ -247,27 +250,40 @@ export default function OilFutures() {
           <span style={{ color: "#d96265" }}>빨강=손실</span>.{" "}
           low_sample(n&lt;30)은 같은 색이되 채도 낮춤(부호는 보존). 클릭하면 백테스트 상세.
         </p>
+        {/* 라디오 토글 — 한 번에 short 또는 long */}
+        <div className="oil-radio-group">
+          <label className={heatmapSide === "short" ? "active" : ""}>
+            <input
+              type="radio" name="heatmap-side" value="short"
+              checked={heatmapSide === "short"}
+              onChange={() => setHeatmapSide("short")}
+            />
+            Short (위로 첫 터치 → 매도)
+          </label>
+          <label className={heatmapSide === "long" ? "active" : ""}>
+            <input
+              type="radio" name="heatmap-side" value="long"
+              checked={heatmapSide === "long"}
+              onChange={() => setHeatmapSide("long")}
+            />
+            Long (아래로 첫 터치 → 매수)
+          </label>
+        </div>
+
         {gridLoading ? (
           <div className="muted">그리드 계산 중…</div>
         ) : gridError ? (
           <div className="error">{gridError}</div>
         ) : (
-          <div className="heatmap-wrap">
-            <HeatmapBlock
-              title="Short (위로 첫 터치 → 매도)"
-              rows={heatmaps.short}
-              max={heatmaps.max}
-              selected={selected}
-              onSelect={setSelected}
-            />
-            <HeatmapBlock
-              title="Long (아래로 첫 터치 → 매수)"
-              rows={heatmaps.long}
-              max={heatmaps.max}
-              selected={selected}
-              onSelect={setSelected}
-            />
-          </div>
+          <HeatmapBlock
+            title={heatmapSide === "short"
+              ? "Short — $80~$150 (위로 첫 터치)"
+              : "Long — $10~$60 (아래로 첫 터치)"}
+            rows={heatmapSide === "short" ? heatmaps.short : heatmaps.long}
+            max={heatmaps.max}
+            selected={selected}
+            onSelect={setSelected}
+          />
         )}
       </section>
 
@@ -430,6 +446,23 @@ export default function OilFutures() {
       </section>
     </div>
   );
+}
+
+// BUY/SELL Scatter 점 — 작은 원 + 흰 테두리 (가독성 + 시각 깔끔)
+function buySellShape(color: string) {
+  return function Shape(props: { cx?: number; cy?: number }) {
+    if (props.cx == null || props.cy == null) return null;
+    return (
+      <circle
+        cx={props.cx}
+        cy={props.cy}
+        r={2.5}
+        fill={color}
+        stroke="#fff"
+        strokeWidth={1}
+      />
+    );
+  };
 }
 
 // 등 자산 차트 커스텀 tooltip — BUY/SELL Scatter일 때 보유일수·수익률 표시
@@ -825,9 +858,9 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                   stroke={s.net_pnl_usd >= 0 ? "#62c884" : "#d96265"}
                   dot={false} strokeWidth={2} />
             <Scatter data={tradeDots.buy} dataKey="value" name="BUY"
-                     fill="#3b82f6" shape="circle" />
+                     fill="#3b82f6" shape={buySellShape("#3b82f6")} />
             <Scatter data={tradeDots.sell} dataKey="value" name="SELL"
-                     fill="#ef4444" shape="circle" />
+                     fill="#ef4444" shape={buySellShape("#ef4444")} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
