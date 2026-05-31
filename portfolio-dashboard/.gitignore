@@ -12,3 +12,7 @@ dart_key.txt
 holdings.csv
 performance_history.csv
 flows_history.csv
+
+# 로컬 전용 Claude Code 설정(자동 push 훅 등)
+.claude/settings.local.json
+.claude/cache/
