@@ -257,6 +257,15 @@ export interface OilDataInfo {
   price_max: number;
 }
 
+export interface OilLatestPrice {
+  price: number;
+  change: number | null;
+  change_pct: number | null;   // 소수 (예: -0.0173)
+  source: string;              // "investing.com" | "yfinance" | "csv"
+  delayed: boolean;
+  fetched_at: string;
+}
+
 export interface OilPricePoint {
   date: string;
   close: number;
@@ -387,6 +396,7 @@ export interface OilWalkForward {
 
 export const oilApi = {
   dataInfo: () => req<OilDataInfo>("/oil-futures/data-info"),
+  latestPrice: () => req<OilLatestPrice>("/oil-futures/latest-price"),
   prices: (start?: string, end?: string) => {
     const qs = new URLSearchParams();
     if (start) qs.set("start", start);

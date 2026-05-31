@@ -30,6 +30,7 @@ import {
   type OilBacktest,
   type OilDataInfo,
   type OilGridCell,
+  type OilLatestPrice,
   type OilMacroContext,
   type OilSeasonality,
   type OilWalkForward,
@@ -84,6 +85,7 @@ type SortDir = "asc" | "desc";
 
 export default function OilFutures() {
   const [info, setInfo] = useState<OilDataInfo | null>(null);
+  const [price, setPrice] = useState<OilLatestPrice | null>(null);
 
   const [grid, setGrid] = useState<OilGridCell[] | null>(null);
   const [gridLoading, setGridLoading] = useState(true);
@@ -120,6 +122,7 @@ export default function OilFutures() {
     oilApi.dataInfo().then(setInfo).catch((e) => console.error("data-info", e));
     oilApi.seasonality().then(setSeason).catch((e) => console.error("seasonality", e));
     oilApi.macroContext().then(setMacro).catch((e) => console.error("macro", e));
+
     setGridLoading(true);
     oilApi
       .grid()
@@ -131,6 +134,13 @@ export default function OilFutures() {
       })
       .catch((e) => setGridError(e.message))
       .finally(() => setGridLoading(false));
+
+    // 실시간 현재가 — 즉시 + 60초마다 갱신
+    const loadPrice = () =>
+      oilApi.latestPrice().then(setPrice).catch((e) => console.error("price", e));
+    loadPrice();
+    const priceTimer = setInterval(loadPrice, 60_000);
+    return () => clearInterval(priceTimer);
   }, []);
 
   useEffect(() => {
@@ -221,7 +231,13 @@ export default function OilFutures() {
   return (
     <div className="oil-page">
       <header className="oil-header">
-        <h1>WTI 원유선물 분석</h1>
+        <div className="oil-title-row">
+          <div>
+            <div className="oil-eyebrow">CRUDE OIL · NYMEX</div>
+            <h1>WTI Crude Oil Futures Analytics</h1>
+          </div>
+          {price && <LivePriceTag price={price} />}
+        </div>
         <p className="muted">
           장중 high/low가 임계값을 첫 터치하면 신호 → N영업일 보유 백테스트.
         </p>
@@ -229,16 +245,31 @@ export default function OilFutures() {
 
       {/* ① 데이터 메타 */}
       <section className="panel" style={{ marginBottom: 16 }}>
-        <h2 className="section-title">① 데이터 메타</h2>
+        <h2 className="section-title">DATA OVERVIEW · 데이터 메타</h2>
         {!info ? (
           <div className="muted">로딩 중…</div>
         ) : (
           <div className="meta-grid">
+            <div><div className="muted">실시간 현재가</div>
+              <div className="meta-value">
+                {price ? `$${price.price.toFixed(2)}` : "—"}
+                {price?.change_pct != null && (
+                  <span className={"meta-delta " + (price.change_pct >= 0 ? "pos" : "neg")}>
+                    {price.change_pct >= 0 ? "▲" : "▼"} {Math.abs(price.change_pct * 100).toFixed(2)}%
+                  </span>
+                )}
+              </div>
+              {price && (
+                <div className="meta-source">
+                  {price.source}{price.delayed ? " · ~15분 지연" : " · 실시간"}
+                </div>
+              )}
+            </div>
             <div><div className="muted">기간</div>
               <div className="meta-value">{info.start_date} ~ {info.end_date}</div></div>
             <div><div className="muted">영업일</div>
-              <div className="meta-value">{info.n_rows.toLocaleString()}일 (~{Math.round(info.n_rows / 252)}년)</div></div>
-            <div><div className="muted">가격 범위</div>
+              <div className="meta-value">D+{info.n_rows.toLocaleString()} <span className="meta-sub-inline">(~{Math.round(info.n_rows / 252)}년)</span></div></div>
+            <div><div className="muted">가격 범위 (23년)</div>
               <div className="meta-value">${info.price_min.toFixed(2)} ~ ${info.price_max.toFixed(2)}</div></div>
           </div>
         )}
@@ -246,7 +277,7 @@ export default function OilFutures() {
 
       {/* ② 히트맵 */}
       <section className="panel" style={{ marginBottom: 16 }}>
-        <h2 className="section-title">② Net PnL 히트맵 (임계값 × horizon)</h2>
+        <h2 className="section-title">PnL HEATMAP · 임계값 × 보유기간</h2>
         <p className="muted" style={{ marginBottom: 12 }}>
           셀: <b>거래당 평균수익률</b> / <b>승률</b> (소수점 1자리).
           색 진하기 = Net PnL 크기. <span style={{ color: "#62c884" }}>녹색=수익</span>,{" "}
@@ -293,7 +324,7 @@ export default function OilFutures() {
       {/* ③ 백테스트 상세 (조합 순위표보다 먼저) */}
       <section className="panel" style={{ marginBottom: 16 }}>
         <h2 className="section-title">
-          ③ 백테스트 상세 {selected && `— ${selected.side} $${selected.threshold} × ${selected.horizon}일`}
+          BACKTEST DETAIL · 백테스트 상세 {selected && <span className="title-tag">{selected.side.toUpperCase()} ${selected.threshold} × {selected.horizon}D</span>}
         </h2>
 
         {/* 🅒 SL/TP 시뮬레이터 */}
@@ -340,7 +371,7 @@ export default function OilFutures() {
 
       {/* ④ 조합 순위표 — 헤더 클릭 정렬 + sticky + Profit/Loss 추가 */}
       <section className="panel" style={{ marginBottom: 16 }}>
-        <h2 className="section-title">④ 조합 순위표 ({gridSorted.length}개)</h2>
+        <h2 className="section-title">RANKING TABLE · 조합 순위표 <span className="title-tag">{gridSorted.length}</span></h2>
         <div className="oil-toolbar">
           <label>
             <input
@@ -406,7 +437,7 @@ export default function OilFutures() {
 
       {/* ⑤ Walk-forward */}
       <section className="panel" style={{ marginBottom: 16 }}>
-        <h2 className="section-title">⑤ Walk-forward 검증 (overfit 체크)</h2>
+        <h2 className="section-title">WALK-FORWARD · 과최적화 검증</h2>
         <div className="oil-toolbar">
           <label>
             분할 날짜:&nbsp;
@@ -428,7 +459,7 @@ export default function OilFutures() {
 
       {/* ⑥ Seasonality */}
       <section className="panel" style={{ marginBottom: 16 }}>
-        <h2 className="section-title">⑥ 🅒 계절성 패턴 — 월별 / 요일별</h2>
+        <h2 className="section-title">SEASONALITY · 계절성 패턴 (월별 / 요일별)</h2>
         {!season ? (
           <div className="muted">로딩 중…</div>
         ) : (
@@ -438,7 +469,7 @@ export default function OilFutures() {
 
       {/* ⑦ Macro context (VIX·DXY) */}
       <section className="panel">
-        <h2 className="section-title">⑦ 🅔 외생 변수 — VIX(변동성) · DXY(달러)</h2>
+        <h2 className="section-title">MACRO CONTEXT · 외생 변수 (VIX · DXY)</h2>
         {!macro ? (
           <div className="muted">로딩 중…</div>
         ) : !macro.available ? (
@@ -447,6 +478,28 @@ export default function OilFutures() {
           <MacroView m={macro} />
         )}
       </section>
+    </div>
+  );
+}
+
+// 헤더 우측 실시간 현재가 태그 (Bloomberg/TradingView 스타일)
+function LivePriceTag({ price }: { price: OilLatestPrice }) {
+  const up = (price.change_pct ?? 0) >= 0;
+  return (
+    <div className="live-price">
+      <div className="live-price-main">
+        <span className="live-price-val">${price.price.toFixed(2)}</span>
+        {price.change_pct != null && (
+          <span className={"live-price-chg " + (up ? "pos" : "neg")}>
+            {up ? "▲" : "▼"} {price.change != null ? Math.abs(price.change).toFixed(2) : "—"}
+            {" "}({Math.abs(price.change_pct * 100).toFixed(2)}%)
+          </span>
+        )}
+      </div>
+      <div className="live-price-src">
+        <span className={"live-dot " + (price.delayed ? "delayed" : "live")} />
+        {price.source}{price.delayed ? " · ~15분 지연" : " · LIVE"}
+      </div>
     </div>
   );
 }

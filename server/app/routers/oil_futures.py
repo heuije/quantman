@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import gc
 import math
+import re
+import time
 from functools import lru_cache
 from typing import Literal, Optional
 
 import pandas as pd
+import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -51,6 +54,105 @@ DEFAULT_HORIZONS = [20, 40, 60, 120, 180, 240, 365]
 @lru_cache(maxsize=1)
 def _df() -> pd.DataFrame:
     return load_wti()
+
+
+# ───── 실시간 현재가 (investing.com 우선, yfinance 폴백) ─────────────────
+#
+# investing.com은 anti-bot(Cloudflare)을 쓴다. 가정용 IP에선 HTML 응답을 주지만
+# 데이터센터 IP(Railway)에선 차단될 수 있다 — 이건 외부 시스템의 진짜 한계이므로
+# yfinance(CL=F, ~15분 지연) 폴백이 정당하다 (CLAUDE.md 근본원인 원칙: 외부 한계
+# 시에만 fallback 허용). 응답엔 어느 소스를 썼는지 source로 명시한다.
+#
+# 60초 캐시 — 매 요청마다 1.1MB HTML 받지 않도록 (메모리·rate-limit 보호).
+
+_PRICE_CACHE: dict = {"data": None, "ts": 0.0}
+_PRICE_TTL = 60.0
+_INVESTING_URL = "https://www.investing.com/commodities/crude-oil"
+_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36")
+
+
+class LatestPrice(BaseModel):
+    price: float
+    change: Optional[float]          # 전일 대비 절대값
+    change_pct: Optional[float]      # 전일 대비 % (소수, 예: -0.0173)
+    source: str                      # "investing.com" | "yfinance" | "csv"
+    delayed: bool                    # 실시간(False) vs 지연(True)
+    fetched_at: str                  # ISO 시각 (UTC)
+
+
+def _fetch_investing() -> Optional[LatestPrice]:
+    """investing.com WTI 페이지에서 현재가 파싱. 차단·실패 시 None."""
+    try:
+        r = requests.get(_INVESTING_URL, headers={"User-Agent": _UA}, timeout=8)
+        if r.status_code != 200:
+            return None
+        html = r.text
+        m_price = re.search(r'data-test="instrument-price-last">([0-9.,]+)', html)
+        if not m_price:
+            return None
+        price = float(m_price.group(1).replace(",", ""))
+        m_chg = re.search(r'data-test="instrument-price-change">([+-]?[0-9.,]+)', html)
+        m_pct = re.search(
+            r'data-test="instrument-price-change-percent">\(([+-]?[0-9.,]+)%\)', html)
+        change = float(m_chg.group(1).replace(",", "")) if m_chg else None
+        change_pct = (float(m_pct.group(1).replace(",", "")) / 100.0) if m_pct else None
+        return LatestPrice(
+            price=price, change=change, change_pct=change_pct,
+            source="investing.com", delayed=False,
+            fetched_at=pd.Timestamp.utcnow().isoformat(),
+        )
+    except Exception:
+        return None
+
+
+def _fetch_yfinance() -> Optional[LatestPrice]:
+    """yfinance CL=F 최근 2일 종가로 현재가 + 전일대비 산출 (~15분 지연)."""
+    try:
+        import yfinance as yf
+        hist = yf.download("CL=F", period="5d", progress=False, auto_adjust=False)
+        if hist.empty:
+            return None
+        closes = hist["Close"].dropna()
+        if hasattr(closes, "iloc") and closes.ndim > 1:
+            closes = closes.iloc[:, 0]
+        price = float(closes.iloc[-1])
+        prev = float(closes.iloc[-2]) if len(closes) >= 2 else price
+        change = price - prev
+        change_pct = (price / prev - 1) if prev else None
+        return LatestPrice(
+            price=price, change=change, change_pct=change_pct,
+            source="yfinance", delayed=True,
+            fetched_at=pd.Timestamp.utcnow().isoformat(),
+        )
+    except Exception:
+        return None
+
+
+@router.get("/latest-price", response_model=LatestPrice)
+def latest_price():
+    """WTI 실시간 현재가. investing.com 우선 → 실패 시 yfinance → CSV 마지막 종가."""
+    now = time.time()
+    if _PRICE_CACHE["data"] is not None and (now - _PRICE_CACHE["ts"]) < _PRICE_TTL:
+        return _PRICE_CACHE["data"]
+
+    result = _fetch_investing() or _fetch_yfinance()
+    if result is None:
+        # 최후 폴백 — CSV 마지막 종가 (지연 명시)
+        df = _df()
+        last = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) >= 2 else last
+        result = LatestPrice(
+            price=float(last["close"]),
+            change=float(last["close"] - prev["close"]),
+            change_pct=float(last["close"] / prev["close"] - 1) if prev["close"] else None,
+            source="csv", delayed=True,
+            fetched_at=pd.Timestamp.utcnow().isoformat(),
+        )
+
+    _PRICE_CACHE["data"] = result
+    _PRICE_CACHE["ts"] = now
+    return result
 
 
 # ─── Response models ────────────────────────────────────────────────────
