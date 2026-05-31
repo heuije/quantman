@@ -39,7 +39,8 @@ import {
 // 488 셀 컴퓨팅 시 OOM 발생, 추후 캐시 layer 추가 후 복원 예정.
 const DEFAULT_SHORTS = [80, 90, 100, 110, 120, 130, 140, 150];
 const DEFAULT_LONGS = [10, 20, 30, 40, 50, 60];
-const DEFAULT_HORIZONS = [20, 40, 60, 120];
+// Horizon (영업일 보유 기간) — 365일까지 확장 (장기 평균회귀 패턴 검증용)
+const DEFAULT_HORIZONS = [20, 40, 60, 120, 180, 240, 365];
 
 // 색 스케일: 음수→빨강, 양수→녹색.
 // low_sample이면 채도·명도 낮춰서 회색쪽으로 블렌드(원본 부호는 유지).

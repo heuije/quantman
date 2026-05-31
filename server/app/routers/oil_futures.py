@@ -42,7 +42,9 @@ router = APIRouter(prefix="/oil-futures", tags=["oil-futures"])
 # 명시 시 임의 범위 가능. 추후 결과 캐시 layer 추가 후 $1 재시도 예정.
 DEFAULT_SHORTS = [80, 90, 100, 110, 120, 130, 140, 150]
 DEFAULT_LONGS = [10, 20, 30, 40, 50, 60]
-DEFAULT_HORIZONS = [20, 40, 60, 120]
+# Horizon (영업일 기준 보유 기간): 단기~장기 비교
+# 365일 = 약 1.5 캘린더 년 (영업일 ≈ 252일/년)
+DEFAULT_HORIZONS = [20, 40, 60, 120, 180, 240, 365]
 
 
 # DataFrame 로드는 첫 호출에만 (~5MB CSV, 메모리 상주) — 매 요청 디스크 IO 회피.
