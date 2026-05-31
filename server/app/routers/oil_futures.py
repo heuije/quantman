@@ -73,6 +73,8 @@ class GridCellOut(BaseModel):
     avg_return: float
     sharpe: float
     mdd_usd: float
+    gross_profit_usd: float     # 이긴 거래만 net PnL 합 (양수)
+    gross_loss_usd: float       # 진 거래만 net PnL 합 (음수)
     net_pnl_usd: float
     profit_factor: Optional[float]   # None = 손실 없음(∞ 대체)
     low_sample: bool
@@ -112,6 +114,8 @@ class SummaryOut(BaseModel):
     profit_factor: Optional[float]
     sharpe: float
     mdd_usd: float
+    gross_profit_usd: float
+    gross_loss_usd: float
     net_pnl_usd: float
     low_sample: bool
 
@@ -218,6 +222,8 @@ def grid(
             avg_return=c.summary.avg_return,
             sharpe=c.summary.sharpe_annualized,
             mdd_usd=c.summary.max_drawdown_usd,
+            gross_profit_usd=c.summary.gross_profit_usd,
+            gross_loss_usd=c.summary.gross_loss_usd,
             net_pnl_usd=c.summary.total_net_pnl_usd,
             profit_factor=_pf(c.summary.profit_factor),
             low_sample=c.summary.low_sample,
@@ -280,6 +286,8 @@ def backtest(req: BacktestRequest):
             profit_factor=_pf(s.profit_factor),
             sharpe=s.sharpe_annualized,
             mdd_usd=s.max_drawdown_usd,
+            gross_profit_usd=s.gross_profit_usd,
+            gross_loss_usd=s.gross_loss_usd,
             net_pnl_usd=s.total_net_pnl_usd,
             low_sample=s.low_sample,
         ),
@@ -350,7 +358,9 @@ def walkforward_endpoint(req: WalkForwardRequest):
                 profit_factor=_pf(bs.profit_factor),
                 sharpe=bs.sharpe_annualized,
                 mdd_usd=bs.max_drawdown_usd,
-                net_pnl_usd=bs.net_pnl_usd if hasattr(bs, "net_pnl_usd") else bs.total_net_pnl_usd,
+                gross_profit_usd=bs.gross_profit_usd,
+                gross_loss_usd=bs.gross_loss_usd,
+                net_pnl_usd=bs.total_net_pnl_usd,
                 low_sample=bs.low_sample,
             ),
         ),
@@ -363,6 +373,8 @@ def walkforward_endpoint(req: WalkForwardRequest):
             profit_factor=_pf(oos.profit_factor),
             sharpe=oos.sharpe_annualized,
             mdd_usd=oos.max_drawdown_usd,
+            gross_profit_usd=oos.gross_profit_usd,
+            gross_loss_usd=oos.gross_loss_usd,
             net_pnl_usd=oos.total_net_pnl_usd,
             low_sample=oos.low_sample,
         ),

@@ -2219,3 +2219,71 @@ thead th { color: var(--muted); font-weight: 600; }
   font-weight: 600;
   color: #1a1a1a;
 }
+
+/* ─── Oil Futures 보강 (sticky + 뱃지 + 정렬) ─────────────────────── */
+
+/* sticky 헤더 — 표를 감싸는 컨테이너에 max-height + overflow 필요 */
+.sticky-table {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.sticky-table table { margin: 0; }
+.sticky-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel-bg, #161b22);
+  box-shadow: 0 1px 0 var(--border);
+}
+/* 첫 번째 컬럼도 가로 스크롤 시 고정 */
+.sticky-table tbody td:first-child,
+.sticky-table tbody th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--panel-bg, #161b22);
+}
+.sticky-table thead th:first-child {
+  z-index: 3;   /* 코너: 헤더 행 + 첫 열 둘 다 고정이라 우선순위 ↑ */
+}
+.sticky-table tbody tr.selected-row td:first-child,
+.sticky-table tbody tr.selected-row th:first-child {
+  background: rgba(108, 156, 233, 0.15);
+}
+.sticky-table tbody tr:hover td:first-child,
+.sticky-table tbody tr:hover th:first-child {
+  background: rgba(255,255,255,0.06);
+}
+
+/* 정렬 가능 헤더 */
+.oil-table th.sortable:hover { color: var(--text); }
+.oil-table th.sortable.active { color: #6c9ce9; }
+.oil-table .sort-arrow {
+  font-size: 10px;
+  opacity: 0.5;
+  margin-left: 2px;
+}
+.oil-table th.sortable.active .sort-arrow { opacity: 1; }
+
+/* BUY / SELL 뱃지 */
+.bs-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  font-family: ui-monospace, monospace;
+}
+.bs-buy {
+  background: rgba(98, 200, 132, 0.18);
+  color: #62c884;
+  border: 1px solid rgba(98, 200, 132, 0.4);
+}
+.bs-sell {
+  background: rgba(217, 98, 101, 0.18);
+  color: #d96265;
+  border: 1px solid rgba(217, 98, 101, 0.4);
+}

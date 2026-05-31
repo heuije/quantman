@@ -273,6 +273,8 @@ export interface OilGridCell {
   avg_return: number;
   sharpe: number;
   mdd_usd: number;
+  gross_profit_usd: number;   // 이긴 거래 합 (양수)
+  gross_loss_usd: number;     // 진 거래 합 (음수)
   net_pnl_usd: number;
   profit_factor: number | null;   // null = 손실 0건 (∞)
   low_sample: boolean;
@@ -294,6 +296,8 @@ export interface OilSummary {
   profit_factor: number | null;
   sharpe: number;
   mdd_usd: number;
+  gross_profit_usd: number;
+  gross_loss_usd: number;
   net_pnl_usd: number;
   low_sample: boolean;
 }

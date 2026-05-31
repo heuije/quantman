@@ -33,6 +33,8 @@ class Summary:
     avg_loss: float                  # 진 거래 평균 수익률 (음수)
     profit_factor: float             # 총이익 / |총손실|, 손실 없으면 inf
     total_net_pnl_usd: float         # 1계약 기준 누적 net PnL
+    gross_profit_usd: float          # 이긴 거래만 net PnL 합 (USD)
+    gross_loss_usd: float            # 진 거래만 net PnL 합 (USD, 음수)
     sharpe_annualized: float         # 거래 수익률 기반 연환산 Sharpe (rf=0)
     max_drawdown_usd: float          # equity curve 최대낙폭 (음수)
     low_sample: bool                 # n_trades < LOW_SAMPLE_THRESHOLD
@@ -51,6 +53,8 @@ def summarize(result: BacktestResult) -> Summary:
             avg_loss=0.0,
             profit_factor=0.0,
             total_net_pnl_usd=0.0,
+            gross_profit_usd=0.0,
+            gross_loss_usd=0.0,
             sharpe_annualized=0.0,
             max_drawdown_usd=0.0,
             low_sample=True,
@@ -71,6 +75,11 @@ def summarize(result: BacktestResult) -> Summary:
         profit_factor = float("inf")
     else:
         profit_factor = 0.0
+
+    # 절대 USD 기준 gross profit / loss (PnL 컬럼 분해용)
+    pnls = pd.Series([t.net_pnl_usd for t in trades])
+    gross_profit_usd = float(pnls[pnls > 0].sum())
+    gross_loss_usd = float(pnls[pnls < 0].sum())   # 음수
 
     # Sharpe (annualized) — trade returns 기반.
     # 가정: 보유기간(horizon) 동안 자본 노출. 연중 거래 가능 회수 ≈ 252 / horizon.
@@ -97,6 +106,8 @@ def summarize(result: BacktestResult) -> Summary:
         avg_loss=avg_loss,
         profit_factor=profit_factor,
         total_net_pnl_usd=float(sum(t.net_pnl_usd for t in trades)),
+        gross_profit_usd=gross_profit_usd,
+        gross_loss_usd=gross_loss_usd,
         sharpe_annualized=sharpe,
         max_drawdown_usd=mdd,
         low_sample=(n < LOW_SAMPLE_THRESHOLD),
