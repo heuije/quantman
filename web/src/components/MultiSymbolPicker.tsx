@@ -8,8 +8,9 @@
  */
 
 import { useState } from "react";
-import type { SymbolInfo } from "../types";
+import type { IndicatorInfo, IrNode, SymbolInfo } from "../types";
 import { usePopoverDismiss } from "./SymbolPicker";
+import SentenceTree, { type Catalog } from "./SentenceTree";
 import TabbedSymbolList from "./TabbedSymbolList";
 
 const TRADABLE_TAB_ORDER = [
@@ -29,7 +30,9 @@ function categoryFor(cat: string): string {
   return cat;
 }
 
-export default function MultiSymbolPicker({ symbols, value, onChange, inline, scope = "tradable", strategies }: {
+export default function MultiSymbolPicker({ symbols, value, onChange, inline, scope = "tradable",
+  strategies, screener, onScreenerChange, screenerRefresh, onScreenerRefreshChange,
+  catalog, selfIndicators }: {
   symbols: SymbolInfo[];
   value: string;                   // 콤마 분리 — "005930,000660" (전략 조합 시 "strat:5" 포함)
   onChange: (v: string) => void;
@@ -39,6 +42,13 @@ export default function MultiSymbolPicker({ symbols, value, onChange, inline, sc
   scope?: "tradable" | "backtest";
   /** "내 전략" 탭 — 저장 전략을 strat:<id> 합성 자산으로 선택(전략 조합 G3). 미지정 시 탭 숨김. */
   strategies?: { id: number; name: string; run_mode?: string }[];
+  /** 세부조건(선택 종목 2차 필터). onScreenerChange가 주어질 때만 렌더. */
+  screener?: IrNode | null;
+  onScreenerChange?: (n: IrNode | null) => void;
+  screenerRefresh?: "each_rebalance" | "once_at_start";
+  onScreenerRefreshChange?: (r: "each_rebalance" | "once_at_start") => void;
+  catalog?: Catalog;
+  selfIndicators?: IndicatorInfo[];
 }) {
   const [open, setOpen] = useState(false);
   const ref = usePopoverDismiss<HTMLDivElement>(open, setOpen);
@@ -86,6 +96,19 @@ export default function MultiSymbolPicker({ symbols, value, onChange, inline, sc
     })),
   ];
 
+  // 세부조건(2차 필터) — onScreenerChange가 주어질 때만(유니버스 선택기 한정) 렌더.
+  const screenerBlock = onScreenerChange ? (
+    <ScreenerSection
+      disabled={selected.length === 0}
+      condition={screener ?? null}
+      onCondition={onScreenerChange}
+      refresh={screenerRefresh ?? "each_rebalance"}
+      onRefresh={onScreenerRefreshChange ?? (() => {})}
+      catalog={catalog} symbols={symbols} selfIndicators={selfIndicators ?? []}
+      count={selected.length}
+    />
+  ) : null;
+
   // Inline 모드 — chips 영역 + 종목 리스트 항상 노출. "+ 종목 추가" 버튼 없음.
   if (inline) {
     return (
@@ -119,6 +142,7 @@ export default function MultiSymbolPicker({ symbols, value, onChange, inline, sc
         <div className="multi-inline-foot muted small">
           {selected.length}개 선택됨 — 종목명을 클릭해 추가/제거
         </div>
+        {screenerBlock}
       </div>
     );
   }
@@ -157,6 +181,7 @@ export default function MultiSymbolPicker({ symbols, value, onChange, inline, sc
             selectedKeys={selected}
             onPick={toggle}
           />
+          {screenerBlock}
           <div className="multi-popover-foot">
             <span className="muted small">{selected.length}개 선택됨</span>
             <button type="button" className="sm" onClick={() => setOpen(false)}>
@@ -214,5 +239,52 @@ export function SymbolRefPicker({ symbols, value, onChange }: {
         </div>
       )}
     </span>
+  );
+}
+
+/**
+ * 세부조건 설정 — 선택한 종목에 대한 2차 필터(condition) + 재선별 시점.
+ * 종목이 선택돼야 활성. 조건은 SentenceTree(문장형)로 조립, refresh로 동적/정적 선택.
+ */
+function ScreenerSection({ disabled, condition, onCondition, refresh, onRefresh,
+                           catalog, symbols, selfIndicators, count }: {
+  disabled: boolean; condition: IrNode | null; onCondition: (n: IrNode | null) => void;
+  refresh: "each_rebalance" | "once_at_start";
+  onRefresh: (r: "each_rebalance" | "once_at_start") => void;
+  catalog?: Catalog; symbols: SymbolInfo[]; selfIndicators: IndicatorInfo[]; count: number;
+}) {
+  const [open, setOpen] = useState(false);
+  if (disabled) {
+    return <div className="muted small" style={{ marginTop: 8 }}>
+      세부조건을 쓰려면 먼저 종목을 선택하세요.</div>;
+  }
+  return (
+    <div className="screener-section" style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 8 }}>
+      <button type="button" className="multi-add" onClick={() => setOpen((v) => !v)}>
+        {open ? "▾" : "▸"} 세부조건 설정{condition ? " · 적용 중" : " (선택)"}
+      </button>
+      {open && catalog && (
+        <div style={{ marginTop: 6 }}>
+          <SentenceTree node={condition} catalog={catalog} symbols={symbols}
+                        selfIndicators={selfIndicators} requiredType="condition"
+                        onChange={onCondition} />
+          <div style={{ marginTop: 6, fontSize: 13 }}>
+            <label style={{ display: "block" }}>
+              <input type="radio" checked={refresh === "each_rebalance"}
+                     onChange={() => onRefresh("each_rebalance")} /> 매 리밸런싱마다 재선별 (동적)
+            </label>
+            <label style={{ display: "block" }}>
+              <input type="radio" checked={refresh === "once_at_start"}
+                     onChange={() => onRefresh("once_at_start")} /> 시작 시점에 한 번만 선별 (정적·바스켓 유지)
+            </label>
+          </div>
+          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            {refresh === "each_rebalance"
+              ? `선택한 ${count}개 종목 중 매 리밸런싱일에 조건을 만족하는 종목만 후보가 됩니다.`
+              : "시작 시점에 조건을 만족한 종목으로 바스켓을 만들어 그대로 유지합니다."}
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
