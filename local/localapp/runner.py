@@ -93,6 +93,17 @@ def _wait_for_order_ws() -> None:
                  "시초가 체결 통보는 REST 폴링으로 반영됨 (push 지연 가능)")
 
 
+_RETRY_BACKOFF_SEC = (60, 300, 900)       # KRX 정규장 6.5h 윈도우 — 긴 backoff 무방
+_RESERVED_BACKOFF_SEC = (30, 60)          # US 예약: 접수창(개장-10분) 내 발주 마감 필요
+
+
+def _cycle_backoffs(reserved: bool) -> tuple[int, ...]:
+    """cycle 재시도 backoff 시퀀스. 예약(US) cycle은 개장-20분에 시작해 접수창(개장
+    -10분)이 닫히기 전 발주를 끝내야 한다 — 긴 backoff(300·900s)는 접수창을 넘겨
+    예약주문을 누락시키므로 짧은 시퀀스만. KRX는 정규장 윈도우가 길어 무방."""
+    return _RESERVED_BACKOFF_SEC if reserved else _RETRY_BACKOFF_SEC
+
+
 def run_cycle(market: str = "KRX", catchup: bool = False,
               reserved: bool = False) -> dict:
     """1회 자동매매 사이클을 실행하고 동기화 스냅샷을 반환한다.
@@ -164,10 +175,10 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
     # (최대 ~21분). 모두 실패해야 error snapshot. 자금 안전은 L-01 intent
     # journal idempotency가 차단 (이미 발주된 매수는 KIS 당일 주문 매칭으로
     # 중복 방지). KRX 정규장 6시간 30분 윈도우라 21분 backoff 안전 마진 충분.
-    _RETRY_BACKOFF_SEC = (60, 300, 900)  # 1분·5분·15분 (D-3 C)
+    backoffs = _cycle_backoffs(reserved)  # 예약(US)은 접수창 내 짧게, KRX는 길게
     payload = None
     cycle_err: Exception | None = None
-    n_attempts = len(_RETRY_BACKOFF_SEC) + 1  # 4 시도
+    n_attempts = len(backoffs) + 1
     for attempt in range(1, n_attempts + 1):
         try:
             from .datafetch import refresh_market_data
@@ -217,8 +228,8 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             break
         except Exception as e:
             cycle_err = e
-            if attempt <= len(_RETRY_BACKOFF_SEC):
-                wait_sec = _RETRY_BACKOFF_SEC[attempt - 1]
+            if attempt <= len(backoffs):
+                wait_sec = backoffs[attempt - 1]
                 log.warning("cycle 실행 예외 (시도 %d/%d) — %d초 후 재시도: %s",
                               attempt, n_attempts, wait_sec, e)
                 time.sleep(wait_sec)

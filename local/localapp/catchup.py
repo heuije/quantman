@@ -438,8 +438,7 @@ def _catchup_stop_loss(market: str, broker, trader) -> dict:
     Returns: {"checked": int, "fired": int, "decisions": list, "error": str|None}
     """
     from .intraday_stop import IntradayStopManager
-    from .market_index import market_group_of
-    from .trader import _CYCLE_LOCK
+    from .trader import _CYCLE_LOCK, _market_group_safe
 
     try:
         snap = broker.account_snapshot()
@@ -447,9 +446,12 @@ def _catchup_stop_loss(market: str, broker, trader) -> dict:
         log.error("catch-up stop-loss [%s] account_snapshot 실패: %s", market, e)
         return {"checked": 0, "fired": 0, "decisions": [], "error": str(e)}
 
+    # 시장 분류는 _market_group_safe(단일 출처) — 한 종목의 RoutingError(마스터 미로드
+    # 등)가 raw market_group_of에서 전파돼 catch-up 손절 전체를 abort하던 비대칭 제거.
+    # EOD cycle 청산(_cycle_body)과 동일 헬퍼. 미해결 종목은 KRX로 안전 기본.
     positions = [p for p in snap.get("positions", [])
                   if p.get("symbol")
-                  and market_group_of(p["symbol"]) == market]
+                  and _market_group_safe(p["symbol"]) == market]
     if not positions:
         log.info("catch-up stop-loss [%s] 보유 종목 0건 — skip", market)
         return {"checked": 0, "fired": 0, "decisions": [], "error": None}

@@ -138,6 +138,21 @@ def held_qty_from_snapshot(snap: dict, symbol: str) -> int:
                if p.get("symbol") == symbol)
 
 
+def clamp_sell_qty(broker_qty: int | None, ledger_qty: int) -> int | None:
+    """L-04 매도 수량 클램프(단일 출처) — 모든 매도 경로가 같은 규칙으로 KIS 실
+    보유에 맞춰 수량을 제한한다. EOD cycle·장중 tick 손절이 각자 다르게 구현해
+    한쪽(EOD)이 클램프를 통째로 빠뜨렸던 결함 class(8cd5e8b 사후 보완)를 막는다.
+
+    반환: None=잔고 미상(skip·재시도), 0=외부 매도로 보유 0(skip), 그 외=min(보유, 원장).
+    호출부는 None/0의 부수효과(로그·sold_today·decision)만 각자 처리한다.
+    """
+    if broker_qty is None:
+        return None
+    if broker_qty <= 0:
+        return 0
+    return min(int(broker_qty), int(ledger_qty))
+
+
 class Trader:
     """Broker에 의존하는 모의투자 실행기. 보유 원장을 로컬에 유지한다.
 
@@ -1121,17 +1136,18 @@ class Trader:
             # 방지(intraday 손절과 동일 안전망, 같은 헬퍼). snap_pre는 cycle 진입부
             # 잔고 재사용이라 추가 KIS 호출 없음. ledger drift는 settlement reconcile이 정리.
             held = held_qty_from_snapshot(snap_pre, pos["symbol"])
-            if held <= 0:
+            clamped = clamp_sell_qty(held, sell_qty)   # snap_pre 기반이라 None 아님
+            if not clamped:                            # 0 = 외부 매도(보유 0)
                 log.info("[L-04 EOD] %s KIS 실 보유 0 (외부 매도 추정) — 청산 발주 skip",
                           pos["symbol"])
                 decisions.append(order_log.decision(
                     "skip_oversell", sid, pos.get("strategy_name", ""), pos["symbol"],
                     "KIS 실 보유 0 — 외부 매도 추정, 청산 발주 skip"))
                 continue
-            if held < sell_qty:
+            if clamped < sell_qty:
                 log.info("[L-04 EOD] %s 청산 수량 클램프 ledger=%d → broker=%d",
-                          pos["symbol"], sell_qty, held)
-                sell_qty = held
+                          pos["symbol"], sell_qty, clamped)
+            sell_qty = clamped
             self._submit_sell(sid, pos.get("strategy_name", ""), pos["symbol"],
                               sell_qty, ref_price, policy, reason, decisions)
             # sold_this_cycle은 sid 단위 — 같은 cycle 중복 매도 차단.
