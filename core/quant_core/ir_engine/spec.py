@@ -481,11 +481,17 @@ def needed_symbols(s: StrategyIR) -> Optional[set[str]]:
     all/screener: 횡단 랭킹/스크리닝이라 후보 전체가 필요 → None(전 유니버스 로드).
     엔진의 _universe_symbols(all 경로)가 dataset 전체를 후보로 보는 것과 같은 경계.
     """
-    if s.universe.kind in ("all", "screener"):
+    if s.universe.kind == "all":
         return None
     syms: set[str] = set(s.universe.symbols)
     nodes = [s.signal, s.position.exit.condition, s.position.overlays.group_label,
              s.sweep.label, s.sweep.event, s.sweep.target_node]
+    sc = (s.universe.screener or {}).get("condition")
+    if sc is not None:
+        try:
+            nodes.append(Node.model_validate(sc))
+        except Exception:                      # noqa: BLE001
+            return None                        # 잘못된 트리면 안전하게 전체
     for nd in nodes:
         if nd is not None:
             syms |= referenced_symbols(nd)
@@ -512,7 +518,7 @@ def needed_columns(s: StrategyIR) -> Optional[set[str]]:
     nodes = [s.signal, s.position.exit.condition, s.position.overlays.group_label,
              s.sweep.label, s.sweep.event, s.sweep.target_node]
     # 스크리너 선별 조건도 참조 컬럼(후보를 이 조건으로 거른다).
-    if s.universe.kind == "screener" and s.universe.screener:
+    if s.universe.screener:
         cond = s.universe.screener.get("condition")
         if cond is not None:
             try:

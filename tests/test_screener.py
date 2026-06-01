@@ -229,6 +229,15 @@ def test_event_screener_gates_entry():
     assert len(early) and early["종목"].isin(("A", "B")).all(), early
 
 
+def test_list_screener_window_not_full():
+    """list+세부조건은 전체 로드(None) 아님 — 선택 종목 + 조건 참조만."""
+    from quant_core.ir_engine.spec import StrategyIR, needed_symbols
+    s = StrategyIR.model_validate(_spec_list(_rank_cond("market_cap", 2)))
+    win = needed_symbols(s)
+    assert win is not None
+    assert {"A", "B", "C", "D"}.issubset(win)
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
