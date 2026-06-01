@@ -156,12 +156,12 @@ const IR_REBALANCE_LABEL: Record<string, string> = {
 
 function summarizeIrUniverse(def: IrStrategyDef): string {
   const u = def.universe ?? { kind: "single" };
-  if (u.kind === "screener") return "스크리너 선별 (자격 필터 + 순위컷)";
-  if (u.kind === "all") return "전체 종목";
+  const detail = u.screener ? " · 세부조건 적용" : "";
+  if (u.kind === "all") return `전체 종목${detail}`;
   const syms = u.symbols ?? [];
   if (syms.length === 0) return "(없음)";
-  if (syms.length === 1) return syms[0];
-  return syms.join(", ");
+  if (syms.length === 1) return `${syms[0]}${detail}`;
+  return `${syms.join(", ")}${detail}`;
 }
 
 /** IR 전략의 활성 청산 규칙을 한 줄로. */

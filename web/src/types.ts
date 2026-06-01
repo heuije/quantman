@@ -240,10 +240,11 @@ export interface IrIssue {
 export interface IrStrategyDef {
   name: string;
   universe: {
-    kind: "single" | "list" | "all" | "screener";
+    kind: "single" | "list" | "all";
     symbols?: string[];
     screener?: {
-      condition?: IrNode | null;
+      condition: IrNode;
+      refresh: "each_rebalance" | "once_at_start";
     } | null;
     exclude_macro?: boolean;
   };

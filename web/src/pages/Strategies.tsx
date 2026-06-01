@@ -31,12 +31,12 @@ const IR_DIR_LABEL: Record<string, string> = {
 /** IR 유니버스를 한 줄로 요약. */
 function summarizeIrUniverse(def: IrStrategyDef): string {
   const u = def.universe ?? { kind: "single" };
-  if (u.kind === "screener") return "스크리너 선별";
-  if (u.kind === "all") return "전체 종목";
+  const detail = u.screener ? " · 세부조건" : "";
+  if (u.kind === "all") return `전체 종목${detail}`;
   const syms = u.symbols ?? [];
   if (syms.length === 0) return "(없음)";
-  if (syms.length === 1) return syms[0];
-  return `${syms[0]} 외 ${syms.length - 1}종목`;
+  if (syms.length === 1) return `${syms[0]}${detail}`;
+  return `${syms[0]} 외 ${syms.length - 1}종목${detail}`;
 }
 
 /** "005930 외 2종목" 형태로 다중 종목 축약. 단일이면 코드 그대로. */

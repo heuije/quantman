@@ -122,9 +122,10 @@ export default function IrBuilder() {
   const [eventBasis, setEventBasis] = useState("close");   // close|intraday|excess
   const [sweepEvent, setSweepEvent] = useState<IrNode | null>(null);  // time축 별도 이벤트 조건(선택)
 
-  // 유니버스 — 스크리너: 단일 선별 조건(필터+횡단순위를 자유 조합한 condition)
-  const [useScreener, setUseScreener] = useState(false);
+  // 유니버스 — 세부조건: 선택 종목에 적용하는 2차 필터(condition) + 재선별 시점.
   const [screenerCond, setScreenerCond] = useState<IrNode | null>(null);
+  const [screenerRefresh, setScreenerRefresh] =
+    useState<"each_rebalance" | "once_at_start">("each_rebalance");
 
   const [capital, setCapital] = useState(10_000_000);
   // 시뮬레이션 (A5)
@@ -228,19 +229,11 @@ export default function IrBuilder() {
   // 저장된 IR 정의 → 전 폼 state 복원 (buildStrategy의 역). 함수 선언이라 위 effect에서 hoisting으로 참조됨.
   function hydrate(def: IrStrategyDef) {
     setName(def.name ?? "새 전략");
-    // 유니버스
+    // 유니버스 — 선택 종목 + 세부조건(2차 필터·재선별 시점)
     const u = def.universe ?? { kind: "single" };
-    if (u.kind === "screener") {
-      setUseScreener(true);
-      // 단일 선별 조건. 옛 형식(filter)은 condition으로 흡수(경량 마이그레이션);
-      // 옛 rank 순위컷은 횡단순위 블록으로 재작성 필요(출시 전이라 자동변환 생략).
-      const sc = (u.screener ?? {}) as { condition?: IrNode; filter?: IrNode };
-      setScreenerCond(sc.condition ?? sc.filter ?? null);
-      setUniverseSymbols("");
-    } else {
-      setUseScreener(false);
-      setUniverseSymbols(u.kind === "all" ? "" : (u.symbols ?? []).join(", "));
-    }
+    setUniverseSymbols(u.kind === "all" ? "" : (u.symbols ?? []).join(", "));
+    setScreenerCond(u.screener?.condition ?? null);
+    setScreenerRefresh(u.screener?.refresh ?? "each_rebalance");
     // 신호
     if (def.signal) setSignal(def.signal);
     // 포지션
@@ -316,7 +309,6 @@ export default function IrBuilder() {
     setEventBasis(sw.event_basis ?? "close");
   }
 
-  const dataSymbols = useMemo(() => symbols.filter((s) => s.has_backtest_data), [symbols]);
   // 지표 메타는 전역(컬럼별·종목 무관) — /symbols의 indicator_catalog 1회 수신분 사용.
   // (이전엔 종목별 indicators 배열을 골랐으나, 메타가 동일해 전역 카탈로그로 대체.)
   const selfIndicators = indicatorCatalog;
@@ -354,14 +346,13 @@ export default function IrBuilder() {
     }
 
     // ── 유니버스 ──
-    let universe: Record<string, unknown>;
-    if (useScreener) {
-      universe = { kind: "screener", screener: { condition: screenerCond } };
-    } else {
-      universe = syms.length
-        ? { kind: syms.length > 1 ? "list" : "single", symbols: syms }
-        : { kind: "all" };
-    }
+    const universe: Record<string, unknown> = {
+      kind: syms.length > 1 ? "list" : syms.length === 1 ? "single" : "all",
+      ...(syms.length ? { symbols: syms } : {}),
+      ...(syms.length && screenerCond
+          ? { screener: { condition: screenerCond, refresh: screenerRefresh } }
+          : {}),
+    };
 
     // ── 사이징 (전 모드 노출 — 검증이 부적합 조합 안내) ──
     const sizing: Record<string, unknown> = { mode: sizingMode, vol_window: volWindow };
@@ -597,45 +588,26 @@ export default function IrBuilder() {
       {/* 유니버스 */}
       <div className="panel">
         <div className="panel-title">유니버스</div>
-        {!useScreener && (
-          <div style={{ marginBottom: 10 }}>
-            <div className="muted" style={{ fontSize: 13, marginBottom: 4 }}>대상 종목</div>
-            <MultiSymbolPicker symbols={symbols} value={universeSymbols}
-                               onChange={setUniverseSymbols} scope="backtest"
-                               strategies={strategies.filter(
-                                 (s) => s.engine !== "operand" && String(s.id) !== editId)} />
-            <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-              비우면 전체 종목이 유니버스가 됩니다. 백테스트 데이터 보유 {dataSymbols.length.toLocaleString()}개에서 선택 ·
-              "내 전략" 탭에서 저장한 전략을 자산으로 골라 전략끼리 조합할 수 있습니다 ·
-              "실거래 불가" 배지는 백테스트 전용(지수·매크로 등, 자동매매 대상 아님).
-            </p>
-          </div>
-        )}
+        <div style={{ marginBottom: 10 }}>
+          <div className="muted" style={{ fontSize: 13, marginBottom: 4 }}>대상 종목</div>
+          <MultiSymbolPicker symbols={symbols} value={universeSymbols}
+                             onChange={setUniverseSymbols} scope="tradable"
+                             strategies={strategies.filter(
+                               (s) => s.engine !== "operand" && String(s.id) !== editId)}
+                             screener={screenerCond} onScreenerChange={setScreenerCond}
+                             screenerRefresh={screenerRefresh}
+                             onScreenerRefreshChange={setScreenerRefresh}
+                             catalog={catalog} selfIndicators={selfIndicators} />
+          <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            비우면 전체 종목이 유니버스가 됩니다. 매수/매도 가능 종목에서 선택 ·
+            "내 전략" 탭에서 저장한 전략을 자산으로 골라 전략끼리 조합할 수 있습니다.
+          </p>
+        </div>
         <div className="lab-row">
           <label className="lab-field">초기자본
             <input type="number" value={capital} step={1_000_000}
                    onChange={(e) => setCapital(Number(e.target.value))} />
           </label>
-        </div>
-        <div style={{ marginTop: 12 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
-            <input type="checkbox" checked={useScreener}
-                   onChange={(e) => setUseScreener(e.target.checked)} />
-            스크리너로 종목 선별 — 켜면 위 종목 대신 적용 · 정기/상시 진입 전용
-          </label>
-          {useScreener && (
-            <div style={{ marginTop: 8 }}>
-              <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
-                매 리밸런싱일마다 이 <b>선별 조건</b>을 만족하는 종목이 후보 유니버스가 됩니다.
-                필터와 <b>횡단 순위</b>를 한 조건에서 자유 조합하세요 — 예: <i>거래대금 &gt; 100억 그리고
-                시가총액의 횡단순위(큰 값·개수) ≤ 50</i> (상위 50종목). 순위 단위를 분위(0~1)로 바꾸면
-                상위 %로도 선별됩니다. 후보 위에서 신호·진입·포지션이 실제 보유를 정합니다(2단계).
-              </div>
-              <SentenceTree node={screenerCond} catalog={catalog} symbols={symbols}
-                         selfIndicators={selfIndicators} requiredType="condition"
-                         onChange={setScreenerCond} />
-            </div>
-          )}
         </div>
       </div>
 
