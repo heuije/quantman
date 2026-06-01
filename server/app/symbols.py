@@ -33,17 +33,21 @@ def tradable_symbols() -> set[str]:
     master_by_code = {m["symbol"]: m for m in kis_master_cache.get_master_list()}
 
     out: set[str] = set()
+    seen: set[str] = set()       # 인덱스 전체(OHLC 무관) — Loop 2 dedup 기준을 payload와 일치.
 
     # 1) 데이터 인덱스 종목 — 마스터에도 있으면(정규화 조회 포함) tradable.
     for sym, meta in index.items():
+        seen.add(sym)
         if not meta["has_ohlc"]:
             continue
         if sym in master_by_code or sym.replace("-", "/") in master_by_code:
             out.add(sym)
 
     # 2) 마스터에만 있고 데이터 없는 종목 — 라이브 매매만(미국 제외).
+    #    인덱스에 이미 있는 종목(seen)은 payload와 동일하게 재추가하지 않는다 —
+    #    OHLC 없는 인덱스 종목(예: 매크로·지수)을 tradable로 오판정하던 버그 방지.
     for code, m in master_by_code.items():
-        if code in out:
+        if code in seen:
             continue
         if m.get("market") in _US_MARKETS:
             continue
