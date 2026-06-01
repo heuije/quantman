@@ -126,6 +126,18 @@ def _exit_reason_for(defn: dict, held_days: int,
         ir, held_days=held_days, dataset=dataset, symbol=symbol), None
 
 
+def held_qty_from_snapshot(snap: dict, symbol: str) -> int:
+    """account_snapshot positions에서 symbol의 실 보유 수량 합 — 단일 출처(L-04).
+
+    매도 발주 직전 over-sell 클램프의 공유 헬퍼. 장중 손절(intraday_stop)과 EOD
+    cycle 청산이 같은 기준으로 'KIS가 실제로 들고 있는 수량'을 읽어, ledger가
+    외부 수동매매로 drift해도 보유 초과 매도를 발주하지 않는다.
+    """
+    return sum(int(p.get("qty") or 0)
+               for p in (snap or {}).get("positions", [])
+               if p.get("symbol") == symbol)
+
+
 class Trader:
     """Broker에 의존하는 모의투자 실행기. 보유 원장을 로컬에 유지한다.
 
@@ -1074,6 +1086,21 @@ class Trader:
                 continue
             # IR(전략 연구소)은 per-rule 매도 비중이 없으므로 전량(100%) 청산.
             sell_qty = int(pos["qty"])
+            # L-04(EOD): 발주 직전 KIS 실 보유로 클램프 — 외부 수동매도 시 over-sell
+            # 방지(intraday 손절과 동일 안전망, 같은 헬퍼). snap_pre는 cycle 진입부
+            # 잔고 재사용이라 추가 KIS 호출 없음. ledger drift는 settlement reconcile이 정리.
+            held = held_qty_from_snapshot(snap_pre, pos["symbol"])
+            if held <= 0:
+                log.info("[L-04 EOD] %s KIS 실 보유 0 (외부 매도 추정) — 청산 발주 skip",
+                          pos["symbol"])
+                decisions.append(order_log.decision(
+                    "skip_oversell", sid, pos.get("strategy_name", ""), pos["symbol"],
+                    "KIS 실 보유 0 — 외부 매도 추정, 청산 발주 skip"))
+                continue
+            if held < sell_qty:
+                log.info("[L-04 EOD] %s 청산 수량 클램프 ledger=%d → broker=%d",
+                          pos["symbol"], sell_qty, held)
+                sell_qty = held
             self._submit_sell(sid, pos.get("strategy_name", ""), pos["symbol"],
                               sell_qty, ref_price, policy, reason, decisions)
             # sold_this_cycle은 sid 단위 — 같은 cycle 중복 매도 차단.

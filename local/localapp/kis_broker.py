@@ -11,6 +11,7 @@ Phase 9 확장:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -108,13 +109,21 @@ class KisBroker:
         self.quote_base = _REAL          # 시세는 항상 실전 도메인
         no = creds["account_no"].split("-")
         self.cano, self.acnt_cd = no[0], (no[1] if len(no) > 1 else "01")
+        # 토큰 캐시 귀속 지문 — 실전/모의 + appkey. KIS access token은 발급 도메인
+        # (VTS=모의 / REAL=실전)에 묶이므로, 단일 캐시 파일을 만료시각만으로 재사용하면
+        # 모의↔실전 전환 직후 이전 계정 토큰을 잘못 재사용해 인증 실패한다. _token()이 검증.
+        self._token_fp = hashlib.sha256(
+            f"{self.virtual}:{self.key}".encode()).hexdigest()[:16]
 
     # ── 토큰 ──────────────────────────────────────────────────────────────────
 
     def _token(self) -> str:
         if _TOKEN_CACHE.exists():
             c = json.loads(_TOKEN_CACHE.read_text(encoding="utf-8"))
-            if datetime.fromisoformat(c["expires_at"]) > datetime.now() + timedelta(minutes=30):
+            # 캐시는 발급 계정(self._token_fp)에 귀속 — 지문 불일치(모의↔실전·다른 appkey)면
+            # 무시하고 재발급. 일치 + 만료 30분 마진 이내일 때만 적중.
+            if (c.get("fp") == self._token_fp
+                    and datetime.fromisoformat(c["expires_at"]) > datetime.now() + timedelta(minutes=30)):
                 return c["access_token"]
         r = requests.post(f"{self.base}/oauth2/tokenP",
                            json={"grant_type": "client_credentials",
@@ -129,6 +138,7 @@ class KisBroker:
             "access_token": d["access_token"],
             "expires_at": (datetime.now()
                            + timedelta(seconds=int(d.get("expires_in", 86400)))).isoformat(),
+            "fp": self._token_fp,
         })
         return d["access_token"]
 

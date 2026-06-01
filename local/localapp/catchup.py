@@ -422,8 +422,7 @@ def _catchup_settlement(market: str, settle_date: str | None = None) -> dict:
             "settle_date": settle_date, "retries_exhausted": True}
 
 
-def _catchup_stop_loss(market: str, broker, trader,
-                        get_strat_def) -> dict:
+def _catchup_stop_loss(market: str, broker, trader) -> dict:
     """C9 — 보유 종목 현재가 일괄 조회 → IntradayStopManager.on_tick 평가+발주.
 
     IntradayStopManager.on_tick은 이미:
@@ -455,10 +454,26 @@ def _catchup_stop_loss(market: str, broker, trader,
         log.info("catch-up stop-loss [%s] 보유 종목 0건 — skip", market)
         return {"checked": 0, "fired": 0, "decisions": [], "error": None}
 
-    # v0.9.4-beta — IntradayStopManager는 submit_sell_fn 인자가 필수.
-    # trader._submit_sell이 over-sell·intent journal·sold_today 처리하므로 그대로 전달.
-    manager = IntradayStopManager(broker, lambda: trader.ledger,
-                                    get_strat_def, trader._submit_sell)
+    # IntradayStopManager는 반드시 키워드 인자로 구성한다. 위치 인자로 넘기면
+    # submit_sell_fn↔dataset 순서가 어긋나 on_tick이 self.dataset.get()에서 즉시
+    # AttributeError로 죽어 catch-up 손절이 단 한 건도 발주 못 하는 회귀가 난다.
+    # on_tick은 ledger pos["definition"]으로 청산 룰을 읽으므로 strat 조회 함수는 불필요.
+    # dataset은 ATR 트레일링 청산 평가용 — 정상 cycle과 동일하게 보유 종목만 scoped
+    # 로드(실패/누락 시 atr_val=None으로 단순 손절/익절/트레일%만 평가).
+    import quant_core as qc
+    try:
+        ds = qc.load_dataset_for([p["symbol"] for p in positions],
+                                  with_indicators=True)
+    except Exception as e:
+        log.warning("catch-up stop-loss [%s] dataset 로드 실패 — ATR 트레일 제외 평가: %s",
+                     market, e)
+        ds = {}
+    manager = IntradayStopManager(
+        broker=broker,
+        get_ledger=lambda: trader.ledger,
+        submit_sell_fn=trader._submit_sell,
+        dataset=ds,
+    )
     fired_before = len(manager.decisions)
 
     # Q5(AL-4): _CYCLE_LOCK으로 정상 cycle·settlement과 직렬화.
@@ -484,18 +499,16 @@ def _catchup_stop_loss(market: str, broker, trader,
             "decisions": list(manager.decisions), "error": None}
 
 
-def _prepare_helpers() -> tuple[object, object, object] | None:
-    """catch-up용 broker·trader·get_strat_def 준비. 실패 시 None.
+def _prepare_helpers() -> tuple[object, object] | None:
+    """catch-up용 broker·trader 준비. 실패 시 None.
 
     KIS 자격증명 없으면 make_broker가 RuntimeError → catch-up abort (안전).
-    전략 pull 실패는 손절은 가능(전략 정의 불필요 — IntradayStopManager가 ledger
-    pos에 strategy_id 보고 strat_def 조회) — 따라서 빈 dict로 fallback해도 손절은
-    동작. cycle catch-up은 preview·전략 필요 → run_cycle 내부에서 다시 시도.
+    손절·cycle catch-up 모두 ledger pos["definition"](자기완결 전략 정의)로 동작하므로
+    여기서 전략 pull은 불필요 — cycle catch-up은 run_cycle 내부에서 전략을 pull한다.
     """
     try:
         from .runner import make_broker
         from .trader import Trader
-        from .sync_client import pull_strategies
     except Exception as e:
         log.error("catch-up: import 실패 — abort: %s", e)
         return None
@@ -512,18 +525,7 @@ def _prepare_helpers() -> tuple[object, object, object] | None:
         log.error("catch-up: Trader 생성 실패: %s", e)
         return None
 
-    try:
-        strategies = pull_strategies()
-        sdict = {str(s["id"]): s.get("definition", {}) for s in strategies}
-    except Exception as e:
-        log.warning("catch-up: 전략 pull 실패 — 손절 catch-up은 진행, cycle은 "
-                     "run_cycle 내부 retry 의존: %s", e)
-        sdict = {}
-
-    def get_strat_def(sid: str):
-        return sdict.get(str(sid))
-
-    return broker, trader, get_strat_def
+    return broker, trader
 
 
 def run_catchup_on_startup() -> dict:
@@ -560,7 +562,7 @@ def run_catchup_on_startup() -> dict:
         }
         _save_result(plan, results)
         return {"plan": plan, "results": results}
-    broker, trader, get_strat_def = helpers
+    broker, trader = helpers
 
     # 1) settlement catch-up 먼저 (어제·전일 누락 정리 → 오늘 cycle의 stale state
     #    위험 제거). 순서: KRX→US (사용자 한국 거주 가정 — KRX 우선 표시).
@@ -583,14 +585,14 @@ def run_catchup_on_startup() -> dict:
     if plan.krx_stop_loss_check:
         try:
             results["krx_stop_loss"] = _catchup_stop_loss(
-                "KRX", broker, trader, get_strat_def)
+                "KRX", broker, trader)
         except Exception as e:
             log.exception("catch-up stop-loss KRX 실행 실패: %s", e)
             results["krx_stop_loss"] = {"error": str(e)}
     if plan.us_stop_loss_check:
         try:
             results["us_stop_loss"] = _catchup_stop_loss(
-                "US", broker, trader, get_strat_def)
+                "US", broker, trader)
         except Exception as e:
             log.exception("catch-up stop-loss US 실행 실패: %s", e)
             results["us_stop_loss"] = {"error": str(e)}

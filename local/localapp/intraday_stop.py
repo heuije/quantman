@@ -91,11 +91,8 @@ class IntradayStopManager:
                 log.warning("account_snapshot 실패 — 캐시 유지: %s", e)
                 if self._snap_cache is None:
                     return None  # 알 수 없음 → 호출부는 안전하게 skip
-        total = 0
-        for p in self._snap_cache.get("positions", []):
-            if p.get("symbol") == symbol:
-                total += int(p.get("qty") or 0)
-        return total
+        from .trader import held_qty_from_snapshot
+        return held_qty_from_snapshot(self._snap_cache, symbol)
 
     def on_tick(self, symbol: str, price: float) -> None:
         """WebSocket tick callback. 가격 변동마다 호출됨.
