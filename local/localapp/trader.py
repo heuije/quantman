@@ -881,7 +881,7 @@ class Trader:
             # IR(전략 연구소)은 universe.kind로 다중키 여부를 결정한다. 후보(cands)는
             # 서버 preview가 이미 선정했다.
             uni_kind = (strat_def.get("universe") or {}).get("kind", "single")
-            is_multi_key = uni_kind in ("list", "all", "screener")
+            is_multi_key = uni_kind in ("list", "all")
             if is_multi_key:
                 prefix = f"{sid}:"
                 held_keys = {k for k in self.ledger if k.startswith(prefix)}

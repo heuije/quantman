@@ -30,9 +30,9 @@ from ..blocks.validate import (SEV_ERROR, SEV_INTEGRITY_WARN, Issue, has_market_
 # ── 유니버스 (대상 종목 집합) ─────────────────────────────────────────────────
 
 class Universe(BaseModel):
-    kind: Literal["single", "list", "all", "screener"] = "single"
+    kind: Literal["single", "list", "all"] = "single"
     symbols: list[str] = Field(default_factory=list)   # single(1개)/list(다수)
-    screener: Optional[dict] = None                    # kind=screener: {"condition": Node}
+    screener: Optional[dict] = None                    # 선택 종목 2차 필터: {"condition": Node, "refresh": str}
     exclude_macro: bool = True                         # all: 매크로/자산 지수 제외
 
 
@@ -478,7 +478,7 @@ def needed_symbols(s: StrategyIR) -> Optional[set[str]]:
     참조한 외부심볼("VIX.Close" 등). 이 집합만 로드·지표계산하면 전 유니버스(수천)
     통째 빌드 없이 동일 결과를 얻는다(test_backtest_golden의 차등 불변식이 보장).
 
-    all/screener: 횡단 랭킹/스크리닝이라 후보 전체가 필요 → None(전 유니버스 로드).
+    all: 횡단 랭킹이라 후보 전체가 필요 → None(전 유니버스 로드).
     엔진의 _universe_symbols(all 경로)가 dataset 전체를 후보로 보는 것과 같은 경계.
     """
     if s.universe.kind == "all":

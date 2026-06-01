@@ -125,7 +125,8 @@ def test_sweep_label_must_be_label():
 def test_screener_condition_must_be_condition():
     """스크리너 조건은 condition만 — score면 S-univ 거부."""
     s = StrategyIR(signal=_score(),
-                   universe=Universe(kind="screener", screener={"condition": _score().model_dump()}),
+                   universe=Universe(kind="list", symbols=["AAA", "BBB"],
+                                     screener={"condition": _score().model_dump()}),
                    position=PositionSpec(entry=Entry(mode="scheduled")))
     assert any(i.rule == "S-univ" for i in validate_strategy(s))
 

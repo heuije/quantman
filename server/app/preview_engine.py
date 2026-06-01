@@ -175,7 +175,7 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
         return out
 
     pos, u = s.position, s.universe
-    out["trade_symbol"] = ("IR:전체" if u.kind in ("all", "screener")
+    out["trade_symbol"] = ("IR:전체" if u.kind == "all"
                            else "IR:" + ",".join(u.symbols))
     st = get(s.signal.op).out_type.value if has(s.signal.op) else None
     if st not in ("condition", "score"):
@@ -192,7 +192,7 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
         return out
     screener = u.screener or {}
     filt = (Node.model_validate(screener["condition"])
-            if u.kind == "screener" and screener.get("condition") else None)
+            if screener.get("condition") else None)
     ds = _scoped(dataset, syms, s.signal, filt, pos.overlays.group_label)
     ctx = EvalContext.from_dataset(ds)
     try:
@@ -211,7 +211,7 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
         out["skipped"].append({"reason": "신호가 유니버스 종목을 포함하지 않습니다."})
         return out
     alpha = alpha[cols]
-    if u.kind == "screener":
+    if screener.get("condition"):
         try:
             elig = _screener_mask(screener, ctx, cols)
             alpha = alpha.where(elig.reindex(index=alpha.index, columns=cols).fillna(False))
@@ -332,7 +332,7 @@ def _preview_dataset(strats: list, held_symbols: set) -> dict:
     (~9.4GB) 빌드를 회피한다(preview cron OOM의 직접 원인이었던 경로).
 
     · 어떤 전략이든 컬럼 결정 불가(strat: 조합 등) → 전체(get_dataset) 안전 폴백(드묾).
-    · all/screener 전략이 하나라도 있으면 전 종목 × 참조컬럼 프로젝션.
+    · all 전략이 하나라도 있으면 전 종목 × 참조컬럼 프로젝션.
     · 전부 single/list면 그 종목들 ∪ 보유종목만 프로젝션.
     보유종목 Close(청산 미리보기)는 OHLCV라 프로젝션에도 항상 포함된다.
     """

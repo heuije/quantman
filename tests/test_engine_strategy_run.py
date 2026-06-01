@@ -111,7 +111,8 @@ def test_engine_rejects_unsupported_root_boundaries():
 
     # 스크리너 조건에 score → 거부 (condition 요구)
     r = run_strategy_ir(StrategyIR(
-        signal=score, universe=Universe(kind="screener", screener={"condition": score.model_dump()}),
+        signal=score, universe=Universe(kind="list", symbols=["AAA", "BBB", "CCC"],
+                                        screener={"condition": score.model_dump()}),
         position=PositionSpec(entry=sched)), d)
     assert not r["success"] and "스크리너 조건" in r.get("error", "")
 
