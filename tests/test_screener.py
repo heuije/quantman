@@ -67,6 +67,16 @@ def _spec(condition) -> dict:
             "simulation": {"initial_capital": 1e7}}
 
 
+def _spec_list(condition, refresh="each_rebalance"):
+    """list 유니버스(A..D) + 세부조건 — 선택 종목 ∩ 조건."""
+    return {"signal": {"op": "data", "params": {"ref": "momentum_12_1m"}},
+            "universe": {"kind": "list", "symbols": ["A", "B", "C", "D"],
+                         "screener": {"condition": condition, "refresh": refresh}},
+            "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
+                         "entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 4}},
+            "simulation": {"initial_capital": 1e7}}
+
+
 # ── 실행 ───────────────────────────────────────────────────────────────────────
 
 def test_screener_rank_topn_runs():
@@ -84,6 +94,17 @@ def test_screener_filter_and_rank_combined_runs():
     """필터 ∧ 횡단순위를 한 조건으로 — 거래대금류 필터 + 시총 상위 N."""
     cond = _and(_cmp("market_cap", ">", 5.0), _rank_cond("market_cap", 2))
     res = strategy_from_spec(_spec(cond), _ds())
+    assert res["success"], res
+
+
+def test_list_screener_dynamic_runs():
+    res = strategy_from_spec(_spec_list(_rank_cond("market_cap", 2)), _ds())
+    assert res["success"], res
+    assert len(res["equity"]) > 0
+
+
+def test_list_screener_static_runs():
+    res = strategy_from_spec(_spec_list(_rank_cond("market_cap", 2), "once_at_start"), _ds())
     assert res["success"], res
 
 

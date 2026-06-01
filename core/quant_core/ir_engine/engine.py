@@ -648,7 +648,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
         return _empty("유니버스에 종목이 없습니다.")
     screener = strategy.universe.screener or {}
     filt_node = (Node.model_validate(screener["condition"])
-                 if strategy.universe.kind == "screener" and screener.get("condition") else None)
+                 if screener.get("condition") else None)
     gl = pos.overlays.group_label
     ds = _scoped(dataset, syms, signal, filt_node, gl)
     ctx = EvalContext.from_dataset(ds)
@@ -665,8 +665,9 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
     if not cols:
         return _empty("신호가 유니버스 종목을 포함하지 않습니다.")
     alpha = alpha[cols]
-    if strategy.universe.kind == "screener":
-        elig = _screener_mask(screener, ctx, cols)
+    if screener.get("condition"):
+        elig = _apply_refresh(_screener_mask(screener, ctx, cols),
+                              screener.get("refresh", "each_rebalance"), sim.start)
         alpha = alpha.where(elig.reindex(index=alpha.index, columns=cols).fillna(False))
 
     group_panel = None
