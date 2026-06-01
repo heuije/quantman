@@ -263,6 +263,14 @@ class Trader:
         분을 자동 cancel하므로 우리는 상태 조회로 cancelled를 인지하고 ledger·
         pending을 정리하기만 한다. 일중에 limit 도달 시 자연 체결 허용.
         """
+        # M3/INV-CONC-1: pending 순회·order_status·_apply_fill·del을 단일 락으로
+        # 직렬화한다. WS 체결 스레드(_on_exec_event)가 같은 pending을 동시 변경하는
+        # race(이중 del→KeyError, 부분반영 재가산→over-position)를 차단. RLock이라
+        # cycle/settlement가 이미 락을 쥔 채 호출해도 재진입 안전.
+        with _CYCLE_LOCK:
+            self._resolve_pending_locked(decisions)
+
+    def _resolve_pending_locked(self, decisions: list[dict]) -> None:
         if not self.pending:
             return
         for order_no, p in list(self.pending.items()):
@@ -276,7 +284,13 @@ class Trader:
             fill_px = float(st.get("fill_price", 0) or 0)
 
             if status == "filled" and filled > 0:
-                self._apply_fill(order_no, p, filled, fill_px, decisions)
+                # filled/partial 모두 KIS 누적(tot_ccld_qty) 기준 — 이미 WS/이전 폴링이
+                # 반영한 filled_so_far를 차감해 잔여 delta만 반영한다. 차감 안 하면
+                # 부분 선반영분이 재가산돼 over-position(INV-FILL-1 위반).
+                already = int(p.get("filled_so_far", 0) or 0)
+                delta = filled - already
+                if delta > 0:
+                    self._apply_fill(order_no, p, delta, fill_px, decisions)
                 del self.pending[order_no]
             elif status == "partial":
                 # 부분체결: 채운 만큼만 반영하고 잔여는 계속 추적

@@ -100,12 +100,6 @@ def _on_exec_event(trader: Trader, broker: Broker, evt: dict) -> None:
     # 미보장 — canonical 비교로 매칭한다(정확일치였다면 unpadded ODER_NO를 전부
     # 놓쳤다). 매칭된 raw 키로 p 조회·del·_apply_fill을 수행해 라운드트립 형태를
     # 보존한다.
-    pending = trader.pending
-    key = _match_pending_key(pending, order_no)
-    if key is None:
-        log.info("[order-ws] 미매칭 체결: ODER_NO=%s (pending에 없음)", order_no)
-        return
-
     try:
         filled_qty = int(evt.get("CNTG_QTY", "0") or 0)
         fill_price = float(evt.get("CNTG_UNPR", "0") or 0)
@@ -117,37 +111,55 @@ def _on_exec_event(trader: Trader, broker: Broker, evt: dict) -> None:
     if filled_qty <= 0 or fill_price <= 0:
         return
 
-    p = pending[key]
-    raw_odno = p.get("order_no", key)
-
-    # L-09 — 체결 통보 중복 dedup. KIS가 같은 H0STCNI0 이벤트를 두 번
-    # 보내면 ledger qty가 이중 가산되어 over-position이 된다. KIS spec엔
-    # 별도 시퀀스/누계 필드가 없으므로 (체결시각, 수량, 가격) 3-tuple로
-    # dedup. 정상 부분 체결은 시각이 달라 정상 누적되고, 진짜 중복은 같은
-    # 시각·가격·수량이라 차단된다. pending[order_no]에 직접 보관하므로
-    # pending이 disk에 영속될 때 같이 저장 → 재기동 직후 중복 도착도 차단.
-    # 전량 체결 시 del pending[order_no]로 자동 회수.
-    dedup_key = [evt.get("STCK_CNTG_HOUR", ""), filled_qty, fill_price]
-    seen_keys = p.setdefault("_dedup_keys", [])
-    if dedup_key in seen_keys:
-        log.info("[order-ws] 중복 체결 통보 dedup: ODER_NO=%s key=%s",
-                  order_no, dedup_key)
-        return
-    seen_keys.append(dedup_key)
-
-    already = int(p.get("filled_so_far", 0) or 0)
+    # M3/INV-CONC-1: 매칭→dedup→_apply_fill→del/filled_so_far 전체를 trader의
+    # 단일 락으로 직렬화. 스케줄러/settlement 스레드의 _resolve_pending이 같은
+    # pending을 동시 변경하는 race(이중 del→KeyError, dedup check-then-append 경합,
+    # 부분반영 재가산→over-position)를 차단. RLock이라 _apply_fill 재진입 안전.
+    # account_snapshot·push(네트워크)는 락 밖에서 수행.
+    from .trader import _CYCLE_LOCK
+    pending = trader.pending
     decisions: list[dict] = []
+    applied = False
+    with _CYCLE_LOCK:
+        key = _match_pending_key(pending, order_no)
+        if key is None:
+            log.info("[order-ws] 미매칭 체결: ODER_NO=%s (pending에 없음)", order_no)
+            return
 
-    if filled_qty + already >= int(p.get("qty", 0)):
-        # 전량 체결
-        trader._apply_fill(raw_odno, p, filled_qty, fill_price, decisions,
-                            partial=False)
-        del pending[key]
-    else:
-        # 부분 체결
-        trader._apply_fill(raw_odno, p, filled_qty, fill_price, decisions,
-                            partial=True)
-        p["filled_so_far"] = already + filled_qty
+        p = pending[key]
+        raw_odno = p.get("order_no", key)
+
+        # L-09 — 체결 통보 중복 dedup. KIS가 같은 H0STCNI0 이벤트를 두 번
+        # 보내면 ledger qty가 이중 가산되어 over-position이 된다. KIS spec엔
+        # 별도 시퀀스/누계 필드가 없으므로 (체결시각, 수량, 가격) 3-tuple로
+        # dedup. 정상 부분 체결은 시각이 달라 정상 누적되고, 진짜 중복은 같은
+        # 시각·가격·수량이라 차단된다. pending[order_no]에 직접 보관하므로
+        # pending이 disk에 영속될 때 같이 저장 → 재기동 직후 중복 도착도 차단.
+        # 전량 체결 시 del pending[order_no]로 자동 회수.
+        dedup_key = [evt.get("STCK_CNTG_HOUR", ""), filled_qty, fill_price]
+        seen_keys = p.setdefault("_dedup_keys", [])
+        if dedup_key in seen_keys:
+            log.info("[order-ws] 중복 체결 통보 dedup: ODER_NO=%s key=%s",
+                      order_no, dedup_key)
+            return
+        seen_keys.append(dedup_key)
+
+        already = int(p.get("filled_so_far", 0) or 0)
+
+        if filled_qty + already >= int(p.get("qty", 0)):
+            # 전량 체결
+            trader._apply_fill(raw_odno, p, filled_qty, fill_price, decisions,
+                                partial=False)
+            del pending[key]
+        else:
+            # 부분 체결
+            trader._apply_fill(raw_odno, p, filled_qty, fill_price, decisions,
+                                partial=True)
+            p["filled_so_far"] = already + filled_qty
+        applied = True
+
+    if not applied:
+        return
 
     # 즉시 서버 push
     try:

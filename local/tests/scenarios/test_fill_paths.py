@@ -13,7 +13,7 @@ _LOCAL = Path(__file__).resolve().parent.parent.parent
 if str(_LOCAL) not in sys.path:
     sys.path.insert(0, str(_LOCAL))
 
-from sim import invariants
+from sim import invariants, scenario
 
 
 def test_unpadded_ws_oder_no_is_recognized(isolated_trader):
@@ -57,4 +57,29 @@ def test_rest_polling_recognizes_fill(isolated_trader):
 
     assert t.ledger["s1"]["qty"] == 5, "INV-FILL-3 위반: REST 폴링 체결 미인지"
     assert not t.pending                                  # 인지 후 회수
+    invariants.check_all(t)
+
+
+def test_partial_ws_then_rest_filled_no_double_count(isolated_trader):
+    """INV-FILL-1/3: WS 부분체결 후 REST가 누적 filled를 봐도 이중 가산 안 됨.
+
+    _resolve_pending의 filled 분기가 filled_so_far를 차감하지 않으면, 이미 WS로
+    반영된 부분체결분까지 재가산돼 over-position이 된다(실자금 초과보유).
+    """
+    t, broker = isolated_trader
+    r = broker.buy_limit("005930", 60, 70000)
+    t._after_submit(r, "s1", "T", {}, "005930", "buy", 60, 70000, 70000,
+                    {"use_limit": True, "buy_tolerance_pct": 1.0}, [], reason="매수신호")
+    # WS 부분체결 40주 → ledger 40, 잔여 20 추적
+    scenario.inject_ws_fill(t, broker, r["order_no"], 40, 70000.0)
+    assert t.ledger["s1"]["qty"] == 40
+    assert t.pending
+
+    # KIS측 전량(누적 60) 체결 → REST 폴링이 filled 관측
+    broker.mark_filled(r["order_no"], 60, 70000.0)
+    t._resolve_pending([])
+
+    assert t.ledger["s1"]["qty"] == 60, \
+        f"INV-FILL-1 위반: 이미 반영된 부분체결 재가산 over-position = {t.ledger['s1']['qty']}"
+    assert not t.pending
     invariants.check_all(t)
