@@ -221,7 +221,10 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
         basket_set = set(live_basket)
         cols = [c for c in cols if c in basket_set]
         if not cols:
-            out["skipped"].append({"reason": "고정 바스켓에 거래 가능 종목이 없습니다."})
+            out["skipped"].append({"reason": (
+                "정적 세부조건 바스켓이 비어 있습니다(전환 시점 매칭 종목 0) — "
+                "조건을 확인하거나 전략을 재전환하세요." if not basket_set
+                else "고정 바스켓 종목의 데이터가 없습니다.")})
             return out
         alpha = alpha[cols]
     elif screener.get("condition"):
@@ -439,9 +442,10 @@ def build_user_preview(session: Session, user_id: int,
         if (s.run_mode in ("paper", "live")
                 and screener.get("refresh") == "once_at_start"
                 and screener.get("condition")
-                and not s.live_basket
-                and result.get("screener_members")):
-            s.live_basket = list(result["screener_members"])
+                and s.live_basket is None):
+            # 전환 후 첫 평가에 당일 자격집합으로 고정 — backtest 시작일 형성과 일치.
+            # 매칭 0이면 빈 바스켓([])으로 고정(거래 없음); preview가 경고 노출, 재전환 시 재형성.
+            s.live_basket = list(result.get("screener_members") or [])
             session.add(s)
             basket_formed = True
 

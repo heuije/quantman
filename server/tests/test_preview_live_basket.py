@@ -212,11 +212,10 @@ def _ir_def_filter() -> dict:
     return d
 
 
-def test_static_empty_formation_day_retries(monkeypatch):
-    """형성일에 자격 종목이 0개면 바스켓을 만들지 않고 None 유지 — 다음 preview에서 재시도.
+def test_static_empty_formation_day_forms_empty(monkeypatch):
+    """형성일 자격 0개 → 빈 바스켓([])으로 고정 — backtest 시작일 형성(빈것 동결)과 일치.
 
-    backtest의 once_at_start(빈 바스켓 영구 동결)와 다른 라이브 의미: 전환일이 마침 무자격
-    이라고 전략을 영구 무거래로 만들지 않는다(자격 종목이 생기는 첫 날 형성)."""
+    이후 자격 종목이 생겨도 재형성하지 않는다(고정). 재형성은 PUT(재전환) 시에만."""
     eng = create_engine("sqlite://", connect_args={"check_same_thread": False},
                         poolclass=StaticPool)
     SQLModel.metadata.create_all(eng)
@@ -232,22 +231,31 @@ def test_static_empty_formation_day_retries(monkeypatch):
         s.commit(); s.refresh(strat)
         sid = strat.id
 
-    # 형성일: 전 종목 market_cap ≤ 50 → 자격 0개 → 미형성
+    # 형성일: 전 종목 market_cap ≤ 50 → 자격 0개 → 빈 바스켓([])으로 고정(None 아님)
     low = {c: _mk(10) for c in _SYMS}
     _patch_dataset(monkeypatch, low)
     with Session(eng) as session:
         preview_engine.build_user_preview(session, uid, "test")
     with Session(eng) as session:
-        assert session.get(Strategy, sid).live_basket is None    # 미형성
+        assert session.get(Strategy, sid).live_basket == []
 
-    # 다음날: 000001만 자격(>50) → 그날 형성
+    # 다음날: 000001이 자격(>50)이 돼도 재형성 안 함(고정)
     eligible = {"000001": _mk(100), "000002": _mk(10),
                 "000003": _mk(10), "000004": _mk(10)}
     _patch_dataset(monkeypatch, eligible)
     with Session(eng) as session:
         preview_engine.build_user_preview(session, uid, "test")
     with Session(eng) as session:
-        assert session.get(Strategy, sid).live_basket == ["000001"]
+        assert session.get(Strategy, sid).live_basket == []      # 여전히 빈것(불변)
+
+
+def test_static_empty_basket_warns():
+    """빈 정적 바스켓([])은 _evaluate가 '바스켓이 비어' 경고(skip)를 낸다(자동매매 경고)."""
+    dataset = {c: _mk(100) for c in _SYMS}
+    out = preview_engine._evaluate_ir_strategy(
+        _ir_def_filter(), dataset, 1e7, set(), {}, live_basket=[])
+    reasons = " ".join(str(x.get("reason", "")) for x in out.get("skipped", []))
+    assert "바스켓이 비어" in reasons, out
 
 
 # ── 4) PUT 초기화 ──────────────────────────────────────────────────────────────
