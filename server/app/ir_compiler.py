@@ -157,7 +157,7 @@ def _system_prompt(catalog: list[dict], capabilities: dict, indicator_cols: list
 <ir_structure>
 StrategyIR = {{
   "name": str,
-  "universe": {{"kind": "single|list|all|screener", "symbols": [..], "screener": {{"condition": <블록>}}}},
+  "universe": {{"kind": "single|list|all", "symbols": [..], "screener": {{"condition": <블록>, "refresh": "each_rebalance|once_at_start"}}}},
   "signal": <블록트리>,          // 신호. {{op, params, inputs:{{slot: 자식블록}}}} 재귀. 잎: data{{ref}}, const{{value}}
   "position": {{"direction":.., "sizing":{{"mode":..}}, "entry":{{"mode":..}}, "exit":{{..}}, "overlays":{{..}}}},
   "simulation": {{"initial_capital":.., "fill":.., "leverage":.., "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", ...}}
@@ -194,8 +194,9 @@ StrategyIR = {{
    (※ on_signal+condition은 단방향 전용. 서로 다른 조건의 양방향은 반드시 이 부호점수+long_short 경로.)
 2. [시계열 모멘텀(TSMOM) 롱숏] "추세가 양이면 롱, 음이면 숏" → signal=score(예: ts_delta(Close,N)),
    direction="long_short", entry.threshold=0. 부호가 곧 방향(중립=정확히 0).
-3. [정기 리밸런스 팩터(횡단)] "매월/매주 ___ 상위 N(또는 X%) 보유" → universe=all|screener,
+3. [정기 리밸런스 팩터(횡단)] "매월/매주 ___ 상위 N(또는 X%) 보유" → universe.kind=all(또는 list+세부조건),
    signal=score(팩터), entry.mode="scheduled"+rebalance, top_n 또는 top_pct. 롱숏이면 부호/순위로 양다리.
+   "거래대금·시총·밸류 등으로 선별한 종목에서"처럼 자격 필터가 붙으면 universe.screener={{condition, refresh}}로 2차 선별.
 4. [국면별 비교] "상승장/하락장 등 국면에 따라 신호·성과가 어떻게 다른가" → 신호 대수는 그대로 두고
    sweep.target="signal"(또는 "relation") + label 블록(국면 라벨)으로 분리. axis는 바꾸지 않는다.
 5. [조건 지속/최근 발생] "N일 연속 충족"·"최근 M일 내 발생" → condition을 modifier 블록으로 감싼다.

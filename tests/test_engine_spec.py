@@ -138,6 +138,15 @@ def test_sweep_event_must_be_condition():
     assert any(i.rule == "S-event" for i in validate_strategy(s))
 
 
+def test_capabilities_no_screener_kind():
+    """능력 카탈로그는 screener를 universe_kind 값으로 제시하지 않는다(세부조건 필드로 직교화)."""
+    from quant_core.ir_engine.capabilities import capability_spec
+    cap = capability_spec()
+    kinds = [k["value"] for k in cap["universe_kind"]]
+    assert "screener" not in kinds
+    assert set(kinds) == {"single", "list", "all"}
+
+
 def test_roundtrip_serialization():
     s = StrategyIR(signal=_score(), universe=Universe(kind="all"),
                    position=PositionSpec(direction="long_short",
