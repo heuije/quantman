@@ -90,3 +90,27 @@ def test_on_exec_event_serializes_on_lock(isolated_trader):
     _hold_lock_then(lambda: scenario.inject_ws_fill(t, broker, on, 5, 70000.0),
                     observe_side_effect_absent=lambda: not entry.get("_dedup_keys"))
     assert t.ledger["s1"]["qty"] == 5
+
+
+def test_in_cycle_is_thread_local(isolated_trader):
+    """REV-D: _in_cycle은 thread-local. 다른 스레드가 cycle 안(_in_cycle=True)이어도
+    이 스레드(WS 체결 스레드 역할)는 자기 기준 False여야 — 안 그러면 cycle 도는 동안
+    WS 체결의 Tier1 killswitch 평가가 오억제된다(_apply_fill의 not self._in_cycle 게이트)."""
+    t, _ = isolated_trader
+    other_in = threading.Event()
+    release = threading.Event()
+
+    def other():
+        t._in_cycle = True               # 다른 스레드가 cycle 진입
+        other_in.set()
+        release.wait(timeout=3)
+        t._in_cycle = False
+
+    th = threading.Thread(target=other, daemon=True)
+    th.start()
+    assert other_in.wait(timeout=3)
+    main_view = t._in_cycle               # 이 스레드 기준
+    release.set()
+    th.join(timeout=3)
+    assert main_view is False, \
+        "_in_cycle이 thread-local 아님 — 다른 스레드 cycle이 보여 WS 체결 ks 오억제"

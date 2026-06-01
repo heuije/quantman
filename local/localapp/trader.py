@@ -158,15 +158,30 @@ class Trader:
         # Q5: kill switch 발동 시 추가 동작을 외부에 알리는 hook (intraday_loop이
         # 보유 종목 강제 청산 cycle을 트리거하도록). None이면 발동만 기록.
         self._ks_trigger_hook = None
-        # Q5(데드락 방지): cycle 진입 중 플래그. _apply_fill의 ks 평가/hook 호출은
-        # cycle 외부에서만 동작 — cycle 내부의 _apply_fill(이전 미체결 정리,
-        # _wait_pending 폴링)에서 hook이 cycle을 재호출하면 _CYCLE_LOCK 데드락 +
-        # 무한 재귀 위험. cycle은 진입부에서 이미 ks를 평가하므로 중복 평가 불필요.
-        # 진짜 필요 케이스는 intraday_loop의 _on_exec_event(별 thread).
-        self._in_cycle = False
+        # Q5(데드락 방지): "현재 스레드가 cycle 안인가"를 나타내는 thread-local 플래그.
+        # _apply_fill의 ks 평가/hook은 cycle 외부 스레드에서만 동작 — cycle 내부의
+        # _apply_fill(미체결 정리·_wait_pending 폴링)에서 hook이 cycle을 재호출하면
+        # _CYCLE_LOCK 재진입+무한재귀. 인스턴스 bool이면 cycle이 도는 동안 다른
+        # 스레드(WS _on_exec_event)의 *정당한* 체결 ks 평가까지 오억제되므로(REV-D)
+        # thread-local로 둔다. 아래 _in_cycle property가 이 tls에 위임한다.
+        self._cycle_tls = threading.local()
         # 미국 정상 cycle에서 True — _submit_buy/_submit_sell이 예약주문(개장 전
         # 접수 → 개시 자동전송)으로 라우팅. _cycle_body가 매 cycle 갱신.
         self._reserved_us = False
+
+    @property
+    def _in_cycle(self) -> bool:
+        """현재 스레드가 cycle 본문 안인지(thread-local). cycle 스레드만 True."""
+        return getattr(getattr(self, "_cycle_tls", None), "active", False)
+
+    @_in_cycle.setter
+    def _in_cycle(self, value: bool) -> None:
+        # __new__로 __init__ 우회한 테스트 스텁도 안전하도록 tls를 lazy 생성.
+        tls = getattr(self, "_cycle_tls", None)
+        if tls is None:
+            tls = threading.local()
+            object.__setattr__(self, "_cycle_tls", tls)
+        tls.active = bool(value)
 
     # ── 영속화 ────────────────────────────────────────────────────────────────
 
@@ -563,8 +578,14 @@ class Trader:
     def _submit_sell(self, sid: str, strat_name: str, symbol: str, qty: int,
                      ref_price: float, policy: dict, reason: str,
                      decisions: list[dict]) -> None:
-        # L-01: 매도도 동일 멱등 보호 — 크래시 시 over-sell 방지(L-04와 중복 안전망).
+        # L-01: 매도 멱등 단일 게이트(모든 매도 경로 공유) — 오늘 같은 (sid, symbol)
+        # 매도 intent가 활성이면 재발주 차단. EOD cycle·장중 tick 손절·catch-up이
+        # 첫 매도 미체결(KIS 잔고 미감소)인 동안 같은 포지션을 동시 평가해도 이중매도를
+        # 막는다. intent journal이 cycle/장중/catch-up·재기동을 가로지르는 단일 출처.
         today_iso = kst_today().isoformat()
+        if intents.is_active(today_iso, sid, symbol, "sell"):
+            log.info("[L-01] 중복 매도 차단 %s/%s", sid, symbol)
+            return
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell",
                       qty, ref_price)
@@ -1093,11 +1114,7 @@ class Trader:
                 ref_price = cur
 
             policy = _policy(pos.get("definition"))
-            # L-01 멱등 게이트 — 오늘 같은 (sid, symbol, sell) intent가 활성이면 skip
-            today_iso = kst_today().isoformat()
-            if intents.is_active(today_iso, sid, pos["symbol"], "sell"):
-                log.info("[L-01] 중복 매도 차단 %s/%s", sid, pos["symbol"])
-                continue
+            # L-01 매도 멱등은 _submit_sell 진입부 단일 게이트가 담당(전 매도 경로 공유).
             # IR(전략 연구소)은 per-rule 매도 비중이 없으므로 전량(100%) 청산.
             sell_qty = int(pos["qty"])
             # L-04(EOD): 발주 직전 KIS 실 보유로 클램프 — 외부 수동매도 시 over-sell
