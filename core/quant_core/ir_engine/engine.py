@@ -492,9 +492,10 @@ def _apply_refresh(mask: pd.DataFrame, refresh: str, start) -> pd.DataFrame:
     """
     if refresh != "once_at_start":
         return mask
-    rows = mask[mask.index >= pd.Timestamp(start)] if start is not None else mask
+    rows = mask if start is None else mask[mask.index >= pd.Timestamp(start)]
     if rows.empty:
-        rows = mask
+        # start가 데이터 윈도우 밖 — 형성할 바스켓 없음. 빈(전부 False) 마스크(거래 없음).
+        return pd.DataFrame(False, index=mask.index, columns=mask.columns)
     basket = rows.iloc[0]                      # 형성일 자격 (cols, bool)
     return pd.DataFrame(
         np.tile(basket.to_numpy(dtype=bool), (len(mask.index), 1)),

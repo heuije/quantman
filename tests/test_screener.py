@@ -138,6 +138,15 @@ def test_apply_refresh_static_freezes_first_row():
     assert [c for c in out.columns if out.iloc[-1][c]] == first
 
 
+def test_apply_refresh_static_empty_when_start_past_window():
+    """once_at_start + start가 전 구간 이후 → 빈 바스켓(전부 False, 거래 없음)."""
+    ctx = EvalContext.from_dataset(_ds())
+    m = _screener_mask({"condition": _rank_cond("market_cap", 2)}, ctx, ["A", "B", "C", "D"])
+    out = _apply_refresh(m, "once_at_start", "2099-01-01")
+    assert out.shape == m.shape
+    assert not out.to_numpy().any()   # 전부 False
+
+
 # ── 검증 게이트 ────────────────────────────────────────────────────────────────
 
 def test_screener_requires_condition():
