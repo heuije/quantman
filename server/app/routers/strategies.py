@@ -223,6 +223,9 @@ def update_strategy(
     row.engine = body.engine
     row.definition = definition
     row.updated_at = now
+    # Task 12b — 사용자 수정·전환 시 정적 라이브 바스켓을 초기화해 다음 preview에서 재형성.
+    # live_basket은 서버 파생 상태 — definition·run_mode가 바뀌면 고정 집합도 다시 형성해야 한다.
+    row.live_basket = None
     session.add(row)
     session.commit()
     session.refresh(row)

@@ -141,12 +141,17 @@ def _data_freshness_ok(dataset: dict, symbol: str,
 
 
 def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
-                          held_keys: set[str], master_by_code: dict) -> dict:
+                          held_keys: set[str], master_by_code: dict,
+                          live_basket: list[str] | None = None) -> dict:
     """engine='ir' 전략의 다음날 매수 후보 — ir_engine 마지막 바 신호·선택 재사용.
 
     수렴의 본질: run_unified/_run_scheduled와 **동일한** _select·_target_weights를 써
     backtest와 live의 신호 선택을 일치시킨다. 사이징은 preview 추정치 — 실제 사이징·발주는
     로컬앱(Stage 3)이 소유한다. 미국 종목은 USD 사이징 불가로 qty=None(표시만, 보안 원칙).
+
+    live_basket(Task 12b) — 정적 세부조건(once_at_start) 라이브 바스켓이 이미 형성됐다면
+    그 고정 종목집합만 후보로 쓰고 세부조건을 재평가하지 않는다(전환 시점에 고정). None이면
+    동적 세부조건을 매 평가마다 적용하고, 형성용 후보(당일 자격집합)를 screener_members에 담는다.
 
     out 형태는 _evaluate_strategy와 동일(프론트 PreviewByStrategy 공유).
     """
@@ -210,14 +215,29 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
     if not cols:
         out["skipped"].append({"reason": "신호가 유니버스 종목을 포함하지 않습니다."})
         return out
-    alpha = alpha[cols]
-    if screener.get("condition"):
+    if live_basket is not None:
+        # 정적 세부조건 라이브 바스켓 — 전환 시점에 고정된 종목집합만 후보로(세부조건 재평가 안 함).
+        # cols 순서를 보존(결정적)하면서 바스켓과 교집합한다.
+        basket_set = set(live_basket)
+        cols = [c for c in cols if c in basket_set]
+        if not cols:
+            out["skipped"].append({"reason": "고정 바스켓에 거래 가능 종목이 없습니다."})
+            return out
+        alpha = alpha[cols]
+    elif screener.get("condition"):
+        alpha = alpha[cols]
         try:
             elig = _screener_mask(screener, ctx, cols)
-            alpha = alpha.where(elig.reindex(index=alpha.index, columns=cols).fillna(False))
+            elig = elig.reindex(index=alpha.index, columns=cols).fillna(False)
+            alpha = alpha.where(elig)
+            # 형성용 후보 바스켓 — 마지막 행(당일)에서 자격 True인 종목들. 정적 전략이 고정할 집합.
+            last_elig = elig.iloc[-1]
+            out["screener_members"] = [c for c in cols if bool(last_elig.get(c, False))]
         except Exception as e:  # noqa: BLE001
             out["skipped"].append({"reason": f"스크리너 평가 오류: {e}"})
             return out
+    else:
+        alpha = alpha[cols]
 
     d = alpha.index[-1]
     out["signal_summary"] = f"마지막 신호일 {str(d)[:10]} 기준"
@@ -401,14 +421,30 @@ def build_user_preview(session: Session, user_id: int,
     by_strategy = []
     total_buy_amount = 0
     n_buy_candidates = 0
+    basket_formed = False           # 정적 바스켓을 이번 호출에서 1회라도 형성·persist 했는가
 
     for s in ir_strats:
         strat_def = dict(s.definition or {})
         strat_def["_id"] = s.id
-        result = _evaluate_ir_strategy(strat_def, dataset, cash, held_symbols, master_by_code)
+        result = _evaluate_ir_strategy(strat_def, dataset, cash, held_symbols,
+                                       master_by_code, live_basket=s.live_basket)
         result["strategy_id"] = s.id
         result["run_mode"] = s.run_mode
         by_strategy.append(result)
+
+        # Task 12b — 정적 세부조건(once_at_start) 라이브 바스켓 lazy 형성.
+        # 전환 후 바스켓이 아직 없고(falsy), 이번 평가가 당일 자격집합(screener_members)을
+        # 산출했으면 그 집합으로 고정. 이후 평가는 s.live_basket을 그대로 받아 재선별 안 함.
+        screener = (strat_def.get("universe") or {}).get("screener") or {}
+        if (s.run_mode in ("paper", "live")
+                and screener.get("refresh") == "once_at_start"
+                and screener.get("condition")
+                and not s.live_basket
+                and result.get("screener_members")):
+            s.live_basket = list(result["screener_members"])
+            session.add(s)
+            basket_formed = True
+
         for c in result.get("candidates", []):
             # US 종목은 USD/KRW 통화 mismatch로 est_total=None (preview_engine.py:164)
             # — 의도된 동작. 합산에서만 skip하고 후보 카운트엔 포함 (사용자 입장에선 매수 예정).
@@ -419,6 +455,11 @@ def build_user_preview(session: Session, user_id: int,
             if est is not None:
                 total_buy_amount += est
             n_buy_candidates += 1
+
+    # 형성된 정적 바스켓을 persist. caller(cron·sync·manual)는 이후 snapshot을 별도 commit하므로
+    # 여기서 바스켓 변경을 먼저 commit해 다음 호출이 고정 집합을 그대로 받게 한다.
+    if basket_formed:
+        session.commit()
 
     # 청산 미리보기
     exit_candidates = _evaluate_exits(positions, dataset, master_by_code)

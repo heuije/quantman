@@ -67,6 +67,9 @@ _NEW_COLS: list[tuple[str, str, str]] = [
     ("strategy",     "paper_started_at",                 "TIMESTAMP"),
     ("strategy",     "live_started_at",                  "TIMESTAMP"),
     ("strategy",     "live_capital_at_start",            "DOUBLE PRECISION"),
+    # Task 12b — 정적 세부조건 라이브 바스켓(symbol list, JSON). create_all이 만드는
+    # definition 등 dict 컬럼과 동일 타입(SQLAlchemy JSON → PG/SQLite 모두 'JSON').
+    ("strategy",     "live_basket",                      "JSON"),
     ("backtestrun",  "strategy_id",                      "INTEGER"),
     ("backtestrun",  "version_no",                       "INTEGER"),
 ]

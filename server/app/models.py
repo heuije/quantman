@@ -43,6 +43,10 @@ class Strategy(SQLModel, table=True):
     paper_started_at: Optional[datetime] = None
     live_started_at: Optional[datetime] = None
     live_capital_at_start: Optional[float] = None    # 실전 전환 시점 자본 (수익률 기준점)
+    # Task 12b — 정적 세부조건(screener.refresh=='once_at_start') 라이브 바스켓.
+    # 전환 후 첫 preview에서 1회 형성(당일 자격 종목)·고정. 동적이면 항상 None.
+    # 라이브 상태일 뿐 IR이 아니다 — definition/universe에 넣지 않는다(IR atomic 유지).
+    live_basket: Optional[list[str]] = Field(default=None, sa_column=Column(JSON, nullable=True))
 
 
 class StrategyVersion(SQLModel, table=True):
