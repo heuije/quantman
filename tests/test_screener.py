@@ -60,8 +60,8 @@ def _and(*conds):
 
 def _spec(condition) -> dict:
     return {"signal": {"op": "data", "params": {"ref": "momentum_12_1m"}},
-            "universe": {"kind": "screener",
-                         "screener": ({"condition": condition} if condition else {})},
+            "universe": {"kind": "list", "symbols": ["A", "B", "C", "D"],
+                         "screener": {"condition": condition}},
             "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
                          "entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 2}},
             "simulation": {"initial_capital": 1e7}}
@@ -170,19 +170,39 @@ def test_apply_refresh_static_empty_when_start_past_window():
 
 # ── 검증 게이트 ────────────────────────────────────────────────────────────────
 
-def test_screener_requires_condition():
-    res = strategy_from_spec(_spec(None), _ds())
-    assert not res["success"]
-    assert any(i["rule"] == "S-univ" for i in res["issues"])
-
-
-def test_screener_rejects_on_signal():
+def test_screener_invalid_refresh_rejected():
+    """refresh 값이 enum 밖이면 에러."""
     spec = _spec(_rank_cond("market_cap", 2))
-    spec["position"]["entry"] = {"mode": "on_signal"}
-    spec["signal"] = _cmp("market_cap", ">", 50.0)
+    spec["universe"]["screener"]["refresh"] = "bogus"
     res = strategy_from_spec(spec, _ds())
     assert not res["success"]
     assert any(i["rule"] == "S-univ" for i in res["issues"])
+
+
+def test_screener_requires_symbols():
+    """세부조건 있는데 종목 미선택(빈 symbols) → 에러."""
+    spec = {"signal": {"op": "data", "params": {"ref": "momentum_12_1m"}},
+            "universe": {"kind": "all",
+                         "screener": {"condition": _rank_cond("market_cap", 2)}},
+            "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
+                         "entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 2}},
+            "simulation": {"initial_capital": 1e7}}
+    res = strategy_from_spec(spec, _ds())
+    assert not res["success"]
+    assert any(i["rule"] == "S-univ" for i in res["issues"])
+
+
+def test_event_with_screener_allowed_in_backtest():
+    """이벤트 진입 + 세부조건은 백테스트 허용(라이브 차단은 서버 가드 담당)."""
+    spec = {"signal": {"op": "compare", "params": {"op": ">"},
+                       "inputs": {"left": _data("momentum_12_1m"), "right": _const(0)}},
+            "universe": {"kind": "list", "symbols": ["A", "B", "C", "D"],
+                         "screener": {"condition": _rank_cond("market_cap", 2)}},
+            "position": {"direction": "long", "sizing": {"mode": "fixed_amount", "amount_krw": 1e6},
+                         "entry": {"mode": "on_signal"}, "exit": {"hold_days": 5}},
+            "simulation": {"initial_capital": 1e7}}
+    res = strategy_from_spec(spec, _ds())
+    assert res["success"], res
 
 
 def test_event_screener_gates_entry():
