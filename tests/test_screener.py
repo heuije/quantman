@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "core"))
 
 from quant_core.blocks import EvalContext            # noqa: E402
 from quant_core.ir_engine import strategy_from_spec  # noqa: E402
-from quant_core.ir_engine.engine import _screener_mask  # noqa: E402
+from quant_core.ir_engine.engine import _screener_mask, _apply_refresh  # noqa: E402
 
 
 def _ds():
@@ -112,6 +112,30 @@ def test_screener_rank_ascending_selects_smallest():
     elig = _screener_mask({"condition": _rank_cond("market_cap", 2, descending=False)},
                           ctx, ["A", "B", "C", "D"])
     assert [c for c in elig.columns if elig.iloc[0][c]] == ["C", "D"]    # 초기 소형
+
+
+# ── 재선별 시점 (동적/정적) ────────────────────────────────────────────────────
+
+def test_apply_refresh_dynamic_passthrough():
+    """each_rebalance — 마스크 그대로."""
+    ctx = EvalContext.from_dataset(_ds())
+    m = _screener_mask({"condition": _rank_cond("market_cap", 2)}, ctx, ["A", "B", "C", "D"])
+    out = _apply_refresh(m, "each_rebalance", None)
+    assert out.equals(m)
+
+
+def test_apply_refresh_static_freezes_first_row():
+    """once_at_start — 시작시점(첫 행) 자격을 전 기간 고정. 시점 자격이 뒤집혀도 불변."""
+    ctx = EvalContext.from_dataset(_ds())
+    m = _screener_mask({"condition": _rank_cond("market_cap", 2)}, ctx, ["A", "B", "C", "D"])
+    out = _apply_refresh(m, "once_at_start", None)
+    first = [c for c in m.columns if m.iloc[0][c]]              # 초기 대형 A,B
+    assert first == ["A", "B"]
+    # 모든 행이 첫 행과 동일(바스켓 고정)
+    assert all([c for c in out.columns if out.iloc[k][c]] == first
+               for k in range(len(out.index)))
+    # 동적과 달리 마지막 행이 C,D로 뒤집히지 않음
+    assert [c for c in out.columns if out.iloc[-1][c]] == first
 
 
 # ── 검증 게이트 ────────────────────────────────────────────────────────────────

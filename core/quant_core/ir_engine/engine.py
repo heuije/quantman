@@ -482,6 +482,25 @@ def _screener_mask(screener: dict, ctx, cols: list) -> pd.DataFrame:
     return pd.DataFrame(True, index=midx, columns=cols)
 
 
+def _apply_refresh(mask: pd.DataFrame, refresh: str, start) -> pd.DataFrame:
+    """자격 마스크에 재선별 시점 적용.
+
+    each_rebalance(동적): 마스크 그대로 — 매 시점 PIT 자격.
+    once_at_start(정적): 백테스트 시작(sim.start 이후 첫 행)의 자격 행을 전 기간으로
+    broadcast → 후보 바스켓 고정. 시작일까지의 데이터만 쓰므로 lookahead 없음. 시작일
+    충족 0개면 빈 바스켓(거래 없음).
+    """
+    if refresh != "once_at_start":
+        return mask
+    rows = mask[mask.index >= pd.Timestamp(start)] if start is not None else mask
+    if rows.empty:
+        rows = mask
+    basket = rows.iloc[0]                      # 형성일 자격 (cols, bool)
+    return pd.DataFrame(
+        np.tile(basket.to_numpy(dtype=bool), (len(mask.index), 1)),
+        index=mask.index, columns=mask.columns)
+
+
 def _cap_groups(w: pd.Series, labels: pd.Series, cap_pct: float) -> pd.Series:
     """그룹별 |비중| 합이 cap 초과 시 그 그룹만 비례 축소(현금 버퍼 — 재정규화 안 함)."""
     cap = cap_pct / 100.0
