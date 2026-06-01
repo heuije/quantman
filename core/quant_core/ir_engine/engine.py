@@ -184,7 +184,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         return _empty("유니버스에 종목이 없습니다.")
     single = (u.kind == "single" and len(syms) == 1)
 
-    ds = _scoped(dataset, syms, strategy.signal, exits.condition)
+    _screener = u.screener or {}
+    _filt = (Node.model_validate(_screener["condition"]) if _screener.get("condition") else None)
+    ds = _scoped(dataset, syms, strategy.signal, exits.condition, _filt)
 
     # 종목별 정렬 데이터 + 신호 마스크
     symbol_dfs: dict[str, pd.DataFrame] = {}
@@ -240,6 +242,12 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         }
         buy_arrs[sym] = _sym_bool(buy_panel, sym, master_idx)
         sell_arrs[sym] = _sym_bool(sell_panel, sym, master_idx) if sell_panel is not None else None
+
+    elig_arrs: dict[str, np.ndarray] | None = None
+    if _screener.get("condition"):
+        elig_mask = _apply_refresh(_screener_mask(_screener, ctx, syms),
+                                   _screener.get("refresh", "each_rebalance"), sim.start)
+        elig_arrs = {sym: _sym_bool(elig_mask, sym, master_idx) for sym in syms}
 
     # 비용 (스칼라; 비용·슬리피지 시계열은 backlog — §7.6)
     commission = sim.commission if sim.commission is not None else _DEFAULT_COMMISSION
@@ -357,7 +365,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             for sym in syms:
                 if sym in positions or sym in pending_buys:
                     continue
-                if buy_arrs[sym][i]:
+                if buy_arrs[sym][i] and (elig_arrs is None or elig_arrs[sym][i]):
                     pending_buys.append(sym)
         else:
             cash_snapshot = cash
@@ -366,7 +374,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                     continue
                 if len(positions) >= _MAX_POSITIONS_GLOBAL:
                     break
-                if not buy_arrs[sym][i] or np.isnan(aligned[sym]["close"][i]):
+                if (not buy_arrs[sym][i]
+                        or (elig_arrs is not None and not elig_arrs[sym][i])
+                        or np.isnan(aligned[sym]["close"][i])):
                     continue
                 _open(sym, i, aligned[sym]["exec"][i], min(_budget(cash_snapshot), cash))
 

@@ -185,6 +185,30 @@ def test_screener_rejects_on_signal():
     assert any(i["rule"] == "S-univ" for i in res["issues"])
 
 
+def test_event_screener_gates_entry():
+    """이벤트 진입 + 세부조건: 자격 False인 종목/날은 신호가 참이어도 진입 차단.
+
+    신호=항상참(momentum>0). 세부조건=시총 상위 2(count). 초기엔 A,B만 자격 →
+    C,D는 신호 참이어도 미보유. trades에 자격 종목만 등장.
+    """
+    spec = {"signal": {"op": "compare", "params": {"op": ">"},
+                       "inputs": {"left": _data("momentum_12_1m"), "right": _const(0)}},
+            "universe": {"kind": "list", "symbols": ["A", "B", "C", "D"],
+                         "screener": {"condition": _rank_cond("market_cap", 2),
+                                      "refresh": "each_rebalance"}},
+            "position": {"direction": "long", "sizing": {"mode": "fixed_amount", "amount_krw": 1e6},
+                         "entry": {"mode": "on_signal"},
+                         "exit": {"hold_days": 5}},
+            "simulation": {"initial_capital": 1e7, "fill": "close"}}
+    res = strategy_from_spec(spec, _ds())
+    assert res["success"], res
+    # 첫 보름(초기 대형 A·B 자격 구간)의 진입 종목엔 C·D 없음
+    # (res["trades"]는 DataFrame — 진입일 컬럼으로 초기 구간 필터)
+    tr = res["trades"]
+    early = tr[tr["진입일"] <= pd.Timestamp("2021-02-01")]
+    assert len(early) and early["종목"].isin(("A", "B")).all(), early
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
