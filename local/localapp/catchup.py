@@ -476,6 +476,11 @@ def _catchup_stop_loss(market: str, broker, trader) -> dict:
         submit_sell_fn=trader._submit_sell,
         dataset=ds,
     )
+    # 알려진 한계(REV-③#1): 트레일링/ATR-트레일 청산은 peak_price 워터마크에 의존하는데,
+    # PC가 꺼져 있던 동안의 장중 고점은 ledger.peak(=진입가 기준)에 반영되지 않는다.
+    # on_tick이 peak=max(ledger.peak, 현재가)로 보정하지만 '진입↔재기동 사이의 고점'은
+    # 못 잡아 catch-up 트레일이 약하게 트리거될 수 있다. 고정 손절/익절(entry 기준)은
+    # 무영향. 장중 고점 조회(분봉)는 드문 PC-off 경로 대비 비용이 커 도입하지 않는다.
     fired_before = len(manager.decisions)
 
     # Q5(AL-4): _CYCLE_LOCK으로 정상 cycle·settlement과 직렬화.

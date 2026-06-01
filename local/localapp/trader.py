@@ -1103,9 +1103,11 @@ class Trader:
                 reason, _ = _exit_reason_for(
                     pos["definition"], held, dataset, pos["symbol"])
             except Exception as e:
+                # 정의 파싱 실패는 평소 skip하나, kill switch 발동 중엔 "모든 보유 강제
+                # 청산" 의도를 지켜야 하므로 파싱 실패 고아도 kill-switch 사유로 청산한다.
                 log.warning("원장 전략 파싱 실패 [%s]: %s", sid, e)
-                continue
-            # kill switch 활성 시 모든 보유 강제 청산
+                reason = None
+            # kill switch 활성 시 모든 보유 강제 청산(파싱 실패 고아 포함).
             if ks_active and not reason:
                 reason = "kill-switch"
 

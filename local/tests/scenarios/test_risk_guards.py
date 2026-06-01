@@ -53,3 +53,28 @@ def test_killswitch_blocks_new_buys(isolated_trader):
     assert buys == [], f"INV-KS-1 위반: killswitch active인데 매수 발주됨 {buys}"
     assert any(d["action"] == "skip_killswitch" for d in payload["decisions"]), \
         "skip_killswitch 결정이 기록되지 않음"
+
+
+def test_killswitch_liquidates_parse_failed_orphan(isolated_trader):
+    """REV-③#4: kill switch 발동 시 정의 파싱 불가한 고아 포지션도 강제 청산된다.
+
+    이전엔 _exit_reason_for 파싱 예외에서 곧장 continue해 ks 강제청산 분기를 건너뛰어,
+    삭제/손상 전략의 고아 포지션이 kill switch 중에도 청산 안 되고 남았다."""
+    from localapp import killswitch
+    t, broker = isolated_trader
+    # 정의 파싱 불가(빈/손상 IR)한 고아 포지션을 ledger에 직접 주입
+    t.ledger["orphan"] = {
+        "symbol": "005930", "qty": 7, "entry_date": "2026-06-01",
+        "entry_price": 70000, "peak_price": 70000,
+        "strategy_name": "삭제된전략", "definition": {"engine": "ir"},  # 필수필드 결여 → 파싱 실패
+    }
+    broker.set_positions([{"symbol": "005930", "qty": 7}])
+    broker._prices["005930"] = 70000
+    killswitch.activate("테스트 — 전량 청산")
+
+    t.cycle(strategies=[], dataset={}, buy_candidates=[],
+            risk_limits={"kill_switch_daily_loss_pct": 3.0}, market="KRX")
+
+    sells = [s for s in broker.submitted if s["side"] == "sell"]
+    assert len(sells) == 1 and sells[0]["qty"] == 7, \
+        f"kill switch가 파싱실패 고아를 청산 안 함: {sells}"

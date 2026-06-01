@@ -72,7 +72,9 @@ class IntradayStopManager:
         try:
             v = float(df["atr_14"].iloc[-1] or 0.0)
             return v if v > 0 else None
-        except Exception:
+        except (ValueError, TypeError, IndexError):
+            # 데이터 형식/결측만 흡수(ATR 트레일 1종만 skip, 나머지 stop은 평가).
+            # KeyError·AttributeError 등 코드 결함은 전파해 silent 무력화를 막는다.
             return None
 
     def _broker_qty_of(self, symbol: str) -> int | None:
