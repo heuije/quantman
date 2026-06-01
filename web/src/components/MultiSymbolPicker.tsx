@@ -281,7 +281,7 @@ function ScreenerSection({ disabled, condition, onCondition, refresh, onRefresh,
           <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
             {refresh === "each_rebalance"
               ? `선택한 ${count}개 종목 중 매 리밸런싱일에 조건을 만족하는 종목만 후보가 됩니다.`
-              : "시작 시점에 조건을 만족한 종목으로 바스켓을 만들어 그대로 유지합니다."}
+              : "모의/실전을 시작하는 시점의 데이터로 종목을 한 번 확정해 유지합니다. 백테스트는 백테스트 시작일 기준이라 실제 운용 종목과 다를 수 있습니다."}
           </p>
         </div>
       )}

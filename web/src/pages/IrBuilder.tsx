@@ -490,8 +490,17 @@ export default function IrBuilder() {
   // 신호평가·청산·사이징이 완성돼 IR도 operand와 동일하게 모의/실전을 소비한다.
   async function save(runMode: "draft" | "paper") {
     if (!signal) return;
-    setSaveErr(""); setSaving(true);
     const def = buildStrategy() as unknown as IrStrategyDef;
+    // 정적 세부조건(once_at_start) 전략을 모의/실전으로 올릴 때 — 바스켓은 지금
+    // 이 시점의 데이터로 확정되며 백테스트에서 본 종목과 다를 수 있음을 고지.
+    if (runMode === "paper" && def.universe?.screener?.refresh === "once_at_start") {
+      if (!confirm(
+        "이 전략은 세부조건이 '정적'입니다.\n" +
+        "모의/실전을 시작하는 지금 시점의 데이터로 매매할 종목 바스켓을 확정하며, 백테스트에서 본 종목과 다를 수 있습니다.\n" +
+        "계속할까요?",
+      )) return;
+    }
+    setSaveErr(""); setSaving(true);
     try {
       if (editId) {
         // 수정: 모의 적용이면 paper 승격, 아니면 기존 run_mode 유지.
