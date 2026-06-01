@@ -184,9 +184,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         return _empty("유니버스에 종목이 없습니다.")
     single = (u.kind == "single" and len(syms) == 1)
 
-    _screener = u.screener or {}
-    _filt = (Node.model_validate(_screener["condition"]) if _screener.get("condition") else None)
-    ds = _scoped(dataset, syms, strategy.signal, exits.condition, _filt)
+    screener = u.screener or {}
+    filt_node = (Node.model_validate(screener["condition"]) if screener.get("condition") else None)
+    ds = _scoped(dataset, syms, strategy.signal, exits.condition, filt_node)
 
     # 종목별 정렬 데이터 + 신호 마스크
     symbol_dfs: dict[str, pd.DataFrame] = {}
@@ -244,9 +244,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         sell_arrs[sym] = _sym_bool(sell_panel, sym, master_idx) if sell_panel is not None else None
 
     elig_arrs: dict[str, np.ndarray] | None = None
-    if _screener.get("condition"):
-        elig_mask = _apply_refresh(_screener_mask(_screener, ctx, syms),
-                                   _screener.get("refresh", "each_rebalance"), sim.start)
+    if screener.get("condition"):
+        elig_mask = _apply_refresh(_screener_mask(screener, ctx, syms),
+                                   screener.get("refresh", "each_rebalance"), sim.start)
         elig_arrs = {sym: _sym_bool(elig_mask, sym, master_idx) for sym in syms}
 
     # 비용 (스칼라; 비용·슬리피지 시계열은 backlog — §7.6)
