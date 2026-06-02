@@ -284,10 +284,15 @@ export function detectOS(): "mac" | "windows" | "other" {
   return "other";
 }
 
-// ─── Oil Futures (WTI) 분석 ──────────────────────────────────────────
-// quant_core.oil_futures 백엔드(/oil-futures/*) 호출 + 응답 타입.
+// ─── Futures (멀티 종목 선물) 분석 ───────────────────────────────────
+// quant_core.oil_futures 백엔드(/futures/{symbol}/*) 호출 + 응답 타입.
 
 export type OilSide = "short" | "long";
+
+export interface OilInstrument {
+  symbol: string;
+  name: string;
+}
 
 export interface OilDataInfo {
   n_rows: number;
@@ -295,6 +300,10 @@ export interface OilDataInfo {
   end_date: string;
   price_min: number;
   price_max: number;
+  name: string;       // "원유 (WTI)"
+  eyebrow: string;    // "CRUDE OIL · NYMEX"
+  unit: string;       // "배럴"
+  roll_note: string;  // 롤/콘탱고 짧은 설명
 }
 
 export interface OilLatestPrice {
@@ -410,8 +419,8 @@ export interface OilBacktest {
 export interface OilMacroRegimeCell {
   bucket: string;
   n_days: number;
-  wti_avg_return: number;
-  wti_win_rate: number;
+  avg_return: number;
+  win_rate: number;
 }
 export interface OilMacroCorrelation {
   pair: string;
@@ -439,17 +448,18 @@ export interface OilWalkForward {
   out_of_sample: OilSummary;
 }
 
-export const oilApi = {
-  dataInfo: () => req<OilDataInfo>("/oil-futures/data-info"),
-  latestPrice: () => req<OilLatestPrice>("/oil-futures/latest-price"),
-  prices: (start?: string, end?: string) => {
+export const futuresApi = {
+  instruments: () => req<OilInstrument[]>("/futures/instruments"),
+  dataInfo: (sym: string) => req<OilDataInfo>(`/futures/${sym}/data-info`),
+  latestPrice: (sym: string) => req<OilLatestPrice>(`/futures/${sym}/latest-price`),
+  prices: (sym: string, start?: string, end?: string) => {
     const qs = new URLSearchParams();
     if (start) qs.set("start", start);
     if (end) qs.set("end", end);
     const q = qs.toString();
-    return req<OilPricePoint[]>("/oil-futures/prices" + (q ? "?" + q : ""));
+    return req<OilPricePoint[]>(`/futures/${sym}/prices` + (q ? "?" + q : ""));
   },
-  grid: (opts: {
+  grid: (sym: string, opts: {
     shorts?: number[];
     longs?: number[];
     horizons?: number[];
@@ -464,28 +474,28 @@ export const oilApi = {
     if (opts.slippage_ticks !== undefined)
       qs.set("slippage_ticks", String(opts.slippage_ticks));
     const q = qs.toString();
-    return req<OilGridCell[]>("/oil-futures/grid" + (q ? "?" + q : ""));
+    return req<OilGridCell[]>(`/futures/${sym}/grid` + (q ? "?" + q : ""));
   },
-  signals: (type: OilSide, threshold: number, since?: string) => {
+  signals: (sym: string, type: OilSide, threshold: number, since?: string) => {
     const qs = new URLSearchParams({ type, threshold: String(threshold) });
     if (since) qs.set("since", since);
-    return req<OilSignal[]>("/oil-futures/signals?" + qs.toString());
+    return req<OilSignal[]>(`/futures/${sym}/signals?` + qs.toString());
   },
-  backtest: (body: {
+  backtest: (sym: string, body: {
     side: OilSide;
     threshold: number;
     horizon_days: number;
     commission?: number;
     slippage_ticks?: number;
-    stop_loss_pct?: number | null;       // 🅒 SL/TP 시뮬레이터
+    stop_loss_pct?: number | null;
     take_profit_pct?: number | null;
-    roll_cost_pct?: number;              // 선물 만기 롤오버 비용 (%/회, 소수)
+    roll_cost_pct?: number;
   }) =>
-    req<OilBacktest>("/oil-futures/backtest", {
+    req<OilBacktest>(`/futures/${sym}/backtest`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  walkforward: (body: {
+  walkforward: (sym: string, body: {
     shorts?: number[];
     longs?: number[];
     horizons?: number[];
@@ -493,10 +503,10 @@ export const oilApi = {
     commission?: number;
     slippage_ticks?: number;
   }) =>
-    req<OilWalkForward>("/oil-futures/walkforward", {
+    req<OilWalkForward>(`/futures/${sym}/walkforward`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  seasonality: () => req<OilSeasonality>("/oil-futures/seasonality"),
-  macroContext: () => req<OilMacroContext>("/oil-futures/macro-context"),
+  seasonality: (sym: string) => req<OilSeasonality>(`/futures/${sym}/seasonality`),
+  macroContext: (sym: string) => req<OilMacroContext>(`/futures/${sym}/macro-context`),
 };

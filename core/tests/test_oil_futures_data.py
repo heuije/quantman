@@ -45,3 +45,15 @@ def test_prepare_wti_raises_on_missing_column():
     raw = _raw().drop(columns=["Close"])
     with pytest.raises(ValueError):
         prepare_wti(raw)
+
+
+def test_new_usd_futures_registered_without_collision():
+    from quant_core import data_fetcher as dfetch
+    for key, sym in [("나스닥선물", "NQ=F"), ("은선물(COMEX)", "SI=F"),
+                     ("비트코인선물", "BTC=F")]:
+        assert dfetch.YFINANCE_SYMBOLS.get(key) == sym
+        assert key in dfetch.ASSET_SYMBOLS
+        assert dfetch.SYMBOL_CATEGORY.get(key) == "자산"
+    # 기존 프록시 키는 그대로 보존(충돌 없음)
+    assert dfetch.FDR_SYMBOLS["나스닥100선물"] == "304940"
+    assert dfetch.FDR_SYMBOLS["은선물"] == "144600"

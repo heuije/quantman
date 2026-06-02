@@ -8,7 +8,7 @@ const NAV = [
   { to: "/lab", label: "전략 연구소" },
   { to: "/strategies", label: "내 전략" },
   { to: "/monitor", label: "트레이딩" },
-  { to: "/oil-futures", label: "원유 분석" },
+  { to: "/futures", label: "선물 분석" },
   { to: "/settings", label: "설정" },
 ];
 

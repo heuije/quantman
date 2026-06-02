@@ -11,7 +11,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from .backtest import CostModel, run_backtest
+from .backtest import ContractSpec, CostModel, WTI_SPEC, run_backtest
 from .metrics import Summary, summarize
 from .signals import Side, generate_signals
 
@@ -33,6 +33,7 @@ def grid_search(
     horizons: Iterable[int],
     cost: CostModel = CostModel(),
     light: bool = False,
+    spec: ContractSpec = WTI_SPEC,
 ) -> list[GridCell]:
     """모든 (side, threshold, horizon) 조합 백테스트.
 
@@ -46,13 +47,13 @@ def grid_search(
     for th in short_thresholds:
         sigs = generate_signals(df, short_thresholds=[th])
         for h in horizons:
-            bt = run_backtest(df, sigs, horizon_days=int(h), cost=cost, light=light)
+            bt = run_backtest(df, sigs, horizon_days=int(h), cost=cost, light=light, spec=spec)
             cells.append(GridCell(Side.SHORT, float(th), int(h), summarize(bt)))
 
     for th in long_thresholds:
         sigs = generate_signals(df, long_thresholds=[th])
         for h in horizons:
-            bt = run_backtest(df, sigs, horizon_days=int(h), cost=cost, light=light)
+            bt = run_backtest(df, sigs, horizon_days=int(h), cost=cost, light=light, spec=spec)
             cells.append(GridCell(Side.LONG, float(th), int(h), summarize(bt)))
 
     return cells
@@ -104,6 +105,7 @@ def walk_forward(
     split_date: pd.Timestamp,
     cost: CostModel = CostModel(),
     require_min_trades: int = 5,
+    spec: ContractSpec = WTI_SPEC,
 ) -> WalkForwardResult:
     """split_date 기준 train/test 분할 walk-forward.
 
@@ -118,7 +120,7 @@ def walk_forward(
             f"(train={len(df_train)}, test={len(df_test)})"
         )
 
-    cells = grid_search(df_train, short_thresholds, long_thresholds, horizons, cost)
+    cells = grid_search(df_train, short_thresholds, long_thresholds, horizons, cost, spec=spec)
     eligible = [c for c in cells if c.summary.n_trades >= require_min_trades]
     if not eligible:
         raise ValueError(
@@ -134,7 +136,7 @@ def walk_forward(
     sigs_test = generate_signals(
         df_test, short_thresholds=short_th, long_thresholds=long_th
     )
-    bt_test = run_backtest(df_test, sigs_test, best.horizon_days, cost)
+    bt_test = run_backtest(df_test, sigs_test, best.horizon_days, cost, spec=spec)
     oos = summarize(bt_test)
 
     return WalkForwardResult(

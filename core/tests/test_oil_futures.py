@@ -17,6 +17,7 @@ if str(_CORE_DIR) not in sys.path:
     sys.path.insert(0, str(_CORE_DIR))
 
 from quant_core.oil_futures import (
+    ContractSpec,
     CostModel,
     Side,
     generate_signals,
@@ -262,3 +263,48 @@ def test_walk_forward_train_test_split(small_df: pd.DataFrame) -> None:
     assert res.test_period[0] >= res.train_period[1]
     assert res.best_in_sample.side == Side.SHORT
     assert res.best_in_sample.summary.n_trades >= 1
+
+
+def test_contract_spec_scales_usd_pnl_not_returns(small_df: pd.DataFrame) -> None:
+    """ContractSpec multiplier scales $ PnL linearly; return%/win/sharpe spec-invariant."""
+    sigs = generate_signals(small_df, short_thresholds=[80])
+    wti = run_backtest(small_df, sigs, 3, CostModel(0, 0),
+                       spec=ContractSpec(tick=0.01, multiplier=1000))
+    gold = run_backtest(small_df, sigs, 3, CostModel(0, 0),
+                        spec=ContractSpec(tick=0.10, multiplier=100))
+    assert len(wti.trades) == 1 and len(gold.trades) == 1
+    tw, tg = wti.trades[0], gold.trades[0]
+    assert tg.gross_pnl_usd == pytest.approx(tw.gross_pnl_usd * (100 / 1000))
+    assert tg.net_pnl_usd == pytest.approx(tw.net_pnl_usd * (100 / 1000))
+    assert tg.return_pct == pytest.approx(tw.return_pct)
+    sw, sg = summarize(wti), summarize(gold)
+    assert sg.win_rate == pytest.approx(sw.win_rate)
+    assert sg.sharpe_annualized == pytest.approx(sw.sharpe_annualized)
+    assert sg.total_net_pnl_usd == pytest.approx(sw.total_net_pnl_usd * (100 / 1000))
+
+
+def test_default_spec_is_wti_backward_compatible(small_df: pd.DataFrame) -> None:
+    """spec unspecified == WTI_SPEC(0.01/1000). byte-identical to before."""
+    sigs = generate_signals(small_df, short_thresholds=[80])
+    default = run_backtest(small_df, sigs, 3, CostModel(0, 0))
+    explicit = run_backtest(small_df, sigs, 3, CostModel(0, 0),
+                            spec=ContractSpec(tick=0.01, multiplier=1000))
+    assert default.trades[0].net_pnl_usd == pytest.approx(explicit.trades[0].net_pnl_usd)
+
+
+def test_contract_spec_tick_scales_slippage(small_df: pd.DataFrame) -> None:
+    """tick 은 슬리피지 드래그를 스케일한다. 동일 multiplier·동일 거래에서
+    tick 10배면 슬리피지 비용(gross-net)도 10배. (gross 는 tick 불변)"""
+    sigs = generate_signals(small_df, short_thresholds=[80])
+    lo = run_backtest(small_df, sigs, 3, CostModel(0, 1),
+                      spec=ContractSpec(tick=0.01, multiplier=1000)).trades[0]
+    hi = run_backtest(small_df, sigs, 3, CostModel(0, 1),
+                      spec=ContractSpec(tick=0.10, multiplier=1000)).trades[0]
+    # gross 는 슬리피지·tick 무관 → 동일
+    assert lo.gross_pnl_usd == pytest.approx(hi.gross_pnl_usd)
+    # 슬리피지 드래그 = 2 * slippage_ticks(1) * tick * multiplier(1000), commission 0
+    drag_lo = lo.gross_pnl_usd - lo.net_pnl_usd
+    drag_hi = hi.gross_pnl_usd - hi.net_pnl_usd
+    assert drag_lo == pytest.approx(20.0)    # 2 * 1 * 0.01 * 1000
+    assert drag_hi == pytest.approx(200.0)   # 2 * 1 * 0.10 * 1000
+    assert drag_hi == pytest.approx(drag_lo * 10)

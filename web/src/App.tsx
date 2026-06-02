@@ -10,7 +10,7 @@ import Monitor from "./pages/Monitor";
 import Pair from "./pages/Pair";
 import Settings from "./pages/Settings";
 import Legal from "./pages/Legal";
-import OilFutures from "./pages/OilFutures";
+import FuturesAnalytics from "./pages/FuturesAnalytics";
 
 export default function App() {
   const { email, ready } = useAuth();
@@ -37,7 +37,7 @@ export default function App() {
         <Route path="/strategies" element={<Strategies />} />
         <Route path="/strategies/:id" element={<StrategyDetail />} />
         <Route path="/monitor" element={<Monitor />} />
-        <Route path="/oil-futures" element={<OilFutures />} />
+        <Route path="/futures" element={<FuturesAnalytics />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/pair" element={<Pair />} />
         <Route path="/legal/:section" element={<Legal />} />

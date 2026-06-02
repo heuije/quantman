@@ -6,9 +6,9 @@
 - 청산가 = 진입 후 horizon_days 영업일 후 종가.
 - 수수료·슬리피지 모델 외부 주입 (CostModel) — 비용 0 모드도 지원.
 
-WTI 선물 계약 단위:
-- 1 contract = 1000 배럴, 틱 사이즈 = $0.01/배럴
-- 1틱 가치 = $10 (1 contract 기준)
+계약 사양은 ContractSpec(tick, multiplier)로 주입 — 기본값 WTI_SPEC.
+- WTI(CL) 기본: 1 contract = 1000 배럴, 틱 = $0.01/배럴 (1틱 = $10).
+- 다른 종목은 run_backtest(..., spec=ContractSpec(...))로 자체 계약사양 주입.
 """
 from __future__ import annotations
 
@@ -19,9 +19,20 @@ import pandas as pd
 
 from .signals import Side, Signal
 
-# WTI 선물 (CL) 계약 사양
-WTI_TICK = 0.01       # USD/배럴
-WTI_MULTIPLIER = 1000  # 1계약 = 1000배럴
+@dataclass(frozen=True)
+class ContractSpec:
+    """선물 계약 사양 — PnL·슬리피지 USD 환산 계수.
+
+    tick: 최소 호가단위(USD/단위). multiplier: 1계약 명목 배수.
+    예) WTI(CL): tick 0.01/배럴, multiplier 1000배럴.
+    """
+
+    tick: float
+    multiplier: float
+
+
+# WTI(CL) 기본 spec — 미지정 시 사용(하위호환: 기존 호출·테스트 무변경).
+WTI_SPEC = ContractSpec(tick=0.01, multiplier=1000.0)
 
 
 @dataclass(frozen=True)
@@ -137,6 +148,7 @@ def run_backtest(
     exits: ExitRules = ExitRules(),
     roll: RollModel = RollModel(),
     light: bool = False,
+    spec: ContractSpec = WTI_SPEC,
 ) -> BacktestResult:
     """신호 리스트에 horizon_days 보유 정책 적용 → BacktestResult.
 
@@ -159,7 +171,7 @@ def run_backtest(
     idx_by_date = {pd.Timestamp(d): i for i, d in enumerate(df["date"])}
     n = len(df)
 
-    slip = cost.slippage_ticks * WTI_TICK
+    slip = cost.slippage_ticks * spec.tick
     sl_pct = exits.stop_loss_pct
     tp_pct = exits.take_profit_pct
 
@@ -242,8 +254,8 @@ def run_backtest(
             else:
                 mfe_price = entry_price - held_low
                 mae_price = entry_price - held_high
-            mfe_usd = max(0.0, mfe_price) * WTI_MULTIPLIER
-            mae_usd = min(0.0, mae_price) * WTI_MULTIPLIER
+            mfe_usd = max(0.0, mfe_price) * spec.multiplier
+            mae_usd = min(0.0, mae_price) * spec.multiplier
 
         # 슬리피지
         if sig.side == Side.LONG:
@@ -253,9 +265,9 @@ def run_backtest(
             eff_entry = entry_price - slip
             eff_exit = exit_price + slip
 
-        gross = sign * (exit_price - entry_price) * WTI_MULTIPLIER
+        gross = sign * (exit_price - entry_price) * spec.multiplier
         net_price_diff = sign * (eff_exit - eff_entry)
-        net = net_price_diff * WTI_MULTIPLIER - 2 * cost.commission_per_contract
+        net = net_price_diff * spec.multiplier - 2 * cost.commission_per_contract
         ret = sign * (exit_price / entry_price - 1)
 
         # ── 만기 강제 롤오버 (A-2) ─────────────────────────────────────
@@ -267,12 +279,12 @@ def run_backtest(
         # pct==0 이면 베이스라인 보존 위해 비용 미적용 (횟수만 num_rollovers로 기록).
         roll_cost = 0.0
         if num_rolls > 0 and roll.roll_cost_pct != 0:
-            notional = entry_price * WTI_MULTIPLIER
+            notional = entry_price * spec.multiplier
             # term-structure 성분 (부호 반영): pct>0 → 비용(음수)
             roll_cost = -(num_rolls * roll.roll_cost_pct * notional)
             # 거래 마찰: 매 롤 왕복 수수료·슬리피지 (항상 비용)
             if roll.apply_txn_per_roll:
-                txn = 2 * cost.commission_per_contract + 2 * slip * WTI_MULTIPLIER
+                txn = 2 * cost.commission_per_contract + 2 * slip * spec.multiplier
                 roll_cost -= num_rolls * txn
             net += roll_cost
             ret += roll_cost / notional if notional else 0.0
@@ -312,7 +324,7 @@ def run_backtest(
     if light:
         portfolio_curve, portfolio_mdd = pd.Series(dtype=float), 0.0
     else:
-        portfolio_curve, portfolio_mdd = _compute_portfolio_mtm(df, trades, cost)
+        portfolio_curve, portfolio_mdd = _compute_portfolio_mtm(df, trades, cost, spec)
 
     return BacktestResult(
         trades=trades,
@@ -326,6 +338,7 @@ def _compute_portfolio_mtm(
     df: pd.DataFrame,
     trades: list[Trade],
     cost: CostModel,
+    spec: ContractSpec = WTI_SPEC,
 ) -> tuple[pd.Series, float]:
     """매 영업일 mark-to-market 포트폴리오 가치 곡선 + MDD.
 
@@ -358,7 +371,7 @@ def _compute_portfolio_mtm(
             elif t.entry_date <= d < t.exit_date:
                 sign = -1.0 if t.signal.side == Side.SHORT else 1.0
                 # 미실현 = (현재가 - 진입가) * sign * 멀티플, 수수료는 청산시 차감 (미반영)
-                unrealized += sign * (close - t.entry_price) * WTI_MULTIPLIER
+                unrealized += sign * (close - t.entry_price) * spec.multiplier
         values.append(realized + unrealized)
 
     curve = pd.Series(values, index=relevant_dates)

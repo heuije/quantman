@@ -23,7 +23,7 @@ from .db import create_db_and_tables
 from .routers import (admin as admin_router, auth, backtest,
                        calendars as calendars_router, commands,
                        dataset, ir as ir_router, ir_compile as ir_compile_router,
-                       market, oil_futures, portfolio,
+                       market, futures, portfolio,
                        preview as preview_router,
                        screener as screener_router,
                        settings as settings_router, strategies, sync,
@@ -434,8 +434,8 @@ async def lifespan(app: FastAPI):
                      daemon=True, name="bundle-initial").start()
     _log.info("미국 시가총액 초기 fetch thread 시작")
     threading.Thread(target=_initial_us_market_caps, daemon=True).start()
-    _log.info("원유 grid 워머 thread 시작")
-    oil_futures.start_grid_warmer()
+    _log.info("선물 grid 워머 thread 시작")
+    futures.start_grid_warmer()
 
     # ── 매일 정기 갱신 (Phase 31 — 외부 publish 시각에 맞춰 재배치) ──────────
     # 각 cron은 _run_with_retry로 감싸 실패 시 backoff[5,15,30,60,120]분 재시도.
@@ -576,7 +576,7 @@ app.include_router(trading_router.router)
 app.include_router(ir_router.router)
 app.include_router(ir_compile_router.router)   # NL 컴파일러(베타) — 미배포(로컬만), 배포 시 별도 결정
 app.include_router(admin_router.router)
-app.include_router(oil_futures.router)
+app.include_router(futures.router)
 
 
 @app.get("/health")

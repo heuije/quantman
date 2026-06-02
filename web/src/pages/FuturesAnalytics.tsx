@@ -1,5 +1,5 @@
 /**
- * WTI 원유선물 분석 대시보드 (Phase 2 + 사용자 피드백 반영).
+ * 선물 분석 대시보드 (멀티 종목 — 원유·나스닥·천연가스·금·은·비트코인).
  *
  * 섹션 순서:
  *   ① 데이터 메타
@@ -26,10 +26,11 @@ import {
   YAxis,
 } from "recharts";
 import {
-  oilApi,
+  futuresApi,
   type OilBacktest,
   type OilDataInfo,
   type OilGridCell,
+  type OilInstrument,
   type OilLatestPrice,
   type OilMacroContext,
   type OilSeasonality,
@@ -76,7 +77,9 @@ type SortKey =
 
 type SortDir = "asc" | "desc";
 
-export default function OilFutures() {
+export default function FuturesAnalytics() {
+  const [instruments, setInstruments] = useState<OilInstrument[]>([]);
+  const [symbol, setSymbol] = useState<string>("oil");
   const [info, setInfo] = useState<OilDataInfo | null>(null);
   const [price, setPrice] = useState<OilLatestPrice | null>(null);
 
@@ -111,15 +114,27 @@ export default function OilFutures() {
   const [tp, setTp] = useState<number | "">("");        // 예: 20 = +20%
   const [rollCost, setRollCost] = useState<number | "">("");  // 롤 비용 %/회 (예: 0.5)
 
-  // ── 초기 로드 ─────────────────────────────────────────────────────
+  // 종목 목록 1회 로드
   useEffect(() => {
-    oilApi.dataInfo().then(setInfo).catch((e) => console.error("data-info", e));
-    oilApi.seasonality().then(setSeason).catch((e) => console.error("seasonality", e));
-    oilApi.macroContext().then(setMacro).catch((e) => console.error("macro", e));
+    futuresApi.instruments().then(setInstruments).catch((e) => console.error("instruments", e));
+  }, []);
+
+  // 종목 변경 시 전체 재로드
+  useEffect(() => {
+    setInfo(null);
+    setPrice(null);
+    setSelected(null);
+    setBacktest(null);
+    setWf(null);
+    futuresApi.dataInfo(symbol).then(setInfo).catch((e) => console.error("data-info", e));
+    futuresApi.seasonality(symbol).then(setSeason).catch((e) => console.error("seasonality", e));
+    futuresApi.macroContext(symbol).then(setMacro).catch((e) => console.error("macro", e));
 
     setGridLoading(true);
-    oilApi
-      .grid()
+    setGrid(null);
+    setGridError(null);
+    futuresApi
+      .grid(symbol)
       .then((g) => {
         setGrid(g);
         const trusted = g.filter((c) => !c.low_sample && c.net_pnl_usd > 0)
@@ -129,16 +144,15 @@ export default function OilFutures() {
       .catch((e) => setGridError(e.message))
       .finally(() => setGridLoading(false));
 
-    // 현재가(일배치 종가) — 마운트 시 1회. 일 1회 갱신 데이터라 인트라데이 폴링 불필요.
-    oilApi.latestPrice().then(setPrice).catch((e) => console.error("price", e));
-  }, []);
+    futuresApi.latestPrice(symbol).then(setPrice).catch((e) => console.error("price", e));
+  }, [symbol]);
 
   useEffect(() => {
     if (!selected) return;
     setBtLoading(true);
     setBacktest(null);
-    oilApi
-      .backtest({
+    futuresApi
+      .backtest(symbol, {
         side: selected.side,
         threshold: selected.threshold,
         horizon_days: selected.horizon,
@@ -149,7 +163,7 @@ export default function OilFutures() {
       .then(setBacktest)
       .catch((e) => console.error("backtest", e))
       .finally(() => setBtLoading(false));
-  }, [selected, sl, tp, rollCost]);
+  }, [symbol, selected, sl, tp, rollCost]);
 
   // 정렬·필터된 그리드
   const gridSorted = useMemo(() => {
@@ -200,8 +214,8 @@ export default function OilFutures() {
   function runWalkForward() {
     setWfLoading(true);
     setWfError(null);
-    oilApi
-      .walkforward({ split_date: splitDate })
+    futuresApi
+      .walkforward(symbol, { split_date: splitDate })
       .then(setWf)
       .catch((e) => setWfError(e.message))
       .finally(() => setWfLoading(false));
@@ -222,16 +236,27 @@ export default function OilFutures() {
       <header className="oil-header">
         <div className="oil-title-row">
           <div>
-            <div className="oil-eyebrow">CRUDE OIL · NYMEX</div>
-            <h1>WTI Crude Oil Futures Analytics</h1>
+            <div className="oil-eyebrow">{info?.eyebrow ?? "FUTURES"}</div>
+            <h1>{info?.name ?? "선물"} 분석</h1>
           </div>
           {price && <LivePriceTag price={price} />}
+        </div>
+        <div className="futures-selector">
+          {instruments.map((it) => (
+            <button
+              key={it.symbol}
+              className={it.symbol === symbol ? "active" : ""}
+              onClick={() => setSymbol(it.symbol)}
+            >
+              {it.name}
+            </button>
+          ))}
         </div>
         <p className="muted">
           장중 high/low가 임계값을 첫 터치하면 신호 → N영업일 보유 백테스트.
         </p>
         <p className="oil-source-note">
-          데이터: Yahoo Finance WTI 최근월 선물(CL=F) · 일배치 갱신 · front-month 롤 점프 포함
+          데이터: Yahoo Finance 최근월 선물 · 일배치 갱신 · front-month 롤 점프 포함
         </p>
       </header>
 
@@ -245,7 +270,7 @@ export default function OilFutures() {
             <div><div className="muted">현재가 (일배치 종가)</div>
               <div className="meta-value">
                 {price ? `$${price.price.toFixed(2)}` : "—"}
-                <span className="meta-unit">/배럴</span>
+                <span className="meta-unit">/{info?.unit ?? ""}</span>
                 {price?.change_pct != null && (
                   <span className={"meta-delta " + (price.change_pct >= 0 ? "pos" : "neg")}>
                     {price.change_pct >= 0 ? "▲" : "▼"} {Math.abs(price.change_pct * 100).toFixed(2)}%
@@ -304,8 +329,8 @@ export default function OilFutures() {
         ) : (
           <HeatmapBlock
             title={heatmapSide === "short"
-              ? "Short — $80~$150 (위로 첫 터치)"
-              : "Long — $10~$60 (아래로 첫 터치)"}
+              ? `Short — 위로 첫 터치 (${heatmaps.short.length}개 임계)`
+              : `Long — 아래로 첫 터치 (${heatmaps.long.length}개 임계)`}
             rows={heatmapSide === "short" ? heatmaps.short : heatmaps.long}
             horizons={heatmaps.horizons}
             max={heatmaps.max}
@@ -374,12 +399,8 @@ export default function OilFutures() {
             <button className="ghost" onClick={() => setRollCost("")}>리셋(0%)</button>
           </span>
           <div className="muted roll-help">
-            WTI는 실물 인수도 → 만기마다 강제 롤오버 (보유 ÷ 21일 ≈ 롤 횟수).
-            <b> 양수 = contango 비용(차감), 음수 = backwardation 이익(가산).</b><br />
-            현재(2026-05) WTI는 <b style={{ color: "var(--green)" }}>backwardation(역조)</b> —
-            근월 $87.4 vs 8월물 $85.3(−2.4%), 12월물 $78.3(−10%) → 롤 시 오히려 이익이라
-            <b> −2% 정도</b> 입력이 현실적. 역사적 평균은 국면마다 달라(콘탱고 +0.3~1%/월 ~
-            슈퍼콘탱고 +10%, 또는 backwardation 시 이익) <b>고정값 없음</b>.
+            선물은 만기마다 롤오버되며 롤 비용/이익이 발생한다 ({info?.roll_note ?? "—"}).
+            <b> 양수 = contango 비용(차감), 음수 = backwardation 이익(가산).</b>
             <span style={{ color: "#c9a227" }}> ⚠️ 추정 가정 — 정확한 롤 yield는 만기물별 데이터 필요.</span>
           </div>
         </div>
@@ -650,9 +671,8 @@ function MacroView({ m }: { m: OilMacroContext }) {
   return (
     <>
       <p className="muted" style={{ marginBottom: 12 }}>
-        WTI 일간 수익률과 VIX(공포지수)/DXY(달러지수)의 관계. 외생 변수가 신호 가치에
-        어떤 영향을 주는지 측정 (전통적 가설: WTI ↔ VIX 음, WTI ↔ DXY 음). 일별 종가 기준,{" "}
-        <b>{m.coverage_days.toLocaleString()}</b>일 표본.
+        종목 일간 수익률과 VIX(공포지수)/DXY(달러지수)의 관계 — 외생 변수가 신호 가치에
+        주는 영향. 일별 종가 기준, <b>{m.coverage_days.toLocaleString()}</b>일 표본.
       </p>
 
       <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
@@ -678,8 +698,8 @@ function MacroView({ m }: { m: OilMacroContext }) {
       </table>
 
       <div className="season-grid">
-        <RegimeTable title="VIX 체제별 WTI 평균 일간 수익률" rows={m.vix_regime} />
-        <RegimeTable title="DXY(달러) 체제별 WTI 평균 일간 수익률" rows={m.dxy_regime} />
+        <RegimeTable title="VIX 체제별 평균 일간 수익률" rows={m.vix_regime} />
+        <RegimeTable title="DXY(달러) 체제별 평균 일간 수익률" rows={m.dxy_regime} />
       </div>
 
       <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
@@ -704,10 +724,10 @@ function RegimeTable({ title, rows }: { title: string; rows: import("../api").Oi
             <tr key={r.bucket}>
               <td>{r.bucket}</td>
               <td>{r.n_days.toLocaleString()}</td>
-              <td className={r.wti_avg_return >= 0 ? "pos" : "neg"}>
-                {(r.wti_avg_return >= 0 ? "+" : "") + (r.wti_avg_return * 100).toFixed(3)}%
+              <td className={r.avg_return >= 0 ? "pos" : "neg"}>
+                {(r.avg_return >= 0 ? "+" : "") + (r.avg_return * 100).toFixed(3)}%
               </td>
-              <td>{(r.wti_win_rate * 100).toFixed(1)}%</td>
+              <td>{(r.win_rate * 100).toFixed(1)}%</td>
             </tr>
           ))}
         </tbody>

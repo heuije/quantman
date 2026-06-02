@@ -1,18 +1,20 @@
-"""WTI 원유선물 분석 API (Phase 2 — 대시보드 백엔드).
+"""선물 분석 API (Phase 2 — 대시보드 백엔드).
 
-quant_core.oil_futures 모듈을 HTTP로 노출. 인증 필요 — 로그인 게이트
-(라우터 전역 Depends(get_current_user)). 대시보드(web/src/pages/OilFutures.tsx)가 호출.
+quant_core.oil_futures 엔진을 종목별(symbol)로 HTTP에 노출. 인증 필요 —
+로그인 게이트(라우터 전역 Depends(get_current_user)). 종목 차이는
+futures_config.INSTRUMENTS에 모은다(데이터키·계약사양·임계범위·라벨).
 
 엔드포인트:
-- GET  /oil-futures/data-info        데이터 메타 (기간/행수/가격범위)
-- GET  /oil-futures/latest-price     최신가 (캐시 일봉 마지막 종가)
-- GET  /oil-futures/prices           일봉 시계열 (차트용, 기간 필터 옵션)
-- GET  /oil-futures/grid             전체 grid (히트맵·표용)
-- GET  /oil-futures/signals          특정 (type, threshold) 신호 목록
-- GET  /oil-futures/seasonality      월·요일 계절성
-- GET  /oil-futures/macro-context    VIX·DXY 외생 변수 레짐·상관
-- POST /oil-futures/backtest         단일 조합 백테스트 (trades + equity)
-- POST /oil-futures/walkforward      train/test 분할 검증
+- GET  /futures/instruments              선택기용 종목 목록
+- GET  /futures/{symbol}/data-info       데이터 메타 (기간/행수/가격범위/라벨)
+- GET  /futures/{symbol}/latest-price    최신가 (캐시 일봉 마지막 종가)
+- GET  /futures/{symbol}/prices          일봉 시계열 (차트용, 기간 필터 옵션)
+- GET  /futures/{symbol}/grid            전체 grid (히트맵·표용)
+- GET  /futures/{symbol}/signals         특정 (type, threshold) 신호 목록
+- GET  /futures/{symbol}/seasonality     월·요일 계절성
+- GET  /futures/{symbol}/macro-context   VIX·DXY 외생 변수 레짐·상관
+- POST /futures/{symbol}/backtest        단일 조합 백테스트 (trades + equity)
+- POST /futures/{symbol}/walkforward     train/test 분할 검증
 """
 
 from __future__ import annotations
@@ -41,48 +43,46 @@ from quant_core.oil_futures import (
 
 from ..data_cache import get_raw_dataset, get_version
 from ..deps import get_current_user
+from ..futures_config import INSTRUMENTS, InstrumentConfig
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(
-    prefix="/oil-futures",
-    tags=["oil-futures"],
+    prefix="/futures",
+    tags=["futures"],
     dependencies=[Depends(get_current_user)],
 )
 
-# 워크포워드 grid — $10 단위 coarse. 과적합 검증(in/out-of-sample 분할)은
-# 조밀할 필요 없고, 조밀하면 best 선택이 noise를 줍는다 → coarse가 올바르다.
-# 사용자가 ?shorts=... 명시 시 임의 범위 가능.
-DEFAULT_SHORTS = [80, 90, 100, 110, 120, 130, 140, 150]
-DEFAULT_LONGS = [10, 20, 30, 40, 50, 60]
-# Horizon (영업일 기준 보유 기간): 단기~장기 비교
-# 365일 = 약 1.5 캘린더 년 (영업일 ≈ 252일/년)
+
+def _get_cfg(symbol: str) -> InstrumentConfig:
+    cfg = INSTRUMENTS.get(symbol)
+    if cfg is None:
+        raise HTTPException(404, f"지원하지 않는 종목: {symbol}")
+    return cfg
+
+
 DEFAULT_HORIZONS = [20, 40, 60, 120, 180, 240, 365]
 
-# 히트맵 grid — $1 단위. 854셀이라 라이브 요청-시점 계산은 비싸고(로컬 ~21s) OOM 위험 →
-# light 모드(grid가 안 쓰는 MAE/MFE·portfolio MTM 생략) + 백그라운드 워머가 데이터 버전당
-# 1회 미리 계산해 버전키 캐시에 적재한다. 사용자는 항상 캐시 히트(즉시).
-GRID_SHORTS = list(range(80, 151))   # $80~$150
-GRID_LONGS = list(range(10, 61))     # $10~$60
+
+# 종목별 정제 df 캐시 — (symbol → {version, df}). 데이터 버전 변경 시 자동 갱신.
+_DF_CACHE: dict[str, dict] = {}
 
 
-_WTI_CACHE: dict = {"version": None, "df": None}
-
-
-def _df() -> pd.DataFrame:
-    """캐시된 '원유선물'(CL=F) 시리즈를 정제해 반환. 데이터 버전 변경 시 자동 갱신."""
+def _df(symbol: str) -> pd.DataFrame:
+    """종목의 캐시 시리즈를 정제해 반환. 데이터 버전 변경 시 자동 갱신.
+    미수집/전구간 탈락이면 503 (version 미갱신 — 빈 프레임을 캐시로 굳히지 않음)."""
+    cfg = _get_cfg(symbol)
     v = get_version()
-    if _WTI_CACHE["version"] != v:
+    slot = _DF_CACHE.get(symbol)
+    if slot is None or slot.get("version") != v:
         ds = get_raw_dataset()
-        raw = ds.get("원유선물")
+        raw = ds.get(cfg.data_key)
         df = prepare_wti(raw) if raw is not None and not raw.empty else None
-        # 미수집(시리즈 부재) + 정제 후 전부 탈락(예: 전 구간 비양수) 둘 다 503.
-        # version을 갱신하지 않아 빈 프레임을 유효 캐시로 굳히지 않는다.
         if df is None or df.empty:
-            raise HTTPException(status_code=503, detail="원유 데이터 미수집 — 데이터 수집 후 이용 가능")
-        _WTI_CACHE["df"] = df
-        _WTI_CACHE["version"] = v
-    return _WTI_CACHE["df"]
+            raise HTTPException(status_code=503,
+                                detail=f"{cfg.name} 데이터 미수집 — 데이터 수집 후 이용 가능")
+        _DF_CACHE[symbol] = {"version": v, "df": df}
+    return _DF_CACHE[symbol]["df"]
 
 
 # ───── 최신가 (캐시 일봉 마지막 종가) ───────────────────────────────────
@@ -96,17 +96,28 @@ class LatestPrice(BaseModel):
     fetched_at: str                  # ISO 시각 (UTC)
 
 
-@router.get("/latest-price", response_model=LatestPrice)
-def latest_price():
-    """WTI 최신가 = 캐시 일봉 마지막 종가 (일배치 기준, delayed=True)."""
-    df = _df()
+class InstrumentInfo(BaseModel):
+    symbol: str
+    name: str
+
+
+@router.get("/instruments", response_model=list[InstrumentInfo])
+def instruments():
+    """선택기용 종목 목록."""
+    return [InstrumentInfo(symbol=c.symbol, name=c.name) for c in INSTRUMENTS.values()]
+
+
+@router.get("/{symbol}/latest-price", response_model=LatestPrice)
+def latest_price(symbol: str):
+    cfg = _get_cfg(symbol)
+    df = _df(symbol)
     last = df.iloc[-1]
     prev = df.iloc[-2] if len(df) >= 2 else last
     return LatestPrice(
         price=float(last["close"]),
         change=float(last["close"] - prev["close"]),
         change_pct=float(last["close"] / prev["close"] - 1) if prev["close"] else None,
-        source="yahoo-cl=f", delayed=True,
+        source=cfg.source, delayed=True,
         fetched_at=pd.Timestamp.utcnow().isoformat(),
     )
 
@@ -119,6 +130,10 @@ class DataInfo(BaseModel):
     end_date: str
     price_min: float
     price_max: float
+    name: str
+    eyebrow: str
+    unit: str
+    roll_note: str
 
 
 class PricePoint(BaseModel):
@@ -246,21 +261,23 @@ def _parse_csv_ints(s: str | None) -> list[int]:
 
 # ─── Endpoints ──────────────────────────────────────────────────────────
 
-@router.get("/data-info", response_model=DataInfo)
-def data_info():
-    df = _df()
+@router.get("/{symbol}/data-info", response_model=DataInfo)
+def data_info(symbol: str):
+    cfg = _get_cfg(symbol)
+    df = _df(symbol)
     return DataInfo(
         n_rows=len(df),
         start_date=str(df["date"].iloc[0].date()),
         end_date=str(df["date"].iloc[-1].date()),
         price_min=float(df["close"].min()),
         price_max=float(df["close"].max()),
+        name=cfg.name, eyebrow=cfg.eyebrow, unit=cfg.unit, roll_note=cfg.roll_note,
     )
 
 
-@router.get("/prices", response_model=list[PricePoint])
-def prices(start: Optional[str] = None, end: Optional[str] = None):
-    df = _df()
+@router.get("/{symbol}/prices", response_model=list[PricePoint])
+def prices(symbol: str, start: Optional[str] = None, end: Optional[str] = None):
+    df = _df(symbol)
     if start:
         df = df[df["date"] >= pd.Timestamp(start)]
     if end:
@@ -276,22 +293,17 @@ def prices(start: Optional[str] = None, end: Optional[str] = None):
     ]
 
 
-# 결과 캐시 — 같은 파라미터 재계산 방지로 메모리 안정화 (Railway 무료 티어 보호).
-# 키: (데이터버전, shorts, longs, horizons, commission, slippage) 튜플.
-_GRID_CACHE: dict[tuple, list[GridCellOut]] = {}   # 키에 데이터 버전 포함
+_GRID_CACHE: dict[tuple, list[GridCellOut]] = {}   # 키: (symbol, version, s, l, h, comm, slip)
 _grid_lock = threading.Lock()
 
 
-def _ensure_grid_cached(s: tuple, l: tuple, h: tuple,
+def _ensure_grid_cached(symbol: str, s: tuple, l: tuple, h: tuple,
                         commission: float, slippage_ticks: int) -> list[GridCellOut]:
-    """주어진 grid 파라미터 결과를 (데이터버전, 파라미터)로 캐시. 워머·요청 공용.
-
-    _df()를 먼저 호출해 데이터 리로드(일갱신)를 정착시킨 뒤 버전을 읽는다.
-    데이터 미수집이면 _df()가 HTTPException(503)을 올린다(호출자 처리).
-    """
-    df = _df()
+    """(symbol, 데이터버전, 파라미터) 결과 캐시. 워머·요청 공용. 미수집이면 _df가 503."""
+    cfg = _get_cfg(symbol)
+    df = _df(symbol)
     version = get_version()
-    key = (version, s, l, h, commission, slippage_ticks)
+    key = (symbol, version, s, l, h, commission, slippage_ticks)
     cached = _GRID_CACHE.get(key)
     if cached is not None:
         return cached
@@ -299,7 +311,8 @@ def _ensure_grid_cached(s: tuple, l: tuple, h: tuple,
         cached = _GRID_CACHE.get(key)
         if cached is not None:
             return cached
-        cells = grid_search(df, s, l, h, CostModel(commission, slippage_ticks), light=True)
+        cells = grid_search(df, s, l, h, CostModel(commission, slippage_ticks),
+                            light=True, spec=cfg.spec)
         out = [
             GridCellOut(
                 side=c.side.value,
@@ -318,58 +331,54 @@ def _ensure_grid_cached(s: tuple, l: tuple, h: tuple,
             )
             for c in cells
         ]
-        # 중간 cells (BacktestResult 다수 포함) 즉시 해제 → 메모리 회수
         del cells
         gc.collect()
-        # 캐시 크기 제한 — 4가지 변형까지만 유지
-        if len(_GRID_CACHE) >= 4:
+        if len(_GRID_CACHE) >= len(INSTRUMENTS) * 2:   # 종목당 2변형(기본+커스텀) 여유
             _GRID_CACHE.pop(next(iter(_GRID_CACHE)))
         _GRID_CACHE[key] = out
         return out
 
 
-@router.get("/grid", response_model=list[GridCellOut])
-def grid(shorts: str = "", longs: str = "", horizons: str = "",
+@router.get("/{symbol}/grid", response_model=list[GridCellOut])
+def grid(symbol: str, shorts: str = "", longs: str = "", horizons: str = "",
          commission: float = 2.5, slippage_ticks: int = 1):
-    """모든 (side, threshold, horizon) 조합 백테스트 (히트맵·표용).
-
-    파라미터 미지정 시 $1 단위 기본 grid. 결과는 (데이터버전,파라미터) 캐시 —
-    백그라운드 워머가 기본 grid를 미리 데워둔다.
-    """
-    s = tuple(_parse_csv_floats(shorts) or GRID_SHORTS)
-    l = tuple(_parse_csv_floats(longs) or GRID_LONGS)
+    """(side, threshold, horizon) 조합 백테스트. 미지정 시 종목 기본 grid(캐시·워머)."""
+    cfg = _get_cfg(symbol)
+    s = tuple(_parse_csv_floats(shorts) or cfg.shorts.values())
+    l = tuple(_parse_csv_floats(longs) or cfg.longs.values())
     h = tuple(_parse_csv_ints(horizons) or DEFAULT_HORIZONS)
-    return _ensure_grid_cached(s, l, h, commission, slippage_ticks)
+    return _ensure_grid_cached(symbol, s, l, h, commission, slippage_ticks)
 
 
 def _warmer_loop() -> None:
-    """기본 $1 grid를 백그라운드로 미리 계산·캐시. 데이터 버전 변경 시 재워밍.
-    데이터 미준비(503)면 자주 재시도, 워밍 성공 후엔 느슨히 재확인."""
-    first = True
+    """전 종목 기본 grid를 백그라운드로 미리 계산·캐시. 데이터 버전 변경 시 재워밍.
+    한 종목이라도 미준비(503)면 자주 재시도(20s), 전 종목 워밍되면 느슨히 재확인(300s)."""
     while True:
-        try:
-            _ensure_grid_cached(tuple(GRID_SHORTS), tuple(GRID_LONGS),
-                                tuple(DEFAULT_HORIZONS), 2.5, 1)
-            first = False
-        except HTTPException:
-            pass  # 데이터 미수집(503) — 다음 틱에 재시도
-        except Exception:
-            _log.warning("oil grid 워밍 실패 — 온디맨드로 계산됨", exc_info=True)
-            first = False
-        time.sleep(20 if first else 300)
+        pending = False
+        for cfg in INSTRUMENTS.values():
+            try:
+                _ensure_grid_cached(cfg.symbol, tuple(cfg.shorts.values()),
+                                    tuple(cfg.longs.values()), tuple(DEFAULT_HORIZONS), 2.5, 1)
+            except HTTPException:
+                pending = True   # 이 종목 데이터 미수집 — 다음 틱 재시도
+            except Exception:
+                _log.warning("선물 grid 워밍 실패 [%s] — 온디맨드로 계산됨",
+                             cfg.symbol, exc_info=True)
+        time.sleep(20 if pending else 300)
 
 
 def start_grid_warmer() -> None:
-    threading.Thread(target=_warmer_loop, daemon=True, name="oil-grid-warm").start()
+    threading.Thread(target=_warmer_loop, daemon=True, name="futures-grid-warm").start()
 
 
-@router.get("/signals", response_model=list[SignalEvent])
+@router.get("/{symbol}/signals", response_model=list[SignalEvent])
 def signals(
+    symbol: str,
     type: Literal["short", "long"],
     threshold: float,
     since: Optional[str] = None,
 ):
-    df = _df()
+    df = _df(symbol)
     short_th = [threshold] if type == "short" else []
     long_th = [threshold] if type == "long" else []
     sigs = generate_signals(df, short_thresholds=short_th, long_thresholds=long_th)
@@ -401,9 +410,10 @@ class BacktestRequest(BaseModel):
     roll_cost_pct: float = Field(default=0.0, ge=-0.1, le=0.1)
 
 
-@router.post("/backtest", response_model=BacktestResponse)
-def backtest(req: BacktestRequest):
-    df = _df()
+@router.post("/{symbol}/backtest", response_model=BacktestResponse)
+def backtest(symbol: str, req: BacktestRequest):
+    cfg = _get_cfg(symbol)
+    df = _df(symbol)
     short_th = [req.threshold] if req.side == "short" else []
     long_th = [req.threshold] if req.side == "long" else []
     sigs = generate_signals(df, short_thresholds=short_th, long_thresholds=long_th)
@@ -414,6 +424,7 @@ def backtest(req: BacktestRequest):
         CostModel(req.commission, req.slippage_ticks),
         ExitRules(req.stop_loss_pct, req.take_profit_pct),
         RollModel(roll_cost_pct=req.roll_cost_pct),
+        spec=cfg.spec,
     )
     s = summarize(res)
     return BacktestResponse(
@@ -471,25 +482,26 @@ def backtest(req: BacktestRequest):
 
 
 class WalkForwardRequest(BaseModel):
-    shorts: list[float] = DEFAULT_SHORTS
-    longs: list[float] = DEFAULT_LONGS
+    shorts: Optional[list[float]] = None
+    longs: Optional[list[float]] = None
     horizons: list[int] = DEFAULT_HORIZONS
     split_date: str
     commission: float = 2.5
     slippage_ticks: int = 1
 
 
-@router.post("/walkforward", response_model=WalkForwardResponse)
-def walkforward_endpoint(req: WalkForwardRequest):
-    df = _df()
+@router.post("/{symbol}/walkforward", response_model=WalkForwardResponse)
+def walkforward_endpoint(symbol: str, req: WalkForwardRequest):
+    cfg = _get_cfg(symbol)
+    df = _df(symbol)
+    shorts = req.shorts if req.shorts is not None else cfg.shorts.values()
+    longs = req.longs if req.longs is not None else cfg.longs.values()
     try:
         res = walk_forward(
-            df,
-            req.shorts,
-            req.longs,
-            req.horizons,
+            df, shorts, longs, req.horizons,
             pd.Timestamp(req.split_date),
             CostModel(req.commission, req.slippage_ticks),
+            spec=cfg.spec,
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
@@ -567,13 +579,13 @@ class SeasonalityResponse(BaseModel):
     weekday: list[SeasonalityCell]
 
 
-@router.get("/seasonality", response_model=SeasonalityResponse)
-def seasonality():
+@router.get("/{symbol}/seasonality", response_model=SeasonalityResponse)
+def seasonality(symbol: str):
     """일간 close-to-close 수익률을 월별 / 요일별로 집계 (신호 무관 구조 패턴).
 
     "10월에 평균 음수 수익" / "월요일이 약함" 같은 시장 구조 발견용.
     """
-    df = _df().copy()
+    df = _df(symbol).copy()
     df["ret"] = df["close"].pct_change()
     df = df.dropna(subset=["ret"])
     df["month"] = df["date"].dt.month
@@ -629,12 +641,12 @@ def _macro_df() -> Optional[pd.DataFrame]:
 class MacroRegimeCell(BaseModel):
     bucket: str           # 예: "VIX < 15", "VIX >= 25"
     n_days: int
-    wti_avg_return: float
-    wti_win_rate: float
+    avg_return: float
+    win_rate: float
 
 
 class MacroCorrelation(BaseModel):
-    pair: str             # 예: "WTI vs VIX"
+    pair: str             # 예: "원유 (WTI) vs VIX"
     pearson: float        # -1 ~ +1
 
 
@@ -646,15 +658,16 @@ class MacroResponse(BaseModel):
     dxy_regime: list[MacroRegimeCell]    # 3 buckets
 
 
-@router.get("/macro-context", response_model=MacroResponse)
-def macro_context():
-    """WTI 일간 수익률과 VIX·DXY 관계 — 외생 변수 신호 가치 측정.
+@router.get("/{symbol}/macro-context", response_model=MacroResponse)
+def macro_context(symbol: str):
+    """종목 일간 수익률과 VIX·DXY 관계 — 외생 변수 신호 가치 측정.
 
-    - 상관관계: WTI vs VIX (음의 상관 예상 — risk-off에 유가 약세),
-              WTI vs DXY (음의 상관 — 강달러에 commodity 약세)
-    - 체제 분할: VIX 저/중/고 / DXY 저/중/고 구간별 WTI 평균수익·승률
+    - 상관관계: 자산 vs VIX (음의 상관 예상 — risk-off에 위험자산 약세),
+              자산 vs DXY (음의 상관 — 강달러에 commodity 약세)
+    - 체제 분할: VIX 저/중/고 / DXY 저/중/고 구간별 자산 평균수익·승률
     """
-    wti = _df().copy()
+    cfg = _get_cfg(symbol)
+    asset = _df(symbol).copy()
     macro = _macro_df()
     if macro is None or macro.empty:
         return MacroResponse(
@@ -662,8 +675,8 @@ def macro_context():
             correlations=[], vix_regime=[], dxy_regime=[],
         )
 
-    wti["ret"] = wti["close"].pct_change()
-    merged = wti.merge(macro, on="date", how="inner").dropna(
+    asset["ret"] = asset["close"].pct_change()
+    merged = asset.merge(macro, on="date", how="inner").dropna(
         subset=["ret", "vix_close", "dxy_close"]
     )
     if len(merged) == 0:
@@ -674,10 +687,10 @@ def macro_context():
 
     # 1) 상관관계
     correlations = [
-        MacroCorrelation(pair="WTI vs VIX", pearson=float(merged["ret"].corr(merged["vix_close"].pct_change()))),
-        MacroCorrelation(pair="WTI vs DXY", pearson=float(merged["ret"].corr(merged["dxy_close"].pct_change()))),
-        MacroCorrelation(pair="WTI vs VIX(level)", pearson=float(merged["ret"].corr(merged["vix_close"]))),
-        MacroCorrelation(pair="WTI vs DXY(level)", pearson=float(merged["ret"].corr(merged["dxy_close"]))),
+        MacroCorrelation(pair=f"{cfg.name} vs VIX", pearson=float(merged["ret"].corr(merged["vix_close"].pct_change()))),
+        MacroCorrelation(pair=f"{cfg.name} vs DXY", pearson=float(merged["ret"].corr(merged["dxy_close"].pct_change()))),
+        MacroCorrelation(pair=f"{cfg.name} vs VIX(level)", pearson=float(merged["ret"].corr(merged["vix_close"]))),
+        MacroCorrelation(pair=f"{cfg.name} vs DXY(level)", pearson=float(merged["ret"].corr(merged["dxy_close"]))),
     ]
 
     # 2) VIX 체제 (3분위: 저/중/고)
@@ -692,8 +705,8 @@ def macro_context():
     vix_regime = [
         MacroRegimeCell(
             bucket=name, n_days=len(df_b),
-            wti_avg_return=float(df_b["ret"].mean()) if len(df_b) else 0.0,
-            wti_win_rate=float((df_b["ret"] > 0).mean()) if len(df_b) else 0.0,
+            avg_return=float(df_b["ret"].mean()) if len(df_b) else 0.0,
+            win_rate=float((df_b["ret"] > 0).mean()) if len(df_b) else 0.0,
         )
         for name, df_b in vix_buckets
     ]
@@ -710,8 +723,8 @@ def macro_context():
     dxy_regime = [
         MacroRegimeCell(
             bucket=name, n_days=len(df_b),
-            wti_avg_return=float(df_b["ret"].mean()) if len(df_b) else 0.0,
-            wti_win_rate=float((df_b["ret"] > 0).mean()) if len(df_b) else 0.0,
+            avg_return=float(df_b["ret"].mean()) if len(df_b) else 0.0,
+            win_rate=float((df_b["ret"] > 0).mean()) if len(df_b) else 0.0,
         )
         for name, df_b in dxy_buckets
     ]

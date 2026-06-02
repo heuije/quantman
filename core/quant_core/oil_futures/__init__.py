@@ -24,8 +24,8 @@ from .backtest import (
     CostModel,
     ExitRules,
     RollModel,
-    WTI_TICK,
-    WTI_MULTIPLIER,
+    ContractSpec,
+    WTI_SPEC,
     run_backtest,
     wti_expiry_dates,
 )
@@ -42,7 +42,7 @@ __all__ = [
     "prepare_wti",
     "Signal", "Side", "generate_signals",
     "Trade", "BacktestResult", "CostModel", "ExitRules", "RollModel",
-    "WTI_TICK", "WTI_MULTIPLIER", "run_backtest", "wti_expiry_dates",
+    "ContractSpec", "WTI_SPEC", "run_backtest", "wti_expiry_dates",
     "Summary", "LOW_SAMPLE_THRESHOLD", "summarize",
     "GridCell", "WalkForwardResult", "grid_search", "grid_to_dataframe", "walk_forward",
 ]
