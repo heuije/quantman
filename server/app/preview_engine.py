@@ -350,10 +350,11 @@ def _evaluate_exits(positions: list[dict], dataset: dict,
     return candidates
 
 
-def _preview_dataset(strats: list, held_symbols: set) -> dict:
+def _preview_dataset(defs: list, held_symbols: set) -> dict:
     """유저 전략들이 참조하는 컬럼·종목만 프로젝션한 dataset — 전 유니버스 45컬럼
     (~9.4GB) 빌드를 회피한다(preview cron OOM의 직접 원인이었던 경로).
 
+    defs: 전략 definition dict 리스트(ORM 객체 아님 — C1: DB 커넥션 미점유 계산용).
     · 어떤 전략이든 컬럼 결정 불가(strat: 조합 등) → 전체(get_dataset) 안전 폴백(드묾).
     · all 전략이 하나라도 있으면 전 종목 × 참조컬럼 프로젝션.
     · 전부 single/list면 그 종목들 ∪ 보유종목만 프로젝션.
@@ -362,9 +363,9 @@ def _preview_dataset(strats: list, held_symbols: set) -> dict:
     union_cols: set = set()
     union_syms: set = set(held_symbols)
     full_universe = False
-    for s in strats:
+    for d in defs:
         try:
-            sir = StrategyIR.model_validate(dict(s.definition or {}))
+            sir = StrategyIR.model_validate(dict(d or {}))
         except Exception:                            # noqa: BLE001 — 파싱 실패는 평가 단계가 skip
             continue
         cols = needed_columns(sir)
@@ -385,11 +386,24 @@ def build_user_preview(session: Session, user_id: int,
                         data_source: str) -> dict:
     """사용자 1명에 대한 next-day preview 생성.
 
+    C1 (2026-06-02) — DB 커넥션을 무거운 계산(_preview_dataset 데이터셋 로드 +
+    _evaluate_ir_strategy 신호평가, 콜드 시 수 초~수십 초) 동안 쥐지 않는다.
+    외부 Neon 서버리스 Postgres가 유휴 연결을 suspend 중 끊으면 *늙은* 연결로의
+    commit이 'psycopg ProtocolViolation: server conn crashed?'로 실패해 preview
+    재생성(=매수 후보결정)이 통째로 누락되던 근본 결함을 제거한다. 구조:
+      (A) 짧은 읽기 — 전략·스냅샷을 plain 값으로 추출
+      (B) session.commit()으로 커넥션 반납 → 세션 미점유 상태로 순수 계산
+      (C) 짧은 쓰기(basket persist)는 fresh checkout이라 pool_pre_ping(db.py)이
+          stale 연결을 자동 폐기·재연결해 보호한다.
+    무거운 계산 함수(_preview_dataset·_evaluate_ir_strategy·_evaluate_exits)는
+    이미 DB 미접근 순수 함수이고 입력이 plain 값이라 호출 위치만 (B)로 옮기면 된다.
+
     Args:
-        session: SQL 세션
+        session: SQL 세션 (읽기/쓰기에만 잠깐 사용; 계산 중에는 미점유)
         user_id: 사용자 ID
-        data_source: cron 식별자 ('dataset_global', 'krx_2nd', 등)
+        data_source: cron 식별자 ('dataset_global', 'manual', 'on_demand_pull' 등)
     """
+    # ── (A) 읽기 — 필요한 모든 값을 plain 으로 추출 (ORM 객체를 계산까지 끌지 않음) ──
     snapshot = _latest_snapshot(session, user_id)
     if snapshot is None or not snapshot.payload:
         return {
@@ -405,49 +419,57 @@ def build_user_preview(session: Session, user_id: int,
     positions = payload.get("positions") or []
     held_symbols = {p.get("symbol", "") for p in positions}
 
-    # KIS 마스터 lookup (종목명 표시용)
-    master_list = kis_master_cache.get_master_list()
-    master_by_code = {m["symbol"]: m for m in master_list}
-
-    # 전략별 매수 평가 — IR 단일 체제(레거시 operand 행은 skip).
-    strats = session.exec(
+    # 전략을 plain dict 로 추출 — (B) 커넥션 반납 후 ORM detach 안전.
+    rows = session.exec(
         select(Strategy).where(
             Strategy.user_id == user_id,
             Strategy.run_mode.in_(("paper", "live"))
         )
     ).all()
-    ir_strats = [s for s in strats if getattr(s, "engine", "operand") == "ir"]
+    ir_defs = [
+        {"id": s.id, "run_mode": s.run_mode,
+         "definition": dict(s.definition or {}),
+         "live_basket": (list(s.live_basket) if s.live_basket is not None else None)}
+        for s in rows if getattr(s, "engine", "operand") == "ir"
+    ]
+
+    # ── DB 커넥션 반납 — 무거운 계산 동안 어떤 연결도 쥐지 않는다(C1 핵심) ──────────
+    # Neon 이 이 사이 유휴 연결을 끊어도, 아래 (C) 쓰기는 fresh checkout 이라
+    # pool_pre_ping(db.py:30) 이 stale 연결을 자동 폐기·재연결한다.
+    session.commit()
+
+    # ── (B) 순수 계산 — 세션/커넥션 미점유 ───────────────────────────────────────
+    # KIS 마스터 lookup (종목명 표시용)
+    master_list = kis_master_cache.get_master_list()
+    master_by_code = {m["symbol"]: m for m in master_list}
 
     # 데이터셋 — 이 유저 전략들이 실제 쓰는 컬럼·종목만(컬럼 프로젝션). 전 유니버스 빌드 회피.
-    dataset = _preview_dataset(ir_strats, held_symbols)
+    dataset = _preview_dataset([d["definition"] for d in ir_defs], held_symbols)
 
     by_strategy = []
     total_buy_amount = 0
     n_buy_candidates = 0
-    basket_formed = False           # 정적 바스켓을 이번 호출에서 1회라도 형성·persist 했는가
+    basket_updates: dict = {}       # {strategy_id: [symbols]} — once_at_start 정적 바스켓 lazy 형성
 
-    for s in ir_strats:
-        strat_def = dict(s.definition or {})
-        strat_def["_id"] = s.id
+    for d in ir_defs:
+        strat_def = dict(d["definition"])
+        strat_def["_id"] = d["id"]
         result = _evaluate_ir_strategy(strat_def, dataset, cash, held_symbols,
-                                       master_by_code, live_basket=s.live_basket)
-        result["strategy_id"] = s.id
-        result["run_mode"] = s.run_mode
+                                       master_by_code, live_basket=d["live_basket"])
+        result["strategy_id"] = d["id"]
+        result["run_mode"] = d["run_mode"]
         by_strategy.append(result)
 
         # Task 12b — 정적 세부조건(once_at_start) 라이브 바스켓 lazy 형성.
-        # 전환 후 바스켓이 아직 없고(falsy), 이번 평가가 당일 자격집합(screener_members)을
-        # 산출했으면 그 집합으로 고정. 이후 평가는 s.live_basket을 그대로 받아 재선별 안 함.
+        # 바스켓이 아직 없고(None) 이번 평가가 당일 자격집합(screener_members)을 산출했으면
+        # 그 집합으로 고정한다. 실제 persist 는 (C) 쓰기 단계에서 fresh 세션으로 수행.
         screener = (strat_def.get("universe") or {}).get("screener") or {}
-        if (s.run_mode in ("paper", "live")
+        if (d["run_mode"] in ("paper", "live")
                 and screener.get("refresh") == "once_at_start"
                 and screener.get("condition")
-                and s.live_basket is None):
-            # 전환 후 첫 평가에 당일 자격집합으로 고정 — backtest 시작일 형성과 일치.
+                and d["live_basket"] is None):
             # 매칭 0이면 빈 바스켓([])으로 고정(거래 없음); preview가 경고 노출, 재전환 시 재형성.
-            s.live_basket = list(result.get("screener_members") or [])
-            session.add(s)
-            basket_formed = True
+            basket_updates[d["id"]] = list(result.get("screener_members") or [])
 
         for c in result.get("candidates", []):
             # US 종목은 USD/KRW 통화 mismatch로 est_total=None (preview_engine.py:164)
@@ -460,13 +482,18 @@ def build_user_preview(session: Session, user_id: int,
                 total_buy_amount += est
             n_buy_candidates += 1
 
-    # 형성된 정적 바스켓을 persist. caller(cron·sync·manual)는 이후 snapshot을 별도 commit하므로
-    # 여기서 바스켓 변경을 먼저 commit해 다음 호출이 고정 집합을 그대로 받게 한다.
-    if basket_formed:
-        session.commit()
-
-    # 청산 미리보기
+    # 청산 미리보기 (DB 미접근 순수 계산)
     exit_candidates = _evaluate_exits(positions, dataset, master_by_code)
+
+    # ── (C) 짧은 쓰기 — 형성된 정적 바스켓 persist (fresh checkout → pool_pre_ping 보호) ──
+    # caller(cron·sync·manual)는 이후 snapshot.next_day_preview 머지를 별도 commit한다.
+    if basket_updates:
+        for sid, basket in basket_updates.items():
+            st = session.get(Strategy, sid)
+            if st is not None and st.live_basket is None:   # 동시 설정 가드(재조회로 최신 확인)
+                st.live_basket = basket
+                session.add(st)
+        session.commit()
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
