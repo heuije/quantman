@@ -81,7 +81,7 @@ def evaluate_data_soundness(strategy: "StrategyIR", manifest: "DataManifest",
     # 4) 생존편향 — 전체/스크리너 유니버스 + 멤버십 이력 없음(편향).
     #    종목별 delisting_date는 manifest에 수집돼 있으나, 완전한 생존편향 해소는 상장폐지 종목의
     #    OHLCV를 유니버스에 편입해야 가능 — 후속 백로그. 현재는 u.kind로 정직히 경고.
-    if u.kind in ("all", "screener") and not manifest.has_membership_history:
+    if u.kind == "all" and not manifest.has_membership_history:
         out.append(Issue("D-surv", bias,
                          "지수 구성 이력 없음 — 생존편향 가능(상장폐지 종목 누락).", "universe"))
 

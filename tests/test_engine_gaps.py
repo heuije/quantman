@@ -79,15 +79,6 @@ def test_budget_sizing_warns_in_scheduled():
     assert not any(i.rule == "S-pair" and i.is_error for i in iss)
 
 
-# ── A4: screener 유니버스 거부 ────────────────────────────────────────────────
-
-def test_screener_universe_rejected():
-    s = StrategyIR(
-        signal=data("momentum_12_1m"), universe=Universe(kind="screener"),
-        position=PositionSpec(entry=Entry(mode="scheduled")))
-    assert any(i.rule == "S-univ" and i.is_error for i in validate_strategy(s))
-
-
 # ── A5: 기간분할 ──────────────────────────────────────────────────────────────
 
 def _factor_spec(**sim):
@@ -227,7 +218,8 @@ def test_sector_exclusion_screener(monkeypatch):
                 inputs={"signal": Node(op="attribute", params={"attr": "Industry"})})
     s = StrategyIR(
         signal=data("momentum_12_1m"),
-        universe=Universe(kind="screener", screener={"condition": excl.model_dump()}),
+        universe=Universe(kind="list", symbols=["A", "B", "C", "D"],
+                          screener={"condition": excl.model_dump()}),
         position=PositionSpec(entry=Entry(mode="scheduled", rebalance="monthly", top_n=2)),
         simulation=SimSpec(initial_capital=1e7))
     assert not [i for i in validate_strategy(s) if i.is_error]

@@ -184,7 +184,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         return _empty("유니버스에 종목이 없습니다.")
     single = (u.kind == "single" and len(syms) == 1)
 
-    ds = _scoped(dataset, syms, strategy.signal, exits.condition)
+    screener = u.screener or {}
+    filt_node = (Node.model_validate(screener["condition"]) if screener.get("condition") else None)
+    ds = _scoped(dataset, syms, strategy.signal, exits.condition, filt_node)
 
     # 종목별 정렬 데이터 + 신호 마스크
     symbol_dfs: dict[str, pd.DataFrame] = {}
@@ -240,6 +242,12 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         }
         buy_arrs[sym] = _sym_bool(buy_panel, sym, master_idx)
         sell_arrs[sym] = _sym_bool(sell_panel, sym, master_idx) if sell_panel is not None else None
+
+    elig_arrs: dict[str, np.ndarray] | None = None
+    if screener.get("condition"):
+        elig_mask = _apply_refresh(_screener_mask(screener, ctx, syms),
+                                   screener.get("refresh", "each_rebalance"), sim.start)
+        elig_arrs = {sym: _sym_bool(elig_mask, sym, master_idx) for sym in syms}
 
     # 비용 (스칼라; 비용·슬리피지 시계열은 backlog — §7.6)
     commission = sim.commission if sim.commission is not None else _DEFAULT_COMMISSION
@@ -357,7 +365,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             for sym in syms:
                 if sym in positions or sym in pending_buys:
                     continue
-                if buy_arrs[sym][i]:
+                if buy_arrs[sym][i] and (elig_arrs is None or elig_arrs[sym][i]):
                     pending_buys.append(sym)
         else:
             cash_snapshot = cash
@@ -366,7 +374,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                     continue
                 if len(positions) >= _MAX_POSITIONS_GLOBAL:
                     break
-                if not buy_arrs[sym][i] or np.isnan(aligned[sym]["close"][i]):
+                if (not buy_arrs[sym][i]
+                        or (elig_arrs is not None and not elig_arrs[sym][i])
+                        or np.isnan(aligned[sym]["close"][i])):
                     continue
                 _open(sym, i, aligned[sym]["exec"][i], min(_budget(cash_snapshot), cash))
 
@@ -480,6 +490,26 @@ def _screener_mask(screener: dict, ctx, cols: list) -> pd.DataFrame:
     if isinstance(m, pd.DataFrame):
         return m.reindex(index=midx, columns=cols).fillna(False).astype(bool)
     return pd.DataFrame(True, index=midx, columns=cols)
+
+
+def _apply_refresh(mask: pd.DataFrame, refresh: str, start) -> pd.DataFrame:
+    """자격 마스크에 재선별 시점 적용.
+
+    each_rebalance(동적): 마스크 그대로 — 매 시점 PIT 자격.
+    once_at_start(정적): 백테스트 시작(sim.start 이후 첫 행)의 자격 행을 전 기간으로
+    broadcast → 후보 바스켓 고정. 시작일까지의 데이터만 쓰므로 lookahead 없음. 시작일
+    충족 0개면 빈 바스켓(거래 없음).
+    """
+    if refresh != "once_at_start":
+        return mask
+    rows = mask if start is None else mask[mask.index >= pd.Timestamp(start)]
+    if rows.empty:
+        # start가 데이터 윈도우 밖 — 형성할 바스켓 없음. 빈(전부 False) 마스크(거래 없음).
+        return pd.DataFrame(False, index=mask.index, columns=mask.columns)
+    basket = rows.iloc[0]                      # 형성일 자격 (cols, bool)
+    return pd.DataFrame(
+        np.tile(basket.to_numpy(dtype=bool), (len(mask.index), 1)),
+        index=mask.index, columns=mask.columns)
 
 
 def _cap_groups(w: pd.Series, labels: pd.Series, cap_pct: float) -> pd.Series:
@@ -628,7 +658,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
         return _empty("유니버스에 종목이 없습니다.")
     screener = strategy.universe.screener or {}
     filt_node = (Node.model_validate(screener["condition"])
-                 if strategy.universe.kind == "screener" and screener.get("condition") else None)
+                 if screener.get("condition") else None)
     gl = pos.overlays.group_label
     ds = _scoped(dataset, syms, signal, filt_node, gl)
     ctx = EvalContext.from_dataset(ds)
@@ -645,8 +675,9 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
     if not cols:
         return _empty("신호가 유니버스 종목을 포함하지 않습니다.")
     alpha = alpha[cols]
-    if strategy.universe.kind == "screener":
-        elig = _screener_mask(screener, ctx, cols)
+    if screener.get("condition"):
+        elig = _apply_refresh(_screener_mask(screener, ctx, cols),
+                              screener.get("refresh", "each_rebalance"), sim.start)
         alpha = alpha.where(elig.reindex(index=alpha.index, columns=cols).fillna(False))
 
     group_panel = None

@@ -126,6 +126,33 @@ def _exit_reason_for(defn: dict, held_days: int,
         ir, held_days=held_days, dataset=dataset, symbol=symbol), None
 
 
+def held_qty_from_snapshot(snap: dict, symbol: str) -> int:
+    """account_snapshot positions에서 symbol의 실 보유 수량 합 — 단일 출처(L-04).
+
+    매도 발주 직전 over-sell 클램프의 공유 헬퍼. 장중 손절(intraday_stop)과 EOD
+    cycle 청산이 같은 기준으로 'KIS가 실제로 들고 있는 수량'을 읽어, ledger가
+    외부 수동매매로 drift해도 보유 초과 매도를 발주하지 않는다.
+    """
+    return sum(int(p.get("qty") or 0)
+               for p in (snap or {}).get("positions", [])
+               if p.get("symbol") == symbol)
+
+
+def clamp_sell_qty(broker_qty: int | None, ledger_qty: int) -> int | None:
+    """L-04 매도 수량 클램프(단일 출처) — 모든 매도 경로가 같은 규칙으로 KIS 실
+    보유에 맞춰 수량을 제한한다. EOD cycle·장중 tick 손절이 각자 다르게 구현해
+    한쪽(EOD)이 클램프를 통째로 빠뜨렸던 결함 class(8cd5e8b 사후 보완)를 막는다.
+
+    반환: None=잔고 미상(skip·재시도), 0=외부 매도로 보유 0(skip), 그 외=min(보유, 원장).
+    호출부는 None/0의 부수효과(로그·sold_today·decision)만 각자 처리한다.
+    """
+    if broker_qty is None:
+        return None
+    if broker_qty <= 0:
+        return 0
+    return min(int(broker_qty), int(ledger_qty))
+
+
 class Trader:
     """Broker에 의존하는 모의투자 실행기. 보유 원장을 로컬에 유지한다.
 
@@ -146,15 +173,30 @@ class Trader:
         # Q5: kill switch 발동 시 추가 동작을 외부에 알리는 hook (intraday_loop이
         # 보유 종목 강제 청산 cycle을 트리거하도록). None이면 발동만 기록.
         self._ks_trigger_hook = None
-        # Q5(데드락 방지): cycle 진입 중 플래그. _apply_fill의 ks 평가/hook 호출은
-        # cycle 외부에서만 동작 — cycle 내부의 _apply_fill(이전 미체결 정리,
-        # _wait_pending 폴링)에서 hook이 cycle을 재호출하면 _CYCLE_LOCK 데드락 +
-        # 무한 재귀 위험. cycle은 진입부에서 이미 ks를 평가하므로 중복 평가 불필요.
-        # 진짜 필요 케이스는 intraday_loop의 _on_exec_event(별 thread).
-        self._in_cycle = False
+        # Q5(데드락 방지): "현재 스레드가 cycle 안인가"를 나타내는 thread-local 플래그.
+        # _apply_fill의 ks 평가/hook은 cycle 외부 스레드에서만 동작 — cycle 내부의
+        # _apply_fill(미체결 정리·_wait_pending 폴링)에서 hook이 cycle을 재호출하면
+        # _CYCLE_LOCK 재진입+무한재귀. 인스턴스 bool이면 cycle이 도는 동안 다른
+        # 스레드(WS _on_exec_event)의 *정당한* 체결 ks 평가까지 오억제되므로(REV-D)
+        # thread-local로 둔다. 아래 _in_cycle property가 이 tls에 위임한다.
+        self._cycle_tls = threading.local()
         # 미국 정상 cycle에서 True — _submit_buy/_submit_sell이 예약주문(개장 전
         # 접수 → 개시 자동전송)으로 라우팅. _cycle_body가 매 cycle 갱신.
         self._reserved_us = False
+
+    @property
+    def _in_cycle(self) -> bool:
+        """현재 스레드가 cycle 본문 안인지(thread-local). cycle 스레드만 True."""
+        return getattr(getattr(self, "_cycle_tls", None), "active", False)
+
+    @_in_cycle.setter
+    def _in_cycle(self, value: bool) -> None:
+        # __new__로 __init__ 우회한 테스트 스텁도 안전하도록 tls를 lazy 생성.
+        tls = getattr(self, "_cycle_tls", None)
+        if tls is None:
+            tls = threading.local()
+            object.__setattr__(self, "_cycle_tls", tls)
+        tls.active = bool(value)
 
     # ── 영속화 ────────────────────────────────────────────────────────────────
 
@@ -251,6 +293,14 @@ class Trader:
         분을 자동 cancel하므로 우리는 상태 조회로 cancelled를 인지하고 ledger·
         pending을 정리하기만 한다. 일중에 limit 도달 시 자연 체결 허용.
         """
+        # M3/INV-CONC-1: pending 순회·order_status·_apply_fill·del을 단일 락으로
+        # 직렬화한다. WS 체결 스레드(_on_exec_event)가 같은 pending을 동시 변경하는
+        # race(이중 del→KeyError, 부분반영 재가산→over-position)를 차단. RLock이라
+        # cycle/settlement가 이미 락을 쥔 채 호출해도 재진입 안전.
+        with _CYCLE_LOCK:
+            self._resolve_pending_locked(decisions)
+
+    def _resolve_pending_locked(self, decisions: list[dict]) -> None:
         if not self.pending:
             return
         for order_no, p in list(self.pending.items()):
@@ -264,7 +314,13 @@ class Trader:
             fill_px = float(st.get("fill_price", 0) or 0)
 
             if status == "filled" and filled > 0:
-                self._apply_fill(order_no, p, filled, fill_px, decisions)
+                # filled/partial 모두 KIS 누적(tot_ccld_qty) 기준 — 이미 WS/이전 폴링이
+                # 반영한 filled_so_far를 차감해 잔여 delta만 반영한다. 차감 안 하면
+                # 부분 선반영분이 재가산돼 over-position(INV-FILL-1 위반).
+                already = int(p.get("filled_so_far", 0) or 0)
+                delta = filled - already
+                if delta > 0:
+                    self._apply_fill(order_no, p, delta, fill_px, decisions)
                 del self.pending[order_no]
             elif status == "partial":
                 # 부분체결: 채운 만큼만 반영하고 잔여는 계속 추적
@@ -537,8 +593,14 @@ class Trader:
     def _submit_sell(self, sid: str, strat_name: str, symbol: str, qty: int,
                      ref_price: float, policy: dict, reason: str,
                      decisions: list[dict]) -> None:
-        # L-01: 매도도 동일 멱등 보호 — 크래시 시 over-sell 방지(L-04와 중복 안전망).
+        # L-01: 매도 멱등 단일 게이트(모든 매도 경로 공유) — 오늘 같은 (sid, symbol)
+        # 매도 intent가 활성이면 재발주 차단. EOD cycle·장중 tick 손절·catch-up이
+        # 첫 매도 미체결(KIS 잔고 미감소)인 동안 같은 포지션을 동시 평가해도 이중매도를
+        # 막는다. intent journal이 cycle/장중/catch-up·재기동을 가로지르는 단일 출처.
         today_iso = kst_today().isoformat()
+        if intents.is_active(today_iso, sid, symbol, "sell"):
+            log.info("[L-01] 중복 매도 차단 %s/%s", sid, symbol)
+            return
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell",
                       qty, ref_price)
@@ -819,7 +881,7 @@ class Trader:
             # IR(전략 연구소)은 universe.kind로 다중키 여부를 결정한다. 후보(cands)는
             # 서버 preview가 이미 선정했다.
             uni_kind = (strat_def.get("universe") or {}).get("kind", "single")
-            is_multi_key = uni_kind in ("list", "all", "screener")
+            is_multi_key = uni_kind in ("list", "all")
             if is_multi_key:
                 prefix = f"{sid}:"
                 held_keys = {k for k in self.ledger if k.startswith(prefix)}
@@ -1041,9 +1103,11 @@ class Trader:
                 reason, _ = _exit_reason_for(
                     pos["definition"], held, dataset, pos["symbol"])
             except Exception as e:
+                # 정의 파싱 실패는 평소 skip하나, kill switch 발동 중엔 "모든 보유 강제
+                # 청산" 의도를 지켜야 하므로 파싱 실패 고아도 kill-switch 사유로 청산한다.
                 log.warning("원장 전략 파싱 실패 [%s]: %s", sid, e)
-                continue
-            # kill switch 활성 시 모든 보유 강제 청산
+                reason = None
+            # kill switch 활성 시 모든 보유 강제 청산(파싱 실패 고아 포함).
             if ks_active and not reason:
                 reason = "kill-switch"
 
@@ -1067,13 +1131,25 @@ class Trader:
                 ref_price = cur
 
             policy = _policy(pos.get("definition"))
-            # L-01 멱등 게이트 — 오늘 같은 (sid, symbol, sell) intent가 활성이면 skip
-            today_iso = kst_today().isoformat()
-            if intents.is_active(today_iso, sid, pos["symbol"], "sell"):
-                log.info("[L-01] 중복 매도 차단 %s/%s", sid, pos["symbol"])
-                continue
+            # L-01 매도 멱등은 _submit_sell 진입부 단일 게이트가 담당(전 매도 경로 공유).
             # IR(전략 연구소)은 per-rule 매도 비중이 없으므로 전량(100%) 청산.
             sell_qty = int(pos["qty"])
+            # L-04(EOD): 발주 직전 KIS 실 보유로 클램프 — 외부 수동매도 시 over-sell
+            # 방지(intraday 손절과 동일 안전망, 같은 헬퍼). snap_pre는 cycle 진입부
+            # 잔고 재사용이라 추가 KIS 호출 없음. ledger drift는 settlement reconcile이 정리.
+            held = held_qty_from_snapshot(snap_pre, pos["symbol"])
+            clamped = clamp_sell_qty(held, sell_qty)   # snap_pre 기반이라 None 아님
+            if not clamped:                            # 0 = 외부 매도(보유 0)
+                log.info("[L-04 EOD] %s KIS 실 보유 0 (외부 매도 추정) — 청산 발주 skip",
+                          pos["symbol"])
+                decisions.append(order_log.decision(
+                    "skip_oversell", sid, pos.get("strategy_name", ""), pos["symbol"],
+                    "KIS 실 보유 0 — 외부 매도 추정, 청산 발주 skip"))
+                continue
+            if clamped < sell_qty:
+                log.info("[L-04 EOD] %s 청산 수량 클램프 ledger=%d → broker=%d",
+                          pos["symbol"], sell_qty, clamped)
+            sell_qty = clamped
             self._submit_sell(sid, pos.get("strategy_name", ""), pos["symbol"],
                               sell_qty, ref_price, policy, reason, decisions)
             # sold_this_cycle은 sid 단위 — 같은 cycle 중복 매도 차단.

@@ -17,19 +17,23 @@ def capability_spec() -> dict:
             {"value": "single", "does": "종목 1개",
              "use_for": "단일 자산 매매 · 레버리지 ETF 복제 · 지수 추종"},
             {"value": "list", "does": "지정한 여러 종목 바스켓",
-             "use_for": "소수 종목 고정 바스켓"},
+             "use_for": "소수 종목 고정 바스켓 (세부조건으로 2차 선별 가능)"},
             {"value": "all", "does": "데이터 보유 전체 종목",
              "use_for": "전체 유니버스 팩터/포트폴리오 (scheduled·always 진입과 함께)"},
-            {"value": "screener", "does": "condition으로 매일 선별된 종목",
-             "use_for": "동적 종목 선별 (거래대금·시총·밸류 등 조건). screener.condition에 블록."},
         ],
+        "screener": {
+            "field": "universe.screener",
+            "does": "선택 종목에 얹는 자격 필터 — 필터+횡단순위 condition. refresh로 동적/정적.",
+            "use_for": "고른 종목을 거래대금·시총·밸류 등 조건으로 2차 선별. "
+                       "refresh=each_rebalance(매 리밸런싱 재선별)·once_at_start(시작시점 바스켓 고정).",
+        },
         "entry_mode": [
             {"value": "on_signal",
              "does": "신호(condition)가 참인 날 진입하고 exit 규칙으로 청산",
              "use_for": "이벤트/룰 기반 단발 매매 — 돌파 매수, 과매도 반등, 골든크로스 등. 단일·소수 종목."},
             {"value": "scheduled",
              "does": "rebalance 주기마다 신호 점수(score) 상위 top_n/top_pct(또는 threshold)를 보유·교체",
-             "use_for": "정기 리밸런싱 팩터/포트폴리오 — 월간 모멘텀 상위 N, 분기 밸류 상위 % 등. all/screener 유니버스와."},
+             "use_for": "정기 리밸런싱 팩터/포트폴리오 — 월간 모멘텀 상위 N, 분기 밸류 상위 % 등. all 유니버스 또는 세부조건과."},
             {"value": "always",
              "does": ("매일 리밸런싱 — 보유 비중을 매일 목표로 되감는다. leverage와 결합하면 "
                       "노출 = leverage × 순자산 을 매일 유지(상승 후 매수·하락 후 매도). exit 규칙은 무시."),

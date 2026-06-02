@@ -455,7 +455,7 @@ def test_unified_a1_shape_screener_quarterly_exit():
     screener = {"condition": Node(op="logic", params={"logic": "AND"},
                                   inputs={"0": filt, "1": rank_cond}).model_dump()}
     base = dict(signal=data("momentum_12_1m"),
-                universe=Universe(kind="screener", screener=screener),
+                universe=Universe(kind="list", symbols=["AAA", "BBB", "CCC"], screener=screener),
                 simulation=SimSpec(initial_capital=1e7))
     no_exit = StrategyIR(**base, position=PositionSpec(
         direction="long", entry=Entry(mode="scheduled", rebalance="quarterly", top_n=2)))

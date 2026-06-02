@@ -97,7 +97,10 @@ def test_ir_strategy_create_and_get_roundtrip():
     assert got["definition"]["position"]["entry"]["mode"] == "on_signal"
 
 
-def test_ir_strategy_update_snapshots_version():
+def test_ir_strategy_update_snapshots_version(monkeypatch):
+    # 모의 승격은 매매가능 유니버스를 요구한다(tradable 게이트). 테스트 환경엔
+    # KIS 마스터가 없어(네트워크 미사용) 헬퍼를 _IR_DEF의 종목 집합으로 고정한다.
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
     client, tok = _build()
     sid = client.post("/strategies", headers=_auth(tok),
                       json={"definition": _IR_DEF, "run_mode": "draft",
@@ -184,8 +187,10 @@ def test_leverage_live_rejected():
     assert r.status_code == 422, r.text
 
 
-def test_unleveraged_paper_allowed():
+def test_unleveraged_paper_allowed(monkeypatch):
     """레버리지=1(기본)은 모의 적용 정상 — 게이트 회귀 가드."""
+    # 모의 승격은 매매가능 유니버스를 요구 — _IR_DEF 종목으로 tradable 헬퍼 고정.
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
     client, tok = _build()
     r = client.post("/strategies", headers=_auth(tok),
                     json={"definition": _lev_def(1.0), "run_mode": "paper", "engine": "ir"})
@@ -201,6 +206,124 @@ def test_leverage_promote_to_live_rejected_on_update():
     r = client.put(f"/strategies/{sid}", headers=_auth(tok),
                    json={"definition": _lev_def(2.0), "run_mode": "live", "engine": "ir"})
     assert r.status_code == 422, r.text
+
+
+# ── 비매매 유니버스·이벤트 세부조건 게이트 — 모의/실전 승격 차단 ─────────────────
+#
+# tradable 판정은 KIS 마스터(네트워크 다운로드)에 의존해 테스트 환경에선 비어 있다
+# (테스트는 네트워크 미사용). 따라서 가드 차단/허용 분기는 strategies_router의
+# tradable_symbols를 고정 집합으로 monkeypatch해 결정론적으로 검증한다.
+# 단, 실제 헬퍼(app.symbols.tradable_symbols)의 멤버십 로직은 별도 테스트에서
+# 마스터·인덱스 캐시를 인메모리 시드해 네트워크 없이 직접 exercise한다(아래 마지막).
+
+# entry.mode=scheduled — 전체/단일 유니버스가 논리검증(validate_strategy)을 통과해
+# 가드까지 도달하게 한다(on_signal + all 유니버스는 검증에서 먼저 막힘).
+_SCHED_ENTRY = {"mode": "scheduled", "schedule": {"freq": "monthly"}}
+
+
+def _uni_def(universe: dict, entry: dict | None = None) -> dict:
+    return {"name": "t", "universe": universe, "signal": _IR_SIGNAL,
+            "position": {"direction": "long", "entry": entry or _SCHED_ENTRY},
+            "simulation": {"initial_capital": 5_000_000}}
+
+
+def _patch_tradable(monkeypatch, codes: set[str]) -> None:
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: set(codes))
+
+
+def test_nontradable_symbol_paper_rejected(monkeypatch):
+    """비매매 종목(자동매매 불가)이 섞이면 모의 적용 422 — 로컬앱이 주문 못 함."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok = _build()
+    d = _uni_def({"kind": "list", "symbols": ["005930", "S&P500"]})
+    r = client.post("/strategies", headers=_auth(tok),
+                    json={"definition": d, "run_mode": "paper", "engine": "ir"})
+    assert r.status_code == 422, r.text
+    assert "S&P500" in r.json()["detail"]
+
+
+def test_empty_all_universe_paper_rejected(monkeypatch):
+    """전체(kind=all·심볼 미선택) 유니버스는 모의·실전 불가 422 — 종목 직접 선택 필요."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok = _build()
+    d = _uni_def({"kind": "all", "symbols": []})
+    r = client.post("/strategies", headers=_auth(tok),
+                    json={"definition": d, "run_mode": "paper", "engine": "ir"})
+    assert r.status_code == 422, r.text
+    assert "직접 선택" in r.json()["detail"]
+
+
+def test_event_screener_paper_rejected(monkeypatch):
+    """이벤트 진입(on_signal) + universe.screener.condition은 라이브 미지원 422."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok = _build()
+    cond = {"op": "compare", "params": {"op": ">"},
+            "inputs": {"left": {"op": "data", "params": {"ref": "__SELF__.Close"}},
+                       "right": {"op": "const", "params": {"value": 1000}}}}
+    d = _uni_def({"kind": "list", "symbols": ["005930"], "screener": {"condition": cond}},
+                 entry={"mode": "on_signal"})
+    r = client.post("/strategies", headers=_auth(tok),
+                    json={"definition": d, "run_mode": "paper", "engine": "ir"})
+    assert r.status_code == 422, r.text
+    assert "백테스트 전용" in r.json()["detail"]
+
+
+def test_tradable_universe_paper_allowed(monkeypatch):
+    """매매가능 종목만 선택하면 모의 적용 정상(가드 회귀 가드)."""
+    _patch_tradable(monkeypatch, {"005930", "000660"})
+    client, tok = _build()
+    d = _uni_def({"kind": "list", "symbols": ["005930", "000660"]})
+    r = client.post("/strategies", headers=_auth(tok),
+                    json={"definition": d, "run_mode": "paper", "engine": "ir"})
+    assert r.status_code == 201, r.text
+
+
+def test_event_screener_draft_allowed(monkeypatch):
+    """이벤트 진입 + 세부조건은 draft(백테스트)로는 저장 가능 — 가드는 모의/실전만."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok = _build()
+    cond = {"op": "compare", "params": {"op": ">"},
+            "inputs": {"left": {"op": "data", "params": {"ref": "__SELF__.Close"}},
+                       "right": {"op": "const", "params": {"value": 1000}}}}
+    d = _uni_def({"kind": "list", "symbols": ["005930"], "screener": {"condition": cond}},
+                 entry={"mode": "on_signal"})
+    r = client.post("/strategies", headers=_auth(tok),
+                    json={"definition": d, "run_mode": "draft", "engine": "ir"})
+    assert r.status_code == 201, r.text
+
+
+def test_real_tradable_helper_membership(monkeypatch):
+    """실제 헬퍼(app.symbols.tradable_symbols)의 멤버십 로직을 네트워크 없이 exercise.
+
+    마스터·인덱스 캐시를 인메모리 시드: 마스터에 005930만 두면 데이터 인덱스에
+    OHLC가 있는 005930은 tradable, 마스터에 없는 합성지수(S&P500)는 비매매가 된다.
+    parquet 인덱스가 환경에 없으면(클린 CI) skip — 가드 분기 테스트는 위에서
+    monkeypatch로 이미 결정론적으로 커버한다.
+    """
+    import pytest
+    from datetime import datetime, timezone
+    from app import data_cache, kis_master_cache
+    from app.symbols import tradable_symbols
+
+    idx = data_cache.get_symbol_index()
+    if "005930" not in idx or "S&P500" not in idx:
+        pytest.skip("데이터 인덱스(parquet) 미존재 — 실제 헬퍼 검증 불가 환경")
+
+    with kis_master_cache._lock:
+        kis_master_cache._state["by_symbol"] = {
+            "005930": {"name": "삼성전자", "market": "KOSPI",
+                       "kind": "stock", "currency": "KRW"}}
+        kis_master_cache._state["symbols"] = {"005930"}
+        kis_master_cache._state["fetched_at"] = datetime.now(timezone.utc)
+    try:
+        t = tradable_symbols()
+        assert "005930" in t            # 마스터 존재 + OHLC 보유 → 매매가능
+        assert "S&P500" not in t        # 합성지수: 마스터 없음 → 비매매
+    finally:
+        with kis_master_cache._lock:    # 캐시 오염 방지 — 다른 테스트 격리
+            kis_master_cache._state["by_symbol"] = {}
+            kis_master_cache._state["symbols"] = set()
+            kis_master_cache._state["fetched_at"] = None
 
 
 # ── 논리 정합성 게이트 — 무의미·모순 로직은 저장 차단(모든 모드) ────────────────

@@ -30,9 +30,9 @@ from ..blocks.validate import (SEV_ERROR, SEV_INTEGRITY_WARN, Issue, has_market_
 # ── 유니버스 (대상 종목 집합) ─────────────────────────────────────────────────
 
 class Universe(BaseModel):
-    kind: Literal["single", "list", "all", "screener"] = "single"
+    kind: Literal["single", "list", "all"] = "single"
     symbols: list[str] = Field(default_factory=list)   # single(1개)/list(다수)
-    screener: Optional[dict] = None                    # kind=screener: {"condition": Node}
+    screener: Optional[dict] = None                    # 선택 종목 2차 필터: {"condition": Node, "refresh": str}
     exclude_macro: bool = True                         # all: 매크로/자산 지수 제외
 
 
@@ -333,33 +333,34 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
         issues.append(Issue("S-univ", SEV_ERROR, "단일 유니버스는 종목 1개가 필요합니다.", "universe"))
     if u.kind == "list" and not u.symbols:
         issues.append(Issue("S-univ", SEV_ERROR, "리스트 유니버스는 종목이 1개 이상 필요합니다.", "universe"))
-    if ent.mode == "on_signal" and u.kind in ("all", "screener"):
+    if ent.mode == "on_signal" and u.kind == "all":
         issues.append(Issue("S-univ", SEV_ERROR,
-                            "전체·스크리너 유니버스는 정기리밸런싱(scheduled)·상시(always) 진입과 함께 쓰세요.",
+                            "전체 종목 유니버스는 정기리밸런싱(scheduled)·상시(always) 진입과 함께 쓰세요.",
                             "universe"))
-    if u.kind == "screener":
-        # 스크리너 = 단일 선별 조건(condition). 필터·횡단순위(rank 블록)·그룹 등을
-        # AND/OR로 자유 조합 — 별도 rank 특수 struct 없이 프리미티브 조합으로 일반화.
-        sc = u.screener or {}
-        cond = sc.get("condition")
-        if not cond:
+    sc = u.screener or {}
+    cond = sc.get("condition")
+    if cond:
+        # 세부조건 = 선택 종목에 얹는 자격 필터. 필터·횡단순위를 AND/OR로 조합한 단일 condition.
+        if not u.symbols:
             issues.append(Issue("S-univ", SEV_ERROR,
-                                "스크리너는 선별 조건(condition)이 필요합니다.", "universe"))
+                                "세부조건은 선택한 종목이 있을 때만 설정할 수 있습니다.", "universe"))
+        if sc.get("refresh", "each_rebalance") not in ("each_rebalance", "once_at_start"):
+            issues.append(Issue("S-univ", SEV_ERROR,
+                                "세부조건 재선별 시점이 올바르지 않습니다.", "universe"))
+        try:
+            cnode = Node.model_validate(cond)
+        except Exception:                       # noqa: BLE001 — 잘못된 트리
+            issues.append(Issue("S-univ", SEV_ERROR, "세부조건이 유효한 블록이 아닙니다.", "universe"))
         else:
-            try:
-                cnode = Node.model_validate(cond)
-            except Exception:                       # noqa: BLE001 — 잘못된 트리
-                issues.append(Issue("S-univ", SEV_ERROR, "스크리너 조건이 유효한 블록이 아닙니다.", "universe"))
-            else:
-                issues += list(validate(cnode, valid_refs))
-                issues += meaningfulness_issues(cnode, "universe.condition")   # M2·M3
-                if signal_out_type(cnode) != "condition":
-                    issues.append(Issue("S-univ", SEV_ERROR,
-                                        "스크리너 조건은 condition(참/거짓) 블록이어야 합니다 "
-                                        "(예: 횡단순위(시총)≤50, 거래대금>임계).", "universe"))
-                if not has_market_source(cnode):                              # M1
-                    issues.append(Issue("M-const", SEV_ERROR,
-                                        "스크리너 조건이 시장 데이터를 참조하지 않습니다.", "universe"))
+            issues += list(validate(cnode, valid_refs))
+            issues += meaningfulness_issues(cnode, "universe.condition")   # M2·M3
+            if signal_out_type(cnode) != "condition":
+                issues.append(Issue("S-univ", SEV_ERROR,
+                                    "세부조건은 condition(참/거짓) 블록이어야 합니다 "
+                                    "(예: 횡단순위(시총)≤50, 거래대금>임계).", "universe"))
+            if not has_market_source(cnode):                              # M1
+                issues.append(Issue("M-const", SEV_ERROR,
+                                    "세부조건이 시장 데이터를 참조하지 않습니다.", "universe"))
 
     # 매도 조건 노드
     if pos.exit.condition is not None:
@@ -477,14 +478,20 @@ def needed_symbols(s: StrategyIR) -> Optional[set[str]]:
     참조한 외부심볼("VIX.Close" 등). 이 집합만 로드·지표계산하면 전 유니버스(수천)
     통째 빌드 없이 동일 결과를 얻는다(test_backtest_golden의 차등 불변식이 보장).
 
-    all/screener: 횡단 랭킹/스크리닝이라 후보 전체가 필요 → None(전 유니버스 로드).
+    all: 횡단 랭킹이라 후보 전체가 필요 → None(전 유니버스 로드).
     엔진의 _universe_symbols(all 경로)가 dataset 전체를 후보로 보는 것과 같은 경계.
     """
-    if s.universe.kind in ("all", "screener"):
+    if s.universe.kind == "all":
         return None
     syms: set[str] = set(s.universe.symbols)
     nodes = [s.signal, s.position.exit.condition, s.position.overlays.group_label,
              s.sweep.label, s.sweep.event, s.sweep.target_node]
+    sc = (s.universe.screener or {}).get("condition")
+    if sc is not None:
+        try:
+            nodes.append(Node.model_validate(sc))
+        except Exception:                      # noqa: BLE001
+            return None                        # 잘못된 트리면 안전하게 전체
     for nd in nodes:
         if nd is not None:
             syms |= referenced_symbols(nd)
@@ -511,7 +518,7 @@ def needed_columns(s: StrategyIR) -> Optional[set[str]]:
     nodes = [s.signal, s.position.exit.condition, s.position.overlays.group_label,
              s.sweep.label, s.sweep.event, s.sweep.target_node]
     # 스크리너 선별 조건도 참조 컬럼(후보를 이 조건으로 거른다).
-    if s.universe.kind == "screener" and s.universe.screener:
+    if s.universe.screener:
         cond = s.universe.screener.get("condition")
         if cond is not None:
             try:

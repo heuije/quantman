@@ -170,13 +170,17 @@ _IR_DEF_MIN = {
 }
 
 
-def test_sync_strategies_injects_engine_into_definition():
+def test_sync_strategies_injects_engine_into_definition(monkeypatch):
     """로컬앱 pull 시 definition에 engine 주입 — trader·intraday_stop이 그걸로 디스패치.
 
     StrategyIR.model_dump엔 engine 필드가 없어 stored definition엔 빠져 있다(아래 create
     응답으로 확인). /sync/strategies가 column 값을 definition에 합쳐 자기완결 spec으로 serve.
     """
     from app.routers import strategies as strategies_router
+
+    # 모의 승격은 매매가능 유니버스를 요구(tradable 게이트). 테스트 환경엔 KIS
+    # 마스터가 없어(네트워크 미사용) 헬퍼를 _IR_DEF_MIN 종목으로 고정한다.
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
 
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
                            poolclass=StaticPool)

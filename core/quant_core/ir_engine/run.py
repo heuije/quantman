@@ -71,7 +71,7 @@ def _root_type_error(strategy: StrategyIR) -> str | None:
     엔진을 직접 호출해도 안전(label 코드가 조건으로 둔갑·연속 점수가 무의미 분할 생성 차단).
     """
     u, pos, sw = strategy.universe, strategy.position, strategy.sweep
-    if u.kind == "screener" and (u.screener or {}).get("condition") is not None:
+    if (u.screener or {}).get("condition") is not None:
         ft = _out_type(Node.model_validate(u.screener["condition"]))
         if ft != "condition":
             return f"스크리너 조건은 condition이어야 합니다 (현재: {ft or '알 수 없는 블록'})."
@@ -112,8 +112,8 @@ def _universe_symbols(strategy: StrategyIR, dataset: dict) -> list[str]:
     u = strategy.universe
     if u.kind in ("single", "list"):
         return [s for s in u.symbols if s in dataset and not dataset[s].empty]
-    # all · screener — 매크로/자산 지수 제외, OHLC 보유 종목. 스크리너 후보=all과 동일,
-    # 시점별 자격은 _run_rebalance의 _screener_mask가 PIT(리밸런스 시점값)로 적용한다.
+    # all — 매크로/자산 지수 제외, OHLC 보유 종목(전 유니버스 후보).
+    # universe.screener 세부조건은 list/all 모두 _scoped·_screener_mask가 직교 적용한다.
     macro: set = set()
     if u.exclude_macro:
         try:
@@ -123,7 +123,7 @@ def _universe_symbols(strategy: StrategyIR, dataset: dict) -> list[str]:
             macro = set()
     out = []
     for s, df in dataset.items():
-        # strat: 합성 자산은 시장 종목이 아님 — all/screener 광역 스캔에서 제외
+        # strat: 합성 자산은 시장 종목이 아님 — all 광역 스캔에서 제외
         # (명시 list 유니버스·데이터 참조로만 진입). 그 외 macro·빈 프레임 제외.
         if s in macro or s.startswith("strat:") or df is None or df.empty:
             continue

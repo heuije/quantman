@@ -125,7 +125,8 @@ def test_sweep_label_must_be_label():
 def test_screener_condition_must_be_condition():
     """스크리너 조건은 condition만 — score면 S-univ 거부."""
     s = StrategyIR(signal=_score(),
-                   universe=Universe(kind="screener", screener={"condition": _score().model_dump()}),
+                   universe=Universe(kind="list", symbols=["AAA", "BBB"],
+                                     screener={"condition": _score().model_dump()}),
                    position=PositionSpec(entry=Entry(mode="scheduled")))
     assert any(i.rule == "S-univ" for i in validate_strategy(s))
 
@@ -136,6 +137,15 @@ def test_sweep_event_must_be_condition():
                    position=PositionSpec(entry=Entry(mode="scheduled")),
                    sweep=SweepSpec(axis="time", event=_score(), windows=[5]))
     assert any(i.rule == "S-event" for i in validate_strategy(s))
+
+
+def test_capabilities_no_screener_kind():
+    """능력 카탈로그는 screener를 universe_kind 값으로 제시하지 않는다(세부조건 필드로 직교화)."""
+    from quant_core.ir_engine.capabilities import capability_spec
+    cap = capability_spec()
+    kinds = [k["value"] for k in cap["universe_kind"]]
+    assert "screener" not in kinds
+    assert set(kinds) == {"single", "list", "all"}
 
 
 def test_roundtrip_serialization():

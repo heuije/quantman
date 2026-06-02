@@ -52,7 +52,7 @@ def required_data(strategy: "StrategyIR") -> set[str]:
     pos, sim, sw, u = strategy.position, strategy.simulation, strategy.sweep, strategy.universe
     nodes = [strategy.signal, pos.exit.condition, sw.label, sw.event, pos.overlays.group_label]
     # 스크리너 선별 조건(필터+횡단순위 포함)의 데이터 참조도 무결성 검사 대상에 포함.
-    if u.kind == "screener" and u.screener:
+    if u.screener:
         from ..blocks.node import Node
         if u.screener.get("condition"):
             try:

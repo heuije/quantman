@@ -14,6 +14,7 @@ from ..deps import get_current_user
 from ..models import BacktestRun, Strategy, StrategyVersion, SyncSnapshot, User
 from ..schemas import (StrategyIn, StrategyOut, StrategyRestoreIn,
                        StrategyStatsOut, StrategyVersionOut)
+from ..symbols import tradable_symbols
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -50,20 +51,46 @@ def _validate(engine: str, definition: dict) -> tuple[str, dict]:
 
 
 def _assert_live_tradable(run_mode: str, definition: dict) -> None:
-    """레버리지(>1배) 전략은 실거래(모의·실전) 불가 — 백테스트/리서치 전용 게이트.
+    """모의/실전 승격 게이트 — 백테스트≠실거래 발산을 막는다.
 
-    실거래는 사용자 KIS '현금계좌'로 체결한다(로컬앱은 order-cash만; 신용거래 미지원).
-    엔진 레버리지는 차입/증거금을 가정하므로 현금계좌로는 체결할 수 없다 → backtest≠live
-    분기를 막기 위해 모의·실전 승격을 차단한다. 실거래로 2x 노출이 필요하면 레버리지 ETF
-    (예: KODEX 레버리지 122630)를 '현금 매수'하면 된다(레버리지가 ETF 가격에 내장).
+    ① 레버리지(>1배): 실거래는 사용자 KIS '현금계좌'로 체결한다(로컬앱 order-cash만,
+       신용거래 미지원). 엔진 레버리지는 차입/증거금을 가정하므로 현금계좌로는 체결
+       불가 → 차단. 실거래로 2x 노출이 필요하면 레버리지 ETF(예: KODEX 레버리지
+       122630)를 '현금 매수'하면 된다(레버리지가 ETF 가격에 내장).
+    ② 비매매 유니버스: 자동매매 불가 종목(지수·매크로·합성) 또는 빈 선택(전체) →
+       로컬앱이 주문할 수 없으므로 차단(반드시 매매가능 종목을 직접 선택해야 함).
+    ③ 이벤트 진입 + 세부조건: 라이브 종목선별(universe.screener)은 미구현(Phase 2)
+       → 차단. 백테스트는 허용.
     """
-    if run_mode in ("paper", "live"):
-        lev = float((definition.get("simulation") or {}).get("leverage") or 1.0)
-        if lev > 1.0:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                "레버리지(>1배) 전략은 백테스트 전용입니다 — 모의·실전 적용 불가. "
-                "실거래에서 레버리지가 필요하면 레버리지 ETF(예: KODEX 레버리지)를 현금 매수하세요.")
+    if run_mode not in ("paper", "live"):
+        return
+
+    lev = float((definition.get("simulation") or {}).get("leverage") or 1.0)
+    if lev > 1.0:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "레버리지(>1배) 전략은 백테스트 전용입니다 — 모의·실전 적용 불가. "
+            "실거래에서 레버리지가 필요하면 레버리지 ETF(예: KODEX 레버리지)를 현금 매수하세요.")
+
+    u = definition.get("universe") or {}
+    syms = u.get("symbols") or []
+    if u.get("kind") == "all" or not syms:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "모의·실전 전략은 매매할 종목을 직접 선택해야 합니다(전체 유니버스 불가).")
+
+    ok = tradable_symbols()
+    bad = [s for s in syms if s not in ok]
+    if bad:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"자동매매 불가 종목이 포함돼 모의·실전으로 적용할 수 없습니다: {', '.join(bad[:5])}")
+
+    entry_mode = ((definition.get("position") or {}).get("entry") or {}).get("mode")
+    if entry_mode == "on_signal" and (u.get("screener") or {}).get("condition"):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "이벤트 진입 + 세부조건 전략은 현재 백테스트 전용입니다(라이브 지원 예정).")
 
 
 def _out(s: Strategy) -> StrategyOut:
@@ -196,6 +223,9 @@ def update_strategy(
     row.engine = body.engine
     row.definition = definition
     row.updated_at = now
+    # Task 12b — 사용자 수정·전환 시 정적 라이브 바스켓을 초기화해 다음 preview에서 재형성.
+    # live_basket은 서버 파생 상태 — definition·run_mode가 바뀌면 고정 집합도 다시 형성해야 한다.
+    row.live_basket = None
     session.add(row)
     session.commit()
     session.refresh(row)

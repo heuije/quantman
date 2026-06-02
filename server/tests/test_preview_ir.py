@@ -173,3 +173,30 @@ def test_build_user_preview_skips_operand(monkeypatch):
         preview = preview_engine.build_user_preview(session, uid, "test")
     # operand 전략은 디스패치에서 skip → by_strategy에 없음
     assert all(b["strategy_name"] != "레거시" for b in preview.get("by_strategy", []))
+
+
+def test_build_user_preview_releases_connection_during_compute(monkeypatch):
+    """C1(근본): 무거운 계산(_preview_dataset→get_projected, _evaluate_ir_strategy)
+    동안 세션이 트랜잭션(=DB 커넥션)을 쥐고 있지 않아야 한다.
+
+    외부 Neon 서버리스 Postgres가 유휴 연결을 suspend 중 끊으면 '늙은' 연결로의
+    commit이 'server conn crashed?'로 실패해 preview 재생성이 통째로 누락되던
+    근본 결함을 제거한 것이 C1. 계산 진입 시점에 session.in_transaction()이 False
+    여야 함을 직접 단언한다(수정 전: 읽기 후 커넥션을 쥔 채 계산 → True → red).
+    """
+    eng, uid = _seed_db()
+    monkeypatch.setattr(preview_engine, "get_dataset", lambda: _DATASET)
+    monkeypatch.setattr(preview_engine.kis_master_cache, "get_master_list", lambda: [])
+    seen: dict = {}
+
+    def _spy_projected(columns, symbols=None):
+        # 이 호출은 build_user_preview의 (B) 순수 계산 단계에서 일어난다.
+        seen["in_txn"] = session.in_transaction()
+        return _DATASET
+
+    monkeypatch.setattr(preview_engine, "get_projected", _spy_projected)
+    with Session(eng) as session:
+        preview = preview_engine.build_user_preview(session, uid, "test")
+    assert preview["available"] is True, preview
+    assert seen.get("in_txn") is False, \
+        "C1 위반: 무거운 계산 동안 세션이 DB 커넥션(트랜잭션)을 점유 중"

@@ -72,7 +72,9 @@ class IntradayStopManager:
         try:
             v = float(df["atr_14"].iloc[-1] or 0.0)
             return v if v > 0 else None
-        except Exception:
+        except (ValueError, TypeError, IndexError):
+            # 데이터 형식/결측만 흡수(ATR 트레일 1종만 skip, 나머지 stop은 평가).
+            # KeyError·AttributeError 등 코드 결함은 전파해 silent 무력화를 막는다.
             return None
 
     def _broker_qty_of(self, symbol: str) -> int | None:
@@ -91,11 +93,8 @@ class IntradayStopManager:
                 log.warning("account_snapshot 실패 — 캐시 유지: %s", e)
                 if self._snap_cache is None:
                     return None  # 알 수 없음 → 호출부는 안전하게 skip
-        total = 0
-        for p in self._snap_cache.get("positions", []):
-            if p.get("symbol") == symbol:
-                total += int(p.get("qty") or 0)
-        return total
+        from .trader import held_qty_from_snapshot
+        return held_qty_from_snapshot(self._snap_cache, symbol)
 
     def on_tick(self, symbol: str, price: float) -> None:
         """WebSocket tick callback. 가격 변동마다 호출됨.
@@ -147,23 +146,24 @@ class IntradayStopManager:
 
                 # L-04: over-sell 방지 — KIS 실 잔고로 클램프.
                 # 사용자가 장중 HTS/MTS에서 수동 매도했어도 ledger엔 잔존 가능.
-                bqty = self._broker_qty_of(symbol)
-                if bqty is None:
+                from .trader import clamp_sell_qty
+                clamped = clamp_sell_qty(self._broker_qty_of(symbol), qty)
+                if clamped is None:
                     # 스냅샷 조회 실패 + 캐시 없음 → 다음 tick에 재시도(skip 1회).
                     log.warning("[intraday-stop] %s broker 잔고 미상 — 1tick skip",
                                 symbol)
                     continue
-                if bqty <= 0:
+                if clamped <= 0:
                     # 외부에서 이미 매도됨 → ledger orphan. 오늘은 더 시도하지 않음.
                     # 15:35 reconcile_with_kis가 ledger 자동 정리.
                     log.info("[intraday-stop] %s broker 보유 0 (외부 매도 추정) — "
                              "오늘 추가 시도 skip (사유 %s)", symbol, reason)
                     self._sold_today.add(ledger_key)
                     continue
-                if bqty < qty:
+                if clamped < qty:
                     log.info("[intraday-stop] %s qty 클램프 ledger=%d → broker=%d",
-                             symbol, qty, bqty)
-                    qty = bqty
+                             symbol, qty, clamped)
+                qty = clamped
 
                 # IR position.exit은 per-rule 매도 비중이 없으므로 전량(100%) 청산.
                 sell_qty = qty
