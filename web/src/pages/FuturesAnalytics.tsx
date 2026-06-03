@@ -37,29 +37,15 @@ import {
   type OilWalkForward,
 } from "../api";
 
-// 색 스케일: 음수→빨강, 양수→녹색.
-// low_sample이면 채도·명도 낮춰서 회색쪽으로 블렌드(원본 부호는 유지).
-function heatColor(v: number, max: number, lowSample: boolean): string {
+// 색 스케일: 음수→빨강, 양수→녹색. 진하기 = |거래당 평균수익률| / 그리드 최대.
+// 색은 수익률에만 비례 — 샘플수 채도 억제 없음(저샘플은 ⚠·툴팁으로만 경고).
+function heatColor(v: number, max: number): string {
   if (!Number.isFinite(v) || max <= 0) return "#1f2937";
   const r = Math.max(-1, Math.min(1, v / max));
-  let R: number, G: number, B: number;
   if (r >= 0) {
-    R = 40;
-    G = Math.round(80 + r * 160);
-    B = 80;
-  } else {
-    R = Math.round(80 + -r * 160);
-    G = 50;
-    B = 60;
+    return `rgb(40, ${Math.round(80 + r * 160)}, 80)`;
   }
-  if (lowSample) {
-    // 회색(110,110,110)과 60% 블렌드 → 부호/방향 보이지만 채도 ↓
-    const mix = (c: number) => Math.round(c * 0.4 + 110 * 0.6);
-    R = mix(R);
-    G = mix(G);
-    B = mix(B);
-  }
-  return `rgb(${R}, ${G}, ${B})`;
+  return `rgb(${Math.round(80 + -r * 160)}, 50, 60)`;
 }
 
 const pct = (v: number, digits = 1) =>
@@ -196,7 +182,8 @@ export default function FuturesAnalytics() {
 
   const heatmaps = useMemo(() => {
     if (!grid) return { short: [], long: [], horizons: [] as number[], max: 1 };
-    const max = Math.max(1, ...grid.map((c) => Math.abs(c.net_pnl_usd)));
+    // 색 스케일 기준 = 거래당 평균수익률(avg_return). 수익률에 정확히 비례하도록.
+    const max = Math.max(1e-9, ...grid.map((c) => Math.abs(c.avg_return)));
     const horizons = [...new Set(grid.map((c) => c.horizon))].sort((a, b) => a - b);
     const byKey = new Map(grid.map((c) => [`${c.side}|${c.threshold}|${c.horizon}`, c] as const));
     const build = (side: "short" | "long") => {
@@ -298,9 +285,9 @@ export default function FuturesAnalytics() {
         <h2 className="section-title">PnL HEATMAP · 임계값 × 보유기간</h2>
         <p className="muted" style={{ marginBottom: 12 }}>
           셀: <b>거래당 평균수익률</b> / <b>승률</b> (소수점 1자리).
-          색 진하기 = Net PnL 크기. <span style={{ color: "#62c884" }}>녹색=수익</span>,{" "}
+          색 진하기 = <b>거래당 평균수익률</b> 크기(수익률에 비례). <span style={{ color: "#62c884" }}>녹색=수익</span>,{" "}
           <span style={{ color: "#d96265" }}>빨강=손실</span>.{" "}
-          low_sample(n&lt;30)은 같은 색이되 채도 낮춤(부호는 보존). 클릭하면 백테스트 상세.
+          low_sample(n&lt;30)은 <b>⚠</b>로만 표시(색 억제 없음 — 거래 적은 셀의 수익률은 노이즈일 수 있어 신중히). 클릭하면 백테스트 상세.
         </p>
         {/* 라디오 토글 — 한 번에 short 또는 long */}
         <div className="oil-radio-group">
@@ -794,7 +781,7 @@ function HeatmapBlock({
                     selected?.side === c.side &&
                     selected?.threshold === c.threshold &&
                     selected?.horizon === c.horizon;
-                  const bg = heatColor(c.net_pnl_usd, max, c.low_sample);
+                  const bg = heatColor(c.avg_return, max);
                   return (
                     <td
                       key={i}
