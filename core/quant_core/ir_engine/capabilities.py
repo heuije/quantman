@@ -92,6 +92,56 @@ def capability_spec() -> dict:
                     "max_drawdown_soft(디리스킹 시작%), max_group_pct(그룹 노출 캡, group_label 필요).",
             "use_for": "포트폴리오 리스크 제어 — 낙폭 디리스킹, 섹터 노출 상한.",
         },
-        "sweep_note": ("기본은 1회 백테스트(sweep.axis='none'). 파라미터/자산/시간 스윕·기간분할"
-                       "(walk_forward·oos)은 명시 요청 시에만."),
+        "rebalance": [
+            {"value": "daily", "does": "매일 리밸런싱"},
+            {"value": "weekly", "does": "매주"},
+            {"value": "monthly", "does": "매월"},
+            {"value": "quarterly", "does": "분기마다"},
+            {"value": "annual", "does": "매년"},
+            {"value": "every_n_days", "does": "N거래일마다(entry.every_n_days로 N 지정)"},
+        ],
+        "refill": [
+            {"value": "cash", "does": "중간 청산 후 빈 슬롯을 현금으로 유지(다음 리밸런스까지)",
+             "use_for": "기본 — 신호 빠지면 비중 줄임."},
+            {"value": "replace", "does": "빈 슬롯을 차순위 종목으로 즉시 충원",
+             "use_for": "항상 top_n 종목 수를 채워 풀투자 유지."},
+        ],
+        "period_split": [
+            {"value": "single", "does": "단일 구간 1회 백테스트(기본)"},
+            {"value": "walk_forward", "does": "워크포워드 — 학습→검증 구간을 롤링",
+             "use_for": "'시간이 지나도 견고한가' 강건성 검증."},
+            {"value": "oos", "does": "표본외 — 앞 구간 학습·뒤 구간 검증으로 분할"},
+            {"value": "kfold", "does": "K겹 교차검증 — 여러 구간으로 갈라 교차"},
+        ],
+        # 펼침/분석(sweep) — axis(어떻게 나눠 볼까)와 target(무엇을 측정할까)은 직교.
+        # 기본은 단일 백테스트(axis='none'·target='return'). 분석 펼침은 명시 요청 시에만.
+        "sweep_axis": [
+            {"value": "none", "does": "펼침 없이 단일 백테스트(기본)"},
+            {"value": "parameter", "does": "param_grid의 점경로별 값 격자로 반복",
+             "use_for": "'기간·비용 등을 바꿔가며 성과 비교'(민감도·최적화). 축 2개+면 데카르트곱."},
+            {"value": "condition",
+             "does": "1회 백테스트 결과를 label 블록으로 그룹 분할해 그룹별 성과·유의차 비교",
+             "use_for": "'산업·섹터별로 어디서 잘 되나'(label=attribute), '요일·월별'(label=calendar), "
+                        "'점수 구간별'(label=bucket). label 필수, target='return'."},
+            {"value": "asset", "does": "assets 목록의 종목별 개별 성과",
+             "use_for": "'종목마다 따로 성과를 본다'."},
+            {"value": "time", "does": "이벤트 시점 기준 forward 수익 분포(event·windows)",
+             "use_for": "'이벤트 발생 후 N일 수익'(이벤트 스터디). event 미지정 시 signal 사용."},
+        ],
+        "sweep_target": [
+            {"value": "return", "does": "전략 일별수익(기본). axis로 분할·반복.",
+             "use_for": "손익·성과가 답일 때. target_node 불필요."},
+            {"value": "signal", "does": "임의 score 노드 *값*의 분포를 (선택)라벨별로 — 신호 자체 연구",
+             "use_for": "신호 반감기·레짐별 분포. sweep.target_node(score 또는 condition) 필요."},
+            {"value": "relation", "does": "factor 노드와 forward수익의 횡단 IC 시계열 — 예측력·팩터 타이밍",
+             "use_for": "팩터 예측력 측정. target_node·windows 필요, universe.kind!=single."},
+        ],
+        "sweep_relation_kind": [
+            {"value": "ic", "does": "횡단 정보계수(Information Coefficient) — 팩터값과 forward수익의 순위상관"},
+        ],
+        "sweep_event_basis": [
+            {"value": "close", "does": "종가→종가 수익(time축 기본)"},
+            {"value": "intraday", "does": "시가→종가 수익(당일 반등 포착)"},
+            {"value": "excess", "does": "시장 대비 초과수익(universe.kind!=single 필요)"},
+        ],
     }
