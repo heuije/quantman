@@ -304,6 +304,7 @@ export interface OilDataInfo {
   eyebrow: string;    // "CRUDE OIL · NYMEX"
   unit: string;       // "배럴"
   roll_note: string;  // 롤/콘탱고 짧은 설명
+  currency: "USD" | "KRW";  // 손익 표시 통화 — 금액은 이 통화, 가격/임계는 USD만 "$" 접두
 }
 
 export interface OilLatestPrice {

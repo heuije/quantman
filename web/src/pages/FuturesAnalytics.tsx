@@ -52,8 +52,8 @@ const pct = (v: number, digits = 1) =>
   (v >= 0 ? "+" : "") + (v * 100).toFixed(digits) + "%";
 const pctNoSign = (v: number, digits = 1) =>
   (v * 100).toFixed(digits) + "%";
-const usd = (v: number) =>
-  (v >= 0 ? "" : "-") + "$" + Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
+const money = (v: number, sym: string) =>
+  (v >= 0 ? "" : "-") + sym + Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
 
 // 정렬 가능 컬럼 키
 type SortKey =
@@ -218,6 +218,11 @@ export default function FuturesAnalytics() {
     }
   }
 
+  // 통화 인식 심볼 — KOSPI200 선물=KRW(₩, 가격은 접두 없음), 나머지 6개=USD($)
+  const cur = info?.currency === "KRW" ? "₩" : "$";        // 금액(실현 P&L) 심볼
+  const curCode = info?.currency ?? "USD";                  // "USD"/"KRW" 텍스트 라벨
+  const priceSym = info?.currency === "KRW" ? "" : "$";     // 가격/임계(지수포인트) 접두
+
   return (
     <div className="oil-page">
       <header className="oil-header">
@@ -226,7 +231,7 @@ export default function FuturesAnalytics() {
             <div className="oil-eyebrow">{info?.eyebrow ?? "FUTURES"}</div>
             <h1>{info?.name ?? "선물"} 분석</h1>
           </div>
-          {price && <LivePriceTag price={price} />}
+          {price && <LivePriceTag price={price} priceSym={priceSym} />}
         </div>
         <div className="futures-selector">
           {instruments.map((it) => (
@@ -256,7 +261,7 @@ export default function FuturesAnalytics() {
           <div className="meta-grid">
             <div><div className="muted">현재가 (일배치 종가)</div>
               <div className="meta-value">
-                {price ? `$${price.price.toFixed(2)}` : "—"}
+                {price ? `${priceSym}${price.price.toFixed(2)}` : "—"}
                 <span className="meta-unit">/{info?.unit ?? ""}</span>
                 {price?.change_pct != null && (
                   <span className={"meta-delta " + (price.change_pct >= 0 ? "pos" : "neg")}>
@@ -275,7 +280,7 @@ export default function FuturesAnalytics() {
             <div><div className="muted">영업일</div>
               <div className="meta-value">D+{info.n_rows.toLocaleString()} <span className="meta-sub-inline">(~{Math.round(info.n_rows / 252)}년)</span></div></div>
             <div><div className="muted">가격 범위 (~{Math.round(info.n_rows / 252)}년)</div>
-              <div className="meta-value">${info.price_min.toFixed(2)} ~ ${info.price_max.toFixed(2)}</div></div>
+              <div className="meta-value">{priceSym}{info.price_min.toFixed(2)} ~ {priceSym}{info.price_max.toFixed(2)}</div></div>
           </div>
         )}
       </section>
@@ -323,6 +328,8 @@ export default function FuturesAnalytics() {
             max={heatmaps.max}
             selected={selected}
             onSelect={setSelected}
+            cur={cur}
+            priceSym={priceSym}
           />
         )}
       </section>
@@ -330,7 +337,7 @@ export default function FuturesAnalytics() {
       {/* ③ 백테스트 상세 (조합 순위표보다 먼저) */}
       <section className="panel" style={{ marginBottom: 16 }}>
         <h2 className="section-title">
-          BACKTEST DETAIL · 백테스트 상세 {selected && <span className="title-tag">{selected.side.toUpperCase()} ${selected.threshold} × {selected.horizon}D</span>}
+          BACKTEST DETAIL · 백테스트 상세 {selected && <span className="title-tag">{selected.side.toUpperCase()} {priceSym}{selected.threshold} × {selected.horizon}D</span>}
         </h2>
 
         {/* 🅒 SL/TP 시뮬레이터 */}
@@ -397,7 +404,7 @@ export default function FuturesAnalytics() {
         ) : btLoading || !backtest ? (
           <div className="muted">백테스트 실행 중…</div>
         ) : (
-          <BacktestDetail bt={backtest} side={selected.side} />
+          <BacktestDetail bt={backtest} side={selected.side} cur={cur} curCode={curCode} priceSym={priceSym} />
         )}
       </section>
 
@@ -427,10 +434,10 @@ export default function FuturesAnalytics() {
                 <SortableTh k="avg_return" cur={sortKey} dir={sortDir} onClick={toggleSort}>평균수익</SortableTh>
                 <SortableTh k="sharpe" cur={sortKey} dir={sortDir} onClick={toggleSort}>Sharpe</SortableTh>
                 <SortableTh k="profit_factor" cur={sortKey} dir={sortDir} onClick={toggleSort}>PF</SortableTh>
-                <SortableTh k="mdd_usd" cur={sortKey} dir={sortDir} onClick={toggleSort}>MDD($)</SortableTh>
-                <SortableTh k="gross_profit_usd" cur={sortKey} dir={sortDir} onClick={toggleSort}>Profit($)</SortableTh>
-                <SortableTh k="gross_loss_usd" cur={sortKey} dir={sortDir} onClick={toggleSort}>Loss($)</SortableTh>
-                <SortableTh k="net_pnl_usd" cur={sortKey} dir={sortDir} onClick={toggleSort}>Net PnL($)</SortableTh>
+                <SortableTh k="mdd_usd" cur={sortKey} dir={sortDir} onClick={toggleSort}>MDD({cur})</SortableTh>
+                <SortableTh k="gross_profit_usd" cur={sortKey} dir={sortDir} onClick={toggleSort}>Profit({cur})</SortableTh>
+                <SortableTh k="gross_loss_usd" cur={sortKey} dir={sortDir} onClick={toggleSort}>Loss({cur})</SortableTh>
+                <SortableTh k="net_pnl_usd" cur={sortKey} dir={sortDir} onClick={toggleSort}>Net PnL({cur})</SortableTh>
                 <th>⚠</th>
               </tr>
             </thead>
@@ -447,17 +454,17 @@ export default function FuturesAnalytics() {
                     onClick={() => setSelected(c)}
                   >
                     <td className={c.side === "short" ? "short" : "long"}>{c.side}</td>
-                    <td>${c.threshold}</td>
+                    <td>{priceSym}{c.threshold}</td>
                     <td>{c.horizon}</td>
                     <td>{c.n_trades}</td>
                     <td>{pctNoSign(c.win_rate, 1)}</td>
                     <td className={c.avg_return >= 0 ? "pos" : "neg"}>{pct(c.avg_return, 2)}</td>
                     <td>{c.sharpe.toFixed(2)}</td>
                     <td>{c.profit_factor == null ? "∞" : c.profit_factor.toFixed(2)}</td>
-                    <td className="neg">{usd(c.mdd_usd)}</td>
-                    <td className="pos">{usd(c.gross_profit_usd)}</td>
-                    <td className="neg">{usd(c.gross_loss_usd)}</td>
-                    <td className={c.net_pnl_usd >= 0 ? "pos" : "neg"}>{usd(c.net_pnl_usd)}</td>
+                    <td className="neg">{money(c.mdd_usd, cur)}</td>
+                    <td className="pos">{money(c.gross_profit_usd, cur)}</td>
+                    <td className="neg">{money(c.gross_loss_usd, cur)}</td>
+                    <td className={c.net_pnl_usd >= 0 ? "pos" : "neg"}>{money(c.net_pnl_usd, cur)}</td>
                     <td>{c.low_sample ? "⚠️" : ""}</td>
                   </tr>
                 );
@@ -486,7 +493,7 @@ export default function FuturesAnalytics() {
           </button>
         </div>
         {wfError && <div className="error">{wfError}</div>}
-        {wf && <WalkForwardView wf={wf} />}
+        {wf && <WalkForwardView wf={wf} cur={cur} priceSym={priceSym} />}
       </section>
 
       {/* ⑥ Seasonality */}
@@ -515,12 +522,12 @@ export default function FuturesAnalytics() {
 }
 
 // 헤더 우측 현재가 태그 — 일배치 종가 (Bloomberg/TradingView 스타일)
-function LivePriceTag({ price }: { price: OilLatestPrice }) {
+function LivePriceTag({ price, priceSym }: { price: OilLatestPrice; priceSym: string }) {
   const up = (price.change_pct ?? 0) >= 0;
   return (
     <div className="live-price">
       <div className="live-price-main">
-        <span className="live-price-val">${price.price.toFixed(2)}</span>
+        <span className="live-price-val">{priceSym}{price.price.toFixed(2)}</span>
         {price.change_pct != null && (
           <span className={"live-price-chg " + (up ? "pos" : "neg")}>
             {up ? "▲" : "▼"} {price.change != null ? Math.abs(price.change).toFixed(2) : "—"}
@@ -567,10 +574,11 @@ type EquityTooltipPayload = {
   };
 };
 
-function EquityTooltip({ active, payload, label }: {
+function EquityTooltip({ active, payload, label, cur }: {
   active?: boolean;
-  payload?: EquityTooltipPayload[];
+  payload?: readonly EquityTooltipPayload[];
   label?: string;
+  cur: string;
 }) {
   if (!active || !payload || payload.length === 0) return null;
   // BUY/SELL Scatter 우선 — payload에 kind 있는 항목 찾기
@@ -595,7 +603,7 @@ function EquityTooltip({ active, payload, label }: {
           </b>
         </div>
         <div className="muted" style={{ fontSize: 11 }}>
-          PnL: <b>{((ev.payload.net_pnl_usd ?? 0) >= 0 ? "+" : "-") + "$" +
+          PnL: <b>{((ev.payload.net_pnl_usd ?? 0) >= 0 ? "+" : "-") + cur +
             Math.abs(ev.payload.net_pnl_usd ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}</b>
         </div>
         {k === "SELL" && <div className="muted" style={{ fontSize: 11 }}>청산사유: {reasonKo}</div>}
@@ -608,7 +616,7 @@ function EquityTooltip({ active, payload, label }: {
       <div style={{ fontWeight: 600 }}>{label}</div>
       {payload.map((p, i) => (
         <div key={i} style={{ fontSize: 11 }}>
-          {p.name}: $
+          {p.name}: {cur}
           {Number(p.value ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
         </div>
       ))}
@@ -749,7 +757,7 @@ function SortableTh({
 
 // ── 히트맵 블록 ────────────────────────────────────────────────────
 function HeatmapBlock({
-  title, rows, horizons, max, selected, onSelect,
+  title, rows, horizons, max, selected, onSelect, cur, priceSym,
 }: {
   title: string;
   rows: { threshold: number; n: number; cells: (OilGridCell | undefined)[] }[];
@@ -757,6 +765,8 @@ function HeatmapBlock({
   max: number;
   selected: OilGridCell | null;
   onSelect: (c: OilGridCell) => void;
+  cur: string;
+  priceSym: string;
 }) {
   return (
     <div className="heatmap-block">
@@ -774,7 +784,7 @@ function HeatmapBlock({
           <tbody>
             {rows.map((row) => (
               <tr key={row.threshold}>
-                <th>${row.threshold} <span className="heat-n">(n={row.n})</span></th>
+                <th>{priceSym}{row.threshold} <span className="heat-n">(n={row.n})</span></th>
                 {row.cells.map((c, i) => {
                   if (!c) return <td key={i} />;
                   const isSel =
@@ -787,7 +797,7 @@ function HeatmapBlock({
                       key={i}
                       title={
                         `n=${c.n_trades}, 평균수익 ${pct(c.avg_return, 2)}, ` +
-                        `승률 ${pctNoSign(c.win_rate, 1)}, Net ${usd(c.net_pnl_usd)}, ` +
+                        `승률 ${pctNoSign(c.win_rate, 1)}, Net ${money(c.net_pnl_usd, cur)}, ` +
                         `Sharpe ${c.sharpe.toFixed(2)}` +
                         (c.low_sample ? " (low sample)" : "")
                       }
@@ -822,7 +832,13 @@ function HeatmapBlock({
 }
 
 // ── 백테스트 상세 ──────────────────────────────────────────────────
-function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" }) {
+function BacktestDetail({ bt, side, cur, curCode, priceSym }: {
+  bt: OilBacktest;
+  side: "short" | "long";
+  cur: string;
+  curCode: string;
+  priceSym: string;
+}) {
   const s = bt.summary;
   // Long: entry=BUY, exit=SELL.  Short: entry=SELL(공매), exit=BUY(환매).
   const entryLabel = side === "long" ? "BUY" : "SELL";
@@ -892,13 +908,13 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
         <Metric label="Sharpe (연환산)" value={s.sharpe.toFixed(2)} />
         <Metric label="Profit Factor"
                 value={s.profit_factor == null ? "∞" : s.profit_factor.toFixed(2)} />
-        <Metric label="MDD (realized, USD)" value={usd(s.mdd_usd)} highlight="bad"
+        <Metric label={`MDD (realized, ${curCode})`} value={money(s.mdd_usd, cur)} highlight="bad"
                 sub="청산 시점 누적 PnL 곡선의 peak-trough" />
-        <Metric label="MDD (시가평가, USD)" value={usd(bt.portfolio_mdd_usd)} highlight="bad"
+        <Metric label={`MDD (시가평가, ${curCode})`} value={money(bt.portfolio_mdd_usd, cur)} highlight="bad"
                 sub="🅓 매일 mark-to-market 포트폴리오 가치 곡선의 peak-trough" />
-        <Metric label="Profit (USD)" value={usd(s.gross_profit_usd)} highlight="good" />
-        <Metric label="Loss (USD)" value={usd(s.gross_loss_usd)} highlight="bad" />
-        <Metric label="Net PnL (USD)" value={usd(s.net_pnl_usd)}
+        <Metric label={`Profit (${curCode})`} value={money(s.gross_profit_usd, cur)} highlight="good" />
+        <Metric label={`Loss (${curCode})`} value={money(s.gross_loss_usd, cur)} highlight="bad" />
+        <Metric label={`Net PnL (${curCode})`} value={money(s.net_pnl_usd, cur)}
                 highlight={s.net_pnl_usd >= 0 ? "good" : "bad"} />
       </div>
 
@@ -908,19 +924,19 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
         <div className="bt-metrics">
           <Metric
             label="Worst MAE (장중 최악)"
-            value={usd(s.worst_mae_usd)}
+            value={money(s.worst_mae_usd, cur)}
             highlight="bad"
             sub="모든 trade 중 가장 깊은 평가손실 — 시가평가 MDD에 근접"
           />
           <Metric
             label="Avg MAE (평균 평가손실)"
-            value={usd(s.avg_mae_usd)}
+            value={money(s.avg_mae_usd, cur)}
             highlight="bad"
             sub="거래당 평균 장중 최악 평가손실"
           />
           <Metric
             label="Avg MFE (평균 평가이익)"
-            value={usd(s.avg_mfe_usd)}
+            value={money(s.avg_mfe_usd, cur)}
             highlight="good"
             sub="평균 보유 중 최고점 — 익절 룰 설계 근거"
           />
@@ -951,8 +967,8 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
             sub={`전체 거래 합산 (trade당 평균 ${s.n_trades ? (s.total_rollovers / s.n_trades).toFixed(1) : 0}회)`}
           />
           <Metric
-            label="롤 손익 합계 (USD)"
-            value={usd(s.total_roll_cost_usd)}
+            label={`롤 손익 합계 (${curCode})`}
+            value={money(s.total_roll_cost_usd, cur)}
             highlight={s.total_roll_cost_usd < 0 ? "bad" : s.total_roll_cost_usd > 0 ? "good" : null}
             sub={
               s.total_roll_cost_usd < 0 ? "contango 비용 — Net PnL에 차감 반영됨"
@@ -1021,7 +1037,14 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                    tick={{ fontSize: 10, fill: "#9aa" }} minTickGap={50} />
             <YAxis tick={{ fontSize: 10, fill: "#9aa" }}
                    tickFormatter={(v) => (v / 1000).toFixed(0) + "k"} />
-            <Tooltip content={<EquityTooltip />} />
+            <Tooltip content={({ active, payload, label }) => (
+              <EquityTooltip
+                active={active}
+                payload={payload as readonly EquityTooltipPayload[] | undefined}
+                label={label as string | undefined}
+                cur={cur}
+              />
+            )} />
             <ReferenceLine y={0} stroke="#666" />
             {/* 시가평가 line — 부모 ComposedChart의 data 사용 */}
             <Line type="monotone" dataKey="cumulative_usd" name="시가평가(MTM)"
@@ -1069,9 +1092,9 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                 <th>청산사유</th>
                 <th>수익률</th>
                 <th title="보유 중 만기 통과(강제 롤오버) 횟수">롤</th>
-                <th>MAE($)</th>
-                <th>MFE($)</th>
-                <th>Net PnL($)</th>
+                <th>MAE({cur})</th>
+                <th>MFE({cur})</th>
+                <th>Net PnL({cur})</th>
               </tr>
             </thead>
             <tbody>
@@ -1080,18 +1103,18 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
                   <td>{t.signal_date}</td>
                   <td>{t.entry_date}</td>
                   <td><span className={`bs-badge bs-${entryLabel.toLowerCase()}`}>{entryLabel}</span></td>
-                  <td>${t.entry_price.toFixed(2)}</td>
+                  <td>{priceSym}{t.entry_price.toFixed(2)}</td>
                   <td>{t.exit_date}</td>
                   <td><span className={`bs-badge bs-${exitLabel.toLowerCase()}`}>{exitLabel}</span></td>
-                  <td>${t.exit_price.toFixed(2)}</td>
+                  <td>{priceSym}{t.exit_price.toFixed(2)}</td>
                   <td><ExitReasonBadge reason={t.exit_reason} /></td>
                   <td className={t.return_pct >= 0 ? "pos" : "neg"}>{pct(t.return_pct, 2)}</td>
-                  <td title={t.roll_cost_usd < 0 ? `롤 비용 ${usd(t.roll_cost_usd)}` : ""}>
+                  <td title={t.roll_cost_usd < 0 ? `롤 비용 ${money(t.roll_cost_usd, cur)}` : ""}>
                     {t.num_rollovers}{t.roll_cost_usd < 0 ? "🛢" : ""}
                   </td>
-                  <td className="neg" title="장중 최악 평가손실">{usd(t.mae_usd)}</td>
-                  <td className="pos" title="장중 최고 평가이익">{usd(t.mfe_usd)}</td>
-                  <td className={t.net_pnl_usd >= 0 ? "pos" : "neg"}>{usd(t.net_pnl_usd)}</td>
+                  <td className="neg" title="장중 최악 평가손실">{money(t.mae_usd, cur)}</td>
+                  <td className="pos" title="장중 최고 평가이익">{money(t.mfe_usd, cur)}</td>
+                  <td className={t.net_pnl_usd >= 0 ? "pos" : "neg"}>{money(t.net_pnl_usd, cur)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1103,7 +1126,7 @@ function BacktestDetail({ bt, side }: { bt: OilBacktest; side: "short" | "long" 
 }
 
 // ── Walk-forward 결과 ─────────────────────────────────────────────
-function WalkForwardView({ wf }: { wf: OilWalkForward }) {
+function WalkForwardView({ wf, cur, priceSym }: { wf: OilWalkForward; cur: string; priceSym: string }) {
   const b = wf.best_in_sample;
   const oos = wf.out_of_sample;
   const ratio = b.summary.avg_return ? oos.avg_return / b.summary.avg_return : 0;
@@ -1119,9 +1142,9 @@ function WalkForwardView({ wf }: { wf: OilWalkForward }) {
           <div className="muted">Train (학습) 구간</div>
           <div>{wf.train_start} ~ {wf.train_end}</div>
           <div style={{ marginTop: 8 }}>
-            <strong>Best in-sample</strong>: {b.side} ${b.threshold} × {b.horizon}일
+            <strong>Best in-sample</strong>: {b.side} {priceSym}{b.threshold} × {b.horizon}일
           </div>
-          <SummaryGrid s={b.summary} />
+          <SummaryGrid s={b.summary} cur={cur} />
         </div>
         <div className="wf-block">
           <div className="muted">Test (out-of-sample) 구간</div>
@@ -1129,7 +1152,7 @@ function WalkForwardView({ wf }: { wf: OilWalkForward }) {
           <div style={{ marginTop: 8 }}>
             <strong>같은 파라미터의 Test 결과</strong>
           </div>
-          <SummaryGrid s={oos} />
+          <SummaryGrid s={oos} cur={cur} />
         </div>
       </div>
       <div className="wf-badge" style={{ background: badge.color }}>{badge.text}</div>
@@ -1137,16 +1160,16 @@ function WalkForwardView({ wf }: { wf: OilWalkForward }) {
   );
 }
 
-function SummaryGrid({ s }: { s: import("../api").OilSummary }) {
+function SummaryGrid({ s, cur }: { s: import("../api").OilSummary; cur: string }) {
   return (
     <div className="summary-grid">
       <div><span className="muted">n</span> {s.n_trades}</div>
       <div><span className="muted">승률</span> {pctNoSign(s.win_rate, 1)}</div>
       <div><span className="muted">평균수익</span> <span className={s.avg_return >= 0 ? "pos" : "neg"}>{pct(s.avg_return, 2)}</span></div>
       <div><span className="muted">Sharpe</span> {s.sharpe.toFixed(2)}</div>
-      <div><span className="muted">Profit</span> <span className="pos">{usd(s.gross_profit_usd)}</span></div>
-      <div><span className="muted">Loss</span> <span className="neg">{usd(s.gross_loss_usd)}</span></div>
-      <div><span className="muted">Net PnL</span> <span className={s.net_pnl_usd >= 0 ? "pos" : "neg"}>{usd(s.net_pnl_usd)}</span></div>
+      <div><span className="muted">Profit</span> <span className="pos">{money(s.gross_profit_usd, cur)}</span></div>
+      <div><span className="muted">Loss</span> <span className="neg">{money(s.gross_loss_usd, cur)}</span></div>
+      <div><span className="muted">Net PnL</span> <span className={s.net_pnl_usd >= 0 ? "pos" : "neg"}>{money(s.net_pnl_usd, cur)}</span></div>
       {s.low_sample && <div style={{ color: "#e6c259" }}>⚠ low sample</div>}
     </div>
   );

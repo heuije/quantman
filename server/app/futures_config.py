@@ -36,6 +36,8 @@ class InstrumentConfig:
     unit: str            # 단위 라벨 "배럴"
     eyebrow: str         # "CRUDE OIL · NYMEX"
     roll_note: str       # 롤/콘탱고 짧은 설명
+    currency: str = "USD"           # 손익 표시 통화 ("USD"|"KRW") — 웹이 금액 라벨에 사용
+    static_path: str | None = None  # 정적 스냅샷 CSV(server/app 상대경로). 설정 시 라이브 캐시 대신 이 파일을 읽음
 
 
 # 계약명세: CME/NYMEX/COMEX 표준. 임계범위·step: 최근 다년 거래범위 기준 기본값(튜닝 가능).
@@ -81,5 +83,17 @@ INSTRUMENTS: dict[str, InstrumentConfig] = {
         shorts=ThresholdRange(70000, 120000, 2500), longs=ThresholdRange(15000, 70000, 2500),
         unit="BTC", eyebrow="BITCOIN · CME",
         roll_note="CME 현금정산 선물",
+    ),
+    # 정적 스냅샷 종목 — yfinance에 KOSPI 선물 심볼이 없고 KRX 공식은 로그인 벽이라,
+    # 사용자가 확보한 연속 선물 일봉 CSV를 1회 번들. 라이브가 아니라 갱신 안 됨(roll_note 명시).
+    # 손익은 KRX 계약사양상 KRW(1pt=₩250,000, 틱 0.05). 임계는 전구간(과거 90%가 407 이하인 추세장).
+    "kospi": InstrumentConfig(
+        symbol="kospi", name="코스피200 선물", data_key="",
+        static_path="data/static/kospi200_futures.csv",
+        source="investing.com-snapshot", currency="KRW",
+        spec=ContractSpec(tick=0.05, multiplier=250000),
+        shorts=ThresholdRange(250, 1450, 25), longs=ThresholdRange(200, 1450, 25),
+        unit="지수", eyebrow="KOSPI 200 FUTURES · KRX (정적 스냅샷)",
+        roll_note="정적 스냅샷 2026-06-02 기준 · 갱신 안 됨 · 과거 90%가 407 이하인 추세장 · 손익 KRW",
     ),
 }

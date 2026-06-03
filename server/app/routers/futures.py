@@ -23,6 +23,7 @@ import gc
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Literal, Optional
 
 import pandas as pd
@@ -67,6 +68,18 @@ DEFAULT_HORIZONS = [20, 40, 60, 120, 180, 240, 365]
 # 종목별 정제 df 캐시 — (symbol → {version, df}). 데이터 버전 변경 시 자동 갱신.
 _DF_CACHE: dict[str, dict] = {}
 
+# server/app 디렉터리 — 정적 스냅샷 CSV 경로 해석 기준(배포에 확실히 포함되는 위치).
+_APP_DIR = Path(__file__).resolve().parents[1]
+
+
+def _load_static_csv(rel_path: str) -> pd.DataFrame:
+    """번들된 정적 스냅샷 CSV(date,open,high,low,close[,volume])를 읽어 prepare_wti 입력으로 반환.
+    파일이 없으면 503 (빈 프레임을 캐시로 굳히지 않음)."""
+    path = _APP_DIR / rel_path
+    if not path.exists():
+        raise HTTPException(status_code=503, detail=f"정적 데이터 파일 없음: {rel_path}")
+    return pd.read_csv(path)
+
 
 def _df(symbol: str) -> pd.DataFrame:
     """종목의 캐시 시리즈를 정제해 반환. 데이터 버전 변경 시 자동 갱신.
@@ -75,8 +88,11 @@ def _df(symbol: str) -> pd.DataFrame:
     v = get_version()
     slot = _DF_CACHE.get(symbol)
     if slot is None or slot.get("version") != v:
-        ds = get_raw_dataset()
-        raw = ds.get(cfg.data_key)
+        if cfg.static_path:        # 정적 스냅샷 종목(KOSPI) — 라이브 캐시 대신 번들 CSV
+            raw = _load_static_csv(cfg.static_path)
+        else:
+            ds = get_raw_dataset()
+            raw = ds.get(cfg.data_key)
         df = prepare_wti(raw) if raw is not None and not raw.empty else None
         if df is None or df.empty:
             raise HTTPException(status_code=503,
@@ -134,6 +150,7 @@ class DataInfo(BaseModel):
     eyebrow: str
     unit: str
     roll_note: str
+    currency: str        # 손익 표시 통화 ("USD"|"KRW") — 웹이 금액 라벨에 사용
 
 
 class PricePoint(BaseModel):
@@ -272,6 +289,7 @@ def data_info(symbol: str):
         price_min=float(df["close"].min()),
         price_max=float(df["close"].max()),
         name=cfg.name, eyebrow=cfg.eyebrow, unit=cfg.unit, roll_note=cfg.roll_note,
+        currency=cfg.currency,
     )
 
 
