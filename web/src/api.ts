@@ -101,6 +101,9 @@ export const api = {
     }),
   deleteStrategy: (id: number) =>
     req<{ ok: boolean }>(`/strategies/${id}`, { method: "DELETE" }),
+  // 정지 — 자동매매(모의/실전)를 멈추고 draft로 내린다(비파괴). 삭제의 선행 단계.
+  stopStrategy: (id: number) =>
+    req<StrategyRow>(`/strategies/${id}/stop`, { method: "POST" }),
 
   // Phase 59 — 버전·현황·백테스트 내역
   listStrategyVersions: (id: number) =>

@@ -326,6 +326,103 @@ def test_real_tradable_helper_membership(monkeypatch):
             kis_master_cache._state["fetched_at"] = None
 
 
+# ── 삭제 게이트 + 강등 timestamp 초기화 (전략 삭제 라이프사이클) ──────────────────
+
+def test_delete_draft_strategy_allowed():
+    """draft 전략은 자유 삭제 — 자동매매 중이 아니므로."""
+    client, tok = _build()
+    sid = client.post("/strategies", headers=_auth(tok),
+                      json={"definition": _IR_DEF, "run_mode": "draft", "engine": "ir"}).json()["id"]
+    r = client.delete(f"/strategies/{sid}", headers=_auth(tok))
+    assert r.status_code == 200, r.text
+    assert client.get(f"/strategies/{sid}", headers=_auth(tok)).status_code == 404
+
+
+def test_delete_paper_strategy_blocked(monkeypatch):
+    """모의(paper) 자동매매 중 전략은 삭제 불가 409 — 먼저 정지(draft 전환)해야 한다.
+
+    근본: 보유 포지션이 통지 없이 고아가 되는 사고의 원천(서버 무점검 삭제)을
+    진입점에서 차단. 서버는 보안상 실시간 보유를 모르므로 권위 있는 단일 신호
+    run_mode로 게이트한다.
+    """
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok = _build()
+    sid = client.post("/strategies", headers=_auth(tok),
+                      json={"definition": _IR_DEF, "run_mode": "paper", "engine": "ir"}).json()["id"]
+    r = client.delete(f"/strategies/{sid}", headers=_auth(tok))
+    assert r.status_code == 409, r.text
+    # 차단됐으므로 전략은 그대로 존재
+    assert client.get(f"/strategies/{sid}", headers=_auth(tok)).status_code == 200
+
+
+def test_delete_live_strategy_blocked(monkeypatch):
+    """실전(live) 자동매매 중 전략도 동일하게 삭제 불가 409 (자금 안전)."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok = _build()
+    sid = client.post("/strategies", headers=_auth(tok),
+                      json={"definition": _IR_DEF, "run_mode": "live", "engine": "ir"}).json()["id"]
+    r = client.delete(f"/strategies/{sid}", headers=_auth(tok))
+    assert r.status_code == 409, r.text
+
+
+def test_demote_to_draft_clears_started_timestamps(monkeypatch):
+    """paper/live→draft 강등 시 활성기간 timestamp를 초기화 — 재승격 시 stale 기준점 방지."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok = _build()
+    sid = client.post("/strategies", headers=_auth(tok),
+                      json={"definition": _IR_DEF, "run_mode": "live", "engine": "ir"}).json()["id"]
+    # 직접 live 생성 → live_started_at 세팅됨
+    assert client.get(f"/strategies/{sid}", headers=_auth(tok)).json()["live_started_at"] is not None
+    # draft로 강등(=정지)
+    r = client.put(f"/strategies/{sid}", headers=_auth(tok),
+                   json={"definition": _IR_DEF, "run_mode": "draft", "engine": "ir"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["run_mode"] == "draft"
+    assert body["live_started_at"] is None
+    assert body["paper_started_at"] is None
+
+
+def test_stop_endpoint_demotes_to_draft(monkeypatch):
+    """정지(/stop) — paper/live 전략을 draft로 내리고 활성기간 timestamp 초기화.
+
+    비파괴: 삭제와 달리 정의·버전·백테스트를 보존한다. 정지 후엔 삭제 가능.
+    """
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok = _build()
+    sid = client.post("/strategies", headers=_auth(tok),
+                      json={"definition": _IR_DEF, "run_mode": "live", "engine": "ir"}).json()["id"]
+    r = client.post(f"/strategies/{sid}/stop", headers=_auth(tok))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["run_mode"] == "draft"
+    assert body["live_started_at"] is None
+    # 정지 후엔 삭제 게이트 통과
+    assert client.delete(f"/strategies/{sid}", headers=_auth(tok)).status_code == 200
+
+
+def test_stop_endpoint_idempotent_on_draft():
+    """이미 draft면 정지는 no-op 200 (멱등)."""
+    client, tok = _build()
+    sid = client.post("/strategies", headers=_auth(tok),
+                      json={"definition": _IR_DEF, "run_mode": "draft", "engine": "ir"}).json()["id"]
+    r = client.post(f"/strategies/{sid}/stop", headers=_auth(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["run_mode"] == "draft"
+
+
+def test_stop_endpoint_no_version_pollution(monkeypatch):
+    """정지는 정의 편집이 아니므로 버전 스냅샷을 만들지 않는다."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok = _build()
+    sid = client.post("/strategies", headers=_auth(tok),
+                      json={"definition": _IR_DEF, "run_mode": "live", "engine": "ir"}).json()["id"]
+    before = len(client.get(f"/strategies/{sid}/versions", headers=_auth(tok)).json())
+    client.post(f"/strategies/{sid}/stop", headers=_auth(tok))
+    after = len(client.get(f"/strategies/{sid}/versions", headers=_auth(tok)).json())
+    assert after == before
+
+
 # ── 논리 정합성 게이트 — 무의미·모순 로직은 저장 차단(모든 모드) ────────────────
 
 def _def_with_signal(sig: dict) -> dict:

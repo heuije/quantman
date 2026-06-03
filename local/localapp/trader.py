@@ -1099,19 +1099,29 @@ class Trader:
             if _market_group_safe(pos["symbol"]) != market:
                 continue
             held = (today - date.fromisoformat(pos["entry_date"])).days
+            parse_failed = False
             try:
                 reason, _ = _exit_reason_for(
                     pos["definition"], held, dataset, pos["symbol"])
             except Exception as e:
-                # 정의 파싱 실패는 평소 skip하나, kill switch 발동 중엔 "모든 보유 강제
-                # 청산" 의도를 지켜야 하므로 파싱 실패 고아도 kill-switch 사유로 청산한다.
+                # 정의 파싱 실패(고아) — 청산 규칙을 평가할 수 없다. kill switch 발동
+                # 중엔 "모든 보유 강제 청산" 의도를 지켜야 하므로 아래에서 강제 사유를
+                # 부여하고, 그 외엔 자동매도하지 않고 청산 불가 고아로 표면화한다.
                 log.warning("원장 전략 파싱 실패 [%s]: %s", sid, e)
                 reason = None
+                parse_failed = True
             # kill switch 활성 시 모든 보유 강제 청산(파싱 실패 고아 포함).
             if ks_active and not reason:
                 reason = "kill-switch"
 
             if not reason:
+                # 파싱 실패 고아(구 스키마 등)는 청산 규칙 평가 불가 → 자동 청산이 안 된다
+                # (kill-switch 외 탈출구 없음). 임의 매도는 하지 않되, 사용자가 웹에서
+                # 인지·수동 정리하도록 명시 표면화한다(Monitor 경고로 노출).
+                if parse_failed:
+                    decisions.append(order_log.decision(
+                        "unparseable_orphan", sid, pos.get("strategy_name", ""),
+                        pos["symbol"], "전략 정의 파싱 실패 — 자동 청산 불가(수동 정리 필요)"))
                 continue
 
             # ref_price는 dataset 전일 종가. 없으면 KIS 현재가로 fallback.
@@ -1199,6 +1209,8 @@ class Trader:
             "n_rejected": sum(1 for d in decisions if d["action"] == "rejected"),
             "n_unfilled": sum(1 for d in decisions if d["action"] == "unfilled"),
             "n_errors": sum(1 for d in decisions if d["action"] == "error"),
+            "n_unparseable_orphan": sum(
+                1 for d in decisions if d["action"] == "unparseable_orphan"),
             "kill_switch": ks_active,
             "equity_pre": equity_now,
             "equity_post": float(snap["balance"]["total_eval"]),

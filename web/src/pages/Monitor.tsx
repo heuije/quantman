@@ -85,6 +85,10 @@ export default function Monitor() {
   const cycles = p?.recent_cycles ?? [];
   const positions = p?.positions ?? [];
   const equityNow = p?.balance?.total_eval;
+  // 청산 불가 고아(삭제·구버전 전략 보유분) — 최신 사이클 decisions에서 종목 추출.
+  const orphanSyms = (p?.decisions ?? [])
+    .filter((d) => d.action === "unparseable_orphan")
+    .map((d) => d.symbol);
   const actionDisabled = busy || !paired;
   const pairTooltip = paired ? undefined : "기기 페어링 후 활성화됩니다";
 
@@ -151,6 +155,23 @@ export default function Monitor() {
             미국 해외 실시간 시세가 수신되지 않습니다. KIS HTS <b>[7781] 해외 실시간
             시세 신청</b> 전까지 미국 종목의 장중 실시간 손절·익절·트레일링이
             동작하지 않습니다(장 마감 후 사이클에서만 청산 평가). 국내 주식은 영향 없음.
+          </div>
+        </div>
+      )}
+
+      {/* 청산 불가 고아 경고 — 삭제·구버전 전략 보유분(자동 손절·익절 미동작) */}
+      {(summary?.n_unparseable_orphan ?? 0) > 0 && (
+        <div className="panel" style={{
+          borderLeft: "4px solid var(--amber)",
+          background: "var(--amber-soft)", marginBottom: 14,
+        }}>
+          <div style={{ fontWeight: 700, color: "var(--amber)" }}>
+            ⚠ 청산 규칙을 해석할 수 없는 보유 종목 {summary?.n_unparseable_orphan}개
+          </div>
+          <div className="muted" style={{ fontSize: 13, marginTop: 4, lineHeight: 1.6 }}>
+            소속 전략이 삭제됐거나 구버전 형식이라, 보유분의 자동 손절·익절·매도조건이
+            동작하지 않습니다{orphanSyms.length > 0 ? ` (${orphanSyms.join(", ")})` : ""}.
+            안전하게 HTS/MTS에서 직접 매도해 정리하세요.
           </div>
         </div>
       )}

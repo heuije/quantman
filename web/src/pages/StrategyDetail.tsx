@@ -11,7 +11,7 @@
  * 인라인 수정은 다음 단계에서 BuildTab 통합으로 추가.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import type {
@@ -74,9 +74,31 @@ export default function StrategyDetail() {
     } catch (e) { setErr((e as Error).message); }
   }
 
+  async function demote() {
+    if (!strategy) return;
+    const label = strategy.run_mode === "live" ? "실전" : "모의";
+    if (!confirm(
+      `이 전략의 ${label} 자동매매를 정지하고 초안으로 전환할까요?\n` +
+      "보유 종목은 로컬앱이 저장된 규칙으로 계속 청산합니다. 정의·버전·백테스트는 보존됩니다.")) return;
+    try {
+      await api.stopStrategy(strategy.id);
+      loadAll();
+    } catch (e) { setErr((e as Error).message); }
+  }
+
   async function remove() {
     if (!strategy) return;
-    if (!confirm("이 전략을 삭제할까요? 모든 버전·백테스트도 함께 삭제됩니다.")) return;
+    // 삭제 게이트 — 자동매매 중(모의/실전)이면 먼저 정지해야 한다(서버도 409로 차단).
+    if (strategy.run_mode !== "draft") {
+      setErr("자동매매 중(모의/실전)인 전략은 삭제할 수 없습니다. 먼저 ‘정지’ 후 삭제하세요.");
+      return;
+    }
+    const held = stats?.n_positions ?? 0;
+    const heldWarn = held > 0
+      ? `\n\n⚠ 이 전략으로 보유 중인 종목 ${held}개가 있습니다. 삭제해도 보유분은 ` +
+        "로컬앱이 저장된 규칙으로 청산하지만, 웹에서 추적이 어려워집니다."
+      : "";
+    if (!confirm(`이 전략을 삭제할까요? 모든 버전·백테스트도 함께 삭제됩니다.${heldWarn}`)) return;
     try {
       await api.deleteStrategy(strategy.id);
       navigate("/strategies");
@@ -123,15 +145,39 @@ export default function StrategyDetail() {
       </nav>
 
       {tab === "config" && (strategy.engine === "ir" ? (
-        <IrConfigTab strategy={strategy} onRemove={remove} />
+        <IrConfigTab strategy={strategy} onRemove={remove} onDemote={demote} />
       ) : (
-        <LegacyConfigTab onRemove={remove} />
+        <LegacyConfigTab runMode={strategy.run_mode} onRemove={remove} onDemote={demote} />
       ))}
       {tab === "versions" && (
         <VersionsTab versions={versions} backtests={backtests} onRestore={restoreVersion} />
       )}
       {tab === "stats" && <StatsTab stats={stats} strategy={strategy} />}
       {tab === "backtests" && <BacktestsTab backtests={backtests} />}
+    </div>
+  );
+}
+
+/** 설정값 탭 하단 액션바 — 정지(자동매매 중단)·삭제.
+ *  자동매매 중(paper/live)이면 삭제를 막고 '정지'를 노출한다(서버 삭제 게이트와 이중 방어). */
+function StrategyActionBar({ runMode, onDemote, onRemove, extraLeft }: {
+  runMode: string;
+  onDemote: () => void;
+  onRemove: () => void;
+  extraLeft?: ReactNode;
+}) {
+  const active = runMode !== "draft";
+  return (
+    <div className="strategy-save-bar">
+      {extraLeft}
+      <span style={{ flex: 1 }} />
+      {active && (
+        <button className="stop-btn" onClick={onDemote}>정지 (자동매매 중단)</button>
+      )}
+      <button className="danger-btn" onClick={onRemove} disabled={active}
+              title={active ? "삭제하려면 먼저 정지하세요" : undefined}>
+        전략 삭제
+      </button>
     </div>
   );
 }
@@ -176,9 +222,10 @@ function summarizeIrExit(ex: IrStrategyDef["position"]["exit"]): string {
   return parts.length ? parts.join(" · ") : "없음 (정기 리밸런싱 교체 또는 무청산)";
 }
 
-function IrConfigTab({ strategy, onRemove }: {
+function IrConfigTab({ strategy, onRemove, onDemote }: {
   strategy: StrategyRow;
   onRemove: () => void;
+  onDemote: () => void;
 }) {
   const navigate = useNavigate();
   const def = strategy.definition as IrStrategyDef;
@@ -230,21 +277,28 @@ function IrConfigTab({ strategy, onRemove }: {
         )}
       </section>
 
-      <div className="strategy-save-bar">
-        <button className="apply-btn"
-                onClick={() => navigate(`/lab?edit=${strategy.id}`)}>
-          전략 연구소에서 편집 →
-        </button>
-        <span style={{ flex: 1 }} />
-        <button className="danger-btn" onClick={onRemove}>전략 삭제</button>
-      </div>
+      <StrategyActionBar
+        runMode={strategy.run_mode}
+        onDemote={onDemote}
+        onRemove={onRemove}
+        extraLeft={
+          <button className="apply-btn"
+                  onClick={() => navigate(`/lab?edit=${strategy.id}`)}>
+            전략 연구소에서 편집 →
+          </button>
+        }
+      />
     </div>
   );
 }
 
 // ── 탭 1 (레거시 operand): 안내만 — 편집·백테스트는 전략 연구소(IR) 전용 ───────
 
-function LegacyConfigTab({ onRemove }: { onRemove: () => void }) {
+function LegacyConfigTab({ runMode, onRemove, onDemote }: {
+  runMode: string;
+  onRemove: () => void;
+  onDemote: () => void;
+}) {
   return (
     <div className="strategy-detail-body">
       <section className="panel">
@@ -252,10 +306,7 @@ function LegacyConfigTab({ onRemove }: { onRemove: () => void }) {
           구버전 형식 전략입니다. 전략 연구소에서 새로 만들어 백테스트·자동매매를 진행해 주세요.
         </p>
       </section>
-      <div className="strategy-save-bar">
-        <span style={{ flex: 1 }} />
-        <button className="danger-btn" onClick={onRemove}>전략 삭제</button>
-      </div>
+      <StrategyActionBar runMode={runMode} onDemote={onDemote} onRemove={onRemove} />
     </div>
   );
 }

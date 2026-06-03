@@ -395,6 +395,7 @@ export interface CycleSummary {
   n_bought?: number; n_sold?: number;
   n_skip_held?: number;
   n_rejected?: number; n_unfilled?: number; n_errors?: number;
+  n_unparseable_orphan?: number;   // 청산 규칙 파싱 불가 고아(삭제·구버전 전략 보유분)
   kill_switch?: boolean;
   equity_pre?: number; equity_post?: number;
   // 미국 해외 실시간 시세 미신청 — 장중 실시간 손절 미제공 (P8)

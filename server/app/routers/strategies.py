@@ -108,6 +108,14 @@ def _own_or_404(session: Session, strategy_id: int, user_id: int) -> Strategy:
     return row
 
 
+def _clear_active_period(row: Strategy) -> None:
+    """draft 강등(=정지) 시 활성기간 기준점을 초기화. 그러지 않으면 재승격 시
+    stale한 started_at·기준자본으로 days_live·손익률 계산이 잘못된 기준점을 쓴다."""
+    row.paper_started_at = None
+    row.live_started_at = None
+    row.live_capital_at_start = None
+
+
 def _next_version_no(session: Session, strategy_id: int) -> int:
     cur = session.exec(
         select(StrategyVersion.version_no)
@@ -217,6 +225,9 @@ def update_strategy(
         row.paper_started_at = now
     if body.run_mode == "live" and row.run_mode != "live":
         row.live_started_at = now
+    # draft 강등(=정지) — 활성기간 기준점 초기화(재승격 시 stale 방지).
+    if body.run_mode == "draft":
+        _clear_active_period(row)
 
     row.name = name
     row.run_mode = body.run_mode
@@ -232,6 +243,29 @@ def update_strategy(
     return _out(row)
 
 
+@router.post("/{strategy_id}/stop", response_model=StrategyOut)
+def stop_strategy(
+    strategy_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """전략 정지 — 모의/실전 자동매매를 멈추고 draft(초안)로 내린다(비파괴 대안).
+
+    삭제와 달리 정의·버전·백테스트를 보존한다. 보유 포지션이 있어도 안전:
+    로컬앱은 다음 사이클부터 신규 진입만 멈추고, 기존 보유는 저장된 규칙으로
+    계속 청산한다. 정의 변경이 아니므로 버전 스냅샷을 만들지 않는다. 멱등.
+    """
+    row = _own_or_404(session, strategy_id, user.id)
+    if row.run_mode != "draft":
+        row.run_mode = "draft"
+        _clear_active_period(row)
+        row.updated_at = datetime.now(timezone.utc)
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+    return _out(row)
+
+
 @router.delete("/{strategy_id}")
 def delete_strategy(
     strategy_id: int,
@@ -239,6 +273,13 @@ def delete_strategy(
     session: Session = Depends(get_session),
 ):
     row = _own_or_404(session, strategy_id, user.id)
+    # 삭제 게이트 — 자동매매 중(모의/실전)인 전략은 삭제 금지. 보유 포지션이 통지
+    # 없이 고아가 되는 사고의 원천을 진입점에서 차단한다. 서버는 보안원칙상 로컬
+    # 실시간 보유를 모르므로, 권위 있는 단일 신호 run_mode로 게이트한다(먼저 정지).
+    if row.run_mode != "draft":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "자동매매 중(모의/실전)인 전략은 삭제할 수 없습니다. 먼저 정지(초안으로 전환)한 뒤 삭제하세요.")
     # 연관 버전·백테스트 cascade 삭제
     for v in session.exec(
             select(StrategyVersion).where(

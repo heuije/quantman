@@ -1686,6 +1686,14 @@ thead th { color: var(--muted); font-weight: 600; }
 .danger-btn:hover { background: var(--red); color: #ffffff; }
 .danger-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* 정지(자동매매 중단) — 파괴적이지 않은 주의 액션. danger-btn과 같은 아웃라인 패턴에 amber. */
+.stop-btn {
+  background: transparent; color: var(--amber);
+  border: 1px solid var(--amber); padding: 8px 14px; border-radius: 8px;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.stop-btn:hover { background: var(--amber); color: #ffffff; }
+
 /* 모달 (승격 등) */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
