@@ -316,6 +316,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         if pos.shares <= 1e-9:
             del positions[sym]
 
+    _wrec: list[dict] = [dict() for _ in range(n)]   # 일별 비중 — 기여 패널 기질(비교용)
     for i in range(n):
         closed_this_step: set[str] = set()   # 비-defer: 당일 청산 종목 동일일 재진입 차단
         if rfr_daily:
@@ -391,6 +392,12 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             else:
                 nav += pos.shares * pos.entry_price
         equity[i] = nav
+        if nav > 0:                                    # end-of-day 비중 기록(기여 패널)
+            for sym, pos in positions.items():
+                cl = aligned[sym]["close"][i]
+                if np.isnan(cl):
+                    cl = last_valid_close[sym] if last_valid_close[sym] > 0 else pos.entry_price
+                _wrec[i][sym] = pos.shares * cl / nav
 
     # 기간말 강제청산
     for sym in list(positions.keys()):
@@ -410,8 +417,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     benchmark_s = _benchmark(strategy, dataset, aligned, syms, master_idx, sim.initial_capital)
     equity_s = pd.Series(equity, index=master_idx, name="전략")
     trades_df = pd.DataFrame(trades)
+    weight_panel = pd.DataFrame(_wrec, index=master_idx).fillna(0.0)   # 비중 패널(비교 기질)
     return {"success": True, "error": None, "equity": equity_s,
-            "benchmark": benchmark_s, "trades": trades_df,
+            "benchmark": benchmark_s, "trades": trades_df, "weight": weight_panel,
             "metrics": finalize_metrics(_metrics(equity_s, benchmark_s, trades_df),
                                         equity_s, benchmark_s, trades_df)}
 
@@ -905,6 +913,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
                     break
 
     excluded: set = set()
+    _wrec: list[dict] = [dict() for _ in range(n)]   # 일별 end-of-day 비중 — 기여 패널 기질
     for i in range(n):
         d = master[i]
         if rfr_daily and cash > 0:                     # 현금 무위험수익
@@ -970,6 +979,10 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
             cl = close[s][i]
             nav += p.shares * (cl if not np.isnan(cl) else p.entry_price)
         equity[i] = nav
+        if nav > 0:                                    # end-of-day 비중 기록(기여 패널)
+            for s, p in positions.items():
+                cl = close[s][i]
+                _wrec[i][s] = p.shares * (cl if not np.isnan(cl) else p.entry_price) / nav
 
     eq = pd.Series(equity, index=master)
     ov = pos.overlays
@@ -990,8 +1003,9 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
                            equity_s, benchmark_s, trades_df)
     eq_mean = float(equity_s.mean())
     met["turnover"] = float(turnover_notional / n / eq_mean * 100) if eq_mean > 0 else 0.0
+    weight_panel = pd.DataFrame(_wrec, index=master).fillna(0.0)   # 비중 패널(기여·비교 기질)
     return {"success": True, "error": None, "equity": equity_s, "benchmark": benchmark_s,
-            "trades": trades_df, "metrics": met}
+            "trades": trades_df, "metrics": met, "weight": weight_panel}
 
 
 def _benchmark_cols(close: dict, master, initial_capital: float) -> pd.Series:

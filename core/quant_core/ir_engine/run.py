@@ -23,9 +23,10 @@ from .compare import (
     compare_partition, distribution, one_sample_test, summarize_events,
     two_sample_test, walk_forward_consistency,
 )
+from .comparison import compare_by_partition
 from .spec import StrategyIR
 from .sweep import (
-    daily_returns, partition_by_label, summarize_returns, sweep_condition,
+    daily_returns, partition_by_label, summarize_returns,
 )
 
 TRADING_DAYS = 252
@@ -107,6 +108,19 @@ def run_strategy_ir(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> d
 
 
 # ── 유니버스 (펼침·이벤트스터디 공용) ─────────────────────────────────────────
+
+def _label_panel(lab, idx, cols: list) -> pd.DataFrame:
+    """라벨 노드 평가결과를 (일×종목) 패널로 정규화 — 비교 분할용.
+
+    종목별 라벨(attribute, 컬럼=종목)은 reindex 그대로; 일별 라벨(bucket/calendar,
+    컬럼=지표 1개)은 첫 컬럼을 보유 종목 전체로 broadcast한다. 이로써 섹터(종목축)·
+    국면(시간축)이 같은 (일×종목) 패널로 통일돼 compare_by_partition이 셀 단위로 분할.
+    """
+    if isinstance(lab, pd.DataFrame) and set(cols).issubset(set(lab.columns)):
+        return lab.reindex(index=idx, columns=cols)
+    series = (lab.iloc[:, 0] if isinstance(lab, pd.DataFrame) else lab).reindex(idx)
+    return pd.DataFrame({c: series for c in cols}, index=idx)
+
 
 def _universe_symbols(strategy: StrategyIR, dataset: dict) -> list[str]:
     u = strategy.universe
@@ -201,21 +215,27 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
         res = run_strategy_ir(strategy, dataset)
         if not res.get("success"):
             return res
-        lab_syms = _universe_symbols(strategy, dataset)
-        lab = evaluate(sw.label, EvalContext.from_dataset(_scoped(dataset, lab_syms, sw.label)))
-        if isinstance(lab, pd.DataFrame):
-            u = strategy.universe
-            col = (u.symbols[0] if u.symbols and u.symbols[0] in lab.columns
-                   else lab.columns[0])
-            label_series = lab[col]
-        else:
-            label_series = lab
-        rets = daily_returns(res["equity"])
-        parts = partition_by_label(rets, label_series)
+        weight = res.get("weight")
+        if weight is None or weight.empty or weight.shape[1] == 0:
+            return _empty("비교할 보유 비중이 없습니다(체결 0).")
+        # 기여 패널 = 전일 비중 × 종목 일별수익(Brinson). Σ종목 = 포트 마크투마켓 일별수익.
+        cols = list(weight.columns)
+        closes = pd.DataFrame({s: dataset[s]["Close"] for s in cols if s in dataset})
+        sym_ret = closes.reindex(weight.index).pct_change().fillna(0.0)
+        contribution = (weight.shift(1).fillna(0.0) * sym_ret).reindex(columns=cols).fillna(0.0)
+        # 라벨 노드 → (일×종목) 패널(종목별=섹터, 일별=국면 broadcast). 옛 단일컬럼 붕괴 대체.
+        lab = evaluate(sw.label, EvalContext.from_dataset(
+            _scoped(dataset, _universe_symbols(strategy, dataset), sw.label)))
+        label_panel = _label_panel(lab, weight.index, cols)
+        cmp = compare_by_partition(contribution, weight, label_panel)
+        # 버킷 요약 = 고유성과(그 그룹만 거래 시 수익) 시리즈. overall = 마크투마켓 합.
+        buckets = {g: summarize_returns(b["daily_standalone"].dropna())
+                   for g, b in cmp["buckets"].items()}
+        parts = {g: b["daily_standalone"].dropna() for g, b in cmp["buckets"].items()}
         return {"success": True, "axis": "condition",
-                "overall": summarize_returns(rets),
-                "buckets": sweep_condition(res["equity"], label_series),
-                "compare": compare_partition(parts),   # A1 — 국면 간 유의성
+                "overall": summarize_returns(cmp["overall_daily"]),
+                "buckets": buckets,
+                "compare": compare_partition(parts),   # 그룹 간 유의성
                 "metrics": res["metrics"], "equity": res["equity"]}
 
     if sw.axis == "time":

@@ -32,8 +32,10 @@ def capability_spec() -> dict:
              "does": "신호(condition)가 참인 날 진입하고 exit 규칙으로 청산",
              "use_for": "이벤트/룰 기반 단발 매매 — 돌파 매수, 과매도 반등, 골든크로스 등. 단일·소수 종목."},
             {"value": "scheduled",
-             "does": "rebalance 주기마다 신호 점수(score) 상위 top_n/top_pct(또는 threshold)를 보유·교체",
-             "use_for": "정기 리밸런싱 팩터/포트폴리오 — 월간 모멘텀 상위 N, 분기 밸류 상위 % 등. all 유니버스 또는 세부조건과."},
+             "does": "rebalance 주기마다 신호로 종목 선택·교체. score 신호는 상위 top_n/top_pct(또는 threshold) 선택; "
+                     "condition 신호는 참인 종목 전부 보유(top_n 무시 — boolean이라 랭킹 불가).",
+             "use_for": "정기 리밸런싱 팩터/포트폴리오 — '월간 모멘텀 상위 N'(score), 'RSI<30 전부 보유'(condition). "
+                        "all 유니버스 또는 세부조건과. ⚠ 상위 N개만 원하면 신호를 score(랭킹 가능)로 짜야 함."},
             {"value": "always",
              "does": ("매일 리밸런싱 — 보유 비중을 매일 목표로 되감는다. leverage와 결합하면 "
                       "노출 = leverage × 순자산 을 매일 유지(상승 후 매수·하락 후 매도). exit 규칙은 무시."),
@@ -48,8 +50,8 @@ def capability_spec() -> dict:
                         "maintenance_margin_pct로 마진콜 모델. 1 초과는 백테스트 전용(모의/실전 차단)."),
         },
         "sizing_mode": [
-            {"value": "equal_weight", "does": "보유 종목 동일가중",
-             "use_for": "기본. 단일 종목이면 100%(×leverage)."},
+            {"value": "equal_weight", "does": "보유 종목 동일가중(scheduled·always 경로). 단일 종목이면 100%.",
+             "use_for": "기본."},
             {"value": "signal_proportional", "does": "신호 점수(score)에 비례 배분",
              "use_for": "팩터 점수가 클수록 큰 비중."},
             {"value": "vol_inverse", "does": "변동성 역가중(vol_window 창)",
@@ -63,6 +65,9 @@ def capability_spec() -> dict:
             {"value": "pct_cash", "does": "자본 대비 %(amount_pct)",
              "use_for": "이벤트 진입 예산 — 신호당 자본의 X% 매수."},
         ],
+        "sizing_note": ("⚠ 사이징 모드(equal_weight·signal_proportional·vol_inverse·target_vol·fixed_weight)는 "
+                        "scheduled·always 경로에서만 실효. on_signal(이벤트) 다종목은 모드와 무관하게 종목당 "
+                        "amount_pct(또는 fixed_amount의 amount_krw) 예산으로 진입한다. leverage도 scheduled·always 전용."),
         "direction": [
             {"value": "long", "does": "매수만", "use_for": "일반 롱 전략."},
             {"value": "short", "does": "매도(공매도)만", "use_for": "하락 베팅 · 인버스."},
@@ -83,14 +88,16 @@ def capability_spec() -> dict:
              "use_for": "일반 룰 전략."},
             {"value": "close", "does": "당일 종가 체결",
              "use_for": "'종가 부근' 체결 · 일일 리밸런싱(상수 레버리지)."},
-            {"value": "typical", "does": "당일 (고+저+종)/3 (일봉 VWAP 근사)",
-             "use_for": "체결가 보수적 근사."},
+            {"value": "typical", "does": "당일 (고+저+종)/3 (일봉 VWAP 근사) — on_signal(이벤트) 경로 전용",
+             "use_for": "체결가 보수적 근사. ⚠ scheduled·always 경로에선 미적용(종가 체결)."},
         ],
         "overlays": {
             "field": "position.overlays",
-            "does": "전역 오버레이 — vol_target(연율 변동성 타겟%), max_drawdown_stop(낙폭 완전청산%), "
-                    "max_drawdown_soft(디리스킹 시작%), max_group_pct(그룹 노출 캡, group_label 필요).",
-            "use_for": "포트폴리오 리스크 제어 — 낙폭 디리스킹, 섹터 노출 상한.",
+            "does": "전역 오버레이 — vol_target(연율 변동성 타겟%), turnover_damp(비중변동 억제 임계), "
+                    "max_drawdown_stop(낙폭 완전청산%), max_drawdown_soft(디리스킹 시작%), "
+                    "max_group_pct(그룹 노출 캡, group_label 필요).",
+            "use_for": "포트폴리오 리스크 제어 — 낙폭 디리스킹, 턴오버 억제, "
+                       "섹터 노출 상한(group_label=attribute(Sector)+max_group_pct).",
         },
         "rebalance": [
             {"value": "daily", "does": "매일 리밸런싱"},
@@ -108,10 +115,10 @@ def capability_spec() -> dict:
         ],
         "period_split": [
             {"value": "single", "does": "단일 구간 1회 백테스트(기본)"},
-            {"value": "walk_forward", "does": "워크포워드 — 학습→검증 구간을 롤링",
-             "use_for": "'시간이 지나도 견고한가' 강건성 검증."},
-            {"value": "oos", "does": "표본외 — 앞 구간 학습·뒤 구간 검증으로 분할"},
-            {"value": "kfold", "does": "K겹 교차검증 — 여러 구간으로 갈라 교차"},
+            {"value": "walk_forward", "does": "1회 실행 후 수익을 시간순 4등분해 구간별 성과 일관성 확인(재학습 없음)",
+             "use_for": "'시간이 지나도 성과가 일관적인가' 강건성 점검."},
+            {"value": "oos", "does": "1회 실행 후 앞/뒤 2등분 구간별 성과(재학습 없음)"},
+            {"value": "kfold", "does": "현재 walk_forward와 동일(시간순 4등분) — 진짜 교차검증(fold 회전) 아님"},
         ],
         # 펼침/분석(sweep) — axis(어떻게 나눠 볼까)와 target(무엇을 측정할까)은 직교.
         # 기본은 단일 백테스트(axis='none'·target='return'). 분석 펼침은 명시 요청 시에만.
@@ -120,9 +127,11 @@ def capability_spec() -> dict:
             {"value": "parameter", "does": "param_grid의 점경로별 값 격자로 반복",
              "use_for": "'기간·비용 등을 바꿔가며 성과 비교'(민감도·최적화). 축 2개+면 데카르트곱."},
             {"value": "condition",
-             "does": "1회 백테스트 결과를 label 블록으로 그룹 분할해 그룹별 성과·유의차 비교",
-             "use_for": "'산업·섹터별로 어디서 잘 되나'(label=attribute), '요일·월별'(label=calendar), "
-                        "'점수 구간별'(label=bucket). label 필수, target='return'."},
+             "does": "1회 백테스트의 종목별 기여(비중×수익)를 임의 라벨로 그룹 분할해 그룹별 성과 비교",
+             "use_for": "라벨이 종목 함수면 '섹터·업종별'(label=attribute('Sector'·'Industry'))·'종목별'; "
+                        "일 함수면 '시장 국면별'(label=bucket(임의 신호) — 예: S&P가 20일선 위/아래)·"
+                        "'요일·월별'(label=calendar)·'점수 구간별'(label=bucket). 섹터×국면 조합도 가능. "
+                        "label은 기존 블록(bucket·calendar·attribute + 임의 신호 조립)으로 자유 구성. label 필수, target='return'."},
             {"value": "asset", "does": "assets 목록의 종목별 개별 성과",
              "use_for": "'종목마다 따로 성과를 본다'."},
             {"value": "time", "does": "이벤트 시점 기준 forward 수익 분포(event·windows)",
