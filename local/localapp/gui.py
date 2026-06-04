@@ -14,7 +14,7 @@ import socket
 import threading
 import tkinter as tk
 import webbrowser
-from tkinter import messagebox, ttk
+from tkinter import font as tkfont, messagebox, ttk
 
 from . import (__version__, killswitch, kis_health, order_log, pairing,
                 secrets_store, sync_client, updater)
@@ -166,12 +166,19 @@ class SettingsApp:
         style.map("TNotebook.Tab",
                   background=[("selected", ACCENT_SOFT)],
                   foreground=[("selected", ACCENT)])
-        # Treeview (주문/사이클 표) 톤
+        # Treeview (주문/사이클 표) 톤.
+        # 행 높이는 폰트의 실제 line height에서 산출한다. 고정 px(기존 22)는 고DPI
+        # 배율(125·150%) 화면에서 폰트만 커지고 행 높이는 그대로라 글자가 세로로
+        # 잘려 겹쳐 보이는 근본 원인이었다. metrics("linespace")가 현재 tk scaling을
+        # 반영하므로 어떤 배율에서도 행이 글자보다 항상 넉넉하다.
+        tree_font = tkfont.Font(family="Segoe UI", size=10)
+        row_h = tree_font.metrics("linespace") + 14   # 위아래 약 7px씩 여유
         style.configure("Treeview", background=PANEL, fieldbackground=PANEL,
                         foreground=TEXT, bordercolor=BORDER, borderwidth=1,
-                        rowheight=22, font=("Segoe UI", 9))
+                        rowheight=row_h, font=tree_font)
         style.configure("Treeview.Heading", background="#f0ece6",
-                        foreground=TEXT, font=("Segoe UI", 9, "bold"))
+                        foreground=TEXT, font=("Segoe UI", 10, "bold"),
+                        padding=(4, 7))
 
     # ── UI 구성 ───────────────────────────────────────────────────────────────
 
