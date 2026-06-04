@@ -1,0 +1,20 @@
+[Unit]
+Description=Telegram News & Price Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/newsbot
+ExecStart=/home/ubuntu/newsbot/venv/bin/python /home/ubuntu/newsbot/bot.py
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+# 로그가 한글이라 UTF-8 강제
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
