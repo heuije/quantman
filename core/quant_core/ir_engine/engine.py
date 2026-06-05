@@ -737,6 +737,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
     cur_of = {s: instrument_spec(s).currency for s in cols}
     mult = {s: instrument_spec(s).multiplier for s in cols}        # point value(1pt=mult 통화단위)
     mr = {s: instrument_spec(s).init_margin_rate for s in cols}    # 개시증거금률(주식=1.0)
+    tk = {s: instrument_spec(s).tick for s in cols}                # 선물 계약 틱(주식=0.0 → 통화별 표)
     commission = sim.commission if sim.commission is not None else _DEFAULT_COMMISSION
     slippage = sim.slippage if sim.slippage is not None else _DEFAULT_SLIPPAGE
     sell_tax = sim.sell_tax if sim.sell_tax is not None else _DEFAULT_SELL_TAX
@@ -770,7 +771,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
         if np.isnan(raw) or raw <= 0:
             return None
         return round_to_tick(raw * (1 + slippage) if side == "buy" else raw * (1 - slippage),
-                             "up" if side == "buy" else "down", cur_of[s])
+                             "up" if side == "buy" else "down", cur_of[s], tk[s])
 
     def _record(s, p, qty, px, i, reason):
         """qty주 청산 기록 — 부호 인식. 롱: 순매도-순매수 대비; 숏: 진입-청산."""

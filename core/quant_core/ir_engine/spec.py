@@ -491,6 +491,17 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                                 "선물 연속물 설정(roll_method·series_adjust·roll_cost_pct)은 선물 심볼에만 "
                                 "적용됩니다 — 현재 유니버스에 선물이 없어 무시됩니다.", "simulation"))
 
+    # 혼합 증거금 — 한 유니버스에 주식과 선물이 섞이면 증거금 회계가 최저 증거금률 기준 단일
+    # 레버리지(lev_eff=lev/min(margin_rate))로 근사된다. 사이징은 심볼별 증거금률로 정확하나
+    # 마진콜 복원·floor_cash 한도는 포트폴리오 단일값이라 주식 다리를 과복원할 수 있음 → 경고.
+    if u.kind in ("single", "list") and u.symbols:
+        n_fut = sum(1 for x in u.symbols if is_futures(x))
+        if 0 < n_fut < len(u.symbols):
+            issues.append(Issue("S-futures-mix", SEV_INTEGRITY_WARN,
+                                "주식과 선물이 한 유니버스에 섞여 있습니다 — 증거금 회계가 최저 증거금률 "
+                                "기준 단일 레버리지로 근사되어(마진콜 복원이 주식 다리를 과복원) 부정확할 수 "
+                                "있습니다. 동질(전부 선물 또는 전부 주식) 유니버스를 권장합니다.", "universe"))
+
     # 무결성
     if meta is None:
         meta = DatasetMeta(delay=s.simulation.delay)

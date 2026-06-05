@@ -93,8 +93,15 @@ def capability_spec() -> dict:
         ],
         "account_currency": [
             {"value": "KRW", "does": "원화 기준 손익(국내선물 — 무환산)"},
-            {"value": "USD", "does": "달러 기준(해외선물 — 상품 통화가 다르면 환율 환산)"},
+            {"value": "USD", "does": "달러 기준(해외선물). ⚠ 현재 엔진은 환율 환산 미구현 — 단일통화 백테스트만 정합."},
         ],
+        # ⚠ 정직성 — roll_method·series_adjust·roll_cost_pct·account_currency는 스키마가 받지만
+        # 엔진이 *아직 적용하지 않는다*(연속물 롤=E2 데이터 의존 보류, FX 환산 미구현). 사용자가
+        # 명시 요청할 때만 설정하되 설명에 "현재 미적용(예약)"을 밝히고, 임의로 채워 넣지 말 것.
+        "futures_continuous_note": ("⚠ roll_method·series_adjust·roll_cost_pct·account_currency는 "
+                                    "스키마 예약 필드 — 엔진이 아직 적용하지 않는다(롤=만기물 데이터 의존 "
+                                    "보류, 환율 환산 미구현). 선물 백테스트는 현재 연속물·단일통화 가정. "
+                                    "사용자가 명시 요청하면 설정하되 '현재 미적용'을 밝히고 임의 추가 금지."),
         "direction": [
             {"value": "long", "does": "매수만", "use_for": "일반 롱 전략 · 선물 롱."},
             {"value": "short", "does": "매도(공매도)만", "use_for": "하락 베팅 · 인버스 · 선물 숏(차입 불필요, 대칭)."},

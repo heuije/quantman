@@ -17,7 +17,7 @@ if str(_CORE) not in sys.path:
 
 from quant_core.blocks import data
 from quant_core.exec_defaults import (InstrumentSpec, instrument_spec, is_futures,
-                                       margin_rate)
+                                       margin_rate, round_to_tick)
 from quant_core.ir_engine import (Entry, PositionSpec, SimSpec, StrategyIR,
                                    Universe, capability_spec, validate_strategy)
 
@@ -124,3 +124,41 @@ def test_roll_settings_on_futures_universe_ok():
 def test_no_roll_settings_no_futures_warning():
     issues = validate_strategy(_strat("005930"))   # roll 미설정 → 경고 없음
     assert not any(i.rule == "S-futures" for i in issues)
+
+
+# ── 선물 계약 틱 라운딩 (InstrumentSpec.tick 소비 — 더는 dead 필드 아님) ──────────
+
+def test_round_to_tick_futures_explicit_tick():
+    # 명시 틱이면 통화 무관 그 배수로 라운딩, float 유지(선물은 분수 호가).
+    assert round_to_tick(404.07, "down", "USD", tick=0.05) == 404.05
+    assert round_to_tick(404.07, "up",   "USD", tick=0.05) == 404.10
+    assert round_to_tick(401.03, "nearest", "KRW", tick=0.05) == 401.05   # 지수선물 분수 pt
+
+
+def test_round_to_tick_equity_unaffected_by_default():
+    # tick=0(주식 기본)이면 기존 통화별 표 그대로 — 정수 KRW 호가, 완전 무영향(백워드 호환).
+    assert round_to_tick(15037, "down", "KRW") == 15030       # 1만~2만 → 10원 틱
+    assert isinstance(round_to_tick(15037, "down", "KRW"), int)
+    assert round_to_tick(404.07, "down", "USD") == 404.07      # USD $0.01
+
+
+# ── 혼합 증거금 유니버스 경고 (S-futures-mix — silent 근사 표면화) ─────────────────
+
+def _list_strat(symbols):
+    return StrategyIR(
+        signal=data("momentum_12_1m"),
+        universe=Universe(kind="list", symbols=symbols),
+        position=PositionSpec(entry=Entry(mode="always")),
+        simulation=SimSpec())
+
+
+def test_mixed_equity_futures_universe_warns():
+    issues = validate_strategy(_list_strat(["005930", "코스피200선물"]))
+    assert any(i.rule == "S-futures-mix" for i in issues)
+
+
+def test_homogeneous_universe_no_mix_warning():
+    assert not any(i.rule == "S-futures-mix"
+                   for i in validate_strategy(_list_strat(["코스피200선물", "나스닥선물"])))
+    assert not any(i.rule == "S-futures-mix"
+                   for i in validate_strategy(_list_strat(["005930", "000660"])))

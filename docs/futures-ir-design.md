@@ -95,3 +95,23 @@
 - 해외선물: CME/SGX 유료시세 + 만료 계약 과거 데이터 깊이가 실제 블로커(yfinance 함정 동일).
   장기 연속물 백테스트엔 전용 벤더(Databento/Norgate) 검토.
 - 상세: `docs/kis-api/INDEX.md` 선물옵션 섹션, `GOTCHAS.md` 2026-06-05.
+
+## 8. 코드 리뷰 후속 수정 (2026-06-05)
+
+E1 착지 후 전수 코드 리뷰에서 발견·수정:
+
+- **🔴 긴급(배포됨 6b817b9)**: `run_unified`(on_signal 경로)가 `is_futures`를 import 없이
+  호출 → **모든 룰 기반 단발 매매 백테스트가 NameError로 죽던 회귀**(scheduled/always는
+  무영향이라 선물 테스트에 안 잡힘). 근본 원인은 검증 누락 — core에 on_signal 커버리지 0개.
+  import 추가 + 이벤트 경로 회귀 테스트 2개로 그 부류를 닫음.
+- **NL 정직성**: `roll_method`·`series_adjust`·`roll_cost_pct`·`account_currency`는 스키마가
+  받지만 엔진이 *아직 적용 안 함*(롤=E2, FX 미구현). `capabilities.futures_continuous_note`로
+  "미적용(예약)"을 컴파일러에 명시 — silent no-op·거짓 약속 제거.
+- **계약 틱 소비**: `round_to_tick(tick=)` 추가, 엔진이 선물 체결가를 `InstrumentSpec.tick`
+  배수로 라운딩(주식 tick=0 → 기존 통화표 그대로, 완전 무영향). `tick`이 더는 dead 필드 아님.
+- **혼합 증거금 경고**: 주식+선물 혼합 유니버스에 `S-futures-mix` 경고 — `lev_eff=lev/min(mr)`
+  단일값이 마진콜 복원에서 주식 다리를 과복원하는 근사임을 표면화(silent 방지).
+- **예약 필드 명시**: `maint_margin_rate`(E1b)·`expiry_rule`·`default_roll`(E2)는 *검증된 계약
+  사실*이라 보관하되 엔진 미소비를 docstring에 `[예약]`으로 표기(미배선 표면화).
+
+검증: core 스위트 82→88 통과(신규 6 테스트: 이벤트 경로 2·틱 2·혼합경고 2), equity 회귀 무변.

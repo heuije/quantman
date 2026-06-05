@@ -101,15 +101,20 @@ def merged_execution(strategy_exec: dict | None) -> dict:
 
 @dataclass(frozen=True)
 class InstrumentSpec:
-    """상품 계약명세. equity면 multiplier=1·margin=1·만기없음."""
-    asset_class: str          # "equity" | "futures"
-    multiplier: float         # point value: 선물 1pt = multiplier 통화단위. equity=1.0
-    tick: float               # 최소 호가단위(가격 단위). equity=0.0(KRW 주식틱은 tick_size()함수)
-    currency: str             # "KRW" | "USD"
-    init_margin_rate: float   # 개시증거금률(notional 대비). equity=1.0(전액)
-    maint_margin_rate: float  # 유지증거금률. equity=1.0
-    expiry_rule: str          # 만기 캘린더 키 "kospi200_2nd_thu"|"cme_cl"… equity=""(만기없음)
-    default_roll: str         # 기본 롤 "days_before:N"|"volume_cross"|"oi_cross". equity=""
+    """상품 계약명세. equity면 multiplier=1·margin=1·만기없음.
+
+    엔진 소비(현재): asset_class·multiplier·tick·currency·init_margin_rate.
+    예약(미소비): maint_margin_rate·expiry_rule·default_roll — E1b(변동증거금)·E2(만기 롤)에서
+    배선 예정. *검증된 계약 사실*이라 보관하되, 엔진이 아직 읽지 않음을 여기 명시한다(미배선 표면화).
+    """
+    asset_class: str          # [소비] "equity" | "futures"
+    multiplier: float         # [소비] point value: 선물 1pt = multiplier 통화단위. equity=1.0
+    tick: float               # [소비] 최소 호가단위 — round_to_tick(tick=)로 선물 체결가 라운딩. equity=0.0(주식은 tick_size 표)
+    currency: str             # [소비] "KRW" | "USD"
+    init_margin_rate: float   # [소비] 개시증거금률(notional 대비). equity=1.0(전액)
+    maint_margin_rate: float  # [예약·E1b] 유지증거금률. 현재 엔진은 SimSpec.maintenance_margin_pct(사용자값) 사용
+    expiry_rule: str          # [예약·E2] 만기 캘린더 키 "kospi200_2nd_thu"|"cme_cl"… equity=""(만기없음)
+    default_roll: str         # [예약·E2] 기본 롤 "days_before:N"|"volume_cross"|"oi_cross". equity=""
 
 
 # 거래소 표준 승수·틱(server/app/futures_config.py와 정렬). 증거금률·만기·롤은 본 카탈로그 신규.
@@ -173,15 +178,27 @@ def tick_size(price: float) -> int:
 
 
 def round_to_tick(price: float, direction: str = "nearest",
-                  currency: str = "KRW") -> float:
+                  currency: str = "KRW", tick: float = 0.0) -> float:
     """호가단위로 라운딩. direction: up | down | nearest.
 
+    tick>0: 명시 호가단위(선물 계약 틱 — InstrumentSpec.tick)로 라운딩(통화 무관, float 유지).
+            주식은 tick=0(기본) → 아래 통화별 표를 그대로 사용(완전 무영향).
     KRW: KIS 국내 호가단위(가격대별), 정수 반환.
     USD: 미국 NMS 기본 $0.01 (1달러 이상). 소수 2자리 float 반환.
     통화 미국이면 정수 절삭이 가격을 망가뜨리므로 반드시 float를 유지한다.
     """
     if price <= 0:
         return 0
+    if tick and tick > 0:                 # 선물 등 명시 계약 틱 — 그 배수로 라운딩
+        import math
+        q = round(price / tick, 9)        # 부동소수 오차 흡수
+        if direction == "up":
+            n = math.ceil(q)
+        elif direction == "down":
+            n = math.floor(q)
+        else:
+            n = round(q)
+        return round(n * tick, 10)
     if currency == "USD":
         # $1 미만은 $0.0001 틱이나, S&P500 대형주는 모두 $1 이상 → $0.01 고정.
         import math
