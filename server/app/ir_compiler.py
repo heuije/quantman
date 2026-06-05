@@ -179,7 +179,7 @@ StrategyIR = {{
 지표 ref(이 외 임의 지표 금지; 종목 자신은 __SELF__. 접두): {", ".join(indicator_cols)}
 기본 OHLCV: Open, High, Low, Close, Volume
 종목 표기: 국내주식=6자리 코드(삼성전자 005930), 미국주식=티커(AAPL), 내장 자산명=정확한 키
-(S&P500, 나스닥100선물, 코스피200선물, 원유선물, 금선물 등). 모르면 사용자가 쓴 명칭 그대로.
+(S&P500, 코스피200선물, 원유선물, 금선물, 은선물(COMEX), 천연가스선물, 나스닥선물, 비트코인선물 등). 모르면 사용자가 쓴 명칭 그대로.
 </reference_data>
 
 <idioms>
@@ -200,6 +200,15 @@ StrategyIR = {{
 4. [국면별 비교] "상승장/하락장 등 국면에 따라 신호·성과가 어떻게 다른가" → 신호 대수는 그대로 두고
    sweep.target="signal"(또는 "relation") + label 블록(국면 라벨)으로 분리. axis는 바꾸지 않는다.
 5. [조건 지속/최근 발생] "N일 연속 충족"·"최근 M일 내 발생" → condition을 modifier 블록으로 감싼다.
+6. [선물 디렉셔널·추세추종] 선물 심볼(코스피200선물·원유선물·금선물·나스닥선물·은선물(COMEX)·
+   천연가스선물·비트코인선물)은 카탈로그가 승수·증거금·만기를 알아 엔진이 자동 인식 — IR엔
+   자산클래스 표시 불필요, 종목처럼 universe.symbols에 이름만 넣는다(주식과 같은 신호·청산 어휘).
+   · 단발 룰("선물이 ___면 롱/숏"): single + on_signal(condition) 단방향, 또는 서로 다른 조건의
+     양방향이면 부호점수+long_short(레시피 1·2)·single은 entry.mode="scheduled"(daily).
+   · 추세추종 보유("추세면 보유"): single + entry.mode="always"(보유 마스크) 또는 scheduled.
+   · 숏은 direction="short"(선물은 차입 불필요, 대칭). 레버리지는 증거금으로 내재 → leverage=1 기본
+     (명목 노출을 더 키울 때만 >1). take_profit/stop_loss(%)·hold_days·지표 신호는 주식과 동일.
+   · 만기 롤은 자동 — roll_method/series_adjust(simulation)는 사용자가 명시할 때만 채운다.
 </idioms>
 
 <process>

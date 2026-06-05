@@ -6,6 +6,7 @@ ExecutionPolicy의 각 필드가 None이면 이 default로 채워진다.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 # ── 글로벌 default ─────────────────────────────────────────────────────────────
@@ -89,20 +90,65 @@ def merged_execution(strategy_exec: dict | None) -> dict:
     return out
 
 
-# ── 종목별 증거금률 (레버리지 백테스트) ───────────────────────────────────────
-# 거래소 선물은 노티오널의 일부만 증거금으로 묶고, 보유비용(carry)은 연속선물 가격에
-# 이미 반영된다 → 레버리지 펀딩(현금 차입이자)을 부과하지 않는다. 현금 주식·ETF·지수는
-# 1.0(전액 증거금=차입이 곧 비용). dataset 키 기준(KR 종목은 숫자코드라 "선물" 미포함).
-_FUTURES_KEYS = frozenset({
-    "원유선물", "천연가스선물", "금선물", "은선물", "구리선물",
-    "코스피200선물", "나스닥100선물",
-})
-_FUTURES_MARGIN_RATE = 0.15            # KRX/해외 선물 위탁증거금 ~7~15% — 보수적 단일값.
+# ── 상품 계약명세 카탈로그 (백테스트 회계의 단일 출처) ─────────────────────────
+# 백테스트가 "현금주식 vs 선물" 회계를 분기하는 근거. IR 스키마엔 이 정보를 넣지 않는다
+# — 승수·증거금·만기는 *상품의 사실*이지 전략 선택이 아니므로 심볼로 조회한다.
+#   equity(현금주식·ETF·지수): multiplier=1·margin=1·만기없음 → 기존 현금모델 그대로.
+#   futures: 손익=ΔP×multiplier×계약수, 자본=증거금(notional×init_margin_rate), 만기마다 롤.
+# ⚠ 통합 메모: server/app/futures_config.py(선물분석 대시보드)도 tick·multiplier를 따로 들고
+#   있다(레거시 oil_futures 경로). core는 server를 import 못 하므로 여기를 단일 출처로 삼고,
+#   추후 futures_config가 이 카탈로그를 읽도록 통합한다(중복 드리프트 제거).
+
+@dataclass(frozen=True)
+class InstrumentSpec:
+    """상품 계약명세. equity면 multiplier=1·margin=1·만기없음."""
+    asset_class: str          # "equity" | "futures"
+    multiplier: float         # point value: 선물 1pt = multiplier 통화단위. equity=1.0
+    tick: float               # 최소 호가단위(가격 단위). equity=0.0(KRW 주식틱은 tick_size()함수)
+    currency: str             # "KRW" | "USD"
+    init_margin_rate: float   # 개시증거금률(notional 대비). equity=1.0(전액)
+    maint_margin_rate: float  # 유지증거금률. equity=1.0
+    expiry_rule: str          # 만기 캘린더 키 "kospi200_2nd_thu"|"cme_cl"… equity=""(만기없음)
+    default_roll: str         # 기본 롤 "days_before:N"|"volume_cross"|"oi_cross". equity=""
+
+
+# 거래소 표준 승수·틱(server/app/futures_config.py와 정렬). 증거금률·만기·롤은 본 카탈로그 신규.
+# 키 = data_fetcher 캐시/dataset 심볼 키. (선물은 한글 상품명, 주식은 종목코드)
+_INSTRUMENTS: dict[str, InstrumentSpec] = {
+    "코스피200선물":  InstrumentSpec("futures", 250_000.0, 0.05,  "KRW", 0.10, 0.075, "kospi200_2nd_thu", "days_before:5"),
+    "원유선물":      InstrumentSpec("futures",   1_000.0, 0.01,  "USD", 0.10, 0.08,  "cme_cl",  "days_before:5"),
+    "천연가스선물":   InstrumentSpec("futures",  10_000.0, 0.001, "USD", 0.10, 0.08,  "cme_ng",  "days_before:5"),
+    "금선물":        InstrumentSpec("futures",     100.0, 0.10,  "USD", 0.08, 0.06,  "cme_gc",  "days_before:5"),
+    "은선물(COMEX)":  InstrumentSpec("futures",   5_000.0, 0.005, "USD", 0.10, 0.08,  "cme_si",  "days_before:5"),
+    "나스닥선물":     InstrumentSpec("futures",      20.0, 0.25,  "USD", 0.05, 0.04,  "cme_nq",  "volume_cross"),
+    "비트코인선물":   InstrumentSpec("futures",       5.0, 5.0,   "USD", 0.50, 0.40,  "cme_btc", "volume_cross"),
+}
+
+
+def instrument_spec(symbol: str) -> InstrumentSpec:
+    """심볼 → 계약명세. 미등록(현금주식·ETF·지수)이면 equity 기본.
+
+    엔진은 반환의 asset_class로 현금/선물 회계를 분기한다. equity 통화는 KR 숫자코드=KRW,
+    그 외=USD 휴리스틱(엔진 곳곳의 sym.isdigit() 추정을 한 곳으로 모음)."""
+    spec = _INSTRUMENTS.get(symbol)
+    if spec is not None:
+        return spec
+    return InstrumentSpec("equity", 1.0, 0.0,
+                          "KRW" if symbol.isdigit() else "USD", 1.0, 1.0, "", "")
+
+
+def is_futures(symbol: str) -> bool:
+    """심볼이 선물 상품인지(카탈로그 등록 여부)."""
+    return instrument_spec(symbol).asset_class == "futures"
 
 
 def margin_rate(symbol: str) -> float:
-    """레버리지 백테스트용 증거금률(0~1). 선물=부분증거금, 그 외=1.0(전액)."""
-    return _FUTURES_MARGIN_RATE if symbol in _FUTURES_KEYS else 1.0
+    """레버리지 백테스트용 개시증거금률(0~1). 선물=부분증거금, 그 외=1.0(전액).
+
+    계약 카탈로그(instrument_spec)가 단일 출처 — 종목별 증거금률을 그대로 반영.
+    거래소 선물은 노티오널의 일부만 증거금으로 묶고 carry는 연속선물 가격에 이미 반영되어
+    레버리지 펀딩(현금 차입이자)을 부과하지 않는다(engine.py 펀딩 항)."""
+    return instrument_spec(symbol).init_margin_rate
 
 
 # ── KIS 호가 단위 (KOSPI/KOSDAQ 공통, 2023년 기준) ─────────────────────────────

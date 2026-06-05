@@ -47,7 +47,8 @@ def capability_spec() -> dict:
             "field": "simulation.leverage",
             "does": "목표 그로스 노출 배수 (sum|비중| = leverage). always와 결합 시 매일 목표노출로 리밸런싱 = 상수 레버리지.",
             "use_for": ("목표 베타 N배 · 레버리지 ETF. funding_cost_pct로 차입비용, "
-                        "maintenance_margin_pct로 마진콜 모델. 1 초과는 백테스트 전용(모의/실전 차단)."),
+                        "maintenance_margin_pct로 마진콜 모델. 1 초과는 백테스트 전용(모의/실전 차단). "
+                        "⚠ 선물은 증거금으로 내재 레버리지가 이미 있어 leverage=1이 기본 — 명목 노출을 더 키울 때만 >1."),
         },
         "sizing_mode": [
             {"value": "equal_weight", "does": "보유 종목 동일가중(scheduled·always 경로). 단일 종목이면 100%.",
@@ -68,11 +69,37 @@ def capability_spec() -> dict:
         "sizing_note": ("⚠ 사이징 모드(equal_weight·signal_proportional·vol_inverse·target_vol·fixed_weight)는 "
                         "scheduled·always 경로에서만 실효. on_signal(이벤트) 다종목은 모드와 무관하게 종목당 "
                         "amount_pct(또는 fixed_amount의 amount_krw) 예산으로 진입한다. leverage도 scheduled·always 전용."),
+        # ── 선물(futures) — 일부 심볼은 선물 상품. 엔진이 카탈로그로 자동 인식(IR에 자산클래스 표시 불필요). ──
+        "instruments": {
+            "field": "universe.symbols",
+            "does": ("심볼 중 일부는 선물 상품 — 카탈로그가 승수·증거금·만기·통화를 안다(엔진 자동 인식, "
+                     "IR에 자산클래스 표시 불필요). 선물 심볼: 코스피200선물·원유선물·천연가스선물·금선물·"
+                     "은선물(COMEX)·나스닥선물·비트코인선물. 주식처럼 universe.symbols에 이름만 넣는다."),
+            "use_for": ("선물 = 내재 레버리지·숏 자연(direction=short, 차입 불필요)·만기 자동 롤. 단일 "
+                        "디렉셔널(single+on_signal)·추세추종(always/scheduled). 신호·take_profit/stop_loss(%)·"
+                        "hold_days는 주식과 동일 동작(가격% 기준). 자본=증거금·손익=가격변화×승수×계약수(엔진이 처리)."),
+        },
+        # 선물 연속물 구성 — 선물 심볼에만 적용. 미지정이면 상품 카탈로그 기본값(보통 명시 불필요).
+        "roll_method": [
+            {"value": "days_before_5", "does": "만기 5영업일 전 근월→차월 롤(보수적 기본)"},
+            {"value": "days_before_1", "does": "만기 1영업일 전 롤(만기 직전까지 근월 보유)"},
+            {"value": "volume_cross", "does": "거래량이 차월물로 역전될 때 롤(유동성 추종)"},
+            {"value": "oi_cross", "does": "미결제약정이 차월물로 역전될 때 롤"},
+        ],
+        "series_adjust": [
+            {"value": "none", "does": "원본 이어붙임(롤 시점 가격 갭 유지)"},
+            {"value": "back_adjust", "does": "과거를 차감 조정해 연속 수익 일관(연속물 표준)"},
+            {"value": "ratio", "does": "비율 조정 연속물"},
+        ],
+        "account_currency": [
+            {"value": "KRW", "does": "원화 기준 손익(국내선물 — 무환산)"},
+            {"value": "USD", "does": "달러 기준(해외선물 — 상품 통화가 다르면 환율 환산)"},
+        ],
         "direction": [
-            {"value": "long", "does": "매수만", "use_for": "일반 롱 전략."},
-            {"value": "short", "does": "매도(공매도)만", "use_for": "하락 베팅 · 인버스."},
+            {"value": "long", "does": "매수만", "use_for": "일반 롱 전략 · 선물 롱."},
+            {"value": "short", "does": "매도(공매도)만", "use_for": "하락 베팅 · 인버스 · 선물 숏(차입 불필요, 대칭)."},
             {"value": "long_short", "does": "threshold 기준 양수=롱·음수=숏 (시장중립 지향)",
-             "use_for": "롱숏 팩터 · 시계열 모멘텀(TSMOM). entry.threshold로 부호 경계."},
+             "use_for": "롱숏 팩터 · 시계열 모멘텀(TSMOM) · 선물 추세추종. entry.threshold로 부호 경계."},
         ],
         "exit": {
             "field": "position.exit",

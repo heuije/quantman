@@ -26,6 +26,7 @@ from ..blocks.integrity import DatasetMeta, integrity_issues
 from ..blocks.node import Node, referenced_columns, referenced_symbols
 from ..blocks.validate import (SEV_ERROR, SEV_INTEGRITY_WARN, Issue, has_market_source,
                                meaningfulness_issues, prioritize, validate)
+from ..exec_defaults import is_futures
 
 # ── 유니버스 (대상 종목 집합) ─────────────────────────────────────────────────
 
@@ -142,6 +143,22 @@ class SimSpec(BaseModel):
     # 분할(세그먼트 N+1개). 학습/검증을 사건이 아닌 *지정 시점*(예: 2018-01-01)으로 가르는
     # 워크포워드에 필수(T1·SEA1 시대분할). split_dates가 있으면 그 자체가 기간분할을 발동.
     split_dates: list[str] = Field(default_factory=list)
+    # ── 선물 연속물 구성 (equity 심볼이면 무시) ──────────────────────────────────
+    # 선물은 만기물 체인 → 단일 연속 시계열로 이어붙여 백테스트한다. 미지정(None)이면 상품
+    # 카탈로그(exec_defaults.instrument_spec)의 default_roll/조정을 사용. 결과에 영향하는
+    # 백테스트 선택이라 param_grid(path="simulation.roll_method")로 민감도 sweep 가능.
+    #   roll_method: 언제 근월→차월로 옮겨탈지. days_before_N=만기 N영업일 전, volume_cross=
+    #                거래량 역전 시, oi_cross=미결제 역전 시.
+    #   series_adjust: 롤 시점 가격 점프 처리. none=원본 이어붙임(갭 유지), back_adjust=과거를
+    #                  차감 조정(연속 수익 일관), ratio=비율 조정.
+    roll_method: Optional[Literal["days_before_5", "days_before_1",
+                                  "volume_cross", "oi_cross"]] = None
+    series_adjust: Optional[Literal["none", "back_adjust", "ratio"]] = None
+    # 만기물별 term-structure 데이터가 없을 때의 정직한 롤비용 폴백(%/롤, 양수=비용).
+    # 실제 근월-원월 가격차 데이터가 있으면 그걸 쓰고 이 값은 무시(데이터 우선 — §7.6).
+    roll_cost_pct: Optional[float] = None
+    # 해외선물 손익 환산 기준 통화(상품 통화가 account와 다르면 환율 환산). 국내선물=KRW면 무환산.
+    account_currency: Literal["KRW", "USD"] = "KRW"
 
 
 # ── 펼침 (비전 §4) ────────────────────────────────────────────────────────────
@@ -463,6 +480,16 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     if (s.sweep.axis != "none" or s.sweep.target != "return") and has_period:
         issues.append(Issue("S-split", SEV_ERROR,
                             "기간분할과 펼침/분석은 동시에 쓸 수 없습니다 — 하나만 선택하세요.", "simulation"))
+
+    # 선물 — 연속물 설정(roll_method·series_adjust·roll_cost_pct)이 비선물 유니버스에 걸리면
+    # 조용히 무시된다 → 경고(silent no-op 방지, M-vacuous 계열). 단일·리스트 유니버스에서만 판정.
+    sim = s.simulation
+    if (sim.roll_method is not None or sim.series_adjust is not None
+            or sim.roll_cost_pct is not None) and u.kind in ("single", "list"):
+        if not any(is_futures(x) for x in u.symbols):
+            issues.append(Issue("S-futures", SEV_INTEGRITY_WARN,
+                                "선물 연속물 설정(roll_method·series_adjust·roll_cost_pct)은 선물 심볼에만 "
+                                "적용됩니다 — 현재 유니버스에 선물이 없어 무시됩니다.", "simulation"))
 
     # 무결성
     if meta is None:
