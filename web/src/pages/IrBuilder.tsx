@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, type IrValidation } from "../api";
+import { api, type IrValidation, type IrExplanation } from "../api";
 import SentenceTree, { type Catalog } from "../components/SentenceTree";
 import EquityChart from "../components/EquityChart";
 import { SweepChart, SignalDistChart, ICChart, EventStudyChart } from "../components/ResultCharts";
@@ -9,6 +9,17 @@ import type {
   IndicatorInfo, IrBlockSpec, IrDistribution, IrEventStat, IrICStat, IrNode, IrPartition,
   IrStrategyDef, IrStrategyResult, StrategyRow, SymbolInfo,
 } from "../types";
+
+// 출처 칩 색: [기본]=엔진이 채운 silent 가정(주의 환기) / [지정]=유저가 정함(중립).
+function provChip(p: string): CSSProperties {
+  const isDefault = p === "기본";
+  return {
+    fontSize: 11, marginLeft: 6, padding: "0 6px", borderRadius: 4, whiteSpace: "nowrap",
+    background: isDefault ? "#fcefe8" : "#eef1f4",
+    color: isDefault ? "#c2410c" : "#555",
+    border: `1px solid ${isDefault ? "#f3d6c4" : "#e2e2e2"}`,
+  };
+}
 
 /**
  * 전략 연구소 — 노코드 블록트리로 룰·팩터·포트폴리오 전략을 조립·백테스트.
@@ -165,6 +176,7 @@ export default function IrBuilder() {
   const [compiling, setCompiling] = useState(false);
   const [compileErr, setCompileErr] = useState("");
   const [compileAssumptions, setCompileAssumptions] = useState<string[]>([]);
+  const [compileExplanation, setCompileExplanation] = useState<IrExplanation | null>(null);
   const [compileId, setCompileId] = useState<number | null>(null);
   const compileBaseline = useRef<string>("");
 
@@ -436,10 +448,11 @@ export default function IrBuilder() {
   // 자연어 설명 → IR 컴파일 → 빌더 전 폼에 hydrate. 변환 후 유저가 확인·실행.
   async function compileFromNl() {
     if (!nlText.trim() || compiling) return;
-    setCompiling(true); setCompileErr(""); setCompileAssumptions([]);
+    setCompiling(true); setCompileErr(""); setCompileAssumptions([]); setCompileExplanation(null);
     try {
       const res = await api.compileIr(nlText.trim());
       setCompileAssumptions(res.assumptions ?? []);
+      setCompileExplanation(res.explanation ?? null);
       if (!res.success) {
         setCompileErr(res.error || "컴파일에 실패했습니다.");
         setCompileId(null);
@@ -570,14 +583,64 @@ export default function IrBuilder() {
           <span className="muted" style={{ fontSize: 12 }}>변환은 아래 폼을 덮어씁니다.</span>
         </div>
         {compileErr && <div className="error" style={{ marginTop: 8 }}>{compileErr}</div>}
-        {compileAssumptions.length > 0 && (
+        {compileExplanation ? (
+          <div style={{ marginTop: 10 }}>
+            {/* ① 직관적 산문 요약 — 이 전략이 정확히 어떻게 백테스트되는지 한 문단으로 */}
+            <div style={{
+              fontSize: 13.5, lineHeight: 1.65, padding: "10px 12px", borderRadius: 8,
+              background: "var(--panel, #fff)", border: "1px solid var(--input-border)",
+            }}>
+              <strong style={{ display: "block", marginBottom: 4 }}>이렇게 백테스트됩니다</strong>
+              {compileExplanation.summary}
+            </div>
+
+            {/* ② MECE 항목별 설정·가정 (접기) — [기본]=엔진이 채운 silent 가정 */}
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                항목별 설정·가정 보기 — 분류 {compileExplanation.buckets.length}개
+                <span className="muted" style={{ fontWeight: 400, marginLeft: 6 }}>
+                  ([기본]=내가 안 정해 자동 적용된 값)
+                </span>
+              </summary>
+              <div style={{ marginTop: 8 }}>
+                {compileExplanation.buckets.map((b) => (
+                  <div key={b.key} style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{b.title}</div>
+                    <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>{b.question}</div>
+                    <ul style={{ margin: 0, paddingLeft: 16, listStyle: "none" }}>
+                      {b.items.map((it, i) => (
+                        <li key={i} style={{ fontSize: 12.5, marginBottom: 4 }}>
+                          <span style={{ fontWeight: 500 }}>{it.label}</span>: {it.value}
+                          <span style={provChip(it.provenance)}>{it.provenance}</span>
+                          {it.meaning && (
+                            <div className="muted" style={{ fontSize: 11, lineHeight: 1.4 }}>{it.meaning}</div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </details>
+
+            {/* ③ [추론] — LLM이 유저 말에서 보충 해석한 가정 */}
+            {compileExplanation.assumptions.length > 0 && (
+              <div className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>
+                <strong>AI 보충 해석</strong> — 의도와 다르면 아래 폼에서 직접 수정하세요.
+                <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                  {compileExplanation.assumptions.map((a, i) => <li key={i}>{a}</li>)}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : compileAssumptions.length > 0 ? (
           <div className="muted" style={{ fontSize: 13, marginTop: 8 }}>
             <strong>해석 가정</strong> — 의도와 다르면 아래에서 직접 수정하세요.
             <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
               {compileAssumptions.map((a, i) => <li key={i}>{a}</li>)}
             </ul>
           </div>
-        )}
+        ) : null}
       </div>
 
       <input

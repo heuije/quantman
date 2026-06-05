@@ -17,6 +17,7 @@ from .compose import (  # noqa: F401
     collect_strat_refs, has_strat_refs, materialize_strategy_assets,
 )
 from .capabilities import capability_spec  # noqa: F401
+from .explain import explain_ir  # noqa: F401
 from .service import backtest_from_spec, strategy_from_spec  # noqa: F401
 from .spec import (  # noqa: F401
     Entry, Exit, Overlays, ParamAxis, PositionSpec, Sizing, SimSpec, StrategyIR,
@@ -30,7 +31,7 @@ from .sweep import (  # noqa: F401
 
 __all__ = [
     "run_backtest_ir", "run_strategy_ir", "run_sweep", "run_period_split",
-    "backtest_from_spec", "strategy_from_spec", "capability_spec",
+    "backtest_from_spec", "strategy_from_spec", "capability_spec", "explain_ir",
     "collect_strat_refs", "has_strat_refs", "materialize_strategy_assets",
     "StrategyIR", "Universe", "PositionSpec", "Sizing", "Entry", "Exit",
     "Overlays", "SimSpec", "SweepSpec", "ParamAxis", "validate_strategy", "signal_out_type",

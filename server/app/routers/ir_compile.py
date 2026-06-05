@@ -15,8 +15,8 @@ from sqlmodel import Session, select
 
 import quant_core as qc
 from quant_core.blocks import catalog_spec
-from quant_core.ir_engine import (StrategyIR, capability_spec, field_contract,
-                                   validate_strategy)
+from quant_core.ir_engine import (StrategyIR, capability_spec, explain_ir,
+                                   field_contract, validate_strategy)
 
 from ..db import get_session
 from ..deps import get_current_user
@@ -103,9 +103,19 @@ def ir_compile(body: IrCompileIn, user: User = Depends(get_current_user),
     session.commit()
     session.refresh(log)
 
+    # 백테스트 구성 설명(MECE 버킷 + 산문 요약) — 성공 IR에 한해 생성. 유저에게
+    # "어떤 가정·설정으로 백테스트가 구성되는지"를 그대로 노출(특히 silent 기본값).
+    explanation = None
+    if res.get("success") and res.get("ir"):
+        try:
+            explanation = explain_ir(StrategyIR.model_validate(res["ir"]),
+                                     res.get("assumptions") or [])
+        except ValidationError:
+            explanation = None
+
     return {"success": bool(res.get("success")), "ir": res.get("ir") or {},
             "assumptions": res.get("assumptions") or [], "issues": res.get("issues") or [],
-            "error": res.get("error"), "compile_id": log.id}
+            "explanation": explanation, "error": res.get("error"), "compile_id": log.id}
 
 
 @router.post("/compile/feedback")

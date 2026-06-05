@@ -59,12 +59,25 @@ export type IrIssue = {
 };
 export type IrValidation = { ok: boolean; issues: IrIssue[] };
 
+// 백테스트 구성 설명 (/ir/compile 의 explanation). 산문 요약 + MECE 버킷별 항목.
+// provenance: "지정"=유저가 정함 / "기본"=유저가 안 정해 엔진 기본값(silent 가정).
+export type IrConfigItem = {
+  label: string; value: string; provenance: "지정" | "기본"; meaning: string;
+};
+export type IrConfigBucket = {
+  key: string; title: string; question: string; items: IrConfigItem[];
+};
+export type IrExplanation = {
+  summary: string; buckets: IrConfigBucket[]; assumptions: string[];
+};
+
 // 자연어 → StrategyIR 컴파일 결과 (/ir/compile). success=false면 error 사유.
 export type IrCompileResult = {
   success: boolean;
   ir: Record<string, unknown>;
   assumptions: string[];
   issues: IrIssue[];
+  explanation?: IrExplanation | null;
   error?: string | null;
   compile_id: number;
 };
