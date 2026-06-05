@@ -29,7 +29,7 @@ from ..backtest import (
 )
 from ..blocks import EvalContext, Node, evaluate, referenced_symbols, select_symbol
 from ..blocks.catalog import get, has
-from ..exec_defaults import margin_rate, round_to_tick
+from ..exec_defaults import instrument_spec, margin_rate, round_to_tick
 from .metrics import finalize_metrics
 from .spec import StrategyIR
 
@@ -182,6 +182,11 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     syms = [s for s in u.symbols if s in dataset and not dataset[s].empty]
     if not syms:
         return _empty("유니버스에 종목이 없습니다.")
+    # 선물 증거금 회계는 scheduled/always 경로에만 구현(승수·증거금 레버리지). 이벤트(on_signal)
+    # 경로는 차입 메커니즘이 없어 명목>자본이면 무거래로 조용히 퇴화 → garbage 차단(추세추종 안내).
+    if any(is_futures(s) for s in syms):
+        return _empty("선물의 이벤트(on_signal) 진입은 아직 증거금 회계가 적용되지 않습니다 — "
+                      "추세추종(always·scheduled) 진입으로 백테스트하세요.")
     single = (u.kind == "single" and len(syms) == 1)
 
     screener = u.screener or {}
@@ -728,12 +733,22 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
         else:
             sell_arr[s] = None
     refill_mode = ent.refill
-    cur_of = {s: ("KRW" if s.isdigit() else "USD") for s in cols}
+    # 상품 계약명세 — 선물 회계(승수·증거금)의 단일 출처. 주식은 mult=1·mr=1(현금모델 그대로).
+    cur_of = {s: instrument_spec(s).currency for s in cols}
+    mult = {s: instrument_spec(s).multiplier for s in cols}        # point value(1pt=mult 통화단위)
+    mr = {s: instrument_spec(s).init_margin_rate for s in cols}    # 개시증거금률(주식=1.0)
     commission = sim.commission if sim.commission is not None else _DEFAULT_COMMISSION
     slippage = sim.slippage if sim.slippage is not None else _DEFAULT_SLIPPAGE
     sell_tax = sim.sell_tax if sim.sell_tax is not None else _DEFAULT_SELL_TAX
+    # 거래세는 주식 매도 단방향 — 선물은 증권거래세 없음(종목별 분리). 주식은 기존 sell_tax 그대로.
+    _fut = {s for s in cols if instrument_spec(s).asset_class == "futures"}
+    stx = {s: (0.0 if s in _fut else sell_tax) for s in cols}
     cap = sz.max_position_pct / 100.0
     lev = float(sim.leverage)
+    # 선물은 증거금으로 명목가치를 레버리지 — 롱 보유여력을 1/증거금률배 키운다(floor_cash·마진콜 복원).
+    # 주식(mr=1)이면 lev_eff=lev(완전 무영향). 단일/동질 선물=정확, 혼합 증거금=가장 낮은 율로 근사.
+    port_mr = min((mr[s] for s in cols), default=1.0)
+    lev_eff = lev / port_mr if port_mr > 0 else lev
     rfr_daily = (sim.rfr_pct / 100.0 / TRADING_DAYS) if sim.rfr_pct else 0.0
     borrow_daily = (sim.short_borrow_pct / 100.0 / TRADING_DAYS) if sim.short_borrow_pct else 0.0
     funding_daily = (sim.funding_cost_pct / 100.0 / TRADING_DAYS) if sim.funding_cost_pct else 0.0
@@ -761,7 +776,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
         """qty주 청산 기록 — 부호 인식. 롱: 순매도-순매수 대비; 숏: 진입-청산."""
         if p.shares > 0:
             cost = qty * p.entry_price * (1 + commission)
-            proceeds = qty * px * (1 - commission - sell_tax)
+            proceeds = qty * px * (1 - commission - stx[s])   # 수익률은 비율 — 승수 상쇄
             ret = (proceeds - cost) / cost * 100 if cost else 0.0
         else:                                          # 숏: 가격 하락이 이익
             ret = (p.entry_price - px) / p.entry_price * 100 if p.entry_price else 0.0
@@ -777,9 +792,9 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
         reasons = reasons or {}
         # 매수여력 = NAV×L. 현금이 floor_cash까지 내려가도록(=차입) 허용해 Σ|w|=lev 타깃을 채운다.
         # lev=1이면 floor_cash=0 → 캡이 정확히 기존 현금캡(cash//per)과 동일(무레버리지 무영향).
-        nav_exec = cash + sum(p.shares * close[s][i] for s, p in positions.items()
+        nav_exec = cash + sum(p.shares * close[s][i] * mult[s] for s, p in positions.items()
                               if not np.isnan(close[s][i]))
-        floor_cash = nav_exec * (1.0 - lev)
+        floor_cash = nav_exec * (1.0 - lev_eff)
         # 결정적 순서 — 매수 루프가 종목별로 남은 현금에서 정수주를 순차 배분하므로
         # 처리 순서가 반올림 잔여(=결과)를 바꾼다. set 순회는 PYTHONHASHSEED 의존이라
         # 같은 전략·데이터의 결과가 프로세스마다 흔들렸다. 심볼명 정렬로 재현성 고정.
@@ -788,7 +803,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
             cur = positions[s].shares if s in positions else 0.0
             px0 = close[s][i]
             if not np.isnan(px0):
-                turnover_notional += abs(float(int(target.get(s, 0))) - cur) * px0
+                turnover_notional += abs(float(int(target.get(s, 0))) - cur) * px0 * mult[s]
         for s in allsyms:                              # 1) 매도(현금 생성)
             cur = positions[s].shares if s in positions else 0.0
             tgt = float(int(target.get(s, 0)))
@@ -800,25 +815,25 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
             if cur > 0:                                # 롱 축소/청산 (+ 부호교차 시 숏 개시)
                 p = positions[s]
                 close_qty = cur - max(tgt, 0)
-                cash += close_qty * px * (1 - commission - sell_tax)
+                cash += close_qty * px * mult[s] * (1 - commission - stx[s])
                 p.shares -= close_qty
                 if p.shares <= 1e-9:
                     _record(s, p, close_qty, px, i, reasons.get(s, "리밸런스"))
                     del positions[s]
                 if tgt < 0:                            # 부호교차 → 숏 |tgt| 개시
                     qty = int(-tgt)
-                    cash += qty * px * (1 - commission - sell_tax)
+                    cash += qty * px * mult[s] * (1 - commission - stx[s])
                     positions[s] = Position(legs=[(s, 1.0)], shares=-qty, entry_price=px,
                                             entry_i=i, peak_high=px, peak_close=px)
             elif s in positions:                       # 숏 증가 (cur<0, tgt<cur)
                 p = positions[s]
                 delta = cur - tgt
-                cash += delta * px * (1 - commission - sell_tax)
+                cash += delta * px * mult[s] * (1 - commission - stx[s])
                 p.entry_price = (abs(cur) * p.entry_price + delta * px) / (abs(cur) + delta)
                 p.shares = tgt
             else:                                      # 신규 숏 (cur=0, tgt<0)
                 qty = int(-tgt)
-                cash += qty * px * (1 - commission - sell_tax)
+                cash += qty * px * mult[s] * (1 - commission - stx[s])
                 positions[s] = Position(legs=[(s, 1.0)], shares=-qty, entry_price=px,
                                         entry_i=i, peak_high=px, peak_close=px)
         for s in allsyms:                              # 2) 매수(현금 사용)
@@ -829,7 +844,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
             px = _exec_price(s, i, "buy")
             if px is None:
                 continue
-            per = px * (1 + commission)
+            per = px * mult[s] * (1 + commission)
             if cur < 0:                                # 숏 커버 (+ 부호교차 시 롱 개시)
                 p = positions[s]
                 cover = min(int(-cur), int(tgt - cur))
@@ -876,13 +891,13 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
             w = w / tot * lev if tot > 0 else w        # sum|w| = leverage
         if pos.overlays.max_group_pct is not None and group_panel is not None and d in group_panel.index:
             w = _cap_groups(w, group_panel.loc[d], float(pos.overlays.max_group_pct))
-        nav = cash + sum(positions[x].shares * close[x][i] for x in positions
+        nav = cash + sum(positions[x].shares * close[x][i] * mult[x] for x in positions
                          if not np.isnan(close[x][i]))
         if nav <= 0:
             return {}
         if pos.overlays.turnover_damp:                 # 작은 비중 변화 억제(턴오버↓)
             thr = float(pos.overlays.turnover_damp)
-            cur_w = {x: positions[x].shares * close[x][i] / nav
+            cur_w = {x: positions[x].shares * close[x][i] * mult[x] / nav
                      for x in positions if not np.isnan(close[x][i])}
             for s_ in list(w.index):
                 if abs(float(w[s_]) - cur_w.get(s_, 0.0)) < thr:
@@ -891,7 +906,9 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
         for s_, wt in w.items():
             px = close[s_][i]
             if px and px > 0 and not np.isnan(px):
-                target[s_] = int(np.sign(wt) * np.floor(abs(wt) * nav / px))
+                # 정수 계약수 = |비중|×nav를 증거금으로 쓰는 명목 ÷ 계약당 명목(px×승수).
+                # 주식(mult=1·mr=1)이면 floor(|wt|×nav/px) — 기존과 항등.
+                target[s_] = int(np.sign(wt) * np.floor(abs(wt) * nav / (px * mult[s_] * mr[s_])))
         return target
 
     def _refill(target: dict, reasons: dict, i: int, d, excluded: set):
@@ -901,7 +918,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
         cands = [s for s in a.index if s not in held and s not in excluded]
         ci = 0
         for s_exit in reasons:
-            freed = positions[s_exit].shares * close[s_exit][i]
+            freed = positions[s_exit].shares * close[s_exit][i] * mult[s_exit]
             if np.isnan(freed) or freed <= 0:
                 continue
             while ci < len(cands):
@@ -909,7 +926,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
                 ci += 1
                 px = close[repl][i]
                 if px and px > 0 and not np.isnan(px):
-                    target[repl] = int(np.floor(freed / px))
+                    target[repl] = int(np.floor(freed / (px * mult[repl])))   # 동일 명목 충원
                     break
 
     excluded: set = set()
@@ -919,13 +936,13 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
         if rfr_daily and cash > 0:                     # 현금 무위험수익
             cash *= (1 + rfr_daily)
         if (borrow_daily or funding_daily) and positions:   # 숏 차입·레버리지 펀딩
-            sv = sum(abs(p.shares) * close[s][i] for s, p in positions.items()
+            sv = sum(abs(p.shares) * close[s][i] * mult[s] for s, p in positions.items()
                      if p.shares < 0 and not np.isnan(close[s][i]))
             # 증거금 요구액 Σ(margin_rate×노티오널). 선물은 부분증거금이라 nav를 넘는
             # 부분만 현금 차입 → 그만큼만 펀딩. 현금주식(rate=1)이면 gross 그대로(기존 동일).
-            margin_req = sum(margin_rate(s) * abs(p.shares) * close[s][i]
+            margin_req = sum(margin_rate(s) * abs(p.shares) * close[s][i] * mult[s]
                              for s, p in positions.items() if not np.isnan(close[s][i]))
-            navv = cash + sum(p.shares * close[s][i] for s, p in positions.items()
+            navv = cash + sum(p.shares * close[s][i] * mult[s] for s, p in positions.items()
                               if not np.isnan(close[s][i]))
             cash -= sv * borrow_daily + max(0.0, margin_req - navv) * funding_daily
         if pending is not None and defer:
@@ -933,12 +950,12 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
             pending = None
         mc_target = None                               # 마진콜 — EOD 자기자본비율(nav/gross)<유지율
         if maint and positions:
-            navv = cash + sum(p.shares * close[s][i] for s, p in positions.items()
+            navv = cash + sum(p.shares * close[s][i] * mult[s] for s, p in positions.items()
                               if not np.isnan(close[s][i]))
-            grossv = sum(abs(p.shares) * close[s][i] for s, p in positions.items()
+            grossv = sum(abs(p.shares) * close[s][i] * mult[s] for s, p in positions.items()
                          if not np.isnan(close[s][i]))
-            if grossv > 0 and navv < maint * grossv:   # 목표 레버리지(nav×L)로 강제 복원(nav≤0이면 전량)
-                scale = min(1.0, max(0.0, navv * lev / grossv)) if navv > 0 else 0.0
+            if grossv > 0 and navv < maint * grossv:   # 목표 레버리지(nav×L_eff)로 강제 복원(nav≤0이면 전량)
+                scale = min(1.0, max(0.0, navv * lev_eff / grossv)) if navv > 0 else 0.0
                 mc_target = {s: int(positions[s].shares * scale) for s in positions}
         if mc_target is not None:
             target, reasons, act = mc_target, {s: "마진콜" for s in positions}, True
@@ -977,12 +994,12 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
         nav = cash
         for s, p in positions.items():
             cl = close[s][i]
-            nav += p.shares * (cl if not np.isnan(cl) else p.entry_price)
+            nav += p.shares * (cl if not np.isnan(cl) else p.entry_price) * mult[s]
         equity[i] = nav
         if nav > 0:                                    # end-of-day 비중 기록(기여 패널)
             for s, p in positions.items():
                 cl = close[s][i]
-                _wrec[i][s] = p.shares * (cl if not np.isnan(cl) else p.entry_price) / nav
+                _wrec[i][s] = p.shares * (cl if not np.isnan(cl) else p.entry_price) * mult[s] / nav
 
     eq = pd.Series(equity, index=master)
     ov = pos.overlays

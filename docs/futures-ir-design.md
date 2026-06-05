@@ -60,16 +60,28 @@
 - **롤 비용**: 만기물별 term-structure 데이터가 있으면 실 근월-원월 가격차, 없으면
   `roll_cost_pct` 폴백(정직한 가정 — §7.6).
 
-## 5. 엔진 주입점 (다음 단계 — 감사 확정)
+## 5. 엔진 회계 — E1 구현·검증 완료 / 잔여
 
-`engine.py`의 좁은 3지점 + 카탈로그 조회:
-- `_compute_target`(:894): 정수 계약수 = `floor(|wt|×nav/(px×multiplier))`, 자본=증거금
-- `_execute`(:832·848): 체결단가 `per = px×multiplier×margin_rate×(1+comm)`
-- NAV/gross/turnover(:389·922·938·980): `shares×close` → `×multiplier`
-- 만기 롤: `oil_futures.RollModel` 로직 이식(만기일 강제 청산→재진입 + 롤비용)
-- 통화: `sym.isdigit()` 추정 → `instrument_spec(sym).currency` + FX 환산
-- (선택) Sizing `fixed_contracts` 모드 — "N계약" 관용. 엔진 구현과 함께 enum 추가
-  (미구현 enum은 spec에 두지 않는 원칙 — 엔진 단계에서 동시 도입)
+**E1 (구현 완료, `_run_scheduled` — 추세추종 always·scheduled 경로)**:
+- 정수 계약수 사이징 = `floor(|wt|×nav/(px×multiplier×margin_rate))` (증거금 레버리지)
+- 체결단가·현금흐름·NAV·그로스·턴오버·펀딩·마진콜 전부 `×multiplier` 주입
+- 선물 보유여력 = `lev_eff = leverage/margin_rate` (주식 mr=1이면 항등 → 완전 백워드 호환)
+- 거래세(sell_tax)는 주식 매도만 — 선물 면제(종목별 `stx`)
+- 통화: `sym.isdigit()` → `instrument_spec(sym).currency`
+- **검증**: 기존 78 테스트 항등 통과(주식 무영향) + 합성 선물 4 테스트(1%→~10% 증거금
+  레버리지·숏 대칭·명목>자본 보유). `core/tests/test_futures_engine.py`.
+- **정직한 한계**: 종가 MtM×승수 + 증거금 레버리지 모델. 진짜 일일 변동증거금 현금흐름은
+  미구현(측정된 차이 시 도입). 혼합 증거금 포트폴리오는 `lev_eff`가 최저율 근사(단일·동질=정확).
+
+**E1b (이벤트 on_signal 경로 — 가드, 다음 증분)**: `run_unified`는 차입 메커니즘이 없어
+명목>자본 선물이 무거래로 퇴화 → **선물+on_signal은 엔진에서 차단**(추세추종 안내). 이벤트
+경로 선물 회계는 증거금 차감형 모델로 별도 구현 필요.
+
+**E2 (만기 롤 — 데이터 의존, 보류)**: `oil_futures.RollModel` 로직 이식(만기일 강제 청산→롤
++ 롤비용). 만기 캘린더·만기물별 데이터 필요 → 데이터 수급 후. 그때까지 `roll_cost_pct` 폴백.
+
+**(선택) Sizing `fixed_contracts`**: "N계약" 관용. 미구현 enum은 spec에 두지 않는 원칙대로
+이벤트/명시 계약수 사이징과 함께 도입.
 
 ## 6. 옵션 — 후순위 (별도 계층)
 
