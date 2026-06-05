@@ -29,7 +29,7 @@ from ..backtest import (
 )
 from ..blocks import EvalContext, Node, evaluate, referenced_symbols, select_symbol
 from ..blocks.catalog import get, has
-from ..exec_defaults import instrument_spec, margin_rate, round_to_tick
+from ..exec_defaults import instrument_spec, is_futures, margin_rate, round_to_tick
 from .metrics import finalize_metrics
 from .spec import StrategyIR
 

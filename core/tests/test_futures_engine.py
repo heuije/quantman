@@ -18,9 +18,10 @@ _CORE = Path(__file__).resolve().parent.parent
 if str(_CORE) not in sys.path:
     sys.path.insert(0, str(_CORE))
 
-from quant_core.blocks import data
+from quant_core.blocks import const, data
+from quant_core.blocks.node import Node
 from quant_core.exec_defaults import instrument_spec
-from quant_core.ir_engine import (Entry, PositionSpec, SimSpec, Sizing,
+from quant_core.ir_engine import (Entry, Exit, PositionSpec, SimSpec, Sizing,
                                    StrategyIR, Universe, run_strategy_ir)
 
 
@@ -78,3 +79,31 @@ def test_futures_short_profits_on_drop():
     assert res["success"], res.get("error")
     ret = res["equity"].iloc[-1] / res["equity"].iloc[0] - 1
     assert ret > 0.05, f"선물 숏이 하락에서 이익 안 남: {ret:.3%}"
+
+
+# ── 이벤트(on_signal) 경로 — run_unified 진입. 선물 가드가 *크래시 없이* 동작하는지. ──
+# (회귀: 선물 가드에 쓰인 is_futures가 engine.py에 import 누락 → on_signal 백테스트 전부
+#  NameError로 죽던 버그를 잡는다. core 테스트엔 on_signal 경로 커버리지가 없어 누락됐었다.)
+
+def _event_always_true(symbol: str) -> StrategyIR:
+    # Close>0 (항상 참) on_signal — 이벤트 디스패치(run_unified)를 타되 매수가 발생.
+    cond = Node(op="compare", params={"op": ">"},
+                inputs={"left": data("Close"), "right": const(0)})
+    return StrategyIR(
+        signal=cond,
+        universe=Universe(kind="single", symbols=[symbol]),
+        position=PositionSpec(entry=Entry(mode="on_signal"), exit=Exit(hold_days=3)),
+        simulation=SimSpec(initial_capital=1e7, commission=0.0, slippage=0.0))
+
+
+def test_event_path_equity_runs():
+    """주식 on_signal(이벤트) 백테스트가 크래시 없이 성공 — run_unified 경로 회귀."""
+    res = run_strategy_ir(_event_always_true("005930"), _ds("005930", _UP))
+    assert res["success"], res.get("error")   # NameError였다면 success=False·error에 트레이스
+
+
+def test_event_path_futures_guarded_not_crash():
+    """선물 on_signal은 (증거금 회계 미구현이라) 가드로 안내 — 크래시가 아니라 명시적 차단."""
+    res = run_strategy_ir(_event_always_true("코스피200선물"), _ds("코스피200선물", _UP))
+    assert not res["success"]
+    assert "증거금 회계" in (res.get("error") or "")   # 가드 메시지(NameError 아님)
