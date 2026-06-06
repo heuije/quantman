@@ -195,3 +195,25 @@ Binance로 직접 fetch*해 영속 볼륨(`/srv/data`)에 저장한다. **KIS·i
   orphan으로 굳어 버그 유지. **그래서 F1은 보류, F0(equity)만 배포**해 라이브 버그를 무데이터로 해소.
 - 실 KOSPI200 선물 데이터를 프로덕션에 *올리려면* 아키텍처 결정 필요: (a) 서버에 KIS 데이터 앱키 추가해
   cron이 fetch_kis_futures_daily 호출, (b) Railway 볼륨 직접 쓰기(일회성), (c) 로컬→프로덕션 업로드 경로 신설.
+
+### F3 — 옵션(a) 채택: 서버 KIS 데이터 클라이언트 + cron 수집 (fail-safe, 미검증)
+
+서버엔 인증 KIS 호출이 없었으므로(공개 마스터만) 최소 데이터 클라이언트 신설:
+- `server/app/kis_data_client.py`: `KisDataClient`(oauth2/tokenP → Bearer+appkey/appsecret/tr_id,
+  검증된 로컬 kis_broker 패턴) + `get_kis_data_client()`(env 없으면 None). tr_id→path 매핑.
+- `main.py` `_refresh_kospi_futures()` + cron `kospi_futures`(16:00 KST, 선물 마감 직후) — env
+  미설정이면 **no-op(fail-safe)**, `_run_with_retry`로 격리(기존 갱신에 무영향).
+- 검증: 구문·fail-safe 게이팅(env 없으면 None, 있으면 클라이언트, HTTP 미호출) 확인. **실제 KIS
+  HTTP·토큰·종목코드는 미검증** — 키 설정 시점에 검증.
+
+**활성화 런북(사용자 작업)**:
+1. KIS 개발자포털에서 **데이터(시세) 전용 앱키** 발급(거래 키와 분리 권장).
+2. 현행 **KOSPI200 최근월물 종목코드**(지수선물 6자리, 예 `101S06`) 확인 — KIS 선물옵션 종목마스터/HTS.
+3. Railway env 설정: `QP_KIS_DATA_APPKEY`·`QP_KIS_DATA_APPSECRET`·`QP_KIS_KOSPI_FUT_ISCD`
+   (모의 먼저면 `QP_KIS_DATA_VIRTUAL=1`).
+4. 검증: `_refresh_kospi_futures` 1회 실행 → output2 매핑·append 확인. 이후 매일 16:00 자동.
+5. 깊은 과거(2010+): KIS 일봉 보관깊이가 얕으면 CSV 백필(`seed_from_investing_csv`)을 1회 볼륨에
+   직접 넣어야(옵션 b) — 즉 옵션(a)는 *증분*, 깊은 과거는 옵션(b) 1회가 보완.
+
+**배포 순서 주의**: F1(카탈로그 futures 승격)은 **데이터가 흐른 뒤** 배포해야 안전 — 키·종목코드
+설정→cron/시드로 데이터 채움→그 다음 F1+F2+F3 함께 배포(데이터 없이 F1만 가면 orphan ETF 버그 재발).

@@ -229,6 +229,33 @@ def _refresh_dataset_all() -> None:
     _refresh_kr_dataset()
 
 
+def _refresh_kospi_futures() -> None:
+    """KOSPI200 선물 일봉 증분 (KIS FHKIF03020100). env에 데이터 앱키·종목코드가 없으면
+    no-op(fail-safe) — 키 설정 전까지 비활성이라 기존 갱신에 무영향.
+
+    ⚠ 미검증: 실제 KIS 연결(키·토큰·현행 최근월물 종목코드)은 자격증명 설정 시점에 1회 검증
+    필요(런북: docs/futures-ir-design.md F2). 깊은 과거(2010+)는 별도 CSV 백필
+    (seed_from_investing_csv); 여기는 최근분 증분만 — 날짜로 소스 분할(CSV 과거·KIS 신규).
+    """
+    import os
+
+    from quant_core.data_fetcher import fetch_kis_futures_daily
+
+    from .kis_data_client import get_kis_data_client
+
+    client = get_kis_data_client()
+    iscd = os.getenv("QP_KIS_KOSPI_FUT_ISCD", "").strip()   # 현행 최근월물 종목코드(지수선물 6자리)
+    if client is None or not iscd:
+        _log.info("KOSPI200 선물 수집 skip — QP_KIS_DATA_APPKEY/SECRET·"
+                  "QP_KIS_KOSPI_FUT_ISCD 미설정(fail-safe)")
+        return
+    end = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
+    df = fetch_kis_futures_daily("코스피200선물", client.request, iscd=iscd, start=start, end=end)
+    _log.info("KOSPI200 선물 일봉 증분: 총 %d행 (~%s)", len(df), end)
+    data_cache.invalidate()
+
+
 def _refresh_global_dataset() -> None:
     """글로벌 데이터셋 — yfinance/FDR ETF/FRED/Binance/공포탐욕 + 해외 on-demand 종목.
 
@@ -463,6 +490,13 @@ async def lifespan(app: FastAPI):
         lambda: _run_with_retry("krx_1st", _refresh_krx, scheduler),
         CronTrigger(hour=15, minute=45),
         id="krx_1st", replace_existing=True)
+
+    # 16:00 — KOSPI200 선물 일봉 증분 (KIS, 선물 정규장 마감 직후). env(QP_KIS_DATA_APPKEY·
+    # QP_KIS_KOSPI_FUT_ISCD) 미설정이면 fail-safe no-op이라 기존 갱신에 무영향.
+    scheduler.add_job(
+        lambda: _run_with_retry("kospi_futures", _refresh_kospi_futures, scheduler),
+        CronTrigger(hour=16, minute=0),
+        id="kospi_futures", replace_existing=True)
 
     # 17:00 — NAVER 펀더멘털 (publish 비공개, 보수적 추정)
     scheduler.add_job(
