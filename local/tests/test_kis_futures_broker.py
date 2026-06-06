@@ -1,0 +1,59 @@
+"""KisFuturesBroker 순수 헬퍼 — 주문 바디(TTTO1101U)·잔고 파싱(CTFO6118R) 단위검증.
+
+네트워크·자격증명 없이 검증 가능한 부분만(build/parse). 실제 KIS 주문·토큰·잔고 output 구조는
+국내선물 모의(virtual=True) 연결 시점에 검증(#4 phase2). 계약수 기반 단위 확인.
+
+    cd platform/local && python -m pytest tests/test_kis_futures_broker.py -q
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_LOCAL = Path(__file__).resolve().parent.parent   # tests → local
+if str(_LOCAL) not in sys.path:
+    sys.path.insert(0, str(_LOCAL))
+
+from localapp.kis_futures_broker import build_futures_order_body, parse_futures_balance
+
+
+def test_build_order_body_buy():
+    b = build_futures_order_body(cano="81012345", acnt_prdt_cd="03",
+                                 symbol="167R12", qty=2, price=345.05, side="buy")
+    assert b["SLL_BUY_DVSN_CD"] == "02"        # 매수
+    assert b["ACNT_PRDT_CD"] == "03"           # 선물옵션 계좌
+    assert b["SHTN_PDNO"] == "167R12"
+    assert b["ORD_QTY"] == "2"                 # 계약수
+    assert b["UNIT_PRICE"] == "345.05"         # 지정가
+    assert b["ORD_DVSN_CD"] == "01"            # 지정가
+    assert b["ORD_PRCS_DVSN_CD"] == "02"       # 주문전송
+
+
+def test_build_order_body_sell():
+    s = build_futures_order_body(cano="81012345", acnt_prdt_cd="03",
+                                 symbol="167R12", qty=1, price=340, side="sell")
+    assert s["SLL_BUY_DVSN_CD"] == "01"        # 매도
+
+
+def test_build_order_body_bad_side():
+    import pytest
+    with pytest.raises(ValueError):
+        build_futures_order_body(cano="1", acnt_prdt_cd="03", symbol="x",
+                                 qty=1, price=1, side="hold")
+
+
+def test_parse_balance_contracts():
+    resp = {"output1": [
+        {"pdno": "167R12", "cblc_qty": "2", "ccld_avg_unpr1": "344.70",
+         "excc_unpr": "345.70", "trad_pfls_amt": "500000"},
+        {"pdno": "EMPTY", "cblc_qty": "0"},     # 0계약 → 제외
+    ]}
+    out = parse_futures_balance(resp)
+    assert len(out["positions"]) == 1
+    p = out["positions"][0]
+    assert p["symbol"] == "167R12" and p["qty"] == 2
+    assert p["avg_price"] == 344.70 and p["eval_price"] == 345.70 and p["pnl"] == 500000.0
+
+
+def test_parse_balance_empty():
+    assert parse_futures_balance({}) == {"positions": []}

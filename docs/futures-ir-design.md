@@ -234,3 +234,26 @@ Model A를 `run_unified`에 미러:
 검증: 합성 1%→~10% 레버리지·주식 baseline ~1%·회귀 무변(core 97 통과) + 실 CSV로 always vs
 on_signal-보유 대비(vol drag 회피 실증). 한계: on_signal은 롱 전용(숏·롱숏은 scheduled+long_short);
 혼합 유니버스 이벤트는 근사(S-futures-mix 경고 유지).
+
+### UI(#7) — 노코드 빌더에서 선물 선택
+
+#5 진단(빌더 유니버스 picker가 tradable=true만 노출 → 선물 제외) 수정: 서버 /symbols에 asset_class
+("futures"|"equity") 추가, web picker가 tradable-scope에 선물 포함 + "선물" 탭 + "백테스트 전용" 배지.
+라이브 게이트(_assert_live_tradable)는 이미 선물 차단(주식 마스터 부재) → 선물=백테스트 선택가능·
+라이브 차단. 검증: tsc -b·core 통과. ⚠ 브라우저 런타임 검증은 배포 시점.
+
+### 자동매매(#4 phase1) — KisFuturesBroker 코어 (standalone, 미배선)
+
+선물옵션 거래 브로커. KIS 공식 spec(국내선물옵션_주문_계좌.xlsx) 추출 *검증* TR:
+- 주문 TTTO1101U/VTTO1101U: ORD_PRCS_DVSN_CD=02·CANO·ACNT_PRDT_CD=03·SLL_BUY_DVSN_CD(02매수/01매도)·
+  SHTN_PDNO·ORD_QTY(계약수)·UNIT_PRICE(지정가)·ORD_DVSN_CD=01. 잔고 CTFO6118R: pdno·cblc_qty·ccld_avg_unpr1.
+- secrets_store.save_kis_futures(선물옵션 계좌, 주식과 별개·상품코드 03). 인증=주식 kis_broker 패턴.
+- 순수 헬퍼(build_futures_order_body·parse_futures_balance) 모의 단위검증(local 5통과). buy_limit/
+  sell_limit/account_snapshot 구현; 시장가·정정취소·체결조회·실시간(H0IFCNT0)은 phase2.
+
+⚠ **standalone — Trader 자동 루프 미배선**(임의 발주 없음). 실 KIS 주문·토큰·잔고 output은 미검증 —
+**국내선물 모의(virtual=True) 연결 후 검증** 필요.
+
+**자동매매 활성화 런북(사용자, phase2)**: ① KIS 선물옵션 계좌+거래 앱키(모의 먼저) ② 로컬 앱에
+save_kis_futures 저장(서버·리포 금지) ③ 모의로 buy_limit/account_snapshot 1회 검증(응답·output 확정)
+④ 검증 후 Trader 루프 배선(event_buy_qty 선물 사이징 완료) + 실시간 + 시장가 코드 확정.
