@@ -336,6 +336,45 @@ def fetch_kis_futures_daily(symbol: str, request_fn, *, iscd: str,
     return append_daily_bars(symbol, df)
 
 
+def seed_kis_futures_full(symbol: str, request_fn, iscd: str, *, floor: str = "20100101",
+                          market: str = "F", max_calls: int = 60) -> pd.DataFrame:
+    """KIS FHKIF03020100을 과거로 거슬러 페이지네이션해 최대 깊이 일봉을 모아 **덮어쓰기** 시드.
+
+    KIS 일봉은 호출당 제한(~100건)이라 날짜 윈도우를 거슬러 반복(floor까지/더 받을 게 없을 때까지).
+    기존 parquet(ETF orphan·스케일 혼합 등)을 *통째 교체* → 혼합 오염 원천 차단. KIS 보관 깊이만큼
+    획득(얕으면 그만큼만; 깊은 과거는 별도 CSV 시드로 보완). request_fn은 호출자(KIS 자격증명 보유)가 주입.
+    """
+    from datetime import datetime, timedelta
+    frames: list[pd.DataFrame] = []
+    seen: set = set()
+    end_dt = datetime.now()
+    for _ in range(max_calls):
+        start = max((end_dt - timedelta(days=140)).strftime("%Y%m%d"), floor)
+        end = end_dt.strftime("%Y%m%d")
+        if start > end:
+            break
+        resp = request_fn("FHKIF03020100", {
+            "FID_COND_MRKT_DIV_CODE": market, "FID_INPUT_ISCD": iscd,
+            "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end, "FID_PERIOD_DIV_CODE": "D"})
+        df = kis_futures_daily_to_ohlcv((resp or {}).get("output2") or [])
+        new = df[~df.index.isin(seen)]
+        if new.empty:                       # 더 받을 과거 없음 → 종료
+            break
+        frames.append(new)
+        seen.update(new.index)
+        earliest = new.index.min()
+        if earliest.strftime("%Y%m%d") <= floor:
+            break
+        end_dt = earliest - timedelta(days=1)
+    if not frames:
+        return _load_existing(symbol)
+    full = pd.concat(frames)
+    full = full[~full.index.duplicated(keep="first")].sort_index()
+    _save(symbol, full)                     # 덮어쓰기 — orphan/혼합 제거
+    mark_data_dirty()
+    return full
+
+
 # ── 데이터셋 세대 마커 (캐시 일관성) ──────────────────────────────────────────
 # 인메모리 캐시(서버 data_cache)가 디스크/다른 프로세스의 변경을 감지하도록, 모든
 # 벌크 변경이 이 토큰을 갱신한다. 서버는 읽기 시 토큰을 싸게 확인해 바뀌었으면 리로드.

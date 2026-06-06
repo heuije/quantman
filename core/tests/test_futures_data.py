@@ -20,7 +20,8 @@ if str(_CORE) not in sys.path:
 
 import quant_core.data_fetcher as df_mod
 from quant_core.data_fetcher import (_parse_investing_volume, clean_investing_csv,
-                                     fetch_kis_futures_daily, kis_futures_daily_to_ohlcv)
+                                     fetch_kis_futures_daily, kis_futures_daily_to_ohlcv,
+                                     seed_kis_futures_full)
 
 # 실제 파일 형식 표본(최신→과거 역순, 날짜 공백, 콤마, 거래량 K/빈값)
 _CSV = (
@@ -99,3 +100,29 @@ def test_fetch_kis_futures_daily_builds_params_and_appends(tmp_path, monkeypatch
     # 매핑·append 결과
     assert out.loc["2026-06-05", "Close"] == 345.70
     assert (tmp_path / "코스피200선물.parquet").exists()   # 실제 저장됨
+
+
+def test_seed_kis_futures_full_paginates_and_overwrites(tmp_path, monkeypatch):
+    monkeypatch.setattr(df_mod, "DATA_DIR", tmp_path)
+    # 기존 ETF orphan(2020, ~₩2.8만) — 덮어써져야 함(스케일 혼합 방지)
+    df_mod._save("코스피200선물", pd.DataFrame(
+        {"Open": [28000.0], "High": [28000.0], "Low": [28000.0], "Close": [28000.0], "Volume": [1.0]},
+        index=pd.DatetimeIndex([pd.Timestamp("2020-01-02")])))
+    all_dates = pd.bdate_range("2026-01-02", "2026-06-05")
+
+    def fake_kis(tr_id, params):                       # 호출당 ~40건 캡 → 페이지네이션 강제
+        s, e = params["FID_INPUT_DATE_1"], params["FID_INPUT_DATE_2"]
+        win = [d for d in all_dates if s <= d.strftime("%Y%m%d") <= e][-40:]
+        return {"output2": [{"stck_bsop_date": d.strftime("%Y%m%d"), "futs_prpr": "344.0",
+                             "futs_oprc": "343.0", "futs_hgpr": "345.0", "futs_lwpr": "342.0",
+                             "acml_vol": "100"} for d in win]}
+
+    res = seed_kis_futures_full("코스피200선물", fake_kis, "A01606", floor="20260101")
+    # 페이지네이션으로 전체 영업일 수집(오름차순)
+    assert len(res) == len(all_dates)
+    assert str(res.index[0].date()) == "2026-01-02" and str(res.index[-1].date()) == "2026-06-05"
+    # ETF orphan 덮어써짐 — 선물 스케일(344)만, 2020 ETF 행 없음
+    assert res["Close"].max() == 344.0
+    assert pd.Timestamp("2020-01-02") not in res.index
+    saved = df_mod._load_existing("코스피200선물")           # 디스크도 덮어쓰기
+    assert pd.Timestamp("2020-01-02") not in saved.index and len(saved) == len(all_dates)

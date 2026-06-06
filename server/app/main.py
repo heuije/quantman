@@ -239,7 +239,7 @@ def _refresh_kospi_futures() -> None:
     """
     import os
 
-    from quant_core.data_fetcher import fetch_kis_futures_daily
+    from quant_core.data_fetcher import seed_kis_futures_full
 
     from .kis_data_client import get_kis_data_client
     from .kis_futures_master import resolve_kospi200_front_month
@@ -250,10 +250,10 @@ def _refresh_kospi_futures() -> None:
     if client is None or not iscd:
         _log.info("KOSPI200 선물 수집 skip — KIS 데이터키 미설정 또는 최근월물 해석 실패(fail-safe)")
         return
-    end = datetime.now().strftime("%Y%m%d")
-    start = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
-    df = fetch_kis_futures_daily("코스피200선물", client.request, iscd=iscd, start=start, end=end)
-    _log.info("KOSPI200 선물 일봉 증분: 총 %d행 (~%s)", len(df), end)
+    # 넓은 기간 페이지네이션 + 덮어쓰기 — 기존 ETF orphan/혼합을 통째 교체(스케일 혼합 원천 차단).
+    df = seed_kis_futures_full("코스피200선물", client.request, iscd=iscd)
+    rng = f"{df.index[0].date()}~{df.index[-1].date()}" if len(df) else "-"
+    _log.info("KOSPI200 선물 시드(덮어쓰기): 총 %d행 (%s, 코드 %s)", len(df), rng, iscd)
     data_cache.invalidate()
 
 
