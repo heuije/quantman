@@ -176,3 +176,22 @@ F0는 데이터가 없어 ETF를 주식으로 후퇴시킨 *임시*였다. 투�
   실선물 데이터를 덮어써야 안전 — 코드+시드를 같이.
 - **always 모드 선물의 vol drag**(발견): always는 매일 lev_eff=10 리밸런싱 → 레버리지 ETF식 감쇠.
   추세추종 "보유"는 *계약 정적 보유* 의미가 적합 — 엔진 semantics 과제(데이터 범위 밖).
+
+### F2 — KIS 일봉 증분 fetch(FHKIF03020100) 구현 + 프로덕션 데이터 경로 진단
+
+KIS 공식 spec(국내선물옵션_기본시세.xlsx) 추출로 *검증된* 요청·응답으로 구현:
+- `kis_futures_daily_to_ohlcv(output2)`: output2[](stck_bsop_date·futs_oprc/hgpr/lwpr/prpr·acml_vol)
+  → OHLCV. `fetch_kis_futures_daily(symbol, request_fn, iscd, start, end)`: `request_fn(tr_id, params)`을
+  주입(core는 KIS 클라이언트 비의존; 자격증명·HTTP는 로컬 KIS 환경이 제공) → 매핑 → append_daily_bars.
+- (버그 수정: append_daily_bars가 `_load`(미정의) 호출 → `_load_existing`. F1에 잠복했으나 인메모리
+  검증이 append를 안 타 누락 — KIS 모의 테스트가 잡음.)
+- 검증: 요청 파라미터(FID_COND_MRKT_DIV_CODE=F·FID_INPUT_ISCD·FID_PERIOD_DIV_CODE=D)·output2 매핑을
+  모의 응답으로 단위검증(test_futures_data.py). **실제 KIS HTTP·인증·현행 최근월물 코드 결정은 연결 시점.**
+
+**🔴 프로덕션 데이터 경로 블로커(진단으로 드러남)**: 배포 서버는 데이터를 *런타임에 yfinance/FDR/FRED/
+Binance로 직접 fetch*해 영속 볼륨(`/srv/data`)에 저장한다. **KIS·investing.com CSV는 서버 소스가 아니고**
+(KIS 자격증명은 로컬 전용), **로컬→프로덕션 데이터 업로드 경로가 없다**(번들은 서버→로컬 방향). 따라서:
+- `코스피200선물`은 프로덕션에서 어떤 fetch도 안 타는 *orphan 키* — F1 코드만 배포하면 기존 ETF parquet이
+  orphan으로 굳어 버그 유지. **그래서 F1은 보류, F0(equity)만 배포**해 라이브 버그를 무데이터로 해소.
+- 실 KOSPI200 선물 데이터를 프로덕션에 *올리려면* 아키텍처 결정 필요: (a) 서버에 KIS 데이터 앱키 추가해
+  cron이 fetch_kis_futures_daily 호출, (b) Railway 볼륨 직접 쓰기(일회성), (c) 로컬→프로덕션 업로드 경로 신설.

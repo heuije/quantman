@@ -275,13 +275,65 @@ def append_daily_bars(symbol: str, new: pd.DataFrame) -> pd.DataFrame:
     매핑한 것). 스플라이스 정합(예: |new 첫 바 ≈ 기존 마지막 바|)은 호출자가 검증해 점프를 차단한다.
     """
     if new is None or new.empty:
-        return _load(symbol)
+        return _load_existing(symbol)
     new = new.copy()
     new.index = pd.to_datetime(new.index).tz_localize(None)
-    merged = _merge(_load(symbol), new)
+    merged = _merge(_load_existing(symbol), new)
     _save(symbol, merged)
     mark_data_dirty()
     return merged
+
+
+def kis_futures_daily_to_ohlcv(output2) -> pd.DataFrame:
+    """KIS FHKIF03020100 output2[](기간별 조회데이터) → OHLCV(오름차순 DatetimeIndex).
+
+    필드(KIS 공식 spec, 국내선물옵션_기본시세.xlsx): stck_bsop_date(YYYYMMDD)·futs_oprc(시)·
+    futs_hgpr(고)·futs_lwpr(저)·futs_prpr(현재가=종가)·acml_vol(거래량). 예: futs_prpr "344.70".
+    """
+    rows = []
+    for r in output2 or []:
+        d = str(r.get("stck_bsop_date", "")).strip()
+        if len(d) != 8 or not d.isdigit():
+            continue
+        try:
+            rows.append((pd.Timestamp(f"{d[:4]}-{d[4:6]}-{d[6:]}"),
+                         float(r["futs_oprc"]), float(r["futs_hgpr"]),
+                         float(r["futs_lwpr"]), float(r["futs_prpr"]),
+                         float(r.get("acml_vol", 0) or 0)))
+        except (KeyError, ValueError, TypeError):
+            continue
+    cols = ["Open", "High", "Low", "Close", "Volume"]
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    df = (pd.DataFrame(rows, columns=["d"] + cols)
+          .set_index("d").sort_index())
+    df.index.name = None
+    return df
+
+
+def fetch_kis_futures_daily(symbol: str, request_fn, *, iscd: str,
+                            start: str, end: str, market: str = "F") -> pd.DataFrame:
+    """KIS FHKIF03020100(국내선물옵션 일봉, 모의 OK)로 일봉 fetch → 증분 append.
+
+    request_fn(tr_id, params)->dict(JSON)을 주입한다 — KIS 자격증명·인증·HTTP는 호출자(로컬 KIS
+    환경)가 제공하고, core는 KIS 클라이언트에 비의존. iscd=선물 종목코드(지수선물 6자리, 현행 최근
+    월물), start/end=YYYYMMDD. 반환 = append 후 머지된 전체 시리즈.
+
+    GET /uapi/domestic-futureoption/v1/quotations/inquire-daily-fuopchartprice
+    ⚠ 검증범위: 요청 파라미터·output2 매핑은 KIS 공식 spec 기준 + 모의 응답으로 단위검증됨.
+    실제 KIS HTTP 호출(인증·현행 최근월물 종목코드 결정)은 KIS 연결 시점에 검증 필요.
+    """
+    resp = request_fn("FHKIF03020100", {
+        "FID_COND_MRKT_DIV_CODE": market,   # F: 지수선물, O: 지수옵션
+        "FID_INPUT_ISCD": iscd,
+        "FID_INPUT_DATE_1": start,          # 조회 시작일 (YYYYMMDD)
+        "FID_INPUT_DATE_2": end,            # 조회 종료일 (YYYYMMDD)
+        "FID_PERIOD_DIV_CODE": "D",         # D:일봉
+    })
+    df = kis_futures_daily_to_ohlcv((resp or {}).get("output2") or [])
+    if df.empty:
+        return _load_existing(symbol)
+    return append_daily_bars(symbol, df)
 
 
 # ── 데이터셋 세대 마커 (캐시 일관성) ──────────────────────────────────────────
