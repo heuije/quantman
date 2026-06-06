@@ -16,6 +16,7 @@ from typing import Optional
 import pandas as pd
 
 from ..blocks import EvalContext, evaluate
+from ..exec_defaults import instrument_spec
 from .engine import _scoped, price_exit_reason
 from .spec import StrategyIR
 
@@ -53,13 +54,14 @@ def cycle_exit_reason(strategy: StrategyIR, *, held_days: int,
 
 
 def event_buy_qty(strategy: StrategyIR, *, cash: float, prev_close: float,
-                  capital: Optional[float] = None) -> int:
-    """이벤트(on_signal) IR 진입 종목당 매수 수량(정수주) — 엔진 _budget과 동일.
+                  capital: Optional[float] = None, symbol: Optional[str] = None) -> int:
+    """이벤트(on_signal) IR 진입 종목당 수량 — 엔진 _open과 동일.
 
     예산 = amount_krw(fixed_amount) 또는 cash×amount_pct% (단일 종목 유니버스는 100% 전액).
-    횡단 사이저(equal/vol/target_vol/fixed_weight)는 횡단 비중이라 종목 독립 사이징 불가 →
-    스케줄·상시 진입에만 적용. 그 경우 호출자가 preview 수량을 쓰도록 이 함수는 이벤트 전용.
-    max_position_pct(<100)면 단일 종목 비중 상한으로 클램프. capital 미지정이면 cash 사용.
+    선물이면 **계약수 = floor(예산/(px×승수×증거금률))**(예산=증거금 → 명목 레버리지; 엔진 E1b
+    _open과 일치). 주식이면 정수주 = floor(예산/px). symbol 미지정 시 단일 유니버스면 그 종목으로 추론.
+    횡단 사이저(equal/vol/target_vol/fixed_weight)는 스케줄·상시 전용 — 호출자가 preview 수량 사용.
+    max_position_pct(<100, 주식만)면 비중 상한 클램프. capital 미지정이면 cash 사용.
     """
     if prev_close <= 0:
         return 0
@@ -71,6 +73,12 @@ def event_buy_qty(strategy: StrategyIR, *, cash: float, prev_close: float,
     else:
         eff_pct = 100.0 if single else sz.amount_pct
         budget = cash * (eff_pct / 100.0)
+    sym = symbol or (u.symbols[0] if (single and u.symbols) else None)
+    spec = instrument_spec(sym) if sym else None
+    if spec is not None and spec.asset_class == "futures":
+        # 선물: 예산=증거금 → 계약수=floor(증거금/(px×승수×증거금률)). 엔진 E1b _open과 일치.
+        denom = prev_close * spec.multiplier * spec.init_margin_rate
+        return max(0, int(budget / denom)) if denom > 0 else 0
     qty = int(budget // prev_close)
     cap = capital if capital is not None else cash
     mp = sz.max_position_pct

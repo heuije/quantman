@@ -23,6 +23,7 @@ from quant_core.blocks.node import Node
 from quant_core.exec_defaults import instrument_spec
 from quant_core.ir_engine import (Entry, Exit, PositionSpec, SimSpec, Sizing,
                                    StrategyIR, Universe, run_strategy_ir)
+from quant_core.ir_engine.live import event_buy_qty
 
 
 def _ds(symbol: str, closes) -> dict:
@@ -137,3 +138,11 @@ def test_event_equity_baseline_no_leverage():
     assert res["success"], res.get("error")
     ret = res["equity"].iloc[-1] / res["equity"].iloc[0] - 1
     assert abs(ret) < 0.02, f"주식 이벤트인데 레버리지 효과({ret:.3%})"
+
+
+def test_event_buy_qty_futures_matches_engine():
+    """live.py event_buy_qty가 선물을 계약수=floor(증거금/(px×승수×mr))로 — 라이브=백테스트(E1b) 일치."""
+    fut = _event_hold("코스피200선물")    # single, 승수 250,000·증거금 0.10
+    assert event_buy_qty(fut, cash=1e7, prev_close=400.0) == 1     # 1e7/(400×250000×0.10)=1계약
+    eq = _event_hold("005930")            # 주식: 정수주
+    assert event_buy_qty(eq, cash=1e7, prev_close=400.0) == 25000  # 1e7//400
