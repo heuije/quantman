@@ -57,10 +57,17 @@ YFINANCE_SYMBOLS = {
 }
 
 FDR_SYMBOLS = {
-    "코스피200선물": "261220",
+    # ⚠ 261220은 KODEX200선물 *ETF*(주식, ~₩만대) — 실제 KOSPI200 선물 계약이 아니다.
+    # 실선물(지수포인트·승수 250,000)은 "코스피200선물" 키로 CSV 백필+KIS 증분 수급(CSV_SEEDED_FUTURES).
+    # 둘이 같은 키를 쓰던 충돌(ETF에 선물 승수 적용)을 분리(F1) — ETF는 ETF 키로.
+    "코스피200선물ETF": "261220",
     "나스닥100선물": "304940",
     "은선물":        "144600",
 }
+
+# CSV(투자닷컴) 콜드스타트 백필 + KIS 일봉 증분으로 수급하는 실선물(연속 일봉). FDR/yfinance
+# 미수집(무료 연속선물 피드 부재) — seed_from_investing_csv로 시드, append_daily_bars로 증분.
+CSV_SEEDED_FUTURES = ["코스피200선물"]
 
 # 매크로 지표 — yfinance
 MACRO_YF_SYMBOLS = {
@@ -122,7 +129,7 @@ MACRO_OTHER = ["암호화폐공포탐욕"]
 MACRO_DERIVED = ["VIX 기간구조", "구리금비율", "회사채신용스프레드",
                  "버핏지수", "실질기준금리"]
 
-ASSET_SYMBOLS = list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + ["비트코인"]
+ASSET_SYMBOLS = list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + ["비트코인"] + CSV_SEEDED_FUTURES
 MACRO_SYMBOLS = (list(MACRO_YF_SYMBOLS) + list(MACRO_FRED_SYMBOLS)
                  + list(MACRO_FRED_LAGGED) + MACRO_OTHER + MACRO_DERIVED)
 ALL_SYMBOLS = ASSET_SYMBOLS + MACRO_SYMBOLS
@@ -132,7 +139,7 @@ ALL_SYMBOLS = ASSET_SYMBOLS + MACRO_SYMBOLS
 SYMBOL_CATEGORY: dict[str, str] = {
     # 자산
     "S&P500": "자산", "원유선물": "자산", "천연가스선물": "자산", "금선물": "자산",
-    "코스피200선물": "자산", "나스닥100선물": "자산", "은선물": "자산",
+    "코스피200선물": "자산", "코스피200선물ETF": "자산", "나스닥100선물": "자산", "은선물": "자산",
     "구리선물": "자산", "비트코인": "자산",
     "나스닥선물": "자산", "은선물(COMEX)": "자산", "비트코인선물": "자산",
     # 변동성
@@ -195,6 +202,86 @@ def _merge(existing: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
     combined = pd.concat([existing, new])
     combined = combined[~combined.index.duplicated(keep="last")]
     return combined.sort_index()
+
+
+# ── 실선물 일봉 수급: CSV 콜드스타트 백필 + 증분 append (KOSPI200 선물 등) ──────────
+# KOSPI200은 무료 연속선물 피드가 없어, 투자닷컴 과거데이터 CSV로 깊은 과거(2010+)를 1회
+# 시드하고, 이후 일봉은 KIS(FHKIF03020100, 모의 OK)가 단일 소스로 증분 append한다.
+# 날짜로 소스를 분할(CSV=과거·KIS=신규, 중복은 KIS 우선) → "데이터포인트당 소스 1개" 준수.
+
+def _parse_investing_volume(v) -> float:
+    """investing.com 거래량 '18.45K'·'175.97K'·'2.3M' → 숫자. 빈값/'-'/NaN → 0."""
+    if v is None:
+        return 0.0
+    s = str(v).strip().replace(",", "")
+    if s in ("", "-", "nan", "NaN", "None"):
+        return 0.0
+    mult = 1.0
+    if s[-1] in "KkMmBb":
+        mult = {"K": 1e3, "M": 1e6, "B": 1e9}[s[-1].upper()]
+        s = s[:-1]
+    try:
+        return float(s) * mult
+    except ValueError:
+        return 0.0
+
+
+def clean_investing_csv(csv_path) -> pd.DataFrame:
+    """investing.com 과거데이터 CSV → 정제 OHLCV(오름차순 DatetimeIndex).
+
+    내보내기 특이점 처리: 날짜 내부 공백('2026- 06- 02'), 천단위 콤마('1,434.95'),
+    거래량 K/M 접미사, 최신→과거 역순. 컬럼: 날짜·종가·시가·고가·저가·거래량(·변동%).
+    """
+    raw = pd.read_csv(csv_path, encoding="utf-8-sig")
+    raw = raw.rename(columns={"날짜": "date", "종가": "Close", "시가": "Open",
+                              "고가": "High", "저가": "Low", "거래량": "Volume"})
+    # raw는 RangeIndex, 새 index는 DatetimeIndex라 Series 그대로 넣으면 라벨정렬로 전부 NaN이
+    # 된다 → 전부 .to_numpy()로 위치기반 배정·필터(인덱스 비정렬 오류도 회피).
+    idx = pd.to_datetime(raw["date"].astype(str).str.replace(" ", "", regex=False),
+                         errors="coerce").to_numpy()
+
+    def _num(col):
+        return pd.to_numeric(raw[col].astype(str).str.replace(",", "", regex=False),
+                             errors="coerce").to_numpy()
+
+    close = _num("Close")
+    vol = (raw["Volume"].map(_parse_investing_volume).to_numpy()
+           if "Volume" in raw.columns else [0.0] * len(raw))
+    df = pd.DataFrame({"Open": _num("Open"), "High": _num("High"), "Low": _num("Low"),
+                       "Close": close, "Volume": vol}, index=idx)
+    df = df[(~pd.isna(idx)) & (~pd.isna(close))].sort_index()
+    df.index.name = None
+    return df
+
+
+def seed_from_investing_csv(symbol: str, csv_path) -> pd.DataFrame:
+    """investing.com CSV로 콜드스타트 백필(1회). 기존 parquet을 **덮어쓴다**(프록시 데이터 교체).
+
+    실선물 연속 일봉이라 엔진이 그대로 소비(별도 롤 데이터 불필요 — 롤은 시리즈에 내재).
+    이후 일봉은 append_daily_bars(KIS 증분)가 단일 소스.
+    """
+    df = clean_investing_csv(csv_path)
+    if df.empty:
+        raise ValueError(f"CSV 정제 결과가 비어 있음: {csv_path}")
+    _save(symbol, df)            # 덮어쓰기 — 기존(프록시 ETF) 데이터를 실선물로 교체
+    mark_data_dirty()
+    return df
+
+
+def append_daily_bars(symbol: str, new: pd.DataFrame) -> pd.DataFrame:
+    """신규 일봉을 기존 parquet에 증분 머지(중복 날짜는 new=최신 소스 우선). KIS 증분 진입점.
+
+    new = OHLCV(+Volume) DatetimeIndex DataFrame(예: KIS FHKIF03020100 일봉을 대문자 OHLCV로
+    매핑한 것). 스플라이스 정합(예: |new 첫 바 ≈ 기존 마지막 바|)은 호출자가 검증해 점프를 차단한다.
+    """
+    if new is None or new.empty:
+        return _load(symbol)
+    new = new.copy()
+    new.index = pd.to_datetime(new.index).tz_localize(None)
+    merged = _merge(_load(symbol), new)
+    _save(symbol, merged)
+    mark_data_dirty()
+    return merged
 
 
 # ── 데이터셋 세대 마커 (캐시 일관성) ──────────────────────────────────────────

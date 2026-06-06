@@ -35,13 +35,15 @@ def test_futures_resolves_to_spec():
     assert s.expiry_rule and s.default_roll  # 만기·롤 규칙 존재
 
 
-def test_kospi200_futures_is_etf_proxy_equity():
-    # "코스피200선물" 데이터 키 = KODEX200 ETF(261220) → 주식 취급(키 충돌 수정 F0).
-    # 실 KOSPI200 선물(지수포인트·승수 250,000)은 KIS 일봉 수급 시 별도 키로 승격.
+def test_kospi200_is_real_futures_etf_separated():
+    # F1: "코스피200선물" = 실선물(지수포인트·승수 250,000), CSV 백필+KIS 증분 수급.
+    # 261220 ETF는 "코스피200선물ETF" 별도 키로 분리 — 승수 충돌(F0 임시 후퇴) 해소.
     s = instrument_spec("코스피200선물")
-    assert s.asset_class == "equity"
-    assert s.multiplier == 1.0 and s.init_margin_rate == 1.0   # 승수·레버리지 없음
-    assert s.currency == "KRW"             # 한글명 KRW ETF — USD 오판정 방지
+    assert s.asset_class == "futures"
+    assert s.multiplier == 250_000.0 and s.currency == "KRW"
+    assert 0 < s.init_margin_rate < 1
+    assert instrument_spec("코스피200선물ETF").asset_class == "equity"   # ETF는 주식
+    assert is_futures("코스피200선물ETF") is False
 
 
 def test_overseas_futures_usd_and_multiplier():
@@ -61,7 +63,8 @@ def test_equity_symbol_is_default_spec():
 
 def test_is_futures_helper():
     assert is_futures("원유선물") is True
-    assert is_futures("코스피200선물") is False   # ETF 프록시 → 주식(F0)
+    assert is_futures("코스피200선물") is True    # F1: 실선물로 승격
+    assert is_futures("코스피200선물ETF") is False  # ETF는 주식
     assert is_futures("005930") is False
     assert is_futures("AAPL") is False
 

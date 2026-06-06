@@ -52,10 +52,11 @@ def test_catalog_oil_futures_multiplier():
     assert s.multiplier == 1_000.0 and s.init_margin_rate == 0.10
 
 
-def test_kospi_futures_is_etf_proxy_equity():
-    # "코스피200선물" 데이터 키 = KODEX200 ETF(261220) → 주식 취급(승수 없음). 키 충돌 수정(F0).
+def test_kospi200_is_real_futures_etf_separated():
+    # F1: "코스피200선물"=실선물(승수 250,000), 261220 ETF는 "코스피200선물ETF" 별도 키.
     s = instrument_spec("코스피200선물")
-    assert s.asset_class == "equity" and s.multiplier == 1.0 and s.currency == "KRW"
+    assert s.asset_class == "futures" and s.multiplier == 250_000.0 and s.currency == "KRW"
+    assert instrument_spec("코스피200선물ETF").asset_class == "equity"
 
 
 def test_futures_margin_leverage_amplifies_return():

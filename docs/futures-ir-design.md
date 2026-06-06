@@ -150,3 +150,29 @@ E1 착지 후 전수 코드 리뷰에서 발견·수정:
 백테스트. NL capabilities·idiom 6 선물 목록에서 코스피200선물 제외(ETF 프록시 명시). 실 KIS 선물
 일봉(FHKIF03020100, 지수포인트) 수급 시(F1) 별도 키로 추가하고 futures(승수 250,000) 승격.
 검증: 실데이터 백테스트 0%→+23.62%(기초 ETF +23.49% 일치). core 93→95 통과(선물 테스트를 원유선물로 이전).
+
+### F1 — KOSPI200 선물 실데이터 수급(CSV 백필 + KIS 증분) · F0 정공법 완성
+
+F0는 데이터가 없어 ETF를 주식으로 후퇴시킨 *임시*였다. 투자닷컴 과거데이터 CSV(2010-01-01~
+2026-06-02, 4013행, 지수포인트)를 확보 → **F0를 정공법으로 승격**:
+
+- **키 분리**: `data_fetcher.FDR_SYMBOLS` `"코스피200선물"→"코스피200선물ETF"`(261220 ETF는 ETF 키로).
+  실선물 `"코스피200선물"`은 `CSV_SEEDED_FUTURES`로 등록(ALL_SYMBOLS 포함 → load·valid_keys 유효,
+  FDR/yfinance 미수집). `exec_defaults`·NL을 다시 futures(승수 250,000)로 복귀.
+- **콜드스타트 백필**: `clean_investing_csv`(날짜 공백·천단위 콤마·거래량 K/M·역순 정제) →
+  `seed_from_investing_csv`(기존 ETF parquet **덮어쓰기**). 실선물 연속 일봉이라 엔진이 그대로 소비
+  (별도 롤 데이터 불필요 — 롤은 시리즈 내재; 필요시 roll_cost_pct 근사).
+- **증분 단일 소스**: `append_daily_bars`(기존 `_merge` 재사용, 중복 날짜는 new=KIS 우선). KIS
+  `FHKIF03020100`(모의 OK) 일봉을 대문자 OHLCV로 매핑해 호출 — 날짜로 소스 분할(CSV 과거·KIS 신규).
+
+검증: 정제 OHLC NaN=0·실가격(197~1435), 카탈로그 futures 250,000, 실데이터 백테스트가 **engage**
+(자산곡선 732/733일 변동 — 예전 ETF 버그의 0% 평탄과 대비). core 95→97 통과(CSV 정제 2 테스트 추가).
+
+**잔여/주의**:
+- **KIS 라이브 fetch 미검증**: `append_daily_bars`(머지 메커니즘)는 검증했으나, KIS HTTP 일봉 fetch는
+  자격증명·연결 필요(로컬 전용)라 *연결 시점에 검증*. 현재는 메커니즘 + 매핑 설계까지.
+- **배포는 시드와 결합 필요**: 코드만 배포하면 `"코스피200선물"` parquet에 *기존 ETF 데이터가 남아*
+  futures(250,000) 승수가 다시 ETF에 적용됨(F0 버그 재발). 배포 직후 `seed_from_investing_csv`로
+  실선물 데이터를 덮어써야 안전 — 코드+시드를 같이.
+- **always 모드 선물의 vol drag**(발견): always는 매일 lev_eff=10 리밸런싱 → 레버리지 ETF식 감쇠.
+  추세추종 "보유"는 *계약 정적 보유* 의미가 적합 — 엔진 semantics 과제(데이터 범위 밖).
