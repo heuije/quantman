@@ -15,11 +15,13 @@ _CORE = Path(__file__).resolve().parent.parent
 if str(_CORE) not in sys.path:
     sys.path.insert(0, str(_CORE))
 
-from quant_core.blocks import data
+from quant_core.blocks import const, data
+from quant_core.blocks.node import Node
 from quant_core.exec_defaults import (InstrumentSpec, instrument_spec, is_futures,
                                        margin_rate, round_to_tick)
 from quant_core.ir_engine import (Entry, PositionSpec, SimSpec, StrategyIR,
-                                   Universe, capability_spec, validate_strategy)
+                                   Universe, capability_spec, explain_ir,
+                                   validate_strategy)
 
 
 # ── 계약 카탈로그 (단일 출처) ──────────────────────────────────────────────────
@@ -162,3 +164,45 @@ def test_homogeneous_universe_no_mix_warning():
                    for i in validate_strategy(_list_strat(["코스피200선물", "나스닥선물"])))
     assert not any(i.rule == "S-futures-mix"
                    for i in validate_strategy(_list_strat(["005930", "000660"])))
+
+
+# ── 선물 이벤트(on_signal) 미지원 경고 (엔진 가드를 validate에 미러 — finding 2) ─────
+
+def _event_strat(symbol: str) -> StrategyIR:
+    cond = Node(op="compare", params={"op": ">"},
+                inputs={"left": data("Close"), "right": const(0)})
+    return StrategyIR(signal=cond, universe=Universe(kind="single", symbols=[symbol]),
+                      position=PositionSpec(entry=Entry(mode="on_signal")), simulation=SimSpec())
+
+
+def test_futures_on_signal_warns_event_unsupported():
+    issues = validate_strategy(_event_strat("코스피200선물"))
+    assert any(i.rule == "S-futures-event" for i in issues)
+
+
+def test_equity_on_signal_no_event_warning():
+    assert not any(i.rule == "S-futures-event"
+                   for i in validate_strategy(_event_strat("005930")))
+
+
+def test_futures_trend_following_no_event_warning():
+    # always(추세추종) 선물은 백테스트 지원 경로 → 이벤트 경고 없음
+    assert not any(i.rule == "S-futures-event"
+                   for i in validate_strategy(_strat("코스피200선물")))
+
+
+# ── explain_ir 정직성: 선물 롤·통화 '미적용' 결정론적 표면화 (finding 1) ──────────
+
+def test_explain_surfaces_futures_roll_not_applied():
+    doc = explain_ir(_strat("코스피200선물", roll_method="days_before_5"))
+    env = next(b for b in doc["buckets"] if b["key"] == "environment")
+    txt = " ".join(it["value"] for it in env["items"])
+    assert "미적용" in txt and "연속 시계열" in txt
+    assert "미반영" in txt          # 설정한 roll_method이 미반영임을 명시
+
+
+def test_explain_equity_has_no_futures_note():
+    doc = explain_ir(_strat("005930"))
+    env = next(b for b in doc["buckets"] if b["key"] == "environment")
+    labels = " ".join(it["label"] for it in env["items"])
+    assert "선물 연속물" not in labels

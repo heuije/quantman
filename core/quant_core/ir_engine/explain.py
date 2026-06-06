@@ -18,7 +18,7 @@ trail_pct/amount_pct/vol_target/낙폭/그룹캡=퍼센트(엔진이 /100).
 from __future__ import annotations
 
 from ..blocks.node import referenced_columns, referenced_symbols
-from ..exec_defaults import DEFAULT_EXECUTION
+from ..exec_defaults import DEFAULT_EXECUTION, is_futures
 from .capabilities import capability_spec
 from .spec import (Entry, Overlays, PositionSpec, SimSpec, Sizing, StrategyIR,
                    SweepSpec, Universe, signal_out_type)
@@ -255,7 +255,7 @@ _SPLIT = {"single": "단일 구간 1회", "walk_forward": "시간순 4분할 일
           "oos": "인/아웃 2분할", "kfold": "시간순 4분할(walk_forward와 동일)"}
 
 
-def _environment(sim: SimSpec) -> dict:
+def _environment(sim: SimSpec, u: Universe) -> dict:
     items = [_it("초기 자본", _won(sim.initial_capital),
                  _SET if sim.initial_capital != _D_SIM.initial_capital else _DEF)]
     if sim.start or sim.end:
@@ -267,7 +267,25 @@ def _environment(sim: SimSpec) -> dict:
                      _does("period_split", sim.period_split)))
     items.append(_it("데이터 빈도", "일봉 (일별 OHLC)", _DEF, "분/틱 단위 아님."))
     items.append(_it("데이터 처리", "종목별 시장 소스 1개 사용 · 배당/생존편향 등 세부 처리는 데이터 레이어에 의존", _DEF))
+    # 선물 연속물·롤·통화 — 엔진 미적용(예약)을 정직하게 못박는다. roll_method 등을 채워 와도,
+    # 또는 LLM 설명이 "만기 자동 롤"이라 해도, 실제 엔진은 단일 연속 시계열·무환산이다(거짓 약속 차단).
+    if u.kind in ("single", "list") and any(is_futures(x) for x in u.symbols):
+        reserved = [k for k, v in (("만기 롤", sim.roll_method), ("연속물 조정", sim.series_adjust),
+                                   ("롤비용", sim.roll_cost_pct)) if v is not None]
+        set_note = f" (설정한 {', '.join(reserved)}은 현재 미반영)" if reserved else ""
+        items.append(_it("선물 연속물·롤", "단일 연속 시계열 가정 — 만기 롤·연속물 조정은 현재 엔진 미적용(예약)" + set_note,
+                         _DEF, "롤·만기물 전환은 데이터 의존 기능(E2)으로 아직 백테스트에 반영되지 않음."))
+        if sim.account_currency == "USD" or any(instrument_currency_usd(x) for x in u.symbols):
+            items.append(_it("선물 통화 환산", "현재 미적용 — 단일통화 백테스트 가정(손익률은 통화 스케일에 불변)",
+                             _DEF, "해외선물 USD↔KRW 환율 환산은 아직 미구현."))
     return _bucket("environment", "⑧ 자본·기간·데이터", "어떤 자본·기간·데이터 위에서 도나?", items)
+
+
+def instrument_currency_usd(symbol: str) -> bool:
+    """해외(USD) 선물 여부 — 통화 환산 미적용 안내 트리거용."""
+    from ..exec_defaults import instrument_spec
+    s = instrument_spec(symbol)
+    return s.asset_class == "futures" and s.currency == "USD"
 
 
 # ── ⑨ 분석 차원 (sweep 요청 시에만) ──────────────────────────────────────────
@@ -379,7 +397,7 @@ def explain_ir(ir: StrategyIR, assumptions: list[str] | None = None) -> dict:
         _exit(pos),
         _overlays(pos.overlays),
         _execution(sim),
-        _environment(sim),
+        _environment(sim, ir.universe),
     ]
     analysis = _analysis(ir.sweep)
     if analysis is not None:
