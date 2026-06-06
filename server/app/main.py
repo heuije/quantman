@@ -394,8 +394,13 @@ def _initial_dataset_refresh():
     try:
         time.sleep(240)
         _log.info("dataset 초기 갱신 시작 (글로벌 + 한국)")
+        # 선물은 단건이라 무거운 전체 갱신 앞에서 먼저 — 빠른 데이터·검증. 자체 try로 격리(선물
+        # 실패가 메인 데이터 갱신을 막지 않게). KIS 데이터키 미설정이면 fail-safe no-op.
+        try:
+            _refresh_kospi_futures()
+        except Exception:
+            _log.exception("KOSPI200 선물 초기 수집 예외 — 16:00 cron 재시도")
         _refresh_dataset_all()
-        _refresh_kospi_futures()        # KIS 데이터키 설정 시 즉시 1회 수집(미설정이면 fail-safe no-op)
         _log.info("dataset 초기 갱신 완료")
     except Exception:
         _log.exception("dataset 초기 갱신 중 예외 — 정시 cron 재시도")
