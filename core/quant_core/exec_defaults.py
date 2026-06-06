@@ -120,7 +120,12 @@ class InstrumentSpec:
 # 거래소 표준 승수·틱(server/app/futures_config.py와 정렬). 증거금률·만기·롤은 본 카탈로그 신규.
 # 키 = data_fetcher 캐시/dataset 심볼 키. (선물은 한글 상품명, 주식은 종목코드)
 _INSTRUMENTS: dict[str, InstrumentSpec] = {
-    "코스피200선물":  InstrumentSpec("futures", 250_000.0, 0.05,  "KRW", 0.10, 0.075, "kospi200_2nd_thu", "days_before:5"),
+    # ⚠ "코스피200선물" 데이터 키 = data_fetcher의 261220 = KODEX200선물 *ETF*(주식, ~₩만대)다.
+    # 무료 KOSPI200 연속선물 피드가 없어 ETF를 프록시로 수급 중 — 진짜 선물 계약(지수포인트·승수
+    # 250,000)이 아니므로 equity로 취급(승수 1·증거금 전액). 통화는 KRW로 못박는다(미등록 기본의
+    # isdigit→USD 휴리스틱이 한글명 KRW ETF를 오판정하므로). 실 KIS 선물 일봉(FHKIF03020100, 지수
+    # 포인트) 수급 시(F1) 별도 키로 추가하고 그 키를 futures(승수 250,000)로 승격한다.
+    "코스피200선물":  InstrumentSpec("equity", 1.0, 0.0, "KRW", 1.0, 1.0, "", ""),
     "원유선물":      InstrumentSpec("futures",   1_000.0, 0.01,  "USD", 0.10, 0.08,  "cme_cl",  "days_before:5"),
     "천연가스선물":   InstrumentSpec("futures",  10_000.0, 0.001, "USD", 0.10, 0.08,  "cme_ng",  "days_before:5"),
     "금선물":        InstrumentSpec("futures",     100.0, 0.10,  "USD", 0.08, 0.06,  "cme_gc",  "days_before:5"),

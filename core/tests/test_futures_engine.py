@@ -47,15 +47,21 @@ _UP = [400.0] * 20 + [404.0] * 10      # +1%
 _DOWN = [400.0] * 20 + [396.0] * 10    # -1%
 
 
-def test_catalog_kospi_multiplier():
+def test_catalog_oil_futures_multiplier():
+    s = instrument_spec("원유선물")
+    assert s.multiplier == 1_000.0 and s.init_margin_rate == 0.10
+
+
+def test_kospi_futures_is_etf_proxy_equity():
+    # "코스피200선물" 데이터 키 = KODEX200 ETF(261220) → 주식 취급(승수 없음). 키 충돌 수정(F0).
     s = instrument_spec("코스피200선물")
-    assert s.multiplier == 250_000.0 and s.init_margin_rate == 0.10
+    assert s.asset_class == "equity" and s.multiplier == 1.0 and s.currency == "KRW"
 
 
 def test_futures_margin_leverage_amplifies_return():
-    """KOSPI200선물(승수 250,000·증거금 0.10): 1% 가격상승 → ~10% 자본수익(10x).
-    명목(100M/계약) > 자본(10M)이라도 증거금으로 보유 — 현금모델이면 0거래로 평탄(~0%)."""
-    res = run_strategy_ir(_always("코스피200선물"), _ds("코스피200선물", _UP))
+    """원유선물(승수 1,000·증거금 0.10): 1% 가격상승 → ~10% 자본수익(10x).
+    명목 > 자본이라도 증거금으로 보유 — 현금모델이면 0거래로 평탄(~0%)."""
+    res = run_strategy_ir(_always("원유선물"), _ds("원유선물", _UP))
     assert res["success"], res.get("error")
     eq = res["equity"]
     ret = eq.iloc[-1] / eq.iloc[0] - 1
@@ -74,8 +80,8 @@ def test_equity_same_path_no_leverage():
 
 def test_futures_short_profits_on_drop():
     """선물 숏: 가격 하락이 이익(승수 적용·차입 불필요)."""
-    res = run_strategy_ir(_always("코스피200선물", direction="short"),
-                          _ds("코스피200선물", _DOWN))
+    res = run_strategy_ir(_always("원유선물", direction="short"),
+                          _ds("원유선물", _DOWN))
     assert res["success"], res.get("error")
     ret = res["equity"].iloc[-1] / res["equity"].iloc[0] - 1
     assert ret > 0.05, f"선물 숏이 하락에서 이익 안 남: {ret:.3%}"
@@ -104,6 +110,6 @@ def test_event_path_equity_runs():
 
 def test_event_path_futures_guarded_not_crash():
     """선물 on_signal은 (증거금 회계 미구현이라) 가드로 안내 — 크래시가 아니라 명시적 차단."""
-    res = run_strategy_ir(_event_always_true("코스피200선물"), _ds("코스피200선물", _UP))
+    res = run_strategy_ir(_event_always_true("원유선물"), _ds("원유선물", _UP))
     assert not res["success"]
     assert "증거금 회계" in (res.get("error") or "")   # 가드 메시지(NameError 아님)

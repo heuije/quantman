@@ -26,14 +26,22 @@ from quant_core.ir_engine import (Entry, PositionSpec, SimSpec, StrategyIR,
 
 # ── 계약 카탈로그 (단일 출처) ──────────────────────────────────────────────────
 
-def test_domestic_futures_resolves_to_spec():
-    s = instrument_spec("코스피200선물")
+def test_futures_resolves_to_spec():
+    s = instrument_spec("원유선물")
     assert isinstance(s, InstrumentSpec)
     assert s.asset_class == "futures"
-    assert s.multiplier == 250_000.0       # KOSPI200 point value(원/pt)
-    assert s.currency == "KRW"
+    assert s.multiplier == 1_000.0          # WTI point value(배럴/계약)
     assert 0 < s.init_margin_rate < 1       # 부분증거금
     assert s.expiry_rule and s.default_roll  # 만기·롤 규칙 존재
+
+
+def test_kospi200_futures_is_etf_proxy_equity():
+    # "코스피200선물" 데이터 키 = KODEX200 ETF(261220) → 주식 취급(키 충돌 수정 F0).
+    # 실 KOSPI200 선물(지수포인트·승수 250,000)은 KIS 일봉 수급 시 별도 키로 승격.
+    s = instrument_spec("코스피200선물")
+    assert s.asset_class == "equity"
+    assert s.multiplier == 1.0 and s.init_margin_rate == 1.0   # 승수·레버리지 없음
+    assert s.currency == "KRW"             # 한글명 KRW ETF — USD 오판정 방지
 
 
 def test_overseas_futures_usd_and_multiplier():
@@ -52,14 +60,15 @@ def test_equity_symbol_is_default_spec():
 
 
 def test_is_futures_helper():
-    assert is_futures("코스피200선물") is True
+    assert is_futures("원유선물") is True
+    assert is_futures("코스피200선물") is False   # ETF 프록시 → 주식(F0)
     assert is_futures("005930") is False
     assert is_futures("AAPL") is False
 
 
 def test_margin_rate_single_source_from_catalog():
     # margin_rate는 카탈로그를 그대로 반영(중복 출처 제거)
-    assert margin_rate("코스피200선물") == instrument_spec("코스피200선물").init_margin_rate
+    assert margin_rate("원유선물") == instrument_spec("원유선물").init_margin_rate
     assert margin_rate("005930") == 1.0     # 주식=전액
 
 
@@ -92,7 +101,7 @@ def test_capability_documents_futures_instruments():
     assert {"days_before_5", "volume_cross"} <= roll_vals
     # 선물 심볼명·숏 의미가 컴파일러가 읽는 텍스트(does/use_for)에 실제로 들어가야 함
     text = cap["instruments"]["does"] + cap["instruments"]["use_for"]
-    assert "코스피200선물" in text and "원유선물" in text
+    assert "원유선물" in text and "나스닥선물" in text   # 실 선물 심볼이 컴파일러 텍스트에
     assert "short" in cap["instruments"]["use_for"]
 
 
@@ -119,7 +128,7 @@ def test_roll_settings_on_equity_universe_warns():
 
 
 def test_roll_settings_on_futures_universe_ok():
-    issues = validate_strategy(_strat("코스피200선물", roll_method="days_before_5"))
+    issues = validate_strategy(_strat("원유선물", roll_method="days_before_5"))
     assert not any(i.rule == "S-futures" for i in issues)
 
 
@@ -155,13 +164,13 @@ def _list_strat(symbols):
 
 
 def test_mixed_equity_futures_universe_warns():
-    issues = validate_strategy(_list_strat(["005930", "코스피200선물"]))
+    issues = validate_strategy(_list_strat(["005930", "원유선물"]))
     assert any(i.rule == "S-futures-mix" for i in issues)
 
 
 def test_homogeneous_universe_no_mix_warning():
     assert not any(i.rule == "S-futures-mix"
-                   for i in validate_strategy(_list_strat(["코스피200선물", "나스닥선물"])))
+                   for i in validate_strategy(_list_strat(["원유선물", "나스닥선물"])))
     assert not any(i.rule == "S-futures-mix"
                    for i in validate_strategy(_list_strat(["005930", "000660"])))
 
@@ -176,7 +185,7 @@ def _event_strat(symbol: str) -> StrategyIR:
 
 
 def test_futures_on_signal_warns_event_unsupported():
-    issues = validate_strategy(_event_strat("코스피200선물"))
+    issues = validate_strategy(_event_strat("원유선물"))
     assert any(i.rule == "S-futures-event" for i in issues)
 
 
@@ -188,13 +197,13 @@ def test_equity_on_signal_no_event_warning():
 def test_futures_trend_following_no_event_warning():
     # always(추세추종) 선물은 백테스트 지원 경로 → 이벤트 경고 없음
     assert not any(i.rule == "S-futures-event"
-                   for i in validate_strategy(_strat("코스피200선물")))
+                   for i in validate_strategy(_strat("원유선물")))
 
 
 # ── explain_ir 정직성: 선물 롤·통화 '미적용' 결정론적 표면화 (finding 1) ──────────
 
 def test_explain_surfaces_futures_roll_not_applied():
-    doc = explain_ir(_strat("코스피200선물", roll_method="days_before_5"))
+    doc = explain_ir(_strat("원유선물", roll_method="days_before_5"))
     env = next(b for b in doc["buckets"] if b["key"] == "environment")
     txt = " ".join(it["value"] for it in env["items"])
     assert "미적용" in txt and "연속 시계열" in txt
