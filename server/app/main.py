@@ -242,12 +242,13 @@ def _refresh_kospi_futures() -> None:
     from quant_core.data_fetcher import fetch_kis_futures_daily
 
     from .kis_data_client import get_kis_data_client
+    from .kis_futures_master import resolve_kospi200_front_month
 
     client = get_kis_data_client()
-    iscd = os.getenv("QP_KIS_KOSPI_FUT_ISCD", "").strip()   # 현행 최근월물 종목코드(지수선물 6자리)
+    # 종목코드: env 명시 override가 있으면 그것, 없으면 KIS 공개 마스터로 최근월물 자동 해석(분기 롤 자동).
+    iscd = os.getenv("QP_KIS_KOSPI_FUT_ISCD", "").strip() or (resolve_kospi200_front_month() or "")
     if client is None or not iscd:
-        _log.info("KOSPI200 선물 수집 skip — QP_KIS_DATA_APPKEY/SECRET·"
-                  "QP_KIS_KOSPI_FUT_ISCD 미설정(fail-safe)")
+        _log.info("KOSPI200 선물 수집 skip — KIS 데이터키 미설정 또는 최근월물 해석 실패(fail-safe)")
         return
     end = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=45)).strftime("%Y%m%d")
@@ -394,6 +395,7 @@ def _initial_dataset_refresh():
         time.sleep(240)
         _log.info("dataset 초기 갱신 시작 (글로벌 + 한국)")
         _refresh_dataset_all()
+        _refresh_kospi_futures()        # KIS 데이터키 설정 시 즉시 1회 수집(미설정이면 fail-safe no-op)
         _log.info("dataset 초기 갱신 완료")
     except Exception:
         _log.exception("dataset 초기 갱신 중 예외 — 정시 cron 재시도")
