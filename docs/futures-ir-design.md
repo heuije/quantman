@@ -217,3 +217,20 @@ Binance로 직접 fetch*해 영속 볼륨(`/srv/data`)에 저장한다. **KIS·i
 
 **배포 순서 주의**: F1(카탈로그 futures 승격)은 **데이터가 흐른 뒤** 배포해야 안전 — 키·종목코드
 설정→cron/시드로 데이터 채움→그 다음 F1+F2+F3 함께 배포(데이터 없이 F1만 가면 orphan ETF 버그 재발).
+
+### E1b — 이벤트(on_signal) 경로 선물 증거금 회계 (③+④ 동시 해결)
+
+§5에서 가드로 막았던 이벤트 경로 선물을 *보유 포지션*으로 구현. `_run_scheduled`의 검증된
+Model A를 `run_unified`에 미러:
+- `_open` 선물: 계약수=floor(budget/(px×승수×증거금률)), cash-=명목(차입 허용; 증거금≤budget≤cash라
+  한도 내). `_close`: 손익 ×승수, 거래세 면제. NAV·_wrec·기간말청산 전부 ×승수. instrument_spec로
+  mult/mr/tick/currency 단일출처(sym.isdigit 휴리스틱 제거).
+- **가드 해제** + finding-2의 on_signal-미지원 잔재 전부 되돌림(spec S-futures-event 제거, capabilities·
+  idiom 6을 single+on_signal 디렉셔널 권장으로 복귀). roll 미적용 정직성은 유지.
+
+**④ vol drag 해결**: always는 매일 lev_eff=10 리밸런싱이라 감쇠(실 2016-2018 -69.5%)지만, on_signal은
+*정적 보유*라 감쇠 없음(같은 구간 +115.2% ≈ 11.49%×10). → 선물 디렉셔널/추세추종은 on_signal-보유가 정석.
+
+검증: 합성 1%→~10% 레버리지·주식 baseline ~1%·회귀 무변(core 97 통과) + 실 CSV로 always vs
+on_signal-보유 대비(vol drag 회피 실증). 한계: on_signal은 롱 전용(숏·롱숏은 scheduled+long_short);
+혼합 유니버스 이벤트는 근사(S-futures-mix 경고 유지).

@@ -182,11 +182,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     syms = [s for s in u.symbols if s in dataset and not dataset[s].empty]
     if not syms:
         return _empty("유니버스에 종목이 없습니다.")
-    # 선물 증거금 회계는 scheduled/always 경로에만 구현(승수·증거금 레버리지). 이벤트(on_signal)
-    # 경로는 차입 메커니즘이 없어 명목>자본이면 무거래로 조용히 퇴화 → garbage 차단(추세추종 안내).
-    if any(is_futures(s) for s in syms):
-        return _empty("선물의 이벤트(on_signal) 진입은 아직 증거금 회계가 적용되지 않습니다 — "
-                      "추세추종(always·scheduled) 진입으로 백테스트하세요.")
+    # 선물 이벤트(on_signal) 진입 = 증거금 레버리지 *보유* 포지션(E1b). _open/_close/NAV가 승수·
+    # 증거금 회계를 적용한다(_run_scheduled의 Model A 미러: 계약수=증거금/(px×승수×증거금률),
+    # cash-=명목(차입 허용), 손익=ΔP×승수×계약수). 보유형이라 always의 일일 리밸런싱 vol drag 없음.
     single = (u.kind == "single" and len(syms) == 1)
 
     screener = u.screener or {}
@@ -238,12 +236,15 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         cl = df["Close"].to_numpy(dtype=float)
         hi = (df["High"].to_numpy(dtype=float) if "High" in df.columns else cl)
         lo = (df["Low"].to_numpy(dtype=float) if "Low" in df.columns else cl)
+        _spec = instrument_spec(sym)
         aligned[sym] = {
             "open": df["Open"].to_numpy(dtype=float),
             "close": cl, "high": hi, "low": lo,
             "exec": ((hi + lo + cl) / 3.0) if fill == "typical" else cl,
             "atr": (df["atr_14"].to_numpy(dtype=float) if "atr_14" in df.columns else None),
-            "currency": "KRW" if sym.isdigit() else "USD",
+            "currency": _spec.currency, "tick": _spec.tick,
+            "mult": _spec.multiplier, "mr": _spec.init_margin_rate,
+            "is_fut": _spec.asset_class == "futures",
         }
         buy_arrs[sym] = _sym_bool(buy_panel, sym, master_idx)
         sell_arrs[sym] = _sym_bool(sell_panel, sym, master_idx) if sell_panel is not None else None
@@ -280,15 +281,25 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         nonlocal cash
         if np.isnan(raw_price) or raw_price <= 0 or budget <= 0:
             return
-        price = round_to_tick(raw_price * (1 + slippage), "up", aligned[sym]["currency"])
+        a = aligned[sym]
+        price = round_to_tick(raw_price * (1 + slippage), "up", a["currency"], a["tick"])
         if price <= 0:
             return
-        per_share_cost = price * (1 + commission)
-        new_shares = min(int(budget // per_share_cost), int(cash // per_share_cost))
-        if new_shares <= 0:
-            return
-        cash -= new_shares * per_share_cost
-        ph, pc = aligned[sym]["high"][i], aligned[sym]["close"][i]
+        if a["is_fut"]:
+            # 선물: budget=증거금. 계약수=floor(증거금/(px×승수×증거금률)) → 명목=증거금/mr 레버리지.
+            # cash-=명목(차입 허용, _run_scheduled Model A 동일; 증거금≤budget≤cash라 한도 내). 거래세는 _close 면제.
+            denom = price * a["mult"] * a["mr"]
+            new_shares = int(budget / denom) if denom > 0 else 0
+            if new_shares <= 0:
+                return
+            cash -= new_shares * price * a["mult"] * (1 + commission)
+        else:
+            per_share_cost = price * (1 + commission)
+            new_shares = min(int(budget // per_share_cost), int(cash // per_share_cost))
+            if new_shares <= 0:
+                return
+            cash -= new_shares * per_share_cost
+        ph, pc = a["high"][i], a["close"][i]
         positions[sym] = Position(
             legs=[(sym, 1.0)], shares=float(new_shares), entry_price=price, entry_i=i,
             peak_high=price if np.isnan(ph) else float(ph),
@@ -302,14 +313,17 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         sell_pct = max(0.0, min(100.0, float(sell_pct)))
         if sell_pct <= 0 or np.isnan(raw_price) or raw_price <= 0:
             return
-        price = round_to_tick(raw_price * (1 - slippage), "down", aligned[sym]["currency"])
+        a = aligned[sym]
+        price = round_to_tick(raw_price * (1 - slippage), "down", a["currency"], a["tick"])
         if price <= 0:
             return
         sell_shares = min(float(int(pos.shares * sell_pct / 100.0)), pos.shares)
         if sell_shares <= 0:
             return
-        proceeds = sell_shares * price * (1 - commission - sell_tax)
-        cost = sell_shares * pos.entry_price * (1 + commission)
+        mult = a["mult"]
+        stx = 0.0 if a["is_fut"] else sell_tax        # 선물은 증권거래세 면제
+        proceeds = sell_shares * price * mult * (1 - commission - stx)
+        cost = sell_shares * pos.entry_price * mult * (1 + commission)
         is_partial = sell_shares < pos.shares - 1e-9
         trades.append({
             "종목": sym, "진입일": master_idx[pos.entry_i], "청산일": master_idx[i],
@@ -388,21 +402,22 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
 
         nav = cash
         for sym, pos in positions.items():
+            m = aligned[sym]["mult"]               # 선물 승수(주식=1)
             cl = aligned[sym]["close"][i]
             if not np.isnan(cl):
                 last_valid_close[sym] = float(cl)
-                nav += pos.shares * cl
+                nav += pos.shares * cl * m
             elif last_valid_close[sym] > 0:
-                nav += pos.shares * last_valid_close[sym]
+                nav += pos.shares * last_valid_close[sym] * m
             else:
-                nav += pos.shares * pos.entry_price
+                nav += pos.shares * pos.entry_price * m
         equity[i] = nav
         if nav > 0:                                    # end-of-day 비중 기록(기여 패널)
             for sym, pos in positions.items():
                 cl = aligned[sym]["close"][i]
                 if np.isnan(cl):
                     cl = last_valid_close[sym] if last_valid_close[sym] > 0 else pos.entry_price
-                _wrec[i][sym] = pos.shares * cl / nav
+                _wrec[i][sym] = pos.shares * cl * aligned[sym]["mult"] / nav
 
     # 기간말 강제청산
     for sym in list(positions.keys()):
@@ -413,7 +428,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                 final_close = float(cl_arr[j])
                 break
         if np.isnan(final_close):
-            cash += positions[sym].shares * positions[sym].entry_price
+            cash += positions[sym].shares * positions[sym].entry_price * aligned[sym]["mult"]
             del positions[sym]
         else:
             _close(sym, n - 1, final_close, "기간종료", 100.0)

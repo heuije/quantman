@@ -203,14 +203,11 @@ StrategyIR = {{
 6. [선물 디렉셔널·추세추종] 선물 심볼(코스피200선물·원유선물·금선물·나스닥선물·은선물(COMEX)·
    천연가스선물·비트코인선물)은 카탈로그가 승수·증거금·통화를 알아 엔진이 자동 인식 — IR엔
    자산클래스 표시 불필요, 종목처럼 universe.symbols에 이름만 넣는다(주식과 같은 신호·청산 어휘).
-   · ⚠ 백테스트 지원 경로는 **추세추종(always)·정기(scheduled)뿐** — 선물 + on_signal(이벤트 단발)은
-     엔진이 아직 차단(증거금 회계 미구현). 따라서 선물은 on_signal을 쓰지 않는다.
-   · "선물이 ___면 롱/숏" 같은 지속 레짐: single + entry.mode="always"(보유 마스크, 신호=참인 동안 보유)
-     또는 entry.mode="scheduled"(daily). 양방향이면 부호점수+long_short(레시피 1·2, scheduled daily).
-   · take_profit/stop_loss(%)·hold_days를 쓰려면 scheduled(daily) 경로로(always는 청산 규칙 무시).
-     순수 단발 이벤트 진입이 핵심 의도면, 현재 선물은 그 경로가 백테스트 미지원임을 assumptions에 밝힌다.
-   · 숏은 direction="short"(선물은 차입 불필요, 대칭). 레버리지는 증거금으로 내재 → leverage=1 기본
-     (명목 노출을 더 키울 때만 >1).
+   · 단발 룰("선물이 ___면 롱, N% 손절"): single + on_signal(condition) — 증거금 레버리지 *보유*
+     포지션으로 진입, take_profit/stop_loss(%)·hold_days·매도조건으로 청산(보유형이라 vol drag 없음).
+   · 추세추종 보유/팩터: single+always(보유 마스크, 신호 참인 동안 보유) 또는 scheduled(daily).
+   · 숏/양방향: on_signal은 롱 전용이므로 숏·롱숏은 부호점수+long_short(레시피 1·2)+scheduled(daily).
+     (선물 숏은 차입 불필요·대칭.) 레버리지는 증거금으로 내재 → leverage=1 기본(명목 더 키울 때만 >1).
    · ⚠ roll_method·series_adjust·roll_cost_pct·account_currency는 **현재 엔진 미적용(예약)** — 채우지
      말 것(단일 연속 시계열·단일통화 가정). 사용자가 강하게 명시하면 채우되 "현재 미적용"을 assumptions에 명시.
 </idioms>

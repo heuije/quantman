@@ -109,8 +109,31 @@ def test_event_path_equity_runs():
     assert res["success"], res.get("error")   # NameError였다면 success=False·error에 트레이스
 
 
-def test_event_path_futures_guarded_not_crash():
-    """선물 on_signal은 (증거금 회계 미구현이라) 가드로 안내 — 크래시가 아니라 명시적 차단."""
-    res = run_strategy_ir(_event_always_true("원유선물"), _ds("원유선물", _UP))
-    assert not res["success"]
-    assert "증거금 회계" in (res.get("error") or "")   # 가드 메시지(NameError 아님)
+def _event_hold(symbol: str) -> StrategyIR:
+    # on_signal 진입(Close>0 항상 참 → 1일차 진입) + 청산규칙 없음 → 기간말까지 *보유*.
+    # 보유형이라 always의 일일 리밸런싱 vol drag 없음 — E1b 레버리지를 순수 격리.
+    cond = Node(op="compare", params={"op": ">"},
+                inputs={"left": data("Close"), "right": const(0)})
+    return StrategyIR(
+        signal=cond, universe=Universe(kind="single", symbols=[symbol]),
+        position=PositionSpec(entry=Entry(mode="on_signal"), exit=Exit()),
+        simulation=SimSpec(initial_capital=1e7, commission=0.0, slippage=0.0))
+
+
+def test_event_futures_leverage_amplifies():
+    """E1b: 선물 on_signal 보유 포지션이 1% 가격상승 → ~10% 자본수익(증거금 레버리지 10x).
+    예전엔 가드로 차단됐던 경로 — 이제 보유형 증거금 회계로 작동(vol drag 없음)."""
+    res = run_strategy_ir(_event_hold("코스피200선물"), _ds("코스피200선물", _UP))
+    assert res["success"], res.get("error")
+    ret = res["equity"].iloc[-1] / res["equity"].iloc[0] - 1
+    assert ret > 0.05, f"선물 이벤트 레버리지 미작동(수익 {ret:.3%})"
+    assert abs(ret - 0.10) < 0.03, f"증거금 레버리지 배수 이상: {ret:.3%}"
+
+
+def test_event_equity_baseline_no_leverage():
+    """같은 on_signal 보유를 주식(005930)으로: 승수=1·증거금=1 → ~1%(레버리지 없음).
+    선물과의 차이가 곧 E1b 이벤트 경로 승수·증거금 회계 효과(주식 회귀 무변)."""
+    res = run_strategy_ir(_event_hold("005930"), _ds("005930", _UP))
+    assert res["success"], res.get("error")
+    ret = res["equity"].iloc[-1] / res["equity"].iloc[0] - 1
+    assert abs(ret) < 0.02, f"주식 이벤트인데 레버리지 효과({ret:.3%})"

@@ -502,15 +502,7 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                                 "기준 단일 레버리지로 근사되어(마진콜 복원이 주식 다리를 과복원) 부정확할 수 "
                                 "있습니다. 동질(전부 선물 또는 전부 주식) 유니버스를 권장합니다.", "universe"))
 
-    # 선물 이벤트(on_signal) 진입 — 엔진이 아직 차단(이벤트 경로 증거금 회계 E1b 미구현). validate에서
-    # 미리 경고해 "컴파일 성공·백테스트 불가"의 silent 발산을 사전 표면화한다(engine.py run_unified 가드와
-    # *같은 의미* — 4계층 일치). 컴파일 자체는 막지 않되(WARN) 빌더에 표시되어 유저가 실행 전 인지.
-    if (u.kind in ("single", "list") and ent.mode == "on_signal"
-            and any(is_futures(x) for x in u.symbols)):
-        issues.append(Issue("S-futures-event", SEV_INTEGRITY_WARN,
-                            "선물의 이벤트(on_signal) 진입은 아직 백테스트가 지원되지 않습니다(증거금 회계 "
-                            "미구현) — 추세추종(always) 또는 정기 리밸런싱(scheduled)으로 백테스트하세요.",
-                            "position.entry"))
+    # (E1b 이후 선물 on_signal 진입이 증거금 보유 포지션으로 지원됨 — S-futures-event 경고 제거.)
 
     # 무결성
     if meta is None:

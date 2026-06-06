@@ -178,31 +178,6 @@ def test_homogeneous_universe_no_mix_warning():
                    for i in validate_strategy(_list_strat(["005930", "000660"])))
 
 
-# ── 선물 이벤트(on_signal) 미지원 경고 (엔진 가드를 validate에 미러 — finding 2) ─────
-
-def _event_strat(symbol: str) -> StrategyIR:
-    cond = Node(op="compare", params={"op": ">"},
-                inputs={"left": data("Close"), "right": const(0)})
-    return StrategyIR(signal=cond, universe=Universe(kind="single", symbols=[symbol]),
-                      position=PositionSpec(entry=Entry(mode="on_signal")), simulation=SimSpec())
-
-
-def test_futures_on_signal_warns_event_unsupported():
-    issues = validate_strategy(_event_strat("원유선물"))
-    assert any(i.rule == "S-futures-event" for i in issues)
-
-
-def test_equity_on_signal_no_event_warning():
-    assert not any(i.rule == "S-futures-event"
-                   for i in validate_strategy(_event_strat("005930")))
-
-
-def test_futures_trend_following_no_event_warning():
-    # always(추세추종) 선물은 백테스트 지원 경로 → 이벤트 경고 없음
-    assert not any(i.rule == "S-futures-event"
-                   for i in validate_strategy(_strat("원유선물")))
-
-
 # ── explain_ir 정직성: 선물 롤·통화 '미적용' 결정론적 표면화 (finding 1) ──────────
 
 def test_explain_surfaces_futures_roll_not_applied():
