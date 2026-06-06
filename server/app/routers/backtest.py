@@ -75,6 +75,7 @@ def _build_symbols_payload() -> dict:
                           else qc.symbol_category(sym)),
             "tradable": in_master and has_ohlc,
             "has_backtest_data": has_ohlc,
+            "asset_class": "futures" if qc.is_futures(sym) else "equity",
             "kind": kind if in_master else None,
             "rows": index[sym]["rows"],
         })
@@ -94,6 +95,7 @@ def _build_symbols_payload() -> dict:
             "category": _category(meta.get("market", ""), kind),
             "tradable": True,
             "has_backtest_data": False,
+            "asset_class": "equity",        # KIS 주식 마스터 — 선물 아님
             "kind": kind,
             "rows": 0,
         })

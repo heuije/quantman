@@ -9,6 +9,7 @@ export interface SymbolInfo {
   category: string;
   tradable: boolean;                // KIS 매수 가능 종목 (마스터에 존재)
   has_backtest_data?: boolean;      // 서버 dataset에 OHLC 보유 — 백테스트 가능
+  asset_class?: string;             // "futures" | "equity" — 선물은 백테스트 선택가능(자동매매는 미지원)
   rows: number;
   // per-symbol 지표 배열은 제거됨(22k× 중복 = 43.5MB) — 지표 메타는 전역
   // indicator_catalog(/symbols 응답에 1회)로 받는다.

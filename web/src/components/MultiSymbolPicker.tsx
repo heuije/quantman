@@ -14,7 +14,7 @@ import SentenceTree, { type Catalog } from "./SentenceTree";
 import TabbedSymbolList from "./TabbedSymbolList";
 
 const TRADABLE_TAB_ORDER = [
-  "KOSPI", "KOSDAQ",
+  "KOSPI", "KOSDAQ", "선물",
   "미국 NASDAQ", "미국 NYSE", "미국 AMEX",
   "일본", "홍콩",
 ];
@@ -54,7 +54,10 @@ export default function MultiSymbolPicker({ symbols, value, onChange, inline, sc
   const ref = usePopoverDismiss<HTMLDivElement>(open, setOpen);
 
   const selected = value.split(",").map((s) => s.trim()).filter(Boolean);
-  const list = symbols.filter((s) => (scope === "backtest" ? s.has_backtest_data : s.tradable));
+  // 선물은 주식 마스터에 없어 tradable=false지만 백테스트 선택은 가능해야 함(자동매매는 별도 게이트가 차단).
+  const list = symbols.filter((s) => (scope === "backtest"
+    ? s.has_backtest_data
+    : (s.tradable || s.asset_class === "futures")));
 
   // "내 전략" 합성 자산(strat:<id>) — 저장 전략을 유니버스 자산으로(조합 폐쇄성). 시장 탭과 별도.
   const stratItems = (strategies ?? []).map((s) => ({
@@ -89,10 +92,12 @@ export default function MultiSymbolPicker({ symbols, value, onChange, inline, sc
     ...list.map((s) => ({
       key: s.symbol,
       label: s.name ? `${s.symbol} ${s.name}` : s.symbol,
-      cat: categoryFor(s.category),
-      badge: scope === "backtest"
-        ? (s.tradable === false ? "실거래 불가" : undefined)   // 백테스트는 되나 자동매매 대상 아님(지수·매크로 등)
-        : (s.has_backtest_data === false ? "백테스트 불가" : undefined),
+      cat: s.asset_class === "futures" ? "선물" : categoryFor(s.category),
+      badge: s.asset_class === "futures"
+        ? "백테스트 전용"                                       // 선물 자동매매 미지원 — 백테스트만(라이브 게이트가 차단)
+        : scope === "backtest"
+          ? (s.tradable === false ? "실거래 불가" : undefined)   // 백테스트는 되나 자동매매 대상 아님(지수·매크로 등)
+          : (s.has_backtest_data === false ? "백테스트 불가" : undefined),
     })),
   ];
 

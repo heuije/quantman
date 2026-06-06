@@ -11,7 +11,7 @@ from .indicators import (compute_all, get_indicator_columns, get_indicator_group
                          get_indicator_label, get_indicator_unit,
                          get_indicator_compare_group, get_all_indicator_columns)
 from .exec_defaults import (DEFAULT_EXECUTION, KRW_DAILY_LIMIT_PCT,
-                            apply_daily_price_limit, merged_execution,
+                            apply_daily_price_limit, is_futures, merged_execution,
                             round_to_tick, tick_size)
 
 __all__ = [
@@ -19,6 +19,6 @@ __all__ = [
     "compute_all", "get_indicator_columns", "get_indicator_group",
     "get_indicator_label", "get_indicator_unit", "get_indicator_compare_group",
     "get_all_indicator_columns",
-    "DEFAULT_EXECUTION", "merged_execution", "round_to_tick", "tick_size",
+    "DEFAULT_EXECUTION", "merged_execution", "round_to_tick", "tick_size", "is_futures",
     "apply_daily_price_limit", "KRW_DAILY_LIMIT_PCT",
 ]
