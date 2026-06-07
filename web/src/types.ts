@@ -288,7 +288,7 @@ export interface IrStrategyDef {
   query?: "select" | "describe" | "relate" | "simulate";
   study?: {
     axis?: "none" | "parameter" | "entity" | "label" | "time_fold";
-    reduction?: "enumerate" | "contrast" | "consistency";
+    reduction?: "enumerate" | "contrast" | "consistency" | "extremize";
     param_grid?: { path: string; values: (number | string)[] }[];
     assets?: string[];                         // axis=entity
     label?: IrNode | null;                     // 국면 라벨 블록(축 또는 조건 분할)
@@ -299,6 +299,10 @@ export interface IrStrategyDef {
     event?: IrNode | null;                     // relate(이벤트) — 별도 이벤트 조건
     windows?: number[];                        // relate — forward/예측 윈도우
     event_basis?: "close" | "intraday" | "excess";
+    objective?: {                              // reduction=extremize 전용 목적함수
+      metric?: "sharpe" | "sortino" | "cagr" | "cum_return" | "mdd";
+      direction?: "max" | "min"; oos_guard?: boolean;
+    } | null;
   };
   // query="select" 전용 — as-of 스냅샷 횡단 랭킹 선별 설정(core SelectSpec과 동기).
   select?: {
@@ -330,6 +334,15 @@ export interface IrPortfolioDiagnosis {
   valuation: { weighted_pb: number | null; weighted_pe: number | null };
   risk: { portfolio_vol_annualized: number | null; avg_pairwise_corr: number | null };
   coverage: { with_price: number; with_fundamentals: number };
+}
+
+// reduction="extremize" — 최적해 + OOS 과최적화 가드 결과.
+export interface IrExtremizeResult {
+  success: boolean; axis: "parameter" | "asset"; reduction: "extremize";
+  objective: { metric: string; direction: string; oos_guard: boolean };
+  best: { label: string; metric_value: number | null; perf: Record<string, number> };
+  ranked: { label: string; metric_value: number | null }[];
+  oos_guard?: { buckets?: Record<string, unknown>; consistency?: unknown; error?: string };
 }
 
 // 모든 펼침 버킷의 단일 지표 어휘 (engine perf_from_returns와 동기) — 갭 A.

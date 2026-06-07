@@ -162,7 +162,7 @@ StrategyIR = {{
   "position": {{"direction":.., "sizing":{{"mode":..}}, "entry":{{"mode":..}}, "exit":{{..}}, "overlays":{{..}}}},
   "simulation": {{"initial_capital":.., "fill":.., "leverage":.., "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", ...}},
   "query": "simulate|select|describe|relate",   // 무엇을 묻는가(기본 simulate=손익 백테스트). select=현시점 스크리닝, describe=살펴보기(단일종목 리포트·포트폴리오 진단·신호 분포), relate=관계/이벤트.
-  "study": {{"axis":"none|parameter|entity|label|time_fold", "reduction":"enumerate|contrast|consistency", "param_grid":[{{"path":점경로,"values":[..]}}], "assets":[..], "label":<블록>, "target_node":<블록>, "windows":[..], "event":<블록>}}
+  "study": {{"axis":"none|parameter|entity|label|time_fold", "reduction":"enumerate|contrast|consistency|extremize", "param_grid":[{{"path":점경로,"values":[..]}}], "assets":[..], "label":<블록>, "target_node":<블록>, "windows":[..], "event":<블록>, "objective":{{"metric":..,"direction":"max|min","oos_guard":bool}}}}  // objective는 extremize 전용
 }}
 펼침/분석이 없으면 query·study를 생략(기본 simulate·axis=none). 종목 자신의 컬럼은 ref에 "__SELF__." 접두(예 "__SELF__.Close"). 신호 out_type: condition(룰)·score(팩터)·value·label.
 </ir_structure>
@@ -227,6 +227,11 @@ StrategyIR = {{
 9. [포트폴리오 진단] "내 포트폴리오 진단"·"보유종목 집중·리스크 봐줘"처럼 *보유 집합의 진단*이면 →
    query="describe" + universe.kind="portfolio" + symbols=[보유들] + (보유 비중 알면 universe.weights={{종목:비중}}, 없으면 동일가중)
    + signal=data("__SELF__.Close")(명목). 엔진이 집중도(HHI)·섹터노출·가중밸류·포트 변동성 산출. study 불필요.
+10. [최적 파라미터/종목 찾기(extremize)] "샤프(또는 수익률·CAGR)를 *최대화*하는 [기간/임계값/top_n] 찾아줘"·
+    "어떤 종목이 제일 나은가"처럼 *그리드 중 최적 1개*가 답이면 → study.axis="parameter"(+param_grid)
+    또는 "entity"(+assets) + study.reduction="extremize" + study.objective={{metric, direction, oos_guard:true}}.
+    metric은 sharpe(기본)·sortino·cagr·cum_return·mdd만. ⚠ mdd는 음수라 "낙폭 최소"=direction:"max".
+    oos_guard=true(기본)면 최적값을 시간폴드로 재검(과최적화 경고). (※ enumerate=모든 셀 나열, extremize=최적 1개.)
 </idioms>
 
 <process>

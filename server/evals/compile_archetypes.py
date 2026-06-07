@@ -54,6 +54,10 @@ CASES = [
      "내 포트폴리오 진단해줘. 보유: 삼성전자, SK하이닉스, NAVER.",
      lambda ir: ir.get("query") == "describe" and ir.get("universe", {}).get("kind") == "portfolio"
                 and len(ir.get("universe", {}).get("symbols", [])) >= 2),
+    ("최적 파라미터(extremize)",
+     "RSI 진입 임계값을 10부터 40까지 5단위로 바꿔가며 샤프를 최대화하는 값을 찾아줘.",
+     lambda ir: ir.get("study", {}).get("reduction") == "extremize"
+                and ir.get("study", {}).get("axis") == "parameter"),
 ]
 
 
