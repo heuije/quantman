@@ -140,12 +140,21 @@ def test_sweep_event_must_be_condition():
 
 
 def test_capabilities_no_screener_kind():
-    """능력 카탈로그는 screener를 universe_kind 값으로 제시하지 않는다(세부조건 필드로 직교화)."""
+    """능력 카탈로그의 universe_kind는 엔진 Literal과 정확히 일치하고, screener는 값으로 제시 안 함.
+
+    엔진(Universe.kind)을 단일 출처로 삼아 capability 노출 집합을 *유도*한다 — 하드코딩한
+    닫힌집합({single,list,all})은 신규 kind(portfolio 등) 추가 때마다 깨지는 과도-타이트 단언이라,
+    엔진 Literal과의 일치로 대체해 드리프트 부류를 양방향으로(엔진엔 있는데 미노출/노출됐는데 엔진엔
+    없음) 영구 차단한다. screener는 직교 필드(세부조건)지 kind가 아니라는 불변식은 별도 유지.
+    """
+    import typing
     from quant_core.ir_engine.capabilities import capability_spec
+    from quant_core.ir_engine.spec import Universe
     cap = capability_spec()
     kinds = [k["value"] for k in cap["universe_kind"]]
+    engine_kinds = set(typing.get_args(Universe.model_fields["kind"].annotation))
     assert "screener" not in kinds
-    assert set(kinds) == {"single", "list", "all"}
+    assert set(kinds) == engine_kinds
 
 
 def test_roundtrip_serialization():

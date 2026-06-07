@@ -117,6 +117,11 @@ def run_query(strategy: StrategyIR, dataset: dict) -> dict:
     if q == "select":
         return run_select(strategy, dataset)
     if q == "describe":
+        u = strategy.universe
+        if u.kind == "single":
+            return run_describe_report(strategy, dataset)
+        if u.kind == "portfolio":
+            return run_portfolio_diagnosis(strategy, dataset)
         return _run_signal_study(strategy, dataset)
     if q == "relate":
         return (_run_event_study(strategy, dataset)
@@ -146,7 +151,7 @@ def _label_panel(lab, idx, cols: list) -> pd.DataFrame:
 
 def _universe_symbols(strategy: StrategyIR, dataset: dict) -> list[str]:
     u = strategy.universe
-    if u.kind in ("single", "list"):
+    if u.kind in ("single", "list", "portfolio"):
         return [s for s in u.symbols if s in dataset and not dataset[s].empty]
     # all — 매크로/자산 지수 제외, OHLC 보유 종목(전 유니버스 후보).
     # universe.screener 세부조건은 list/all 모두 _scoped·_screener_mask가 직교 적용한다.
@@ -450,6 +455,132 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
     return {"success": True, "query": "select", "as_of": str(asof)[:10],
             "universe_size": len(syms), "eligible_size": eligible_size,
             "results": results}
+
+
+# ── DESCRIBE 대상 확장 (P2 — 단일종목 360 리포트 + 포트폴리오 진단) ───────────
+
+def run_describe_report(strategy: StrategyIR, dataset: dict) -> dict:
+    """단일종목 360 리포트 — 한 종목의 가격·수익·리스크·밸류·섹터 스냅샷(DESCRIBE+단일대상).
+
+    시계열 시뮬·신호 평가 없음(signal은 분석동사 명목값). 보유 데이터(가격/펀더멘털/분류)에서
+    결정적 요약을 조립. 미수집 펀더멘털은 None으로 정직 표기(가짜 채움 금지). 데이터 기반 답변
+    패러다임의 단일대상 슬라이스 — 뉴스/추정치/이벤트 기반 facet(왜 올랐나·성장전망·실적후확률)은 P3.
+    """
+    from ..expression_parser import get_symbol_group
+    syms = _universe_symbols(strategy, dataset)
+    if not syms:
+        return _empty("리포트 대상 종목 데이터가 없습니다.")
+    sym = syms[0]
+    df = dataset.get(sym)
+    if df is None or "Close" not in df.columns or df["Close"].dropna().empty:
+        return _empty(f"{sym} 가격 데이터가 없습니다.")
+    close = df["Close"].astype(float).dropna()
+    asof = close.index[-1]
+    last = float(close.iloc[-1])
+
+    def _ret(days):
+        if len(close) <= days:
+            return None
+        prev = float(close.iloc[-1 - days])
+        return (last / prev - 1.0) if prev > 0 else None
+    returns = {"1m": _ret(21), "3m": _ret(63), "6m": _ret(126), "12m": _ret(252)}
+
+    win = close.iloc[-252:]
+    hi_52w, lo_52w = float(win.max()), float(win.min())
+    pct_from_high = (last / hi_52w - 1.0) if hi_52w > 0 else None
+
+    rets = close.pct_change().dropna()
+    rwin = rets.iloc[-252:]
+    vol_ann = (float(rwin.std()) * (TRADING_DAYS ** 0.5)) if len(rwin) > 1 else None
+    dd = close / close.cummax() - 1.0
+    max_dd = float(dd.min()) if len(dd) else None
+
+    fundamentals = {}
+    for col in ("pb_ratio", "trailing_pe", "ev_ebitda"):
+        if col in df.columns:
+            s = df.loc[df.index <= asof, col].dropna()
+            fundamentals[col] = float(s.iloc[-1]) if len(s) else None
+        else:
+            fundamentals[col] = None
+
+    return {
+        "success": True, "query": "describe", "report": "single",
+        "symbol": sym, "sector": get_symbol_group(sym, "Sector"),
+        "as_of": str(asof)[:10], "data_points": int(len(close)),
+        "price": {"last": last, "returns": returns, "high_52w": hi_52w,
+                  "low_52w": lo_52w, "pct_from_52w_high": pct_from_high},
+        "risk": {"vol_annualized": vol_ann, "max_drawdown": max_dd},
+        "fundamentals": fundamentals,
+    }
+
+
+def run_portfolio_diagnosis(strategy: StrategyIR, dataset: dict) -> dict:
+    """포트폴리오 진단 — 보유 종목의 집중도·섹터노출·가중밸류·리스크 스냅샷(DESCRIBE+포트폴리오 대상).
+
+    universe.kind="portfolio", symbols=보유, universe.weights(없으면 동일가중). 시뮬 없음.
+    집중도(HHI·유효종목수)·섹터노출(분류)·가중 밸류·포트 변동성/평균상관을 보유 데이터로 결정적 계산.
+    미수집은 coverage로 정직 표기. 실제 계좌 포지션 배선은 별개(엔진은 명시 holdings 입력).
+    """
+    from ..expression_parser import get_symbol_group
+    u = strategy.universe
+    holdings = [s for s in u.symbols if s in dataset and dataset[s] is not None
+                and not dataset[s].empty and "Close" in dataset[s].columns]
+    if not holdings:
+        return _empty("진단할 보유 종목 데이터가 없습니다.")
+    raw = u.weights or {}
+    w = {s: float(raw[s]) for s in holdings if s in raw and float(raw[s]) > 0}
+    if not w:
+        w = {s: 1.0 for s in holdings}
+    tot = sum(w.values())
+    weights = {s: w.get(s, 0.0) / tot for s in holdings}
+    asof = max(dataset[s]["Close"].dropna().index[-1] for s in holdings)
+
+    wv = np.array([weights[s] for s in holdings], dtype=float)
+    hhi = float((wv ** 2).sum())
+    ws = sorted(wv, reverse=True)
+    concentration = {"hhi": hhi, "effective_n": (float(1.0 / hhi) if hhi > 0 else None),
+                     "top_weight": float(ws[0]), "top3_weight": float(sum(ws[:3]))}
+
+    sector_exposure: dict = {}
+    holdings_out = []
+    for s in holdings:
+        sec = get_symbol_group(s, "Sector")
+        sector_exposure[sec] = sector_exposure.get(sec, 0.0) + weights[s]
+        holdings_out.append({"symbol": s, "weight": weights[s], "sector": sec})
+
+    def _wavg(col):
+        num = wsum = 0.0
+        for s in holdings:
+            df = dataset[s]
+            if col in df.columns:
+                v = df.loc[df.index <= asof, col].dropna()
+                if len(v):
+                    num += weights[s] * float(v.iloc[-1]); wsum += weights[s]
+        return (num / wsum) if wsum > 0 else None
+    valuation = {"weighted_pb": _wavg("pb_ratio"), "weighted_pe": _wavg("trailing_pe")}
+
+    closes = pd.DataFrame({s: dataset[s]["Close"].astype(float) for s in holdings})
+    rets = closes.pct_change().dropna(how="any")
+    risk = {"portfolio_vol_annualized": None, "avg_pairwise_corr": None}
+    if rets.shape[0] > 1:
+        cov = rets[holdings].cov().to_numpy() * TRADING_DAYS
+        pvar = float(wv @ cov @ wv)
+        risk["portfolio_vol_annualized"] = float(pvar ** 0.5) if pvar >= 0 else None
+        if len(holdings) >= 2:
+            cc = rets[holdings].corr().to_numpy()
+            iu = np.triu_indices(len(holdings), k=1)
+            vals = cc[iu][np.isfinite(cc[iu])]
+            risk["avg_pairwise_corr"] = float(vals.mean()) if vals.size else None
+
+    return {
+        "success": True, "query": "describe", "report": "portfolio",
+        "as_of": str(asof)[:10], "n_holdings": len(holdings), "holdings": holdings_out,
+        "concentration": concentration, "sector_exposure": sector_exposure,
+        "valuation": valuation, "risk": risk,
+        "coverage": {"with_price": len(holdings),
+                     "with_fundamentals": sum(1 for s in holdings if "pb_ratio" in dataset[s].columns
+                                              and dataset[s]["pb_ratio"].dropna().shape[0] > 0)},
+    }
 
 
 # ── 이벤트 스터디 (비전 §4 시간축) ────────────────────────────────────────────

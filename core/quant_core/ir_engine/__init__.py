@@ -7,7 +7,10 @@
 """
 
 from .backtest import run_backtest_ir  # noqa: F401
-from .run import run_period_split, run_query, run_select, run_strategy_ir, run_sweep  # noqa: F401
+from .run import (  # noqa: F401
+    run_describe_report, run_period_split, run_portfolio_diagnosis, run_query,
+    run_select, run_strategy_ir, run_sweep,
+)
 from .compare import (  # noqa: F401
     block_bootstrap_ci, bootstrap_mean_ci, compare_partition, distribution,
     excess_distribution, jackknife_by_year, one_sample_test, two_sample_test,
@@ -20,8 +23,8 @@ from .capabilities import capability_spec  # noqa: F401
 from .explain import explain_ir  # noqa: F401
 from .service import backtest_from_spec, strategy_from_spec  # noqa: F401
 from .spec import (  # noqa: F401
-    Entry, Exit, Overlays, ParamAxis, PositionSpec, Sizing, SimSpec, StrategyIR,
-    Study, Universe, field_contract, needed_columns, needed_symbols,
+    Entry, Exit, Overlays, ParamAxis, PositionSpec, SelectSpec, Sizing, SimSpec,
+    StrategyIR, Study, Universe, field_contract, needed_columns, needed_symbols,
     signal_out_type, validate_strategy,
 )
 from .sweep import (  # noqa: F401
@@ -31,9 +34,10 @@ from .sweep import (  # noqa: F401
 
 __all__ = [
     "run_backtest_ir", "run_strategy_ir", "run_sweep", "run_period_split", "run_query", "run_select",
+    "run_describe_report", "run_portfolio_diagnosis",
     "backtest_from_spec", "strategy_from_spec", "capability_spec", "explain_ir",
     "collect_strat_refs", "has_strat_refs", "materialize_strategy_assets",
-    "StrategyIR", "Universe", "PositionSpec", "Sizing", "Entry", "Exit",
+    "StrategyIR", "Universe", "PositionSpec", "Sizing", "Entry", "Exit", "SelectSpec",
     "Overlays", "SimSpec", "Study", "ParamAxis", "validate_strategy", "signal_out_type",
     "needed_symbols", "needed_columns", "field_contract",
     "run_condition_sweep", "sweep_condition", "partition_by_label",

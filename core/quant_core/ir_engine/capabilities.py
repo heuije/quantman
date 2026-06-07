@@ -20,6 +20,8 @@ def capability_spec() -> dict:
              "use_for": "소수 종목 고정 바스켓 (세부조건으로 2차 선별 가능)"},
             {"value": "all", "does": "데이터 보유 전체 종목",
              "use_for": "전체 유니버스 팩터/포트폴리오 (scheduled·always 진입과 함께)"},
+            {"value": "portfolio", "does": "내 보유 종목 집합(진단 대상). universe.weights로 비중(없으면 동일가중)",
+             "use_for": "포트폴리오 진단 — 집중도(HHI)·섹터 노출·가중 밸류·포트 변동성. query=describe와 함께."},
         ],
         "screener": {
             "field": "universe.screener",
@@ -161,8 +163,10 @@ def capability_spec() -> dict:
              "use_for": "저평가주·고배당주 등 '조건 맞는 상위 N개 종목' 스크리닝. "
                         "signal=랭킹 score(예: 낮은 PBR), universe.screener로 섹터·자격 필터, "
                         "select.top_n/top_pct·descending·display(근거 지표)."},
-            {"value": "describe", "does": "임의 score 노드 값의 분포·요약을 (선택)국면 라벨별로",
-             "use_for": "신호 분포·반감기 연구. study.target_node(score 또는 condition) 필요."},
+            {"value": "describe", "does": ("살펴보기 — 대상에 따라: 단일종목(universe.kind=single)=가격·수익·"
+                                           "리스크·밸류·섹터 360 리포트; 포트폴리오(kind=portfolio)=집중·섹터노출·"
+                                           "리스크 진단; 종목군(kind=all/list)=임의 score 노드 값의 분포·요약(study.target_node)"),
+             "use_for": "'이 종목 어때'(single)·'내 포트폴리오 진단'(portfolio)·신호 분포 연구(all/list+target_node)."},
             {"value": "relate", "does": "factor↔forward수익 횡단 IC(또는 event 지정 시 이벤트 스터디)",
              "use_for": "예측력·이벤트 반응. IC=study.target_node·windows·universe.kind!=single; "
                         "이벤트 스터디=study.event·windows."},

@@ -31,10 +31,13 @@ from ..exec_defaults import is_futures
 # ── 유니버스 (대상 종목 집합) ─────────────────────────────────────────────────
 
 class Universe(BaseModel):
-    kind: Literal["single", "list", "all"] = "single"
-    symbols: list[str] = Field(default_factory=list)   # single(1개)/list(다수)
+    kind: Literal["single", "list", "all", "portfolio"] = "single"
+    symbols: list[str] = Field(default_factory=list)   # single(1)/list·portfolio(다수)
     screener: Optional[dict] = None                    # 선택 종목 2차 필터: {"condition": Node, "refresh": str}
     exclude_macro: bool = True                         # all: 매크로/자산 지수 제외
+    # portfolio 전용 — 보유 비중 {symbol: weight}. 없으면 동일가중. 이것은 "내 실제 보유"(진단 대상,
+    # 축A)로, position.sizing.weights("전략 목표배분")와 평면이 다르다(진단엔 position 자체가 없음).
+    weights: Optional[dict] = None
 
 
 # ── 포지션 4부품 (비전 §3.3) ──────────────────────────────────────────────────
@@ -396,6 +399,24 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
         issues.append(Issue("S-univ", SEV_ERROR,
                             "전체 종목 유니버스는 정기리밸런싱(scheduled)·상시(always) 진입과 함께 쓰세요.",
                             "universe"))
+    # 포트폴리오 진단 — describe 전용 대상. 보유 종목 필요, 비중 정합(축A — position 없음).
+    if u.kind == "portfolio":
+        if s.query != "describe":
+            issues.append(Issue("S-PORT", SEV_ERROR,
+                                "portfolio 유니버스는 진단(query=describe) 전용입니다 — "
+                                "보유 기반 시뮬은 별도 대상입니다.", "universe"))
+        if not u.symbols:
+            issues.append(Issue("S-PORT", SEV_ERROR,
+                                "포트폴리오 진단은 보유 종목(symbols)이 1개 이상 필요합니다.", "universe"))
+        if u.weights:
+            if any(float(v) <= 0 for v in u.weights.values()):
+                issues.append(Issue("S-PORT", SEV_ERROR,
+                                    "보유 비중(weights)은 양수여야 합니다.", "universe.weights"))
+            stray = set(u.weights) - set(u.symbols)
+            if stray:
+                issues.append(Issue("M-vacuous", SEV_INTEGRITY_WARN,
+                                    f"비중에 보유 외 종목이 있습니다: {sorted(stray)} — 무시됩니다.",
+                                    "universe.weights"))
     sc = u.screener or {}
     cond = sc.get("condition")
     if cond:
@@ -496,7 +517,8 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     # 분석(query=describe·relate) — 분석 노드(target_node) 필요·타입·시장참조 검증.
     # (relate + event는 이벤트 스터디라 target_node 없이 동작 → IC 모드일 때만 target_node 요구.)
     is_ic = s.query == "relate" and st.event is None
-    if s.query == "describe" or is_ic:
+    describe_dist = s.query == "describe" and u.kind in ("all", "list")
+    if describe_dist or is_ic:
         tn = st.target_node
         if tn is None:
             issues.append(Issue("S-target", SEV_ERROR,
