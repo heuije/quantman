@@ -207,6 +207,51 @@ def build_oil_excel(
     # 헤더 행 고정 (스크롤해도 보이게)
     ws.freeze_panes = "A9"
 
+    # ── 거래내역 시트 (라이브 수식 추출 — 거래 발생 행만) ────────────
+    # FILTER 함수로 백테스트 시트에서 수익률(L)이 빈칸이 아닌 행만 자동 추출.
+    # 백테스트 입력칸을 바꾸면 이 목록도 즉시 갱신. (Office 365/2021+ 필요)
+    tr = wb.create_sheet("거래내역")
+    tr["A1"] = "거래내역 — 신호가 발생해 실제 거래된 행만 자동 추출"
+    tr["A1"].font = title_font
+    tr["A2"] = "거래 수"
+    tr["A2"].font = accent_font
+    tr["B2"] = f'=COUNT(백테스트!L9:L{last})'
+    tr["B2"].font = bold
+    tr["B2"].border = border
+    tr["C2"] = "← 백테스트 입력칸(임계값·보유기간·비용)을 바꾸면 자동 갱신 (FILTER)"
+    tr["C2"].font = Font(italic=True, color="6F6A62")
+
+    tr_headers = ["신호일", "진입일", "청산일", "진입가", "청산가",
+                  "롤횟수", "수익률", "PnL($)"]
+    for j, h in enumerate(tr_headers):
+        c = tr.cell(row=4, column=1 + j, value=h)
+        c.font = bold
+        c.fill = head_fill
+        c.border = border
+        c.alignment = center
+
+    # 백테스트 시트 원본 컬럼: 신호일=A, 진입일=G, 청산일=H, 진입가=I, 청산가=J,
+    #   롤횟수=K, 수익률=L, PnL=M. 조건 = 수익률(L)이 빈칸 아님 (=실제 거래).
+    src_cols = ["A", "G", "H", "I", "J", "K", "L", "M"]
+    cond = f'백테스트!$L$9:$L${last}<>""'
+    for j, col in enumerate(src_cols):
+        empty = '"거래 없음"' if j == 0 else '""'
+        tr.cell(row=5, column=1 + j, value=(
+            f'=FILTER(백테스트!{col}9:{col}{last},{cond},{empty})'
+        ))
+
+    # 거래내역 포맷 (스필 영역 넉넉히 5~600행 미리 포맷)
+    fmt = {1: "yyyy-mm-dd", 2: "yyyy-mm-dd", 3: "yyyy-mm-dd",
+           4: "0.00", 5: "0.00", 6: "0",
+           7: "+0.00%;-0.00%", 8: "#,##0"}
+    for rr in range(5, 600):
+        for col_i, nf in fmt.items():
+            tr.cell(row=rr, column=col_i).number_format = nf
+    tr_widths = [12, 12, 12, 10, 10, 8, 10, 12]
+    for j, w in enumerate(tr_widths):
+        tr.column_dimensions[get_column_letter(1 + j)].width = w
+    tr.freeze_panes = "A5"
+
     # ── 만기일 시트 (롤횟수 COUNTIFS 참조용) ─────────────────────────
     exp_ws = wb.create_sheet("만기일")
     exp_ws["A1"] = "WTI 월물 만기일"
@@ -244,6 +289,7 @@ def build_oil_excel(
         ["유효청산가(O열)", "청산가에 슬리피지 반영"],
         ["PnL(M열)", "[부호×(유효청산−유효진입) − 수수료×(유효진입+유효청산)]×1000 − 롤횟수×롤비용×진입대금"],
         ["수익률(L열)", "순손익(M) ÷ 진입 거래대금. 슬리피지·수수료·롤비용 모두 반영된 net"],
+        ["거래내역 시트", "신호가 발생해 실제 거래된 행만 FILTER로 자동 추출 (입력 바꾸면 갱신). Office 365/2021+ 필요"],
         ["만기일 시트", "롤횟수 계산의 기준 만기일 목록 (CME 규칙 기반 자동 생성)"],
         ["", ""],
         ["한계", "MAE/MFE·walk-forward는 미반영. 앱은 롤비용≠0 시 롤당 소액 거래마찰도 부과(엑셀은 term-structure 성분만)."],
