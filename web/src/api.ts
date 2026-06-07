@@ -3,6 +3,7 @@ import type {
   CommandRow, CommandType, DeviceRow, IndicatorInfo, IrBlockSpec,
   IrStrategyDef, IrStrategyResult,
   MarketContext, NextDayPreview, PortfolioRisk,
+  PortfolioAnalyzeIn, PortfolioAnalysis, PortfolioHoldings, SymbolDetail, SymbolListing,
   ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO, ScreenerUserPreset,
   StrategyDef, StrategyRow, StrategyStats, StrategyVersionRow,
   SymbolInfo, SyncSnapshot, TradingTimeline, UserSettingsIO,
@@ -158,6 +159,16 @@ export const api = {
   marketContext: () => req<MarketContext>("/market/context"),
   portfolioRisk: (window = 60) =>
     req<PortfolioRisk>(`/portfolio/risk?window=${window}`),
+
+  // 대시보드/포트폴리오 탭 — on-demand (서버 dataset 미의존)
+  symbolDetail: (symbol: string, range = "1y") =>
+    req<SymbolDetail>(`/market/symbol/${encodeURIComponent(symbol)}?range=${range}`),
+  marketListings: () => req<{ listings: SymbolListing[] }>("/market/listings"),
+  analyzePortfolio: (body: PortfolioAnalyzeIn) =>
+    req<PortfolioAnalysis>("/portfolio/analyze", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  portfolioHoldings: () => req<PortfolioHoldings>("/portfolio/holdings"),
   getSettings: () => req<UserSettingsIO>("/settings"),
   putSettings: (s: UserSettingsIO) =>
     req<UserSettingsIO>("/settings", { method: "PUT", body: JSON.stringify(s) }),

@@ -488,6 +488,68 @@ export interface PortfolioRisk {
   window: number;
 }
 
+// ── 대시보드 탭 — 개별 종목 on-demand 조회 ──────────────────────────────────
+export interface SymbolListing { symbol: string; name: string; market: string }
+export interface IndicatorSpec {
+  key: string; label: string; pane: "price" | "sub"; fields?: string[];
+}
+export interface SymbolPoint {
+  date: string;
+  open: number | null; high: number | null; low: number | null; close: number | null;
+  volume: number | null; chg_pct: number | null;
+  ma5: number | null; ma20: number | null; ma60: number | null; ma120: number | null;
+  bb_upper: number | null; bb_mid: number | null; bb_lower: number | null;
+  rsi_14: number | null;
+  macd: number | null; macd_signal: number | null; macd_hist: number | null;
+  stoch_k: number | null; stoch_d: number | null;
+  atr_14: number | null; obv: number | null; vol_20d: number | null;
+}
+export interface SymbolDetail {
+  symbol: string; currency: string; range: string;
+  last: {
+    date: string; close: number | null; change_pct: number | null;
+    rsi_14: number | null; volume: number | null;
+    ma20: number | null; ma60: number | null;
+    macd: number | null; stoch_k: number | null; atr_14: number | null; vol_20d: number | null;
+    beta: number | null; benchmark: string;
+    high_52w: number | null; low_52w: number | null;
+  };
+  indicators: IndicatorSpec[];
+  series: SymbolPoint[];
+}
+
+// ── 포트폴리오 탭 — 현재 vs 예상 비교 분석 ──────────────────────────────────
+export interface PositionInput { symbol: string; weight: number }
+export interface PortfolioInput { label: string; positions: PositionInput[] }
+export interface PortfolioAnalyzeIn {
+  current?: PortfolioInput | null;
+  proposed?: PortfolioInput | null;
+  benchmark?: string;
+  years?: number;
+}
+export interface EquityPoint { date: string; value: number }
+export interface PortfolioLeg {
+  label: string;
+  symbols: string[];
+  weights: Record<string, number>;
+  metrics: {
+    cagr: number | null; vol: number | null; sharpe: number | null;
+    mdd: number | null; cum_return: number | null; var_95: number | null;
+    beta: number | null; excess_return: number | null;
+  };
+  equity: EquityPoint[];
+  benchmark_equity: EquityPoint[] | null;
+}
+export interface PortfolioAnalysis {
+  benchmark: string; years: number;
+  current: PortfolioLeg | null;
+  proposed: PortfolioLeg | null;
+}
+export interface PortfolioHoldings {
+  linked: boolean;
+  positions: { symbol: string; weight: number }[];
+}
+
 export interface UserSettingsIO {
   alert_webhook_url: string;
   alert_on_killswitch: boolean;
