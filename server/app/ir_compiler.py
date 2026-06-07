@@ -161,7 +161,7 @@ StrategyIR = {{
   "signal": <블록트리>,          // 신호. {{op, params, inputs:{{slot: 자식블록}}}} 재귀. 잎: data{{ref}}, const{{value}}
   "position": {{"direction":.., "sizing":{{"mode":..}}, "entry":{{"mode":..}}, "exit":{{..}}, "overlays":{{..}}}},
   "simulation": {{"initial_capital":.., "fill":.., "leverage":.., "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", ...}},
-  "query": "simulate|describe|relate",   // 무엇을 묻는가(기본 simulate=손익 백테스트). 분석 질문일 때만 describe·relate.
+  "query": "simulate|select|describe|relate",   // 무엇을 묻는가(기본 simulate=손익 백테스트). select=현시점 스크리닝, describe=살펴보기(단일종목 리포트·포트폴리오 진단·신호 분포), relate=관계/이벤트.
   "study": {{"axis":"none|parameter|entity|label|time_fold", "reduction":"enumerate|contrast|consistency", "param_grid":[{{"path":점경로,"values":[..]}}], "assets":[..], "label":<블록>, "target_node":<블록>, "windows":[..], "event":<블록>}}
 }}
 펼침/분석이 없으면 query·study를 생략(기본 simulate·axis=none). 종목 자신의 컬럼은 ref에 "__SELF__." 접두(예 "__SELF__.Close"). 신호 out_type: condition(룰)·score(팩터)·value·label.
@@ -220,6 +220,13 @@ StrategyIR = {{
    is_in(attribute("Sector"), ["반도체"]) 같은 섹터/자격 필터 + select={top_n:N,
    descending:false(저평가=낮은값 우선)·true(높은값 우선), display:[pb_ratio, ...](근거 지표)}.
    (※ 레시피 3은 *정기 리밸런싱 백테스트*(simulate), 본 레시피는 *현 시점 스냅샷 선별*(select) — 둘 구분.)
+8. [단일종목 360 리포트] "삼성전자 어때"·"이 종목 분석/요약"처럼 *한 종목의 현황*이 답이면 →
+   query="describe" + universe.kind="single" + symbols=[그 종목] + signal=data("__SELF__.Close")
+   (분석 동사라 신호는 명목 — 엔진이 가격·수익·리스크·밸류·섹터를 자동 조립). study 불필요.
+   (※ '왜 올랐나/성장전망/실적후확률'은 뉴스·추정치·이벤트 데이터 필요 — 아직 미지원이면 assumptions에 명시.)
+9. [포트폴리오 진단] "내 포트폴리오 진단"·"보유종목 집중·리스크 봐줘"처럼 *보유 집합의 진단*이면 →
+   query="describe" + universe.kind="portfolio" + symbols=[보유들] + (보유 비중 알면 universe.weights={{종목:비중}}, 없으면 동일가중)
+   + signal=data("__SELF__.Close")(명목). 엔진이 집중도(HHI)·섹터노출·가중밸류·포트 변동성 산출. study 불필요.
 </idioms>
 
 <process>

@@ -46,6 +46,14 @@ CASES = [
      lambda ir: (ir.get("query") == "select"
                  and (ir.get("select") or {}).get("top_n") == 3
                  and (ir.get("select") or {}).get("descending") is False)),
+    ("단일종목 360 리포트",
+     "삼성전자 어때? 분석해줘.",
+     lambda ir: ir.get("query") == "describe" and ir.get("universe", {}).get("kind") == "single"
+                and bool(ir.get("universe", {}).get("symbols"))),
+    ("포트폴리오 진단",
+     "내 포트폴리오 진단해줘. 보유: 삼성전자, SK하이닉스, NAVER.",
+     lambda ir: ir.get("query") == "describe" and ir.get("universe", {}).get("kind") == "portfolio"
+                and len(ir.get("universe", {}).get("symbols", [])) >= 2),
 ]
 
 

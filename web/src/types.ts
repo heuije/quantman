@@ -241,13 +241,14 @@ export interface IrIssue {
 export interface IrStrategyDef {
   name: string;
   universe: {
-    kind: "single" | "list" | "all";
+    kind: "single" | "list" | "all" | "portfolio";
     symbols?: string[];
     screener?: {
       condition: IrNode;
       refresh: "each_rebalance" | "once_at_start";
     } | null;
     exclude_macro?: boolean;
+    weights?: Record<string, number> | null;   // portfolio 전용 — 보유 비중(없으면 동일가중)
   };
   signal: IrNode;
   position: {
@@ -304,6 +305,31 @@ export interface IrStrategyDef {
     as_of?: string; top_n?: number; top_pct?: number;
     descending?: boolean; display?: string[];
   };
+}
+
+// query="describe" + universe.kind="single" — 단일종목 360 리포트 결과.
+export interface IrSingleReport {
+  success: boolean; query: "describe"; report: "single";
+  symbol: string; sector: string; as_of: string; data_points: number;
+  price: {
+    last: number;
+    returns: Record<"1m" | "3m" | "6m" | "12m", number | null>;
+    high_52w: number; low_52w: number; pct_from_52w_high: number | null;
+  };
+  risk: { vol_annualized: number | null; max_drawdown: number | null };
+  fundamentals: Record<"pb_ratio" | "trailing_pe" | "ev_ebitda", number | null>;
+}
+
+// query="describe" + universe.kind="portfolio" — 포트폴리오 진단 결과.
+export interface IrPortfolioDiagnosis {
+  success: boolean; query: "describe"; report: "portfolio";
+  as_of: string; n_holdings: number;
+  holdings: { symbol: string; weight: number; sector: string }[];
+  concentration: { hhi: number; effective_n: number | null; top_weight: number; top3_weight: number };
+  sector_exposure: Record<string, number>;
+  valuation: { weighted_pb: number | null; weighted_pe: number | null };
+  risk: { portfolio_vol_annualized: number | null; avg_pairwise_corr: number | null };
+  coverage: { with_price: number; with_fundamentals: number };
 }
 
 // 모든 펼침 버킷의 단일 지표 어휘 (engine perf_from_returns와 동기) — 갭 A.
