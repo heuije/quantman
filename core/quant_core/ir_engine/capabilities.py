@@ -151,43 +151,48 @@ def capability_spec() -> dict:
             {"value": "replace", "does": "빈 슬롯을 차순위 종목으로 즉시 충원",
              "use_for": "항상 top_n 종목 수를 채워 풀투자 유지."},
         ],
-        "period_split": [
-            {"value": "single", "does": "단일 구간 1회 백테스트(기본)"},
-            {"value": "walk_forward", "does": "1회 실행 후 수익을 시간순 4등분해 구간별 성과 일관성 확인(재학습 없음)",
-             "use_for": "'시간이 지나도 성과가 일관적인가' 강건성 점검."},
-            {"value": "oos", "does": "1회 실행 후 앞/뒤 2등분 구간별 성과(재학습 없음)"},
-            {"value": "kfold", "does": "현재 walk_forward와 동일(시간순 4등분) — 진짜 교차검증(fold 회전) 아님"},
+        # 질문(query) — '무엇을 묻는가'의 동사. 기본은 simulate(손익 백테스트).
+        # describe·relate는 분석 질문(신호 분포·예측력)으로, study.target_node 등 분석 입력을 동반.
+        "query": [
+            {"value": "simulate", "does": "전략 모의매매(손익)",
+             "use_for": "백테스트 — 기본"},
+            {"value": "describe", "does": "임의 score 노드 값의 분포·요약을 (선택)국면 라벨별로",
+             "use_for": "신호 분포·반감기 연구. study.target_node(score 또는 condition) 필요."},
+            {"value": "relate", "does": "factor↔forward수익 횡단 IC(또는 event 지정 시 이벤트 스터디)",
+             "use_for": "예측력·이벤트 반응. IC=study.target_node·windows·universe.kind!=single; "
+                        "이벤트 스터디=study.event·windows."},
         ],
-        # 펼침/분석(sweep) — axis(어떻게 나눠 볼까)와 target(무엇을 측정할까)은 직교.
-        # 기본은 단일 백테스트(axis='none'·target='return'). 분석 펼침은 명시 요청 시에만.
-        "sweep_axis": [
-            {"value": "none", "does": "펼침 없이 단일 백테스트(기본)"},
-            {"value": "parameter", "does": "param_grid의 점경로별 값 격자로 반복",
+        # 스터디(study) — 질문을 한 축(axis)으로 펼치고 환원(reduction)한다. axis·reduction은 직교.
+        # 기본은 단일 실행(axis='none'·reduction='enumerate'). 펼침은 명시 요청 시에만.
+        "study_axis": [
+            {"value": "none", "does": "펼침 없이 단일 실행(기본)",
+             "use_for": "한 번만 돌릴 때."},
+            {"value": "parameter", "does": "param_grid의 점경로별 값 격자로 재실행",
              "use_for": "'기간·비용 등을 바꿔가며 성과 비교'(민감도·최적화). 축 2개+면 데카르트곱."},
-            {"value": "condition",
-             "does": "1회 백테스트의 종목별 기여(비중×수익)를 임의 라벨로 그룹 분할해 그룹별 성과 비교",
+            {"value": "entity", "does": "assets 목록의 종목별 개별 성과",
+             "use_for": "'종목마다 따로 성과를 본다'. assets(종목 목록) 필요."},
+            {"value": "label",
+             "does": "1회 실행의 종목별 기여(비중×수익)를 임의 라벨로 사후 그룹 분할해 그룹별 비교",
              "use_for": "라벨이 종목 함수면 '섹터·업종별'(label=attribute('Sector'·'Industry'))·'종목별'; "
                         "일 함수면 '시장 국면별'(label=bucket(임의 신호) — 예: S&P가 20일선 위/아래)·"
                         "'요일·월별'(label=calendar)·'점수 구간별'(label=bucket). 섹터×국면 조합도 가능. "
-                        "label은 기존 블록(bucket·calendar·attribute + 임의 신호 조립)으로 자유 구성. label 필수, target='return'."},
-            {"value": "asset", "does": "assets 목록의 종목별 개별 성과",
-             "use_for": "'종목마다 따로 성과를 본다'."},
-            {"value": "time", "does": "이벤트 시점 기준 forward 수익 분포(event·windows)",
-             "use_for": "'이벤트 발생 후 N일 수익'(이벤트 스터디). event 미지정 시 signal 사용."},
+                        "label은 기존 블록(bucket·calendar·attribute + 임의 신호 조립)으로 자유 구성. label 필수."},
+            {"value": "time_fold", "does": "1회 실행 후 수익을 시간순 폴드(folds)로 나눠 구간별 성과 일관성 확인(재학습 없음)",
+             "use_for": "'시간이 지나도 성과가 일관적인가' 강건성 점검(OOS). reduction=consistency와 함께. "
+                        "folds로 분할 수(기본 4), split_dates로 명시 경계도 가능."},
         ],
-        "sweep_target": [
-            {"value": "return", "does": "전략 일별수익(기본). axis로 분할·반복.",
-             "use_for": "손익·성과가 답일 때. target_node 불필요."},
-            {"value": "signal", "does": "임의 score 노드 *값*의 분포를 (선택)라벨별로 — 신호 자체 연구",
-             "use_for": "신호 반감기·레짐별 분포. study.target_node(score 또는 condition) 필요."},
-            {"value": "relation", "does": "factor 노드와 forward수익의 횡단 IC 시계열 — 예측력·팩터 타이밍",
-             "use_for": "팩터 예측력 측정. target_node·windows 필요, universe.kind!=single."},
+        "study_reduction": [
+            {"value": "enumerate", "does": "축의 모든 점을 그대로 나열(각 셀의 성과)"},
+            {"value": "contrast", "does": "축의 그룹들을 대조하고 차이의 통계 검정",
+             "use_for": "label축 그룹 비교 — 국면·섹터 간 성과 차이가 유의한가."},
+            {"value": "consistency", "does": "폴드 간 성과의 일관성 요약",
+             "use_for": "time_fold축 — 구간이 바뀌어도 성과가 유지되는가."},
         ],
-        "sweep_relation_kind": [
+        "study_relation_kind": [
             {"value": "ic", "does": "횡단 정보계수(Information Coefficient) — 팩터값과 forward수익의 순위상관"},
         ],
-        "sweep_event_basis": [
-            {"value": "close", "does": "종가→종가 수익(time축 기본)"},
+        "study_event_basis": [
+            {"value": "close", "does": "종가→종가 수익(이벤트 스터디 기본)"},
             {"value": "intraday", "does": "시가→종가 수익(당일 반등 포착)"},
             {"value": "excess", "does": "시장 대비 초과수익(universe.kind!=single 필요)"},
         ],

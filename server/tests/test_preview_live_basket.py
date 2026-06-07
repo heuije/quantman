@@ -80,7 +80,7 @@ def _ir_def(refresh: str) -> dict:
                      "entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 4},
                      "exit": {}, "overlays": {}},
         "simulation": {"initial_capital": 10_000_000},
-        "sweep": {"axis": "none"},
+        "study": {"axis": "none"},
     }
 
 

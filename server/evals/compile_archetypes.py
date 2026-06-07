@@ -83,8 +83,8 @@ def main():
         print("=" * 64)
         print(f"[{label}] success={ok} prop={prop_ok} repair={res.get('repair_count')}")
         print("  direction:", ir.get("position", {}).get("direction"))
-        sw = ir.get("sweep", {}) or {}
-        print("  sweep.axis:", sw.get("axis"), "| param_grid 축:", len(sw.get("param_grid", []) or []))
+        st = ir.get("study", {}) or {}
+        print("  study.axis:", st.get("axis"), "| param_grid 축:", len(st.get("param_grid", []) or []))
         print("  assumptions:", json.dumps(res.get("assumptions") or [], ensure_ascii=False)[:300])
         if not ok:
             print("  error:", res.get("error"))

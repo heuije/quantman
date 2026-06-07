@@ -165,9 +165,9 @@ def _make_strategy_resolver(session: Session, user: Optional[User]):
 @router.post("/strategy")
 def ir_strategy(body: dict, user: User = Depends(get_current_user),
                 session: Session = Depends(get_session)):
-    """완전한 StrategyIR(유니버스·신호·포지션 4부품·시뮬·펼침) 백테스트.
+    """완전한 StrategyIR(유니버스·신호·포지션 4부품·시뮬·스터디) 백테스트.
 
-    sweep.axis != none이면 펼침 resultset(버킷), 아니면 1회 백테스트 결과.
+    study.axis != none이면 펼침 resultset(버킷), 아니면 1회 백테스트 결과.
     저장된 전략(body.strategy_id) 백테스트면 BacktestRun으로 내역 저장.
     """
     # 부분집합 로드 — 두 축으로 전 유니버스 45컬럼(~9.4GB) 빌드를 우회한다:

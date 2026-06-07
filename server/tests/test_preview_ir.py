@@ -63,7 +63,7 @@ def _ir_def(entry_mode="on_signal", sizing_mode="pct_cash", amount_pct=10.0):
             "exit": {}, "overlays": {},
         },
         "simulation": {"initial_capital": 10_000_000},
-        "sweep": {"axis": "none"},
+        "study": {"axis": "none"},
     }
 
 
