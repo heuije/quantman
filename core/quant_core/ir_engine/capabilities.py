@@ -202,7 +202,27 @@ def capability_spec() -> dict:
              "use_for": "label축 그룹 비교 — 국면·섹터 간 성과 차이가 유의한가."},
             {"value": "consistency", "does": "폴드 간 성과의 일관성 요약",
              "use_for": "time_fold축 — 구간이 바뀌어도 성과가 유지되는가."},
+            {"value": "extremize", "does": "축의 셀 중 목적함수(objective)를 최대/최소화하는 최적 셀 선택 + OOS 과최적화 가드",
+             "use_for": "파라미터·종목 최적해 — '샤프 최대 파라미터'·'가장 나은 종목'. axis=parameter(+param_grid) "
+                        "또는 entity(+assets) + study.objective와 함께. (enumerate=모든 셀 나열과 구분 — 최적 1개 선택.)"},
         ],
+        # extremize 목적함수 — metric(최적화 대상)·direction·과최적화 가드. summarize_returns 산출 지표만.
+        "objective_metric": [
+            {"value": "sharpe", "does": "샤프 비율(위험조정수익, 기본)"},
+            {"value": "sortino", "does": "소르티노(하방위험조정)"},
+            {"value": "cagr", "does": "연복리수익률(%)"},
+            {"value": "cum_return", "does": "누적수익률(%)"},
+            {"value": "mdd", "does": "최대낙폭(음수%) — ⚠ '낙폭 최소화'는 direction=max(0에 가까울수록 좋음)"},
+        ],
+        "objective_direction": [
+            {"value": "max", "does": "최대화"},
+            {"value": "min", "does": "최소화"},
+        ],
+        "objective": {
+            "field": "study.objective",
+            "does": "extremize 목적함수 — metric·direction·oos_guard(in-sample 최적을 시간폴드 OOS 일관성으로 교차검증).",
+            "use_for": "최적화 기준 지정. 기본=sharpe/max/guard. 예: '낙폭 최소'=metric:mdd+direction:max.",
+        },
         "study_relation_kind": [
             {"value": "ic", "does": "횡단 정보계수(Information Coefficient) — 팩터값과 forward수익의 순위상관"},
         ],

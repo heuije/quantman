@@ -25,7 +25,7 @@ from .compare import (
     two_sample_test, walk_forward_consistency,
 )
 from .comparison import compare_by_partition
-from .spec import StrategyIR
+from .spec import StrategyIR, Study
 from .sweep import (
     daily_returns, partition_by_label, summarize_returns,
 )
@@ -131,6 +131,8 @@ def run_query(strategy: StrategyIR, dataset: dict) -> dict:
         return run_period_split(strategy, dataset)
     if st.axis == "none":
         return run_strategy_ir(strategy, dataset)
+    if st.reduction == "extremize":
+        return run_extremize(strategy, dataset)
     return run_sweep(strategy, dataset)
 
 
@@ -260,6 +262,81 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
                 "metrics": res["metrics"], "equity": res["equity"]}
 
     return _empty(f"미지원 펼침 축: {st.axis}")
+
+
+# ── 최적화 (extremize 환원 — 최적해 + 과최적화 OOS 가드) ────────────────────────
+
+def run_extremize(strategy: StrategyIR, dataset: dict) -> dict:
+    """펼침 축의 셀 중 목적함수 최대/최소 셀(최적해)을 찾고 OOS 일관성으로 과최적화를 가드.
+
+    axis=parameter: param_grid 데카르트곱 / axis=entity: assets — 각 셀을 simulate 백테스트해
+    summarize_returns로 perf 산출, objective.metric를 direction대로 argmax/argmin. in-sample
+    argmax는 과최적화 위험이라 oos_guard=True면 최적 셀을 시간폴드(run_period_split)로 재검해
+    OOS 일관성을 표면화한다(견고한 최적 vs 우연한 spike 구분). 새 평가기 없이 기존 머신 재사용.
+    """
+    from .spec import Objective
+    st = strategy.study
+    obj = st.objective or Objective()
+    base = strategy.model_dump()
+
+    combos: list = []   # [(label, kind, payload)]  kind∈{"param","entity"}
+    if st.axis == "parameter":
+        grid = st.param_grid
+        if not grid or any(not ax.values for ax in grid):
+            return _empty("파라미터 최적화는 param_grid(경로·값)가 필요합니다.")
+        import itertools
+        for combo in itertools.product(*[ax.values for ax in grid]):
+            patch = {ax.path: v for ax, v in zip(grid, combo)}
+            label = " | ".join(f"{ax.path.split('.')[-1]}={v}" for ax, v in zip(grid, combo))
+            combos.append((label, "param", patch))
+    elif st.axis == "entity":
+        if not st.assets:
+            return _empty("종목 최적화는 assets(종목 목록)가 필요합니다.")
+        for a in st.assets:
+            combos.append((a, "entity", a))
+    else:
+        return _empty(f"extremize는 parameter 또는 entity 축이 필요합니다 (현재: {st.axis}).")
+
+    def _build(kind, payload) -> StrategyIR:
+        d = copy.deepcopy(base)
+        d["study"] = {"axis": "none"}; d["query"] = "simulate"
+        if kind == "entity":
+            d["universe"] = {"kind": "single", "symbols": [payload],
+                             "screener": None, "exclude_macro": True}
+        else:
+            for path, v in payload.items():
+                _set_path(d, path, v)
+        return StrategyIR.model_validate(d)
+
+    cells: list = []   # [(label, perf, kind, payload)]
+    for label, kind, payload in combos:
+        res = run_strategy_ir(_build(kind, payload), dataset)
+        if res.get("success"):
+            cells.append((label, summarize_returns(daily_returns(res["equity"])), kind, payload))
+    if not cells:
+        return _empty("최적화할 유효 결과가 없습니다(모든 셀 실패).")
+
+    sign = 1.0 if obj.direction == "max" else -1.0
+
+    def _score(perf):
+        v = perf.get(obj.metric)
+        return sign * float(v) if (v is not None and v == v) else float("-inf")  # NaN=최악
+
+    cells.sort(key=lambda c: _score(c[1]), reverse=True)
+    best_label, best_perf, best_kind, best_payload = cells[0]
+    out = {
+        "success": True, "axis": ("asset" if st.axis == "entity" else "parameter"),
+        "reduction": "extremize", "objective": obj.model_dump(),
+        "best": {"label": best_label, "metric_value": best_perf.get(obj.metric), "perf": best_perf},
+        "ranked": [{"label": l, "metric_value": p.get(obj.metric)} for l, p, _, _ in cells],
+    }
+    if obj.oos_guard:
+        guard = _build(best_kind, best_payload)
+        guard.study = Study(axis="time_fold", reduction="consistency", folds=4)
+        ps = run_period_split(guard, dataset)
+        out["oos_guard"] = ({"buckets": ps.get("buckets"), "consistency": ps.get("consistency")}
+                            if ps.get("success") else {"error": ps.get("error")})
+    return out
 
 
 # ── 기간분할 (비전 §3.5·§6) — 워크포워드/OOS/시계열 k-fold ────────────────────

@@ -167,10 +167,18 @@ class ParamAxis(BaseModel):
     values: list = Field(default_factory=list)
 
 
+class Objective(BaseModel):
+    """reduction=extremize 전용 목적함수. metric은 summarize_returns 산출 키만(정직)."""
+    # ⚠ mdd는 음수%(낙폭) — "낙폭 최소화"는 direction="max"(0에 가까울수록 좋음).
+    metric: Literal["sharpe", "sortino", "cagr", "cum_return", "mdd"] = "sharpe"
+    direction: Literal["max", "min"] = "max"
+    oos_guard: bool = True   # in-sample 최적을 시간폴드 OOS 일관성으로 교차검증(과최적화 가드)
+
+
 class Study(BaseModel):
     """평면4 — 질문을 한 축으로 펼치고 환원(옛 SweepSpec + period_split 흡수)."""
     axis: Literal["none", "parameter", "entity", "label", "time_fold"] = "none"
-    reduction: Literal["enumerate", "contrast", "consistency"] = "enumerate"
+    reduction: Literal["enumerate", "contrast", "consistency", "extremize"] = "enumerate"
     param_grid: list[ParamAxis] = Field(default_factory=list)
     assets: list[str] = Field(default_factory=list)
     label: Optional[Node] = None
@@ -181,6 +189,7 @@ class Study(BaseModel):
     event: Optional[Node] = None
     windows: list[int] = Field(default_factory=lambda: [5, 10, 20])
     event_basis: Literal["close", "intraday", "excess"] = "close"
+    objective: Optional[Objective] = None   # reduction=extremize 목적함수(없으면 sharpe-max 기본)
 
 
 # ── 선택 (SELECT 동사 — as-of 횡단 랭킹 스크리닝) ─────────────────────────────
@@ -494,6 +503,14 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                             "파라미터축 펼침은 param_grid(경로·값 목록)가 필요합니다.", "study"))
     if st.axis == "entity" and not st.assets:
         issues.append(Issue("S-sweep", SEV_ERROR, "자산축 펼침은 assets(종목 목록)가 필요합니다.", "study"))
+    # extremize(최적화) — 검색공간 축(parameter/entity) + simulate 동사 필요.
+    if st.reduction == "extremize":
+        if s.query != "simulate":
+            issues.append(Issue("S-OPT", SEV_ERROR,
+                                "extremize(최적해)는 손익 지표 기반이라 simulate 동사에서만 동작합니다.", "study"))
+        if st.axis not in ("parameter", "entity"):
+            issues.append(Issue("S-OPT", SEV_ERROR,
+                                "extremize는 검색공간(axis=parameter 또는 entity)이 필요합니다.", "study"))
     # relate + event 설정 = 이벤트 스터디 모드(옛 axis="time").
     if s.query == "relate" and st.event is not None:
         if signal_out_type(st.event) != "condition":
