@@ -349,15 +349,16 @@ def _bootstrap_dataset_bundle():
     if not url:
         return
     # 추출 용량 예산 (MB). 볼륨 크기에서 헤드룸 남김. env로 조절 가능.
-    budget_mb = int(os.getenv("QP_DATASET_BUDGET_MB", "440"))
+    budget_mb = int(os.getenv("QP_DATASET_BUDGET_MB", "400"))
     budget = budget_mb * 1024 * 1024
     try:
         import zstandard
         from quant_core.data_fetcher import DATA_DIR
 
-        # 이전 실패로 남은 부분 파일 정리 (볼륨 점유 해제)
-        for junk in DATA_DIR.glob("_bundle*.tar*"):
-            junk.unlink(missing_ok=True)
+        # 이전 실패로 남은 비-parquet 잔여물 정리 (볼륨 점유 해제)
+        for junk in DATA_DIR.iterdir():
+            if junk.is_file() and junk.suffix not in (".parquet", ".json"):
+                junk.unlink(missing_ok=True)
 
         existing = list(DATA_DIR.glob("*.parquet"))
         if existing:
@@ -375,24 +376,22 @@ def _bootstrap_dataset_bundle():
                 with open(zst, "rb") as fi, open(tar_path, "wb") as fo:
                     dctx.copy_stream(fi, fo)
                 os.remove(zst)
-                # 우선순위 추출: 비-6자리(지수·매크로) 먼저, 그다음 6자리 코드 예산까지
+                # 우선순위 추출 (전체 예산 상한): 한국 종목(6자리) 먼저,
+                # 그다음 지수·매크로·미국 종목. 모두 used가 budget 넘으면 skip.
                 with tarfile.open(tar_path) as tar:
                     members = [m for m in tar.getmembers() if m.isfile()]
                     def is_code(m):
                         stem = m.name.rsplit("/", 1)[-1].replace(".parquet", "")
                         return stem.isdigit() and len(stem) == 6
-                    nonnum = [m for m in members if not is_code(m)]
-                    num = [m for m in members if is_code(m)]
-                    used = 0
-                    for m in nonnum:           # 지수·매크로는 항상 추출 (작고 벤치마크 필수)
-                        tar.extract(m, DATA_DIR); used += m.size
-                    skipped = 0
-                    for m in num:              # 한국 종목은 예산 내까지
+                    kr = sorted((m for m in members if is_code(m)), key=lambda m: m.size)
+                    other = sorted((m for m in members if not is_code(m)), key=lambda m: m.size)
+                    used = 0; took = 0; skipped = 0
+                    for m in kr + other:       # 작은 것부터 → 더 많은 종목 확보
                         if used + m.size > budget:
                             skipped += 1; continue
-                        tar.extract(m, DATA_DIR); used += m.size
-                    _log.info("dataset 적재: 지수·매크로 %d + 한국종목 %d (스킵 %d), %d MB",
-                              len(nonnum), len(num) - skipped, skipped, used // 1024 // 1024)
+                        tar.extract(m, DATA_DIR); used += m.size; took += 1
+                    _log.info("dataset 적재: %d개 추출 (스킵 %d), %d MB / 예산 %dMB",
+                              took, skipped, used // 1024 // 1024, budget_mb)
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
 
