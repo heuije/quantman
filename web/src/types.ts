@@ -511,6 +511,7 @@ export interface SymbolDetail {
     rsi_14: number | null; volume: number | null;
     ma20: number | null; ma60: number | null;
     macd: number | null; stoch_k: number | null; atr_14: number | null; vol_20d: number | null;
+    beta: number | null; benchmark: string;
     high_52w: number | null; low_52w: number | null;
   };
   indicators: IndicatorSpec[];

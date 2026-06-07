@@ -146,6 +146,24 @@ _INDICATORS = [
 ]
 
 
+def _benchmark_for(market: str, is_kr: bool) -> tuple[str, str]:
+    """종목 시장 → 추종 벤치마크 지수(FDR 심볼, 표시명).
+
+    KOSPI/KONEX→코스피(^KS11), KOSDAQ→코스닥(^KQ11),
+    NASDAQ→나스닥(^IXIC), NYSE/AMEX→S&P500(^GSPC).
+    """
+    m = (market or "").upper()
+    if "KOSDAQ" in m:
+        return "^KQ11", "코스닥"
+    if "KOSPI" in m or "KONEX" in m:
+        return "^KS11", "코스피"
+    if "NASDAQ" in m:
+        return "^IXIC", "나스닥"
+    if m in ("NYSE", "AMEX"):
+        return "^GSPC", "S&P500"
+    return ("^KS11", "코스피") if is_kr else ("^GSPC", "S&P500")
+
+
 @router.get("/symbol/{symbol}")
 def symbol_detail(symbol: str, range: str = "1y",
                   user: User = Depends(get_current_user)):
@@ -228,6 +246,32 @@ def symbol_detail(symbol: str, range: str = "1y",
     prev = show.iloc[-2] if len(show) >= 2 else last
     close = float(last["Close"]); pclose = float(prev["Close"])
     is_kr = symbol.strip().isdigit()
+
+    # 베타 — 종목이 추종하는 벤치마크(코스피/코스닥/나스닥/S&P500) 대비 민감도.
+    # 시장은 전종목 listing(캐시)에서 판별, 벤치마크 지수를 fetch해 회귀.
+    mkt = ""
+    try:
+        for it in _all_listings_cached(datetime.now().date().isoformat()):
+            if it["symbol"] == sym:
+                mkt = it["market"]
+                break
+    except Exception:
+        pass
+    bench_sym, bench_name = _benchmark_for(mkt, is_kr)
+    beta = None
+    try:
+        braw = fdr.DataReader(bench_sym, fetch_start)
+        if braw is not None and not braw.empty and "Close" in braw.columns:
+            sret = show["Close"].pct_change().dropna()
+            bret = braw["Close"].pct_change().dropna()
+            common = sret.index.intersection(bret.index)
+            if len(common) > 20:
+                sv, bv = sret.reindex(common), bret.reindex(common)
+                if bv.var() and bv.var() > 0:
+                    beta = round(float(np.cov(sv, bv)[0, 1] / bv.var()), 2)
+    except Exception as e:  # 벤치마크 fetch 실패 — 베타 생략
+        _log.warning("베타 계산 실패 %s vs %s: %s", sym, bench_sym, e)
+
     return {
         "symbol": sym,
         "currency": "KRW" if is_kr else "USD",
@@ -241,6 +285,7 @@ def symbol_detail(symbol: str, range: str = "1y",
             "ma20": _n(last.get("ma20")), "ma60": _n(last.get("ma60")),
             "macd": _n(last.get("macd"), 3), "stoch_k": _n(last.get("stoch_k"), 1),
             "atr_14": _n(last.get("atr_14")), "vol_20d": _n(last.get("realized_vol_20d")),
+            "beta": beta, "benchmark": bench_name,
             "high_52w": _n(show["High"].tail(252).max()),
             "low_52w": _n(show["Low"].tail(252).min()),
         },

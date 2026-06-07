@@ -1,7 +1,7 @@
 import { useState, useEffect, type ReactNode } from "react";
 import {
   ComposedChart, LineChart, BarChart, Line, Bar, Scatter, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, ReferenceLine, CartesianGrid, Legend, Brush,
+  ResponsiveContainer, ReferenceLine, CartesianGrid, Legend, Brush, Cell,
 } from "recharts";
 import { api } from "../api";
 import type { SymbolDetail, SymbolListing } from "../types";
@@ -92,18 +92,22 @@ export default function StockDashboard() {
   const chgColor = last?.change_pct != null ? (last.change_pct >= 0 ? UP : DOWN) : "var(--muted)";
 
   // 차트 데이터 + 급등락 마커 컬럼
-  const chartData = (data?.series || []).map((p) => ({
-    ...p,
-    up_spike: p.chg_pct != null && p.chg_pct >= 10 ? p.close : null,
-    down_spike: p.chg_pct != null && p.chg_pct <= -10 ? p.close : null,
-  }));
+  const chartData = (data?.series || []).map((p, i, arr) => {
+    const pv = i > 0 ? arr[i - 1].volume : null;
+    return {
+      ...p,
+      up_spike: p.chg_pct != null && p.chg_pct >= 10 ? p.close : null,
+      down_spike: p.chg_pct != null && p.chg_pct <= -10 ? p.close : null,
+      vol_chg: pv && p.volume != null ? (p.volume - pv) / pv * 100 : null,
+    };
+  });
 
   return (
     <div>
-      <h1 style={{ marginBottom: 4 }}>종목 대시보드</h1>
+      <h1 style={{ marginBottom: 4 }}>Company Analysis</h1>
       <p style={{ color: "var(--muted)", marginTop: 0 }}>
-        한국·미국 개별 종목·ETF·ETN의 가격·추이·지표를 조회합니다. 급등락 ±10%는
-        세모(▲빨강/▼파랑)로, 그래프 하단 막대로 기간 확대·축소가 됩니다.
+        한국·미국 개별 종목·ETF·ETN의 가격·추이·지표를 조회합니다. 급등락(주가 ±10%·
+        거래량 ±5%)은 색/세모로 강조되고, 모든 그래프는 하단 막대로 확대·축소됩니다.
       </p>
 
       <div className="panel" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -145,12 +149,12 @@ export default function StockDashboard() {
         <span style={{ fontSize: 12, color: "var(--muted)" }}>
           {listings.length ? `${listings.length.toLocaleString()}종목` : ""}
         </span>
-        <div style={{ display: "flex", gap: 4, marginLeft: "auto", flexWrap: "wrap" }}>
-          {RANGES.map(([v, lbl]) => (
-            <button key={v} type="button" className={range === v ? "" : "ghost"}
-              onClick={() => load(symbol, v)} style={{ padding: "4px 9px" }}>{lbl}</button>
-          ))}
-        </div>
+        <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+          <span style={{ color: "var(--muted)" }}>기간</span>
+          <select value={range} onChange={(e) => load(symbol, e.target.value)} aria-label="조회 기간">
+            {RANGES.map(([v, lbl]) => <option key={v} value={v}>{lbl}</option>)}
+          </select>
+        </label>
       </div>
 
       {err && <div className="error" style={{ marginTop: 12 }}>{err}</div>}
@@ -164,14 +168,19 @@ export default function StockDashboard() {
                 {last.change_pct != null && last.change_pct >= 0 ? "▲" : "▼"} {last.change_pct?.toFixed(2)}%
               </div>
             </Card>
+            <Card title={`베타 (β) vs ${last.benchmark}`}>
+              <div style={{ fontSize: 22, fontWeight: 700,
+                color: last.beta == null ? "var(--muted)" : last.beta > 1 ? UP : last.beta < 1 ? DOWN : "inherit" }}>
+                {last.beta ?? "—"}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                {last.benchmark} 1.00 · {last.beta == null ? "" : last.beta > 1 ? "변동 더 큼" : "변동 더 작음"}
+              </div>
+            </Card>
             <Card title="RSI (14)"><RsiBadge rsi={last.rsi_14} /></Card>
             <Card title="52주 고 / 저">
               <div style={{ fontSize: 14 }}>고 {dol}{fmtP(last.high_52w)}{won}</div>
               <div style={{ fontSize: 14 }}>저 {dol}{fmtP(last.low_52w)}{won}</div>
-            </Card>
-            <Card title="MACD / 변동성">
-              <div style={{ fontSize: 14 }}>MACD {last.macd ?? "—"}</div>
-              <div style={{ fontSize: 14 }}>변동성 {last.vol_20d ?? "—"}%</div>
             </Card>
           </div>
 
@@ -239,20 +248,37 @@ export default function StockDashboard() {
 
 function SubChart({ ikey, data }: { ikey: string; data: Record<string, unknown>[] }) {
   const title = SUB_LABEL[ikey] || ikey;
+  const M = { top: 5, right: 12, bottom: 5, left: 8 };
+  const brush = <Brush dataKey="date" height={16} stroke={ACCENT} travellerWidth={6} />;
   return (
     <div className="panel" style={{ marginTop: 16 }}>
-      <h3 style={{ marginTop: 0 }}>{title}</h3>
-      <ResponsiveContainer width="100%" height={160}>
+      <h3 style={{ marginTop: 0 }}>
+        {title}
+        {ikey === "volume" && (
+          <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
+            {"  "}· 전일대비 ▲+5%↑ 빨강 / ▼−5%↓ 파랑
+          </span>
+        )}
+      </h3>
+      <ResponsiveContainer width="100%" height={200}>
         {ikey === "volume" ? (
-          <BarChart data={data} margin={{ top: 5, right: 12, bottom: 5, left: 8 }}>
+          <BarChart data={data} margin={M}>
+            <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
             <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
             <YAxis tick={{ fontSize: 11 }} width={48}
               tickFormatter={(v) => v >= 1e6 ? `${(v / 1e6).toFixed(0)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(0)}k` : String(v)} />
             <Tooltip formatter={(v: number) => v?.toLocaleString()} />
-            <Bar dataKey="volume" fill={IND_COLORS.volume} name="거래량" />
+            <Bar dataKey="volume" name="거래량">
+              {data.map((d, i) => {
+                const vc = d.vol_chg as number | null;
+                const fill = vc != null && vc >= 5 ? UP : vc != null && vc <= -5 ? DOWN : "#d7cfc4";
+                return <Cell key={i} fill={fill} />;
+              })}
+            </Bar>
+            {brush}
           </BarChart>
         ) : ikey === "macd" ? (
-          <ComposedChart data={data} margin={{ top: 5, right: 12, bottom: 5, left: 8 }}>
+          <ComposedChart data={data} margin={M}>
             <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
             <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
             <YAxis tick={{ fontSize: 11 }} width={48} />
@@ -260,9 +286,10 @@ function SubChart({ ikey, data }: { ikey: string; data: Record<string, unknown>[
             <Bar dataKey="macd_hist" fill="#cbb9ac" name="히스토그램" />
             <Line type="monotone" dataKey="macd" stroke={IND_COLORS.macd} strokeWidth={1.5} dot={false} name="MACD" />
             <Line type="monotone" dataKey="macd_signal" stroke={IND_COLORS.macd_signal} strokeWidth={1} dot={false} name="시그널" />
+            {brush}
           </ComposedChart>
         ) : ikey === "stoch" ? (
-          <LineChart data={data} margin={{ top: 5, right: 12, bottom: 5, left: 8 }}>
+          <LineChart data={data} margin={M}>
             <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
             <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
             <YAxis domain={[0, 100]} ticks={[20, 50, 80]} tick={{ fontSize: 11 }} width={32} />
@@ -270,23 +297,26 @@ function SubChart({ ikey, data }: { ikey: string; data: Record<string, unknown>[
             <ReferenceLine y={20} stroke={DOWN} strokeDasharray="4 4" />
             <Line type="monotone" dataKey="stoch_k" stroke={IND_COLORS.stoch_k} strokeWidth={1.5} dot={false} name="%K" />
             <Line type="monotone" dataKey="stoch_d" stroke={IND_COLORS.stoch_d} strokeWidth={1} dot={false} name="%D" />
+            {brush}
           </LineChart>
         ) : ikey === "rsi_14" ? (
-          <LineChart data={data} margin={{ top: 5, right: 12, bottom: 5, left: 8 }}>
+          <LineChart data={data} margin={M}>
             <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
             <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
             <YAxis domain={[0, 100]} ticks={[30, 50, 70]} tick={{ fontSize: 11 }} width={32} />
             <Tooltip /><ReferenceLine y={70} stroke={UP} strokeDasharray="4 4" />
             <ReferenceLine y={30} stroke={DOWN} strokeDasharray="4 4" />
             <Line type="monotone" dataKey="rsi_14" stroke={IND_COLORS.rsi_14} strokeWidth={1.5} dot={false} name="RSI" />
+            {brush}
           </LineChart>
         ) : (
-          <LineChart data={data} margin={{ top: 5, right: 12, bottom: 5, left: 8 }}>
+          <LineChart data={data} margin={M}>
             <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
             <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
             <YAxis tick={{ fontSize: 11 }} width={48} />
             <Tooltip />
             <Line type="monotone" dataKey={ikey} stroke={IND_COLORS[ikey] || ACCENT} strokeWidth={1.5} dot={false} name={title} />
+            {brush}
           </LineChart>
         )}
       </ResponsiveContainer>

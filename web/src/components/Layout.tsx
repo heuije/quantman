@@ -5,7 +5,7 @@ import ErrorBoundary from "./ErrorBoundary";
 
 const NAV = [
   { to: "/", label: "개요" },
-  { to: "/dashboard", label: "대시보드" },
+  { to: "/dashboard", label: "개별 종목 분석" },
   { to: "/lab", label: "전략 연구소" },
   { to: "/strategies", label: "내 전략" },
   { to: "/portfolio", label: "포트폴리오" },
