@@ -214,6 +214,12 @@ StrategyIR = {{
      (선물 숏은 차입 불필요·대칭.) 레버리지는 증거금으로 내재 → leverage=1 기본(명목 더 키울 때만 >1).
    · ⚠ roll_method·series_adjust·roll_cost_pct·account_currency는 **현재 엔진 미적용(예약)** — 채우지
      말 것(단일 연속 시계열·단일통화 가정). 사용자가 강하게 명시하면 채우되 "현재 미적용"을 assumptions에 명시.
+7. [스크리닝(현 시점 종목 선별)] "저평가 X 상위 N개"·"조건 맞는 종목 골라줘"처럼 *백테스트 손익이
+   아니라 지금 시점 종목 리스트*가 답이면 → query="select" + signal=랭킹 score(예: 낮은 PBR이면
+   data(__SELF__.pb_ratio)) + universe.kind=all + universe.screener.condition=
+   is_in(attribute("Sector"), ["반도체"]) 같은 섹터/자격 필터 + select={top_n:N,
+   descending:false(저평가=낮은값 우선)·true(높은값 우선), display:[pb_ratio, ...](근거 지표)}.
+   (※ 레시피 3은 *정기 리밸런싱 백테스트*(simulate), 본 레시피는 *현 시점 스냅샷 선별*(select) — 둘 구분.)
 </idioms>
 
 <process>

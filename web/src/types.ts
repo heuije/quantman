@@ -282,8 +282,9 @@ export interface IrStrategyDef {
     start?: string | null; end?: string | null;
   };
   // 조사형 쿼리 — query(동사) × study(축 × 환원). 옛 sweep+period_split을 흡수.
-  // describe=신호값 분포, relate=이벤트/IC, simulate=백테스트(+축별 펼침·기간분할).
-  query?: "describe" | "relate" | "simulate";
+  // describe=신호값 분포, relate=이벤트/IC, simulate=백테스트(+축별 펼침·기간분할),
+  // select=as-of 스냅샷 횡단 랭킹 스크리닝.
+  query?: "select" | "describe" | "relate" | "simulate";
   study?: {
     axis?: "none" | "parameter" | "entity" | "label" | "time_fold";
     reduction?: "enumerate" | "contrast" | "consistency";
@@ -297,6 +298,11 @@ export interface IrStrategyDef {
     event?: IrNode | null;                     // relate(이벤트) — 별도 이벤트 조건
     windows?: number[];                        // relate — forward/예측 윈도우
     event_basis?: "close" | "intraday" | "excess";
+  };
+  // query="select" 전용 — as-of 스냅샷 횡단 랭킹 선별 설정(core SelectSpec과 동기).
+  select?: {
+    as_of?: string; top_n?: number; top_pct?: number;
+    descending?: boolean; display?: string[];
   };
 }
 

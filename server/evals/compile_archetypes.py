@@ -41,6 +41,11 @@ CASES = [
     ("TSMOM 롱숏",
      "코스피200선물을 20일 추세가 양이면 롱, 음이면 숏.",
      lambda ir: ir.get("position", {}).get("direction") == "long_short"),
+    ("저평가 반도체주 3개",
+     "저평가된 반도체 종목 3개만 골라줘 — PBR 낮은 순으로, PBR과 시가총액도 같이 보여줘.",
+     lambda ir: (ir.get("query") == "select"
+                 and (ir.get("select") or {}).get("top_n") == 3
+                 and (ir.get("select") or {}).get("descending") is False)),
 ]
 
 
