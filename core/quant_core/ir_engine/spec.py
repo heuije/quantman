@@ -185,7 +185,8 @@ class Study(BaseModel):
     folds: int = 4
     split_dates: list[str] = Field(default_factory=list)
     target_node: Optional[Node] = None
-    relation_kind: Literal["ic"] = "ic"
+    relation_kind: Literal["ic", "regression"] = "ic"
+    factors: list[Node] = Field(default_factory=list)   # relation_kind=regression 설명변수(다중)
     event: Optional[Node] = None
     windows: list[int] = Field(default_factory=lambda: [5, 10, 20])
     event_basis: Literal["close", "intraday", "excess"] = "close"
@@ -533,7 +534,8 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
 
     # 분석(query=describe·relate) — 분석 노드(target_node) 필요·타입·시장참조 검증.
     # (relate + event는 이벤트 스터디라 target_node 없이 동작 → IC 모드일 때만 target_node 요구.)
-    is_ic = s.query == "relate" and st.event is None
+    is_ic = s.query == "relate" and st.event is None and st.relation_kind == "ic"
+    is_regression = s.query == "relate" and st.event is None and st.relation_kind == "regression"
     describe_dist = s.query == "describe" and u.kind in ("all", "list")
     if describe_dist or is_ic:
         tn = st.target_node
@@ -558,6 +560,28 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
             if s.universe.kind == "single":
                 issues.append(Issue("S-target", SEV_ERROR,
                                     "IC(횡단 상관) 분석은 종목이 2개 이상이어야 합니다.", "universe"))
+
+    # 다중팩터 횡단 회귀(relation_kind=regression) — 설명변수(factors) 1개 이상·종목 2+·
+    # forward 윈도우 필요. 각 factor는 score/condition 블록이고 시장 데이터를 참조해야 한다.
+    if is_regression:
+        if not st.factors:
+            issues.append(Issue("S-REG", SEV_ERROR,
+                                "다중 회귀는 설명변수(factors)가 1개 이상 필요합니다.", "study.factors"))
+        if s.universe.kind == "single":
+            issues.append(Issue("S-REG", SEV_ERROR,
+                                "횡단 회귀는 종목이 2개 이상이어야 합니다.", "universe"))
+        if not st.windows:
+            issues.append(Issue("S-REG", SEV_ERROR,
+                                "회귀는 forward 윈도우(windows)가 필요합니다.", "study.windows"))
+        for f in st.factors:
+            issues += list(validate(f, valid_refs))
+            if signal_out_type(f) not in ("score", "condition"):
+                issues.append(Issue("S-REG", SEV_ERROR,
+                                    "설명변수(factor)는 score(점수) 또는 condition 블록이어야 합니다.",
+                                    "study.factors"))
+            if not has_market_source(f):
+                issues.append(Issue("M-const", SEV_ERROR,
+                                    "설명변수가 시장 데이터를 참조하지 않습니다.", "study.factors"))
 
     # 기간분할 × 펼침 동시 사용 금지 (2D 모호성 차단). study가 평면이라 time_fold가 다른
     # 펼침/분석 필드(param_grid·assets·label·target_node·event)나 비-simulate 동사와

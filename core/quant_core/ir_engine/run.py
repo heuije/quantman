@@ -124,8 +124,12 @@ def run_query(strategy: StrategyIR, dataset: dict) -> dict:
             return run_portfolio_diagnosis(strategy, dataset)
         return _run_signal_study(strategy, dataset)
     if q == "relate":
-        return (_run_event_study(strategy, dataset)
-                if strategy.study.event is not None else _run_ic_study(strategy, dataset))
+        st = strategy.study
+        if st.event is not None:
+            return _run_event_study(strategy, dataset)
+        if st.relation_kind == "regression":
+            return _run_regression_study(strategy, dataset)
+        return _run_ic_study(strategy, dataset)
     st = strategy.study
     if st.axis == "time_fold":
         return run_period_split(strategy, dataset)
@@ -456,6 +460,86 @@ def _run_ic_study(strategy: StrategyIR, dataset: dict) -> dict:
         by_window[str(w)] = block
     return {"success": True, "axis": "relation", "relation": "ic",
             "windows": [str(w) for w in windows], "by_window": by_window}
+
+
+# ── 다중팩터 횡단 회귀 (RELATE 심화 — Fama-MacBeth) ────────────────────────────
+
+def _fama_macbeth(betas: np.ndarray):
+    """per-date 계수 (T기간×K팩터) → Fama-MacBeth 집계 (평균·표준오차·t·95% CI).
+
+    날짜별 횡단 회귀 계수의 시계열을 평균하고, 그 시계열 분산으로 t값을 낸다(횡단 상관에
+    강건한 표준 방법). T=1이면 se=0. 정확관계(분산 0)면 t는 무한대(완전 유의)로 표기.
+    """
+    mean = betas.mean(axis=0)
+    T = betas.shape[0]
+    sd = betas.std(axis=0, ddof=1) if T > 1 else np.zeros(betas.shape[1])
+    se = sd / np.sqrt(T)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.where(se > 0, mean / se,
+                     np.where(mean != 0, np.inf * np.sign(mean), 0.0))
+    return mean, se, t, mean - 1.96 * se, mean + 1.96 * se
+
+
+def _run_regression_study(strategy: StrategyIR, dataset: dict) -> dict:
+    """다중 설명변수의 forward수익 횡단 예측력 — Fama-MacBeth 계수·t값·신뢰구간.
+
+    "밸류·모멘텀·퀄리티 중 무엇이 다음 달 수익을 횡단으로 설명하나(다중 통제 후)"에 답한다.
+    날짜별 횡단 OLS(절편+팩터들, numpy lstsq=OLS) → per-date 계수 → Fama-MacBeth 집계.
+    forward수익은 미래참조라 분석 전용(IC 스터디와 동일 규약). 단일팩터=IC, 다중·통제=이것.
+    """
+    from ..blocks.node import referenced_columns
+    syms = _universe_symbols(strategy, dataset)
+    if len(syms) < 2:
+        return _empty("횡단 회귀는 종목이 2개 이상이어야 합니다.")
+    nodes = list(strategy.study.factors)
+    if not nodes:
+        return _empty("다중 회귀는 설명변수(factors)가 1개 이상 필요합니다.")
+    windows = strategy.study.windows or [21]
+    ctx = EvalContext.from_dataset(_scoped(dataset, syms, *nodes))
+    panels = [evaluate(n, ctx) for n in nodes]
+    if any(not isinstance(p, pd.DataFrame) for p in panels):
+        return _empty("설명변수가 패널(종목×날짜)을 산출하지 않습니다.")
+    idx = panels[0].index
+    close = pd.DataFrame({s: dataset[s]["Close"] for s in syms
+                          if s in dataset and "Close" in dataset[s].columns}).reindex(idx)
+    K = len(nodes)
+    names = []
+    for i, n in enumerate(nodes):
+        cols = sorted(referenced_columns(n))
+        names.append(cols[0] if cols else f"f{i}")
+
+    by_window: dict = {}
+    for w in windows:
+        fwd = close.shift(-int(w)) / close - 1.0
+        betas = []
+        for d in idx:
+            yv = fwd.loc[d].to_numpy(dtype=float)
+            Xcols = [panels[k].loc[d].reindex(close.columns).to_numpy(dtype=float)
+                     for k in range(K)]
+            X = np.column_stack(Xcols)
+            mask = np.isfinite(yv) & np.isfinite(X).all(axis=1)
+            if int(mask.sum()) < K + 2:        # 자유도 확보
+                continue
+            Xd = np.column_stack([np.ones(int(mask.sum())), X[mask]])   # 절편 + 팩터
+            try:
+                coef, *_ = np.linalg.lstsq(Xd, yv[mask], rcond=None)
+            except Exception:                  # noqa: BLE001 — 특이행렬 등
+                continue
+            betas.append(coef[1:])             # 절편 제외 팩터 계수
+        if len(betas) < 2:
+            by_window[str(w)] = {"n_periods": len(betas), "factors": None,
+                                 "note": "회귀 가능한 기간이 부족합니다(종목·결측 확인)."}
+            continue
+        mean, se, t, lo, hi = _fama_macbeth(np.array(betas))
+        by_window[str(w)] = {
+            "n_periods": int(len(betas)),
+            "factors": [{"name": names[k], "coef": float(mean[k]), "se": float(se[k]),
+                         "t_stat": (float(t[k]) if np.isfinite(t[k]) else None),
+                         "t_inf": bool(not np.isfinite(t[k])),
+                         "ci_low": float(lo[k]), "ci_high": float(hi[k])} for k in range(K)],
+        }
+    return {"success": True, "axis": "relation", "relation": "regression",
+            "windows": [str(w) for w in windows], "factor_names": names, "by_window": by_window}
 
 
 # ── 선택 (SELECT 동사 — as-of 횡단 랭킹 스크리닝) ─────────────────────────────

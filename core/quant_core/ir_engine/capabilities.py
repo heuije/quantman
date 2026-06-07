@@ -225,7 +225,14 @@ def capability_spec() -> dict:
         },
         "study_relation_kind": [
             {"value": "ic", "does": "횡단 정보계수(Information Coefficient) — 팩터값과 forward수익의 순위상관"},
+            {"value": "regression", "does": "다중 설명변수(factors)의 forward수익 횡단 회귀 — Fama-MacBeth 계수·t값·95% 신뢰구간",
+             "use_for": "'여러 팩터 중 무엇이 수익을 설명하나(상호 통제 후)'. study.factors=[score 블록들]·windows·universe 2+종목. 단일=ic."},
         ],
+        "regression_factors": {
+            "field": "study.factors",
+            "does": "relation_kind=regression의 설명변수 목록(각 score/condition 블록). 날짜별 횡단 OLS로 동시 통제.",
+            "use_for": "다중팩터 회귀. 예: [pb_ratio, momentum, ...]. IC(target_node 단일)와 구분.",
+        },
         "study_event_basis": [
             {"value": "close", "does": "종가→종가 수익(이벤트 스터디 기본)"},
             {"value": "intraday", "does": "시가→종가 수익(당일 반등 포착)"},
