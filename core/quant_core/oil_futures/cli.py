@@ -44,8 +44,8 @@ def _parse_list(s: str, t=float) -> list:
 
 def _cost_from_args(args) -> CostModel:
     return CostModel(
-        commission_per_contract=args.commission,
-        slippage_ticks=args.slippage_ticks,
+        commission_pct=args.commission_pct,
+        slippage_pct=args.slippage_pct,
     )
 
 
@@ -213,10 +213,10 @@ def _build_parser() -> argparse.ArgumentParser:
         description="WTI 원유선물 분석 (Phase 1)",
     )
     p.add_argument("--csv", help="WTI 일봉 CSV 경로 (기본: core/data/wti_daily.csv)")
-    p.add_argument("--commission", type=float, default=2.5,
-                   help="계약당 한방향 수수료 USD (기본 2.5)")
-    p.add_argument("--slippage-ticks", type=int, default=1,
-                   help="진입/청산 각각 N틱 슬리피지 (기본 1, $0.01/틱)")
+    p.add_argument("--commission-pct", type=float, default=0.0,
+                   help="한방향 거래대금 대비 수수료율 소수 (기본 0, 예 0.0003=0.03%%)")
+    p.add_argument("--slippage-pct", type=float, default=0.0,
+                   help="진입/청산 각각 슬리피지율 소수 (기본 0, 예 0.0005=0.05%%)")
 
     sub = p.add_subparsers(dest="cmd", required=True)
 

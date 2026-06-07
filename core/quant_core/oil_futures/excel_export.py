@@ -49,6 +49,8 @@ def build_oil_excel(
     threshold: float = 100.0,
     horizon_days: int = 120,
     roll_cost_pct: float = 0.0,
+    commission_pct: float = 0.0,
+    slippage_pct: float = 0.0,
 ) -> bytes:
     """WTI OHLC DataFrame → 라이브 수식 .xlsx 바이트.
 
@@ -72,12 +74,14 @@ def build_oil_excel(
     ws["A1"] = "WTI Crude Oil Futures — 라이브 백테스트"
     ws["A1"].font = title_font
 
-    # ── 입력칸 (B2~B5) ───────────────────────────────────────────────
+    # ── 입력칸 (B2~B7) ───────────────────────────────────────────────
     inputs = [
         ("방향 (short/long)", side),
         ("임계값 ($)", threshold),
         ("보유기간 (영업일)", horizon_days),
         ("롤비용 (%/롤, 예 0.5)", roll_cost_pct * 100),
+        ("슬리피지 (%/체결, 예 0.05)", slippage_pct * 100),
+        ("수수료 (%/체결, 예 0.03)", commission_pct * 100),
     ]
     for i, (label, val) in enumerate(inputs):
         r = 2 + i
@@ -117,7 +121,8 @@ def build_oil_excel(
 
     # ── 데이터 + 수식 헤더 (8행) ─────────────────────────────────────
     headers = ["날짜", "시가", "고가", "저가", "종가",
-               "신호", "진입가", "청산가", "수익률", "PnL($)", "롤횟수"]
+               "신호", "진입가", "청산가", "수익률", "PnL($)", "롤횟수",
+               "유효진입가", "유효청산가"]
     for j, h in enumerate(headers):
         c = ws.cell(row=8, column=1 + j, value=h)
         c.font = bold
@@ -156,24 +161,36 @@ def build_oil_excel(
             f'만기일!$A:$A,"<="&OFFSET(A{r},1+$B$4,0)'
             f'),""),"")'
         ))
-        # I 수익률 = 부호*(청산/진입-1) - 롤횟수*롤비용
-        ws.cell(row=r, column=9, value=(
-            f'=IF(OR(G{r}="",H{r}=""),"",'
-            f'IF($B$2="short",-(H{r}/G{r}-1),(H{r}/G{r}-1))-K{r}*$B$5/100)'
+        # L 유효진입가 = 슬리피지 반영 (short 진입가↓, long 진입가↑)
+        ws.cell(row=r, column=12, value=(
+            f'=IF(G{r}="","",IF($B$2="short",G{r}*(1-$B$6/100),G{r}*(1+$B$6/100)))'
         ))
-        # J PnL($) = 수익률 * 진입notional(진입가*1000)
-        ws.cell(row=r, column=10,
-                value=f'=IF(I{r}="","",I{r}*G{r}*1000)')
+        # M 유효청산가 = 슬리피지 반영 (short 청산가↑, long 청산가↓)
+        ws.cell(row=r, column=13, value=(
+            f'=IF(H{r}="","",IF($B$2="short",H{r}*(1+$B$6/100),H{r}*(1-$B$6/100)))'
+        ))
+        # J PnL($) = [부호·(유효청산-유효진입) - 수수료(양레그)]·1000 - 롤비용
+        #   수수료 = $B$7/100 × (유효진입+유효청산), 롤 = K×$B$5/100×진입notional
+        ws.cell(row=r, column=10, value=(
+            f'=IF(OR(L{r}="",M{r}=""),"",'
+            f'(IF($B$2="short",L{r}-M{r},M{r}-L{r})-$B$7/100*(L{r}+M{r}))*1000'
+            f'-K{r}*$B$5/100*G{r}*1000)'
+        ))
+        # I 수익률 = 순손익 / 진입 거래대금 (비용 반영된 net 기준)
+        ws.cell(row=r, column=9,
+                value=f'=IF(J{r}="","",J{r}/(G{r}*1000))')
 
-    # 수익률·PnL 포맷
+    # 수익률·PnL·유효가 포맷
     for idx in range(n):
         r = 9 + idx
         ws.cell(row=r, column=9).number_format = "+0.00%;-0.00%"
         ws.cell(row=r, column=10).number_format = "#,##0"
+        ws.cell(row=r, column=12).number_format = "0.00"
+        ws.cell(row=r, column=13).number_format = "0.00"
         ws.cell(row=r, column=1).number_format = "yyyy-mm-dd"
 
     # ── 열 너비 ──────────────────────────────────────────────────────
-    widths = [12, 9, 9, 9, 9, 7, 10, 10, 10, 12, 8]
+    widths = [12, 9, 9, 9, 9, 7, 10, 10, 10, 12, 8, 11, 11]
     for j, w in enumerate(widths):
         ws.column_dimensions[get_column_letter(1 + j)].width = w
     ws.column_dimensions["D"].width = 18
@@ -202,19 +219,24 @@ def build_oil_excel(
     notes = [
         ["WTI 선물 백테스트 — 엑셀 로직 설명", ""],
         ["", ""],
-        ["입력칸", "백테스트 시트 B2~B5의 노란 칸을 바꾸면 전체 재계산"],
-        ["방향", "short=고가가 임계값 위로 첫 터치 시 매도, long=저가가 아래로 첫 터치 시 매수"],
+        ["입력칸", "백테스트 시트 B2~B7의 노란 칸을 바꾸면 전체 재계산"],
+        ["방향(B2)", "short=고가가 임계값 위로 첫 터치 시 매도, long=저가가 아래로 첫 터치 시 매수"],
+        ["임계값(B3)", "신호 발생 가격선 ($)"],
+        ["보유기간(B4)", "진입 후 청산까지 영업일 수"],
+        ["롤비용(B5)", "만기 롤오버 1회당 % (양수=콘탱고 비용/음수=backwardation 이익)"],
+        ["슬리피지(B6)", "체결 1회당 불리한 체결 비율 % (진입·청산 각각). short 진입가↓·청산가↑"],
+        ["수수료(B7)", "체결 거래대금 대비 % (한국투자 등 우대율 계좌별 상이 → 직접 입력)"],
         ["신호(F열)", "장중 고가/저가 기준 전일 대비 첫 돌파 (히스테리시스 — 연속 돌파는 1회만)"],
         ["진입가(G열)", "신호 다음 영업일 시가 (look-ahead 제거)"],
         ["청산가(H열)", "진입 후 '보유기간' 영업일 후 종가"],
+        ["유효진입가(L열)", "진입가에 슬리피지 반영 (=실제 체결가)"],
+        ["유효청산가(M열)", "청산가에 슬리피지 반영"],
         ["롤횟수(K열)", "'만기일' 시트의 실제 WTI 만기일을 COUNTIFS로 카운트 (진입<만기≤청산) — 앱과 동일"],
-        ["수익률(I열)", "부호×(청산/진입−1) − 롤횟수×롤비용. short는 하락이 이익"],
-        ["PnL(J열)", "수익률 × 진입가 × 1000배럴(1계약)"],
-        ["롤비용(B5)", "노란 칸. 바꾸면 즉시 재계산. 양수=콘탱고 비용(차감), 음수=backwardation 이익(가산)"],
+        ["PnL(J열)", "[부호×(유효청산−유효진입) − 수수료×(유효진입+유효청산)]×1000 − 롤횟수×롤비용×진입대금"],
+        ["수익률(I열)", "순손익(J) ÷ 진입 거래대금. 슬리피지·수수료·롤비용 모두 반영된 net"],
         ["만기일 시트", "롤횟수 계산의 기준 만기일 목록 (CME 규칙 기반 자동 생성)"],
         ["", ""],
-        ["한계", "수수료·슬리피지·MAE/MFE·walk-forward는 미반영(gross 기준)."],
-        ["", "앱은 롤비용≠0 시 롤당 소액 거래마찰도 부과하나 엑셀은 term-structure 성분만 반영."],
+        ["한계", "MAE/MFE·walk-forward는 미반영. 앱은 롤비용≠0 시 롤당 소액 거래마찰도 부과(엑셀은 term-structure 성분만)."],
     ]
     for i, (a, b) in enumerate(notes):
         doc.cell(row=1 + i, column=1, value=a).font = bold if i == 0 else Font()

@@ -308,16 +308,19 @@ def export_excel(
     threshold: float = 100.0,
     horizon_days: int = 120,
     roll_cost_pct: float = 0.0,
+    commission_pct: float = 0.0,
+    slippage_pct: float = 0.0,
 ):
     """현재 분석 로직을 라이브 수식 엑셀(.xlsx)로 다운로드.
 
-    입력칸(방향/임계값/보유기간/롤비용)은 쿼리 파라미터 초기값으로 채워지고,
-    엑셀에서 그 칸을 바꾸면 전체가 재계산된다.
+    입력칸(방향/임계값/보유기간/롤비용/수수료/슬리피지)은 쿼리 파라미터 초기값으로
+    채워지고, 엑셀에서 그 칸을 바꾸면 전체가 재계산된다.
     """
     from quant_core.oil_futures.excel_export import build_oil_excel
     data = build_oil_excel(
         _df(), side=side, threshold=threshold,
         horizon_days=horizon_days, roll_cost_pct=roll_cost_pct,
+        commission_pct=commission_pct, slippage_pct=slippage_pct,
     )
     fname = f"WTI_{side}_{threshold:g}_{horizon_days}D.xlsx"
     return Response(
@@ -357,8 +360,8 @@ def grid(
     shorts: str = "",
     longs: str = "",
     horizons: str = "",
-    commission: float = 2.5,
-    slippage_ticks: int = 1,
+    commission_pct: float = 0.0,
+    slippage_pct: float = 0.0,
 ):
     """모든 (side, threshold, horizon) 조합 백테스트.
 
@@ -369,11 +372,11 @@ def grid(
     s = tuple(_parse_csv_floats(shorts) or DEFAULT_SHORTS)
     l = tuple(_parse_csv_floats(longs) or DEFAULT_LONGS)
     h = tuple(_parse_csv_ints(horizons) or DEFAULT_HORIZONS)
-    key = (s, l, h, commission, slippage_ticks)
+    key = (s, l, h, commission_pct, slippage_pct)
     if key in _GRID_CACHE:
         return _GRID_CACHE[key]
 
-    cells = grid_search(df, s, l, h, CostModel(commission, slippage_ticks))
+    cells = grid_search(df, s, l, h, CostModel(commission_pct, slippage_pct))
     out = [
         GridCellOut(
             side=c.side.value,
@@ -431,8 +434,9 @@ class BacktestRequest(BaseModel):
     side: Literal["short", "long"]
     threshold: float
     horizon_days: int = Field(..., ge=1, le=500)
-    commission: float = 2.5
-    slippage_ticks: int = 1
+    # 거래비용 (% 기반, 소수). 0=gross. 한국투자 우대율 등 계좌별 상이 → 사용자 설정.
+    commission_pct: float = Field(default=0.0, ge=0.0, le=0.05)
+    slippage_pct: float = Field(default=0.0, ge=0.0, le=0.05)
     # 🅒 SL/TP 시뮬레이터 — None이면 기존 horizon 고정 보유
     stop_loss_pct: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     take_profit_pct: Optional[float] = Field(default=None, ge=0.0, le=2.0)
@@ -452,7 +456,7 @@ def backtest(req: BacktestRequest):
         raise HTTPException(404, "신호가 발생하지 않음 — 임계값/타입 확인")
     res = run_backtest(
         df, sigs, req.horizon_days,
-        CostModel(req.commission, req.slippage_ticks),
+        CostModel(req.commission_pct, req.slippage_pct),
         ExitRules(req.stop_loss_pct, req.take_profit_pct),
         RollModel(roll_cost_pct=req.roll_cost_pct),
     )
@@ -516,8 +520,8 @@ class WalkForwardRequest(BaseModel):
     longs: list[float] = DEFAULT_LONGS
     horizons: list[int] = DEFAULT_HORIZONS
     split_date: str
-    commission: float = 2.5
-    slippage_ticks: int = 1
+    commission_pct: float = 0.0
+    slippage_pct: float = 0.0
 
 
 @router.post("/walkforward", response_model=WalkForwardResponse)
@@ -530,7 +534,7 @@ def walkforward_endpoint(req: WalkForwardRequest):
             req.longs,
             req.horizons,
             pd.Timestamp(req.split_date),
-            CostModel(req.commission, req.slippage_ticks),
+            CostModel(req.commission_pct, req.slippage_pct),
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e

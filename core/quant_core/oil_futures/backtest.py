@@ -26,14 +26,17 @@ WTI_MULTIPLIER = 1000  # 1계약 = 1000배럴
 
 @dataclass(frozen=True)
 class CostModel:
-    """거래 비용 모델.
+    """거래 비용 모델 (퍼센트 기반).
 
-    commission_per_contract: 한 방향(진입 또는 청산)당 계약당 수수료(USD).
-    slippage_ticks: 진입·청산 각각 N틱씩 불리한 가격으로 체결 가정.
+    commission_pct: 한 방향(진입/청산)당 거래대금 대비 수수료율 (소수).
+      예 0.0003 = 0.03%. 한국투자증권 등 우대율에 따라 계좌마다 상이 → 사용자 설정.
+    slippage_pct: 진입·청산 각각 체결가가 불리해지는 비율 (소수).
+      예 0.0005 = 0.05%. Long은 진입가↑·청산가↓, Short은 반대.
+    기본 0 = gross (비용 미반영, 엑셀 export와 일치).
     """
 
-    commission_per_contract: float = 2.5
-    slippage_ticks: int = 1
+    commission_pct: float = 0.0
+    slippage_pct: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -152,7 +155,8 @@ def run_backtest(
     idx_by_date = {pd.Timestamp(d): i for i, d in enumerate(df["date"])}
     n = len(df)
 
-    slip = cost.slippage_ticks * WTI_TICK
+    slip_pct = cost.slippage_pct       # 체결가 불리 비율 (소수)
+    comm_pct = cost.commission_pct     # 한 방향 거래대금 대비 수수료율 (소수)
     sl_pct = exits.stop_loss_pct
     tp_pct = exits.take_profit_pct
 
@@ -233,18 +237,21 @@ def run_backtest(
         mfe_usd = max(0.0, mfe_price) * WTI_MULTIPLIER
         mae_usd = min(0.0, mae_price) * WTI_MULTIPLIER
 
-        # 슬리피지
+        # 슬리피지 (% 기반): Long 진입가↑·청산가↓, Short 반대 (불리한 체결)
         if sig.side == Side.LONG:
-            eff_entry = entry_price + slip
-            eff_exit = exit_price - slip
+            eff_entry = entry_price * (1 + slip_pct)
+            eff_exit = exit_price * (1 - slip_pct)
         else:
-            eff_entry = entry_price - slip
-            eff_exit = exit_price + slip
+            eff_entry = entry_price * (1 - slip_pct)
+            eff_exit = exit_price * (1 + slip_pct)
 
         gross = sign * (exit_price - entry_price) * WTI_MULTIPLIER
-        net_price_diff = sign * (eff_exit - eff_entry)
-        net = net_price_diff * WTI_MULTIPLIER - 2 * cost.commission_per_contract
-        ret = sign * (exit_price / entry_price - 1)
+        # 수수료 (% 기반): 진입·청산 양 레그의 거래대금 대비
+        commission_usd = comm_pct * (eff_entry + eff_exit) * WTI_MULTIPLIER
+        net = sign * (eff_exit - eff_entry) * WTI_MULTIPLIER - commission_usd
+        # 수익률 = 순손익 / 진입 거래대금 (비용 반영된 net 기준)
+        entry_notional = entry_price * WTI_MULTIPLIER
+        ret = net / entry_notional if entry_notional else 0.0
 
         # ── 만기 강제 롤오버 (A-2) ─────────────────────────────────────
         entry_d = pd.Timestamp(entry_row["date"])
@@ -258,9 +265,9 @@ def run_backtest(
             notional = entry_price * WTI_MULTIPLIER
             # term-structure 성분 (부호 반영): pct>0 → 비용(음수)
             roll_cost = -(num_rolls * roll.roll_cost_pct * notional)
-            # 거래 마찰: 매 롤 왕복 수수료·슬리피지 (항상 비용)
+            # 거래 마찰: 매 롤 왕복(청산+재진입) 수수료·슬리피지 (% 기반, 항상 비용)
             if roll.apply_txn_per_roll:
-                txn = 2 * cost.commission_per_contract + 2 * slip * WTI_MULTIPLIER
+                txn = (2 * comm_pct + 2 * slip_pct) * notional
                 roll_cost -= num_rolls * txn
             net += roll_cost
             ret += roll_cost / notional if notional else 0.0

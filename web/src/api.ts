@@ -443,6 +443,8 @@ export const oilApi = {
     stop_loss_pct?: number | null;       // 🅒 SL/TP 시뮬레이터
     take_profit_pct?: number | null;
     roll_cost_pct?: number;              // 선물 만기 롤오버 비용 (%/회, 소수)
+    commission_pct?: number;            // 수수료율 (소수)
+    slippage_pct?: number;              // 슬리피지율 (소수)
   }) =>
     req<OilBacktest>("/oil-futures/backtest", {
       method: "POST",

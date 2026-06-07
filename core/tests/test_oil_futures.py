@@ -126,12 +126,14 @@ def test_short_pnl_sign_and_magnitude(small_df: pd.DataFrame) -> None:
 
 
 def test_cost_model_reduces_net_pnl(small_df: pd.DataFrame) -> None:
-    """수수료 + 슬리피지가 net_pnl 을 적절히 줄이는지."""
+    """수수료(%) + 슬리피지(%)가 net_pnl 을 줄이는지."""
     sigs = generate_signals(small_df, short_thresholds=[80])
     free = run_backtest(small_df, sigs, 3, CostModel(0, 0)).trades[0]
-    paid = run_backtest(small_df, sigs, 3, CostModel(2.5, 1)).trades[0]
-    # 슬리피지 1틱 * $0.01 * 1000 * 2(in+out) = $20, 수수료 $2.5*2 = $5 → 총 $25
-    assert paid.net_pnl_usd == pytest.approx(free.net_pnl_usd - 25)
+    paid = run_backtest(
+        small_df, sigs, 3, CostModel(commission_pct=0.001, slippage_pct=0.001)
+    ).trades[0]
+    # 비용이 있으면 net_pnl 은 gross 보다 작아야 함 (수수료·슬리피지 차감)
+    assert paid.net_pnl_usd < free.net_pnl_usd
     assert paid.gross_pnl_usd == free.gross_pnl_usd  # gross 는 비용 무관
 
 

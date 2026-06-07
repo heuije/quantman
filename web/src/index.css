@@ -2502,3 +2502,10 @@ thead th { color: var(--muted); font-weight: 600; }
   transition: opacity 0.15s;
 }
 .excel-download-btn:hover { opacity: 0.88; }
+
+/* 거래비용(슬리피지·수수료) 시뮬레이터 툴바 */
+.cost-toolbar {
+  background: rgba(108,156,233,0.06);
+  border: 1px solid rgba(108,156,233,0.25);
+  border-radius: 8px; padding: 10px 12px; margin-top: 8px;
+}

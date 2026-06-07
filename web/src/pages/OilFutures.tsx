@@ -118,6 +118,8 @@ export default function OilFutures() {
   const [sl, setSl] = useState<number | "">("");        // 예: 10 = -10%
   const [tp, setTp] = useState<number | "">("");        // 예: 20 = +20%
   const [rollCost, setRollCost] = useState<number | "">("");  // 롤 비용 %/회 (예: 0.5)
+  const [slippage, setSlippage] = useState<number | "">("");  // 슬리피지 %/체결 (예: 0.05)
+  const [commission, setCommission] = useState<number | "">(""); // 수수료 %/체결 (예: 0.03)
 
   // ── 초기 로드 ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -157,11 +159,13 @@ export default function OilFutures() {
         stop_loss_pct: sl === "" ? null : sl / 100,
         take_profit_pct: tp === "" ? null : tp / 100,
         roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
+        commission_pct: commission === "" ? 0 : commission / 100,
+        slippage_pct: slippage === "" ? 0 : slippage / 100,
       })
       .then(setBacktest)
       .catch((e) => console.error("backtest", e))
       .finally(() => setBtLoading(false));
-  }, [selected, sl, tp, rollCost]);
+  }, [selected, sl, tp, rollCost, commission, slippage]);
 
   // 정렬·필터된 그리드
   const gridSorted = useMemo(() => {
@@ -338,7 +342,9 @@ export default function OilFutures() {
                 `${API_BASE}/oil-futures/export.xlsx` +
                 `?side=${selected.side}&threshold=${selected.threshold}` +
                 `&horizon_days=${selected.horizon}` +
-                `&roll_cost_pct=${rollCost === "" ? 0 : rollCost / 100}`
+                `&roll_cost_pct=${rollCost === "" ? 0 : rollCost / 100}` +
+                `&commission_pct=${commission === "" ? 0 : commission / 100}` +
+                `&slippage_pct=${slippage === "" ? 0 : slippage / 100}`
               }
             >
               ⬇ 엑셀 다운로드 (수식 연결)
@@ -406,6 +412,39 @@ export default function OilFutures() {
             <b> −2% 정도</b> 입력이 현실적. 역사적 평균은 국면마다 달라(콘탱고 +0.3~1%/월 ~
             슈퍼콘탱고 +10%, 또는 backwardation 시 이익) <b>고정값 없음</b>.
             <span style={{ color: "#c9a227" }}> ⚠️ 추정 가정 — 정확한 롤 yield는 만기물별 데이터 필요.</span>
+          </div>
+        </div>
+
+        {/* 거래비용 시뮬레이터 — 슬리피지·수수료 (%) */}
+        <div className="oil-toolbar sltp-toolbar cost-toolbar">
+          <span style={{ fontWeight: 600 }}>💸 거래비용:</span>
+          <label>
+            슬리피지&nbsp;
+            <input
+              type="number" min={0} max={5} step={0.01}
+              value={slippage}
+              placeholder="0"
+              onChange={(e) => setSlippage(e.target.value === "" ? "" : Number(e.target.value))}
+              style={{ width: 72 }}
+            />
+            &nbsp;% / 체결
+          </label>
+          <label>
+            수수료&nbsp;
+            <input
+              type="number" min={0} max={5} step={0.01}
+              value={commission}
+              placeholder="0"
+              onChange={(e) => setCommission(e.target.value === "" ? "" : Number(e.target.value))}
+              style={{ width: 72 }}
+            />
+            &nbsp;% / 체결
+          </label>
+          <button onClick={() => { setSlippage(""); setCommission(""); }} className="ghost">리셋(0%)</button>
+          <div className="muted roll-help">
+            진입·청산 각각에 적용. <b>슬리피지</b>=불리한 체결(short 진입가↓·청산가↑),
+            <b> 수수료</b>=거래대금 대비 비율. 한국투자증권 등 <b>우대율에 따라 계좌마다 상이</b>하므로
+            본인 조건으로 입력하세요. 엑셀 다운로드에도 그대로 반영됩니다.
           </div>
         </div>
 
