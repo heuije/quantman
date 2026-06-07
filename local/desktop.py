@@ -64,7 +64,7 @@ def _show_already_running_dialog() -> None:
     """
     import tkinter as tk
     root = tk.Tk()
-    root.title("마이스톡")
+    root.title("MyStock")
     root.resizable(False, False)
     root.eval("tk::PlaceWindow . center")
     tk.Label(

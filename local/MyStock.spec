@@ -113,7 +113,7 @@ if IS_MAC:
         bundle_identifier="com.merckr.quantplatformlocal",
         info_plist={
             "CFBundleName": "MyStock",
-            "CFBundleDisplayName": "마이스톡 로컬앱",
+            "CFBundleDisplayName": "MyStock 로컬앱",
             "CFBundleShortVersionString": _VERSION,
             "CFBundleVersion": _VERSION,
             "NSHighResolutionCapable": True,
