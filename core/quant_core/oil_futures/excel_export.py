@@ -101,10 +101,10 @@ def build_oil_excel(
     last = 8 + n
     summary = [
         ("신호 횟수", f'=COUNTIF(F9:F{last},1)'),
-        ("거래 성립", f'=COUNT(I9:I{last})'),
-        ("승률", f'=IFERROR(COUNTIF(I9:I{last},">0")/COUNT(I9:I{last}),0)'),
-        ("평균 수익률", f'=IFERROR(AVERAGE(I9:I{last}),0)'),
-        ("누적 PnL ($, 1계약)", f'=SUM(J9:J{last})'),
+        ("거래 성립", f'=COUNT(L9:L{last})'),
+        ("승률", f'=IFERROR(COUNTIF(L9:L{last},">0")/COUNT(L9:L{last}),0)'),
+        ("평균 수익률", f'=IFERROR(AVERAGE(L9:L{last}),0)'),
+        ("누적 PnL ($, 1계약)", f'=SUM(M9:M{last})'),
     ]
     for i, (label, formula) in enumerate(summary):
         r = 2 + i
@@ -120,9 +120,11 @@ def build_oil_excel(
     ws["E6"].number_format = "#,##0"
 
     # ── 데이터 + 수식 헤더 (8행) ─────────────────────────────────────
-    headers = ["날짜", "시가", "고가", "저가", "종가",
-               "신호", "진입가", "청산가", "수익률", "PnL($)", "롤횟수",
-               "유효진입가", "유효청산가"]
+    # 컬럼: A날짜 B시가 C고가 D저가 E종가 F신호 | G진입일 H청산일 I진입가 J청산가
+    #       K롤횟수 | L수익률 M PnL N유효진입가 O유효청산가
+    headers = ["날짜", "시가", "고가", "저가", "종가", "신호",
+               "진입일", "청산일", "진입가", "청산가", "롤횟수",
+               "수익률", "PnL($)", "유효진입가", "유효청산가"]
     for j, h in enumerate(headers):
         c = ws.cell(row=8, column=1 + j, value=h)
         c.font = bold
@@ -141,56 +143,62 @@ def build_oil_excel(
         ws.cell(row=r, column=5, value=float(row["close"]))
 
         # F 신호: short=고가 위로 첫터치, long=저가 아래로 첫터치 (전일 비교)
-        f = (
+        ws.cell(row=r, column=6, value=(
             f'=IF($B$2="short",'
             f'IF(AND(C{r}>=$B$3,C{r-1}<$B$3),1,""),'
             f'IF(AND(D{r}<=$B$3,D{r-1}>$B$3),1,""))'
-        )
-        ws.cell(row=r, column=6, value=f)
-        # G 진입가 = 다음날 시가
+        ))
+        # G 진입일 = 신호 다음 영업일 날짜
         ws.cell(row=r, column=7,
-                value=f'=IF(F{r}=1,IFERROR(OFFSET(B{r},1,0),""),"")')
-        # H 청산가 = 진입 후 보유기간 종가 (= 신호행 기준 1+horizon 아래)
+                value=f'=IF(F{r}=1,IFERROR(OFFSET(A{r},1,0),""),"")')
+        # H 청산일 = 진입 후 보유기간 영업일 날짜 (= 신호행 1+horizon 아래)
         ws.cell(row=r, column=8,
-                value=f'=IF(F{r}=1,IFERROR(OFFSET(E{r},1+$B$4,0),""),"")')
-        # K 롤횟수 = 진입~청산 사이 실제 WTI 만기일 수 (앱과 동일: entry<만기<=exit)
-        # 만기일!A:A 에 만기일 리스트, COUNTIFS로 정확히 카운트
-        ws.cell(row=r, column=11, value=(
-            f'=IF(F{r}=1,IFERROR(COUNTIFS('
-            f'만기일!$A:$A,">"&OFFSET(A{r},1,0),'
-            f'만기일!$A:$A,"<="&OFFSET(A{r},1+$B$4,0)'
-            f'),""),"")'
-        ))
-        # L 유효진입가 = 슬리피지 반영 (short 진입가↓, long 진입가↑)
-        ws.cell(row=r, column=12, value=(
-            f'=IF(G{r}="","",IF($B$2="short",G{r}*(1-$B$6/100),G{r}*(1+$B$6/100)))'
-        ))
-        # M 유효청산가 = 슬리피지 반영 (short 청산가↑, long 청산가↓)
-        ws.cell(row=r, column=13, value=(
-            f'=IF(H{r}="","",IF($B$2="short",H{r}*(1+$B$6/100),H{r}*(1-$B$6/100)))'
-        ))
-        # J PnL($) = [부호·(유효청산-유효진입) - 수수료(양레그)]·1000 - 롤비용
-        #   수수료 = $B$7/100 × (유효진입+유효청산), 롤 = K×$B$5/100×진입notional
-        ws.cell(row=r, column=10, value=(
-            f'=IF(OR(L{r}="",M{r}=""),"",'
-            f'(IF($B$2="short",L{r}-M{r},M{r}-L{r})-$B$7/100*(L{r}+M{r}))*1000'
-            f'-K{r}*$B$5/100*G{r}*1000)'
-        ))
-        # I 수익률 = 순손익 / 진입 거래대금 (비용 반영된 net 기준)
+                value=f'=IF(F{r}=1,IFERROR(OFFSET(A{r},1+$B$4,0),""),"")')
+        # I 진입가 = 다음날 시가
         ws.cell(row=r, column=9,
-                value=f'=IF(J{r}="","",J{r}/(G{r}*1000))')
+                value=f'=IF(F{r}=1,IFERROR(OFFSET(B{r},1,0),""),"")')
+        # J 청산가 = 진입 후 보유기간 종가
+        ws.cell(row=r, column=10,
+                value=f'=IF(F{r}=1,IFERROR(OFFSET(E{r},1+$B$4,0),""),"")')
+        # K 롤횟수 = 진입일(G)~청산일(H) 사이 만기일 수 (COUNTIFS, 두 날짜 셀 직접 참조)
+        ws.cell(row=r, column=11, value=(
+            f'=IF(OR(G{r}="",H{r}=""),"",IFERROR(COUNTIFS('
+            f'만기일!$A:$A,">"&G{r},'
+            f'만기일!$A:$A,"<="&H{r}'
+            f'),""))'
+        ))
+        # N 유효진입가 = 진입가에 슬리피지 (short 진입가↓, long 진입가↑)
+        ws.cell(row=r, column=14, value=(
+            f'=IF(I{r}="","",IF($B$2="short",I{r}*(1-$B$6/100),I{r}*(1+$B$6/100)))'
+        ))
+        # O 유효청산가 = 청산가에 슬리피지 (short 청산가↑, long 청산가↓)
+        ws.cell(row=r, column=15, value=(
+            f'=IF(J{r}="","",IF($B$2="short",J{r}*(1+$B$6/100),J{r}*(1-$B$6/100)))'
+        ))
+        # M PnL($) = [부호·(유효청산-유효진입) - 수수료(양레그)]·1000 - 롤비용
+        ws.cell(row=r, column=13, value=(
+            f'=IF(OR(N{r}="",O{r}=""),"",'
+            f'(IF($B$2="short",N{r}-O{r},O{r}-N{r})-$B$7/100*(N{r}+O{r}))*1000'
+            f'-K{r}*$B$5/100*I{r}*1000)'
+        ))
+        # L 수익률 = 순손익(M) / 진입 거래대금 (비용 반영된 net 기준)
+        ws.cell(row=r, column=12,
+                value=f'=IF(M{r}="","",M{r}/(I{r}*1000))')
 
-    # 수익률·PnL·유효가 포맷
+    # 포맷
     for idx in range(n):
         r = 9 + idx
-        ws.cell(row=r, column=9).number_format = "+0.00%;-0.00%"
-        ws.cell(row=r, column=10).number_format = "#,##0"
-        ws.cell(row=r, column=12).number_format = "0.00"
-        ws.cell(row=r, column=13).number_format = "0.00"
-        ws.cell(row=r, column=1).number_format = "yyyy-mm-dd"
+        ws.cell(row=r, column=1).number_format = "yyyy-mm-dd"   # A 날짜
+        ws.cell(row=r, column=7).number_format = "yyyy-mm-dd"   # G 진입일
+        ws.cell(row=r, column=8).number_format = "yyyy-mm-dd"   # H 청산일
+        ws.cell(row=r, column=12).number_format = "+0.00%;-0.00%"  # L 수익률
+        ws.cell(row=r, column=13).number_format = "#,##0"      # M PnL
+        ws.cell(row=r, column=14).number_format = "0.00"       # N 유효진입가
+        ws.cell(row=r, column=15).number_format = "0.00"       # O 유효청산가
 
     # ── 열 너비 ──────────────────────────────────────────────────────
-    widths = [12, 9, 9, 9, 9, 7, 10, 10, 10, 12, 8, 11, 11]
+    #       A   B  C  D  E  F  G   H   I   J   K  L   M    N    O
+    widths = [12, 9, 9, 9, 9, 7, 12, 12, 10, 10, 8, 10, 12, 11, 11]
     for j, w in enumerate(widths):
         ws.column_dimensions[get_column_letter(1 + j)].width = w
     ws.column_dimensions["D"].width = 18
@@ -227,13 +235,15 @@ def build_oil_excel(
         ["슬리피지(B6)", "체결 1회당 불리한 체결 비율 % (진입·청산 각각). short 진입가↓·청산가↑"],
         ["수수료(B7)", "체결 거래대금 대비 % (한국투자 등 우대율 계좌별 상이 → 직접 입력)"],
         ["신호(F열)", "장중 고가/저가 기준 전일 대비 첫 돌파 (히스테리시스 — 연속 돌파는 1회만)"],
-        ["진입가(G열)", "신호 다음 영업일 시가 (look-ahead 제거)"],
-        ["청산가(H열)", "진입 후 '보유기간' 영업일 후 종가"],
-        ["유효진입가(L열)", "진입가에 슬리피지 반영 (=실제 체결가)"],
-        ["유효청산가(M열)", "청산가에 슬리피지 반영"],
-        ["롤횟수(K열)", "'만기일' 시트의 실제 WTI 만기일을 COUNTIFS로 카운트 (진입<만기≤청산) — 앱과 동일"],
-        ["PnL(J열)", "[부호×(유효청산−유효진입) − 수수료×(유효진입+유효청산)]×1000 − 롤횟수×롤비용×진입대금"],
-        ["수익률(I열)", "순손익(J) ÷ 진입 거래대금. 슬리피지·수수료·롤비용 모두 반영된 net"],
+        ["진입일(G열)", "신호 다음 영업일 날짜"],
+        ["청산일(H열)", "진입일 + 보유기간 영업일 날짜"],
+        ["진입가(I열)", "진입일 시가 (look-ahead 제거)"],
+        ["청산가(J열)", "청산일 종가"],
+        ["롤횟수(K열)", "진입일(G)~청산일(H) 사이 '만기일' 시트의 만기일 수 COUNTIFS (진입<만기≤청산) — 앱과 동일"],
+        ["유효진입가(N열)", "진입가에 슬리피지 반영 (=실제 체결가)"],
+        ["유효청산가(O열)", "청산가에 슬리피지 반영"],
+        ["PnL(M열)", "[부호×(유효청산−유효진입) − 수수료×(유효진입+유효청산)]×1000 − 롤횟수×롤비용×진입대금"],
+        ["수익률(L열)", "순손익(M) ÷ 진입 거래대금. 슬리피지·수수료·롤비용 모두 반영된 net"],
         ["만기일 시트", "롤횟수 계산의 기준 만기일 목록 (CME 규칙 기반 자동 생성)"],
         ["", ""],
         ["한계", "MAE/MFE·walk-forward는 미반영. 앱은 롤비용≠0 시 롤당 소액 거래마찰도 부과(엑셀은 term-structure 성분만)."],
