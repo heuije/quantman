@@ -268,6 +268,37 @@ def seed_from_investing_csv(symbol: str, csv_path) -> pd.DataFrame:
     return df
 
 
+def seed_from_clean_csv(symbol: str, csv_path) -> pd.DataFrame:
+    """정제완료 OHLCV CSV(date,open,high,low,close[,volume]; 오름차순) → parquet **덮어쓰기** 시드.
+
+    번들 정적 CSV(server/app/data/static/kospi200_futures.csv = 투자닷컴 KOSPI200 연속선물 2010+
+    스냅샷, 번들 시점에 1회 정제)를 깊은 base로 적재. clean_investing_csv는 *원시* 투자닷컴 포맷
+    (한글헤더·날짜공백·K접미사)용 — 이 함수는 *이미 표준화된* CSV용. 이후 최근분은
+    fetch_kis_futures_daily(KIS 증분)가 이 base 위에 append → "데이터포인트당 소스 1개"(과거=CSV·신규=KIS).
+    """
+    raw = pd.read_csv(csv_path)
+    raw = raw.rename(columns={"date": "d", "open": "Open", "high": "High",
+                              "low": "Low", "close": "Close", "volume": "Volume"})
+    # raw는 RangeIndex, 새 index는 DatetimeIndex라 Series 그대로 넣으면 라벨정렬로 NaN → .to_numpy() 위치배정.
+    idx = pd.to_datetime(raw["d"].astype(str), errors="coerce").to_numpy()
+
+    def _num(col):
+        return (pd.to_numeric(raw[col], errors="coerce").to_numpy()
+                if col in raw.columns else [0.0] * len(raw))
+
+    close = _num("Close")
+    df = pd.DataFrame({"Open": _num("Open"), "High": _num("High"), "Low": _num("Low"),
+                       "Close": close, "Volume": _num("Volume")}, index=idx)
+    df = df[(~pd.isna(idx)) & (~pd.isna(close))].sort_index()
+    df["Volume"] = df["Volume"].fillna(0.0)
+    df.index.name = None
+    if df.empty:
+        raise ValueError(f"정제 CSV 결과가 비어 있음: {csv_path}")
+    _save(symbol, df)            # 덮어쓰기 — 기존(얕은 KIS·프록시 ETF·혼합) 데이터를 깊은 연속물로 교체
+    mark_data_dirty()
+    return df
+
+
 def append_daily_bars(symbol: str, new: pd.DataFrame) -> pd.DataFrame:
     """신규 일봉을 기존 parquet에 증분 머지(중복 날짜는 new=최신 소스 우선). KIS 증분 진입점.
 

@@ -126,3 +126,34 @@ def test_seed_kis_futures_full_paginates_and_overwrites(tmp_path, monkeypatch):
     assert pd.Timestamp("2020-01-02") not in res.index
     saved = df_mod._load_existing("코스피200선물")           # 디스크도 덮어쓰기
     assert pd.Timestamp("2020-01-02") not in saved.index and len(saved) == len(all_dates)
+
+
+# ── 번들 정제완료 CSV(깊은 과거 2010+) 시드 — 전략연구소 parquet의 깊은 base ──────────
+
+def test_seed_from_clean_csv(tmp_path, monkeypatch):
+    monkeypatch.setattr(df_mod, "DATA_DIR", tmp_path)
+    # 번들 포맷: date,open,high,low,close,volume 오름차순. 초기행 volume 빈값(투자닷컴 스냅샷 특성).
+    csv = tmp_path / "clean.csv"
+    csv.write_text(
+        "date,open,high,low,close,volume\n"
+        "2010-01-01,222.38,222.38,222.38,222.38,\n"
+        "2010-01-04,222.38,224.38,222.38,223.58,\n"
+        "2026-06-02,1413.5,1444.65,1405.5,1434.95,18450.0\n",
+        encoding="utf-8")
+    # 기존 얕은 KIS orphan(2025, 단일계약) — 깊은 CSV로 덮어써져야 함
+    df_mod._save("코스피200선물", pd.DataFrame(
+        {"Open": [340.0], "High": [340.0], "Low": [340.0], "Close": [340.0], "Volume": [1.0]},
+        index=pd.DatetimeIndex([pd.Timestamp("2025-09-01")])))
+
+    df = df_mod.seed_from_clean_csv("코스피200선물", csv)
+    assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert list(df.index) == sorted(df.index)                 # 오름차순
+    assert df.index[0] == pd.Timestamp("2010-01-01")          # 깊은 과거 base
+    assert df.index[-1] == pd.Timestamp("2026-06-02")
+    assert df.loc["2026-06-02", "Close"] == 1434.95
+    assert df.loc["2026-06-02", "Volume"] == 18450.0
+    assert df.loc["2010-01-01", "Volume"] == 0.0              # 빈값 → 0
+    # 얕은 orphan 덮어써짐 — 깊은 연속물만(2025 단일계약 행 없음)
+    assert pd.Timestamp("2025-09-01") not in df.index
+    saved = df_mod._load_existing("코스피200선물")
+    assert saved.index[0] == pd.Timestamp("2010-01-01") and pd.Timestamp("2025-09-01") not in saved.index
