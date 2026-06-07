@@ -223,7 +223,7 @@ export const api = {
 // 로컬앱 다운로드 — 플랫폼별 zip URL 조회.
 //
 // 매 release마다 asset 이름이 버전·플랫폼 포함으로 바뀌므로
-// (QuantPlatformLocal-v{ver}-{platform}.zip) 정적 URL 불가. GitHub releases API로
+// (MyStock-v{ver}-{platform}.zip) 정적 URL 불가. GitHub releases API로
 // 최신 release의 asset 목록을 받아 plat suffix 매칭으로 선택. 실패 시 release
 // 페이지 URL fallback.
 //

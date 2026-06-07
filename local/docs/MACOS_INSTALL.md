@@ -22,19 +22,19 @@ macOS 버전에 따라 다릅니다:
 ## 방법 2 — Terminal 한 줄 (모든 macOS 버전 권장)
 
 1. [최신 release](https://github.com/MercKR/quantman-releases/releases/latest)에서
-   `QuantPlatformLocal-vX.Y.Z-macos-arm64.zip` 다운로드.
-2. zip 더블클릭 → `QuantPlatformLocal-vX.Y.Z.app` 생성.
+   `MyStock-vX.Y.Z-macos-arm64.zip` 다운로드.
+2. zip 더블클릭 → `MyStock-vX.Y.Z.app` 생성.
 3. `.app`을 `/Applications`로 드래그(권장) 또는 그대로 사용.
 4. **Spotlight(`Cmd+Space`) → "터미널"** 검색해 열기.
 5. 아래 명령 붙여넣고 Enter (경로는 실제 위치로 치환):
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/QuantPlatformLocal-vX.Y.Z.app
+xattr -dr com.apple.quarantine /Applications/MyStock-vX.Y.Z.app
 ```
 
    `~/Downloads`에 있으면:
 ```bash
-xattr -dr com.apple.quarantine ~/Downloads/QuantPlatformLocal-vX.Y.Z.app
+xattr -dr com.apple.quarantine ~/Downloads/MyStock-vX.Y.Z.app
 ```
 
 6. 이후 더블클릭으로 그냥 열립니다. (quarantine 속성 제거 → Gatekeeper가
@@ -47,7 +47,7 @@ Sequoia부터 우클릭→열기 우회가 막혔습니다. GUI로만 처리하�
 1. .app 더블클릭 → 거부 다이얼로그 뜨면 **[완료]** 클릭.
 2. **시스템 설정 → 개인정보 보호 및 보안** 열기.
 3. 페이지 아래로 스크롤 → "보안" 섹션에서 다음 문구 찾기:
-   > "'QuantPlatformLocal-vX.Y.Z'은(는) 확인된 개발자가 배포한 것이
+   > "'MyStock-vX.Y.Z'은(는) 확인된 개발자가 배포한 것이
    > 아니므로 차단되었습니다"
 4. 오른쪽 **[그래도 열기]** (또는 영어 "Open Anyway") 버튼 클릭.
 5. Touch ID 또는 사용자 암호 인증.
@@ -71,7 +71,7 @@ Sequoia부터 우클릭→열기 우회가 막혔습니다. GUI로만 처리하�
 앱 첫 실행 후 KIS 자격증명을 wizard에서 저장·로드할 때 macOS Keychain prompt가
 표시됩니다:
 
-> "QuantPlatformLocal에서 키체인 항목 'kis_credentials'에 접근하려고 합니다"
+> "MyStock에서 키체인 항목 'kis_credentials'에 접근하려고 합니다"
 
 **반드시 [항상 허용]을 클릭하세요.**
 
@@ -81,7 +81,7 @@ Sequoia부터 우클릭→열기 우회가 막혔습니다. GUI로만 처리하�
 
 만약 실수로 [허용]만 눌렀다면 키체인 접근.app(Keychain Access)에서:
 1. 검색창에 `quant-platform-local` 입력
-2. 항목 더블클릭 → [접근 제어] 탭 → [이 항목을 사용할 때 인증되지 않은 모든 응용 프로그램 허용] 체크 (또는 QuantPlatformLocal을 [항상 허용 목록]에 추가).
+2. 항목 더블클릭 → [접근 제어] 탭 → [이 항목을 사용할 때 인증되지 않은 모든 응용 프로그램 허용] 체크 (또는 MyStock을 [항상 허용 목록]에 추가).
 
 ---
 

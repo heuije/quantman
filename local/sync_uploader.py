@@ -37,7 +37,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     print("=" * 60)
-    print(" [QuantPlatform Parquet 벌크 동기화 시스템] ")
+    print(" [MyStock Parquet 벌크 동기화 시스템] ")
     print("=" * 60)
     print(f"서버 주소: {PLATFORM_URL}")
     

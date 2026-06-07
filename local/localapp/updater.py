@@ -139,9 +139,9 @@ def _app_root_and_exe() -> tuple[Path, Path]:
     """PyInstaller frozen 환경에서 앱 root 폴더·실행파일 경로 반환.
 
     "Root"는 업데이트 시 통째로 교체되는 폴더 단위.
-      - Windows onedir: sys.executable='C:/.../QuantPlatformLocal/QuantPlatformLocal.exe'
+      - Windows onedir: sys.executable='C:/.../MyStock/MyStock.exe'
         → root는 exe.parent (onedir 폴더 자체).
-      - macOS .app bundle: sys.executable='.../QuantPlatformLocal-vX.Y.Z.app/Contents/MacOS/QuantPlatformLocal'
+      - macOS .app bundle: sys.executable='.../MyStock-vX.Y.Z.app/Contents/MacOS/MyStock'
         → root는 .app bundle 자체 (3단계 위).
 
     개발 환경(python desktop.py)이면 호출자가 사전에 is_frozen()으로 차단.
@@ -211,11 +211,11 @@ def _write_updater_bat(bat_path: Path, src_dir: Path, dst_dir: Path,
       5. 복사 실패 → :ROLLBACK(불완전 폴더 제거 + .old 복원 + 기존 앱 재실행).
       부분 업데이트(.exe↔_internal 짝 불일치)를 구조적으로 절대 남기지 않는다.
 
-    경로 가정: release는 영문 폴더('QuantPlatformLocal-v0.9.x-beta/'). 사용자 홈이
+    경로 가정: release는 영문 폴더('MyStock-v0.9.x-beta/'). 사용자 홈이
     한글이어도 %TEMP%·설치 경로의 ASCII 부분으로 cmd가 동작한다.
     """
     fail_msg = (
-        "Quantman 업데이트를 적용하지 못했습니다. 기존 버전은 그대로 유지됩니다. "
+        "마이스톡 업데이트를 적용하지 못했습니다. 기존 버전은 그대로 유지됩니다. "
         "앱을 완전히 종료한 뒤 잠시 후 다시 시도해 주세요."
     )
     dst_name = dst_dir.name

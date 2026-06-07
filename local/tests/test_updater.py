@@ -20,9 +20,9 @@ from localapp.updater import _write_updater_bat
 
 def _gen(tmp_path: Path) -> str:
     bat = tmp_path / "updater.bat"
-    src = tmp_path / "extracted" / "QuantPlatformLocal-v9.9.9-beta"
-    dst = tmp_path / "install" / "QuantPlatformLocal-v9.9.9-beta"
-    app_exe = dst / "QuantPlatformLocal.exe"
+    src = tmp_path / "extracted" / "MyStock-v9.9.9-beta"
+    dst = tmp_path / "install" / "MyStock-v9.9.9-beta"
+    app_exe = dst / "MyStock.exe"
     _write_updater_bat(bat, src, dst, app_exe)
     return bat.read_bytes().decode("cp949", errors="replace")
 
@@ -35,9 +35,9 @@ def test_updater_bat_is_clean_swap_not_xo_merge(tmp_path):
     # robocopy는 빈(스왑된) 폴더에 통째 복사(/E).
     assert "robocopy" in s and "/E" in s
     # 원자적 스왑 — 설치 폴더 rename(.old) 잠금 게이트.
-    assert "ren " in s and "QuantPlatformLocal-v9.9.9-beta.old" in s
+    assert "ren " in s and "MyStock-v9.9.9-beta.old" in s
     # 본체·좀비 일소.
-    assert 'taskkill /F /IM "QuantPlatformLocal.exe"' in s
+    assert 'taskkill /F /IM "MyStock.exe"' in s
     # 복사 실패 시 롤백(불완전 폴더 제거 + 기존 복원) 분기.
     assert ":ROLLBACK" in s
     # 잠금 시 중단(기존 그대로) 분기.

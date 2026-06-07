@@ -83,7 +83,7 @@ export function LocalAppDownload({ downloads, os }: Props) {
             whiteSpace: "nowrap",
             overflow: "auto",
           }}>
-            xattr -dr com.apple.quarantine ~/Downloads/QuantPlatformLocal-{downloads.tag || "vX.Y.Z"}.app
+            xattr -dr com.apple.quarantine ~/Downloads/MyStock-{downloads.tag || "vX.Y.Z"}.app
           </code>
           <p style={{ margin: "6px 0 0 0" }}>
             {downloads.tag && (

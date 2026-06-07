@@ -59,21 +59,21 @@ jobs:
 
       - name: Build with PyInstaller
         shell: pwsh
-        run: pyinstaller QuantPlatformLocal.spec --noconfirm --clean
+        run: pyinstaller MyStock.spec --noconfirm --clean
 
       - name: Package as zip
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
-          $src = "dist/QuantPlatformLocal-v$v"
-          $dst = "dist/QuantPlatformLocal-v$v-windows.zip"
+          $src = "dist/MyStock-v$v"
+          $dst = "dist/MyStock-v$v-windows.zip"
           Compress-Archive -Path $src -DestinationPath $dst -CompressionLevel Optimal
           Get-Item $dst | Select-Object Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-zip
-          path: local/dist/QuantPlatformLocal-v${{ steps.ver.outputs.version }}-windows.zip
+          path: local/dist/MyStock-v${{ steps.ver.outputs.version }}-windows.zip
           retention-days: 14
 
   build-macos:
@@ -107,7 +107,7 @@ jobs:
           echo "Building version: $v"
 
       - name: Build with PyInstaller
-        run: pyinstaller QuantPlatformLocal.spec --noconfirm --clean
+        run: pyinstaller MyStock.spec --noconfirm --clean
 
       - name: Ad-hoc code sign (.app)
         # v0.9.3-beta — 무료 ad-hoc 서명. Apple Developer ID 없음.
@@ -116,8 +116,8 @@ jobs:
         # 시스템 설정 → 개인정보 보호 및 보안 흐름이 더 안정적으로 동작함.
         run: |
           v="${{ steps.ver.outputs.version }}"
-          codesign --force --deep --sign - "dist/QuantPlatformLocal-v$v.app"
-          codesign --verify --deep --strict --verbose=2 "dist/QuantPlatformLocal-v$v.app" || true
+          codesign --force --deep --sign - "dist/MyStock-v$v.app"
+          codesign --verify --deep --strict --verbose=2 "dist/MyStock-v$v.app" || true
 
       - name: Package .app as zip (ditto preserves resource forks)
         run: |
@@ -126,14 +126,14 @@ jobs:
           # ditto는 macOS 표준 archive 도구 — resource fork·extended attribute 보존.
           # zip 명령보다 안전 (Finder에서 풀었을 때 .app 손상 가능성 낮음).
           ditto -c -k --sequesterRsrc --keepParent \
-            "QuantPlatformLocal-v$v.app" \
-            "QuantPlatformLocal-v$v-macos-arm64.zip"
-          ls -lh "QuantPlatformLocal-v$v-macos-arm64.zip"
+            "MyStock-v$v.app" \
+            "MyStock-v$v-macos-arm64.zip"
+          ls -lh "MyStock-v$v-macos-arm64.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos-zip
-          path: local/dist/QuantPlatformLocal-v${{ steps.ver.outputs.version }}-macos-arm64.zip
+          path: local/dist/MyStock-v${{ steps.ver.outputs.version }}-macos-arm64.zip
           retention-days: 14
 
   publish:

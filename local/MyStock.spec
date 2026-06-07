@@ -26,7 +26,7 @@ _m = re.search(r'__version__\s*=\s*"([^"]+)"', _INIT_PY.read_text(encoding="utf-
 if not _m:
     raise RuntimeError(f"__version__ 파싱 실패: {_INIT_PY}")
 _VERSION = _m.group(1)
-_BUNDLE_NAME = f"QuantPlatformLocal-v{_VERSION}"
+_BUNDLE_NAME = f"MyStock-v{_VERSION}"
 
 datas, binaries, hiddenimports = [], [], []
 
@@ -91,7 +91,7 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
-    name="QuantPlatformLocal",
+    name="MyStock",
     console=False,            # GUI 앱 — 콘솔 창 없음
     disable_windowed_traceback=False,
     target_arch="arm64" if IS_MAC else None,
@@ -99,7 +99,7 @@ exe = EXE(
 
 coll = COLLECT(
     exe, a.binaries, a.datas,
-    name=_BUNDLE_NAME,   # dist/QuantPlatformLocal-v{version}/ — 폴더명만 봐도 버전 식별.
+    name=_BUNDLE_NAME,   # dist/MyStock-v{version}/ — 폴더명만 봐도 버전 식별.
 )
 
 if IS_MAC:
@@ -112,7 +112,7 @@ if IS_MAC:
         icon=None,
         bundle_identifier="com.merckr.quantplatformlocal",
         info_plist={
-            "CFBundleName": "QuantPlatformLocal",
+            "CFBundleName": "MyStock",
             "CFBundleDisplayName": "마이스톡 로컬앱",
             "CFBundleShortVersionString": _VERSION,
             "CFBundleVersion": _VERSION,

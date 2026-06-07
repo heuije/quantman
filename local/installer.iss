@@ -1,23 +1,23 @@
 ; 퀀트 플랫폼 로컬앱 — Inno Setup 인스톨러 스크립트
 ;
 ; 빌드 순서:
-;   1) python -m PyInstaller QuantPlatformLocal.spec --noconfirm
-;   2) Inno Setup(ISCC.exe)으로 이 파일 컴파일 → Output\QuantPlatformLocal-Setup.exe
+;   1) python -m PyInstaller MyStock.spec --noconfirm
+;   2) Inno Setup(ISCC.exe)으로 이 파일 컴파일 → Output\MyStock-Setup.exe
 ;
 ; 베타는 코드 미서명 — 설치 시 Windows SmartScreen 경고가 뜰 수 있다("추가 정보 → 실행").
 
 #define AppName "마이스톡 로컬앱"
 #define AppVersion "0.1.0-beta"
-#define AppExe "QuantPlatformLocal.exe"
+#define AppExe "MyStock.exe"
 
 [Setup]
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=MyStock
-DefaultDirName={autopf}\QuantPlatformLocal
+DefaultDirName={autopf}\MyStock
 DefaultGroupName=마이스톡
 OutputDir=Output
-OutputBaseFilename=QuantPlatformLocal-Setup
+OutputBaseFilename=MyStock-Setup
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
@@ -34,7 +34,7 @@ Name: "desktopicon"; Description: "바탕화면 바로가기 생성"; Flags: unc
 Name: "startup"; Description: "Windows 시작 시 자동 실행 (자동매매 상시 가동)"
 
 [Files]
-Source: "dist\QuantPlatformLocal\*"; DestDir: "{app}"; \
+Source: "dist\MyStock\*"; DestDir: "{app}"; \
     Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
@@ -45,7 +45,7 @@ Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 [Registry]
 ; 부팅 자동시작 (사용자 단위 — 관리자 권한 불필요)
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
-    ValueType: string; ValueName: "QuantPlatformLocal"; \
+    ValueType: string; ValueName: "MyStock"; \
     ValueData: """{app}\{#AppExe}"""; Tasks: startup; Flags: uninsdeletevalue
 
 [Run]
