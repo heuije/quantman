@@ -28,7 +28,10 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side as XlSide
 from openpyxl.utils import get_column_letter
 
-from .backtest import wti_expiry_dates
+from .backtest import (
+    CostModel, ExitRules, RollModel, run_backtest, wti_expiry_dates,
+)
+from .signals import generate_signals
 
 
 # 디자인 토큰 (대시보드 팔레트와 통일)
@@ -124,7 +127,7 @@ def build_oil_excel(
     #       K롤횟수 | L수익률 M PnL N유효진입가 O유효청산가
     headers = ["날짜", "시가", "고가", "저가", "종가", "신호",
                "진입일", "청산일", "진입가", "청산가", "롤횟수",
-               "수익률", "PnL($)", "유효진입가", "유효청산가", "거래#"]
+               "수익률", "PnL($)", "유효진입가", "유효청산가"]
     for j, h in enumerate(headers):
         c = ws.cell(row=8, column=1 + j, value=h)
         c.font = bold
@@ -184,9 +187,6 @@ def build_oil_excel(
         # L 수익률 = 순손익(M) / 진입 거래대금 (비용 반영된 net 기준)
         ws.cell(row=r, column=12,
                 value=f'=IF(M{r}="","",M{r}/(I{r}*1000))')
-        # P 거래# = 거래 순번 (거래내역 시트 INDEX/MATCH 참조용)
-        ws.cell(row=r, column=16,
-                value=f'=IF(L{r}<>"",COUNT($L$9:L{r}),"")')
 
     # 포맷
     for idx in range(n):
@@ -200,33 +200,42 @@ def build_oil_excel(
         ws.cell(row=r, column=15).number_format = "0.00"       # O 유효청산가
 
     # ── 열 너비 ──────────────────────────────────────────────────────
-    #       A   B  C  D  E  F  G   H   I   J   K  L   M    N    O   P
-    widths = [12, 9, 9, 9, 9, 7, 12, 12, 10, 10, 8, 10, 12, 11, 11, 7]
+    #       A   B  C  D  E  F  G   H   I   J   K  L   M    N    O
+    widths = [12, 9, 9, 9, 9, 7, 12, 12, 10, 10, 8, 10, 12, 11, 11]
     for j, w in enumerate(widths):
         ws.column_dimensions[get_column_letter(1 + j)].width = w
     ws.column_dimensions["D"].width = 18
     ws.column_dimensions["E"].width = 14
-    # 거래# 헬퍼 컬럼은 숨김 (거래내역 시트 참조용)
-    ws.column_dimensions["P"].hidden = True
-    for idx in range(n):
-        ws.cell(row=9 + idx, column=16).number_format = "0"
 
     # 헤더 행 고정 (스크롤해도 보이게)
     ws.freeze_panes = "A9"
 
-    # ── 거래내역 시트 (라이브 수식 추출 — 거래 발생 행만) ────────────
-    # INDEX/MATCH로 백테스트 시트에서 n번째 거래(거래#=P열)를 끌어옴.
-    # 동적배열(FILTER) 대신 일반 수식이라 모든 엑셀에서 안정적으로 열리고,
-    # 백테스트 입력칸을 바꾸면 거래# 가 재계산되어 이 목록도 자동 갱신된다.
+    # ── 거래내역 시트 (거래 발생 행만 — Python 계산값) ───────────────
+    # 다운로드 시점 파라미터 기준으로 실제 거래된 내역만 값으로 기록.
+    # (수식 대신 값 → 엑셀 호환성·안정성 보장. 백테스트 시트는 라이브 수식 유지.)
+    sigs = generate_signals(
+        df,
+        short_thresholds=[threshold] if side == "short" else [],
+        long_thresholds=[threshold] if side == "long" else [],
+    )
+    bt = run_backtest(
+        df, sigs, horizon_days,
+        CostModel(commission_pct, slippage_pct),
+        ExitRules(),
+        RollModel(roll_cost_pct=roll_cost_pct),
+    )
+    trades = bt.trades
+
     tr = wb.create_sheet("거래내역")
-    tr["A1"] = "거래내역 — 신호가 발생해 실제 거래된 행만 자동 추출"
+    tr["A1"] = (f"거래내역 — {side} ${threshold:g} × {horizon_days}일 "
+                f"(거래 {len(trades)}건, 다운로드 시점 파라미터 기준)")
     tr["A1"].font = title_font
     tr["A2"] = "거래 수"
     tr["A2"].font = accent_font
-    tr["B2"] = f'=COUNT(백테스트!L9:L{last})'
+    tr["B2"] = len(trades)
     tr["B2"].font = bold
     tr["B2"].border = border
-    tr["C2"] = "← 백테스트 입력칸(임계값·보유기간·비용)을 바꾸면 자동 갱신"
+    tr["C2"] = "← 백테스트 시트 입력칸을 바꿔 실험하려면 그 시트를, 확정 내역은 이 시트를 참고"
     tr["C2"].font = Font(italic=True, color="6F6A62")
 
     tr_headers = ["신호일", "진입일", "청산일", "진입가", "청산가",
@@ -238,34 +247,28 @@ def build_oil_excel(
         c.border = border
         c.alignment = center
 
-    # 백테스트 원본 컬럼: 신호일=A, 진입일=G, 청산일=H, 진입가=I, 청산가=J,
-    #   롤횟수=K, 수익률=L, PnL=M. 거래#=P (1,2,3...).
-    src_cols = ["A", "G", "H", "I", "J", "K", "L", "M"]
-    MAX_TRADES = 400  # 출력 행 한도 (거래는 보통 수십 건)
-    for k in range(1, MAX_TRADES + 1):
-        r_out = 4 + k
-        # J(헬퍼, col9): k번째 거래의 백테스트 행 위치 (MATCH). 없으면 ""
-        tr.cell(row=r_out, column=9, value=(
-            f'=IFERROR(MATCH({k},백테스트!$P$9:$P${last},0),"")'
-        ))
-        for j, col in enumerate(src_cols):
-            tr.cell(row=r_out, column=1 + j, value=(
-                f'=IF($I{r_out}="","",'
-                f'INDEX(백테스트!{col}$9:{col}${last},$I{r_out}))'
-            ))
+    for i, t in enumerate(trades):
+        r_out = 5 + i
+        tr.cell(row=r_out, column=1, value=t.signal.date.to_pydatetime())
+        tr.cell(row=r_out, column=2, value=t.entry_date.to_pydatetime())
+        tr.cell(row=r_out, column=3, value=t.exit_date.to_pydatetime())
+        tr.cell(row=r_out, column=4, value=round(t.entry_price, 2))
+        tr.cell(row=r_out, column=5, value=round(t.exit_price, 2))
+        tr.cell(row=r_out, column=6, value=t.num_rollovers)
+        tr.cell(row=r_out, column=7, value=t.return_pct)
+        tr.cell(row=r_out, column=8, value=round(t.net_pnl_usd, 0))
 
     # 포맷
     fmt = {1: "yyyy-mm-dd", 2: "yyyy-mm-dd", 3: "yyyy-mm-dd",
            4: "0.00", 5: "0.00", 6: "0",
            7: "+0.00%;-0.00%", 8: "#,##0"}
-    for k in range(1, MAX_TRADES + 1):
-        r_out = 4 + k
+    for i in range(len(trades)):
+        r_out = 5 + i
         for col_i, nf in fmt.items():
             tr.cell(row=r_out, column=col_i).number_format = nf
     tr_widths = [12, 12, 12, 10, 10, 8, 10, 12]
     for j, w in enumerate(tr_widths):
         tr.column_dimensions[get_column_letter(1 + j)].width = w
-    tr.column_dimensions["I"].hidden = True  # 헬퍼(MATCH 위치) 숨김
     tr.freeze_panes = "A5"
 
     # ── 만기일 시트 (롤횟수 COUNTIFS 참조용) ─────────────────────────
@@ -305,7 +308,7 @@ def build_oil_excel(
         ["유효청산가(O열)", "청산가에 슬리피지 반영"],
         ["PnL(M열)", "[부호×(유효청산−유효진입) − 수수료×(유효진입+유효청산)]×1000 − 롤횟수×롤비용×진입대금"],
         ["수익률(L열)", "순손익(M) ÷ 진입 거래대금. 슬리피지·수수료·롤비용 모두 반영된 net"],
-        ["거래내역 시트", "신호가 발생해 실제 거래된 행만 INDEX/MATCH로 자동 추출 (입력 바꾸면 갱신, 모든 엑셀 호환)"],
+        ["거래내역 시트", "다운로드 시점 파라미터의 실제 거래내역만 값으로 정리 (호환성·안정성). 실험은 백테스트 시트에서"],
         ["만기일 시트", "롤횟수 계산의 기준 만기일 목록 (CME 규칙 기반 자동 생성)"],
         ["", ""],
         ["한계", "MAE/MFE·walk-forward는 미반영. 앱은 롤비용≠0 시 롤당 소액 거래마찰도 부과(엑셀은 term-structure 성분만)."],
