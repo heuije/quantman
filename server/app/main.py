@@ -355,7 +355,12 @@ def _bootstrap_dataset_bundle():
         import zstandard
         from quant_core.data_fetcher import DATA_DIR
 
-        # 이전 실패로 남은 비-parquet 잔여물 정리 (볼륨 점유 해제)
+        # QP_DATASET_RESET=1 이면 모든 parquet 삭제 후 재적재 (망가진 볼륨 복구용)
+        if os.getenv("QP_DATASET_RESET", "").strip() in ("1", "true", "yes"):
+            for p in DATA_DIR.glob("*.parquet"):
+                p.unlink(missing_ok=True)
+            _log.info("QP_DATASET_RESET — 기존 parquet 전부 삭제")
+        # 비-parquet/json 잔여물 정리 (볼륨 점유 해제)
         for junk in DATA_DIR.iterdir():
             if junk.is_file() and junk.suffix not in (".parquet", ".json"):
                 junk.unlink(missing_ok=True)
