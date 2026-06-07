@@ -116,6 +116,31 @@ export const api = {
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   },
+  /** 예시 전략(N일선 추세추종) 라이브 수식 엑셀 다운로드. 서버 dataset 불필요. 인증 GET → blob. */
+  exportStrategyExampleExcel: async (
+    symbol: string, name: string, ma: number, hold: number, years: number,
+  ) => {
+    const headers: Record<string, string> = {};
+    const t = tokenStore.get();
+    if (t) headers["Authorization"] = `Bearer ${t}`;
+    const qs = new URLSearchParams({
+      symbol, name, ma: String(ma), hold: String(hold), years: String(years),
+    }).toString();
+    const res = await fetch(BASE + "/backtest/strategy-example.xlsx?" + qs, { headers });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const fname = m ? m[1] : "strategy.xlsx";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  },
   runAnalysis: (body: {
     conditions: unknown[]; logic: string; target_symbol: string;
     target_indicator: string; forward_days: number; lookback_years?: number | null;

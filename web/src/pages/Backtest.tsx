@@ -96,6 +96,15 @@ export default function Backtest() {
   const [err, setErr] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
 
+  // 예시 전략 엑셀(라이브 수식) — 서버 dataset 불필요, 단일 종목 즉시 다운로드
+  const [exSymbol, setExSymbol] = useState(() => loadDraft("exSymbol", "005930"));
+  const [exName, setExName] = useState(() => loadDraft("exName", "삼성전자"));
+  const [exMa, setExMa] = useState(() => loadDraft("exMa", 20));
+  const [exHold, setExHold] = useState(() => loadDraft("exHold", 20));
+  const [exYears, setExYears] = useState(() => loadDraft("exYears", 3));
+  const [exBusy, setExBusy] = useState(false);
+  const [exErr, setExErr] = useState("");
+
   function setRule(key: RuleKey, patch: Partial<{ on: boolean; v: number; sell_pct: number }>) {
     setExits((e) => ({ ...e, [key]: { ...e[key], ...patch } }));
   }
@@ -125,6 +134,7 @@ export default function Backtest() {
       useLimit, buyTolerancePct, sellTolerancePct,
       btCommissionBps, btSellTaxBps, btSlippageBps,
       capital, forwardDays, backtestStart, backtestEnd,
+      exSymbol, exName, exMa, exHold, exYears,
     };
     try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); }
     catch { /* quota 초과 등 — 단순 무시 */ }
@@ -135,7 +145,8 @@ export default function Backtest() {
       maxPositionPct, maxPositionEnabled, maxDrawdownPct, maxDrawdownEnabled,
       useLimit, buyTolerancePct, sellTolerancePct,
       btCommissionBps, btSellTaxBps, btSlippageBps,
-      capital, forwardDays, backtestStart, backtestEnd]);
+      capital, forwardDays, backtestStart, backtestEnd,
+      exSymbol, exName, exMa, exHold, exYears]);
 
   function buildDef(): StrategyDef {
     const execution: ExecutionPolicy = {
@@ -287,6 +298,16 @@ export default function Backtest() {
     } catch (e) { setErr((e as Error).message); }
   }
 
+  async function exportExampleExcel() {
+    setExErr(""); setExBusy(true);
+    try {
+      await api.exportStrategyExampleExcel(
+        exSymbol.trim(), exName.trim(), exMa, exHold, exYears,
+      );
+    } catch (e) { setExErr((e as Error).message); }
+    finally { setExBusy(false); }
+  }
+
   function resetStrategy() {
     if (!window.confirm("작성 중인 전략을 초기화할까요?\n저장 안 된 모든 변경이 사라집니다.")) return;
     localStorage.removeItem(DRAFT_KEY);
@@ -376,6 +397,94 @@ export default function Backtest() {
           saveMsg={saveMsg}
         />
       )}
+
+      <ExampleExcelCard
+        exSymbol={exSymbol} setExSymbol={setExSymbol}
+        exName={exName} setExName={setExName}
+        exMa={exMa} setExMa={setExMa}
+        exHold={exHold} setExHold={setExHold}
+        exYears={exYears} setExYears={setExYears}
+        exBusy={exBusy} exErr={exErr}
+        onDownload={exportExampleExcel}
+      />
+    </div>
+  );
+}
+
+// ── 예시 전략 엑셀 카드 (라이브 수식, 서버 dataset 불필요) ─────────────────────
+
+function ExampleExcelCard(props: {
+  exSymbol: string; setExSymbol: (v: string) => void;
+  exName: string; setExName: (v: string) => void;
+  exMa: number; setExMa: (v: number) => void;
+  exHold: number; setExHold: (v: number) => void;
+  exYears: number; setExYears: (v: number) => void;
+  exBusy: boolean; exErr: string;
+  onDownload: () => void;
+}) {
+  const {
+    exSymbol, setExSymbol, exName, setExName, exMa, setExMa,
+    exHold, setExHold, exYears, setExYears, exBusy, exErr, onDownload,
+  } = props;
+  return (
+    <div className="panel" style={{ marginTop: 24 }}>
+      <h3 style={{ marginTop: 0, marginBottom: 4 }}>
+        예시 전략 엑셀 — 추세추종 (이동평균 돌파)
+      </h3>
+      <p style={{ color: "var(--muted)", marginTop: 0, fontSize: 14 }}>
+        종가가 <b>N일 이동평균</b>을 상향 돌파하면 매수, <b>M영업일</b> 보유 후
+        매도하는 예시 전략의 백테스트를 엑셀로 받습니다. 종목 일봉과 모든 계산식
+        (이동평균·신호·진입·청산·수익률)이 <b>엑셀 함수</b>로 들어가 있어, 열어서
+        직접 확인·수정할 수 있습니다. 별도 <b>거래내역</b> 탭에 실제 거래만 정리됩니다.
+      </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-end" }}>
+        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>종목코드</span>
+          <input
+            value={exSymbol}
+            onChange={(e) => setExSymbol(e.target.value)}
+            placeholder="005930 / AAPL"
+            style={{ width: 120 }}
+          />
+        </label>
+        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>표시 이름</span>
+          <input
+            value={exName}
+            onChange={(e) => setExName(e.target.value)}
+            placeholder="삼성전자"
+            style={{ width: 120 }}
+          />
+        </label>
+        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>이동평균(일)</span>
+          <input
+            type="number" min={2} max={240} value={exMa}
+            onChange={(e) => setExMa(Math.max(2, Math.min(240, Number(e.target.value) || 20)))}
+            style={{ width: 90 }}
+          />
+        </label>
+        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>보유기간(영업일)</span>
+          <input
+            type="number" min={1} max={240} value={exHold}
+            onChange={(e) => setExHold(Math.max(1, Math.min(240, Number(e.target.value) || 20)))}
+            style={{ width: 90 }}
+          />
+        </label>
+        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <span style={{ fontWeight: 600, fontSize: 13 }}>데이터 기간(년)</span>
+          <input
+            type="number" min={1} max={10} value={exYears}
+            onChange={(e) => setExYears(Math.max(1, Math.min(10, Number(e.target.value) || 3)))}
+            style={{ width: 90 }}
+          />
+        </label>
+        <button type="button" onClick={onDownload} disabled={exBusy || !exSymbol.trim()}>
+          {exBusy ? "생성 중…" : "엑셀 다운로드"}
+        </button>
+      </div>
+      {exErr && <div className="error" style={{ marginTop: 10 }}>{exErr}</div>}
     </div>
   );
 }

@@ -239,6 +239,68 @@ def export_backtest_excel(body: BacktestIn,
     )
 
 
+@router.get("/backtest/strategy-example.xlsx")
+def export_strategy_example_excel(
+    symbol: str = Query(..., description="종목 코드 (예: 005930, AAPL)"),
+    name: str = Query("", description="표시 이름(미지정 시 코드 사용)"),
+    ma: int = Query(20, ge=2, le=240, description="이동평균 기간(일)"),
+    hold: int = Query(20, ge=1, le=240, description="보유기간(영업일)"),
+    years: int = Query(3, ge=1, le=10, description="데이터 기간(년)"),
+    user: User = Depends(get_current_user),
+):
+    """예시 전략(N일선 추세추종) 백테스트를 라이브 수식 엑셀로 반환.
+
+    서버 dataset에 의존하지 않는다 — 단일 종목 일봉을 직접 fetch해 엑셀에
+    embed하고, 모든 로직(이동평균·신호·진입·청산·수익률)을 엑셀 함수로 표현.
+    원유선물 엑셀과 동일 패턴. 본 탭=라이브 수식, 거래내역 탭=실거래 정적값.
+    """
+    from datetime import date, timedelta
+
+    import FinanceDataReader as fdr
+    import pandas as pd
+
+    from quant_core.strategy_excel_live import build_strategy_live_excel
+
+    sym = symbol.strip().upper()
+    if not sym:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "종목 코드가 필요합니다.")
+    start = (date.today() - timedelta(days=365 * years + 40)).isoformat()
+    try:
+        raw = fdr.DataReader(sym, start)
+    except Exception as e:  # 외부 데이터 소스 한계 — 호출자에 명확히 전달
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            f"가격 데이터를 가져오지 못했습니다: {e}")
+    if raw is None or raw.empty:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            f"'{symbol}' 가격 데이터를 찾을 수 없습니다.")
+
+    # fdr 인덱스명은 소스별로 다르다(KR='Date', US=None). 첫 컬럼을 날짜로 강제.
+    raw = raw.reset_index()
+    df = raw.rename(columns={raw.columns[0]: "date", "Open": "open",
+                             "High": "high", "Low": "low", "Close": "close"})
+    df = df[["date", "open", "high", "low", "close"]].dropna()
+    df["date"] = pd.to_datetime(df["date"])
+    if len(df) < ma + hold + 5:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "데이터가 전략 기간에 비해 부족합니다.")
+
+    is_kr = symbol.strip().isdigit()
+    currency = "KRW" if is_kr else "USD"
+    disp = (name.strip() or symbol.strip())
+    data = build_strategy_live_excel(
+        df, symbol=disp, name=f"{ma}일선 추세추종",
+        ma_window=ma, hold_days=hold, currency=currency,
+    )
+    safe = disp.replace("/", "_").replace(" ", "_")[:30]
+    return Response(
+        content=data,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="strategy_{safe}.xlsx"'},
+    )
+
+
 @router.get("/backtest/runs", response_model=list[BacktestRunSummary])
 def list_backtest_runs(
     user: User = Depends(get_current_user),
