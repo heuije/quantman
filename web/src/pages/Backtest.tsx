@@ -84,7 +84,8 @@ export default function Backtest() {
   const [btCommissionBps, setBtCommissionBps] = useState(() => loadDraft("btCommissionBps", EXECUTION_DEFAULTS.bt_commission_bps));
   const [btSellTaxBps, setBtSellTaxBps] = useState(() => loadDraft("btSellTaxBps", EXECUTION_DEFAULTS.bt_sell_tax_bps));
   const [btSlippageBps, setBtSlippageBps] = useState(() => loadDraft("btSlippageBps", EXECUTION_DEFAULTS.bt_slippage_bps));
-  const [capital, setCapital] = useState(() => loadDraft("capital", 0));
+  // 초기자본 기본값 1,000만원(백만 단위 round) — CapitalInput이 콤마 표시.
+  const [capital, setCapital] = useState(() => loadDraft("capital", 10_000_000));
   const [backtestStart, setBacktestStart] = useState<string>(() => loadDraft("backtestStart", ""));
   const [backtestEnd, setBacktestEnd] = useState<string>(() => loadDraft("backtestEnd", ""));
   const [forwardDays, setForwardDays] = useState(() => loadDraft("forwardDays", 1));
