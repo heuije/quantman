@@ -259,6 +259,13 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     commission = sim.commission if sim.commission is not None else _DEFAULT_COMMISSION
     slippage = sim.slippage if sim.slippage is not None else _DEFAULT_SLIPPAGE
     sell_tax = sim.sell_tax if sim.sell_tax is not None else _DEFAULT_SELL_TAX
+    # 선물 마진콜 — EOD 자기자본비율(nav/gross)<유지율이면 디레버리지(scheduled _run_scheduled와 동일
+    # 의미·Model A 일관성). port_mr=보유 선물 최소 증거금률(주식만이면 1.0 → 마진콜 무발동),
+    # lev_eff=복원 목표 레버리지. maintenance_margin_pct 미설정이면 None(무발동).
+    lev = float(sim.leverage)
+    port_mr = min((aligned[s]["mr"] for s in syms), default=1.0)
+    lev_eff = lev / port_mr if port_mr > 0 else lev
+    maint = (sim.maintenance_margin_pct / 100.0) if sim.maintenance_margin_pct else None
 
     sz = pos_spec.sizing
     amount_pct = 100.0 if single else sz.amount_pct
@@ -412,6 +419,24 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             else:
                 nav += pos.shares * pos.entry_price * m
         equity[i] = nav
+        # H1: EOD 마진콜 — 자기자본비율(nav/gross)<유지율이면 목표 레버리지로 강제 축소(nav≤0이면 전량
+        # 청산). 보유 경로엔 디레버리지 트리거가 없어 선물 손실이 NAV를 음수로 무한 발산시키던 결함 차단.
+        if maint and positions:
+            gross = 0.0
+            for sym, pos in positions.items():
+                cl = aligned[sym]["close"][i]
+                gross += abs(pos.shares) * (float(cl) if not np.isnan(cl) else last_valid_close[sym]) * aligned[sym]["mult"]
+            if gross > 0 and nav < maint * gross:
+                scale = min(1.0, max(0.0, nav * lev_eff / gross)) if nav > 0 else 0.0
+                for sym in list(positions.keys()):
+                    cl = aligned[sym]["close"][i]
+                    _close(sym, i, float(cl) if not np.isnan(cl) else last_valid_close[sym],
+                           "마진콜", (1.0 - scale) * 100.0)
+                nav = cash
+                for sym, pos in positions.items():
+                    cl = aligned[sym]["close"][i]
+                    nav += pos.shares * (float(cl) if not np.isnan(cl) else last_valid_close[sym]) * aligned[sym]["mult"]
+                equity[i] = nav
         if nav > 0:                                    # end-of-day 비중 기록(기여 패널)
             for sym, pos in positions.items():
                 cl = aligned[sym]["close"][i]

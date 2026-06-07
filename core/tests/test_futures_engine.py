@@ -146,3 +146,41 @@ def test_event_buy_qty_futures_matches_engine():
     assert event_buy_qty(fut, cash=1e7, prev_close=400.0) == 1     # 1e7/(400×250000×0.10)=1계약
     eq = _event_hold("005930")            # 주식: 정수주
     assert event_buy_qty(eq, cash=1e7, prev_close=400.0) == 25000  # 1e7//400
+
+
+# ── H1: event(on_signal) 경로 마진콜 — 선물 손실이 NAV를 음수로 무한 발산시키던 결함 차단 ──
+# 보유 경로엔 디레버리지 트리거가 없어 maintenance_margin_pct가 무시됐다. scheduled는 마진콜로
+# 생존하는데 mode만 on_signal이면 NAV가 −수백%로 파국 — 같은 전략 다른 결과(Model A 깨짐).
+
+_FUT_CRASH = [400.0] * 20 + list(np.linspace(396.0, 340.0, 10))   # -15% 급락(10x → 증거금 초과 손실)
+
+
+def _event_hold_maint(symbol: str, maint=None) -> StrategyIR:
+    cond = Node(op="compare", params={"op": ">"},
+                inputs={"left": data("Close"), "right": const(0)})
+    return StrategyIR(
+        signal=cond, universe=Universe(kind="single", symbols=[symbol]),
+        position=PositionSpec(entry=Entry(mode="on_signal"), exit=Exit()),
+        simulation=SimSpec(initial_capital=1e7, commission=0.0, slippage=0.0,
+                           maintenance_margin_pct=maint))
+
+
+def test_event_futures_margin_call_prevents_nav_blowup():
+    """선물 on_signal 보유가 급락해도 maintenance_margin_pct 설정 시 마진콜로 NAV 음수 발산 차단."""
+    ds = _ds("원유선물", _FUT_CRASH)
+    res = run_strategy_ir(_event_hold_maint("원유선물", maint=8.0), ds)
+    assert res["success"], res.get("error")
+    nav_end = res["equity"].iloc[-1]
+    assert nav_end > 0, f"마진콜에도 NAV 음수 발산: {nav_end:,.0f}"
+    causes = res["trades"]["청산사유"].tolist() if len(res["trades"]) else []
+    assert any("마진콜" in c for c in causes), f"마진콜 미발동: {causes}"
+
+
+def test_event_futures_no_maint_blows_up_isolates_fix():
+    """대조: maintenance_margin_pct 미설정이면 보호 없음 → NAV 음수(보호의 효과를 격리·문서화)."""
+    ds = _ds("원유선물", _FUT_CRASH)
+    unprotected = run_strategy_ir(_event_hold_maint("원유선물", maint=None), ds)
+    protected = run_strategy_ir(_event_hold_maint("원유선물", maint=8.0), ds)
+    assert unprotected["success"] and protected["success"]
+    assert unprotected["equity"].iloc[-1] < 0       # 무보호 = 증거금 초과 손실로 음수
+    assert protected["equity"].iloc[-1] > unprotected["equity"].iloc[-1]   # 마진콜이 손실 확대 차단
