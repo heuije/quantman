@@ -48,7 +48,9 @@ def capability_spec() -> dict:
             "does": "목표 그로스 노출 배수 (sum|비중| = leverage). always와 결합 시 매일 목표노출로 리밸런싱 = 상수 레버리지.",
             "use_for": ("목표 베타 N배 · 레버리지 ETF. funding_cost_pct로 차입비용, "
                         "maintenance_margin_pct로 마진콜 모델. 1 초과는 백테스트 전용(모의/실전 차단). "
-                        "⚠ 선물은 증거금으로 내재 레버리지가 이미 있어 leverage=1이 기본 — 명목 노출을 더 키울 때만 >1."),
+                        "⚠ scheduled·always 전용 — on_signal(이벤트)은 leverage를 무시한다(sizing_note 참조). "
+                        "선물은 증거금으로 내재 레버리지가 이미 있어 leverage=1이 기본 — scheduled·always에서 "
+                        "명목 노출을 더 키울 때만 >1(on_signal 선물은 증거금 내재 레버리지만 적용)."),
         },
         "sizing_mode": [
             {"value": "equal_weight", "does": "보유 종목 동일가중(scheduled·always 경로). 단일 종목이면 100%.",

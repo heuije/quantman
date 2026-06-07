@@ -226,7 +226,7 @@ def _overlays(ov: Overlays) -> dict:
 
 
 # ── ⑦ 체결·비용 가정 (가장 보이지 않던 silent 기본값) ────────────────────────
-def _execution(sim: SimSpec) -> dict:
+def _execution(sim: SimSpec, u: Universe) -> dict:
     items = []
     items.append(_it("체결 시점",
                      {"next_open": "신호 다음 거래일 시가", "close": "당일 종가",
@@ -240,9 +240,18 @@ def _execution(sim: SimSpec) -> dict:
     slip = sim.slippage if sim.slippage is not None else DEFAULT_EXECUTION["bt_slippage_bps"] / 10_000.0
     items.append(_it("슬리피지", f"편도 {_frac_pct(slip)}",
                      _SET if sim.slippage is not None else _DEF, "체결가 불리 가정."))
+    # 매도세(증권거래세)는 주식 매도에만 — 선물은 면제(엔진 stx=0). 유니버스 자산클래스에 맞춰 표기.
     tax = sim.sell_tax if sim.sell_tax is not None else DEFAULT_EXECUTION["bt_sell_tax_bps"] / 10_000.0
-    items.append(_it("매도세", _frac_pct(tax),
-                     _SET if sim.sell_tax is not None else _DEF, "거래세+농특세, 매도 시에만."))
+    _fut_n = sum(1 for x in u.symbols if is_futures(x))
+    if u.symbols and _fut_n == len(u.symbols):
+        items.append(_it("매도세", "면제 (선물)", _DEF, "선물은 증권거래세 없음 — 백테스트도 미부과."))
+    elif _fut_n:                                   # 주식+선물 혼합
+        items.append(_it("매도세", f"{_frac_pct(tax)} (주식 다리만)",
+                         _SET if sim.sell_tax is not None else _DEF,
+                         "거래세+농특세, 주식 매도 시에만 — 선물 다리는 면제."))
+    else:
+        items.append(_it("매도세", _frac_pct(tax),
+                         _SET if sim.sell_tax is not None else _DEF, "거래세+농특세, 매도 시에만."))
     if sim.short_borrow_pct is not None:
         items.append(_it("공매도 차입비용", f"연 {_pct(sim.short_borrow_pct)}", _SET))
     if sim.funding_cost_pct is not None:
@@ -396,7 +405,7 @@ def explain_ir(ir: StrategyIR, assumptions: list[str] | None = None) -> dict:
         _sizing(pos, sim),
         _exit(pos),
         _overlays(pos.overlays),
-        _execution(sim),
+        _execution(sim, ir.universe),
         _environment(sim, ir.universe),
     ]
     analysis = _analysis(ir.sweep)
