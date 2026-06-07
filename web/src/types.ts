@@ -279,20 +279,24 @@ export interface IrStrategyDef {
     leverage?: number;
     short_borrow_pct?: number | null; funding_cost_pct?: number | null; rfr_pct?: number | null;
     maintenance_margin_pct?: number | null;    // 레버리지 마진콜 유지증거금률(%)
-    start?: string | null; end?: string | null; period_split?: string;
-    split_dates?: string[];                    // G6 — 명시 분할 시점(워크포워드)
+    start?: string | null; end?: string | null;
   };
-  sweep: {
-    axis: "none" | "condition" | "parameter" | "asset" | "time";
-    target?: "return" | "signal" | "relation"; // G7·G2 — 분석 대상
-    target_node?: IrNode | null;               // signal/relation 분석 노드
-    relation_kind?: string;
-    label?: IrNode | null;
+  // 조사형 쿼리 — query(동사) × study(축 × 환원). 옛 sweep+period_split을 흡수.
+  // describe=신호값 분포, relate=이벤트/IC, simulate=백테스트(+축별 펼침·기간분할).
+  query?: "describe" | "relate" | "simulate";
+  study?: {
+    axis?: "none" | "parameter" | "entity" | "label" | "time_fold";
+    reduction?: "enumerate" | "contrast" | "consistency";
     param_grid?: { path: string; values: (number | string)[] }[];
-    assets?: string[];
-    event?: IrNode | null;
-    windows?: number[];
-    event_basis?: string;
+    assets?: string[];                         // axis=entity
+    label?: IrNode | null;                     // 국면 라벨 블록(축 또는 조건 분할)
+    folds?: number;                            // axis=time_fold — 균등 분할 수
+    split_dates?: string[];                    // axis=time_fold — 명시 분할 시점(워크포워드)
+    target_node?: IrNode | null;               // describe/relate 분석 노드
+    relation_kind?: "ic";                      // relate — 횡단 IC
+    event?: IrNode | null;                     // relate(이벤트) — 별도 이벤트 조건
+    windows?: number[];                        // relate — forward/예측 윈도우
+    event_basis?: "close" | "intraday" | "excess";
   };
 }
 
@@ -337,6 +341,8 @@ export interface IrICStat {
 export interface IrStrategyResult extends BacktestResult {
   warnings?: IrIssue[];
   issues?: IrIssue[];
+  // 결과 dict의 axis는 백엔드가 옛 라벨을 parity로 유지한다(요청의 study.axis 신값과
+  // 다를 수 있음 — 예: study.axis="entity" 요청 → 결과 axis="asset"). 표시 전용.
   axis?: "condition" | "parameter" | "asset" | "time" | "period_split" | "signal" | "relation";
   buckets?: Record<string, IrSweepBucket>;
   overall?: IrSweepBucket | Record<string, IrEventStat> | IrDistribution;
@@ -345,7 +351,7 @@ export interface IrStrategyResult extends BacktestResult {
   by_window?: Record<string, { overall: IrICStat; by_regime?: IrPartition | null }>;
   // parameter축 격자 메타 (다축 Cartesian) — 갭 B
   axes?: { path: string; values: (number | string)[] }[];
-  // period_split 일관성
+  // time_fold(기간분할) 일관성 — study.reduction="consistency" 결과
   consistency?: { n_folds: number; positive_folds: number; consistency: number };
   // condition축 유의성 (A1)
   compare?: { pairwise?: Record<string, IrPairTest> };

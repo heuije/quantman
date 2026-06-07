@@ -81,9 +81,13 @@ function numOrEmpty(v: number | null | undefined): number | "" {
 }
 
 // 분석 유형 — 펼침 축(condition/parameter/asset/time) + 신호값(signal)·IC(relation)·기간분할(period).
-// 평면 단일 드롭다운으로 노출. signal/relation은 sweep.target, period는 simulation.period_split로 매핑.
+// 평면 단일 드롭다운으로 노출. query(동사: describe/relate/simulate) + study(축×환원)로 매핑.
+// (asset→entity, condition→label, period→time_fold, signal→describe, relation/time→relate.)
 type AnalysisType = "none" | "condition" | "parameter" | "asset" | "time"
   | "signal" | "relation" | "period";
+
+// 기간분할 스킴 → time_fold 기본 fold 수(split_dates 미지정 시). 옛 period_split 스킴의 UI 표현.
+const SPLIT_FOLDS: Record<string, number> = { oos: 2, walk_forward: 4, kfold: 5 };
 
 export default function IrBuilder() {
   const [catalogList, setCatalogList] = useState<IrBlockSpec[]>([]);
@@ -290,7 +294,6 @@ export default function IrBuilder() {
     setDelay(sim.delay ?? 1);
     setFill(sim.fill ?? "next_open");
     setLeverage(sim.leverage ?? 1);
-    setPeriodSplit(sim.period_split ?? "single");
     setStartDate(sim.start ?? "");
     setEndDate(sim.end ?? "");
     setCommission(numOrEmpty(sim.commission));
@@ -300,25 +303,37 @@ export default function IrBuilder() {
     setFunding(numOrEmpty(sim.funding_cost_pct));
     setRfr(numOrEmpty(sim.rfr_pct));
     setMaintMargin(numOrEmpty(sim.maintenance_margin_pct));
-    // 분석 (펼침 + 신호값/IC/기간분할) — target·period를 평면 analysisType로 역매핑.
-    const sw = def.sweep ?? { axis: "none" };
-    const tgt = sw.target ?? "return";
-    const hasPeriod = (sim.period_split && sim.period_split !== "single")
-      || (sim.split_dates?.length ?? 0) > 0;
-    setSweepAxis(tgt === "signal" ? "signal" : tgt === "relation" ? "relation"
-      : hasPeriod ? "period" : (sw.axis ?? "none"));
-    setTargetNode(sw.target_node ?? null);
-    setSplitDates((sim.split_dates ?? []).join(", "));
-    if (sw.param_grid?.length) {
-      setParamAxes(sw.param_grid.map((ax) => ({
+    // 분석 — query(동사) + study(축×환원)를 평면 analysisType로 역매핑.
+    // describe→signal, relate→(relation_kind=ic ? relation : time),
+    // simulate→study.axis(parameter/entity→asset/label→condition/time_fold→period/none→none).
+    const query = def.query ?? "simulate";
+    const st = def.study ?? {};
+    const axis = st.axis ?? "none";
+    setSweepAxis(
+      query === "describe" ? "signal"
+      : query === "relate" ? (st.relation_kind === "ic" ? "relation" : "time")
+      : axis === "parameter" ? "parameter"
+      : axis === "entity" ? "asset"
+      : axis === "label" ? "condition"
+      : axis === "time_fold" ? "period"
+      : "none");
+    setTargetNode(st.target_node ?? null);
+    setSplitDates((st.split_dates ?? []).join(", "));
+    // folds → 스킴 드롭다운 역매핑(2→oos·4→walk_forward·5→kfold), 그 외엔 oos.
+    if (st.folds != null) {
+      const scheme = Object.entries(SPLIT_FOLDS).find(([, n]) => n === st.folds)?.[0];
+      setPeriodSplit(scheme ?? "oos");
+    }
+    if (st.param_grid?.length) {
+      setParamAxes(st.param_grid.map((ax) => ({
         path: ax.path, values: (ax.values ?? []).join(", "),
       })));
     }
-    setSweepAssets((sw.assets ?? []).join(", "));
-    setSweepLabel(sw.label ?? null);
-    setSweepEvent(sw.event ?? null);
-    if (sw.windows?.length) setSweepWindows(sw.windows.join(", "));
-    setEventBasis(sw.event_basis ?? "close");
+    setSweepAssets((st.assets ?? []).join(", "));
+    setSweepLabel(st.label ?? null);
+    setSweepEvent(st.event ?? null);
+    if (st.windows?.length) setSweepWindows(st.windows.join(", "));
+    setEventBasis(st.event_basis ?? "close");
   }
 
   // 지표 메타는 전역(컬럼별·종목 무관) — /symbols의 indicator_catalog 1회 수신분 사용.
@@ -330,16 +345,11 @@ export default function IrBuilder() {
 
   function buildStrategy(): Record<string, unknown> {
     const syms = universeSymbols.split(",").map((s) => s.trim()).filter(Boolean);
-    const sweep = buildSweep();
+    const { query, study } = buildQuery();
     const sim: Record<string, unknown> = {
       initial_capital: capital, delay, fill, leverage,
-      // 기간분할은 분석 유형이 'period'일 때만 — 그 외엔 single(엔진 라우팅·검증 일관).
-      period_split: sweepAxis === "period" ? (periodSplit === "single" ? "oos" : periodSplit) : "single",
       start: startDate || null, end: endDate || null,
     };
-    if (sweepAxis === "period" && splitDates.trim()) {
-      sim.split_dates = splitDates.split(",").map((s) => s.trim()).filter(Boolean);
-    }
     if (commission !== "") sim.commission = commission;
     if (slippage !== "") sim.slippage = slippage;
     if (sellTax !== "") sim.sell_tax = sellTax;
@@ -403,42 +413,81 @@ export default function IrBuilder() {
       signal,
       position: { direction, sizing, entry, exit, overlays },
       simulation: sim,
-      sweep,
+      query,
+      ...(study ? { study } : {}),
     };
   }
 
-  function buildSweep(): Record<string, unknown> {
+  // 평면 분석 유형 → 조사형 query(동사) + study(축×환원). 옛 buildSweep/period_split 대체.
+  // 매핑: asset→entity, condition→label, period→time_fold, signal→describe, relation/time→relate.
+  function buildQuery(): { query: "describe" | "relate" | "simulate";
+                           study?: Record<string, unknown> } {
     if (sweepAxis === "parameter") {
       return {
-        axis: "parameter",
-        param_grid: paramAxes
-          .map((ax) => ({
-            path: ax.path.trim(),
-            values: ax.values.split(",").map((x) => Number(x.trim())).filter((n) => !Number.isNaN(n)),
-          }))
-          .filter((ax) => ax.path && ax.values.length),
+        query: "simulate",
+        study: {
+          axis: "parameter", reduction: "contrast",
+          param_grid: paramAxes
+            .map((ax) => ({
+              path: ax.path.trim(),
+              values: ax.values.split(",").map((x) => Number(x.trim())).filter((n) => !Number.isNaN(n)),
+            }))
+            .filter((ax) => ax.path && ax.values.length),
+        },
       };
     }
     if (sweepAxis === "asset") {
-      return { axis: "asset", assets: sweepAssets.split(",").map((s) => s.trim()).filter(Boolean) };
-    }
-    if (sweepAxis === "time") {
       return {
-        axis: "time", label: sweepLabel, event: sweepEvent, event_basis: eventBasis,
-        windows: parseWindows(),
+        query: "simulate",
+        study: {
+          axis: "entity", reduction: "contrast",
+          assets: sweepAssets.split(",").map((s) => s.trim()).filter(Boolean),
+        },
       };
     }
-    if (sweepAxis === "condition") return { axis: "condition", label: sweepLabel };
-    // 신호값 분포 — 임의 score 노드의 값 분포를 (선택)국면별로. axis=none.
+    if (sweepAxis === "time") {
+      // 이벤트 스터디 — forward 수익 분포(P&L 아님). axis=none, query=relate.
+      return {
+        query: "relate",
+        study: {
+          axis: "none", label: sweepLabel, event: sweepEvent,
+          event_basis: eventBasis, windows: parseWindows(),
+        },
+      };
+    }
+    if (sweepAxis === "condition") {
+      return { query: "simulate", study: { axis: "label", reduction: "contrast", label: sweepLabel } };
+    }
+    // 신호값 분포 — 임의 score 노드의 값 분포를 (선택)국면별로. 국면 블록 있으면 axis=label.
     if (sweepAxis === "signal") {
-      return { axis: "none", target: "signal", target_node: targetNode, label: sweepLabel };
+      return {
+        query: "describe",
+        study: { axis: sweepLabel ? "label" : "none", target_node: targetNode, label: sweepLabel },
+      };
     }
-    // 횡단 IC — factor와 forward수익의 예측력. windows=forward 일수.
+    // 횡단 IC — factor와 forward수익의 예측력. windows=forward 일수, relation_kind=ic.
     if (sweepAxis === "relation") {
-      return { axis: "none", target: "relation", target_node: targetNode,
-               label: sweepLabel, windows: parseWindows() };
+      return {
+        query: "relate",
+        study: {
+          axis: "none", relation_kind: "ic", target_node: targetNode,
+          label: sweepLabel, windows: parseWindows(),
+        },
+      };
     }
-    return { axis: "none" };   // none·period(기간분할은 simulation.period_split로 처리)
+    // 기간 분할 / 워크포워드 — time_fold × consistency. 명시 split_dates 우선, 없으면 folds.
+    // 백엔드는 분할 스킴(oos/wf/kfold)을 fold 수 + consistency 환원으로 흡수했으므로,
+    // 스킴 드롭다운은 folds 기본값에 대한 UI 표현으로 매핑(oos=2·walk_forward=4·kfold=5).
+    if (sweepAxis === "period") {
+      const study: Record<string, unknown> = {
+        axis: "time_fold", reduction: "consistency",
+      };
+      const dates = splitDates.split(",").map((s) => s.trim()).filter(Boolean);
+      if (dates.length) study.split_dates = dates;
+      else study.folds = SPLIT_FOLDS[periodSplit] ?? 2;
+      return { query: "simulate", study };
+    }
+    return { query: "simulate" };   // none — 단일 백테스트(study 없음)
   }
 
   function parseWindows(): number[] {
