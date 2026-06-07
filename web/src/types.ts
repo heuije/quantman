@@ -489,6 +489,7 @@ export interface PortfolioRisk {
 }
 
 // ── 대시보드 탭 — 개별 종목 on-demand 조회 ──────────────────────────────────
+export interface SymbolListing { symbol: string; name: string; market: string }
 export interface SymbolPoint {
   date: string;
   open: number | null; high: number | null; low: number | null; close: number | null;

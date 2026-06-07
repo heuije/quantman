@@ -4,10 +4,12 @@ import {
   ResponsiveContainer, ReferenceLine, CartesianGrid, Legend,
 } from "recharts";
 import { api } from "../api";
-import type { SymbolDetail } from "../types";
+import type { SymbolDetail, SymbolListing } from "../types";
 
 const RANGES: [string, string][] = [
-  ["3m", "3개월"], ["6m", "6개월"], ["1y", "1년"], ["2y", "2년"], ["5y", "5년"],
+  ["1m", "1개월"], ["3m", "3개월"], ["6m", "6개월"], ["12m", "12개월"], ["1y", "1년"],
+  ["3y", "3년"], ["5y", "5년"], ["10y", "10년"], ["15y", "15년"],
+  ["20y", "20년"], ["25y", "25년"], ["30y", "30년"],
 ];
 const UP = "#de3033", DOWN = "#1f6feb", ACCENT = "#d97757";
 
@@ -18,6 +20,7 @@ export default function StockDashboard() {
   const [data, setData] = useState<SymbolDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [listings, setListings] = useState<SymbolListing[]>([]);
 
   async function load(sym: string, rng: string) {
     const s = sym.trim();
@@ -30,8 +33,18 @@ export default function StockDashboard() {
     finally { setBusy(false); }
   }
 
-  // 첫 진입 시 예시 종목 1회 로드
-  useEffect(() => { load("005930", "1y"); /* eslint-disable-line */ }, []);
+  // 첫 진입 시 예시 종목 1회 로드 + 전종목 목록(검색/드롭다운)
+  useEffect(() => {
+    load("005930", "1y");
+    api.marketListings().then((r) => setListings(r.listings)).catch(() => {});
+    /* eslint-disable-line */
+  }, []);
+
+  // 입력 기반 자동완성 — 코드·이름 부분일치 상위 50개 (전종목 1만개 전체 렌더 회피)
+  const q = input.trim().toUpperCase();
+  const matches = q.length >= 1
+    ? listings.filter((l) => l.symbol.includes(q) || l.name.toUpperCase().includes(q)).slice(0, 50)
+    : [];
 
   const isKR = data?.currency === "KRW";
   const fmtP = (v: number | null | undefined) =>
@@ -54,15 +67,24 @@ export default function StockDashboard() {
       <div className="panel" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <input
           value={input}
+          list="symbol-list"
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") load(input, range); }}
-          placeholder="005930 / AAPL / SPY"
-          aria-label="종목 코드"
-          style={{ width: 200 }}
+          placeholder="종목명·코드 검색 (삼성전자 / 005930 / AAPL)"
+          aria-label="종목 검색"
+          style={{ width: 280 }}
         />
+        <datalist id="symbol-list">
+          {matches.map((l) => (
+            <option key={l.symbol} value={l.symbol}>{l.name} · {l.market}</option>
+          ))}
+        </datalist>
         <button onClick={() => load(input, range)} disabled={busy}>
           {busy ? "조회 중…" : "조회"}
         </button>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>
+          {listings.length ? `${listings.length.toLocaleString()}종목` : ""}
+        </span>
         <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
           {RANGES.map(([v, lbl]) => (
             <button key={v} type="button" className={range === v ? "" : "ghost"}

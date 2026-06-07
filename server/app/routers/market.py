@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,6 +19,7 @@ from ..deps import get_current_user
 from ..models import User
 
 router = APIRouter(prefix="/market", tags=["market"])
+_log = logging.getLogger("app.market")
 
 
 # 표시할 시장 지표 (라벨, dataset 심볼 후보들)
@@ -71,7 +74,55 @@ def market_context(user: User = Depends(get_current_user)):
     }
 
 
-_RANGE_DAYS = {"3m": 130, "6m": 260, "1y": 400, "2y": 760, "5y": 1850}
+_RANGE_DAYS = {
+    "1m": 30, "3m": 95, "6m": 190, "12m": 380, "1y": 380,
+    "3y": 1120, "5y": 1850, "10y": 3700, "15y": 5550,
+    "20y": 7400, "25y": 9250, "30y": 11100,
+}
+
+
+@lru_cache(maxsize=2)
+def _all_listings_cached(_day: str) -> list[dict]:
+    """한국(KRX)+미국(NASDAQ/NYSE/AMEX) 전종목 목록 — fdr on-demand, 일 1회 캐시.
+
+    _day(오늘 날짜)를 키로 lru_cache → 같은 날은 1회만 fetch(수천~만 종목).
+    개별 시장 실패는 skip(부분 제공). 서버 dataset 미의존.
+    """
+    import FinanceDataReader as fdr
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(sym, name, market):
+        s = str(sym).strip().upper()
+        n = str(name).strip()
+        if s and n and s not in seen:
+            seen.add(s)
+            out.append({"symbol": s, "name": n, "market": market})
+
+    try:
+        kr = fdr.StockListing("KRX")
+        mk = kr["Market"] if "Market" in kr.columns else [""] * len(kr)
+        for code, name, market in zip(kr["Code"], kr["Name"], mk):
+            _add(code, name, market or "KRX")
+    except Exception as e:  # 외부 소스 한계 — 부분 제공
+        _log.warning("KRX listing 실패: %s", e)
+
+    for m in ("NASDAQ", "NYSE", "AMEX"):
+        try:
+            us = fdr.StockListing(m)
+            for sym, name in zip(us["Symbol"], us["Name"]):
+                _add(sym, name, m)
+        except Exception as e:
+            _log.warning("%s listing 실패: %s", m, e)
+
+    return out
+
+
+@router.get("/listings")
+def market_listings(user: User = Depends(get_current_user)):
+    """전종목(한국+미국) 검색·드롭다운용 목록. {symbol, name, market}."""
+    from datetime import date
+    return {"listings": _all_listings_cached(date.today().isoformat())}
 
 
 @router.get("/symbol/{symbol}")
