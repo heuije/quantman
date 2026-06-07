@@ -488,6 +488,56 @@ export interface PortfolioRisk {
   window: number;
 }
 
+// ── 대시보드 탭 — 개별 종목 on-demand 조회 ──────────────────────────────────
+export interface SymbolPoint {
+  date: string;
+  open: number | null; high: number | null; low: number | null; close: number | null;
+  volume: number | null; rsi_14: number | null;
+  ma20: number | null; ma60: number | null; ma200: number | null;
+}
+export interface SymbolDetail {
+  symbol: string; currency: string; range: string;
+  last: {
+    date: string; close: number | null; change_pct: number | null;
+    rsi_14: number | null; volume: number | null;
+    ma20: number | null; ma60: number | null;
+    high_52w: number | null; low_52w: number | null;
+  };
+  series: SymbolPoint[];
+}
+
+// ── 포트폴리오 탭 — 현재 vs 예상 비교 분석 ──────────────────────────────────
+export interface PositionInput { symbol: string; weight: number }
+export interface PortfolioInput { label: string; positions: PositionInput[] }
+export interface PortfolioAnalyzeIn {
+  current?: PortfolioInput | null;
+  proposed?: PortfolioInput | null;
+  benchmark?: string;
+  years?: number;
+}
+export interface EquityPoint { date: string; value: number }
+export interface PortfolioLeg {
+  label: string;
+  symbols: string[];
+  weights: Record<string, number>;
+  metrics: {
+    cagr: number | null; vol: number | null; sharpe: number | null;
+    mdd: number | null; cum_return: number | null; var_95: number | null;
+    beta: number | null; excess_return: number | null;
+  };
+  equity: EquityPoint[];
+  benchmark_equity: EquityPoint[] | null;
+}
+export interface PortfolioAnalysis {
+  benchmark: string; years: number;
+  current: PortfolioLeg | null;
+  proposed: PortfolioLeg | null;
+}
+export interface PortfolioHoldings {
+  linked: boolean;
+  positions: { symbol: string; weight: number }[];
+}
+
 export interface UserSettingsIO {
   alert_webhook_url: string;
   alert_on_killswitch: boolean;

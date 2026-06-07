@@ -11,6 +11,8 @@ import Pair from "./pages/Pair";
 import Settings from "./pages/Settings";
 import Legal from "./pages/Legal";
 import FuturesAnalytics from "./pages/FuturesAnalytics";
+import StockDashboard from "./pages/StockDashboard";
+import Portfolio from "./pages/Portfolio";
 
 export default function App() {
   const { email, ready } = useAuth();
@@ -33,6 +35,8 @@ export default function App() {
     <Layout>
       <Routes>
         <Route path="/" element={<Dashboard />} />
+        <Route path="/dashboard" element={<StockDashboard />} />
+        <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/lab" element={<IrBuilder />} />
         <Route path="/strategies" element={<Strategies />} />
         <Route path="/strategies/:id" element={<StrategyDetail />} />

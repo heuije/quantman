@@ -152,6 +152,33 @@ def analyze_portfolio(body: AnalyzeIn, user: User = Depends(get_current_user)):
             "current": current, "proposed": proposed}
 
 
+@router.get("/holdings")
+def portfolio_holdings(user: User = Depends(get_current_user),
+                       session: Session = Depends(get_session)):
+    """증권사 연동(로컬앱 sync) 보유 종목을 평가금액 비중(%)으로 반환.
+
+    미연동(스냅샷 없음)이면 linked=False — 프론트는 현재 포트폴리오를 수동
+    입력하도록 한다. 연동 시 이 보유를 '현재 포트폴리오'로 자동 채운다.
+    """
+    snap = session.exec(
+        select(SyncSnapshot)
+        .where(SyncSnapshot.user_id == user.id)
+        .order_by(SyncSnapshot.received_at.desc())
+    ).first()
+    if snap is None:
+        return {"linked": False, "positions": []}
+    positions = (snap.payload or {}).get("positions") or []
+    rows = []
+    for p in positions:
+        sym = p.get("symbol")
+        amt = float(p.get("eval_price", 0) or 0) * float(p.get("qty", 0) or 0)
+        if sym and amt > 0:
+            rows.append((sym, amt))
+    total = sum(a for _, a in rows) or 1.0
+    out = [{"symbol": s, "weight": round(a / total * 100, 2)} for s, a in rows]
+    return {"linked": True, "positions": out}
+
+
 @router.get("/risk")
 def portfolio_risk(window: int = 60,
                    user: User = Depends(get_current_user),
