@@ -191,6 +191,54 @@ def run_backtest(body: BacktestIn,
     return payload
 
 
+@router.post("/backtest/export.xlsx")
+def export_backtest_excel(body: BacktestIn,
+                          user: User = Depends(get_current_user)):
+    """현재 전략의 백테스트를 실행해 결과 + 회귀분석을 엑셀(.xlsx)로 반환.
+
+    /backtest/run 과 동일한 입력. 결과 dict를 build_strategy_excel로 변환.
+    """
+    from quant_core.strategy_excel import build_strategy_excel
+    try:
+        strategy = qc.Strategy(**body.strategy)
+    except ValidationError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"전략 정의 오류: {e.errors()[0]['msg']}")
+    # screener preset resolve (/backtest/run 과 동일)
+    ts = strategy.trade_symbol or ""
+    if ts.startswith("screener:") and not strategy.screener_spec:
+        key = ts[len("screener:"):]
+        from ..screener import PRESETS
+        preset = PRESETS.get(key)
+        if preset and isinstance(preset.get("spec"), dict):
+            strategy = strategy.model_copy(update={"screener_spec": preset["spec"]})
+
+    result = qc.run_strategy_backtest(
+        strategy, get_dataset(),
+        initial_capital=body.initial_capital,
+        start=body.start, end=body.end,
+    )
+    if not result.get("success"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            result.get("error") or "백테스트 실패")
+
+    data = build_strategy_excel(
+        result,
+        strategy_name=strategy.name or "전략",
+        symbol=strategy.trade_symbol or "",
+        initial_capital=body.initial_capital,
+        start=body.start, end=body.end,
+    )
+    safe = (strategy.name or "strategy").replace("/", "_").replace(" ", "_")[:30]
+    return Response(
+        content=data,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="backtest_{safe}.xlsx"'},
+    )
+
+
 @router.get("/backtest/runs", response_model=list[BacktestRunSummary])
 def list_backtest_runs(
     user: User = Depends(get_current_user),

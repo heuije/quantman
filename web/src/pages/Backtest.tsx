@@ -276,6 +276,17 @@ export default function Backtest() {
     finally { setBusy(""); }
   }
 
+  // 현재 전략 백테스트를 엑셀(회귀분석 포함)로 다운로드.
+  async function exportExcel() {
+    setErr("");
+    try {
+      await api.exportBacktestExcel(
+        buildDef(), capital,
+        backtestStart || undefined, backtestEnd || undefined,
+      );
+    } catch (e) { setErr((e as Error).message); }
+  }
+
   function resetStrategy() {
     if (!window.confirm("작성 중인 전략을 초기화할까요?\n저장 안 된 모든 변경이 사라집니다.")) return;
     localStorage.removeItem(DRAFT_KEY);
@@ -361,6 +372,7 @@ export default function Backtest() {
           busy={busy}
           onDraft={() => save("draft")}
           onApply={() => save("paper")}
+          onExportExcel={exportExcel}
           saveMsg={saveMsg}
         />
       )}
@@ -1496,7 +1508,7 @@ function ScreenerPickerModal({
 // ── 탭 2: 결과 리포트 ─────────────────────────────────────────────────────────
 
 function InlineResult({
-  backtest, metrics, name, busy, onDraft, onApply, saveMsg,
+  backtest, metrics, name, busy, onDraft, onApply, onExportExcel, saveMsg,
 }: {
   backtest: BacktestResult;
   metrics: Record<string, number | null> | undefined;
@@ -1504,8 +1516,14 @@ function InlineResult({
   busy: string;
   onDraft: () => void;
   onApply: () => void;
+  onExportExcel: () => void | Promise<void>;
   saveMsg: string;
 }) {
+  const [exporting, setExporting] = useState(false);
+  async function handleExport() {
+    setExporting(true);
+    try { await onExportExcel(); } finally { setExporting(false); }
+  }
   if (!backtest.success || !metrics) {
     return <div className="error">{backtest.error}</div>;
   }
@@ -1525,7 +1543,12 @@ function InlineResult({
 
   return (
     <div className="panel">
-      <h3>'{name}' 백테스트 결과</h3>
+      <div className="section-title-row">
+        <h3>'{name}' 백테스트 결과</h3>
+        <button className="excel-download-btn" onClick={handleExport} disabled={exporting}>
+          {exporting ? "엑셀 생성 중…" : "⬇ 엑셀 다운로드 (회귀분석 포함)"}
+        </button>
+      </div>
       {/* Phase 48 — NFA 2-29 수준 가정적 수익률 disclaimer (동일 prominence) */}
       <div className="hypothetical-banner">
         <strong>⚠ 가정적(Hypothetical) 결과 — 실제 매매가 아닙니다</strong>

@@ -88,6 +88,34 @@ export const api = {
         strategy, initial_capital, start, end, strategy_id, version_no,
       }),
     }),
+
+  /** 현재 전략 백테스트를 엑셀(.xlsx, 회귀분석 포함)로 다운로드. 인증 POST → blob. */
+  exportBacktestExcel: async (
+    strategy: StrategyDef, initial_capital: number,
+    start?: string, end?: string,
+  ) => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const t = tokenStore.get();
+    if (t) headers["Authorization"] = `Bearer ${t}`;
+    const res = await fetch(BASE + "/backtest/export.xlsx", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ strategy, initial_capital, start, end }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const fname = m ? m[1] : "backtest.xlsx";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  },
   runAnalysis: (body: {
     conditions: unknown[]; logic: string; target_symbol: string;
     target_indicator: string; forward_days: number; lookback_years?: number | null;
