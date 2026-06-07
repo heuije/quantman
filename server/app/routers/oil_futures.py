@@ -23,7 +23,7 @@ from typing import Literal, Optional
 
 import pandas as pd
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from quant_core.oil_futures import (
@@ -299,6 +299,33 @@ def data_info():
         end_date=str(df["date"].iloc[-1].date()),
         price_min=float(df["close"].min()),
         price_max=float(df["close"].max()),
+    )
+
+
+@router.get("/export.xlsx")
+def export_excel(
+    side: Literal["short", "long"] = "short",
+    threshold: float = 100.0,
+    horizon_days: int = 120,
+    roll_cost_pct: float = 0.0,
+):
+    """현재 분석 로직을 라이브 수식 엑셀(.xlsx)로 다운로드.
+
+    입력칸(방향/임계값/보유기간/롤비용)은 쿼리 파라미터 초기값으로 채워지고,
+    엑셀에서 그 칸을 바꾸면 전체가 재계산된다.
+    """
+    from quant_core.oil_futures.excel_export import build_oil_excel
+    data = build_oil_excel(
+        _df(), side=side, threshold=threshold,
+        horizon_days=horizon_days, roll_cost_pct=roll_cost_pct,
+    )
+    fname = f"WTI_{side}_{threshold:g}_{horizon_days}D.xlsx"
+    return Response(
+        content=data,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
 
 

@@ -2487,3 +2487,18 @@ thead th { color: var(--muted); font-weight: 600; }
 .roll-quick { display: inline-flex; gap: 6px; }
 .roll-quick .ghost { padding: 3px 8px; font-size: 11px; }
 .roll-help { font-size: 11px; line-height: 1.5; margin-top: 6px; flex-basis: 100%; }
+
+/* 섹션 제목 + 다운로드 버튼 한 줄 배치 */
+.section-title-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+.section-title-row .section-title { margin-bottom: 0; }
+.excel-download-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; font-size: 13px; font-weight: 600;
+  background: var(--green, #15803d); color: #fff !important;
+  border-radius: 6px; text-decoration: none; white-space: nowrap;
+  transition: opacity 0.15s;
+}
+.excel-download-btn:hover { opacity: 0.88; }

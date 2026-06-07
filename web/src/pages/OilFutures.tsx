@@ -26,6 +26,7 @@ import {
   YAxis,
 } from "recharts";
 import {
+  API_BASE,
   oilApi,
   type OilBacktest,
   type OilDataInfo,
@@ -326,9 +327,24 @@ export default function OilFutures() {
 
       {/* ③ 백테스트 상세 (조합 순위표보다 먼저) */}
       <section className="panel" style={{ marginBottom: 16 }}>
-        <h2 className="section-title">
-          BACKTEST DETAIL · 백테스트 상세 {selected && <span className="title-tag">{selected.side.toUpperCase()} ${selected.threshold} × {selected.horizon}D</span>}
-        </h2>
+        <div className="section-title-row">
+          <h2 className="section-title">
+            BACKTEST DETAIL · 백테스트 상세 {selected && <span className="title-tag">{selected.side.toUpperCase()} ${selected.threshold} × {selected.horizon}D</span>}
+          </h2>
+          {selected && (
+            <a
+              className="excel-download-btn"
+              href={
+                `${API_BASE}/oil-futures/export.xlsx` +
+                `?side=${selected.side}&threshold=${selected.threshold}` +
+                `&horizon_days=${selected.horizon}` +
+                `&roll_cost_pct=${rollCost === "" ? 0 : rollCost / 100}`
+              }
+            >
+              ⬇ 엑셀 다운로드 (수식 연결)
+            </a>
+          )}
+        </div>
 
         {/* 🅒 SL/TP 시뮬레이터 */}
         <div className="oil-toolbar sltp-toolbar">

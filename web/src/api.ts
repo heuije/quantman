@@ -9,6 +9,9 @@ import type {
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const TOKEN_KEY = "qp_token";
 
+/** API 베이스 URL (파일 다운로드 등 fetch 외 직접 링크용) */
+export const API_BASE = BASE;
+
 export const tokenStore = {
   get: () => localStorage.getItem(TOKEN_KEY),
   set: (t: string) => localStorage.setItem(TOKEN_KEY, t),
