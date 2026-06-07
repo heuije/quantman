@@ -490,11 +490,19 @@ export interface PortfolioRisk {
 
 // ── 대시보드 탭 — 개별 종목 on-demand 조회 ──────────────────────────────────
 export interface SymbolListing { symbol: string; name: string; market: string }
+export interface IndicatorSpec {
+  key: string; label: string; pane: "price" | "sub"; fields?: string[];
+}
 export interface SymbolPoint {
   date: string;
   open: number | null; high: number | null; low: number | null; close: number | null;
-  volume: number | null; rsi_14: number | null;
-  ma20: number | null; ma60: number | null; ma200: number | null;
+  volume: number | null; chg_pct: number | null;
+  ma5: number | null; ma20: number | null; ma60: number | null; ma120: number | null;
+  bb_upper: number | null; bb_mid: number | null; bb_lower: number | null;
+  rsi_14: number | null;
+  macd: number | null; macd_signal: number | null; macd_hist: number | null;
+  stoch_k: number | null; stoch_d: number | null;
+  atr_14: number | null; obv: number | null; vol_20d: number | null;
 }
 export interface SymbolDetail {
   symbol: string; currency: string; range: string;
@@ -502,8 +510,10 @@ export interface SymbolDetail {
     date: string; close: number | null; change_pct: number | null;
     rsi_14: number | null; volume: number | null;
     ma20: number | null; ma60: number | null;
+    macd: number | null; stoch_k: number | null; atr_14: number | null; vol_20d: number | null;
     high_52w: number | null; low_52w: number | null;
   };
+  indicators: IndicatorSpec[];
   series: SymbolPoint[];
 }
 

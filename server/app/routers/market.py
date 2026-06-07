@@ -125,6 +125,27 @@ def market_listings(user: User = Depends(get_current_user)):
     return {"listings": _all_listings_cached(date.today().isoformat())}
 
 
+# 지표 카탈로그 — 드롭다운용. pane: price(주가 그래프 오버레이) / sub(별도 패널).
+# fields: 한 지표가 여러 라인일 때 series의 키들.
+_INDICATORS = [
+    {"key": "ma5", "label": "이동평균 5", "pane": "price"},
+    {"key": "ma20", "label": "이동평균 20", "pane": "price"},
+    {"key": "ma60", "label": "이동평균 60", "pane": "price"},
+    {"key": "ma120", "label": "이동평균 120", "pane": "price"},
+    {"key": "bb", "label": "볼린저밴드(20,2σ)", "pane": "price",
+     "fields": ["bb_upper", "bb_mid", "bb_lower"]},
+    {"key": "rsi_14", "label": "RSI(14)", "pane": "sub"},
+    {"key": "macd", "label": "MACD(12,26,9)", "pane": "sub",
+     "fields": ["macd", "macd_signal", "macd_hist"]},
+    {"key": "stoch", "label": "스토캐스틱(14,3)", "pane": "sub",
+     "fields": ["stoch_k", "stoch_d"]},
+    {"key": "volume", "label": "거래량", "pane": "sub"},
+    {"key": "atr_14", "label": "ATR(14)", "pane": "sub"},
+    {"key": "obv", "label": "OBV", "pane": "sub"},
+    {"key": "vol_20d", "label": "변동성(20일)", "pane": "sub"},
+]
+
+
 @router.get("/symbol/{symbol}")
 def symbol_detail(symbol: str, range: str = "1y",
                   user: User = Depends(get_current_user)):
@@ -134,6 +155,7 @@ def symbol_detail(symbol: str, range: str = "1y",
     (light mode·무료티어에서도 동작). 200일 이동평균 워밍업을 위해 표시 구간보다
     넉넉히 받은 뒤 표시 구간만 잘라 반환.
     """
+    import numpy as np
     import pandas as pd
     import FinanceDataReader as fdr
     from quant_core.indicators import compute_all
@@ -151,10 +173,29 @@ def symbol_detail(symbol: str, range: str = "1y",
         raise HTTPException(status_code=404,
                             detail=f"'{symbol}' 가격 데이터를 찾을 수 없습니다.")
 
-    ind = compute_all(raw.copy())
-    ind["ma20"] = ind["Close"].rolling(20).mean()
-    ind["ma60"] = ind["Close"].rolling(60).mean()
-    ind["ma200"] = ind["Close"].rolling(200).mean()
+    ind = compute_all(raw.copy())     # rsi_14·atr_14·realized_vol 등 기본 지표
+    c = ind["Close"]
+    # 이동평균
+    for w in (5, 20, 60, 120):
+        ind[f"ma{w}"] = c.rolling(w).mean()
+    # 볼린저밴드 (20, 2σ)
+    m20, s20 = c.rolling(20).mean(), c.rolling(20).std()
+    ind["bb_upper"], ind["bb_mid"], ind["bb_lower"] = m20 + 2 * s20, m20, m20 - 2 * s20
+    # MACD (12,26,9)
+    e12 = c.ewm(span=12, adjust=False).mean()
+    e26 = c.ewm(span=26, adjust=False).mean()
+    ind["macd"] = e12 - e26
+    ind["macd_signal"] = ind["macd"].ewm(span=9, adjust=False).mean()
+    ind["macd_hist"] = ind["macd"] - ind["macd_signal"]
+    # 스토캐스틱 (14,3)
+    low14, high14 = ind["Low"].rolling(14).min(), ind["High"].rolling(14).max()
+    rng14 = (high14 - low14).replace(0, np.nan)
+    ind["stoch_k"] = (c - low14) / rng14 * 100
+    ind["stoch_d"] = ind["stoch_k"].rolling(3).mean()
+    # OBV
+    ind["obv"] = (np.sign(c.diff().fillna(0)) * ind["Volume"]).fillna(0).cumsum()
+    # 전일대비 % (급등락 마커용)
+    ind["chg_pct"] = c.pct_change() * 100
     show = ind.tail(span)
 
     def _n(v, nd=2):
@@ -168,9 +209,17 @@ def symbol_detail(symbol: str, range: str = "1y",
             "open": _n(r.get("Open")), "high": _n(r.get("High")),
             "low": _n(r.get("Low")), "close": _n(r.get("Close")),
             "volume": _n(r.get("Volume"), 0),
+            "chg_pct": _n(r.get("chg_pct")),
+            "ma5": _n(r.get("ma5")), "ma20": _n(r.get("ma20")),
+            "ma60": _n(r.get("ma60")), "ma120": _n(r.get("ma120")),
+            "bb_upper": _n(r.get("bb_upper")), "bb_mid": _n(r.get("bb_mid")),
+            "bb_lower": _n(r.get("bb_lower")),
             "rsi_14": _n(r.get("rsi_14"), 1),
-            "ma20": _n(r.get("ma20")), "ma60": _n(r.get("ma60")),
-            "ma200": _n(r.get("ma200")),
+            "macd": _n(r.get("macd"), 3), "macd_signal": _n(r.get("macd_signal"), 3),
+            "macd_hist": _n(r.get("macd_hist"), 3),
+            "stoch_k": _n(r.get("stoch_k"), 1), "stoch_d": _n(r.get("stoch_d"), 1),
+            "atr_14": _n(r.get("atr_14")), "obv": _n(r.get("obv"), 0),
+            "vol_20d": _n(r.get("realized_vol_20d")),
         })
     if not series:
         raise HTTPException(status_code=404, detail="표시할 데이터가 부족합니다.")
@@ -190,9 +239,12 @@ def symbol_detail(symbol: str, range: str = "1y",
             "rsi_14": _n(last.get("rsi_14"), 1),
             "volume": _n(last.get("Volume"), 0),
             "ma20": _n(last.get("ma20")), "ma60": _n(last.get("ma60")),
+            "macd": _n(last.get("macd"), 3), "stoch_k": _n(last.get("stoch_k"), 1),
+            "atr_14": _n(last.get("atr_14")), "vol_20d": _n(last.get("realized_vol_20d")),
             "high_52w": _n(show["High"].tail(252).max()),
             "low_52w": _n(show["Low"].tail(252).min()),
         },
+        "indicators": _INDICATORS,
         "series": series,
     }
 
