@@ -413,10 +413,27 @@ def _bootstrap_dataset_bundle():
         _log.exception("dataset 번들 부트스트랩 실패")
 
 
+def _light_mode() -> bool:
+    """무료티어 메모리(~512MB) 보호 모드.
+
+    전 종목 historical dataset fetch·기술지표 계산·번들 압축·미국 시총 수집은
+    무료티어 RAM을 초과해 컨테이너를 OOM Kill → crash loop를 만든다(로그로 검증).
+    이 모드에서는 그 무거운 초기 fetch·cron을 끄고, 인증·전략·동기화·종목 마스터·
+    KRX 스냅샷·캘린더만 돌려 서버를 안정 상주시킨다. Railway Hobby 등으로 RAM이
+    충분해지면 QP_LIGHT_MODE를 해제해 전체 데이터 파이프라인을 복원한다.
+    """
+    return os.getenv("QP_LIGHT_MODE", "").strip().lower() in ("1", "true", "yes")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _log.info("lifespan 시작 — DB 초기화")
     create_db_and_tables()
+
+    light = _light_mode()
+    if light:
+        _log.warning("QP_LIGHT_MODE 활성 — dataset/기술지표/번들/시총 초기 fetch·cron "
+                     "건너뜀 (무료티어 메모리 OOM 방지). 인증·전략·마스터·KRX는 유지.")
 
     # ── dataset 번들 부트스트랩 (볼륨 비어있을 때 1회 다운로드·적재) ──────────
     _log.info("dataset 번들 부트스트랩 thread 시작")
@@ -432,10 +449,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_krx_refresh, daemon=True).start()
     _log.info("NAVER 펀더멘털 초기 fetch thread 시작")
     threading.Thread(target=_initial_naver_refresh, daemon=True).start()
-    _log.info("기술적 지표 초기 fetch thread 시작")
-    threading.Thread(target=_initial_technical_refresh, daemon=True).start()
-    _log.info("dataset 초기 갱신 thread 시작")
-    threading.Thread(target=_initial_dataset_refresh, daemon=True).start()
+
     # Phase 58-C — dataset 초기 갱신 후 bundle 한 번 packaging (사용자가 다음
     # cron 도래 전에도 bundle 받을 수 있게). dataset thread가 끝난 후 호출.
     def _initial_bundle_after_dataset():
@@ -447,10 +461,17 @@ async def lifespan(app: FastAPI):
             dataset_router.build_bundle()
         except Exception as e:
             _log.warning("초기 bundle packaging 실패: %s", e)
-    threading.Thread(target=_initial_bundle_after_dataset,
-                     daemon=True, name="bundle-initial").start()
-    _log.info("미국 시가총액 초기 fetch thread 시작")
-    threading.Thread(target=_initial_us_market_caps, daemon=True).start()
+
+    # 무거운 데이터 작업(OOM 유발)은 light mode에서 건너뜀.
+    if not light:
+        _log.info("기술적 지표 초기 fetch thread 시작")
+        threading.Thread(target=_initial_technical_refresh, daemon=True).start()
+        _log.info("dataset 초기 갱신 thread 시작")
+        threading.Thread(target=_initial_dataset_refresh, daemon=True).start()
+        threading.Thread(target=_initial_bundle_after_dataset,
+                         daemon=True, name="bundle-initial").start()
+        _log.info("미국 시가총액 초기 fetch thread 시작")
+        threading.Thread(target=_initial_us_market_caps, daemon=True).start()
 
     # ── 매일 정기 갱신 (Phase 31 — 외부 publish 시각에 맞춰 재배치) ──────────
     # 각 cron은 _run_with_retry로 감싸 실패 시 backoff[5,15,30,60,120]분 재시도.
@@ -467,12 +488,6 @@ async def lifespan(app: FastAPI):
         CronTrigger(hour=18, minute=58),
         id="kis_master_2nd", replace_existing=True)
 
-    # 07:30 — dataset 글로벌 (yfinance/FRED 06:15 publish + Binance/공포탐욕 09:00 publish 이후)
-    scheduler.add_job(
-        lambda: _run_with_retry("dataset_global", _refresh_global_dataset, scheduler),
-        CronTrigger(hour=7, minute=30),
-        id="dataset_global", replace_existing=True)
-
     # 15:45 — KRX 정규장 1차 (15:40 publish 직후)
     scheduler.add_job(
         lambda: _run_with_retry("krx_1st", _refresh_krx, scheduler),
@@ -485,42 +500,52 @@ async def lifespan(app: FastAPI):
         CronTrigger(hour=17, minute=0),
         id="naver", replace_existing=True)
 
-    # 17:15 — 기술지표 (NAVER 직후, daily_metrics 내부 계산)
-    scheduler.add_job(
-        lambda: _run_with_retry("technical", _refresh_technical, scheduler),
-        CronTrigger(hour=17, minute=15),
-        id="technical", replace_existing=True)
+    # ── 무거운 데이터 cron (OOM 유발) — light mode에서 등록하지 않음 ──────────
+    # dataset/기술지표/번들/시총은 무료티어 RAM을 초과한다. RAM이 충분해지면
+    # QP_LIGHT_MODE 해제로 자동 복원.
+    if not light:
+        # 07:30 — dataset 글로벌 (yfinance/FRED 06:15 + Binance/공포탐욕 09:00 publish 이후)
+        scheduler.add_job(
+            lambda: _run_with_retry("dataset_global", _refresh_global_dataset, scheduler),
+            CronTrigger(hour=7, minute=30),
+            id="dataset_global", replace_existing=True)
 
-    # 18:15 — 한국 dataset 갱신 (정규장 종가 + KRX 정정 반영, parquet 영구 저장)
-    # 주: KRX 2차 cron은 제거됨. krx_cache.refresh()가 in-memory metrics를 통째
-    # 교체해서 17:00 NAVER + 17:15 technical로 채워진 PER/PBR/RSI/MA 필드를
-    # 모두 파괴했음. 정정 보정 가치 < 자동 선택 데이터 손실. 15:45 KRX 1차로 충분.
-    scheduler.add_job(
-        lambda: _run_with_retry("dataset_kr", _refresh_kr_dataset, scheduler),
-        CronTrigger(hour=18, minute=15),
-        id="dataset_kr", replace_existing=True)
+        # 17:15 — 기술지표 (NAVER 직후, daily_metrics 내부 계산)
+        scheduler.add_job(
+            lambda: _run_with_retry("technical", _refresh_technical, scheduler),
+            CronTrigger(hour=17, minute=15),
+            id="technical", replace_existing=True)
 
-    # Phase 58-C — Dataset bundle packaging.
-    # 글로벌 dataset(07:30) + 한국 dataset(18:15) 갱신 직후 packaging.
-    # 사용자 로컬앱은 08:00 KST sync로 글로벌 + 어제 한국 close 묶음을 받음.
-    # 한국 close(18:15) 후 packaging은 다음 날 사용자 sync에 반영.
-    def _do_package_bundle():
-        from .routers import dataset as dataset_router
-        return dataset_router.build_bundle()
-    scheduler.add_job(
-        lambda: _run_with_retry("bundle_morning", _do_package_bundle, scheduler),
-        CronTrigger(hour=7, minute=45),
-        id="bundle_morning", replace_existing=True)
-    scheduler.add_job(
-        lambda: _run_with_retry("bundle_evening", _do_package_bundle, scheduler),
-        CronTrigger(hour=18, minute=30),
-        id="bundle_evening", replace_existing=True)
+        # 18:15 — 한국 dataset 갱신 (정규장 종가 + KRX 정정 반영, parquet 영구 저장)
+        # 주: KRX 2차 cron은 제거됨. krx_cache.refresh()가 in-memory metrics를 통째
+        # 교체해서 17:00 NAVER + 17:15 technical로 채워진 PER/PBR/RSI/MA 필드를
+        # 모두 파괴했음. 정정 보정 가치 < 자동 선택 데이터 손실. 15:45 KRX 1차로 충분.
+        scheduler.add_job(
+            lambda: _run_with_retry("dataset_kr", _refresh_kr_dataset, scheduler),
+            CronTrigger(hour=18, minute=15),
+            id="dataset_kr", replace_existing=True)
 
-    # 일요일 08:00 — 미국 S&P500 시가총액 (fast_info). 분기 변동 낮아 주1회.
-    scheduler.add_job(
-        lambda: _run_with_retry("us_market_caps", _refresh_us_market_caps, scheduler),
-        CronTrigger(day_of_week="sun", hour=8, minute=0),
-        id="us_market_caps", replace_existing=True)
+        # Phase 58-C — Dataset bundle packaging.
+        # 글로벌 dataset(07:30) + 한국 dataset(18:15) 갱신 직후 packaging.
+        # 사용자 로컬앱은 08:00 KST sync로 글로벌 + 어제 한국 close 묶음을 받음.
+        # 한국 close(18:15) 후 packaging은 다음 날 사용자 sync에 반영.
+        def _do_package_bundle():
+            from .routers import dataset as dataset_router
+            return dataset_router.build_bundle()
+        scheduler.add_job(
+            lambda: _run_with_retry("bundle_morning", _do_package_bundle, scheduler),
+            CronTrigger(hour=7, minute=45),
+            id="bundle_morning", replace_existing=True)
+        scheduler.add_job(
+            lambda: _run_with_retry("bundle_evening", _do_package_bundle, scheduler),
+            CronTrigger(hour=18, minute=30),
+            id="bundle_evening", replace_existing=True)
+
+        # 일요일 08:00 — 미국 S&P500 시가총액 (fast_info). 분기 변동 낮아 주1회.
+        scheduler.add_job(
+            lambda: _run_with_retry("us_market_caps", _refresh_us_market_caps, scheduler),
+            CronTrigger(day_of_week="sun", hour=8, minute=0),
+            id="us_market_caps", replace_existing=True)
 
     # 03:00 — KR/US 시장 캘린더 일일 재빌드 (Q2+Q8).
     # exchange_calendars 패치(임시공휴일 추가)를 매일 받아서 stale 캘린더 방지.
@@ -531,10 +556,14 @@ async def lifespan(app: FastAPI):
         id="calendars", replace_existing=True)
 
     scheduler.start()
-    _log.info("cron 시작: "
-              "03:00 캘린더 · 06:05 KIS-1 · 07:30 dataset글로벌 · 15:45 KRX · "
-              "17:00 NAVER · 17:15 기술 · 18:15 dataset한국 · 18:58 KIS-2 KST "
-              "(실패 시 backoff[5,15,30,60,120]분 재시도)")
+    if light:
+        _log.info("cron 시작(LIGHT): 03:00 캘린더 · 06:05/18:58 KIS · 15:45 KRX · "
+                  "17:00 NAVER (dataset/기술/번들/시총 cron 비활성 — 메모리 보호)")
+    else:
+        _log.info("cron 시작: "
+                  "03:00 캘린더 · 06:05 KIS-1 · 07:30 dataset글로벌 · 15:45 KRX · "
+                  "17:00 NAVER · 17:15 기술 · 18:15 dataset한국 · 18:58 KIS-2 KST "
+                  "(실패 시 backoff[5,15,30,60,120]분 재시도)")
     app.state.scheduler = scheduler
     try:
         yield
