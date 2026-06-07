@@ -2623,3 +2623,10 @@ thead th { color: var(--muted); font-weight: 600; }
 .roll-quick { display: inline-flex; gap: 6px; }
 .roll-quick .ghost { padding: 3px 8px; font-size: 11px; }
 .roll-help { font-size: 11px; line-height: 1.5; margin-top: 6px; flex-basis: 100%; }
+
+.bt-export {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.bt-export .ghost { padding: 6px 14px; font-size: 13px; }
+.bt-export-help { font-size: 11px; line-height: 1.4; }

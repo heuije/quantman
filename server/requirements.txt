@@ -17,3 +17,4 @@ python-multipart>=0.0.18      # FastAPI file upload (multipart/form-data)
 exchange_calendars>=4.5       # Q2+Q8 - daily KR/US session refresh (incl. ad-hoc holidays)
 zstandard>=0.22               # Phase 58-C - dataset bundle (tar.zst) packaging
 anthropic>=0.40               # NL→IR 컴파일러 (자연어 전략 → StrategyIR)
+openpyxl>=3.1                  # 선물 분석 라이브 수식 엑셀(.xlsx) export
