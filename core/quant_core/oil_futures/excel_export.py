@@ -10,9 +10,14 @@
   후 종가)·롤횟수(보유 중 통과 월수 ≈ 만기 횟수)·수익률·PnL을 전부 =수식으로.
 - 요약: COUNTIF/AVERAGE/SUM.
 
+롤오버: 앱과 동일하게 '만기일' 시트에 실제 WTI 월물 만기일을 싣고, K열에서
+COUNTIFS로 진입~청산 사이 만기 횟수를 정확히 카운트(entry<만기<=exit). 롤비용
+입력칸(B5)을 바꾸면 수익률·PnL이 즉시 재계산된다(양수=콘탱고 비용, 음수=
+backwardation 이익).
+
 한계(엑셀 단순화): 수수료·슬리피지·MAE/MFE·walk-forward는 제외(gross 기준).
-롤횟수는 '캘린더 월 변화 수'로 근사(엑셀에서 투명하게 보이도록) — 앱의 정확한
-만기일 카운트와 미세 차이 가능. 롤비용 0이면 영향 없음.
+앱은 롤비용≠0일 때 롤당 소액 거래마찰($ commission+slippage)도 부과하나
+엑셀은 term-structure 성분(롤횟수×롤비용)만 반영.
 """
 from __future__ import annotations
 
@@ -22,6 +27,8 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side as XlSide
 from openpyxl.utils import get_column_letter
+
+from .backtest import wti_expiry_dates
 
 
 # 디자인 토큰 (대시보드 팔레트와 통일)
@@ -141,12 +148,13 @@ def build_oil_excel(
         # H 청산가 = 진입 후 보유기간 종가 (= 신호행 기준 1+horizon 아래)
         ws.cell(row=r, column=8,
                 value=f'=IF(F{r}=1,IFERROR(OFFSET(E{r},1+$B$4,0),""),"")')
-        # K 롤횟수 = 진입~청산 사이 캘린더 월 변화 수 (≈ 만기 통과 횟수)
+        # K 롤횟수 = 진입~청산 사이 실제 WTI 만기일 수 (앱과 동일: entry<만기<=exit)
+        # 만기일!A:A 에 만기일 리스트, COUNTIFS로 정확히 카운트
         ws.cell(row=r, column=11, value=(
-            f'=IF(F{r}=1,IFERROR('
-            f'(YEAR(OFFSET(A{r},1+$B$4,0))*12+MONTH(OFFSET(A{r},1+$B$4,0)))'
-            f'-(YEAR(OFFSET(A{r},1,0))*12+MONTH(OFFSET(A{r},1,0)))'
-            f',""),"")'
+            f'=IF(F{r}=1,IFERROR(COUNTIFS('
+            f'만기일!$A:$A,">"&OFFSET(A{r},1,0),'
+            f'만기일!$A:$A,"<="&OFFSET(A{r},1+$B$4,0)'
+            f'),""),"")'
         ))
         # I 수익률 = 부호*(청산/진입-1) - 롤횟수*롤비용
         ws.cell(row=r, column=9, value=(
@@ -174,6 +182,21 @@ def build_oil_excel(
     # 헤더 행 고정 (스크롤해도 보이게)
     ws.freeze_panes = "A9"
 
+    # ── 만기일 시트 (롤횟수 COUNTIFS 참조용) ─────────────────────────
+    exp_ws = wb.create_sheet("만기일")
+    exp_ws["A1"] = "WTI 월물 만기일"
+    exp_ws["A1"].font = bold
+    exp_ws["B1"] = "(CME 규칙: 인도월 전월 25일의 3영업일 전. 백테스트!K열이 COUNTIFS로 참조)"
+    exp_ws["B1"].font = Font(italic=True, color="6F6A62")
+    expiries = wti_expiry_dates(
+        pd.Timestamp(df["date"].iloc[0]), pd.Timestamp(df["date"].iloc[-1])
+    )
+    for i, e in enumerate(expiries):
+        cell = exp_ws.cell(row=2 + i, column=1, value=pd.Timestamp(e).to_pydatetime())
+        cell.number_format = "yyyy-mm-dd"
+    exp_ws.column_dimensions["A"].width = 14
+    exp_ws.column_dimensions["B"].width = 60
+
     # ── 로직 설명 시트 ───────────────────────────────────────────────
     doc = wb.create_sheet("로직설명")
     notes = [
@@ -184,12 +207,14 @@ def build_oil_excel(
         ["신호(F열)", "장중 고가/저가 기준 전일 대비 첫 돌파 (히스테리시스 — 연속 돌파는 1회만)"],
         ["진입가(G열)", "신호 다음 영업일 시가 (look-ahead 제거)"],
         ["청산가(H열)", "진입 후 '보유기간' 영업일 후 종가"],
-        ["롤횟수(K열)", "진입~청산 사이 캘린더 월 변화 수 ≈ 선물 만기 강제 롤오버 횟수"],
+        ["롤횟수(K열)", "'만기일' 시트의 실제 WTI 만기일을 COUNTIFS로 카운트 (진입<만기≤청산) — 앱과 동일"],
         ["수익률(I열)", "부호×(청산/진입−1) − 롤횟수×롤비용. short는 하락이 이익"],
         ["PnL(J열)", "수익률 × 진입가 × 1000배럴(1계약)"],
+        ["롤비용(B5)", "노란 칸. 바꾸면 즉시 재계산. 양수=콘탱고 비용(차감), 음수=backwardation 이익(가산)"],
+        ["만기일 시트", "롤횟수 계산의 기준 만기일 목록 (CME 규칙 기반 자동 생성)"],
         ["", ""],
-        ["한계", "수수료·슬리피지·MAE/MFE·walk-forward는 미반영(gross 기준). 롤횟수는 월 근사."],
-        ["주의", "롤비용 양수=콘탱고 비용(차감), 음수=backwardation 이익(가산)"],
+        ["한계", "수수료·슬리피지·MAE/MFE·walk-forward는 미반영(gross 기준)."],
+        ["", "앱은 롤비용≠0 시 롤당 소액 거래마찰도 부과하나 엑셀은 term-structure 성분만 반영."],
     ]
     for i, (a, b) in enumerate(notes):
         doc.cell(row=1 + i, column=1, value=a).font = bold if i == 0 else Font()
