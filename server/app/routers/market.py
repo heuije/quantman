@@ -21,7 +21,9 @@ router = APIRouter(prefix="/market", tags=["market"])
 
 # 표시할 시장 지표 (라벨, dataset 심볼 후보들)
 _MARKET_SYMBOLS = [
-    ("KOSPI",   ["KOSPI", "코스피", "코스피200선물", "KS11", "^KS11"]),
+    # KOSPI 프록시 = 261220 ETF(코스피200선물ETF). F1에서 "코스피200선물" 키가 ETF→실선물(승수
+    # 250,000·지수포인트 스케일)로 의미가 바뀌어, 이 표시 후보를 ETF 키로 고정(스케일 회귀 차단).
+    ("KOSPI",   ["KOSPI", "코스피", "코스피200선물ETF", "KS11", "^KS11"]),
     ("KOSDAQ",  ["KOSDAQ", "코스닥", "KQ11", "^KQ11"]),
     ("VKOSPI",  ["VKOSPI", "변동성지수"]),
     ("VIX",     ["VIX", "^VIX"]),
