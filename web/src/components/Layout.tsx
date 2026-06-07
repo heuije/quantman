@@ -24,7 +24,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     <div className="shell">
       {/* 모바일 상단 헤더 — 데스크탑에선 hidden (CSS) */}
       <header className="mobile-header">
-        <div className="brand">퀀트<span>플랫폼</span></div>
+        <div className="brand">마이<span>스톡</span></div>
         <button type="button" className="hamburger-btn"
                 onClick={() => setDrawerOpen((o) => !o)}
                 aria-label={drawerOpen ? "메뉴 닫기" : "메뉴 열기"}
@@ -34,7 +34,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </header>
 
       <aside className={"sidebar" + (drawerOpen ? " drawer-open" : "")}>
-        <div className="brand sidebar-brand">퀀트<span>플랫폼</span></div>
+        <div className="brand sidebar-brand">마이<span>스톡</span></div>
         {NAV.map((n) => (
           <NavLink
             key={n.to}

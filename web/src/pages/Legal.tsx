@@ -28,7 +28,7 @@ export default function Legal() {
       <header className="legal-header">
         <button className="ghost sm" onClick={() => nav(-1)}>← 뒤로</button>
         <div className="brand" style={{ padding: 0 }}>
-          퀀트<span>플랫폼</span>
+          마이<span>스톡</span>
         </div>
       </header>
 
