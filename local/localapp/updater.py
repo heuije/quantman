@@ -258,7 +258,7 @@ def _write_updater_bat(bat_path: Path, src_dir: Path, dst_dir: Path,
         "powershell -NoProfile -Command "
         '"Add-Type -AssemblyName PresentationFramework; '
         f'[System.Windows.MessageBox]::Show(\'{fail_msg}\','
-        " '퀀트 플랫폼 업데이트 실패', 'OK', 'Warning')\"\r\n"
+        " '마이스톡 업데이트 실패', 'OK', 'Warning')\"\r\n"
         f'rmdir /S /Q "{src_dir.parent}"\r\n'
         "(goto) 2>nul & del \"%~f0\"\r\n"
     )
