@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 import quant_core as qc
 
@@ -68,6 +68,81 @@ def market_context(user: User = Depends(get_current_user)):
     return {
         "indicators": indicators,
         "session": _session_now(),
+    }
+
+
+_RANGE_DAYS = {"3m": 130, "6m": 260, "1y": 400, "2y": 760, "5y": 1850}
+
+
+@router.get("/symbol/{symbol}")
+def symbol_detail(symbol: str, range: str = "1y",
+                  user: User = Depends(get_current_user)):
+    """개별 종목 on-demand 조회 — 가격·차트·지표(RSI/이동평균). 한국+미국 상장.
+
+    서버 dataset(parquet)에 의존하지 않고 FinanceDataReader로 실시간 fetch한다
+    (light mode·무료티어에서도 동작). 200일 이동평균 워밍업을 위해 표시 구간보다
+    넉넉히 받은 뒤 표시 구간만 잘라 반환.
+    """
+    import pandas as pd
+    import FinanceDataReader as fdr
+    from quant_core.indicators import compute_all
+
+    sym = symbol.strip().upper()
+    if not sym:
+        raise HTTPException(status_code=400, detail="종목 코드가 필요합니다.")
+    span = _RANGE_DAYS.get(range, 400)
+    fetch_start = (datetime.now().date() - timedelta(days=span + 320)).isoformat()
+    try:
+        raw = fdr.DataReader(sym, fetch_start)
+    except Exception as e:  # 외부 데이터 소스 한계 — 호출자에 명확히 전달
+        raise HTTPException(status_code=502, detail=f"가격 데이터 조회 실패: {e}")
+    if raw is None or raw.empty or "Close" not in raw.columns:
+        raise HTTPException(status_code=404,
+                            detail=f"'{symbol}' 가격 데이터를 찾을 수 없습니다.")
+
+    ind = compute_all(raw.copy())
+    ind["ma20"] = ind["Close"].rolling(20).mean()
+    ind["ma60"] = ind["Close"].rolling(60).mean()
+    ind["ma200"] = ind["Close"].rolling(200).mean()
+    show = ind.tail(span)
+
+    def _n(v, nd=2):
+        return None if v is None or pd.isna(v) else round(float(v), nd)
+
+    series = []
+    for idx, r in show.iterrows():
+        d = idx.date().isoformat() if hasattr(idx, "date") else str(idx)
+        series.append({
+            "date": d,
+            "open": _n(r.get("Open")), "high": _n(r.get("High")),
+            "low": _n(r.get("Low")), "close": _n(r.get("Close")),
+            "volume": _n(r.get("Volume"), 0),
+            "rsi_14": _n(r.get("rsi_14"), 1),
+            "ma20": _n(r.get("ma20")), "ma60": _n(r.get("ma60")),
+            "ma200": _n(r.get("ma200")),
+        })
+    if not series:
+        raise HTTPException(status_code=404, detail="표시할 데이터가 부족합니다.")
+
+    last = show.iloc[-1]
+    prev = show.iloc[-2] if len(show) >= 2 else last
+    close = float(last["Close"]); pclose = float(prev["Close"])
+    is_kr = symbol.strip().isdigit()
+    return {
+        "symbol": sym,
+        "currency": "KRW" if is_kr else "USD",
+        "range": range,
+        "last": {
+            "date": series[-1]["date"],
+            "close": _n(close),
+            "change_pct": _n((close - pclose) / pclose * 100 if pclose else 0.0),
+            "rsi_14": _n(last.get("rsi_14"), 1),
+            "volume": _n(last.get("Volume"), 0),
+            "ma20": _n(last.get("ma20")), "ma60": _n(last.get("ma60")),
+            "high_52w": _n(show["High"].tail(252).max()),
+            "low_52w": _n(show["Low"].tail(252).min()),
+        },
+        "series": series,
     }
 
 
