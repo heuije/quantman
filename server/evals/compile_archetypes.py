@@ -58,6 +58,11 @@ CASES = [
      "RSI 진입 임계값을 10부터 40까지 5단위로 바꿔가며 샤프를 최대화하는 값을 찾아줘.",
      lambda ir: ir.get("study", {}).get("reduction") == "extremize"
                 and ir.get("study", {}).get("axis") == "parameter"),
+    ("다중팩터 회귀(relate)",
+     "PBR과 12개월 모멘텀이 forward 수익을 설명하는지 다중 횡단 회귀로 보여줘. 코스피 종목.",
+     lambda ir: ir.get("query") == "relate"
+                and ir.get("study", {}).get("relation_kind") == "regression"
+                and len(ir.get("study", {}).get("factors", [])) >= 1),
 ]
 
 

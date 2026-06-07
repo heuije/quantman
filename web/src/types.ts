@@ -295,7 +295,8 @@ export interface IrStrategyDef {
     folds?: number;                            // axis=time_fold — 균등 분할 수
     split_dates?: string[];                    // axis=time_fold — 명시 분할 시점(워크포워드)
     target_node?: IrNode | null;               // describe/relate 분석 노드
-    relation_kind?: "ic";                      // relate — 횡단 IC
+    relation_kind?: "ic" | "regression";       // relate — IC(단일) 또는 다중팩터 회귀
+    factors?: IrNode[];                         // relation_kind=regression 설명변수
     event?: IrNode | null;                     // relate(이벤트) — 별도 이벤트 조건
     windows?: number[];                        // relate — forward/예측 윈도우
     event_basis?: "close" | "intraday" | "excess";
@@ -343,6 +344,18 @@ export interface IrExtremizeResult {
   best: { label: string; metric_value: number | null; perf: Record<string, number> };
   ranked: { label: string; metric_value: number | null }[];
   oos_guard?: { buckets?: Record<string, unknown>; consistency?: unknown; error?: string };
+}
+
+// query="relate" + relation_kind="regression" — 다중팩터 Fama-MacBeth 회귀 결과.
+export interface IrRegressionResult {
+  success: boolean; axis: "relation"; relation: "regression";
+  windows: string[]; factor_names: string[];
+  by_window: Record<string, {
+    n_periods: number;
+    factors: { name: string; coef: number; se: number; t_stat: number | null;
+               t_inf: boolean; ci_low: number; ci_high: number }[] | null;
+    note?: string;
+  }>;
 }
 
 // 모든 펼침 버킷의 단일 지표 어휘 (engine perf_from_returns와 동기) — 갭 A.
