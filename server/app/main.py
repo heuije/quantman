@@ -332,10 +332,62 @@ def _initial_calendar_refresh():
         _log.exception("캘린더 초기 빌드 예외 — 다음 03:00 cron 재시도")
 
 
+def _bootstrap_dataset_bundle():
+    """QP_DATASET_BUNDLE_URL이 설정돼 있고 DATA_DIR이 비어 있으면,
+    공개 dataset 번들(tar.zst)을 받아 DATA_DIR에 풀어 백테스트 데이터를 부트스트랩.
+
+    볼륨(QP_CORE_DATA_DIR=/data)에 적재되므로 한 번 받으면 재배포해도 유지된다.
+    background thread에서 실행 (610MB 다운로드라 부팅 차단 방지)."""
+    import json
+    import os
+    import tarfile
+    import urllib.request
+
+    url = os.getenv("QP_DATASET_BUNDLE_URL")
+    if not url:
+        return
+    try:
+        import zstandard
+        from quant_core.data_fetcher import DATA_DIR
+        existing = list(DATA_DIR.glob("*.parquet"))
+        if existing:
+            _log.info("dataset 번들: 이미 %d개 parquet 적재됨 — skip", len(existing))
+        else:
+            _log.info("dataset 번들 다운로드 시작: %s", url)
+            tmp = DATA_DIR / "_bundle.tar.zst"
+            urllib.request.urlretrieve(url, tmp)
+            _log.info("dataset 번들 다운로드 완료 (%d MB) — 압축 해제",
+                      tmp.stat().st_size // 1024 // 1024)
+            dctx = zstandard.ZstdDecompressor()
+            with open(tmp, "rb") as fh, dctx.stream_reader(fh) as reader:
+                with tarfile.open(fileobj=reader, mode="r|") as tar:
+                    tar.extractall(DATA_DIR)
+            tmp.unlink(missing_ok=True)
+            _log.info("dataset 번들 적재 완료: %d parquet",
+                      len(list(DATA_DIR.glob("*.parquet"))))
+        # managed_kr_stocks.json 없으면 6자리 parquet 코드로 생성 (load_all이 KR주식 인식)
+        mk = DATA_DIR / "managed_kr_stocks.json"
+        if not mk.exists():
+            codes = sorted(p.stem for p in DATA_DIR.glob("*.parquet")
+                           if p.stem.isdigit() and len(p.stem) == 6)
+            if codes:
+                mk.write_text(json.dumps(codes))
+                _log.info("managed_kr_stocks.json 생성: KR 종목 %d개", len(codes))
+        # 캐시 무효화 → 다음 get_dataset 시 새 parquet 로드
+        from . import data_cache
+        data_cache.invalidate()
+    except Exception:
+        _log.exception("dataset 번들 부트스트랩 실패")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _log.info("lifespan 시작 — DB 초기화")
     create_db_and_tables()
+
+    # ── dataset 번들 부트스트랩 (볼륨 비어있을 때 1회 다운로드·적재) ──────────
+    _log.info("dataset 번들 부트스트랩 thread 시작")
+    threading.Thread(target=_bootstrap_dataset_bundle, daemon=True).start()
 
     # ── 시작 시 1회 초기 fetch (백그라운드 thread, 부팅 차단 방지) ─────────────
     _log.info("KIS 마스터 초기 다운로드 thread 시작")
