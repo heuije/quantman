@@ -42,7 +42,7 @@ def _ir_def(exit_spec=None):
                      "sizing": {"mode": "pct_cash", "amount_pct": 10},
                      "entry": {"mode": "on_signal"},
                      "exit": exit_spec or {}, "overlays": {}},
-        "simulation": {}, "sweep": {"axis": "none"},
+        "simulation": {},
     }
 
 

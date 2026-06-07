@@ -44,7 +44,7 @@ def _patch(monkeypatch):
     monkeypatch.setattr(ir, "build_dataset_manifest", lambda *a, **k: None)
 
 
-def _factor_body(top_n=1, direction="long", sweep=None):
+def _factor_body(top_n=1, direction="long", study=None):
     b = {
         "signal": {"op": "data", "params": {"ref": "momentum_12_1m"}},
         "universe": {"kind": "all"},
@@ -52,8 +52,8 @@ def _factor_body(top_n=1, direction="long", sweep=None):
                      "entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": top_n}},
         "simulation": {"initial_capital": 1e7},
     }
-    if sweep:
-        b["sweep"] = sweep
+    if study:
+        b["study"] = study
     return b
 
 
@@ -71,7 +71,7 @@ def test_long_short_strategy():
 
 
 def test_parameter_sweep():
-    body = _factor_body(sweep={"axis": "parameter",
+    body = _factor_body(study={"axis": "parameter",
                                "param_grid": [{"path": "position.entry.top_n",
                                                "values": [1, 2]}]})
     res = ir_strategy(body, user=None)
@@ -82,7 +82,7 @@ def test_parameter_sweep():
 
 def test_parameter_sweep_2d_grid():
     """비용 민감도 — commission × slippage 데카르트곱 격자."""
-    body = _factor_body(sweep={"axis": "parameter", "param_grid": [
+    body = _factor_body(study={"axis": "parameter", "param_grid": [
         {"path": "simulation.commission", "values": [0.0, 0.001]},
         {"path": "simulation.slippage", "values": [0.0, 0.001]}]})
     res = ir_strategy(body, user=None)

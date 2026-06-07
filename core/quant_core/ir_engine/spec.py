@@ -3,7 +3,7 @@
 명세 §7(1회 백테스트 5단계)·§3.3(포지션 4부품). 비전의 데이터→신호→포지션→
 성과→시뮬을 한 스키마로 통합한다. 핵심: **포지션 레이어가 룰·팩터 전략을 통일**.
 
-  StrategyIR = universe + signal(Node) + position(4부품+오버레이) + simulation + sweep
+  StrategyIR = universe + signal(Node) + position(4부품+오버레이) + simulation + query/study
 
 신호(signal)는 condition(룰 트리거) 또는 score(팩터 알파) — 둘 다 같은 블록 트리.
 엔진은 entry.mode × signal 타입으로 디스패치:
@@ -193,48 +193,19 @@ class StrategyIR(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_legacy(cls, data):
-        """[임시 마이그레이션 셰임 — 후속 단계에서 삭제] 레거시 dict(sweep/period_split)→신(query/study)."""
-        if not isinstance(data, dict):
-            return data
-        if "study" in data or "query" in data:
-            return data
-        sw = data.pop("sweep", None) or {}
-        sim = data.get("simulation") or {}
-        study: dict = {}
-        for k in ("label", "target_node", "relation_kind", "event", "windows", "event_basis"):
-            if k in sw:
-                study[k] = sw[k]
-        tgt, axis = sw.get("target", "return"), sw.get("axis", "none")
-        ps, sd = (sim.get("period_split", "single") if isinstance(sim, dict) else "single"), \
-                 (sim.get("split_dates") or [] if isinstance(sim, dict) else [])
-        if tgt == "signal":
-            data["query"] = "describe"
-        elif tgt == "relation" or axis == "time":
-            data["query"] = "relate"
-            if axis == "time" and sw.get("event") is not None:
-                study["event"] = sw["event"]
-            study["param_grid"] = sw.get("param_grid", [])
-        else:
-            data["query"] = "simulate"
-            if ps != "single" or sd:
-                study.update(axis="time_fold", reduction="consistency",
-                             folds=(2 if ps == "oos" else 4), split_dates=sd)
-                # 기간분할 × 펼침 동시 사용은 금지(2D 모호성). 셰임은 time_fold로 수렴하되
-                # 펼침축의 잔여 필드(param_grid·assets)를 남겨 validate_strategy가 충돌을 감지·거부한다.
-                if axis == "parameter" and sw.get("param_grid"):
-                    study["param_grid"] = sw["param_grid"]
-                elif axis == "asset" and sw.get("assets"):
-                    study["assets"] = sw["assets"]
-            elif axis == "parameter":
-                study.update(axis="parameter", reduction="enumerate", param_grid=sw.get("param_grid", []))
-            elif axis == "asset":
-                study.update(axis="entity", reduction="enumerate", assets=sw.get("assets", []))
-            elif axis == "condition":
-                study.update(axis="label", reduction="contrast")
-        if isinstance(sim, dict):
-            sim.pop("period_split", None); sim.pop("split_dates", None)
-        data["study"] = study
+    def _reject_legacy(cls, data):
+        """레거시 sweep/period_split 키를 명시 거부 — 클린 컷오버(번역 셰임 없음).
+
+        StrategyIR은 extra="ignore"(pydantic 기본)라 제거된 sweep/period_split을 누가
+        넘기면 *조용히 무시→study 기본값*이 되어 silent 오작동(NL repair loop도 못 잡음).
+        따라서 alias 번역이 아니라 검증 에러로 loud하게 거부한다 — LLM이 레거시 산출 시
+        repair loop가 교정하게.
+        """
+        if isinstance(data, dict):
+            sim = data.get("simulation")
+            if "sweep" in data or (isinstance(sim, dict)
+                                   and ("period_split" in sim or "split_dates" in sim)):
+                raise ValueError("레거시 'sweep'/'period_split' 제거됨 — 'query'/'study' 사용")
         return data
 
 
@@ -515,9 +486,9 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                 issues.append(Issue("S-target", SEV_ERROR,
                                     "IC(횡단 상관) 분석은 종목이 2개 이상이어야 합니다.", "universe"))
 
-    # 기간분할 × 펼침 동시 사용 금지 (2D 모호성 차단). 신 모델은 study가 평면이라 time_fold가
-    # 다른 펼침/분석 필드와 공존하면 충돌(레거시 셰임이 period_split+sweep을 받으면 time_fold로
-    # 수렴하되 sweep 잔여 필드를 남긴다 — 그 잔여로 충돌을 감지해 거부).
+    # 기간분할 × 펼침 동시 사용 금지 (2D 모호성 차단). study가 평면이라 time_fold가 다른
+    # 펼침/분석 필드(param_grid·assets·label·target_node·event)나 비-simulate 동사와
+    # 공존하면 2D 모호성이 생기므로 거부 — time_fold는 단독으로만 쓴다.
     if st.axis == "time_fold" and (st.label is not None or st.param_grid or st.assets
                                    or st.target_node is not None or st.event is not None
                                    or s.query != "simulate"):

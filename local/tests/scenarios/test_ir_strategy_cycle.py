@@ -42,7 +42,7 @@ def _ir_def(sizing, universe, exit_spec=None):
         "universe": universe, "signal": _DUMMY_SIGNAL,
         "position": {"direction": "long", "sizing": sizing,
                      "entry": {"mode": "on_signal"}, "exit": exit_spec or {}, "overlays": {}},
-        "simulation": {}, "sweep": {"axis": "none"},
+        "simulation": {},
     }
 
 
