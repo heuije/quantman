@@ -114,6 +114,8 @@ def run_query(strategy: StrategyIR, dataset: dict) -> dict:
     if err is not None:
         return _empty(err)
     q = strategy.query
+    if q == "select":
+        return run_select(strategy, dataset)
     if q == "describe":
         return _run_signal_study(strategy, dataset)
     if q == "relate":
@@ -372,6 +374,82 @@ def _run_ic_study(strategy: StrategyIR, dataset: dict) -> dict:
         by_window[str(w)] = block
     return {"success": True, "axis": "relation", "relation": "ic",
             "windows": [str(w) for w in windows], "by_window": by_window}
+
+
+# ── 선택 (SELECT 동사 — as-of 횡단 랭킹 스크리닝) ─────────────────────────────
+
+def run_select(strategy: StrategyIR, dataset: dict) -> dict:
+    """SELECT 동사 — as-of 스냅샷에서 score를 횡단 랭크해 상위 종목 선별(스크리닝).
+
+    시계열 시뮬 없음. signal(score)을 평가해 as_of 시점 단면을 랭크한다. universe.screener는
+    자격 마스크(PIT), select.display는 결과에 붙일 지표 컬럼. 미래행 미참조(PIT).
+    """
+    from .engine import _screener_mask
+    from ..expression_parser import get_symbol_group
+
+    sel = strategy.select
+    if sel is None:
+        return _empty("select 질의는 select 설정이 필요합니다.")
+    if _out_type(strategy.signal) != "score":
+        return _empty("select(스크리닝)은 랭킹용 score 신호가 필요합니다.")
+    syms = _universe_symbols(strategy, dataset)
+    if not syms:
+        return _empty("선별 유니버스에 종목이 없습니다.")
+    screener = strategy.universe.screener or {}
+    filt = Node.model_validate(screener["condition"]) if screener.get("condition") else None
+    ds = _scoped(dataset, syms, strategy.signal, filt)
+    ctx = EvalContext.from_dataset(ds)
+    score = evaluate(strategy.signal, ctx)
+    if not isinstance(score, pd.DataFrame) or score.empty:
+        return _empty("score 신호가 패널(종목×날짜)을 산출하지 않습니다.")
+    cols = [c for c in syms if c in score.columns]
+    if not cols:
+        return _empty("score가 유니버스 종목을 포함하지 않습니다.")
+    score = score[cols]
+
+    # as_of 스냅샷 (PIT — 미래행 미참조)
+    if sel.as_of == "latest":
+        asof = score.index[-1]
+    else:
+        prior = score.index[score.index <= pd.Timestamp(sel.as_of)]
+        if len(prior) == 0:
+            return _empty(f"as_of {sel.as_of} 이전 데이터가 없습니다.")
+        asof = prior[-1]
+    row = score.loc[asof]
+
+    # 자격 마스크(screener) 적용 — 같은 as_of 단면
+    if filt is not None:
+        elig = _screener_mask(screener, ctx, cols)
+        elig_row = (elig.loc[asof] if asof in elig.index
+                    else elig.reindex([asof]).iloc[0]).reindex(cols).fillna(False).astype(bool)
+        row = row.where(elig_row)
+    eligible = row.dropna()
+    eligible_size = int(eligible.shape[0])
+
+    ranked = eligible.sort_values(ascending=not sel.descending)
+    if sel.top_n is not None:
+        ranked = ranked.head(int(sel.top_n))
+    elif sel.top_pct is not None:
+        k = max(1, int(round(eligible_size * float(sel.top_pct) / 100.0)))
+        ranked = ranked.head(k)
+
+    results = []
+    for sym in ranked.index:
+        df = dataset.get(sym)
+        metrics = {}
+        for col in sel.display:
+            if df is not None and col in df.columns:
+                sub = df.loc[df.index <= asof, col].dropna()
+                metrics[col] = float(sub.iloc[-1]) if len(sub) else None
+        results.append({
+            "symbol": sym,
+            "score": (float(ranked[sym]) if pd.notna(ranked[sym]) else None),
+            "sector": get_symbol_group(sym, "Sector"),
+            "metrics": metrics,
+        })
+    return {"success": True, "query": "select", "as_of": str(asof)[:10],
+            "universe_size": len(syms), "eligible_size": eligible_size,
+            "results": results}
 
 
 # ── 이벤트 스터디 (비전 §4 시간축) ────────────────────────────────────────────

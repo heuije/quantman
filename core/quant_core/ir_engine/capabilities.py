@@ -156,12 +156,23 @@ def capability_spec() -> dict:
         "query": [
             {"value": "simulate", "does": "전략 모의매매(손익)",
              "use_for": "백테스트 — 기본"},
+            {"value": "select",
+             "does": "as-of 스냅샷에서 score를 횡단 랭크해 상위 종목을 선별(시계열 시뮬 없음)",
+             "use_for": "저평가주·고배당주 등 '조건 맞는 상위 N개 종목' 스크리닝. "
+                        "signal=랭킹 score(예: 낮은 PBR), universe.screener로 섹터·자격 필터, "
+                        "select.top_n/top_pct·descending·display(근거 지표)."},
             {"value": "describe", "does": "임의 score 노드 값의 분포·요약을 (선택)국면 라벨별로",
              "use_for": "신호 분포·반감기 연구. study.target_node(score 또는 condition) 필요."},
             {"value": "relate", "does": "factor↔forward수익 횡단 IC(또는 event 지정 시 이벤트 스터디)",
              "use_for": "예측력·이벤트 반응. IC=study.target_node·windows·universe.kind!=single; "
                         "이벤트 스터디=study.event·windows."},
         ],
+        # SELECT 동사 전용 설정 — query="select"일 때만. as-of 단면 랭킹 스크리닝의 모양 제어.
+        "select": {
+            "field": "select",
+            "does": "SELECT 동사 설정 — as_of(기준시점·기본 latest)·top_n|top_pct·descending·display(근거 지표).",
+            "use_for": "스크리닝 결과 모양 제어. 저PBR=descending:false, 고배당=descending:true 등.",
+        },
         # 스터디(study) — 질문을 한 축(axis)으로 펼치고 환원(reduction)한다. axis·reduction은 직교.
         # 기본은 단일 실행(axis='none'·reduction='enumerate'). 펼침은 명시 요청 시에만.
         "study_axis": [

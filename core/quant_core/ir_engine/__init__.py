@@ -7,7 +7,7 @@
 """
 
 from .backtest import run_backtest_ir  # noqa: F401
-from .run import run_period_split, run_query, run_strategy_ir, run_sweep  # noqa: F401
+from .run import run_period_split, run_query, run_select, run_strategy_ir, run_sweep  # noqa: F401
 from .compare import (  # noqa: F401
     block_bootstrap_ci, bootstrap_mean_ci, compare_partition, distribution,
     excess_distribution, jackknife_by_year, one_sample_test, two_sample_test,
@@ -30,7 +30,7 @@ from .sweep import (  # noqa: F401
 )
 
 __all__ = [
-    "run_backtest_ir", "run_strategy_ir", "run_sweep", "run_period_split", "run_query",
+    "run_backtest_ir", "run_strategy_ir", "run_sweep", "run_period_split", "run_query", "run_select",
     "backtest_from_spec", "strategy_from_spec", "capability_spec", "explain_ir",
     "collect_strat_refs", "has_strat_refs", "materialize_strategy_assets",
     "StrategyIR", "Universe", "PositionSpec", "Sizing", "Entry", "Exit",

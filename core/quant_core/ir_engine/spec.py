@@ -180,6 +180,17 @@ class Study(BaseModel):
     event_basis: Literal["close", "intraday", "excess"] = "close"
 
 
+# ── 선택 (SELECT 동사 — as-of 횡단 랭킹 스크리닝) ─────────────────────────────
+
+class SelectSpec(BaseModel):
+    """SELECT 동사 — as-of 스냅샷 횡단 랭킹 선별 설정."""
+    as_of: str = "latest"               # "latest" 또는 ISO 날짜(그 시점 이하 마지막 단면)
+    top_n: Optional[int] = None         # 상위 N (top_pct와 둘 중 하나)
+    top_pct: Optional[float] = None     # 또는 상위 %(0<pct<=100)
+    descending: bool = True             # score 큰 순(False=작은 순 — 예: 저PER)
+    display: list[str] = Field(default_factory=list)   # 결과에 붙일 지표 컬럼(pb_ratio 등)
+
+
 # ── 전략 (통합) ───────────────────────────────────────────────────────────────
 
 class StrategyIR(BaseModel):
@@ -188,8 +199,9 @@ class StrategyIR(BaseModel):
     signal: Node                        # condition(룰) 또는 score(팩터)
     position: PositionSpec = Field(default_factory=PositionSpec)
     simulation: SimSpec = Field(default_factory=SimSpec)
-    query: Literal["describe", "relate", "simulate"] = "simulate"
+    query: Literal["select", "describe", "relate", "simulate"] = "simulate"
     study: Study = Field(default_factory=Study)
+    select: Optional[SelectSpec] = None    # query="select" 전용
 
     @model_validator(mode="before")
     @classmethod
@@ -325,6 +337,28 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                             "임계 선택(threshold)은 신호가 score(점수)여야 합니다 — "
                             "참/거짓 신호는 그 자체가 임계 선택이므로 condition 신호를 쓰세요.",
                             "position.entry"))
+
+    # SELECT 동사 — 랭킹이므로 score 신호 필요 + select 설정 정합.
+    if s.query == "select":
+        if st != "score":
+            issues.append(Issue("S-SEL", SEV_ERROR,
+                                "select(스크리닝)은 랭킹용 score 신호가 필요합니다(condition 불가).",
+                                "signal"))
+        sel = s.select
+        if sel is None:
+            issues.append(Issue("S-SEL", SEV_ERROR,
+                                "select 질의는 select 설정(top_n 또는 top_pct)이 필요합니다.",
+                                "select"))
+        else:
+            if (sel.top_n is None) == (sel.top_pct is None):
+                issues.append(Issue("S-SEL", SEV_ERROR,
+                                    "top_n과 top_pct 중 정확히 하나를 지정하세요.", "select"))
+            if sel.top_n is not None and sel.top_n < 1:
+                issues.append(Issue("S-SEL", SEV_ERROR,
+                                    "top_n은 1 이상이어야 합니다.", "select.top_n"))
+            if sel.top_pct is not None and not (0 < sel.top_pct <= 100):
+                issues.append(Issue("S-SEL", SEV_ERROR,
+                                    "top_pct는 0 초과 100 이하여야 합니다.", "select.top_pct"))
 
     # M4 — 선택 파라미터 범위 (퇴화 선택 방지: top_n=0/음수, top_pct 범위밖이면 조용한 무거래)
     if ent.top_n is not None and ent.top_n < 1:
