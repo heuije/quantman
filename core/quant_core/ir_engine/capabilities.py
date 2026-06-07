@@ -179,7 +179,7 @@ def capability_spec() -> dict:
             {"value": "return", "does": "전략 일별수익(기본). axis로 분할·반복.",
              "use_for": "손익·성과가 답일 때. target_node 불필요."},
             {"value": "signal", "does": "임의 score 노드 *값*의 분포를 (선택)라벨별로 — 신호 자체 연구",
-             "use_for": "신호 반감기·레짐별 분포. sweep.target_node(score 또는 condition) 필요."},
+             "use_for": "신호 반감기·레짐별 분포. study.target_node(score 또는 condition) 필요."},
             {"value": "relation", "does": "factor 노드와 forward수익의 횡단 IC 시계열 — 예측력·팩터 타이밍",
              "use_for": "팩터 예측력 측정. target_node·windows 필요, universe.kind!=single."},
         ],

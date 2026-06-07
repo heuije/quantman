@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 
 from quant_core.blocks import Node, const, data  # noqa: E402
 from quant_core.ir_engine import (  # noqa: E402
-    Entry, Exit, Overlays, PositionSpec, Sizing, StrategyIR, SweepSpec, Universe,
+    Entry, Exit, Overlays, PositionSpec, Sizing, StrategyIR, Study, Universe,
     validate_strategy,
 )
 
@@ -118,7 +118,7 @@ def test_sweep_label_must_be_label():
     """펼침 분할 라벨은 label만 — score면 S-sweep 거부."""
     s = StrategyIR(signal=_score(), universe=Universe(kind="all"),
                    position=PositionSpec(entry=Entry(mode="scheduled")),
-                   sweep=SweepSpec(axis="condition", label=_score()))
+                   query="simulate", study=Study(axis="label", reduction="contrast", label=_score()))
     assert any(i.rule == "S-sweep" for i in validate_strategy(s))
 
 
@@ -135,7 +135,7 @@ def test_sweep_event_must_be_condition():
     """펼침 이벤트는 condition만 — score면 S-event 거부."""
     s = StrategyIR(signal=_score(), universe=Universe(kind="all"),
                    position=PositionSpec(entry=Entry(mode="scheduled")),
-                   sweep=SweepSpec(axis="time", event=_score(), windows=[5]))
+                   query="relate", study=Study(event=_score(), windows=[5]))
     assert any(i.rule == "S-event" for i in validate_strategy(s))
 
 

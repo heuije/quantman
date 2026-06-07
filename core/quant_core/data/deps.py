@@ -49,8 +49,8 @@ def required_data(strategy: "StrategyIR") -> set[str]:
     from ..indicators import BASE_INDICATOR_COLS, FUND_INDICATOR_COLS   # 지연 import
 
     base, fund = set(BASE_INDICATOR_COLS), set(FUND_INDICATOR_COLS)
-    pos, sim, sw, u = strategy.position, strategy.simulation, strategy.sweep, strategy.universe
-    nodes = [strategy.signal, pos.exit.condition, sw.label, sw.event, pos.overlays.group_label]
+    pos, sim, st, u = strategy.position, strategy.simulation, strategy.study, strategy.universe
+    nodes = [strategy.signal, pos.exit.condition, st.label, st.event, pos.overlays.group_label]
     # 스크리너 선별 조건(필터+횡단순위 포함)의 데이터 참조도 무결성 검사 대상에 포함.
     if u.screener:
         from ..blocks.node import Node
@@ -67,7 +67,7 @@ def required_data(strategy: "StrategyIR") -> set[str]:
             req.add("price.open")
         elif sim.fill == "typical":
             req.update({"price.high", "price.low"})
-    if sw.axis == "time" and sw.event_basis == "intraday":
+    if strategy.query == "relate" and st.event is not None and st.event_basis == "intraday":
         req.add("price.open")
     if pos.exit.trail_atr_mult is not None or pos.exit.trail_pct is not None:
         req.add("price.high")

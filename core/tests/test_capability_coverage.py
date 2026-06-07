@@ -28,7 +28,16 @@ from quant_core.ir_engine import capability_spec
 from quant_core.ir_engine.spec import StrategyIR
 
 # LLM에 의도적으로 숨기는 내부 전용 enum 값 — 비우는 게 기본. 추가 시 반드시 사유 주석.
-_ALLOWLIST: set[str] = set()
+# query/study 평면(describe·relate·simulate / none·parameter·entity·label·time_fold /
+# enumerate·contrast·consistency)은 마이그레이션 셰임이 레거시 sweep/period_split을 흡수하는
+# *내부 타깃* 어휘다. 현 단계 NL 컴파일러는 여전히 레거시 sweep_axis/sweep_target/period_split
+# (capabilities.py에 그대로 노출)을 산출하고 셰임이 이 평면으로 번역한다. 컴파일러를 query/study
+# 직접 산출로 재배선하는 후속 단계에서 capability_spec에 {value, does}로 승격하며 이 항목을 비운다.
+_ALLOWLIST: set[str] = {
+    "describe", "relate", "simulate",                       # query 동사
+    "none", "parameter", "entity", "label", "time_fold",    # study.axis
+    "enumerate", "contrast", "consistency",                 # study.reduction
+}
 
 
 def _collect_from_annotation(ann, lit: set, models: set) -> None:

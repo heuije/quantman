@@ -19,7 +19,7 @@ import types
 import typing
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..blocks.catalog import get, has
 from ..blocks.integrity import DatasetMeta, integrity_issues
@@ -138,11 +138,6 @@ class SimSpec(BaseModel):
     maintenance_margin_pct: Optional[float] = None
     start: Optional[str] = None
     end: Optional[str] = None
-    period_split: Literal["single", "walk_forward", "oos", "kfold"] = "single"
-    # 명시 분할 경계(ISO 날짜) — 비면 등분(oos 5:5·walk_forward 4등분), 채우면 이 날짜들로
-    # 분할(세그먼트 N+1개). 학습/검증을 사건이 아닌 *지정 시점*(예: 2018-01-01)으로 가르는
-    # 워크포워드에 필수(T1·SEA1 시대분할). split_dates가 있으면 그 자체가 기간분할을 발동.
-    split_dates: list[str] = Field(default_factory=list)
     # ── 선물 연속물 구성 (equity 심볼이면 무시) ──────────────────────────────────
     # 선물은 만기물 체인 → 단일 연속 시계열로 이어붙여 백테스트한다. 미지정(None)이면 상품
     # 카탈로그(exec_defaults.instrument_spec)의 default_roll/조정을 사용. 결과에 영향하는
@@ -169,24 +164,19 @@ class ParamAxis(BaseModel):
     values: list = Field(default_factory=list)
 
 
-class SweepSpec(BaseModel):
-    axis: Literal["none", "condition", "parameter", "asset", "time"] = "none"
-    # 분석 대상(target) — 무엇을 측정하나. axis와 직교: target!=return이면 전용 분석 경로로
-    # 분기(axis 무시). 측정만 일반화하고 신호 대수는 안 건드린다(읽기층 일반화).
-    #   return  : 전략 일별수익(기존). axis로 분할/반복.
-    #   signal  : 임의 score 노드의 *값* 분포를 (선택)국면 라벨별로 — 신호 자체를 연구
-    #             (반감기·상관 레짐 등). 손익이 아니라 신호값의 분포·왜도가 답이다.
-    #   relation: factor 노드와 forward수익의 횡단 IC 시계열 — 예측력·팩터 타이밍.
-    target: Literal["return", "signal", "relation"] = "return"
-    target_node: Optional[Node] = None   # signal: 분석 노드 · relation: factor 노드
-    relation_kind: Literal["ic"] = "ic"  # relation 측정 종류(현재 횡단 IC만)
-    label: Optional[Node] = None        # condition·time·signal·relation: 라벨 블록(국면 등)
-    # parameter축: 격자. 축 1개=1D 펼침, 2개+=데카르트곱(예: commission×slippage 민감도).
+class Study(BaseModel):
+    """평면4 — 질문을 한 축으로 펼치고 환원(옛 SweepSpec + period_split 흡수)."""
+    axis: Literal["none", "parameter", "entity", "label", "time_fold"] = "none"
+    reduction: Literal["enumerate", "contrast", "consistency"] = "enumerate"
     param_grid: list[ParamAxis] = Field(default_factory=list)
-    assets: list[str] = Field(default_factory=list)   # asset축: 종목/유니버스 목록
-    event: Optional[Node] = None        # time축: 이벤트 조건(미지정 시 signal 사용)
-    windows: list[int] = Field(default_factory=lambda: [5, 10, 20])  # time축·IC: forward 윈도우(일)
-    # time축 수익 기준: close(종가→종가)·intraday(시가→종가, 당일반등)·excess(시장초과)
+    assets: list[str] = Field(default_factory=list)
+    label: Optional[Node] = None
+    folds: int = 4
+    split_dates: list[str] = Field(default_factory=list)
+    target_node: Optional[Node] = None
+    relation_kind: Literal["ic"] = "ic"
+    event: Optional[Node] = None
+    windows: list[int] = Field(default_factory=lambda: [5, 10, 20])
     event_basis: Literal["close", "intraday", "excess"] = "close"
 
 
@@ -198,7 +188,54 @@ class StrategyIR(BaseModel):
     signal: Node                        # condition(룰) 또는 score(팩터)
     position: PositionSpec = Field(default_factory=PositionSpec)
     simulation: SimSpec = Field(default_factory=SimSpec)
-    sweep: SweepSpec = Field(default_factory=SweepSpec)
+    query: Literal["describe", "relate", "simulate"] = "simulate"
+    study: Study = Field(default_factory=Study)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy(cls, data):
+        """[임시 마이그레이션 셰임 — 후속 단계에서 삭제] 레거시 dict(sweep/period_split)→신(query/study)."""
+        if not isinstance(data, dict):
+            return data
+        if "study" in data or "query" in data:
+            return data
+        sw = data.pop("sweep", None) or {}
+        sim = data.get("simulation") or {}
+        study: dict = {}
+        for k in ("label", "target_node", "relation_kind", "event", "windows", "event_basis"):
+            if k in sw:
+                study[k] = sw[k]
+        tgt, axis = sw.get("target", "return"), sw.get("axis", "none")
+        ps, sd = (sim.get("period_split", "single") if isinstance(sim, dict) else "single"), \
+                 (sim.get("split_dates") or [] if isinstance(sim, dict) else [])
+        if tgt == "signal":
+            data["query"] = "describe"
+        elif tgt == "relation" or axis == "time":
+            data["query"] = "relate"
+            if axis == "time" and sw.get("event") is not None:
+                study["event"] = sw["event"]
+            study["param_grid"] = sw.get("param_grid", [])
+        else:
+            data["query"] = "simulate"
+            if ps != "single" or sd:
+                study.update(axis="time_fold", reduction="consistency",
+                             folds=(2 if ps == "oos" else 4), split_dates=sd)
+                # 기간분할 × 펼침 동시 사용은 금지(2D 모호성). 셰임은 time_fold로 수렴하되
+                # 펼침축의 잔여 필드(param_grid·assets)를 남겨 validate_strategy가 충돌을 감지·거부한다.
+                if axis == "parameter" and sw.get("param_grid"):
+                    study["param_grid"] = sw["param_grid"]
+                elif axis == "asset" and sw.get("assets"):
+                    study["assets"] = sw["assets"]
+            elif axis == "parameter":
+                study.update(axis="parameter", reduction="enumerate", param_grid=sw.get("param_grid", []))
+            elif axis == "asset":
+                study.update(axis="entity", reduction="enumerate", assets=sw.get("assets", []))
+            elif axis == "condition":
+                study.update(axis="label", reduction="contrast")
+        if isinstance(sim, dict):
+            sim.pop("period_split", None); sim.pop("split_dates", None)
+        data["study"] = study
+        return data
 
 
 # ── 스키마 인트로스펙션 (LLM 교정 피드백용) ──────────────────────────────────────
@@ -263,7 +300,7 @@ def _model_at(loc: tuple) -> Optional[type]:
 def field_contract(loc) -> Optional[str]:
     """loc 위치 모델의 계약을 한 줄로(LLM 교정 힌트).
 
-    예: field_contract(("sweep","param_grid",0)) → "ParamAxis = { path: str(필수), values: list }".
+    예: field_contract(("study","param_grid",0)) → "ParamAxis = { path: str(필수), values: list }".
     누락·타입 오류 시 _validate가 이 컨테이너 계약을 에러 메시지에 덧붙여 LLM이 모양을 고치게 한다.
     """
     model = _model_at(tuple(loc))
@@ -421,63 +458,69 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                             "낙폭 soft가 hard 이상 — 부분 디리스킹 없이 binary kill로 동작합니다.",
                             "position.overlays"))
 
-    # 펼침
-    if s.sweep.axis == "condition" and s.sweep.label is None:
-        issues.append(Issue("S-sweep", SEV_ERROR, "조건축 펼침은 라벨 블록이 필요합니다.", "sweep"))
-    if s.sweep.axis == "parameter" and (not s.sweep.param_grid
-                                        or any(not ax.values for ax in s.sweep.param_grid)):
+    # 펼침 (query=simulate의 study.axis 분기 + describe/relate 분석)
+    st = s.study
+    if st.axis == "label" and st.label is None:
+        issues.append(Issue("S-sweep", SEV_ERROR, "조건축 펼침은 라벨 블록이 필요합니다.", "study"))
+    if st.axis == "parameter" and (not st.param_grid
+                                   or any(not ax.values for ax in st.param_grid)):
         issues.append(Issue("S-sweep", SEV_ERROR,
-                            "파라미터축 펼침은 param_grid(경로·값 목록)가 필요합니다.", "sweep"))
-    if s.sweep.axis == "asset" and not s.sweep.assets:
-        issues.append(Issue("S-sweep", SEV_ERROR, "자산축 펼침은 assets(종목 목록)가 필요합니다.", "sweep"))
-    if s.sweep.axis == "time":
-        ev = s.sweep.event or s.signal
-        if signal_out_type(ev) != "condition":
+                            "파라미터축 펼침은 param_grid(경로·값 목록)가 필요합니다.", "study"))
+    if st.axis == "entity" and not st.assets:
+        issues.append(Issue("S-sweep", SEV_ERROR, "자산축 펼침은 assets(종목 목록)가 필요합니다.", "study"))
+    # relate + event 설정 = 이벤트 스터디 모드(옛 axis="time").
+    if s.query == "relate" and st.event is not None:
+        if signal_out_type(st.event) != "condition":
             issues.append(Issue("S-event", SEV_ERROR,
-                                "이벤트 분석은 이벤트 신호가 condition(발생 여부)이어야 합니다.", "sweep.event"))
-        if not s.sweep.windows:
-            issues.append(Issue("S-event", SEV_ERROR, "이벤트 분석은 forward 윈도우가 필요합니다.", "sweep.windows"))
-        if s.sweep.event_basis == "excess" and u.kind == "single":
+                                "이벤트 분석은 이벤트 신호가 condition(발생 여부)이어야 합니다.", "study.event"))
+        if not st.windows:
+            issues.append(Issue("S-event", SEV_ERROR, "이벤트 분석은 forward 윈도우가 필요합니다.", "study.windows"))
+        if st.event_basis == "excess" and u.kind == "single":
             issues.append(Issue("S-event", SEV_ERROR,
                                 "초과수익(excess) 기준은 시장 지수 생성을 위해 종목이 2개 이상이어야 합니다.",
-                                "sweep.event_basis"))
-    if s.sweep.label is not None:
-        issues += list(validate(s.sweep.label, valid_refs))
-        if signal_out_type(s.sweep.label) != "label":
+                                "study.event_basis"))
+    if st.label is not None:
+        issues += list(validate(st.label, valid_refs))
+        if signal_out_type(st.label) != "label":
             issues.append(Issue("S-sweep", SEV_ERROR,
-                                "펼침 분할 라벨(sweep.label)은 label 블록(구간분할·국면·달력)이어야 합니다.",
-                                "sweep.label"))
-    if s.sweep.event is not None:
-        issues += list(validate(s.sweep.event, valid_refs))
+                                "펼침 분할 라벨(study.label)은 label 블록(구간분할·국면·달력)이어야 합니다.",
+                                "study.label"))
+    if st.event is not None:
+        issues += list(validate(st.event, valid_refs))
 
-    # 분석 대상(target=signal·relation) — 분석 노드(target_node) 필요·타입·시장참조 검증
-    if s.sweep.target in ("signal", "relation"):
-        tn = s.sweep.target_node
+    # 분석(query=describe·relate) — 분석 노드(target_node) 필요·타입·시장참조 검증.
+    # (relate + event는 이벤트 스터디라 target_node 없이 동작 → IC 모드일 때만 target_node 요구.)
+    is_ic = s.query == "relate" and st.event is None
+    if s.query == "describe" or is_ic:
+        tn = st.target_node
         if tn is None:
             issues.append(Issue("S-target", SEV_ERROR,
                                 "신호값/관계 분석은 분석 노드(target_node)가 필요합니다.",
-                                "sweep.target_node"))
+                                "study.target_node"))
         else:
             issues += list(validate(tn, valid_refs))
-            issues += meaningfulness_issues(tn, "sweep.target_node")
+            issues += meaningfulness_issues(tn, "study.target_node")
             if signal_out_type(tn) not in ("score", "condition"):
                 issues.append(Issue("S-target", SEV_ERROR,
                                     "분석 노드는 score(점수) 또는 condition 블록이어야 합니다.",
-                                    "sweep.target_node"))
+                                    "study.target_node"))
             if not has_market_source(tn):
                 issues.append(Issue("M-const", SEV_ERROR,
-                                    "분석 노드가 시장 데이터를 참조하지 않습니다.", "sweep.target_node"))
-        if s.sweep.target == "relation":
-            if not s.sweep.windows:
+                                    "분석 노드가 시장 데이터를 참조하지 않습니다.", "study.target_node"))
+        if is_ic:
+            if not st.windows:
                 issues.append(Issue("S-target", SEV_ERROR,
-                                    "IC 분석은 forward 윈도우(windows)가 필요합니다.", "sweep.windows"))
+                                    "IC 분석은 forward 윈도우(windows)가 필요합니다.", "study.windows"))
             if s.universe.kind == "single":
                 issues.append(Issue("S-target", SEV_ERROR,
                                     "IC(횡단 상관) 분석은 종목이 2개 이상이어야 합니다.", "universe"))
 
-    # 기간분할 × 펼침 동시 사용 금지 (2D 모호성 차단) — split_dates·target도 기간분할/분석 발동
-    has_period = s.simulation.period_split != "single" or bool(s.simulation.split_dates)
-    if (s.sweep.axis != "none" or s.sweep.target != "return") and has_period:
+    # 기간분할 × 펼침 동시 사용 금지 (2D 모호성 차단). 신 모델은 study가 평면이라 time_fold가
+    # 다른 펼침/분석 필드와 공존하면 충돌(레거시 셰임이 period_split+sweep을 받으면 time_fold로
+    # 수렴하되 sweep 잔여 필드를 남긴다 — 그 잔여로 충돌을 감지해 거부).
+    if st.axis == "time_fold" and (st.label is not None or st.param_grid or st.assets
+                                   or st.target_node is not None or st.event is not None
+                                   or s.query != "simulate"):
         issues.append(Issue("S-split", SEV_ERROR,
                             "기간분할과 펼침/분석은 동시에 쓸 수 없습니다 — 하나만 선택하세요.", "simulation"))
 
@@ -525,7 +568,7 @@ def needed_symbols(s: StrategyIR) -> Optional[set[str]]:
         return None
     syms: set[str] = set(s.universe.symbols)
     nodes = [s.signal, s.position.exit.condition, s.position.overlays.group_label,
-             s.sweep.label, s.sweep.event, s.sweep.target_node]
+             s.study.label, s.study.event, s.study.target_node]
     sc = (s.universe.screener or {}).get("condition")
     if sc is not None:
         try:
@@ -556,7 +599,7 @@ def needed_columns(s: StrategyIR) -> Optional[set[str]]:
     if any(str(x).startswith("strat:") for x in s.universe.symbols):
         return None
     nodes = [s.signal, s.position.exit.condition, s.position.overlays.group_label,
-             s.sweep.label, s.sweep.event, s.sweep.target_node]
+             s.study.label, s.study.event, s.study.target_node]
     # 스크리너 선별 조건도 참조 컬럼(후보를 이 조건으로 거른다).
     if s.universe.screener:
         cond = s.universe.screener.get("condition")

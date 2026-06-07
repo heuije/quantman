@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 
 from quant_core.blocks import Node, const, data  # noqa: E402
 from quant_core.ir_engine import (  # noqa: E402
-    Entry, PositionSpec, Sizing, SimSpec, StrategyIR, SweepSpec, Universe, run_sweep,
+    Entry, PositionSpec, Sizing, SimSpec, StrategyIR, Study, Universe, run_query,
 )
 
 
@@ -42,10 +42,11 @@ def test_condition_sweep_includes_significance():
         position=PositionSpec(direction="long", sizing=Sizing(mode="equal_weight"),
                               entry=Entry(mode="scheduled", rebalance="monthly", top_n=1)),
         simulation=SimSpec(initial_capital=1e7),
-        sweep=SweepSpec(axis="condition",
-                        label=Node(op="bucket", params={"edges": [25.0]},
-                                   inputs={"signal": data("VIX.Close")})))
-    res = run_sweep(s, _multi())
+        query="simulate",
+        study=Study(axis="label", reduction="contrast",
+                    label=Node(op="bucket", params={"edges": [25.0]},
+                               inputs={"signal": data("VIX.Close")})))
+    res = run_query(s, _multi())
     assert res["success"] and res["axis"] == "condition"
     assert "compare" in res                      # A1 — 유의성 동봉
     assert "pairwise" in res["compare"]
@@ -72,18 +73,18 @@ def _wti():
 def _event_strategy(with_regime: bool):
     cross = Node(op="cross", params={"direction": "down"},
                  inputs={"left": data("__SELF__.Close"), "right": const(60.0)})
-    sweep = SweepSpec(axis="time", windows=[5, 10, 20])
+    study = Study(event=cross, windows=[5, 10, 20])
     if with_regime:
-        sweep.label = Node(op="bucket", params={"edges": [35.0]},
+        study.label = Node(op="bucket", params={"edges": [35.0]},
                            inputs={"signal": data("__SELF__.realized_vol_20d")})
     return StrategyIR(
         signal=cross, universe=Universe(kind="single", symbols=["원유선물"]),
         position=PositionSpec(entry=Entry(mode="on_signal")),
-        simulation=SimSpec(initial_capital=1e7), sweep=sweep)
+        simulation=SimSpec(initial_capital=1e7), query="relate", study=study)
 
 
 def test_event_study_forward_windows():
-    res = run_sweep(_event_strategy(with_regime=False), _wti())
+    res = run_query(_event_strategy(with_regime=False), _wti())
     assert res["success"] and res["axis"] == "time"
     assert set(res["windows"]) == {"5", "10", "20"}
     assert res["n_events"] > 0
@@ -94,7 +95,7 @@ def test_event_study_forward_windows():
 
 
 def test_event_study_regime_split_significance():
-    res = run_sweep(_event_strategy(with_regime=True), _wti())
+    res = run_query(_event_strategy(with_regime=True), _wti())
     assert res["success"]
     assert res["by_regime"] is not None
     w20 = res["by_regime"]["20"]
@@ -109,7 +110,7 @@ def test_event_study_regime_split_significance():
 
 def test_event_study_path_metrics_present():
     """모든 윈도 요약에 forward 낙폭(MAE)·상승(MFE) 경로지표 포함 — task8·task9."""
-    res = run_sweep(_event_strategy(with_regime=False), _wti())
+    res = run_query(_event_strategy(with_regime=False), _wti())
     for w in ("5", "10", "20"):
         o = res["overall"][w]
         for k in ("mean_mae", "worst_mae", "mean_mfe", "payoff_ratio"):
@@ -120,9 +121,9 @@ def test_event_study_path_metrics_present():
 def test_event_study_intraday_basis():
     """basis=intraday — 당일 시가→종가 반등(task13). w=0 포함 경로."""
     s = _event_strategy(with_regime=False)
-    s.sweep.event_basis = "intraday"
-    s.sweep.windows = [0, 1, 3]
-    res = run_sweep(s, _wti())
+    s.study.event_basis = "intraday"
+    s.study.windows = [0, 1, 3]
+    res = run_query(s, _wti())
     assert res["success"] and res["basis"] == "intraday"
     assert res["overall"]["0"]["n"] > 0            # 당일(w=0)도 측정
 
@@ -134,9 +135,9 @@ def test_event_study_excess_basis_multi():
     s = StrategyIR(
         signal=cross, universe=Universe(kind="list", symbols=["AAA", "BBB", "CCC"]),
         position=PositionSpec(entry=Entry(mode="on_signal")),
-        simulation=SimSpec(initial_capital=1e7),
-        sweep=SweepSpec(axis="time", windows=[5, 10], event_basis="excess"))
-    res = run_sweep(s, _multi())
+        simulation=SimSpec(initial_capital=1e7), query="relate",
+        study=Study(event=cross, windows=[5, 10], event_basis="excess"))
+    res = run_query(s, _multi())
     assert res["success"] and res["basis"] == "excess"
     assert res["n_events"] > 0
 
@@ -144,7 +145,7 @@ def test_event_study_excess_basis_multi():
 def test_event_study_excess_single_rejected():
     from quant_core.ir_engine import validate_strategy
     s = _event_strategy(with_regime=False)
-    s.sweep.event_basis = "excess"                 # 단일종목 — 시장 지수 불가
+    s.study.event_basis = "excess"                 # 단일종목 — 시장 지수 불가
     assert any(i.rule == "S-event" and i.is_error for i in validate_strategy(s))
 
 

@@ -83,7 +83,7 @@ def test_load_manifest_missing_returns_none(tmp_path):
 from quant_core.blocks import Node, const, data  # noqa: E402
 from quant_core.data import required_data  # noqa: E402
 from quant_core.ir_engine import (  # noqa: E402
-    Entry, Overlays, PositionSpec, Sizing, SimSpec, StrategyIR, SweepSpec, Universe,
+    Entry, Overlays, PositionSpec, Sizing, SimSpec, StrategyIR, Study, Universe,
 )
 
 
@@ -115,8 +115,8 @@ def test_deps_event_intraday_list():
                          "right": Node(op="ts_mean", params={"window": 5},
                                        inputs={"signal": data("__SELF__.Close")})})
     s = StrategyIR(signal=cross, universe=Universe(kind="list", symbols=["A", "B"]),
-                   position=PositionSpec(entry=Entry(mode="on_signal")),
-                   sweep=SweepSpec(axis="time", event_basis="intraday", windows=[1, 3]))
+                   position=PositionSpec(entry=Entry(mode="on_signal")), query="relate",
+                   study=Study(event=cross, event_basis="intraday", windows=[1, 3]))
     req = required_data(s)
     assert {"price.close", "price.open"} <= req
     assert "symbol_master" not in req            # 게이트 비소비 토큰 미발행

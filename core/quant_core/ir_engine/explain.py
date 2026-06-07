@@ -21,7 +21,7 @@ from ..blocks.node import referenced_columns, referenced_symbols
 from ..exec_defaults import DEFAULT_EXECUTION, is_futures
 from .capabilities import capability_spec
 from .spec import (Entry, Overlays, PositionSpec, SimSpec, Sizing, StrategyIR,
-                   SweepSpec, Universe, signal_out_type)
+                   Study, Universe, signal_out_type)
 
 _SET = "지정"
 _DEF = "기본"
@@ -32,7 +32,19 @@ _CAP = capability_spec()
 _D_UNI = Universe()
 _D_POS = PositionSpec()
 _D_SIM = SimSpec()
-_D_SWEEP = SweepSpec()
+_D_STUDY = Study()
+
+
+def _split_mode(ir: StrategyIR) -> str:
+    """study(time_fold/folds)에서 옛 period_split 표시값을 복원 — 검증 방식 라벨·_does 키용.
+
+    엔진은 split_dates 유무·folds(2=oos·4=walk_forward) 만 구분하므로 kfold는 walk_forward와
+    동치로 묶인다(_SPLIT/capabilities도 동일 명시). time_fold 아니면 단일 구간(single).
+    """
+    st = ir.study
+    if st.axis != "time_fold":
+        return "single"
+    return "oos" if st.folds == 2 else "walk_forward"
 
 
 def _does(spec_key: str, value) -> str:
@@ -264,16 +276,16 @@ _SPLIT = {"single": "단일 구간 1회", "walk_forward": "시간순 4분할 일
           "oos": "인/아웃 2분할", "kfold": "시간순 4분할(walk_forward와 동일)"}
 
 
-def _environment(sim: SimSpec, u: Universe) -> dict:
+def _environment(sim: SimSpec, u: Universe, split_mode: str) -> dict:
     items = [_it("초기 자본", _won(sim.initial_capital),
                  _SET if sim.initial_capital != _D_SIM.initial_capital else _DEF)]
     if sim.start or sim.end:
         items.append(_it("기간", f"{sim.start or '데이터 시작'} ~ {sim.end or '데이터 끝'}", _SET))
     else:
         items.append(_it("기간", "데이터 전체 기간", _DEF))
-    items.append(_it("검증 방식", _SPLIT.get(sim.period_split, sim.period_split),
-                     _SET if sim.period_split != _D_SIM.period_split else _DEF,
-                     _does("period_split", sim.period_split)))
+    items.append(_it("검증 방식", _SPLIT.get(split_mode, split_mode),
+                     _SET if split_mode != "single" else _DEF,
+                     _does("period_split", split_mode)))
     items.append(_it("데이터 빈도", "일봉 (일별 OHLC)", _DEF, "분/틱 단위 아님."))
     items.append(_it("데이터 처리", "종목별 시장 소스 1개 사용 · 배당/생존편향 등 세부 처리는 데이터 레이어에 의존", _DEF))
     # 선물 연속물·롤·통화 — 엔진 미적용(예약)을 정직하게 못박는다. roll_method 등을 채워 와도,
@@ -297,20 +309,36 @@ def instrument_currency_usd(symbol: str) -> bool:
     return s.asset_class == "futures" and s.currency == "USD"
 
 
-# ── ⑨ 분석 차원 (sweep 요청 시에만) ──────────────────────────────────────────
-def _analysis(sw: SweepSpec) -> dict | None:
-    if sw.axis == "none":
+# ── ⑨ 분석 차원 (펼침 요청 시에만) ───────────────────────────────────────────
+def _display_axis_target(ir: StrategyIR) -> tuple[str, str]:
+    """신 query/study에서 옛 (sweep_axis, sweep_target) 표시쌍 복원(capabilities does-텍스트 키).
+
+    describe→(none,signal)·relate+event→(time,return)·relate(IC)→(none,relation)·
+    simulate는 study.axis로(parameter→parameter·entity→asset·label→condition·그 외 none).
+    """
+    st = ir.study
+    if ir.query == "describe":
+        return "none", "signal"
+    if ir.query == "relate":
+        return ("time", "return") if st.event is not None else ("none", "relation")
+    return {"parameter": "parameter", "entity": "asset",
+            "label": "condition"}.get(st.axis, "none"), "return"
+
+
+def _analysis(ir: StrategyIR) -> dict | None:
+    axis, target = _display_axis_target(ir)
+    if axis == "none":            # 옛 sweep.axis=="none"(단일·기간분할·IC·신호분포)은 분석 버킷 없음
         return None
-    items = [_it("분석 축", _does("sweep_axis", sw.axis) or sw.axis, _SET),
-             _it("측정 대상", _does("sweep_target", sw.target) or sw.target, _SET)]
-    if sw.label is not None:
+    items = [_it("분석 축", _does("sweep_axis", axis) or axis, _SET),
+             _it("측정 대상", _does("sweep_target", target) or target, _SET)]
+    if ir.study.label is not None:
         items.append(_it("분할 라벨", "그룹 라벨 블록(섹터·국면 등)으로 분할", _SET))
     return _bucket("analysis", "⑨ 분석 차원 (결과 펼침)", "단일 결과인가, 쪼개 보나?", items)
 
 
 def _narrative(ir: StrategyIR) -> str:
     """전략 전체를 흐르는 한국어 한 문단으로 묘사 — 직관적 요약(MECE 항목의 산문 버전)."""
-    u, pos, sim, sw = ir.universe, ir.position, ir.simulation, ir.sweep
+    u, pos, sim = ir.universe, ir.position, ir.simulation
     e, x, s = pos.entry, pos.exit, pos.sizing
     st = signal_out_type(ir.signal)
     cols = sorted(referenced_columns(ir.signal))
@@ -378,14 +406,16 @@ def _narrative(ir: StrategyIR) -> str:
     slip = sim.slippage if sim.slippage is not None else DEFAULT_EXECUTION["bt_slippage_bps"] / 10_000.0
     tax = sim.sell_tax if sim.sell_tax is not None else DEFAULT_EXECUTION["bt_sell_tax_bps"] / 10_000.0
     period = f"{sim.start or '데이터 시작'}~{sim.end or '데이터 끝'}" if (sim.start or sim.end) else "데이터 전체 기간"
+    split_mode = _split_mode(ir)
     sents.append(f"체결은 {fill_word} 기준이고, 비용은 수수료 편도 {_frac_pct(comm)}·"
                  f"슬리피지 {_frac_pct(slip)}·매도세 {_frac_pct(tax)}를 가정하며, "
                  f"초기 자본 {_won(sim.initial_capital)}으로 {period}을 "
-                 f"{_SPLIT.get(sim.period_split, sim.period_split)} 일봉 백테스트합니다.")
+                 f"{_SPLIT.get(split_mode, split_mode)} 일봉 백테스트합니다.")
 
-    if sw.axis != "none":
+    disp_axis, _ = _display_axis_target(ir)
+    if disp_axis != "none":
         axis_word = {"condition": "그룹(섹터·국면 등)별", "parameter": "파라미터 값별",
-                     "asset": "종목별", "time": "이벤트 시점별"}.get(sw.axis, sw.axis)
+                     "asset": "종목별", "time": "이벤트 시점별"}.get(disp_axis, disp_axis)
         sents.append(f"결과는 {axis_word}로 나눠 비교합니다.")
 
     return " ".join(sents)
@@ -395,7 +425,7 @@ def explain_ir(ir: StrategyIR, assumptions: list[str] | None = None) -> dict:
     """StrategyIR → 설명 문서: 직관적 prose 요약 + MECE 버킷별 분해.
 
     반환: {"summary": str(한 문단 묘사), "buckets": [...], "assumptions": [...]}.
-    buckets는 항상 ①~⑧ + (sweep.axis != none이면) ⑨. assumptions는 컴파일러가 준
+    buckets는 항상 ①~⑧ + (펼침 축이 있으면) ⑨. assumptions는 컴파일러가 준
     [추론] 가정 리스트(있으면 그대로 통과 — UI가 별도 밴드로 표시)."""
     pos, sim = ir.position, ir.simulation
     buckets = [
@@ -406,9 +436,9 @@ def explain_ir(ir: StrategyIR, assumptions: list[str] | None = None) -> dict:
         _exit(pos),
         _overlays(pos.overlays),
         _execution(sim, ir.universe),
-        _environment(sim, ir.universe),
+        _environment(sim, ir.universe, _split_mode(ir)),
     ]
-    analysis = _analysis(ir.sweep)
+    analysis = _analysis(ir)
     if analysis is not None:
         buckets.append(analysis)
     return {"summary": _narrative(ir), "buckets": buckets,

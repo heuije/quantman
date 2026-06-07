@@ -22,7 +22,7 @@ if str(_CORE) not in sys.path:
 from quant_core.blocks import Node, data
 from quant_core.expression_parser import get_symbol_group
 from quant_core.ir_engine import (Entry, PositionSpec, Sizing, SimSpec, StrategyIR,
-                                   SweepSpec, Universe, run_sweep)
+                                   Study, Universe, run_query)
 
 
 def _ds(codes):
@@ -40,9 +40,9 @@ def _sector_ir(codes):
         signal=data("momentum_12_1m"), universe=Universe(kind="list", symbols=codes),
         position=PositionSpec(direction="long", sizing=Sizing(mode="equal_weight"),
                               entry=Entry(mode="scheduled", rebalance="monthly", top_n=len(codes))),
-        simulation=SimSpec(initial_capital=1e7),
-        sweep=SweepSpec(axis="condition", target="return",
-                        label=Node(op="attribute", params={"attr": "Industry"})))
+        simulation=SimSpec(initial_capital=1e7), query="simulate",
+        study=Study(axis="label", reduction="contrast",
+                    label=Node(op="attribute", params={"attr": "Industry"})))
 
 
 def test_condition_sector_partition_makes_multiple_buckets():
@@ -50,7 +50,7 @@ def test_condition_sector_partition_makes_multiple_buckets():
     sectors = {get_symbol_group(c, "Industry") for c in codes}
     if len(sectors) < 2:
         pytest.skip(f"분류 사이드카 부재 또는 단일 섹터: {sectors}")
-    res = run_sweep(_sector_ir(codes), _ds(codes))
+    res = run_query(_sector_ir(codes), _ds(codes))
     assert res["success"], res.get("error")
     assert res["axis"] == "condition"
     assert len(res["buckets"]) >= 2, f"섹터 분할 실패(여전히 1버킷?): {list(res['buckets'])}"

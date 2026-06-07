@@ -114,7 +114,7 @@ register(DataTypeSpec(
     adjustment="total_return", source="yfinance / FinanceDataReader",
     provides=["Open", "High", "Low", "Close", "Volume"],
     required_meta=_BASE_META + ["adjustment"],
-    downstream=["universe", "signal", "sweep.event"], current_status="present",
+    downstream=["universe", "signal", "study.event"], current_status="present",
 ))
 register(DataTypeSpec(
     key="ohlcv.crypto", pclass=PClass.PRICE, label="암호화폐 OHLCV", frequency="daily",
@@ -157,7 +157,7 @@ register(DataTypeSpec(
     label="애널리스트 추정치·리비전(EPS surprise·estimate revision)",
     frequency="event", history_rule="추정 스냅샷별 timestamp 시계열", point_in_time=True,
     source="(미연동)", required_meta=_BASE_META + ["as_of", "estimate_date"],
-    downstream=["signal(추정치 ref)", "sweep.time(이벤트)"], current_status="absent",
+    downstream=["signal(추정치 ref)", "study.event(이벤트)"], current_status="absent",
     notes="task2(실적서프라이즈·리비전 지속성)에 필요 — 현재 미연동.",
 ))
 
@@ -167,21 +167,21 @@ register(DataTypeSpec(
     key="macro.market", pclass=PClass.MACRO, label="시장 지표(VIX·달러지수·^TNX·MOVE 등)",
     frequency="daily", history_rule="백테스트 기간 + ffill 가능 길이",
     source="yfinance", provides=["Close(=val)"], required_meta=_BASE_META,
-    downstream=["sweep.condition(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",
+    downstream=["study.label(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",
     notes="종목과 캘린더 달라 ffill 브로드캐스트(resolve_data)로 정렬.",
 ))
 register(DataTypeSpec(
     key="macro.fred", pclass=PClass.MACRO, label="거시 시리즈(금리·신용·환율 일간 16종)",
     frequency="daily", history_rule="백테스트 기간", source="FRED CSV",
     provides=["Close(=val)"], required_meta=_BASE_META,
-    downstream=["sweep.condition", "signal(브로드캐스트 ref)"], current_status="present",
+    downstream=["study.label", "signal(브로드캐스트 ref)"], current_status="present",
 ))
 register(DataTypeSpec(
     key="macro.fred_lagged", pclass=PClass.MACRO,
     label="거시 월간(실업률·CPI·GDP 등 10종, 발표지연)", frequency="monthly",
     history_rule="발표분기 시계열", point_in_time=True, source="FRED CSV(15~60일 lag)",
     provides=["Close(=val)"], required_meta=_BASE_META + ["as_of"],
-    downstream=["sweep.condition"], current_status="present",
+    downstream=["study.label"], current_status="present",
     notes="발표지연 있음 → as_of로 PIT 표기 권장.",
 ))
 

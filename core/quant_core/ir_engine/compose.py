@@ -40,7 +40,7 @@ def collect_strat_refs(ir: StrategyIR) -> set[str]:
         if isinstance(s, str) and s.startswith(STRAT_PREFIX):
             ids.add(s)
     nodes = [ir.signal, ir.position.exit.condition, ir.position.overlays.group_label,
-             ir.sweep.label, ir.sweep.event, ir.sweep.target_node]
+             ir.study.label, ir.study.event, ir.study.target_node]
     sc = (ir.universe.screener or {}).get("condition")
     if sc is not None:
         try:
@@ -65,7 +65,7 @@ def materialize_strategy_assets(ir: StrategyIR, dataset: dict, resolver,
     resolver(token) -> 자식 전략 spec(dict). token = 'strat:' 접두 제거(버전 포함, 예 'value_ls@v3').
     dataset를 제자리 변형(호출자가 공유 캐시를 보호하려면 사본을 넘길 것). strat: 참조가 있는데
     resolver=None이면 ValueError. 자식은 단일 백테스트(run_strategy_ir)로 실행 — 자식 spec의
-    sweep/period_split은 무시하고 base equity만 자산으로 쓴다.
+    study(펼침/기간분할)는 무시하고 base equity만 자산으로 쓴다.
     """
     refs = collect_strat_refs(ir)
     if not refs:
