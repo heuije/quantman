@@ -333,47 +333,76 @@ def _initial_calendar_refresh():
 
 
 def _bootstrap_dataset_bundle():
-    """QP_DATASET_BUNDLE_URL이 설정돼 있고 DATA_DIR이 비어 있으면,
-    공개 dataset 번들(tar.zst)을 받아 DATA_DIR에 풀어 백테스트 데이터를 부트스트랩.
+    """QP_DATASET_BUNDLE_URL의 공개 dataset 번들(tar.zst)을 받아 DATA_DIR에 적재.
 
-    볼륨(QP_CORE_DATA_DIR=/data)에 적재되므로 한 번 받으면 재배포해도 유지된다.
-    background thread에서 실행 (610MB 다운로드라 부팅 차단 방지)."""
+    볼륨(QP_CORE_DATA_DIR=/data)에 적재 → 한 번 받으면 재배포해도 유지.
+    무료 티어 볼륨(500MB) 대응: 다운로드는 /tmp(임시디스크), 추출은 예산 내에서
+    지수·매크로(벤치마크) 먼저 + 한국 종목을 용량 한도까지. background thread 실행."""
     import json
     import os
+    import shutil
     import tarfile
+    import tempfile
     import urllib.request
 
     url = os.getenv("QP_DATASET_BUNDLE_URL")
     if not url:
         return
+    # 추출 용량 예산 (MB). 볼륨 크기에서 헤드룸 남김. env로 조절 가능.
+    budget_mb = int(os.getenv("QP_DATASET_BUDGET_MB", "440"))
+    budget = budget_mb * 1024 * 1024
     try:
         import zstandard
         from quant_core.data_fetcher import DATA_DIR
+
+        # 이전 실패로 남은 부분 파일 정리 (볼륨 점유 해제)
+        for junk in DATA_DIR.glob("_bundle*.tar*"):
+            junk.unlink(missing_ok=True)
+
         existing = list(DATA_DIR.glob("*.parquet"))
         if existing:
             _log.info("dataset 번들: 이미 %d개 parquet 적재됨 — skip", len(existing))
         else:
-            _log.info("dataset 번들 다운로드 시작: %s", url)
-            tmp = DATA_DIR / "_bundle.tar.zst"
-            urllib.request.urlretrieve(url, tmp)
-            _log.info("dataset 번들 다운로드 완료 (%d MB) — 압축 해제",
-                      tmp.stat().st_size // 1024 // 1024)
-            dctx = zstandard.ZstdDecompressor()
-            with open(tmp, "rb") as fh, dctx.stream_reader(fh) as reader:
-                with tarfile.open(fileobj=reader, mode="r|") as tar:
-                    tar.extractall(DATA_DIR)
-            tmp.unlink(missing_ok=True)
-            _log.info("dataset 번들 적재 완료: %d parquet",
-                      len(list(DATA_DIR.glob("*.parquet"))))
-        # managed_kr_stocks.json 없으면 6자리 parquet 코드로 생성 (load_all이 KR주식 인식)
-        mk = DATA_DIR / "managed_kr_stocks.json"
-        if not mk.exists():
-            codes = sorted(p.stem for p in DATA_DIR.glob("*.parquet")
-                           if p.stem.isdigit() and len(p.stem) == 6)
-            if codes:
-                mk.write_text(json.dumps(codes))
-                _log.info("managed_kr_stocks.json 생성: KR 종목 %d개", len(codes))
-        # 캐시 무효화 → 다음 get_dataset 시 새 parquet 로드
+            tmpdir = tempfile.mkdtemp(prefix="dsbundle_")  # 임시디스크(/tmp 계열)
+            zst = os.path.join(tmpdir, "b.tar.zst")
+            tar_path = os.path.join(tmpdir, "b.tar")
+            try:
+                _log.info("dataset 번들 다운로드 시작(→임시): %s", url)
+                urllib.request.urlretrieve(url, zst)
+                _log.info("다운로드 완료 (%d MB) — 압축 해제",
+                          os.path.getsize(zst) // 1024 // 1024)
+                dctx = zstandard.ZstdDecompressor()
+                with open(zst, "rb") as fi, open(tar_path, "wb") as fo:
+                    dctx.copy_stream(fi, fo)
+                os.remove(zst)
+                # 우선순위 추출: 비-6자리(지수·매크로) 먼저, 그다음 6자리 코드 예산까지
+                with tarfile.open(tar_path) as tar:
+                    members = [m for m in tar.getmembers() if m.isfile()]
+                    def is_code(m):
+                        stem = m.name.rsplit("/", 1)[-1].replace(".parquet", "")
+                        return stem.isdigit() and len(stem) == 6
+                    nonnum = [m for m in members if not is_code(m)]
+                    num = [m for m in members if is_code(m)]
+                    used = 0
+                    for m in nonnum:           # 지수·매크로는 항상 추출 (작고 벤치마크 필수)
+                        tar.extract(m, DATA_DIR); used += m.size
+                    skipped = 0
+                    for m in num:              # 한국 종목은 예산 내까지
+                        if used + m.size > budget:
+                            skipped += 1; continue
+                        tar.extract(m, DATA_DIR); used += m.size
+                    _log.info("dataset 적재: 지수·매크로 %d + 한국종목 %d (스킵 %d), %d MB",
+                              len(nonnum), len(num) - skipped, skipped, used // 1024 // 1024)
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+
+        # managed_kr_stocks.json — 추출된 6자리 parquet 코드로 생성 (load_all 인식)
+        codes = sorted(p.stem for p in DATA_DIR.glob("*.parquet")
+                       if p.stem.isdigit() and len(p.stem) == 6)
+        if codes:
+            (DATA_DIR / "managed_kr_stocks.json").write_text(json.dumps(codes))
+            _log.info("managed_kr_stocks.json: KR 종목 %d개", len(codes))
+
         from . import data_cache
         data_cache.invalidate()
     except Exception:
