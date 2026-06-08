@@ -14,6 +14,7 @@ class SimBroker:
                                      "foreign_eval_krw": 0, "cash_usd": 0, "fx_usdkrw": 0}
         self._prices = dict(prices or {})
         self._positions: list[dict] = []
+        self._margin: dict | None = None
         self.submitted: list[dict] = []
         self._statuses: dict[str, dict] = {}
         self._n = 0
@@ -30,7 +31,10 @@ class SimBroker:
     # ── Broker Protocol ──
     def account_snapshot(self, overseas: bool = True) -> dict:
         # overseas — 실 KisBroker는 국내/해외 조회를 가르지만 Sim은 단일 잔고. 인자만 수용.
-        return {"balance": dict(self._balance), "positions": list(self._positions)}
+        snap = {"balance": dict(self._balance), "positions": list(self._positions)}
+        if self._margin is not None:          # 선물 모드에서만 증거금 노출(주식 무변경)
+            snap["margin"] = dict(self._margin)
+        return snap
 
     def price(self, symbol: str) -> float:
         return float(self._prices.get(symbol, 0.0))
@@ -78,3 +82,8 @@ class SimBroker:
         각 항목: {symbol, qty, avg_price, ...} — analytics.reconcile_ledger가 symbol로 매칭.
         """
         self._positions = list(positions)
+
+    def set_margin(self, total_margin: float, available_margin: float) -> None:
+        """선물 시나리오용 증거금 잔고 설정. account_snapshot()['margin']로 노출."""
+        self._margin = {"total_margin": float(total_margin),
+                        "available_margin": float(available_margin)}

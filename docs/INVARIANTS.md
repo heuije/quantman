@@ -90,6 +90,14 @@
   - 근거: 자동매매가 사지 않은 포지션을 원장에 넣으면 청산 로직이 오작동 (Phase 40).
   - 강제: `trader.py:reconcile_with_kis` + `analytics.py:reconcile_ledger`/`plan_orphan_adjustments`.
   - 테스트: ⚠️ 갭 — Workbench 시나리오(외부 매도 drift) 필요.
+- **INV-FUT-1** — 선물 포지션 side는 **long|short**이고 qty > 0다(flat은 미보유=목록부재).
+  - 근거: 선물 숏 포지션의 부호 방향 혼동 방지 (증거금·손익 계산 독립변수).
+  - 강제: `sim/invariants.py:check_futures_sign` (발주 전 위반 검사 미배선, Workbench 진입 시 추가).
+  - 테스트: `test_sim_futures.py::test_inv_fut_sign_ok/rejects_bad_side`.
+- **INV-FUT-2** — 선물 eval_pnl = (eval−avg)×qty×승수×부호(롱+1/숏−1).
+  - 근거: 미결제손익 계산 정확성 (장 중·정산 평가에서 수렴성 보증).
+  - 강제: `sim/invariants.py:check_futures_pnl` (position 생성·갱신마다 자동 검증).
+  - 테스트: `test_sim_futures.py::test_inv_fut_pnl_ok/rejects_wrong_pnl`.
 
 ## A7. 리스크·안전
 
@@ -105,6 +113,10 @@
   - 근거: KIS 서버 거부 누적 방지.
   - 강제: `trader.py:_submit_buy`/`_submit_sell` (`qc.apply_daily_price_limit`).
   - 테스트: ⚠️ 갭 — Workbench 시나리오 필요.
+- **INV-FUT-3** — 선물: 점유 증거금 ≤ 가용 증거금 (과레버리지 차단).
+  - 근거: 증거금 부족으로 인한 강제청산 방지 (마진콜 전 조기 정지).
+  - 강제: `sim/invariants.py:check_futures_margin` (account_snapshot 평가 시 검증).
+  - 테스트: `test_sim_futures.py::test_inv_fut_margin_ok/rejects_overleverage`.
 
 ## A8. 외부 API 한계
 
