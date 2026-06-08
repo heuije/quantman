@@ -11,6 +11,7 @@ from datetime import date
 
 from quant_core.futures_contract import (
     OVERSEAS_ROOTS,
+    dataset_for_contract,
     front_contract,
     futures_market,
     parse_front_month_domestic,
@@ -121,6 +122,33 @@ def test_futures_market_routing():
     assert futures_market("금선물") == "CME"
     assert futures_market("원유선물") == "CME"
     assert futures_market("005930") == ""      # 주식은 선물 market 아님
+
+
+# ── dataset_for_contract — 계약코드 → 데이터셋 심볼 역매핑 (스냅샷 정규화·reconcile, M7) ──
+def test_dataset_for_contract_overseas_roots():
+    assert dataset_for_contract("GCM26") == "금선물"        # GC+M+26
+    assert dataset_for_contract("CLN26") == "원유선물"      # CL+N+26
+    assert dataset_for_contract("BTCM26") == "비트코인선물"  # BTC+M+26
+    assert dataset_for_contract("NQZ25") == "나스닥선물"     # NQ+Z+25
+
+
+def test_dataset_for_contract_domestic():
+    assert dataset_for_contract("A01606") == "코스피200선물"
+    assert dataset_for_contract("A01609") == "코스피200선물"
+
+
+def test_dataset_for_contract_roundtrip_with_resolve():
+    # resolve_contract의 역 — 같은 마스터로 정방향 해석한 코드를 되돌리면 원 심볼
+    assert dataset_for_contract(
+        resolve_contract("금선물", date(2026, 6, 7), overseas_master=_OV)) == "금선물"
+    assert dataset_for_contract(
+        resolve_contract("코스피200선물", date(2026, 6, 7), domestic_master=_DOM)) == "코스피200선물"
+
+
+def test_dataset_for_contract_unknown_none():
+    assert dataset_for_contract("") is None
+    assert dataset_for_contract("005930") is None     # 주식코드는 선물 계약 아님
+    assert dataset_for_contract("ZZZ99") is None       # 미등록 root
 
 
 # ── front_contract — (계약코드, 만기일) 동시 해석 (M6 진입 시 ledger 기록용) ──────

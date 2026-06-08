@@ -112,6 +112,28 @@ def parse_front_month_overseas(master_text: str, today: date,
     return r[1] if r else None
 
 
+def dataset_for_contract(code: str) -> str | None:
+    """라이브 계약코드 → 데이터셋 심볼(한글 상품명). resolve_contract의 역(reconcile/스냅샷용).
+
+    라이브 잔고는 선물을 계약코드(국내 A01606·해외 globex GCM26)로 키잉하나 ledger·reconcile은
+    데이터셋 심볼("코스피200선물"·"금선물")로 키잉한다. BrokerRouter가 스냅샷 병합 시 이 역매핑으로
+    정규화해 기존 (symbol,side) 매칭 로직을 그대로 쓴다. **roll 독립**(root 파싱 — 만기/마스터 불요).
+
+    해외: globex = root + 월코드(1) + YY(2) → root = code[:-3] → OVERSEAS_ROOTS 역.
+    국내: KOSPI200이 유일 국내선물 → 'A'+숫자 단축코드(A01606)면 "코스피200선물".
+    미매칭(미등록 코드) → None.
+    """
+    if not code:
+        return None
+    root = code[:-3]                                   # 해외 globex root 추정
+    for sym, r in OVERSEAS_ROOTS.items():
+        if r == root:
+            return sym
+    if re.match(r"^A\d", code):                        # 국내 지수선물 단축코드(KOSPI200 유일)
+        return _DOMESTIC[0]
+    return None
+
+
 def futures_market(symbol: str) -> str:
     """선물 심볼 → 거래 market. 'KRX'(국내)·'CME'(해외)·''(선물 아님/미등록)."""
     if symbol in _DOMESTIC:
