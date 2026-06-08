@@ -18,7 +18,9 @@ from localapp.kis_futures_broker import (
     _balance_rows,
     _json,
     build_balance_params,
+    build_futures_cancel_body,
     build_futures_order_body,
+    parse_ccnl_order_status,
     parse_futures_balance,
 )
 
@@ -125,6 +127,34 @@ def test_json_decodes_utf8_korean():
     assert out["msg1"] == "모의투자 주문처리가 안되었습니다."
 
 
+def test_build_order_body_market_buy():
+    b = build_futures_order_body(cano="50188802", acnt_prdt_cd="03", symbol="A01606",
+                                 qty=1, price=0, side="buy", order_type="market")
+    assert b["ORD_DVSN_CD"] == "02"            # 시장가
+    assert b["UNIT_PRICE"] == "0"              # 시장가 가격 0
+    assert b["SLL_BUY_DVSN_CD"] == "02"
+
+
+def test_build_order_body_limit_default_unchanged():
+    # order_type 미지정 → 기존 지정가 동작(회귀).
+    b = build_futures_order_body(cano="5", acnt_prdt_cd="03", symbol="A01606",
+                                 qty=2, price=375.0, side="sell")
+    assert b["ORD_DVSN_CD"] == "01" and b["UNIT_PRICE"] == "375.0"
+
+
+def test_build_cancel_body():
+    b = build_futures_cancel_body(cano="50188802", acnt_prdt_cd="03",
+                                  order_no="0000005605", qty=1)
+    assert b["RVSE_CNCL_DVSN_CD"] == "02"      # 취소
+    assert b["ORGN_ODNO"] == "0000005605"
+    assert b["ORD_QTY"] == "1"                 # 모의 필수
+    assert b["UNIT_PRICE"] == "0"              # 취소 시 0
+    assert b["KRX_NMPR_CNDT_CD"] == "0"        # 취소 시 0
+    assert b["ORD_DVSN_CD"] == "01"            # 취소 시 01
+    assert b["RMN_QTY_YN"] == "Y"
+    assert b["ORD_PRCS_DVSN_CD"] == "02"
+
+
 def test_overseas_limit_buy_routes_to_overseas_endpoint(monkeypatch):
     """overseas_buy_limit은 해외 엔드포인트로 라우팅하고 올바른 바디를 전송해야 한다."""
     import localapp.kis_futures_broker as kfb
@@ -159,3 +189,27 @@ def test_overseas_limit_buy_routes_to_overseas_endpoint(monkeypatch):
     assert captured["body"]["SLL_BUY_DVSN_CD"] == "02"
     assert captured["body"]["PRIC_DVSN_CD"] == "1"
     assert r["output"]["ODNO"] == "00298040"
+
+
+def test_parse_ccnl_filled():
+    resp = {"output1": [
+        {"odno": "0000007045", "tot_ccld_qty": "1", "qty": "0", "avg_idx": "400.00", "rjct_qty": "0"},
+    ]}
+    s = parse_ccnl_order_status(resp, "0000007045")
+    assert s["status"] == "filled" and s["filled_qty"] == 1 and s["remain_qty"] == 0
+    assert s["fill_price"] == 400.0 and s["order_no"] == "0000007045"
+
+
+def test_parse_ccnl_partial_and_canonical_odno():
+    # 부분체결 + 0-패딩 무관 매칭(canonical lstrip("0")).
+    resp = {"output1": [
+        {"odno": "0000007006", "tot_ccld_qty": "1", "qty": "1", "avg_idx": "375.0", "rjct_qty": "0"},
+    ]}
+    s = parse_ccnl_order_status(resp, "7006")
+    assert s["status"] == "partial" and s["filled_qty"] == 1 and s["remain_qty"] == 1
+
+
+def test_parse_ccnl_rejected_and_unknown():
+    resp = {"output1": [{"odno": "0000000001", "tot_ccld_qty": "0", "qty": "0", "rjct_qty": "1"}]}
+    assert parse_ccnl_order_status(resp, "1")["status"] == "rejected"
+    assert parse_ccnl_order_status({}, "999")["status"] == "unknown"

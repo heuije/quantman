@@ -42,6 +42,8 @@ _REAL = "https://openapi.koreainvestment.com:9443"
 _VTS = "https://openapivts.koreainvestment.com:29443"
 _ORDER_PATH = "/uapi/domestic-futureoption/v1/trading/order"
 _BALANCE_PATH = "/uapi/domestic-futureoption/v1/trading/inquire-balance"
+_CANCEL_PATH = "/uapi/domestic-futureoption/v1/trading/order-rvsecncl"
+_CCNL_PATH = "/uapi/domestic-futureoption/v1/trading/inquire-ccnl"
 _QUOTE_PATH = "/uapi/domestic-futureoption/v1/quotations/inquire-price"
 _QUOTE_TR = "FHMIF10000000"   # 선물옵션 시세(실전·모의 공통)
 
@@ -55,13 +57,18 @@ _OV_QUOTE_TR     = "HHDFC55010000"
 
 
 def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
-                             qty: int, price, side: str) -> dict:
-    """TTTO1101U/VTTO1101U 주문 바디(지정가). side: 'buy'|'sell', qty=계약수, price=지정가.
+                             qty: int, price, side: str, order_type: str = "limit") -> dict:
+    """TTTO1101U/VTTO1101U 주문 바디(지정가·시장가). side: 'buy'|'sell', qty=계약수,
+    price=지정가(limit) 또는 0(market). order_type='limit'(01)|'market'(02).
 
     순수함수 — 네트워크 없음(단위검증 대상). SLL_BUY_DVSN_CD: 02 매수 / 01 매도.
     """
     if side not in ("buy", "sell"):
         raise ValueError(f"side는 buy|sell: {side}")
+    if order_type not in ("limit", "market"):
+        raise ValueError(f"order_type는 limit|market: {order_type}")
+    _is_limit = order_type == "limit"
+
     return {
         "ORD_PRCS_DVSN_CD": "02",                         # 02: 주문전송
         "CANO": cano,
@@ -69,10 +76,32 @@ def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
         "SLL_BUY_DVSN_CD": "02" if side == "buy" else "01",
         "SHTN_PDNO": symbol,                              # 단축상품번호(종목코드)
         "ORD_QTY": str(int(qty)),                         # 계약수
-        "UNIT_PRICE": str(price),                         # 지정가 가격
+        "UNIT_PRICE": str(price) if _is_limit else "0",  # 시장가는 0
         "NMPR_TYPE_CD": "",
         "KRX_NMPR_CNDT_CD": "",
-        "ORD_DVSN_CD": "01",                              # 01: 지정가
+        "ORD_DVSN_CD": "01" if _is_limit else "02",      # 01 지정가 / 02 시장가
+    }
+
+
+def build_futures_cancel_body(*, cano: str, acnt_prdt_cd: str, order_no, qty: int) -> dict:
+    """VTTO1103U/TTTO1103U 취소 바디(전량). 순수함수 — 단위검증 대상.
+
+    취소: RVSE_CNCL_DVSN_CD=02·UNIT_PRICE=0·KRX_NMPR_CNDT_CD=0·ORD_DVSN_CD=01·RMN_QTY_YN=Y.
+    ORD_QTY는 모의계좌 필수(전량이라도 입력).
+    """
+    return {
+        "ORD_PRCS_DVSN_CD": "02",
+        "CANO": cano,
+        "ACNT_PRDT_CD": acnt_prdt_cd,
+        "RVSE_CNCL_DVSN_CD": "02",          # 02: 취소
+        "ORGN_ODNO": str(order_no),
+        "ORD_QTY": str(int(qty)),
+        "UNIT_PRICE": "0",
+        "NMPR_TYPE_CD": "",
+        "KRX_NMPR_CNDT_CD": "0",
+        "RMN_QTY_YN": "Y",                  # 전량
+        "FUOP_ITEM_DVSN_CD": "",
+        "ORD_DVSN_CD": "01",
     }
 
 
@@ -155,6 +184,41 @@ def parse_futures_balance(resp: dict) -> dict:
         "eval_pnl": _num("futr_evlu_pfls_amt"),   # 선물 평가손익
     }
     return {"positions": positions, "account": account}
+
+
+def parse_ccnl_order_status(resp: dict, order_no) -> dict:
+    """inquire-ccnl output1에서 order_no 행 → {order_no,status,filled_qty,remain_qty,fill_price}.
+
+    canonical odno 비교(lstrip "0"). status: rejected(rjct>0) / filled(잔량0·체결>0) /
+    partial(체결>0) / submitted(체결0) / unknown(행 없음).
+    """
+    rows = resp.get("output1")
+    if not isinstance(rows, list):
+        rows = []
+    target = str(order_no).lstrip("0")
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("odno", "")).lstrip("0") == target:
+            def _i(k):
+                try:
+                    return int(float(r.get(k, 0) or 0))
+                except (ValueError, TypeError):
+                    return 0
+            filled, remain, rjct = _i("tot_ccld_qty"), _i("qty"), _i("rjct_qty")
+            if rjct > 0:
+                status = "rejected"
+            elif remain == 0 and filled > 0:
+                status = "filled"
+            elif filled > 0:
+                status = "partial"
+            else:
+                status = "submitted"
+            return {"order_no": str(r.get("odno", "")), "status": status,
+                    "filled_qty": filled, "remain_qty": remain,
+                    "fill_price": float(r.get("avg_idx", 0) or 0)}
+    return {"order_no": str(order_no), "status": "unknown",
+            "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
 
 
 class KisFuturesBroker:
@@ -261,9 +325,11 @@ class KisFuturesBroker:
     def sell_limit(self, symbol: str, qty: int, limit_price) -> dict:
         return self._submit_order(symbol, qty, limit_price, "sell")
 
-    def _submit_order(self, symbol: str, qty: int, price, side: str) -> dict:
+    def _submit_order(self, symbol: str, qty: int, price, side: str,
+                      order_type: str = "limit") -> dict:
         body = build_futures_order_body(cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd,
-                                        symbol=symbol, qty=qty, price=price, side=side)
+                                        symbol=symbol, qty=qty, price=price, side=side,
+                                        order_type=order_type)
         r = requests.post(f"{self.base}{_ORDER_PATH}", headers=self._headers(self._order_tr()),
                           json=body, timeout=10)
         r.raise_for_status()
@@ -344,20 +410,44 @@ class KisFuturesBroker:
         raw = _json(r).get("output1", {}).get("last_price", "")
         return scale_overseas_price(raw, scalc_desz)
 
-    # ── phase 2 (연속장 라이브 검증 후 구현) — 시장가·정정취소·체결조회 ──────────────
-    # spec 확보 완료(시장가 ORD_DVSN_CD=02, 취소 order-rvsecncl, 체결조회 inquire-ccnl).
-    # 추측 발주 방지를 위해 라이브 라운드트립 검증 전까지 미구현 유지.
     def buy(self, symbol: str, qty: int) -> dict:
-        raise NotImplementedError("선물 시장가(ORD_DVSN_CD=02) — 연속장 라이브 검증 후 구현(phase2). buy_limit 사용.")
+        return self._submit_order(symbol, qty, 0, "buy", order_type="market")
 
     def sell(self, symbol: str, qty: int) -> dict:
-        raise NotImplementedError("선물 시장가(ORD_DVSN_CD=02) — 연속장 라이브 검증 후 구현(phase2). sell_limit 사용.")
+        return self._submit_order(symbol, qty, 0, "sell", order_type="market")
+
+    # ── phase 2 (연속장 라이브 검증 후 구현) — 정정취소·체결조회 ──────────────────────
+    # spec 확보 완료(취소 order-rvsecncl, 체결조회 inquire-ccnl).
+    # 추측 발주 방지를 위해 라이브 라운드트립 검증 전까지 미구현 유지.
 
     def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
-        raise NotImplementedError("정정취소 VTTO1103U(order-rvsecncl) — phase2(라이브 검증 후).")
+        body = build_futures_cancel_body(cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd,
+                                         order_no=order_no, qty=qty)
+        tr = "VTTO1103U" if self.virtual else "TTTO1103U"
+        r = requests.post(f"{self.base}{_CANCEL_PATH}", headers=self._headers(tr),
+                          json=body, timeout=10)
+        r.raise_for_status()
+        return _json(r)
+
+    def _inquire_ccnl(self, only_unfilled: bool = False) -> dict:
+        """inquire-ccnl 조회(당일). only_unfilled=True면 미체결만."""
+        import datetime
+        today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y%m%d")
+        tr = "VTTO5201R" if self.virtual else "TTTO5201R"
+        params = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                  "STRT_ORD_DT": today, "END_ORD_DT": today,
+                  "SLL_BUY_DVSN_CD": "00", "CCLD_NCCS_DVSN": "02" if only_unfilled else "00",
+                  "SORT_SQN": "DS", "STRT_ODNO": "", "PDNO": "", "MKET_ID_CD": "00",
+                  "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""}
+        r = requests.get(f"{self.base}{_CCNL_PATH}", headers=self._headers(tr),
+                         params=params, timeout=10)
+        r.raise_for_status()
+        return _json(r)
 
     def order_status(self, order_no: str) -> dict:
-        raise NotImplementedError("주문체결내역 VTTO5201R(inquire-ccnl) — phase2(라이브 검증 후).")
+        return parse_ccnl_order_status(self._inquire_ccnl(), order_no)
 
     def pending_orders(self) -> list[dict]:
-        raise NotImplementedError("미체결 조회 VTTO5201R 기반 — phase2(라이브 검증 후).")
+        rows = self._inquire_ccnl(only_unfilled=True).get("output1") or []
+        return [parse_ccnl_order_status({"output1": [r]}, r.get("odno", ""))
+                for r in rows if isinstance(r, dict)]
