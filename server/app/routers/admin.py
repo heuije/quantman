@@ -63,3 +63,41 @@ def compile_stats(user: User = Depends(get_current_user),
         "top_fail_paths": paths.most_common(10),
         "top_fail_rules": rules.most_common(10),
     }
+
+
+@router.get("/fund-diag")
+def fund_diag(code: str = "005930", user: User = Depends(get_current_user)):
+    """진단 계측 — 펀더멘털 prod 미적재 원인 규명. OpenDART 키 직접 테스트·managed_kr_codes 개수·
+    단일종목 fetch 결과를 즉시 반환(로그 스팸 우회). 원인 확정 후 제거."""
+    import os
+    from datetime import datetime
+
+    import pandas as pd
+    from quant_core.data.feeds import fundamental_kr as fk
+
+    out: dict = {"key_set": bool(os.environ.get("OPENDART_API_KEY"))}
+    try:
+        out["n_managed_kr"] = len(data_fetcher.load_managed_kr_codes())
+    except Exception as e:                       # noqa: BLE001 — 진단: 예외도 결과로 보고
+        out["managed_err"] = f"{type(e).__name__}: {e}"
+    # OpenDART 키 직접 테스트 — 한 보고서 호출(키 무효면 여기서 에러 노출)
+    try:
+        dart = fk._client()
+        rep = dart.finstate_all(code, str(datetime.now().year - 1), reprt_code="11011", fs_div="CFS")
+        out["dart_test"] = {"ok": rep is not None, "rows": (len(rep) if rep is not None else 0)}
+    except Exception as e:                       # noqa: BLE001
+        out["dart_test_err"] = f"{type(e).__name__}: {str(e)[:300]}"
+    # 단일종목 fetch_one — td(P1-b) 포함 실제 산출 확인
+    try:
+        yr = datetime.now().year
+        df = fk.fetch_one(code, [yr - 2, yr - 1, yr])
+        out["fetch_rows"] = int(len(df))
+        if len(df):
+            last = df.iloc[-1]
+            out["sample"] = {c: (None if pd.isna(last.get(c)) else float(last[c]))
+                             for c in ("total_debt", "stockholders_equity",
+                                       "shares_outstanding", "ttm_ni")
+                             if c in df.columns}
+    except Exception as e:                       # noqa: BLE001
+        out["fetch_err"] = f"{type(e).__name__}: {str(e)[:300]}"
+    return out
