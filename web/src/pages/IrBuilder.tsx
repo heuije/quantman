@@ -608,7 +608,11 @@ export default function IrBuilder() {
 
   // 실시간 논리 검증 — 빌드된 전략이 바뀔 때마다(400ms 디바운스) /ir/validate 호출.
   // bodyJson(직렬화)을 변경 감지자로 사용해 다수 state 의존을 한 dep로 요약. 에러 시 버튼 게이팅.
-  const bodyJson = signal ? JSON.stringify(buildStrategy()) : "";
+  // research 질의(select/describe/relate/extremize)는 빌더 폼이 왕복 못해 buildStrategy()가
+  // query·select를 누락한 simulate IR을 만든다 → 폼 재구성이 아니라 **실제 실행될 researchIr**를
+  // 검증해야 spurious 오류(S-entry 등)와 run 버튼 오게이팅을 막는다. 서버 validate는 query-aware.
+  const bodyJson = researchIr ? JSON.stringify(researchIr)
+    : signal ? JSON.stringify(buildStrategy()) : "";
   useEffect(() => {
     if (!bodyJson) { setValidation(null); return; }
     const t = setTimeout(() => {
