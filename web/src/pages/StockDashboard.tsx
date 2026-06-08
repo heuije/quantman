@@ -99,6 +99,7 @@ export default function StockDashboard() {
   const [focused, setFocused] = useState(false);
   const [box3, setBox3] = useState("rsi");
   const [box4, setBox4] = useState("range52");
+  const [hidden, setHidden] = useState<Record<string, boolean>>({});  // 범례 클릭 토글
 
   const nameMap = new Map(listings.map((l) => [l.symbol, l.name]));
   const nameOf = (s: string) => nameMap.get(s) || s;
@@ -319,15 +320,22 @@ export default function StockDashboard() {
                     payload={payload as readonly PriceTipEntry[] | undefined}
                     isKR={isKR} dol={dol} won={won} benchName={last.benchmark} />
                 )} />
-                <Legend />
+                <Legend
+                  onClick={(e) => { const k = (e as { dataKey?: string }).dataKey; if (k) setHidden((h) => ({ ...h, [k]: !h[k] })); }}
+                  formatter={(value, entry) => {
+                    const k = (entry as { dataKey?: string })?.dataKey;
+                    const off = !!(k && hidden[k]);
+                    return <span style={{ cursor: "pointer", color: off ? "var(--muted)" : "inherit",
+                      textDecoration: off ? "line-through" : "none" }}>{value}</span>;
+                  }} />
                 <Bar dataKey="hl" isAnimationActive={false} legendType="none" shape={Candle} />
                 {PRICE_MA.map(([k, lbl, col]) => (
-                  <Line key={k} type="monotone" dataKey={k} stroke={col} strokeWidth={1} dot={false} name={lbl} />
+                  <Line key={k} type="monotone" dataKey={k} stroke={col} strokeWidth={1} dot={false} name={lbl} hide={!!hidden[k]} />
                 ))}
                 <Line type="monotone" dataKey="bench" stroke={BENCH} strokeWidth={1.4}
-                  strokeDasharray="6 4" dot={false} name={`${last.benchmark}(벤치마크)`} connectNulls />
-                <Scatter dataKey="up_spike" shape={<TriUp />} name="급등 +10%" legendType="triangle" fill={UP} />
-                <Scatter dataKey="down_spike" shape={<TriDown />} name="급락 −10%" legendType="triangle" fill={DOWN} />
+                  strokeDasharray="6 4" dot={false} name={`${last.benchmark}(벤치마크)`} connectNulls hide={!!hidden["bench"]} />
+                <Scatter dataKey="up_spike" shape={<TriUp />} name="급등 +10%" legendType="triangle" fill={UP} hide={!!hidden["up_spike"]} />
+                <Scatter dataKey="down_spike" shape={<TriDown />} name="급락 −10%" legendType="triangle" fill={DOWN} hide={!!hidden["down_spike"]} />
                 <Brush dataKey="date" height={24} stroke={ACCENT} travellerWidth={8} />
               </ComposedChart>
             </ResponsiveContainer>
