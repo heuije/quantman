@@ -53,3 +53,41 @@ def test_simbroker_stock_snapshot_has_no_margin_key():
     # 주식 회귀: margin 미설정이면 margin 키 없음(기존 동작 보존).
     b = SimBroker()
     assert "margin" not in b.account_snapshot()
+
+
+import pytest
+
+from sim import invariants
+
+
+def test_inv_fut_sign_ok():
+    pos = [make_futures_position("코스피200선물", "long", 2, 375.0, 377.0),
+           make_futures_position("금선물", "short", 1, 2000.0, 1990.0)]
+    invariants.check_futures_sign(pos)   # 위반 없음
+
+
+def test_inv_fut_sign_rejects_bad_side():
+    with pytest.raises(AssertionError, match="INV-FUT-1"):
+        invariants.check_futures_sign([{"symbol": "코스피200선물", "side": "up", "qty": 1}])
+
+
+def test_inv_fut_pnl_ok():
+    invariants.check_futures_pnl([make_futures_position("코스피200선물", "long", 2, 375.0, 377.0)])
+
+
+def test_inv_fut_pnl_rejects_wrong_pnl():
+    bad = make_futures_position("코스피200선물", "long", 2, 375.0, 377.0)
+    bad["eval_pnl"] = 999.0
+    with pytest.raises(AssertionError, match="INV-FUT-2"):
+        invariants.check_futures_pnl([bad])
+
+
+def test_inv_fut_margin_ok():
+    snap = {"margin": {"total_margin": 18_750_000.0, "available_margin": 100_000_000.0}}
+    invariants.check_futures_margin(snap)
+
+
+def test_inv_fut_margin_rejects_overleverage():
+    snap = {"margin": {"total_margin": 120_000_000.0, "available_margin": 100_000_000.0}}
+    with pytest.raises(AssertionError, match="INV-FUT-3"):
+        invariants.check_futures_margin(snap)
