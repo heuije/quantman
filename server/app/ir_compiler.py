@@ -217,8 +217,8 @@ StrategyIR = {{
 7. [스크리닝(현 시점 종목 선별)] "저평가 X 상위 N개"·"조건 맞는 종목 골라줘"처럼 *백테스트 손익이
    아니라 지금 시점 종목 리스트*가 답이면 → query="select" + signal=랭킹 score(예: 낮은 PBR이면
    data(__SELF__.pb_ratio)) + universe.kind=all + universe.screener.condition=
-   is_in(attribute("Sector"), ["반도체"]) 같은 섹터/자격 필터 + select={top_n:N,
-   descending:false(저평가=낮은값 우선)·true(높은값 우선), display:[pb_ratio, ...](근거 지표)}.
+   is_in(attribute("Sector"), ["반도체"]) 같은 섹터/자격 필터 + select={{top_n:N,
+   descending:false(저평가=낮은값 우선)·true(높은값 우선), display:[pb_ratio, ...](근거 지표)}}.
    (※ 레시피 3은 *정기 리밸런싱 백테스트*(simulate), 본 레시피는 *현 시점 스냅샷 선별*(select) — 둘 구분.)
 8. [단일종목 360 리포트] "삼성전자 어때"·"이 종목 분석/요약"처럼 *한 종목의 현황*이 답이면 →
    query="describe" + universe.kind="single" + symbols=[그 종목] + signal=data("__SELF__.Close")
