@@ -103,7 +103,7 @@ export default function Login() {
     <div className="center-wrap">
       <div className="panel auth-box">
         <div className="brand" style={{ padding: "0 0 18px" }}>
-          마이<span>스톡</span>
+          My<span>Stock</span>
         </div>
         <p className="page-sub">
           {mode === "login" ? "로그인하고 전략을 관리하세요." : "계정을 만들어 시작하세요."}
