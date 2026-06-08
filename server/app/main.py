@@ -209,6 +209,22 @@ def _initial_naver_refresh():
         _log.exception("NAVER 펀더멘털 초기 fetch 중 예외 — 정시 cron 재시도")
 
 
+def _initial_kr_fundamentals_refresh():
+    """시작 시 1회 KR 펀더멘털(OpenDART) 초기 fetch — 펀더멘털 공백의 구조적 보강.
+
+    OpenDART 펀더멘털은 17:30 cron만 있어, 재배포·신규 볼륨 후 다음 17:30까지 pb_ratio·PER·EV가
+    전 종목 NaN이었다(스크리닝·360 밸류·진단 동시 빈값의 근본원인). 부팅 시 한 번 채워 그 공백을
+    없앤다. OpenDART 호출이 무거워(증분 예산) dataset 초기 갱신 등 이후 충분히 지연한다.
+    OPENDART_API_KEY 미설정이면 _refresh_kr_fundamentals 내부에서 예외→로그 후 17:30 cron 재시도."""
+    import time
+    try:
+        time.sleep(420)            # dataset 초기 갱신(240s)·기타 fetch 이후 — 외부 호출 분산
+        _log.info("KR 펀더멘털(OpenDART) 초기 fetch 시작")
+        _refresh_kr_fundamentals()
+    except Exception:
+        _log.exception("KR 펀더멘털 초기 fetch 중 예외 — 17:30 cron 재시도")
+
+
 def _initial_technical_refresh():
     import time
     try:
@@ -484,6 +500,8 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_krx_refresh, daemon=True).start()
     _log.info("NAVER 펀더멘털 초기 fetch thread 시작")
     threading.Thread(target=_initial_naver_refresh, daemon=True).start()
+    _log.info("KR 펀더멘털(OpenDART) 초기 fetch thread 시작")
+    threading.Thread(target=_initial_kr_fundamentals_refresh, daemon=True).start()
     _log.info("기술적 지표 초기 fetch thread 시작")
     threading.Thread(target=_initial_technical_refresh, daemon=True).start()
     _log.info("정적 메타 초기 fetch thread 시작 (섹터·상장폐지일)")
