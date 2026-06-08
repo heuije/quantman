@@ -3,12 +3,23 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, type IrValidation, type IrExplanation } from "../api";
 import SentenceTree, { type Catalog } from "../components/SentenceTree";
 import EquityChart from "../components/EquityChart";
-import { SweepChart, SignalDistChart, ICChart, EventStudyChart } from "../components/ResultCharts";
+import {
+  SweepChart, SignalDistChart, ICChart, EventStudyChart,
+  RankedListChart, ReportCards, DiagnosisPanel, RegressionChart, ExtremizeChart,
+} from "../components/ResultCharts";
 import MultiSymbolPicker from "../components/MultiSymbolPicker";
 import type {
-  IndicatorInfo, IrBlockSpec, IrDistribution, IrEventStat, IrICStat, IrNode, IrPartition,
+  IndicatorInfo, IrBlockSpec, IrDistribution, IrEventStat, IrExtremizeResult, IrICStat,
+  IrNode, IrPartition, IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport,
   IrStrategyDef, IrStrategyResult, StrategyRow, SymbolInfo,
 } from "../types";
+
+// research query(신규 동사)는 빌더 폼(simulate 전용)을 왕복 못함 → 컴파일 IR을 직접 실행.
+// 판별: select/describe/relate 동사이거나 extremize 환원(simulate지만 폼 표현 불가).
+function isResearch(ir: IrStrategyDef): boolean {
+  return ir.query === "select" || ir.query === "describe" || ir.query === "relate"
+    || ir.study?.reduction === "extremize";
+}
 
 // 출처 칩 색: [기본]=엔진이 채운 silent 가정(주의 환기) / [지정]=유저가 정함(중립).
 function provChip(p: string): CSSProperties {
@@ -174,6 +185,8 @@ export default function IrBuilder() {
 
   const [result, setResult] = useState<IrStrategyResult | null>(null);
   const [running, setRunning] = useState(false);
+  // 컴파일된 research IR(신규 동사) — 있으면 빌더 폼 대신 이 IR을 직접 실행.
+  const [researchIr, setResearchIr] = useState<IrStrategyDef | null>(null);
 
   // 자연어 → IR 컴파일 (베타). compileId/baseline로 "수정 없이 실행=정확" 신호 추적.
   const [nlText, setNlText] = useState("");
@@ -507,7 +520,11 @@ export default function IrBuilder() {
         setCompileId(null);
         return;
       }
-      hydrate(res.ir as unknown as IrStrategyDef);   // 컴파일 IR을 기존 hydrate로 전 폼 복원
+      const compiledIr = res.ir as unknown as IrStrategyDef;
+      hydrate(compiledIr);   // 컴파일 IR을 기존 hydrate로 전 폼 복원(요약 표시·일부 항목 확인용)
+      // research query면 빌더 폼이 왕복 못하므로 컴파일 IR을 직접 실행하도록 보관.
+      // 일반 simulate면 null로 둬 폼(buildStrategy) 경로 사용.
+      setResearchIr(isResearch(compiledIr) ? compiledIr : null);
       setCompileId(res.compile_id);
       setResult(null);
     } catch (e) {
@@ -527,9 +544,18 @@ export default function IrBuilder() {
   }, [compileId]);
 
   async function run() {
-    if (!signal) return;
     setRunning(true); setResult(null);
     try {
+      // research query(신규 동사)면 컴파일 IR을 그대로 실행 — 빌더 폼은 simulate 전용이라
+      // select/describe/relate/extremize를 왕복 못한다(폼 재구성 우회).
+      if (researchIr) {
+        if (compileId != null) {
+          api.compileFeedback(compileId, true, false).catch(() => {});
+        }
+        setResult(await api.runIrStrategy(researchIr as unknown as Record<string, unknown>));
+        return;
+      }
+      if (!signal) return;
       // 저장된 전략(?edit) 백테스트면 strategy_id를 실어 BacktestRun으로 내역 저장.
       const built = buildStrategy() as Record<string, unknown>;
       // 컴파일된 IR이면 "수정 없이 실행했는지" 기록(베타 정확도 신호).
@@ -1185,6 +1211,54 @@ function ResultPanel({ result }: { result: IrStrategyResult }) {
             ))}
           </ul>
         ) : null}
+      </div>
+    );
+  }
+
+  // ── 신규 동사 라우팅(기존 axis 분기에 선행) — visualization_spec §3.2 ──
+  // select: as-of 스냅샷 횡단 랭킹.
+  if (result.query === "select") {
+    return (
+      <div className="panel">
+        <div className="panel-title">랭킹 선별 — 현 시점 스냅샷 (백테스트 손익 아님)</div>
+        <RankedListChart results={result.results ?? []} as_of={result.as_of}
+          universe_size={result.universe_size} eligible_size={result.eligible_size} />
+      </div>
+    );
+  }
+  // describe single: 단일종목 360 리포트.
+  if (result.report === "single") {
+    return (
+      <div className="panel">
+        <div className="panel-title">종목 현황 (백테스트 손익 아님)</div>
+        <ReportCards r={result as unknown as IrSingleReport} />
+      </div>
+    );
+  }
+  // describe portfolio: 포트폴리오 진단.
+  if (result.report === "portfolio") {
+    return (
+      <div className="panel">
+        <div className="panel-title">포트폴리오 진단 (백테스트 손익 아님)</div>
+        <DiagnosisPanel r={result as unknown as IrPortfolioDiagnosis} />
+      </div>
+    );
+  }
+  // extremize: 목적함수 최적해 + OOS 가드.
+  if (result.reduction === "extremize") {
+    return (
+      <div className="panel">
+        <div className="panel-title">최적해 탐색</div>
+        <ExtremizeChart r={result as unknown as IrExtremizeResult} />
+      </div>
+    );
+  }
+  // relate regression: 다중팩터 횡단 회귀(forward 예측).
+  if (result.axis === "relation" && result.relation === "regression") {
+    return (
+      <div className="panel">
+        <div className="panel-title">다중팩터 회귀 — forward 예측력 (손익 아님)</div>
+        <RegressionChart r={result as unknown as IrRegressionResult} />
       </div>
     );
   }

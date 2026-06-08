@@ -421,6 +421,19 @@ export interface IrStrategyResult extends BacktestResult {
     by_regime: Record<string, IrEventStat>;
     pairwise: Record<string, IrPairTest>;
   }>;
+
+  // ── 신규 동사(select·describe·relate-regression·extremize) 식별·본문 ──
+  // 런타임 dict는 이미 이 키들을 가짐(엔진 산출). ResultPanel 라우팅이 query/report/
+  // reduction/relation으로 분기한 뒤, 본문은 전용 결과 타입으로 좁혀 컴포넌트에 넘긴다.
+  query?: "select" | "describe" | "relate" | "simulate";   // 동사
+  report?: "single" | "portfolio";                         // describe 대상 분기
+  reduction?: string;                                       // "extremize" 등 환원 식별
+  // select(as-of 스냅샷 횡단 랭킹) 본문 + 헤더 메타
+  results?: { symbol: string; score: number | null; sector: string;
+              metrics: Record<string, number | null> }[];
+  as_of?: string;
+  universe_size?: number;
+  eligible_size?: number;
 }
 
 export interface BacktestRunSummary {
