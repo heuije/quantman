@@ -234,6 +234,28 @@ def parse_ccnl_order_status(resp: dict, order_no) -> dict:
             "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
 
 
+def normalize_order_resp(d: dict) -> dict:
+    """KIS 주문/취소 원시응답 → Broker 프로토콜 정규형 {success, message, msg_cd, order_no}.
+
+    주식 KisBroker(kis_broker.py:529-533)·SimBroker(sim/broker.py)와 동일 계약. Trader._after_submit은
+    r['success']/r['order_no']를 읽으므로(trader.py:863-864) 선물 브로커도 raw가 아닌 이 정규형을
+    반환해야 한다 — 그러지 않으면 모든 선물 주문이 success=falsy로 '거부' 처리되고 order_no 추적이
+    불가해 KIS(접수)와 ledger(거부 인식)가 발산한다. 국내·해외 공통(rt_cd/msg1/msg_cd/output.ODNO).
+    해외(OTFM3001U) ODNO 키는 KIS 표준 가정 — 모의 미지원이라 첫 실거래(M10) 캡처로 확정.
+    """
+    out = d.get("output") or {}
+    if isinstance(out, list):
+        out = out[0] if out else {}
+    if not isinstance(out, dict):
+        out = {}
+    return {
+        "success": d.get("rt_cd") == "0",
+        "message": d.get("msg1", "") or "",
+        "msg_cd": d.get("msg_cd", "") or "",
+        "order_no": str(out.get("ODNO", "") or ""),
+    }
+
+
 class KisFuturesBroker:
     """국내선물옵션 거래 클라이언트(계약수 기반). 선물옵션 계좌 자격증명을 로컬에서 읽는다.
 
@@ -346,7 +368,7 @@ class KisFuturesBroker:
         r = requests.post(f"{self.base}{_ORDER_PATH}", headers=self._headers(self._order_tr()),
                           json=body, timeout=10)
         r.raise_for_status()
-        return _json(r)
+        return normalize_order_resp(_json(r))
 
     def account_snapshot(self) -> dict:
         params = build_balance_params(self.cano, self.acnt_prdt_cd)
@@ -378,7 +400,7 @@ class KisFuturesBroker:
         r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
                           headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
         r.raise_for_status()
-        return _json(r)
+        return normalize_order_resp(_json(r))
 
     def overseas_sell_limit(self, symbol: str, qty: int, limit_price) -> dict:
         body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
@@ -387,7 +409,7 @@ class KisFuturesBroker:
         r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
                           headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
         r.raise_for_status()
-        return _json(r)
+        return normalize_order_resp(_json(r))
 
     def overseas_buy(self, symbol: str, qty: int) -> dict:
         body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
@@ -396,7 +418,7 @@ class KisFuturesBroker:
         r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
                           headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
         r.raise_for_status()
-        return _json(r)
+        return normalize_order_resp(_json(r))
 
     def overseas_sell(self, symbol: str, qty: int) -> dict:
         body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
@@ -405,7 +427,7 @@ class KisFuturesBroker:
         r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
                           headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
         r.raise_for_status()
-        return _json(r)
+        return normalize_order_resp(_json(r))
 
     def overseas_account_snapshot(self) -> dict:
         params = {"CANO": self._ov_cano, "ACNT_PRDT_CD": self._ov_acnt_prdt_cd,
@@ -436,7 +458,7 @@ class KisFuturesBroker:
         r = requests.post(f"{self._ov_base}{_OV_RVSECNCL_PATH}",
                           headers=self._ov_headers(_OV_CANCEL_TR), json=body, timeout=10)
         r.raise_for_status()
-        return _json(r)
+        return normalize_order_resp(_json(r))
 
     def _ov_inquire_ccld(self, only_unfilled: bool = False) -> dict:
         """inquire-ccld(OTFM3116R) 당일주문내역 조회. only_unfilled=True면 미체결만(03)."""
@@ -493,7 +515,7 @@ class KisFuturesBroker:
         r = requests.post(f"{self.base}{_CANCEL_PATH}", headers=self._headers(tr),
                           json=body, timeout=10)
         r.raise_for_status()
-        return _json(r)
+        return normalize_order_resp(_json(r))
 
     def _inquire_ccnl(self, only_unfilled: bool = False) -> dict:
         """inquire-ccnl 조회(당일). only_unfilled=True면 미체결만."""
