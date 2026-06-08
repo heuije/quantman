@@ -208,6 +208,58 @@ def test_leverage_promote_to_live_rejected_on_update():
     assert r.status_code == 422, r.text
 
 
+# ── M1 방향 게이트 — long_short·비선물 숏은 라이브 미지원(4계층 정합) ─────────────
+# 게이트 함수를 직접 호출(IR 검증 분리 — long_short의 score 요구 등과 무관하게 게이트만 검증).
+
+def _gate(run_mode, direction, symbols):
+    from fastapi import HTTPException  # noqa: F401 (가독성)
+    return strategies_router._assert_live_tradable(
+        run_mode, {"position": {"direction": direction},
+                   "universe": {"kind": "single", "symbols": symbols}})
+
+
+def test_gate_blocks_long_short_paper():
+    import pytest
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        _gate("paper", "long_short", ["005930"])
+    assert e.value.status_code == 422
+
+
+def test_gate_blocks_long_short_live():
+    import pytest
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        _gate("live", "long_short", ["005930"])
+    assert e.value.status_code == 422
+
+
+def test_gate_blocks_short_on_equity():
+    # 현금계좌로 주식 공매도 불가 → 비선물 숏은 차단
+    import pytest
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        _gate("paper", "short", ["005930"])
+    assert e.value.status_code == 422
+
+
+def test_gate_allows_short_on_futures(monkeypatch):
+    # 숏+선물은 게이트 통과(선물은 sell-to-open 지원) — ③ 위해 선물을 tradable로 고정
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"코스피200선물"})
+    _gate("live", "short", ["코스피200선물"])     # 예외 없으면 통과
+
+
+def test_gate_allows_long_on_equity(monkeypatch):
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    _gate("paper", "long", ["005930"])            # 회귀 가드(long은 기존대로 허용)
+
+
+def test_gate_draft_skips_direction_checks():
+    # draft(백테스트)는 게이트 자체를 건너뜀 — long_short·숏 모두 허용
+    _gate("draft", "long_short", ["005930"])
+    _gate("draft", "short", ["005930"])
+
+
 # ── 비매매 유니버스·이벤트 세부조건 게이트 — 모의/실전 승격 차단 ─────────────────
 #
 # tradable 판정은 KIS 마스터(네트워크 다운로드)에 의존해 테스트 환경에선 비어 있다

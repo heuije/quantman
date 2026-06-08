@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
+from quant_core import is_futures
 from quant_core.ir_engine import StrategyIR, validate_strategy
 from sqlmodel import Session, select
 
@@ -61,6 +62,9 @@ def _assert_live_tradable(run_mode: str, definition: dict) -> None:
        로컬앱이 주문할 수 없으므로 차단(반드시 매매가능 종목을 직접 선택해야 함).
     ③ 이벤트 진입 + 세부조건: 라이브 종목선별(universe.screener)은 미구현(Phase 2)
        → 차단. 백테스트는 허용.
+    ④ 방향(M1 4계층 게이트): long_short(횡단 랭킹)는 라이브 단방향 체결기가 재현 못 해
+       런타임이 skip하므로 차단. short는 선물 전용(현금계좌로 주식 공매도 불가) — 비선물
+       숏은 차단. long/단일방향 long·short(선물)만 라이브 승격 허용.
     """
     if run_mode not in ("paper", "live"):
         return
@@ -72,12 +76,29 @@ def _assert_live_tradable(run_mode: str, definition: dict) -> None:
             "레버리지(>1배) 전략은 백테스트 전용입니다 — 모의·실전 적용 불가. "
             "실거래에서 레버리지가 필요하면 레버리지 ETF(예: KODEX 레버리지)를 현금 매수하세요.")
 
+    direction = ((definition.get("position") or {}).get("direction")) or "long"
+    if direction == "long_short":
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "롱숏(횡단 랭킹) 전략은 백테스트 전용입니다 — 모의·실전 미지원. "
+            "라이브 자동매매는 단일 방향(long 또는 short)만 체결합니다.")
+
     u = definition.get("universe") or {}
     syms = u.get("symbols") or []
     if u.get("kind") == "all" or not syms:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "모의·실전 전략은 매매할 종목을 직접 선택해야 합니다(전체 유니버스 불가).")
+
+    # 숏은 선물 전용 — 현금계좌(로컬앱 order-cash)로는 주식 공매도가 불가하므로 비선물
+    # 숏 전략은 라이브에서 발주 거부된다. 선물(만기·증거금 모델)만 sell-to-open 지원.
+    if direction == "short":
+        non_fut = [s for s in syms if not is_futures(s)]
+        if non_fut:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "숏 전략은 선물만 모의·실전 가능합니다(현금계좌로 주식 공매도 불가): "
+                f"{', '.join(non_fut[:5])}")
 
     ok = tradable_symbols()
     bad = [s for s in syms if s not in ok]
