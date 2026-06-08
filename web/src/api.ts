@@ -523,6 +523,36 @@ export const futuresApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // 라이브 수식 엑셀(.xlsx) 다운로드. req<T>는 JSON 전용이라 blob을 직접 처리.
+  exportExcel: async (sym: string, body: {
+    side: OilSide;
+    threshold: number;
+    horizon_days: number;
+    roll_cost_pct?: number;
+  }) => {
+    const t = tokenStore.get();
+    const res = await fetch(`${BASE}/futures/${sym}/export.xlsx`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      throw new Error(b.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `futures_${sym}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
   walkforward: (sym: string, body: {
     shorts?: number[];
     longs?: number[];

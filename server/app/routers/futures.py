@@ -27,13 +27,14 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from quant_core.oil_futures import (
     CostModel,
     ExitRules,
     RollModel,
+    build_oil_excel,
     generate_signals,
     grid_search,
     prepare_wti,
@@ -496,6 +497,39 @@ def backtest(symbol: str, req: BacktestRequest):
             for idx, val in res.portfolio_equity_curve.items()
         ],
         portfolio_mdd_usd=res.portfolio_mdd_usd,
+    )
+
+
+_XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.post("/{symbol}/export.xlsx")
+def export_excel(symbol: str, req: BacktestRequest):
+    """현재 종목·파라미터의 백테스트를 라이브 수식 엑셀(.xlsx)로 반환.
+
+    /backtest 와 동일 입력(BacktestRequest). 빌더가 종목 ContractSpec(cfg.spec)으로
+    손익을 계산해 앱 백테스트 숫자와 일치한다. SL/TP는 엑셀 단순화상 미반영(보유기간
+    고정) — 빌더 로직설명 시트에 명시.
+    """
+    cfg = _get_cfg(symbol)
+    df = _df(symbol)
+    data = build_oil_excel(
+        df,
+        side=req.side,
+        threshold=req.threshold,
+        horizon_days=req.horizon_days,
+        spec=cfg.spec,
+        commission_per_contract=req.commission,
+        slippage_ticks=req.slippage_ticks,
+        roll_cost_pct=req.roll_cost_pct,
+        name=cfg.name,
+        currency=cfg.currency,
+        unit=cfg.unit,
+    )
+    return Response(
+        content=data,
+        media_type=_XLSX_MEDIA,
+        headers={"Content-Disposition": f'attachment; filename="futures_{cfg.symbol}.xlsx"'},
     )
 
 

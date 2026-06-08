@@ -37,6 +37,7 @@ from .optimizer import (
     grid_to_dataframe,
     walk_forward,
 )
+from .excel_export import build_oil_excel
 
 __all__ = [
     "prepare_wti",
@@ -45,4 +46,5 @@ __all__ = [
     "ContractSpec", "WTI_SPEC", "run_backtest", "wti_expiry_dates",
     "Summary", "LOW_SAMPLE_THRESHOLD", "summarize",
     "GridCell", "WalkForwardResult", "grid_search", "grid_to_dataframe", "walk_forward",
+    "build_oil_excel",
 ]
