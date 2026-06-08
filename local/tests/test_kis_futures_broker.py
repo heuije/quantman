@@ -20,6 +20,7 @@ from localapp.kis_futures_broker import (
     build_balance_params,
     build_futures_cancel_body,
     build_futures_order_body,
+    parse_ccnl_order_status,
     parse_futures_balance,
 )
 
@@ -188,3 +189,27 @@ def test_overseas_limit_buy_routes_to_overseas_endpoint(monkeypatch):
     assert captured["body"]["SLL_BUY_DVSN_CD"] == "02"
     assert captured["body"]["PRIC_DVSN_CD"] == "1"
     assert r["output"]["ODNO"] == "00298040"
+
+
+def test_parse_ccnl_filled():
+    resp = {"output1": [
+        {"odno": "0000007045", "tot_ccld_qty": "1", "qty": "0", "avg_idx": "400.00", "rjct_qty": "0"},
+    ]}
+    s = parse_ccnl_order_status(resp, "0000007045")
+    assert s["status"] == "filled" and s["filled_qty"] == 1 and s["remain_qty"] == 0
+    assert s["fill_price"] == 400.0 and s["order_no"] == "0000007045"
+
+
+def test_parse_ccnl_partial_and_canonical_odno():
+    # 부분체결 + 0-패딩 무관 매칭(canonical lstrip("0")).
+    resp = {"output1": [
+        {"odno": "0000007006", "tot_ccld_qty": "1", "qty": "1", "avg_idx": "375.0", "rjct_qty": "0"},
+    ]}
+    s = parse_ccnl_order_status(resp, "7006")
+    assert s["status"] == "partial" and s["filled_qty"] == 1 and s["remain_qty"] == 1
+
+
+def test_parse_ccnl_rejected_and_unknown():
+    resp = {"output1": [{"odno": "0000000001", "tot_ccld_qty": "0", "qty": "0", "rjct_qty": "1"}]}
+    assert parse_ccnl_order_status(resp, "1")["status"] == "rejected"
+    assert parse_ccnl_order_status({}, "999")["status"] == "unknown"

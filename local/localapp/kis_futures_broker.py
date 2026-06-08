@@ -43,6 +43,7 @@ _VTS = "https://openapivts.koreainvestment.com:29443"
 _ORDER_PATH = "/uapi/domestic-futureoption/v1/trading/order"
 _BALANCE_PATH = "/uapi/domestic-futureoption/v1/trading/inquire-balance"
 _CANCEL_PATH = "/uapi/domestic-futureoption/v1/trading/order-rvsecncl"
+_CCNL_PATH = "/uapi/domestic-futureoption/v1/trading/inquire-ccnl"
 _QUOTE_PATH = "/uapi/domestic-futureoption/v1/quotations/inquire-price"
 _QUOTE_TR = "FHMIF10000000"   # 선물옵션 시세(실전·모의 공통)
 
@@ -183,6 +184,41 @@ def parse_futures_balance(resp: dict) -> dict:
         "eval_pnl": _num("futr_evlu_pfls_amt"),   # 선물 평가손익
     }
     return {"positions": positions, "account": account}
+
+
+def parse_ccnl_order_status(resp: dict, order_no) -> dict:
+    """inquire-ccnl output1에서 order_no 행 → {order_no,status,filled_qty,remain_qty,fill_price}.
+
+    canonical odno 비교(lstrip "0"). status: rejected(rjct>0) / filled(잔량0·체결>0) /
+    partial(체결>0) / submitted(체결0) / unknown(행 없음).
+    """
+    rows = resp.get("output1")
+    if not isinstance(rows, list):
+        rows = []
+    target = str(order_no).lstrip("0")
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("odno", "")).lstrip("0") == target:
+            def _i(k):
+                try:
+                    return int(float(r.get(k, 0) or 0))
+                except (ValueError, TypeError):
+                    return 0
+            filled, remain, rjct = _i("tot_ccld_qty"), _i("qty"), _i("rjct_qty")
+            if rjct > 0:
+                status = "rejected"
+            elif remain == 0 and filled > 0:
+                status = "filled"
+            elif filled > 0:
+                status = "partial"
+            else:
+                status = "submitted"
+            return {"order_no": str(r.get("odno", "")), "status": status,
+                    "filled_qty": filled, "remain_qty": remain,
+                    "fill_price": float(r.get("avg_idx", 0) or 0)}
+    return {"order_no": str(order_no), "status": "unknown",
+            "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
 
 
 class KisFuturesBroker:
@@ -393,8 +429,25 @@ class KisFuturesBroker:
         r.raise_for_status()
         return _json(r)
 
+    def _inquire_ccnl(self, only_unfilled: bool = False) -> dict:
+        """inquire-ccnl 조회(당일). only_unfilled=True면 미체결만."""
+        import datetime
+        today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y%m%d")
+        tr = "VTTO5201R" if self.virtual else "TTTO5201R"
+        params = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                  "STRT_ORD_DT": today, "END_ORD_DT": today,
+                  "SLL_BUY_DVSN_CD": "00", "CCLD_NCCS_DVSN": "02" if only_unfilled else "00",
+                  "SORT_SQN": "DS", "STRT_ODNO": "", "PDNO": "", "MKET_ID_CD": "00",
+                  "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""}
+        r = requests.get(f"{self.base}{_CCNL_PATH}", headers=self._headers(tr),
+                         params=params, timeout=10)
+        r.raise_for_status()
+        return _json(r)
+
     def order_status(self, order_no: str) -> dict:
-        raise NotImplementedError("주문체결내역 VTTO5201R(inquire-ccnl) — phase2(라이브 검증 후).")
+        return parse_ccnl_order_status(self._inquire_ccnl(), order_no)
 
     def pending_orders(self) -> list[dict]:
-        raise NotImplementedError("미체결 조회 VTTO5201R 기반 — phase2(라이브 검증 후).")
+        rows = self._inquire_ccnl(only_unfilled=True).get("output1") or []
+        return [parse_ccnl_order_status({"output1": [r]}, r.get("odno", ""))
+                for r in rows if isinstance(r, dict)]
