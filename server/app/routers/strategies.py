@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -49,6 +50,17 @@ def _validate(engine: str, definition: dict) -> tuple[str, dict]:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             f"전략 로직이 올바르지 않습니다: {errors[0].message}")
     return s.name, s.model_dump()
+
+
+# M1a: 선물 라이브 승격 개방 — KOSPI200만(사용자 결정). 환경변수 게이트(기본 OFF)로,
+# M8 국내 라운드트립 라이브 검증 통과 후 켠다(미검증 라이브 경로 개방 방지 — 원칙4).
+# 켜기 전엔 선물이 tradable에 없어 게이트 ②/③에서 차단 = 현재 동작 보존(휴면).
+_LIVE_FUTURES_SYMBOLS = frozenset({"코스피200선물"})
+
+
+def _futures_live_enabled() -> bool:
+    """선물 라이브 승격 활성 여부(QP_FUTURES_LIVE_ENABLED). M8 검증 후 운영자가 켠다."""
+    return os.getenv("QP_FUTURES_LIVE_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _assert_live_tradable(run_mode: str, definition: dict) -> None:
@@ -101,6 +113,8 @@ def _assert_live_tradable(run_mode: str, definition: dict) -> None:
                 f"{', '.join(non_fut[:5])}")
 
     ok = tradable_symbols()
+    if _futures_live_enabled():
+        ok = ok | _LIVE_FUTURES_SYMBOLS          # M1a: 플래그 ON 시 KOSPI200 선물 라이브 허용
     bad = [s for s in syms if s not in ok]
     if bad:
         raise HTTPException(
