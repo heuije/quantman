@@ -5,14 +5,29 @@ KisFuturesBroker로, 아니면 KisBroker로 거래를 위임한다. 선물은 �
 "금선물"·"코스피200선물")을 라이브 계약코드(globex GCM26·국내 A01606)로 해석해 전달한다
 (resolve 콜백 = futures_contracts.ContractResolver).
 
-주식 전용 메서드(account_snapshot의 overseas 인자·buying_power_usd·pending_orders 등)는
-__getattr__로 stock 브로커에 그대로 위임 — **주식 동작 완전 무변경**(라우터는 거래 메서드만
-오버라이드). 선물 잔고 병합·reconcile은 M5(원장 선물화)에서. make_broker는 선물 자격증명이
-없으면 라우터 없이 KisBroker를 그대로 반환하므로, 선물 미사용 환경은 영향이 전혀 없다.
+주식 전용 메서드(buying_power_usd·pending_orders 등)는 __getattr__로 stock 브로커에 그대로
+위임 — **주식 동작 완전 무변경**. make_broker는 선물 자격증명이 없으면 라우터 없이 KisBroker를
+그대로 반환하므로, 선물 미사용 환경은 영향이 전혀 없다.
+
+M7(잔고 통합 + market dispatch):
+- `account_snapshot`을 오버라이드해 stock + 선물(국내·해외) 포지션을 **병합**하고, 선물은
+  라이브 계약코드(GCM26·A01606)를 **데이터셋 심볼("금선물"·"코스피200선물")로 정규화**한다
+  (dataset_for_contract). 이로써 ledger·reconcile·over-sell 클램프(전부 데이터셋 심볼 기준)가
+  선물 포지션을 인식 — 병합 전엔 선물 청산이 항상 skip되고 reconcile이 고아 오삭제했다.
+- 선물 **주문**(buy/sell/limit)은 `futures_market`으로 국내(KRX)→domestic 메서드·해외(CME)→
+  `overseas_*` 메서드로 dispatch한다.
+⚠ 해외선물 cancel/order_status/price 라우팅은 미완(P2 overseas phase2 미구현) — 국내선물·주식은
+  완전. 해외 선물 lifecycle 관리(취소·체결조회·시세)는 해외 활성화 단계에서 완성(모의 없어
+  라이브 검증 필요). equity(_unified_equity_krw)에 선물 증거금/평가 정밀 반영도 M8 라이브 후.
 """
 from __future__ import annotations
 
+import logging
+
 import quant_core as qc
+from quant_core.futures_contract import dataset_for_contract, futures_market
+
+log = logging.getLogger("localapp.broker_router")
 
 
 class BrokerRouter:
@@ -44,18 +59,28 @@ class BrokerRouter:
             raise RuntimeError(f"선물 계약코드 해석 실패(마스터 미수신/만기 등): {symbol} — 발주 skip")
         return code
 
+    def _order_fn(self, symbol, base: str):
+        """선물 주문 메서드를 market별로 — CME(해외선물)면 overseas_*(해외 컨텍스트)로 dispatch.
+
+        국내선물(KRX)·주식은 base 메서드 그대로. 해외선물만 overseas_buy/overseas_sell/
+        overseas_buy_limit/overseas_sell_limit(P2 구현)로 라우팅(국내 엔드포인트 오발주 방지)."""
+        broker = self._broker(symbol)
+        if self._is_fut(symbol) and futures_market(symbol) == "CME":
+            return getattr(broker, "overseas_" + base)
+        return getattr(broker, base)
+
     # ── Broker Protocol: 심볼 기반 거래 메서드(라우팅) ────────────────────────────
     def buy(self, symbol, qty):
-        return self._broker(symbol).buy(self._code(symbol), qty)
+        return self._order_fn(symbol, "buy")(self._code(symbol), qty)
 
     def sell(self, symbol, qty):
-        return self._broker(symbol).sell(self._code(symbol), qty)
+        return self._order_fn(symbol, "sell")(self._code(symbol), qty)
 
     def buy_limit(self, symbol, qty, limit_price):
-        return self._broker(symbol).buy_limit(self._code(symbol), qty, limit_price)
+        return self._order_fn(symbol, "buy_limit")(self._code(symbol), qty, limit_price)
 
     def sell_limit(self, symbol, qty, limit_price):
-        return self._broker(symbol).sell_limit(self._code(symbol), qty, limit_price)
+        return self._order_fn(symbol, "sell_limit")(self._code(symbol), qty, limit_price)
 
     def buy_resv_limit(self, symbol, qty, limit_price):
         return self._broker(symbol).buy_resv_limit(self._code(symbol), qty, limit_price)
@@ -77,6 +102,39 @@ class BrokerRouter:
         if symbol is not None and self._is_fut(symbol):
             return self._futures.order_status(order_no)
         return self._stock.order_status(order_no, symbol)
+
+    # ── 잔고 스냅샷: stock + 선물(국내·해외) 병합 + 심볼 정규화 (M7) ──────────────────
+    def account_snapshot(self, overseas=True):
+        """주식 스냅샷에 선물 포지션을 병합. 선물 계약코드→데이터셋 심볼로 정규화.
+
+        선물 포지션을 ledger·reconcile·over-sell 클램프(전부 데이터셋 심볼 기준)가 인식하도록
+        병합한다. 선물 브로커가 국내(account_snapshot)·해외(overseas_account_snapshot) 컨텍스트별
+        잔고를 주면 둘 다 병합(미구성 컨텍스트는 try/except skip). **주식 동작 무변경**(선물 없으면
+        stock 스냅샷 그대로). equity 정밀 병합(증거금/평가→_unified_equity_krw)은 라이브 검증 후."""
+        snap = self._stock.account_snapshot(overseas)
+        if self._futures is None:
+            return snap
+        out = {"balance": dict(snap.get("balance", {}) or {}),
+               "positions": list(snap.get("positions", []) or [])}
+        for getter in ("account_snapshot", "overseas_account_snapshot"):
+            fn = getattr(self._futures, getter, None)
+            if fn is None:
+                continue
+            try:
+                fsnap = fn() or {}
+            except Exception as e:                   # noqa: BLE001 — 미구성/통신 실패는 병합 skip
+                log.warning("선물 잔고 조회 실패(%s) — 병합 skip: %s", getter, e)
+                continue
+            for p in (fsnap.get("positions") or []):
+                np = dict(p)
+                code = str(p.get("symbol", "") or "")
+                ds = dataset_for_contract(code)
+                if ds:                               # 계약코드 → 데이터셋 심볼(ledger 매칭 키)
+                    np["contract_code"] = code
+                    np["symbol"] = ds
+                np.setdefault("asset_class", "futures")
+                out["positions"].append(np)
+        return out
 
     # ── 진입 시 계약코드·만기일 (M6 만기 자동청산 — Trader가 ledger에 기록) ──────────
     def contract_expiry(self, symbol):

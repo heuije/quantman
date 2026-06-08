@@ -64,8 +64,33 @@ class _FakeStock(_Fake):
 
 class _FakeFutures(_Fake):
     # 선물 order_status는 1-arg
+    def __init__(self, tag):
+        super().__init__(tag)
+        self.dom_positions: list[dict] = []   # 국내선물 잔고(계약코드 키)
+        self.ov_positions: list[dict] = []     # 해외선물 잔고(globex 키)
+
     def order_status(self, order_no):
         self.calls.append(("order_status", order_no)); return {"tag": "fut"}
+
+    # 해외선물 주문 메서드(P2) — CME 심볼은 라우터가 이쪽으로 dispatch
+    def overseas_buy(self, symbol, qty):
+        self.calls.append(("overseas_buy", symbol, qty)); return {"tag": self.tag}
+
+    def overseas_sell(self, symbol, qty):
+        self.calls.append(("overseas_sell", symbol, qty)); return {"tag": self.tag}
+
+    def overseas_buy_limit(self, symbol, qty, limit_price):
+        self.calls.append(("overseas_buy_limit", symbol, qty, limit_price)); return {"tag": self.tag}
+
+    def overseas_sell_limit(self, symbol, qty, limit_price):
+        self.calls.append(("overseas_sell_limit", symbol, qty, limit_price)); return {"tag": self.tag}
+
+    # 잔고(국내=parse_futures_balance shape, 해외=parse_overseas_balance shape)
+    def account_snapshot(self):
+        self.calls.append(("fut_account_snapshot",)); return {"positions": list(self.dom_positions), "account": {}}
+
+    def overseas_account_snapshot(self):
+        self.calls.append(("ov_account_snapshot",)); return {"positions": list(self.ov_positions)}
 
 
 def _router(resolve_expiry=None):
@@ -85,14 +110,32 @@ def test_equity_buy_routes_to_stock_unchanged():
     assert fut.calls == []
 
 
-def test_futures_buy_routes_to_futures_with_contract_code():
+def test_domestic_futures_buy_routes_to_domestic_method():
+    # 국내선물(코스피200·KRX) → domestic buy + 계약코드 해석
     r, stock, fut = _router()
-    r.buy("금선물", 2)
-    assert ("buy", "GCM26", 2) in fut.calls      # 한글명→계약코드 해석
+    r.buy("코스피200선물", 2)
+    assert ("buy", "A01606", 2) in fut.calls
     assert stock.calls == []
 
 
-def test_futures_limit_and_price_resolve_code():
+def test_overseas_futures_buy_routes_to_overseas_method():
+    # 해외선물(금선물·CME) → overseas_buy(해외 컨텍스트) — domestic buy 오발주 방지(M7 갭 수정)
+    r, stock, fut = _router()
+    r.buy("금선물", 2)
+    assert ("overseas_buy", "GCM26", 2) in fut.calls
+    assert ("buy", "GCM26", 2) not in fut.calls
+    assert stock.calls == []
+
+
+def test_overseas_futures_limit_routes_to_overseas():
+    r, stock, fut = _router()
+    r.buy_limit("금선물", 1, 1950.0)
+    r.sell_limit("금선물", 1, 1960.0)
+    assert ("overseas_buy_limit", "GCM26", 1, 1950.0) in fut.calls
+    assert ("overseas_sell_limit", "GCM26", 1, 1960.0) in fut.calls
+
+
+def test_domestic_futures_limit_and_price_resolve_code():
     r, stock, fut = _router()
     r.buy_limit("코스피200선물", 1, 350.0)
     r.price("코스피200선물")
@@ -139,6 +182,43 @@ def test_no_futures_broker_routes_all_to_stock():
     r = BrokerRouter(stock, None, resolve=lambda s: None)
     r.buy("금선물", 1)              # 선물브로커 없으면 선물도 stock으로(라우터 미사용 상정 방어)
     assert ("buy", "금선물", 1) in stock.calls
+
+
+# ── account_snapshot 병합 + 심볼 정규화 (M7 — 선물 청산/reconcile이 인식하도록) ────
+def test_snapshot_merges_domestic_futures_normalized_to_dataset_symbol():
+    r, stock, fut = _router()
+    fut.dom_positions = [{"symbol": "A01606", "side": "buy", "qty": 2, "avg_price": 350.0}]
+    snap = r.account_snapshot()
+    pos = [p for p in snap["positions"] if p["symbol"] == "코스피200선물"]
+    assert len(pos) == 1                                  # 계약코드 A01606 → 데이터셋 심볼
+    assert pos[0]["contract_code"] == "A01606" and pos[0]["qty"] == 2
+    assert pos[0]["asset_class"] == "futures"
+
+
+def test_snapshot_merges_overseas_futures_normalized():
+    r, stock, fut = _router()
+    fut.ov_positions = [{"symbol": "GCM26", "side": "short", "qty": 1, "avg_price": 1950.0}]
+    snap = r.account_snapshot()
+    pos = [p for p in snap["positions"] if p["symbol"] == "금선물"]
+    assert len(pos) == 1 and pos[0]["contract_code"] == "GCM26" and pos[0]["side"] == "short"
+
+
+def test_snapshot_no_futures_broker_unchanged():
+    stock = _FakeStock("stock")
+    r = BrokerRouter(stock, None, resolve=lambda s: None)
+    assert r.account_snapshot() == {"balance": {"cash": 1}, "positions": []}   # stock 그대로
+
+
+def test_snapshot_skips_failed_futures_context_without_crash():
+    # 미구성/통신 실패 컨텍스트(예외) → 그 컨텍스트만 skip, 국내는 병합·크래시 없음
+    r, stock, fut = _router()
+    fut.dom_positions = [{"symbol": "A01606", "side": "buy", "qty": 1}]
+
+    def _boom():
+        raise RuntimeError("해외선물 미구성")
+    fut.overseas_account_snapshot = _boom
+    snap = r.account_snapshot()
+    assert any(p["symbol"] == "코스피200선물" for p in snap["positions"])
 
 
 # ── contract_expiry — 진입 시 ledger 기록용 (계약코드+만기일, M6) ──────────────
