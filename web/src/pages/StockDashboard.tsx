@@ -1,6 +1,6 @@
 import { useState, useEffect, type ReactNode } from "react";
 import {
-  ComposedChart, LineChart, Line, Bar, Scatter, XAxis, YAxis, Tooltip,
+  ComposedChart, Line, Bar, Scatter, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine, CartesianGrid, Legend, Brush, Cell,
 } from "recharts";
 import { api } from "../api";
@@ -25,16 +25,6 @@ const VOL_MA: [keyof SymbolPoint, string, string][] = [
   ["vma120", "MA120", "#7c3aed"], ["vma240", "MA240", "#b45309"],
 ];
 
-const IND_COLORS: Record<string, string> = {
-  rsi_14: "#ad5019", macd: "#d97757", macd_signal: "#1668c4",
-  stoch_k: "#ad5019", stoch_d: "#1668c4", atr_14: "#7c3aed",
-  obv: "#22a06b", vol_20d: "#e0823d",
-};
-const SUB_LABEL: Record<string, string> = {
-  rsi_14: "RSI (14)", macd: "MACD (12,26,9)", stoch: "스토캐스틱 (14,3)",
-  volume: "거래량", atr_14: "ATR (14)", obv: "OBV", vol_20d: "변동성 (20일)",
-  bb: "볼린저밴드 (20,2σ)",
-};
 const DEFAULT_SEL = ["rsi_14", "macd", "volume", "stoch"];   // 최대 4개
 
 // 다종목 비교 팔레트 (최대 10)
@@ -46,6 +36,118 @@ const METRIC_OPTS: [string, string][] = [
   ["rsi", "RSI (14)"], ["range52", "52주 고/저"], ["volume", "거래량"],
   ["macd", "MACD"], ["stoch", "스토캐스틱"], ["atr", "ATR (14)"], ["vol20", "변동성 (20일)"],
 ];
+
+// 서브차트 라인 색
+const L1 = "#ad5019", L2 = "#1668c4", L3 = "#7c3aed", L4 = "#22a06b", L5 = "#d97757", GRAY = "#9aa0a6";
+
+// 지표 1개 = 렌더 설정. SubChart가 이 설정대로 일괄 렌더(라인/밴드/히스토 + 줌).
+type RCSeries = { k: string; name: string; color: string; width?: number; dash?: string };
+type RC = {
+  priceOverlay?: boolean;                     // 종가선 + 가격 y축 (이동평균·밴드류)
+  series?: RCSeries[];
+  hist?: string;                              // 중립색 히스토그램 (macd_hist, ppo_hist)
+  histSign?: string;                          // 부호색(빨강/파랑) 히스토그램 (ao)
+  volume?: boolean;                           // 거래량 특수 렌더(전일비 색 + 거래량MA)
+  domain?: [number, number] | ["auto", "auto"];
+  ticks?: number[];
+  refs?: { y: number; color: string }[];
+};
+
+const RENDER: Record<string, RC> = {
+  // 기존 8
+  rsi_14: { series: [{ k: "rsi_14", name: "RSI", color: L1, width: 1.5 }], domain: [0, 100], ticks: [30, 50, 70], refs: [{ y: 70, color: UP }, { y: 30, color: DOWN }] },
+  macd: { series: [{ k: "macd", name: "MACD", color: L5, width: 1.5 }, { k: "macd_signal", name: "시그널", color: L2, width: 1 }], hist: "macd_hist", refs: [{ y: 0, color: GRAY }] },
+  stoch: { series: [{ k: "stoch_k", name: "%K", color: L1, width: 1.5 }, { k: "stoch_d", name: "%D", color: L2, width: 1 }], domain: [0, 100], ticks: [20, 50, 80], refs: [{ y: 80, color: UP }, { y: 20, color: DOWN }] },
+  volume: { volume: true },
+  atr_14: { series: [{ k: "atr_14", name: "ATR", color: L3, width: 1.5 }] },
+  obv: { series: [{ k: "obv", name: "OBV", color: L4, width: 1.5 }] },
+  vol_20d: { series: [{ k: "vol_20d", name: "변동성%", color: L5, width: 1.5 }] },
+  bb: { priceOverlay: true, series: [{ k: "bb_upper", name: "상단", color: L4, width: 1 }, { k: "bb_mid", name: "중심", color: GRAY, width: 1, dash: "3 3" }, { k: "bb_lower", name: "하단", color: L4, width: 1 }] },
+  // 가격 오버레이
+  ema: { priceOverlay: true, series: [{ k: "ema20", name: "EMA20", color: L5, width: 1.2 }, { k: "ema60", name: "EMA60", color: L2, width: 1 }] },
+  wma: { priceOverlay: true, series: [{ k: "wma20", name: "WMA20", color: L5, width: 1.2 }] },
+  vwap: { priceOverlay: true, series: [{ k: "vwap", name: "VWAP", color: L3, width: 1.2 }] },
+  envelope: { priceOverlay: true, series: [{ k: "env_upper", name: "상단", color: L4, width: 1 }, { k: "env_lower", name: "하단", color: L4, width: 1 }] },
+  keltner: { priceOverlay: true, series: [{ k: "kc_upper", name: "상단", color: L4, width: 1 }, { k: "kc_mid", name: "중심", color: GRAY, width: 1, dash: "3 3" }, { k: "kc_lower", name: "하단", color: L4, width: 1 }] },
+  donchian: { priceOverlay: true, series: [{ k: "dc_upper", name: "상단", color: L4, width: 1 }, { k: "dc_mid", name: "중심", color: GRAY, width: 1, dash: "3 3" }, { k: "dc_lower", name: "하단", color: L4, width: 1 }] },
+  psar: { priceOverlay: true, series: [{ k: "psar", name: "SAR", color: L3, width: 1, dash: "1 4" }] },
+  ichimoku: { priceOverlay: true, series: [{ k: "ichi_tenkan", name: "전환", color: L5, width: 1 }, { k: "ichi_kijun", name: "기준", color: L2, width: 1 }, { k: "ichi_spanA", name: "선행A", color: L4, width: 1 }, { k: "ichi_spanB", name: "선행B", color: "#be185d", width: 1 }] },
+  supertrend: { priceOverlay: true, series: [{ k: "supertrend", name: "슈퍼트렌드", color: L3, width: 1.4 }] },
+  // 모멘텀·오실레이터
+  cci: { series: [{ k: "cci", name: "CCI", color: L1, width: 1.5 }], refs: [{ y: 100, color: UP }, { y: -100, color: DOWN }, { y: 0, color: GRAY }] },
+  williams_r: { series: [{ k: "williams_r", name: "%R", color: L1, width: 1.5 }], domain: [-100, 0], ticks: [-20, -50, -80], refs: [{ y: -20, color: UP }, { y: -80, color: DOWN }] },
+  roc: { series: [{ k: "roc", name: "ROC%", color: L1, width: 1.5 }], refs: [{ y: 0, color: GRAY }] },
+  momentum: { series: [{ k: "momentum", name: "모멘텀", color: L1, width: 1.5 }], refs: [{ y: 0, color: GRAY }] },
+  stochrsi: { series: [{ k: "stochrsi_k", name: "%K", color: L1, width: 1.5 }, { k: "stochrsi_d", name: "%D", color: L2, width: 1 }], domain: [0, 100], ticks: [20, 50, 80], refs: [{ y: 80, color: UP }, { y: 20, color: DOWN }] },
+  trix: { series: [{ k: "trix", name: "TRIX", color: L1, width: 1.5 }], refs: [{ y: 0, color: GRAY }] },
+  uo: { series: [{ k: "uo", name: "UO", color: L1, width: 1.5 }], domain: [0, 100], ticks: [30, 50, 70], refs: [{ y: 70, color: UP }, { y: 30, color: DOWN }] },
+  ao: { histSign: "ao", refs: [{ y: 0, color: GRAY }] },
+  dmi: { series: [{ k: "plus_di", name: "+DI", color: UP, width: 1.2 }, { k: "minus_di", name: "-DI", color: DOWN, width: 1.2 }, { k: "adx", name: "ADX", color: L3, width: 1.5 }], refs: [{ y: 25, color: GRAY }] },
+  aroon: { series: [{ k: "aroon_up", name: "Up", color: UP, width: 1.2 }, { k: "aroon_down", name: "Down", color: DOWN, width: 1.2 }], domain: [0, 100], ticks: [30, 70] },
+  vortex: { series: [{ k: "vi_plus", name: "VI+", color: UP, width: 1.2 }, { k: "vi_minus", name: "VI-", color: DOWN, width: 1.2 }] },
+  dpo: { series: [{ k: "dpo", name: "DPO", color: L1, width: 1.5 }], refs: [{ y: 0, color: GRAY }] },
+  ppo: { series: [{ k: "ppo", name: "PPO", color: L5, width: 1.5 }, { k: "ppo_signal", name: "시그널", color: L2, width: 1 }], hist: "ppo_hist", refs: [{ y: 0, color: GRAY }] },
+  disparity: { series: [{ k: "disparity", name: "이격도", color: L1, width: 1.5 }], refs: [{ y: 100, color: GRAY }] },
+  psy: { series: [{ k: "psy_line", name: "심리도", color: L1, width: 1.5 }], domain: [0, 100], ticks: [25, 50, 75], refs: [{ y: 75, color: UP }, { y: 25, color: DOWN }] },
+  kst: { series: [{ k: "kst", name: "KST", color: L5, width: 1.5 }, { k: "kst_signal", name: "시그널", color: L2, width: 1 }], refs: [{ y: 0, color: GRAY }] },
+  coppock: { series: [{ k: "coppock", name: "코폭", color: L1, width: 1.5 }], refs: [{ y: 0, color: GRAY }] },
+  elder: { series: [{ k: "bull_power", name: "불파워", color: UP, width: 1.2 }, { k: "bear_power", name: "베어파워", color: DOWN, width: 1.2 }], refs: [{ y: 0, color: GRAY }] },
+  // 거래량
+  mfi: { series: [{ k: "mfi", name: "MFI", color: L1, width: 1.5 }], domain: [0, 100], ticks: [20, 50, 80], refs: [{ y: 80, color: UP }, { y: 20, color: DOWN }] },
+  cmf: { series: [{ k: "cmf", name: "CMF", color: L1, width: 1.5 }], refs: [{ y: 0, color: GRAY }] },
+  chaikin_osc: { series: [{ k: "chaikin_osc", name: "Chaikin", color: L1, width: 1.5 }], refs: [{ y: 0, color: GRAY }] },
+  force_index: { series: [{ k: "force_index", name: "Force", color: L1, width: 1.5 }], refs: [{ y: 0, color: GRAY }] },
+  eom: { series: [{ k: "eom", name: "EOM", color: L1, width: 1.5 }], refs: [{ y: 0, color: GRAY }] },
+  vr: { series: [{ k: "vr", name: "VR%", color: L1, width: 1.5 }], refs: [{ y: 150, color: UP }, { y: 70, color: DOWN }, { y: 100, color: GRAY }] },
+  ad_line: { series: [{ k: "ad_line", name: "A/D", color: L4, width: 1.5 }] },
+  // 변동성
+  bb_pctb: { series: [{ k: "bb_pct_b", name: "%B", color: L1, width: 1.5 }], refs: [{ y: 1, color: UP }, { y: 0, color: DOWN }, { y: 0.5, color: GRAY }] },
+  bb_bw: { series: [{ k: "bb_bw", name: "밴드폭%", color: L1, width: 1.5 }] },
+  stddev: { series: [{ k: "stddev_20", name: "표준편차", color: L3, width: 1.5 }] },
+  mass_index: { series: [{ k: "mass_index", name: "Mass", color: L1, width: 1.5 }], refs: [{ y: 27, color: UP }, { y: 26.5, color: DOWN }] },
+};
+
+// 신규 지표 설명(정의) — interpret()의 규칙기반 해석과 함께 표시.
+const DEF: Record<string, string> = {
+  ema: "지수이동평균(EMA)은 최근 가격에 가중치를 더 준 이동평균으로, 단순이평보다 추세 변화에 빠르게 반응합니다.",
+  wma: "가중이동평균(WMA)은 최근일일수록 큰 가중치를 준 이동평균입니다.",
+  vwap: "거래량가중평균가(VWAP)는 거래량을 가중한 평균 단가로, 기관 평균 매매가 기준선으로 쓰입니다.",
+  envelope: "엔벨로프는 이동평균 ±일정%(여기선 5%) 밴드로, 상단 접근=과열·하단 접근=과냉을 봅니다.",
+  keltner: "켈트너 채널은 EMA ±2×ATR 밴드로 변동성 기반 추세·돌파를 봅니다.",
+  donchian: "돈치안 채널은 최근 N일 최고가·최저가 밴드로, 상단 돌파를 추세 시작 신호로 씁니다.",
+  psar: "파라볼릭 SAR는 추세 방향의 손절·반전점을 표시합니다(가격이 SAR를 교차하면 추세 전환).",
+  ichimoku: "일목균형표는 전환선·기준선·선행스팬(구름)으로 추세·지지저항을 한 번에 봅니다.",
+  supertrend: "슈퍼트렌드는 ATR 기반 추세 추종선으로, 가격이 선 위면 상승·아래면 하락 추세입니다.",
+  cci: "CCI는 가격이 평균에서 벗어난 정도로, +100 위=과열·강세, -100 아래=과냉·약세.",
+  williams_r: "Williams %R은 최근 범위 내 종가 위치(0~-100)로, -20 위=과매수·-80 아래=과매도.",
+  roc: "ROC(가격변화율)은 N일 전 대비 등락률(%)로 모멘텀 강도를 봅니다(0 위=상승 모멘텀).",
+  momentum: "모멘텀은 N일 전 대비 가격 차이로, 0 위면 상승 모멘텀입니다.",
+  stochrsi: "스토캐스틱 RSI는 RSI에 스토캐스틱을 적용해 더 민감하게 과매수(80↑)·과매도(20↓)를 봅니다.",
+  trix: "TRIX는 삼중 지수이평의 변화율로 노이즈를 걸러낸 추세 모멘텀입니다(0 상향 돌파=매수).",
+  uo: "얼티밋 오실레이터는 단·중·장기를 합친 모멘텀(0~100)으로, 30↓ 과매도·70↑ 과매수.",
+  ao: "어썸 오실레이터는 5·34 중간가격 이평 차이로 모멘텀을 봅니다(0 위=강세).",
+  dmi: "DMI/ADX는 +DI/-DI로 방향, ADX로 추세 강도를 봅니다(ADX 25 위=추세 강함).",
+  aroon: "아룬은 최근 고점·저점까지의 시간으로 추세 시작·강도를 봅니다(Up>Down=상승).",
+  vortex: "볼텍스(VI)는 VI+와 VI-의 교차로 추세 전환을 포착합니다(VI+>VI-=상승).",
+  dpo: "DPO(추세제거)는 추세를 뺀 가격 순환만 보여 주기적 고저점을 찾습니다.",
+  ppo: "PPO는 MACD를 %로 표현한 것으로 종목 간 비교가 쉽습니다(시그널 상향 돌파=매수).",
+  disparity: "이격도는 현재가÷이동평균×100으로, 100 위=이평 위(과열 가능)·아래=과냉 가능.",
+  psy: "투자심리도는 최근 12일 중 상승일 비율(%)로, 75↑ 과열·25↓ 침체.",
+  kst: "KST는 여러 기간 ROC를 합친 장기 모멘텀으로, 시그널 상향 돌파를 매수로 봅니다.",
+  coppock: "코폭 곡선은 장기 모멘텀 지표로, 0 상향 돌파를 중장기 매수 신호로 봅니다.",
+  elder: "엘더레이는 불파워(고가-EMA)·베어파워(저가-EMA)로 매수·매도 세력을 봅니다.",
+  mfi: "MFI(자금흐름)는 거래량을 반영한 RSI로, 80↑ 과매수·20↓ 과매도.",
+  cmf: "CMF(차이킨 자금흐름)는 거래량 가중 매집/분산으로, 0 위=매집 우위.",
+  chaikin_osc: "차이킨 오실레이터는 A/D선의 단·장기 이평 차이로 자금 흐름 변화를 봅니다.",
+  force_index: "강도지수는 가격 변화×거래량으로 추세의 힘을 측정합니다(0 위=상승 압력).",
+  eom: "이동편의도(EOM)는 적은 거래량으로 가격이 쉽게 오르내리는 정도로, 0 위=상승 용이.",
+  vr: "거래량비율(VR)은 상승일/하락일 거래량 비(%)로, 보통 150 위 과열·70 아래 침체.",
+  ad_line: "A/D 누적분배선은 종가 위치×거래량 누적으로, 가격과 같이 오르면 매집(추세 신뢰).",
+  bb_pctb: "볼린저 %B는 밴드 내 종가 위치로, 1 위=상단 돌파(과열)·0 아래=하단 이탈(과냉).",
+  bb_bw: "볼린저 밴드폭은 밴드 폭(변동성)으로, 좁아지면(스퀴즈) 큰 변동 임박 신호.",
+  stddev: "표준편차는 최근 N일 가격 변동성의 크기입니다(클수록 변동성↑).",
+  mass_index: "매스 인덱스는 고저 범위 확장으로 추세 반전(반전 벌지, 27 위→26.5 아래)을 예고합니다.",
+};
 
 // 급등락 세모 마커 (위=급등 빨강 / 아래=급락 파랑)
 function TriUp({ cx, cy }: { cx?: number; cy?: number }) {
@@ -347,7 +449,7 @@ export default function StockDashboard() {
             <div className="ca-grid" style={{ marginTop: 16 }}>
               {selected.map((k) => (
                 <div key={k} className="panel" style={{ marginBottom: 0 }}>
-                  <SubChart ikey={k} data={chartData} isKR={isKR} />
+                  <SubChart ikey={k} label={indicators.find((i) => i.key === k)?.label || k} data={chartData} isKR={isKR} />
                   <ExplToggle ikey={k} series={data.series} isKR={isKR} dol={dol} won={won} benchName={last.benchmark} />
                 </div>
               ))}
@@ -363,62 +465,78 @@ export default function StockDashboard() {
   );
 }
 
-// ── 다종목 비교 차트 (수익률% 정규화) ──────────────────────────────────────────
+// ── 다종목 비교 — 종목별 소형 캔들차트(small-multiples) ──────────────────────────
 function CompareChart({ items }: { items: CompareItem[] }) {
-  // 날짜 합집합으로 병합 (시장별 거래일 상이 → 누락은 connectNulls)
-  const dateSet = new Set<string>();
-  items.forEach((it) => it.series.forEach((p) => dateSet.add(p.date)));
-  const dates = Array.from(dateSet).sort();
-  const bySym = new Map(items.map((it) => [it.symbol, new Map(it.series.map((p) => [p.date, p.ret_pct]))]));
-  const rows = dates.map((d) => {
-    const row: Record<string, string | number | null> = { date: d };
-    items.forEach((it) => { row[it.symbol] = bySym.get(it.symbol)?.get(d) ?? null; });
-    return row;
-  });
   return (
     <div className="panel" style={{ marginTop: 16 }}>
       <h3 style={{ marginTop: 0 }}>
-        다종목 수익률 비교 (시작점 = 0%)
+        다종목 캔들 비교
         <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
-          {"  "}· 비교 모드에선 지표·벤치마크는 표시하지 않습니다
+          {"  "}· 종목별 개별 캔들차트(MA 5·20·60) · 비교 모드에선 지표는 표시하지 않습니다
         </span>
       </h3>
-      <ResponsiveContainer width="100%" height={460}>
-        <LineChart data={rows} margin={{ top: 5, right: 16, bottom: 5, left: 8 }}>
+      <div className="ca-grid">
+        {items.map((it) => <CompareCell key={it.symbol} item={it} />)}
+      </div>
+    </div>
+  );
+}
+
+function CompareCell({ item }: { item: CompareItem }) {
+  const isKR = item.currency === "KRW";
+  const data = item.series.map((p) => ({
+    ...p, hl: p.low != null && p.high != null ? [p.low, p.high] : null,
+  }));
+  let pmin = Infinity, pmax = -Infinity;
+  data.forEach((d) => {
+    ([d.low, d.high, d.ma20, d.ma60] as (number | null)[]).forEach((v) => {
+      if (v != null) { if (v < pmin) pmin = v; if (v > pmax) pmax = v; }
+    });
+  });
+  const domain: [number, number] = pmin <= pmax
+    ? [Math.floor(pmin * 0.985), Math.ceil(pmax * 1.015)] : [0, 1];
+  return (
+    <div className="panel" style={{ marginBottom: 0 }}>
+      <h3 style={{ marginTop: 0, fontSize: 14 }}>
+        {item.name} <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>{item.symbol}</span>
+      </h3>
+      <ResponsiveContainer width="100%" height={260}>
+        <ComposedChart data={data} margin={{ top: 5, right: 12, bottom: 5, left: 8 }}>
           <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
-          <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
-          <YAxis tick={{ fontSize: 11 }} width={50} tickFormatter={(v) => `${v}%`} />
-          <Tooltip formatter={(v, n) => [`${Number(v).toFixed(2)}%`, n as string]} />
-          <Legend />
-          <ReferenceLine y={0} stroke="#9aa0a6" />
-          {items.map((it, i) => (
-            <Line key={it.symbol} type="monotone" dataKey={it.symbol}
-              name={`${it.name} (${it.symbol})`} stroke={CMP_COLORS[i % CMP_COLORS.length]}
-              strokeWidth={1.6} dot={false} connectNulls />
-          ))}
-          <Brush dataKey="date" height={24} stroke={ACCENT} travellerWidth={8} />
-        </LineChart>
+          <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
+          <YAxis domain={domain} tick={{ fontSize: 10 }} width={52}
+            tickFormatter={(v) => isKR ? `${Math.round(v / 1000)}k` : String(v)} />
+          <Tooltip /><Legend />
+          <Bar dataKey="hl" isAnimationActive={false} legendType="none" shape={Candle} />
+          <Line type="monotone" dataKey="ma5" stroke="#9aa0a6" strokeWidth={1} dot={false} name="MA5" connectNulls />
+          <Line type="monotone" dataKey="ma20" stroke="#d97757" strokeWidth={1} dot={false} name="MA20" connectNulls />
+          <Line type="monotone" dataKey="ma60" stroke="#1668c4" strokeWidth={1} dot={false} name="MA60" connectNulls />
+          <Brush dataKey="date" height={16} stroke={ACCENT} travellerWidth={6} />
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
 }
 
 // ── 서브 지표 차트 (4분할 그리드 1칸) ──────────────────────────────────────────
-function SubChart({ ikey, data, isKR }: { ikey: string; data: Record<string, unknown>[]; isKR: boolean }) {
-  const title = SUB_LABEL[ikey] || ikey;
+function SubChart({ ikey, label, data, isKR }:
+  { ikey: string; label: string; data: Record<string, unknown>[]; isKR: boolean }) {
+  const rc: RC = RENDER[ikey] || { series: [{ k: ikey, name: label, color: ACCENT }] };
   const M = { top: 5, right: 12, bottom: 5, left: 8 };
-  return (
-    <>
-      <h3 style={{ marginTop: 0 }}>
-        {title}
-        {ikey === "volume" && (
+  const brush = <Brush dataKey="date" height={14} stroke={ACCENT} travellerWidth={6} />;
+  const kfmt = (v: number) => isKR ? `${Math.round(v / 1000)}k` : String(v);
+
+  // 거래량 — 전일비 색 막대 + 거래량 이동평균
+  if (rc.volume) {
+    return (
+      <>
+        <h3 style={{ marginTop: 0 }}>
+          {label}
           <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 400 }}>
             {"  "}· 전일比 ▲+5% 빨강 / ▼−5% 파랑 · MA 5종
           </span>
-        )}
-      </h3>
-      <ResponsiveContainer width="100%" height={210}>
-        {ikey === "volume" ? (
+        </h3>
+        <ResponsiveContainer width="100%" height={210}>
           <ComposedChart data={data} margin={M}>
             <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
             <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
@@ -435,57 +553,46 @@ function SubChart({ ikey, data, isKR }: { ikey: string; data: Record<string, unk
             {VOL_MA.map(([k, lbl, col]) => (
               <Line key={k} type="monotone" dataKey={k} stroke={col} strokeWidth={1} dot={false} name={lbl} />
             ))}
+            {brush}
           </ComposedChart>
-        ) : ikey === "macd" ? (
-          <ComposedChart data={data} margin={M}>
-            <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
-            <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
-            <YAxis tick={{ fontSize: 10 }} width={44} />
-            <Tooltip /><ReferenceLine y={0} stroke="#9aa0a6" />
-            <Bar dataKey="macd_hist" fill="#cbb9ac" name="히스토그램" isAnimationActive={false} />
-            <Line type="monotone" dataKey="macd" stroke={IND_COLORS.macd} strokeWidth={1.5} dot={false} name="MACD" />
-            <Line type="monotone" dataKey="macd_signal" stroke={IND_COLORS.macd_signal} strokeWidth={1} dot={false} name="시그널" />
-          </ComposedChart>
-        ) : ikey === "stoch" ? (
-          <LineChart data={data} margin={M}>
-            <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
-            <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
-            <YAxis domain={[0, 100]} ticks={[20, 50, 80]} tick={{ fontSize: 10 }} width={30} />
-            <Tooltip /><ReferenceLine y={80} stroke={UP} strokeDasharray="4 4" />
-            <ReferenceLine y={20} stroke={DOWN} strokeDasharray="4 4" />
-            <Line type="monotone" dataKey="stoch_k" stroke={IND_COLORS.stoch_k} strokeWidth={1.5} dot={false} name="%K" />
-            <Line type="monotone" dataKey="stoch_d" stroke={IND_COLORS.stoch_d} strokeWidth={1} dot={false} name="%D" />
-          </LineChart>
-        ) : ikey === "rsi_14" ? (
-          <LineChart data={data} margin={M}>
-            <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
-            <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
-            <YAxis domain={[0, 100]} ticks={[30, 50, 70]} tick={{ fontSize: 10 }} width={30} />
-            <Tooltip /><ReferenceLine y={70} stroke={UP} strokeDasharray="4 4" />
-            <ReferenceLine y={30} stroke={DOWN} strokeDasharray="4 4" />
-            <Line type="monotone" dataKey="rsi_14" stroke={IND_COLORS.rsi_14} strokeWidth={1.5} dot={false} name="RSI" />
-          </LineChart>
-        ) : ikey === "bb" ? (
-          <LineChart data={data} margin={M}>
-            <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
-            <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
-            <YAxis domain={["auto", "auto"]} tick={{ fontSize: 10 }} width={48}
-              tickFormatter={(v) => isKR ? `${Math.round(v / 1000)}k` : String(v)} />
-            <Tooltip />
-            <Line type="monotone" dataKey="bb_upper" stroke="#22a06b" strokeWidth={1} dot={false} name="상단" />
-            <Line type="monotone" dataKey="close" stroke={ACCENT} strokeWidth={1.4} dot={false} name="종가" />
-            <Line type="monotone" dataKey="bb_mid" stroke="#9aa0a6" strokeWidth={1} strokeDasharray="3 3" dot={false} name="중심" />
-            <Line type="monotone" dataKey="bb_lower" stroke="#22a06b" strokeWidth={1} dot={false} name="하단" />
-          </LineChart>
-        ) : (
-          <LineChart data={data} margin={M}>
-            <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
-            <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
-            <YAxis tick={{ fontSize: 10 }} width={44} />
-            <Tooltip />
-            <Line type="monotone" dataKey={ikey} stroke={IND_COLORS[ikey] || ACCENT} strokeWidth={1.5} dot={false} name={title} />
-          </LineChart>
-        )}
+        </ResponsiveContainer>
+      </>
+    );
+  }
+
+  // 일반 — 설정대로 라인/밴드/히스토그램 + 기준선 + 줌
+  const priceY = !!rc.priceOverlay;
+  return (
+    <>
+      <h3 style={{ marginTop: 0 }}>{label}</h3>
+      <ResponsiveContainer width="100%" height={210}>
+        <ComposedChart data={data} margin={M}>
+          <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
+          <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
+          <YAxis domain={rc.domain || ["auto", "auto"]} ticks={rc.ticks} tick={{ fontSize: 10 }}
+            width={priceY ? 50 : 42} tickFormatter={priceY ? kfmt : undefined} />
+          <Tooltip /><Legend />
+          {(rc.refs || []).map((r, i) => (
+            <ReferenceLine key={i} y={r.y} stroke={r.color} strokeDasharray="4 4" />
+          ))}
+          {priceY && (
+            <Line type="monotone" dataKey="close" stroke={ACCENT} strokeWidth={1.4} dot={false} name="종가" connectNulls />
+          )}
+          {rc.hist && <Bar dataKey={rc.hist} fill="#cbb9ac" name="히스토그램" isAnimationActive={false} />}
+          {rc.histSign && (
+            <Bar dataKey={rc.histSign} name={label} isAnimationActive={false}>
+              {data.map((d, i) => {
+                const v = d[rc.histSign as string] as number | null;
+                return <Cell key={i} fill={v != null && v >= 0 ? UP : DOWN} />;
+              })}
+            </Bar>
+          )}
+          {(rc.series || []).map((s) => (
+            <Line key={s.k} type="monotone" dataKey={s.k} stroke={s.color}
+              strokeWidth={s.width || 1.4} strokeDasharray={s.dash} dot={false} name={s.name} connectNulls />
+          ))}
+          {brush}
+        </ComposedChart>
       </ResponsiveContainer>
     </>
   );
@@ -624,8 +731,42 @@ function interpret(
       };
     }
     default:
-      return { def: "지표 설명을 준비 중입니다.", reading: "—" };
+      return genericInterpret(ikey, series);
   }
+}
+
+// 신규 38종 — RENDER 설정 + 최근 1개월 수치로 규칙기반 해석 자동 생성.
+function genericInterpret(ikey: string, series: SymbolPoint[]): { def: string; reading: string } {
+  const rc = RENDER[ikey];
+  const def = DEF[ikey] || "기술적 지표입니다.";
+  const recent = series.slice(-21);
+  const fld = (rc?.priceOverlay ? rc.series?.[0]?.k
+    : rc?.histSign || rc?.series?.[0]?.k || ikey) as string;
+  const vals = recent.map((p) => (p as unknown as Record<string, number | null>)[fld])
+    .filter((v) => v != null) as number[];
+  const last = vals.length ? vals[vals.length - 1] : null;
+  const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  const tr = vals.length >= 2
+    ? (vals[vals.length - 1] > vals[0] ? "상승" : vals[vals.length - 1] < vals[0] ? "하락" : "보합")
+    : "데이터 부족";
+  const f = (v: number | null) => v == null ? "—"
+    : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(2);
+
+  let reading: string;
+  if (rc?.priceOverlay) {
+    const close = recent.length ? recent[recent.length - 1].close : null;
+    const rel = close != null && last != null ? (close >= last ? "위(강세)" : "아래(약세)") : "—";
+    reading = `현재가가 ${rc.series?.[0]?.name ?? "기준선"} ${rel}. 기준선 1개월 추세 ${tr}.`;
+  } else if (rc?.refs && rc.refs.length >= 2) {
+    const ys = rc.refs.map((r) => r.y);
+    const hi = Math.max(...ys), lo = Math.min(...ys);
+    const zone = last == null || hi === lo ? "중립"
+      : last >= hi ? "상단(과열/강세)" : last <= lo ? "하단(과냉/약세)" : "중립";
+    reading = `현재 ${f(last)}, 최근 1개월 평균 ${f(avg)} (${zone}). 추세 ${tr}.`;
+  } else {
+    reading = `현재 ${f(last)}, 최근 1개월 평균 ${f(avg)}. 추세 ${tr}.`;
+  }
+  return { def, reading };
 }
 
 // ── 가격 캔들 차트 커스텀 툴팁 (OHLC + MA + 벤치마크) ──────────────────────────

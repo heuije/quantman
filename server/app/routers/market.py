@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import quant_core as qc
 
-from .. import kis_master_cache
+from .. import dashboard_indicators, kis_master_cache
 from ..deps import get_current_user
 from ..models import User
 
@@ -153,7 +153,7 @@ _INDICATORS = [
     {"key": "atr_14", "label": "ATR(14)", "pane": "sub"},
     {"key": "obv", "label": "OBV", "pane": "sub"},
     {"key": "vol_20d", "label": "변동성(20일)", "pane": "sub"},
-]
+] + dashboard_indicators.NEW_INDICATORS
 
 
 def _benchmark_for(market: str, is_kr: bool) -> tuple[str, str]:
@@ -229,6 +229,8 @@ def symbol_detail(symbol: str, range: str = "1y",
     ind["obv"] = (np.sign(c.diff().fillna(0)) * ind["Volume"]).fillna(0).cumsum()
     # 전일대비 % (급등락 마커용)
     ind["chg_pct"] = c.pct_change() * 100
+    # 확장 기술지표 38종 (EMA·일목·DMI·CCI·MFI·이격도 등) — 별도 모듈에서 계산
+    dashboard_indicators.compute(ind)
     show = ind.tail(span)
     is_kr = symbol.strip().isdigit()
 
@@ -271,7 +273,7 @@ def symbol_detail(symbol: str, range: str = "1y",
         d = idx.date().isoformat() if hasattr(idx, "date") else str(idx)
         bval = (bench_rebased.loc[idx] if bench_rebased is not None
                 and idx in bench_rebased.index else None)
-        series.append({
+        pt = {
             "date": d,
             "open": _n(r.get("Open")), "high": _n(r.get("High")),
             "low": _n(r.get("Low")), "close": _n(r.get("Close")),
@@ -292,7 +294,11 @@ def symbol_detail(symbol: str, range: str = "1y",
             "stoch_k": _n(r.get("stoch_k"), 1), "stoch_d": _n(r.get("stoch_d"), 1),
             "atr_14": _n(r.get("atr_14")), "obv": _n(r.get("obv"), 0),
             "vol_20d": _n(r.get("realized_vol_20d")),
-        })
+        }
+        # 확장 지표 38종 필드 추가
+        for name, nd in dashboard_indicators.NEW_FIELDS:
+            pt[name] = _n(r.get(name), nd)
+        series.append(pt)
     if not series:
         raise HTTPException(status_code=404, detail="표시할 데이터가 부족합니다.")
 
@@ -325,10 +331,9 @@ def symbol_detail(symbol: str, range: str = "1y",
 @router.get("/compare")
 def market_compare(symbols: str, range: str = "1y",
                    user: User = Depends(get_current_user)):
-    """다종목 비교 — 각 종목을 시작점=0% 기준 정규화 수익률로 반환(최대 10종목).
+    """다종목 비교 — 종목별 OHLC + 단기 이동평균(소형 캔들차트용, 최대 10종목).
 
-    지표 계산 없이 종가만 받아 경량(겹쳐보기 전용) — symbol_detail보다 빠르다.
-    스케일이 다른 종목(국내 30만원 vs 미국 $200)도 같은 축에서 비교 가능.
+    지표 38종은 빼고 OHLC와 ma5/20/60만 계산해 경량 — symbol_detail보다 빠르다.
     """
     import FinanceDataReader as fdr
     import pandas as pd
@@ -337,12 +342,16 @@ def market_compare(symbols: str, range: str = "1y",
     if not syms:
         raise HTTPException(status_code=400, detail="비교할 종목이 필요합니다.")
     span = _RANGE_DAYS.get(range, 400)
-    fetch_start = (datetime.now().date() - timedelta(days=span + 10)).isoformat()
+    # ma60 워밍업 확보
+    fetch_start = (datetime.now().date() - timedelta(days=span + 100)).isoformat()
     try:
         name_map = {it["symbol"]: it["name"]
                     for it in _all_listings_cached(datetime.now().date().isoformat())}
     except Exception:
         name_map = {}
+
+    def _r(v, nd=2):
+        return None if v is None or pd.isna(v) else round(float(v), nd)
 
     items = []
     for sym in syms:
@@ -353,18 +362,22 @@ def market_compare(symbols: str, range: str = "1y",
             continue
         if raw is None or raw.empty or "Close" not in raw.columns:
             continue
-        cs = raw["Close"].dropna().tail(span)
-        if cs.empty:
+        c = raw["Close"]
+        ma5, ma20, ma60 = c.rolling(5).mean(), c.rolling(20).mean(), c.rolling(60).mean()
+        show = raw.tail(span)
+        s = []
+        for idx, row in show.iterrows():
+            d = idx.date().isoformat() if hasattr(idx, "date") else str(idx)
+            s.append({
+                "date": d,
+                "open": _r(row.get("Open")), "high": _r(row.get("High")),
+                "low": _r(row.get("Low")), "close": _r(row.get("Close")),
+                "ma5": _r(ma5.get(idx)), "ma20": _r(ma20.get(idx)), "ma60": _r(ma60.get(idx)),
+            })
+        if not s:
             continue
-        base = float(cs.iloc[0])
-        if not base:
-            continue
-        s = [
-            {"date": (idx.date().isoformat() if hasattr(idx, "date") else str(idx)),
-             "ret_pct": round((float(v) / base - 1) * 100, 2)}
-            for idx, v in cs.items()
-        ]
-        items.append({"symbol": sym, "name": name_map.get(sym, sym), "series": s})
+        items.append({"symbol": sym, "name": name_map.get(sym, sym),
+                      "currency": "KRW" if sym.isdigit() else "USD", "series": s})
     if not items:
         raise HTTPException(status_code=404, detail="비교할 데이터를 찾을 수 없습니다.")
     return {"items": items, "range": range}

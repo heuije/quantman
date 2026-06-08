@@ -573,6 +573,26 @@ export interface SymbolPoint {
   macd: number | null; macd_signal: number | null; macd_hist: number | null;
   stoch_k: number | null; stoch_d: number | null;
   atr_14: number | null; obv: number | null; vol_20d: number | null;
+  // 확장 기술지표 38종 (dashboard_indicators.py와 동기)
+  ema20: number | null; ema60: number | null; wma20: number | null; vwap: number | null;
+  env_upper: number | null; env_lower: number | null;
+  kc_upper: number | null; kc_mid: number | null; kc_lower: number | null;
+  dc_upper: number | null; dc_mid: number | null; dc_lower: number | null;
+  psar: number | null;
+  ichi_tenkan: number | null; ichi_kijun: number | null;
+  ichi_spanA: number | null; ichi_spanB: number | null;
+  supertrend: number | null;
+  cci: number | null; williams_r: number | null; roc: number | null; momentum: number | null;
+  stochrsi_k: number | null; stochrsi_d: number | null; trix: number | null;
+  uo: number | null; ao: number | null;
+  plus_di: number | null; minus_di: number | null; adx: number | null;
+  aroon_up: number | null; aroon_down: number | null; vi_plus: number | null; vi_minus: number | null;
+  dpo: number | null; ppo: number | null; ppo_signal: number | null; ppo_hist: number | null;
+  disparity: number | null; psy_line: number | null; kst: number | null; kst_signal: number | null;
+  coppock: number | null; bull_power: number | null; bear_power: number | null;
+  mfi: number | null; cmf: number | null; chaikin_osc: number | null; force_index: number | null;
+  eom: number | null; vr: number | null; ad_line: number | null;
+  bb_pct_b: number | null; bb_bw: number | null; stddev_20: number | null; mass_index: number | null;
 }
 export interface SymbolDetail {
   symbol: string; currency: string; range: string;
@@ -588,9 +608,13 @@ export interface SymbolDetail {
   series: SymbolPoint[];
 }
 
-// 다종목 비교 — 시작점=0% 정규화 수익률(겹쳐보기 전용, 지표 미포함).
-export interface ComparePoint { date: string; ret_pct: number | null }
-export interface CompareItem { symbol: string; name: string; series: ComparePoint[] }
+// 다종목 비교 — 종목별 소형 캔들차트(small-multiples). OHLC + 단기 MA.
+export interface ComparePoint {
+  date: string;
+  open: number | null; high: number | null; low: number | null; close: number | null;
+  ma5: number | null; ma20: number | null; ma60: number | null;
+}
+export interface CompareItem { symbol: string; name: string; currency: string; series: ComparePoint[] }
 export interface CompareResult { items: CompareItem[]; range: string }
 
 // ── 포트폴리오 탭 — 현재 vs 예상 비교 분석 ──────────────────────────────────
