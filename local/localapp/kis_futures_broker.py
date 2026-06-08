@@ -416,6 +416,16 @@ class KisFuturesBroker:
     def sell(self, symbol: str, qty: int) -> dict:
         return self._submit_order(symbol, qty, 0, "sell", order_type="market")
 
+    # ── 예약주문(reservation) — 선물 미지원 가드 (Broker Protocol 충족) ───────────────
+    # 예약주문은 *대상 시장이 닫힌 시점*에 주문을 예약하는 미국주식 전용 흐름이다. 국내선물
+    # (정규장)·해외선물(거의 24h)은 예약 개념이 없어 즉시주문(buy_limit/buy)을 쓴다. 메서드는
+    # 두되 잘못 라우팅 시 조용히 틀리지 않도록 명시 오류 — Trader 선물 진입은 즉시주문 경로(M4).
+    def buy_resv_limit(self, symbol: str, qty: int, limit_price) -> dict:
+        raise NotImplementedError("선물은 예약주문 미지원 — 정규장 buy_limit/buy 사용(Trader가 즉시주문 경로로 라우팅).")
+
+    def sell_resv_moo(self, symbol: str, qty: int) -> dict:
+        raise NotImplementedError("선물은 예약주문 미지원 — 정규장 sell_limit/sell 사용.")
+
     # ── phase 2 (연속장 라이브 검증 후 구현) — 정정취소·체결조회 ──────────────────────
     # spec 확보 완료(취소 order-rvsecncl, 체결조회 inquire-ccnl).
     # 추측 발주 방지를 위해 라이브 라운드트립 검증 전까지 미구현 유지.
