@@ -3,21 +3,26 @@
 기존 KisBroker(주식)와 별개: 선물옵션 계좌(상품코드 03)·전용 TR. 인증 흐름은 동일
 (/oauth2/tokenP → Bearer+appkey/appsecret/tr_id). 단위는 *계약수*(주식 '주' 아님).
 
-검증된 KIS 공식 spec(국내선물옵션_주문_계좌.xlsx):
+검증된 KIS 공식 spec([국내선물옵션] 주문_계좌·기본시세.xlsx):
 - 주문  TTTO1101U(실전)/VTTO1101U(모의) POST /uapi/domestic-futureoption/v1/trading/order
         body: ORD_PRCS_DVSN_CD=02·CANO·ACNT_PRDT_CD=03·SLL_BUY_DVSN_CD(01매도/02매수)·
-        SHTN_PDNO·ORD_QTY(계약수)·UNIT_PRICE(지정가)·ORD_DVSN_CD(01지정가)
+        SHTN_PDNO·ORD_QTY(계약수)·UNIT_PRICE·ORD_DVSN_CD(01지정가/02시장가)
 - 잔고  CTFO6118R(실전)/VTFO6118R(모의) GET .../trading/inquire-balance
-        output: pdno·cblc_qty(계약수)·ccld_avg_unpr1(평단)·excc_unpr(정산가)·trad_pfls_amt(손익)
+        output1=포지션(shtn_pdno·cblc_qty·sll_buy_dvsn_name·ccld_avg_unpr1·excc_unpr·evlu_pfls_amt)
+- 시세  FHMIF10000000(실전·모의 공통) GET .../quotations/inquire-price
+        output1.futs_prpr(현재가)·futs_oprc(시가)·futs_mxpr/futs_llam(상·하한 밴드)
 
-라이브 모의 검증(2026-06-08, VTFO6118R):
-- ✅ 토큰 발급·잔고조회 정상. 잔고 필수 파라미터 MGNA_DVSN·EXCC_STAT_CD·CTX_AREA_FK/NK200
-  확정(누락 시 KIS가 'INPUT_FIELD_NAME MGNA_DVSN'로 거절). output1=포지션 list·output2=계좌요약 dict.
-- ⚠ 미검증(파생 모의계좌 증거금 0이라 보류): 주문 성공 응답(ODNO)·포지션 행 키(output1[0])·
-  시장가 ORD_DVSN_CD(모의 미지원 가능성). 파생상품 모의투자 충전 후 1회 검증 필요.
+⚠ 종목코드(SHTN_PDNO)는 **선물 6자리**(예: A01606=KOSPI200 202606). fo_idx_code.mst field-1
+  `1A01606`(7자)에서 앞 `1`을 떼야 함 — 라이브 검증: A01606→주문가능, 1A01606→"모의투자 조회실패".
+
+라이브 모의 검증(2026-06-08):
+- ✅ 토큰·잔고(VTFO6118R, 필수파라미터 MGNA_DVSN 등)·시세(output1.futs_prpr) 정상. 펀딩계좌
+  주문가능(VTTO5105R)로 심볼 확정. 시장가(ORD_DVSN_CD=02) spec 지원 확인.
+- ⚠ 미검증(장 시간 필요): 주문 성공 응답(ODNO)·체결 후 populated 잔고 output1 형태. KIS spec은
+  output1을 컬럼형(dict of arrays)으로 예시 — parse는 행형/컬럼형 양형 방어. 연속장 라운드트립 1회로 확정.
 
 이 모듈은 *자동 Trader 루프에 아직 배선되지 않음*(standalone) — 임의 발주가 일어나지 않는다.
-build/parse/params 순수함수는 단위검증됨.
+build/parse/params 순수함수는 단위검증됨. price/today_open(읽기전용 시세)은 라이브 검증됨.
 """
 from __future__ import annotations
 
@@ -35,6 +40,8 @@ _REAL = "https://openapi.koreainvestment.com:9443"
 _VTS = "https://openapivts.koreainvestment.com:29443"
 _ORDER_PATH = "/uapi/domestic-futureoption/v1/trading/order"
 _BALANCE_PATH = "/uapi/domestic-futureoption/v1/trading/inquire-balance"
+_QUOTE_PATH = "/uapi/domestic-futureoption/v1/quotations/inquire-price"
+_QUOTE_TR = "FHMIF10000000"   # 선물옵션 시세(실전·모의 공통)
 
 
 def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
@@ -75,33 +82,48 @@ def build_balance_params(cano: str, acnt_prdt_cd: str) -> dict:
     }
 
 
-def parse_futures_balance(resp: dict) -> dict:
-    """잔고 응답 → {positions:[{symbol,qty,avg_price,eval_price,pnl}], account:{...}}.
+def _balance_rows(output1) -> list[dict]:
+    """잔고 output1을 행(dict) 리스트로 정규화.
 
-    output1=종목별 포지션 배열(0계약 제외), output2=계좌 요약(주문가능현금·증거금·예수금·평가손익).
-    output1=list·output2=dict 형태는 라이브 모의(VTFO6118R)로 확정. 단 포지션 행 키(cblc_qty 등)는
-    보유 포지션이 없어 KIS 공식 spec 기준(라이브 미확정 — 파생 모의 충전 후 검증).
+    KIS는 일관되지 않음: 빈 잔고=[](array), 보유 시 공식 spec 예시는 컬럼형(dict of arrays,
+    {shtn_pdno:[...], cblc_qty:[...], ...})이나 문서 type은 array. 행형(list of dicts)도 대비해
+    양형 모두 처리한다(라이브 populated 형태는 연속장 검증 예정).
     """
-    holdings = resp.get("output1")
-    if not isinstance(holdings, list):
-        # 일부 TR은 단일 output. 배열을 찾아 폴백.
-        holdings = next((v for v in resp.values() if isinstance(v, list)), [])
+    if isinstance(output1, list):
+        return [r for r in output1 if isinstance(r, dict)]
+    if isinstance(output1, dict):
+        cols = {k: v for k, v in output1.items() if isinstance(v, list)}
+        if not cols:
+            return []
+        n = max(len(v) for v in cols.values())
+        return [{k: (v[i] if i < len(v) else None) for k, v in cols.items()} for i in range(n)]
+    return []
+
+
+def parse_futures_balance(resp: dict) -> dict:
+    """잔고 응답 → {positions:[{symbol,side,qty,avg_price,settle_price,eval_pnl}], account:{...}}.
+
+    output1=종목별 포지션(0계약 제외), output2=계좌 요약(주문가능현금·증거금·예수금·평가손익).
+    symbol=shtn_pdno(6자 거래코드), side=롱/숏(sll_buy_dvsn_name), settle_price=정산단가(excc_unpr),
+    eval_pnl=평가손익(evlu_pfls_amt). 키는 KIS 공식 spec(VTFO6118R) 기준.
+    """
     positions = []
-    for r in holdings:
-        if not isinstance(r, dict):
-            continue
+    for r in _balance_rows(resp.get("output1")):
         try:
             qty = int(float(r.get("cblc_qty", 0) or 0))
         except (ValueError, TypeError):
             qty = 0
         if qty == 0:
             continue
+        side_name = str(r.get("sll_buy_dvsn_name", "") or "").strip()
+        side = "sell" if side_name in ("매도", "SLL") else ("buy" if side_name in ("매수", "BUY") else "")
         positions.append({
-            "symbol": str(r.get("pdno", "")).strip(),
+            "symbol": str(r.get("shtn_pdno", "") or "").strip(),   # 6자 단축 거래코드
+            "side": side,                                          # 롱(buy)/숏(sell)
             "qty": qty,
-            "avg_price": float(r.get("ccld_avg_unpr1", 0) or 0),
-            "eval_price": float(r.get("excc_unpr", 0) or 0),
-            "pnl": float(r.get("trad_pfls_amt", 0) or 0),
+            "avg_price": float(r.get("ccld_avg_unpr1", 0) or 0),   # 체결평균단가
+            "settle_price": float(r.get("excc_unpr", 0) or 0),     # 정산단가
+            "eval_pnl": float(r.get("evlu_pfls_amt", 0) or 0),     # 평가손익(미실현)
         })
 
     summary = resp.get("output2")
@@ -193,24 +215,34 @@ class KisFuturesBroker:
         r.raise_for_status()
         return parse_futures_balance(_json(r))
 
-    # ── phase 2 (모의 검증 후 구현) — 시장가·정정취소·체결조회·실시간·시세 ──────────
-    def buy(self, symbol: str, qty: int) -> dict:
-        raise NotImplementedError("선물 시장가 ORD_DVSN_CD 모의 확인 후 구현(phase2). buy_limit 사용.")
-
-    def sell(self, symbol: str, qty: int) -> dict:
-        raise NotImplementedError("선물 시장가 ORD_DVSN_CD 모의 확인 후 구현(phase2). sell_limit 사용.")
-
-    def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
-        raise NotImplementedError("정정취소 TTTO1103U/VTTO1103U — phase2.")
-
-    def order_status(self, order_no: str) -> dict:
-        raise NotImplementedError("주문체결내역 TTTO5201R/VTTO5201R — phase2.")
-
-    def pending_orders(self) -> list[dict]:
-        raise NotImplementedError("미체결 조회 — phase2(TTTO5201R 기반).")
+    # ── 시세(읽기전용, 라이브 검증됨) ──────────────────────────────────────────────
+    def _quote(self, symbol: str) -> dict:
+        """선물옵션 시세 output1(현재가·시가·밴드 등). FID: F=지수선물."""
+        r = requests.get(f"{self.base}{_QUOTE_PATH}", headers=self._headers(_QUOTE_TR),
+                         params={"FID_COND_MRKT_DIV_CODE": "F", "FID_INPUT_ISCD": symbol}, timeout=10)
+        r.raise_for_status()
+        return _json(r).get("output1") or {}
 
     def price(self, symbol: str) -> float:
-        raise NotImplementedError("선물 실시간 시세 H0IFCNT0 — phase2.")
+        return float(self._quote(symbol).get("futs_prpr", 0) or 0)        # 현재가
 
     def today_open(self, symbol: str) -> float:
-        raise NotImplementedError("선물 당일 시가 — phase2.")
+        return float(self._quote(symbol).get("futs_oprc", 0) or 0)        # 당일 시가
+
+    # ── phase 2 (연속장 라이브 검증 후 구현) — 시장가·정정취소·체결조회 ──────────────
+    # spec 확보 완료(시장가 ORD_DVSN_CD=02, 취소 order-rvsecncl, 체결조회 inquire-ccnl).
+    # 추측 발주 방지를 위해 라이브 라운드트립 검증 전까지 미구현 유지.
+    def buy(self, symbol: str, qty: int) -> dict:
+        raise NotImplementedError("선물 시장가(ORD_DVSN_CD=02) — 연속장 라이브 검증 후 구현(phase2). buy_limit 사용.")
+
+    def sell(self, symbol: str, qty: int) -> dict:
+        raise NotImplementedError("선물 시장가(ORD_DVSN_CD=02) — 연속장 라이브 검증 후 구현(phase2). sell_limit 사용.")
+
+    def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
+        raise NotImplementedError("정정취소 VTTO1103U(order-rvsecncl) — phase2(라이브 검증 후).")
+
+    def order_status(self, order_no: str) -> dict:
+        raise NotImplementedError("주문체결내역 VTTO5201R(inquire-ccnl) — phase2(라이브 검증 후).")
+
+    def pending_orders(self) -> list[dict]:
+        raise NotImplementedError("미체결 조회 VTTO5201R 기반 — phase2(라이브 검증 후).")
