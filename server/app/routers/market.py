@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import quant_core as qc
 
+from .. import kis_master_cache
 from ..deps import get_current_user
 from ..models import User
 
@@ -83,12 +84,16 @@ _RANGE_DAYS = {
 
 @lru_cache(maxsize=2)
 def _all_listings_cached(_day: str) -> list[dict]:
-    """한국(KRX)+미국(NASDAQ/NYSE/AMEX) 전종목 목록 — fdr on-demand, 일 1회 캐시.
+    """한국(KOSPI/KOSDAQ)+미국(NASDAQ/NYSE/AMEX) 전종목 목록 — on-demand, 일 1회 캐시.
 
-    _day(오늘 날짜)를 키로 lru_cache → 같은 날은 1회만 fetch(수천~만 종목).
-    개별 시장 실패는 skip(부분 제공). 서버 dataset 미의존.
+    _day(오늘 날짜)를 키로 lru_cache → 같은 날은 1회만 빌드. 개별 시장 실패는
+    skip(부분 제공). 서버 dataset 미의존.
+
+    한국 종목명은 KIS 종목마스터 캐시에서 가져온다 — fdr.StockListing("KRX")가
+    외부 마스터 CSV의 404로 전면 실패(2026-06 확인)해 한글명 검색이 불가했기 때문.
+    KIS 마스터는 서버가 매일 갱신하며 KOSPI/KOSDAQ 한글명을 제공한다. 미국은
+    fdr.StockListing이 정상이므로 그대로 사용.
     """
-    import FinanceDataReader as fdr
     out: list[dict] = []
     seen: set[str] = set()
 
@@ -99,14 +104,21 @@ def _all_listings_cached(_day: str) -> list[dict]:
             seen.add(s)
             out.append({"symbol": s, "name": n, "market": market})
 
-    try:
-        kr = fdr.StockListing("KRX")
-        mk = kr["Market"] if "Market" in kr.columns else [""] * len(kr)
-        for code, name, market in zip(kr["Code"], kr["Name"], mk):
-            _add(code, name, market or "KRX")
-    except Exception as e:  # 외부 소스 한계 — 부분 제공
-        _log.warning("KRX listing 실패: %s", e)
+    # 한국 — KIS 종목마스터(KOSPI/KOSDAQ 한글명). 아직 미적재면 1회 받아온다.
+    kr = [x for x in kis_master_cache.get_master_list()
+          if x.get("market") in ("KOSPI", "KOSDAQ")]
+    if not kr:
+        try:
+            kis_master_cache.refresh()
+            kr = [x for x in kis_master_cache.get_master_list()
+                  if x.get("market") in ("KOSPI", "KOSDAQ")]
+        except Exception as e:  # 외부 소스 한계 — 부분 제공
+            _log.warning("KIS 마스터 로드 실패(국내 목록): %s", e)
+    for x in kr:
+        _add(x["symbol"], x["name"], x["market"])
 
+    # 미국 — fdr.StockListing은 미국 목록 정상.
+    import FinanceDataReader as fdr
     for m in ("NASDAQ", "NYSE", "AMEX"):
         try:
             us = fdr.StockListing(m)
