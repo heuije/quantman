@@ -14,6 +14,7 @@ from .config import KEYRING_SERVICE
 
 _KIS = "kis_credentials"
 _KIS_FUT = "kis_futures_credentials"   # 선물옵션 계좌(상품코드 03) — 주식 계좌와 별개
+_KIS_OVF = "kis_overseas_futures_credentials"   # 해외선물옵션 계좌(상품코드 08) — 국내선물·주식과 별개
 _DEVICE = "device_token"
 
 
@@ -54,6 +55,23 @@ def load_kis_futures() -> dict | None:
     return json.loads(raw) if raw else None
 
 
+def save_kis_overseas_futures(app_key: str, app_secret: str, account_no: str,
+                              virtual: bool = False) -> None:
+    """해외선물옵션 *거래* 자격증명 저장(국내선물·주식과 별개 — 상품코드 08).
+
+    ⚠ KIS 해외선물은 모의투자 미지원 → 실전 전용(virtual=False 고정 권장). 로컬 PC 전용(서버·리포 전송 금지).
+    """
+    keyring.set_password(KEYRING_SERVICE, _KIS_OVF, json.dumps({
+        "app_key": app_key, "app_secret": app_secret,
+        "account_no": account_no, "virtual": virtual,
+    }))
+
+
+def load_kis_overseas_futures() -> dict | None:
+    raw = keyring.get_password(KEYRING_SERVICE, _KIS_OVF)
+    return json.loads(raw) if raw else None
+
+
 _cached_device_token = None
 
 
@@ -73,7 +91,7 @@ def load_device_token() -> str | None:
 def clear() -> None:
     global _cached_device_token
     _cached_device_token = None
-    for key in (_KIS, _KIS_FUT, _DEVICE):
+    for key in (_KIS, _KIS_FUT, _KIS_OVF, _DEVICE):
         try:
             keyring.delete_password(KEYRING_SERVICE, key)
         except keyring.errors.PasswordDeleteError:
