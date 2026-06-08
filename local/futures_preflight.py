@@ -150,8 +150,12 @@ def main():
     print(f"3) [OK] 잔고 조회 — 주문가능현금 {acct.get('order_cash', 0):,.0f} · "
           f"증거금합계 {acct.get('margin_total', 0):,.0f} · 보유 {len(snap.get('positions', []))}계약")
 
-    # 4) 현재가 조회
-    px = broker.price(code)
+    # 4) 현재가 조회 (브로커가 간헐 5xx는 재시도; 지속 실패는 px=0로 떨궈 크래시 대신 보고)
+    try:
+        px = broker.price(code)
+    except Exception as e:
+        px = 0.0
+        print(f"[!] 현재가 조회 실패 — {e} (px=0 처리, 라운드트립은 시세 확보 시에만)")
     if px <= 0:
         print(f"[!] 현재가 조회 0 — 장 시간 또는 시세 권한 확인 ({code})")
     else:
