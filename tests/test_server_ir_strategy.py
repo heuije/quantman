@@ -40,6 +40,8 @@ def _patch(monkeypatch):
                         lambda columns, symbols=None: _multi())
     # strat: 조합 등 결정 불가 폴백 경로(get_dataset)도 동일 합성 dataset.
     monkeypatch.setattr(ir, "get_dataset", _multi)
+    # single/list 경로(load_dataset_for)도 합성 — describe 단일/포트폴리오 리서치 테스트용.
+    monkeypatch.setattr(ir.qc, "load_dataset_for", lambda needed: _multi())
     # 게이트는 test_data_layer에서 검증 — 여기선 실행 경로만 보므로 manifest 생략(None=게이트 skip).
     monkeypatch.setattr(ir, "build_dataset_manifest", lambda *a, **k: None)
 
@@ -217,3 +219,43 @@ def test_composition_blocks_cross_user_reference():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ── 리서치 질의 라우팅 — serialize_backtest KeyError('trades') 회귀 차단 (P6) ─────
+
+def test_select_research_no_trades_keyerror():
+    """select 결과는 trades 없는 분석 — serialize_backtest 경로로 가면 KeyError 500.
+
+    research 브랜치가 결과를 그대로 JSON 통과시키는지 고정(프로덕션 /ir/strategy 500 근본수정).
+    """
+    body = {"query": "select", "universe": {"kind": "all"},
+            "signal": {"op": "data", "params": {"ref": "momentum_12_1m"}},
+            "select": {"top_n": 2, "descending": True}}
+    res = ir_strategy(body, user=None)
+    assert res["success"] and res["query"] == "select"
+    assert isinstance(res.get("results"), list) and len(res["results"]) == 2
+
+
+def test_describe_report_research_no_keyerror():
+    body = {"query": "describe", "universe": {"kind": "single", "symbols": ["AAA"]},
+            "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}}}
+    res = ir_strategy(body, user=None)
+    assert res["success"] and res.get("report") == "single" and res["symbol"] == "AAA"
+    assert "price" in res and "risk" in res and "fundamentals" in res
+
+
+def test_describe_portfolio_research_no_keyerror():
+    body = {"query": "describe", "universe": {"kind": "portfolio", "symbols": ["AAA", "BBB"]},
+            "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}}}
+    res = ir_strategy(body, user=None)
+    assert res["success"] and res.get("report") == "portfolio"
+    assert "concentration" in res and "sector_exposure" in res
+
+
+def test_extremize_research_no_keyerror():
+    body = _factor_body(study={"axis": "entity", "reduction": "extremize",
+                               "assets": ["AAA", "BBB", "CCC"],
+                               "objective": {"metric": "cum_return", "direction": "max"}})
+    res = ir_strategy(body, user=None)
+    assert res["success"] and res.get("reduction") == "extremize"
+    assert res["best"]["label"] == "AAA" and isinstance(res.get("ranked"), list)
