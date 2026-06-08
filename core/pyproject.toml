@@ -15,6 +15,7 @@ dependencies = [
     "pyarrow>=14.0",
     "yfinance>=0.2.40",
     "finance-datareader>=0.9.50",
+    "OpenDartReader>=0.2.2",        # KR 펀더멘털(OpenDART 재무제표) — quant_core/data/feeds/fundamental_kr.py
     "requests>=2.31",
 ]
 
