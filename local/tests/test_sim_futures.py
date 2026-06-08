@@ -34,3 +34,22 @@ def test_make_futures_position_shape():
     assert p["multiplier"] == 250_000.0
     assert p["margin_requirement"] == 18_750_000.0
     assert p["eval_pnl"] == 1_000_000.0
+
+
+from sim.broker import SimBroker
+
+
+def test_simbroker_holds_futures_positions_and_margin():
+    b = SimBroker()
+    b.set_positions([make_futures_position("코스피200선물", "long", 2, 375.0, 377.0)])
+    b.set_margin(total_margin=18_750_000.0, available_margin=100_000_000.0)
+    snap = b.account_snapshot()
+    assert snap["positions"][0]["side"] == "long"
+    assert snap["positions"][0]["multiplier"] == 250_000.0
+    assert snap["margin"] == {"total_margin": 18_750_000.0, "available_margin": 100_000_000.0}
+
+
+def test_simbroker_stock_snapshot_has_no_margin_key():
+    # 주식 회귀: margin 미설정이면 margin 키 없음(기존 동작 보존).
+    b = SimBroker()
+    assert "margin" not in b.account_snapshot()
