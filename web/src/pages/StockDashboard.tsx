@@ -215,7 +215,7 @@ export default function StockDashboard() {
                 <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
                 <YAxis domain={["auto", "auto"]} tick={{ fontSize: 11 }} width={54}
                   tickFormatter={(v) => isKR ? `${Math.round(v / 1000)}k` : String(v)} />
-                <Tooltip formatter={(v: number) => `${dol}${fmtP(v)}${won}`} />
+                <Tooltip formatter={(v) => `${dol}${fmtP(Number(v))}${won}`} />
                 <Legend />
                 <Line type="monotone" dataKey="close" stroke={ACCENT} strokeWidth={2} dot={false} name="종가" />
                 {priceInds.flatMap((k) => k === "bb"
@@ -267,7 +267,7 @@ function SubChart({ ikey, data }: { ikey: string; data: Record<string, unknown>[
             <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
             <YAxis tick={{ fontSize: 11 }} width={48}
               tickFormatter={(v) => v >= 1e6 ? `${(v / 1e6).toFixed(0)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(0)}k` : String(v)} />
-            <Tooltip formatter={(v: number) => v?.toLocaleString()} />
+            <Tooltip formatter={(v) => Number(v).toLocaleString()} />
             <Bar dataKey="volume" name="거래량">
               {data.map((d, i) => {
                 const vc = d.vol_chg as number | null;
