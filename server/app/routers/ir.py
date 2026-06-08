@@ -199,10 +199,19 @@ def ir_strategy(body: dict, user: User = Depends(get_current_user),
     if not res.get("success"):
         return {"success": False, "error": res.get("error"),
                 "issues": res.get("issues", [])}
+    # 리서치 질의(select·describe 리포트/진단·extremize) — equity/trades 없는 분석 결과.
+    # serialize_backtest는 result["trades"]를 요구해 KeyError로 500을 낸다(프로덕션 /ir/strategy
+    # 500 근본원인). 분석 결과 dict는 pandas 객체가 없으므로 전 키를 JSON-안전하게 통과시킨다.
+    if (res.get("query") in ("select", "describe") or res.get("report")
+            or res.get("reduction") == "extremize"):
+        out = {k: v for k, v in res.items()
+               if k not in ("equity", "benchmark", "trades", "weight")}
+        return clean_json(out)
     if res.get("axis"):   # 펼침 resultset (equity Series는 JSON 비호환이라 제외)
         out = {"success": True, "axis": res["axis"], "warnings": res.get("warnings", [])}
         for k in ("buckets", "overall", "axes", "metrics", "compare", "consistency",
-                  "windows", "by_regime", "n_events", "basis", "by_window", "relation"):
+                  "windows", "by_regime", "n_events", "basis", "by_window", "relation",
+                  "factor_names"):
             if k in res and res[k] is not None:
                 out[k] = res[k]
         return clean_json(out)   # NaN/inf→None (allow_nan=False JSONResponse 호환)
