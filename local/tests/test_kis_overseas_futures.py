@@ -87,3 +87,53 @@ def test_scale_overseas_price():
     assert scale_overseas_price("19225", -1) == 1922.5
     assert scale_overseas_price("  75.63 ", 0) == 75.63
     assert scale_overseas_price("", -1) == 0.0
+
+
+# ── phase2: 취소 바디·체결조회·주문가능 (OTFM3003U/3116R/3304R) ─────────────────
+from localapp.kis_overseas_futures import (
+    build_overseas_cancel_body, parse_overseas_ccld_order_status,
+    parse_overseas_orderable_qty,
+)
+
+
+def test_build_overseas_cancel_body():
+    b = build_overseas_cancel_body(cano="81012345", acnt_prdt_cd="08",
+                                   orgn_ord_dt="20221214", orgn_odno="00360686")
+    assert b["CANO"] == "81012345" and b["ACNT_PRDT_CD"] == "08"
+    assert b["ORGN_ORD_DT"] == "20221214"      # 현지거래일(원주문 ORD_DT)
+    assert b["ORGN_ODNO"] == "00360686"        # "0" 포함 8자리
+    assert b["FM_HDGE_ORD_SCRN_YN"] == "N"     # 필수
+    assert b["FM_MKPR_CVSN_YN"] == "N"         # 취소 후 시장가 재주문 안 함
+
+
+def test_parse_overseas_ccld_filled():
+    resp = {"output": [
+        {"odno": "00298048", "fm_ccld_qty": "2", "fm_ord_rmn_qty": "0",
+         "fm_ccld_pric": "1922.5", "fm_ord_qty": "2"},
+    ]}
+    st = parse_overseas_ccld_order_status(resp, "298048")     # canonical(lstrip 0) 비교
+    assert st["status"] == "filled" and st["filled_qty"] == 2
+    assert st["remain_qty"] == 0 and st["fill_price"] == 1922.5
+    assert st["order_no"] == "00298048"
+
+
+def test_parse_overseas_ccld_partial_and_submitted():
+    resp = {"output": [
+        {"odno": "00000010", "fm_ccld_qty": "1", "fm_ord_rmn_qty": "1", "fm_ccld_pric": "70.1"},
+        {"odno": "00000011", "fm_ccld_qty": "0", "fm_ord_rmn_qty": "3", "fm_ccld_pric": "0"},
+    ]}
+    assert parse_overseas_ccld_order_status(resp, "10")["status"] == "partial"
+    assert parse_overseas_ccld_order_status(resp, "11")["status"] == "submitted"
+
+
+def test_parse_overseas_ccld_unknown_when_absent():
+    st = parse_overseas_ccld_order_status({"output": []}, "999")
+    assert st["status"] == "unknown" and st["filled_qty"] == 0
+
+
+def test_parse_overseas_orderable_qty():
+    # output object(또는 단일원소 배열) → fm_new_ord_psbl_qty
+    assert parse_overseas_orderable_qty({"output": {"fm_new_ord_psbl_qty": "3717"}}) == 3717
+    assert parse_overseas_orderable_qty({"output": [{"fm_new_ord_psbl_qty": "5"}]}) == 5
+    assert parse_overseas_orderable_qty({}) == 0
+    assert parse_overseas_orderable_qty({"output": {}}) == 0
