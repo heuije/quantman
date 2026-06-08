@@ -108,3 +108,34 @@ def test_all_order_methods_return_normalized(monkeypatch, method, args):
     assert r["success"] is True, f"{method} success 누락/falsy"
     assert r["order_no"] == "0000777", f"{method} order_no 미정규화"
     assert "rt_cd" not in r, f"{method} raw KIS 응답 누출(정규화 안 됨)"
+
+
+# ── 읽기 GET 재시도 (KIS 게이트웨이 간헐 5xx — idempotent read만, 주문 POST 제외) ──
+class _GetResp:
+    def __init__(self, status, payload=None):
+        self.status_code = status
+        self.reason = "Server Error"
+        self.content = json.dumps(payload or {}).encode("utf-8")
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise kfb.requests.HTTPError(f"{self.status_code}", response=self)
+
+
+def test_read_get_retries_transient_5xx_then_succeeds(monkeypatch):
+    """간헐 500 두 번 후 200 → 재시도로 성공(실측 KIS 게이트웨이 거동 2026-06-09)."""
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)   # 테스트 가속
+    seq = iter([_GetResp(500), _GetResp(500), _GetResp(200, {"output1": {"futs_prpr": "1178.25"}})])
+    monkeypatch.setattr(kfb.requests, "get", lambda *a, **k: next(seq))
+    b = object.__new__(KisFuturesBroker)
+    data = b._read_get("https://x/p", {}, {})
+    assert data["output1"]["futs_prpr"] == "1178.25"
+
+
+def test_read_get_raises_after_persistent_5xx(monkeypatch):
+    """지속 500이면 3회 시도 후 HTTPError 전파(무한 재시도/조용한 무시 금지)."""
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    monkeypatch.setattr(kfb.requests, "get", lambda *a, **k: _GetResp(500))
+    b = object.__new__(KisFuturesBroker)
+    with pytest.raises(kfb.requests.HTTPError):
+        b._read_get("https://x/p", {}, {})

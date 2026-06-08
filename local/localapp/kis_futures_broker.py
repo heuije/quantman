@@ -370,20 +370,41 @@ class KisFuturesBroker:
         r.raise_for_status()
         return normalize_order_resp(_json(r))
 
+    def _read_get(self, url: str, headers: dict, params: dict) -> dict:
+        """idempotent READ GET — KIS 게이트웨이 간헐 5xx/연결오류에 한해 짧게 재시도 후 _json.
+
+        KIS 게이트웨이는 시세·잔고 조회에 간헐적 HTTP 5xx(EGW)를 돌려준다(실측 2026-06-09:
+        VTS A01606 시세가 동일 요청 재시도에 500→200). 읽기는 idempotent이라 재시도가 안전하다.
+        **주문/취소 POST에는 절대 쓰지 않는다**(중복발주 위험). 4xx(throttle 등)는 재시도 무익 →
+        raise_for_status로 즉시 전파. broker.price()는 프로덕션(kill-switch·intraday 폴링)에서 쓰여
+        간헐 500이 사이클을 깨므로 이 재시도가 근본 방어."""
+        import time as _t
+        last = None
+        for i in range(3):
+            try:
+                r = requests.get(url, headers=headers, params=params, timeout=10)
+                if r.status_code >= 500:
+                    last = requests.HTTPError(f"{r.status_code} Server Error", response=r)
+                    _t.sleep(0.6 * (i + 1))
+                    continue
+                r.raise_for_status()
+                return _json(r)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last = e
+                _t.sleep(0.6 * (i + 1))
+        raise last
+
     def account_snapshot(self) -> dict:
-        params = build_balance_params(self.cano, self.acnt_prdt_cd)
-        r = requests.get(f"{self.base}{_BALANCE_PATH}", headers=self._headers(self._balance_tr()),
-                         params=params, timeout=10)
-        r.raise_for_status()
-        return parse_futures_balance(_json(r))
+        data = self._read_get(f"{self.base}{_BALANCE_PATH}", self._headers(self._balance_tr()),
+                              build_balance_params(self.cano, self.acnt_prdt_cd))
+        return parse_futures_balance(data)
 
     # ── 시세(읽기전용, 라이브 검증됨) ──────────────────────────────────────────────
     def _quote(self, symbol: str) -> dict:
         """선물옵션 시세 output1(현재가·시가·밴드 등). FID: F=지수선물."""
-        r = requests.get(f"{self.base}{_QUOTE_PATH}", headers=self._headers(_QUOTE_TR),
-                         params={"FID_COND_MRKT_DIV_CODE": "F", "FID_INPUT_ISCD": symbol}, timeout=10)
-        r.raise_for_status()
-        return _json(r).get("output1") or {}
+        data = self._read_get(f"{self.base}{_QUOTE_PATH}", self._headers(_QUOTE_TR),
+                              {"FID_COND_MRKT_DIV_CODE": "F", "FID_INPUT_ISCD": symbol})
+        return data.get("output1") or {}
 
     def price(self, symbol: str) -> float:
         return float(self._quote(symbol).get("futs_prpr", 0) or 0)        # 현재가
@@ -527,10 +548,7 @@ class KisFuturesBroker:
                   "SLL_BUY_DVSN_CD": "00", "CCLD_NCCS_DVSN": "02" if only_unfilled else "00",
                   "SORT_SQN": "DS", "STRT_ODNO": "", "PDNO": "", "MKET_ID_CD": "00",
                   "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""}
-        r = requests.get(f"{self.base}{_CCNL_PATH}", headers=self._headers(tr),
-                         params=params, timeout=10)
-        r.raise_for_status()
-        return _json(r)
+        return self._read_get(f"{self.base}{_CCNL_PATH}", self._headers(tr), params)
 
     def order_status(self, order_no: str) -> dict:
         return parse_ccnl_order_status(self._inquire_ccnl(), order_no)
