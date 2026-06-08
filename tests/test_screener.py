@@ -179,8 +179,13 @@ def test_screener_invalid_refresh_rejected():
     assert any(i["rule"] == "S-univ" for i in res["issues"])
 
 
-def test_screener_requires_symbols():
-    """세부조건 있는데 종목 미선택(빈 symbols) → 에러."""
+def test_screener_on_all_is_allowed():
+    """kind=all + 세부조건 = '전 종목을 조건으로 필터' — 엔진 _screener_mask가 전 종목에 적용(honor).
+
+    옛 'screener requires symbols' 과대제약 폐기: 스크리너는 universe *필터*지 list *정제*가
+    아니다. kind=all이면 전 종목이 곧 후보집합이고 스크리너가 그걸 거른다(run_select·simulate
+    엔진 모두 지원). list/single 빈 symbols는 각 유니버스 구조 규칙이 따로 거부.
+    """
     spec = {"signal": {"op": "data", "params": {"ref": "momentum_12_1m"}},
             "universe": {"kind": "all",
                          "screener": {"condition": _rank_cond("market_cap", 2)}},
@@ -188,8 +193,8 @@ def test_screener_requires_symbols():
                          "entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 2}},
             "simulation": {"initial_capital": 1e7}}
     res = strategy_from_spec(spec, _ds())
-    assert not res["success"]
-    assert any(i["rule"] == "S-univ" for i in res["issues"])
+    assert not any(i["rule"] == "S-univ" for i in res.get("issues", [])), \
+        f"kind=all+스크리너는 S-univ로 거부되면 안 됨: {res.get('issues')}"
 
 
 def test_event_with_screener_allowed_in_backtest():

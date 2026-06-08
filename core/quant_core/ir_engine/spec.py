@@ -321,6 +321,12 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     st = signal_out_type(s.signal)
     ent, pos, u = s.position.entry, s.position, s.universe
 
+    # 리서치 질의(select/describe/relate)는 position을 안 쓴다(run_select/_run_*_study가 무시).
+    # 포지션·진입·청산·사이징·오버레이·선물 규칙은 simulate 전용 — 리서치에 적용하면 유효 IR이
+    # 거짓 거부돼 NL repair가 simulate로 후퇴한다. signal 타입/시장참조·유니버스 구조·스크리너
+    # 유효성·질의별 규칙(S-SEL/S-PORT/S-target/S-REG/S-event)은 전 질의 공통으로 유지.
+    is_research = s.query in ("select", "describe", "relate")
+
     # 최상위 신호는 매매 가능한 타입이어야 — condition(룰 트리거) 또는 score(팩터 알파).
     # label(bucket·calendar)·scalar는 그룹라벨·국면 등 보조 역할일 뿐 신호 자체가 될 수 없다.
     # (엔진은 condition 외 전부를 score로 취급하므로 label 코드가 알파로 오해석되는 silent 결함 차단.)
@@ -335,17 +341,17 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                             "신호가 시장 데이터를 참조하지 않습니다 — 상수·산술만으론 시장에 "
                             "반응하지 않아 백테스트가 무의미합니다.", "signal"))
 
-    # 신호 타입 × 진입/방향 호환
-    if ent.mode == "on_signal" and st != "condition":
+    # 신호 타입 × 진입/방향 호환 (position 전용 — 리서치 스킵)
+    if not is_research and ent.mode == "on_signal" and st != "condition":
         issues.append(Issue("S-entry", SEV_ERROR,
                             "on_signal 진입은 신호가 condition(참/거짓)이어야 합니다.", "signal"))
-    if pos.direction == "long_short" and st != "score":
+    if not is_research and pos.direction == "long_short" and st != "score":
         issues.append(Issue("S-dir", SEV_ERROR,
                             "long_short는 신호가 score(점수)여야 순위로 롱·숏을 가릅니다.", "signal"))
-    if pos.sizing.mode == "signal_proportional" and st != "score":
+    if not is_research and pos.sizing.mode == "signal_proportional" and st != "score":
         issues.append(Issue("S-size", SEV_ERROR,
                             "신호비례 사이징은 신호가 score여야 합니다.", "position.sizing"))
-    if ent.threshold is not None and st != "score":
+    if not is_research and ent.threshold is not None and st != "score":
         issues.append(Issue("S-select", SEV_ERROR,
                             "임계 선택(threshold)은 신호가 score(점수)여야 합니다 — "
                             "참/거짓 신호는 그 자체가 임계 선택이므로 condition 신호를 쓰세요.",
@@ -374,38 +380,39 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                                     "top_pct는 0 초과 100 이하여야 합니다.", "select.top_pct"))
 
     # M4 — 선택 파라미터 범위 (퇴화 선택 방지: top_n=0/음수, top_pct 범위밖이면 조용한 무거래)
-    if ent.top_n is not None and ent.top_n < 1:
+    # position.entry 전용 — 리서치 스킵(select 랭킹은 select.top_n으로 S-SEL이 별도 검증).
+    if not is_research and ent.top_n is not None and ent.top_n < 1:
         issues.append(Issue("M-select", SEV_ERROR, "top_n은 1 이상이어야 합니다.", "position.entry"))
-    if ent.top_pct is not None and not (0 < ent.top_pct <= 100):
+    if not is_research and ent.top_pct is not None and not (0 < ent.top_pct <= 100):
         issues.append(Issue("M-select", SEV_ERROR, "top_pct는 0 초과 100 이하여야 합니다.", "position.entry"))
 
-    # M6 — 유니버스/사이징 공허 조합 (경고: 선택이 무의미하거나 매수가 안 됨)
-    if u.kind in ("single", "list") and ent.top_n is not None and ent.top_n > len(u.symbols):
+    # M6 — 유니버스/사이징 공허 조합 (경고: 선택이 무의미하거나 매수가 안 됨). position 전용 — 리서치 스킵.
+    if not is_research and u.kind in ("single", "list") and ent.top_n is not None and ent.top_n > len(u.symbols):
         issues.append(Issue("M-vacuous", SEV_INTEGRITY_WARN,
                             f"top_n({ent.top_n})이 유니버스 종목 수({len(u.symbols)})보다 많습니다 — 전체 선택과 동일.",
                             "position.entry"))
-    if (pos.sizing.mode == "fixed_weight" and pos.sizing.weights
+    if (not is_research and pos.sizing.mode == "fixed_weight" and pos.sizing.weights
             and u.kind in ("single", "list") and not (set(pos.sizing.weights) & set(u.symbols))):
         issues.append(Issue("M-vacuous", SEV_INTEGRITY_WARN,
                             "fixed_weight 가중치에 유니버스 종목이 하나도 없습니다 — 매수되지 않습니다.",
                             "position.sizing"))
 
-    # 포지션 짝 제약 (비전 §3.3)
-    if ent.mode in ("scheduled", "always") and pos.sizing.mode in ("fixed_amount", "pct_cash"):
+    # 포지션 짝 제약 (비전 §3.3) — position 전용, 리서치 스킵.
+    if not is_research and ent.mode in ("scheduled", "always") and pos.sizing.mode in ("fixed_amount", "pct_cash"):
         issues.append(Issue("S-pair", SEV_INTEGRITY_WARN,
                             "종목당 예산 사이징(fixed_amount·pct_cash)은 이벤트(on_signal) 진입용 — "
                             "스케줄·상시 진입에선 동일가중으로 처리됩니다.", "position.sizing"))
-    if ent.mode == "always" and any((pos.exit.hold_days, pos.exit.take_profit, pos.exit.stop_loss,
+    if not is_research and ent.mode == "always" and any((pos.exit.hold_days, pos.exit.take_profit, pos.exit.stop_loss,
                                       pos.exit.trail_pct, pos.exit.trail_atr_mult, pos.exit.condition)):
         issues.append(Issue("S-pair", SEV_INTEGRITY_WARN,
                             "상시 진입은 매일 리밸런싱이라 설정한 청산 규칙이 무시됩니다.", "position.exit"))
 
-    # 유니버스
+    # 유니버스 — 구조 규칙(single=1·list≥1)은 전 질의 공통. all+on_signal은 진입(position) 의존 → 리서치 스킵.
     if u.kind == "single" and len(u.symbols) != 1:
         issues.append(Issue("S-univ", SEV_ERROR, "단일 유니버스는 종목 1개가 필요합니다.", "universe"))
     if u.kind == "list" and not u.symbols:
         issues.append(Issue("S-univ", SEV_ERROR, "리스트 유니버스는 종목이 1개 이상 필요합니다.", "universe"))
-    if ent.mode == "on_signal" and u.kind == "all":
+    if not is_research and ent.mode == "on_signal" and u.kind == "all":
         issues.append(Issue("S-univ", SEV_ERROR,
                             "전체 종목 유니버스는 정기리밸런싱(scheduled)·상시(always) 진입과 함께 쓰세요.",
                             "universe"))
@@ -431,7 +438,9 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     cond = sc.get("condition")
     if cond:
         # 세부조건 = 선택 종목에 얹는 자격 필터. 필터·횡단순위를 AND/OR로 조합한 단일 condition.
-        if not u.symbols:
+        # kind=all + 스크리너 = 전 종목을 조건으로 필터(run_select·엔진 _screener_mask가 지원) → 정당.
+        # kind=list는 여전히 선택 종목 필요(빈 리스트에 필터는 무의미).
+        if not u.symbols and u.kind != "all":
             issues.append(Issue("S-univ", SEV_ERROR,
                                 "세부조건은 선택한 종목이 있을 때만 설정할 수 있습니다.", "universe"))
         if sc.get("refresh", "each_rebalance") not in ("each_rebalance", "once_at_start"):
@@ -452,8 +461,8 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                 issues.append(Issue("M-const", SEV_ERROR,
                                     "세부조건이 시장 데이터를 참조하지 않습니다.", "universe"))
 
-    # 매도 조건 노드
-    if pos.exit.condition is not None:
+    # 매도 조건 노드 (position 전용 — 리서치 스킵)
+    if not is_research and pos.exit.condition is not None:
         issues += list(validate(pos.exit.condition, valid_refs))
         issues += meaningfulness_issues(pos.exit.condition, "exit.condition")   # M2·M3
         if not has_market_source(pos.exit.condition):                          # M1
@@ -464,35 +473,37 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
             issues.append(Issue("S-exit", SEV_ERROR, "매도 조건은 condition 블록이어야 합니다.", "exit.condition"))
 
     # M5 — 청산 규칙 부호·범위 (관례: 익절>0%, 손절<0%, 보유기간≥1, 트레일링>0).
-    # 부호가 틀리면 즉시청산/미청산으로 조용히 퇴화한다.
+    # 부호가 틀리면 즉시청산/미청산으로 조용히 퇴화한다. position.exit 전용 — 리서치 스킵.
     ex = pos.exit
-    if ex.hold_days is not None and ex.hold_days < 1:
-        issues.append(Issue("M-exit", SEV_ERROR, "보유기간(hold_days)은 1 이상이어야 합니다.", "position.exit"))
-    if ex.take_profit is not None and ex.take_profit <= 0:
-        issues.append(Issue("M-exit", SEV_ERROR, "익절(take_profit)은 양수(%)여야 합니다.", "position.exit"))
-    if ex.stop_loss is not None and ex.stop_loss >= 0:
-        issues.append(Issue("M-exit", SEV_ERROR, "손절(stop_loss)은 음수(%)여야 합니다.", "position.exit"))
-    if ex.trail_pct is not None and ex.trail_pct <= 0:
-        issues.append(Issue("M-exit", SEV_ERROR, "트레일링(trail_pct)은 양수(%)여야 합니다.", "position.exit"))
-    if ex.trail_atr_mult is not None and ex.trail_atr_mult <= 0:
-        issues.append(Issue("M-exit", SEV_ERROR, "ATR 트레일링 배수(trail_atr_mult)는 양수여야 합니다.", "position.exit"))
+    if not is_research:
+        if ex.hold_days is not None and ex.hold_days < 1:
+            issues.append(Issue("M-exit", SEV_ERROR, "보유기간(hold_days)은 1 이상이어야 합니다.", "position.exit"))
+        if ex.take_profit is not None and ex.take_profit <= 0:
+            issues.append(Issue("M-exit", SEV_ERROR, "익절(take_profit)은 양수(%)여야 합니다.", "position.exit"))
+        if ex.stop_loss is not None and ex.stop_loss >= 0:
+            issues.append(Issue("M-exit", SEV_ERROR, "손절(stop_loss)은 음수(%)여야 합니다.", "position.exit"))
+        if ex.trail_pct is not None and ex.trail_pct <= 0:
+            issues.append(Issue("M-exit", SEV_ERROR, "트레일링(trail_pct)은 양수(%)여야 합니다.", "position.exit"))
+        if ex.trail_atr_mult is not None and ex.trail_atr_mult <= 0:
+            issues.append(Issue("M-exit", SEV_ERROR, "ATR 트레일링 배수(trail_atr_mult)는 양수여야 합니다.", "position.exit"))
 
-    # 오버레이 (그룹 캡·낙폭 제어)
+    # 오버레이 (그룹 캡·낙폭 제어) — position 전용, 리서치 스킵.
     ov = pos.overlays
-    if ov.group_label is not None:
-        issues += list(validate(ov.group_label, valid_refs))
-        if signal_out_type(ov.group_label) != "label":
+    if not is_research:
+        if ov.group_label is not None:
+            issues += list(validate(ov.group_label, valid_refs))
+            if signal_out_type(ov.group_label) != "label":
+                issues.append(Issue("S-overlay", SEV_ERROR,
+                                    "그룹 노출 라벨(group_label)은 label 블록(구간분할·달력)이어야 합니다.",
+                                    "position.overlays"))
+        if ov.max_group_pct is not None and ov.group_label is None:
             issues.append(Issue("S-overlay", SEV_ERROR,
-                                "그룹 노출 라벨(group_label)은 label 블록(구간분할·달력)이어야 합니다.",
+                                "그룹 노출 캡(max_group_pct)은 group_label 블록이 필요합니다.", "position.overlays"))
+        if (ov.max_drawdown_soft is not None and ov.max_drawdown_stop is not None
+                and abs(ov.max_drawdown_soft) >= abs(ov.max_drawdown_stop)):
+            issues.append(Issue("S-overlay", SEV_INTEGRITY_WARN,
+                                "낙폭 soft가 hard 이상 — 부분 디리스킹 없이 binary kill로 동작합니다.",
                                 "position.overlays"))
-    if ov.max_group_pct is not None and ov.group_label is None:
-        issues.append(Issue("S-overlay", SEV_ERROR,
-                            "그룹 노출 캡(max_group_pct)은 group_label 블록이 필요합니다.", "position.overlays"))
-    if (ov.max_drawdown_soft is not None and ov.max_drawdown_stop is not None
-            and abs(ov.max_drawdown_soft) >= abs(ov.max_drawdown_stop)):
-        issues.append(Issue("S-overlay", SEV_INTEGRITY_WARN,
-                            "낙폭 soft가 hard 이상 — 부분 디리스킹 없이 binary kill로 동작합니다.",
-                            "position.overlays"))
 
     # 펼침 (query=simulate의 study.axis 분기 + describe/relate 분석)
     st = s.study
@@ -594,24 +605,26 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
 
     # 선물 — 연속물 설정(roll_method·series_adjust·roll_cost_pct)이 비선물 유니버스에 걸리면
     # 조용히 무시된다 → 경고(silent no-op 방지, M-vacuous 계열). 단일·리스트 유니버스에서만 판정.
+    # 선물 회계는 simulate 전용(증거금·마진콜·롤) — 리서치 스킵.
     sim = s.simulation
-    if (sim.roll_method is not None or sim.series_adjust is not None
-            or sim.roll_cost_pct is not None) and u.kind in ("single", "list"):
-        if not any(is_futures(x) for x in u.symbols):
-            issues.append(Issue("S-futures", SEV_INTEGRITY_WARN,
-                                "선물 연속물 설정(roll_method·series_adjust·roll_cost_pct)은 선물 심볼에만 "
-                                "적용됩니다 — 현재 유니버스에 선물이 없어 무시됩니다.", "simulation"))
+    if not is_research:
+        if (sim.roll_method is not None or sim.series_adjust is not None
+                or sim.roll_cost_pct is not None) and u.kind in ("single", "list"):
+            if not any(is_futures(x) for x in u.symbols):
+                issues.append(Issue("S-futures", SEV_INTEGRITY_WARN,
+                                    "선물 연속물 설정(roll_method·series_adjust·roll_cost_pct)은 선물 심볼에만 "
+                                    "적용됩니다 — 현재 유니버스에 선물이 없어 무시됩니다.", "simulation"))
 
-    # 혼합 증거금 — 한 유니버스에 주식과 선물이 섞이면 증거금 회계가 최저 증거금률 기준 단일
-    # 레버리지(lev_eff=lev/min(margin_rate))로 근사된다. 사이징은 심볼별 증거금률로 정확하나
-    # 마진콜 복원·floor_cash 한도는 포트폴리오 단일값이라 주식 다리를 과복원할 수 있음 → 경고.
-    if u.kind in ("single", "list") and u.symbols:
-        n_fut = sum(1 for x in u.symbols if is_futures(x))
-        if 0 < n_fut < len(u.symbols):
-            issues.append(Issue("S-futures-mix", SEV_INTEGRITY_WARN,
-                                "주식과 선물이 한 유니버스에 섞여 있습니다 — 증거금 회계가 최저 증거금률 "
-                                "기준 단일 레버리지로 근사되어(마진콜 복원이 주식 다리를 과복원) 부정확할 수 "
-                                "있습니다. 동질(전부 선물 또는 전부 주식) 유니버스를 권장합니다.", "universe"))
+        # 혼합 증거금 — 한 유니버스에 주식과 선물이 섞이면 증거금 회계가 최저 증거금률 기준 단일
+        # 레버리지(lev_eff=lev/min(margin_rate))로 근사된다. 사이징은 심볼별 증거금률로 정확하나
+        # 마진콜 복원·floor_cash 한도는 포트폴리오 단일값이라 주식 다리를 과복원할 수 있음 → 경고.
+        if u.kind in ("single", "list") and u.symbols:
+            n_fut = sum(1 for x in u.symbols if is_futures(x))
+            if 0 < n_fut < len(u.symbols):
+                issues.append(Issue("S-futures-mix", SEV_INTEGRITY_WARN,
+                                    "주식과 선물이 한 유니버스에 섞여 있습니다 — 증거금 회계가 최저 증거금률 "
+                                    "기준 단일 레버리지로 근사되어(마진콜 복원이 주식 다리를 과복원) 부정확할 수 "
+                                    "있습니다. 동질(전부 선물 또는 전부 주식) 유니버스를 권장합니다.", "universe"))
 
     # (E1b 이후 선물 on_signal 진입이 증거금 보유 포지션으로 지원됨 — S-futures-event 경고 제거.)
 
