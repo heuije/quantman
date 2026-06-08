@@ -53,7 +53,7 @@ function Box({ title, sub, children }:
   );
 }
 
-function tip(rows: [string, string][]) {
+function tip(rows: [string, string][], fmt: (v: number | null | undefined) => string = f2) {
   return ({ active, payload, label }:
     { active?: boolean; payload?: { payload: Record<string, unknown> }[]; label?: unknown }) => {
     if (!active || !payload?.length) return null;
@@ -62,7 +62,7 @@ function tip(rows: [string, string][]) {
         padding: "8px 10px", fontSize: 12, color: C.muted }}>
         <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>{String(label)}</div>
         {rows.map(([k, key]) => (
-          <div key={k}>{k} {f2(payload[0].payload[key] as number)}</div>
+          <div key={k}>{k} {fmt(payload[0].payload[key] as number)}</div>
         ))}
       </div>
     );
@@ -304,8 +304,9 @@ function Badge({ children, tone = "muted" }:
 }
 
 // % 포맷 — 결측 "—", 그 외 소수 2자리 + "%". 부호색은 호출측이 결정.
+// 입력은 **소수(fraction)** — 엔진이 수익률·변동성·MDD를 0.05(=5%)로 반환하므로 표시 시 ×100.
 const pct = (v: number | null | undefined) =>
-  v == null || Number.isNaN(v) ? "—" : `${v.toFixed(2)}%`;
+  v == null || Number.isNaN(v) ? "—" : `${(v * 100).toFixed(2)}%`;
 
 const tdStyle: React.CSSProperties = {
   padding: "5px 8px", borderBottom: `1px solid ${C.grid}`, fontSize: 12,
@@ -355,7 +356,7 @@ function SectorPieTip({ active, payload }: {
   const d = payload[0].payload;
   return (
     <div style={{ ...tipBox, padding: "6px 9px" }}>
-      <span style={{ color: C.text, fontWeight: 600 }}>{d.name}</span> {pct(d.value * 100)}
+      <span style={{ color: C.text, fontWeight: 600 }}>{d.name}</span> {pct(d.value)}
     </div>
   );
 }
@@ -460,7 +461,7 @@ export function ReportCards({ r }: { r: IrSingleReport }) {
   const lastPos = range != null && last != null
     ? Math.min(100, Math.max(0, ((last - lo!) / range) * 100)) : null;
 
-  const RetTip = tip([["수익", "value"]]);
+  const RetTip = tip([["수익", "value"]], pct);
   const grid: React.CSSProperties = {
     display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10,
   };
@@ -496,7 +497,8 @@ export function ReportCards({ r }: { r: IrSingleReport }) {
             <BarChart data={retData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid stroke={C.grid} vertical={false} />
               <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 10 }} width={36} />
+              <YAxis tick={{ fontSize: 10 }} width={36}
+                tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
               <Tooltip content={<RetTip />} cursor={{ fill: C.accent + "14" }} />
               <ReferenceLine y={0} stroke={C.muted} />
               <Bar dataKey="value" isAnimationActive={false}>
@@ -575,8 +577,8 @@ export function DiagnosisPanel({ r }: { r: IrPortfolioDiagnosis }) {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             <Badge tone={concentrated ? "warn" : "muted"}>HHI {f2(conc.hhi)}</Badge>
             <Badge tone="muted">유효종목수 {f2(conc.effective_n)}</Badge>
-            <Badge tone="muted">최대비중 {pct(conc.top_weight != null ? conc.top_weight * 100 : null)}</Badge>
-            <Badge tone="muted">상위3 {pct(conc.top3_weight != null ? conc.top3_weight * 100 : null)}</Badge>
+            <Badge tone="muted">최대비중 {pct(conc.top_weight)}</Badge>
+            <Badge tone="muted">상위3 {pct(conc.top3_weight)}</Badge>
           </div>
           {concentrated && (
             <div style={{ fontSize: 11, color: "#b45309", marginTop: 6 }}>
@@ -616,7 +618,7 @@ export function DiagnosisPanel({ r }: { r: IrPortfolioDiagnosis }) {
               <tr key={i}>
                 <td style={tdStyle}>{h.symbol}</td>
                 <td style={{ ...tdStyle, textAlign: "right" }}>
-                  {pct(h.weight != null ? h.weight * 100 : null)}</td>
+                  {pct(h.weight)}</td>
                 <td style={tdStyle}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                     <span style={{ width: 9, height: 9, borderRadius: 2,
