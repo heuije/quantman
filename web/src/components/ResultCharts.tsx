@@ -529,6 +529,26 @@ export function ReportCards({ r }: { r: IrSingleReport }) {
           </div>
         </Card>
       </div>
+
+      {/* ⑤ 최근 뉴스 — '왜 움직였나' facet(네이버 검색). 없으면 카드 자체를 숨긴다. */}
+      {r.news && r.news.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <Card title="최근 뉴스 · 왜 움직였나">
+            <ul style={{ margin: 0, padding: 0, listStyle: "none",
+              display: "flex", flexDirection: "column", gap: 9 }}>
+              {r.news.slice(0, 5).map((n, i) => (
+                <li key={i} style={{ borderLeft: `2px solid ${C.grid}`, paddingLeft: 9 }}>
+                  <a href={n.link} target="_blank" rel="noopener noreferrer"
+                    style={{ color: C.text, textDecoration: "none", fontWeight: 600,
+                      fontSize: 13, lineHeight: 1.35 }}>{n.title}</a>
+                  {n.desc && <div style={{ color: C.muted, fontSize: 12, marginTop: 2,
+                    lineHeight: 1.4 }}>{n.desc}</div>}
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </div>
+      )}
     </Box>
   );
 }

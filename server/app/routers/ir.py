@@ -15,10 +15,11 @@ from sqlmodel import Session, select
 import quant_core as qc
 from quant_core.blocks import DatasetMeta, available_refs, catalog_spec
 from quant_core.blocks.node import Node, referenced_symbols
+from quant_core.data.feeds import news_kr
 from quant_core.ir_engine import (StrategyIR, backtest_from_spec, needed_columns,
                                   needed_symbols, strategy_from_spec, validate_strategy)
 
-from .. import data_cache
+from .. import data_cache, kis_master_cache
 from ..data_cache import get_dataset
 from ..data_manifest import build_dataset_manifest
 from ..db import get_session
@@ -162,6 +163,21 @@ def _make_strategy_resolver(session: Session, user: Optional[User]):
     return resolve
 
 
+def _attach_symbol_news(out: dict) -> dict:
+    """단일 360 리포트(describe·report="single")에 '왜 움직였나' 뉴스 facet을 붙인다.
+
+    뉴스는 라이브 네트워크·env키(NAVER) 의존이라 **결정적 엔진(run_describe_report) 밖**, 서버
+    엣지에서 조회한다(엔진 골든 불변식 유지). 종목명은 /symbols와 동일 출처(kis_master_cache)로
+    해석 — 코드("005930")→네이버 검색어("삼성전자"). 이름 미해석·키 미설정이면 빈 리스트(가짜
+    채움 0). 단일 리포트가 아니면 무변경(포트 진단·select·extremize는 대상 종목이 1개가 아님).
+    """
+    if out.get("report") != "single":
+        return out
+    name = kis_master_cache.get_name(out.get("symbol") or "")
+    out["news"] = news_kr.fetch_news(name, display=5) if name else []
+    return out
+
+
 @router.post("/strategy")
 def ir_strategy(body: dict, user: User = Depends(get_current_user),
                 session: Session = Depends(get_session)):
@@ -214,6 +230,7 @@ def ir_strategy(body: dict, user: User = Depends(get_current_user),
             or res.get("reduction") == "extremize"):
         out = {k: v for k, v in res.items()
                if k not in ("equity", "benchmark", "trades", "weight")}
+        _attach_symbol_news(out)         # 단일 360 리포트 '왜 움직였나' 뉴스 facet(서버 엣지)
         return clean_json(out)
     if res.get("axis"):   # 펼침 resultset (equity Series는 JSON 비호환이라 제외)
         out = {"success": True, "axis": res["axis"], "warnings": res.get("warnings", [])}
