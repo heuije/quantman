@@ -215,7 +215,7 @@ def _write_updater_bat(bat_path: Path, src_dir: Path, dst_dir: Path,
     한글이어도 %TEMP%·설치 경로의 ASCII 부분으로 cmd가 동작한다.
     """
     fail_msg = (
-        "마이스톡 업데이트를 적용하지 못했습니다. 기존 버전은 그대로 유지됩니다. "
+        "MyStock 업데이트를 적용하지 못했습니다. 기존 버전은 그대로 유지됩니다. "
         "앱을 완전히 종료한 뒤 잠시 후 다시 시도해 주세요."
     )
     dst_name = dst_dir.name
@@ -258,7 +258,7 @@ def _write_updater_bat(bat_path: Path, src_dir: Path, dst_dir: Path,
         "powershell -NoProfile -Command "
         '"Add-Type -AssemblyName PresentationFramework; '
         f'[System.Windows.MessageBox]::Show(\'{fail_msg}\','
-        " '마이스톡 업데이트 실패', 'OK', 'Warning')\"\r\n"
+        " 'MyStock 업데이트 실패', 'OK', 'Warning')\"\r\n"
         f'rmdir /S /Q "{src_dir.parent}"\r\n'
         "(goto) 2>nul & del \"%~f0\"\r\n"
     )

@@ -82,7 +82,7 @@ def cmd_status():
 
 
 def main():
-    p = argparse.ArgumentParser(description="마이스톡 로컬앱")
+    p = argparse.ArgumentParser(description="MyStock 로컬앱")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in ("setup", "pair", "cycle", "run", "status"):
         sub.add_parser(name)

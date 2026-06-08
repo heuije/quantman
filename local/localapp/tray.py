@@ -38,7 +38,7 @@ class TrayApp:
         self.app = SettingsApp()
         self.app.on_close_to_tray = self._hide_window
         self.icon = pystray.Icon(
-            "quant-platform-local", _icon_image(), "마이스톡 로컬앱",
+            "quant-platform-local", _icon_image(), "MyStock 로컬앱",
             menu=pystray.Menu(
                 pystray.MenuItem("설정 열기", self._show_window, default=True),
                 pystray.MenuItem("종료", self._quit),

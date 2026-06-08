@@ -6,7 +6,7 @@
 ;
 ; 베타는 코드 미서명 — 설치 시 Windows SmartScreen 경고가 뜰 수 있다("추가 정보 → 실행").
 
-#define AppName "마이스톡 로컬앱"
+#define AppName "MyStock 로컬앱"
 #define AppVersion "0.1.0-beta"
 #define AppExe "MyStock.exe"
 
@@ -15,7 +15,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=MyStock
 DefaultDirName={autopf}\MyStock
-DefaultGroupName=마이스톡
+DefaultGroupName=MyStock
 OutputDir=Output
 OutputBaseFilename=MyStock-Setup
 Compression=lzma2

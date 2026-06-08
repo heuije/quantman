@@ -83,7 +83,7 @@ class SettingsApp:
         self.user_email = ""
 
         self.root = tk.Tk()
-        self.root.title("마이스톡 — 로컬앱")
+        self.root.title("MyStock — 로컬앱")
         self.root.geometry("880x980")
         self.root.resizable(True, True)
         self._apply_theme()
@@ -1864,7 +1864,7 @@ class SettingsApp:
         dlg.configure(bg=BG)
 
         tk.Label(dlg, bg=BG, fg=TEXT, font=("Segoe UI", 10),
-                 text=f"마이스톡 {info['tag']} 설치 중...").pack(pady=(16, 8))
+                 text=f"MyStock {info['tag']} 설치 중...").pack(pady=(16, 8))
         status = tk.Label(dlg, bg=BG, fg=MUTED, font=("Segoe UI", 9),
                           text="다운로드 준비 중…")
         status.pack()
