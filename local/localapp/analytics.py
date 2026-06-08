@@ -423,6 +423,18 @@ def enrich_positions(positions: list[dict], ledger: dict,
 #   - 외부 매수 (KIS 초과분 또는 신규 종목) → ledger 손대지 않음 (정보만 표시)
 # 자동 처리는 15:35 settlement 사이클에서만 — 매매 직전 08:55에서 손대면 위험.
 
+def norm_side(s) -> str:
+    """포지션 side 표현 정규화 → 'long'|'short'.
+
+    표현이 소스마다 다름: ledger=long/short, KIS 국내선물 잔고=buy/sell(매수/매도),
+    KIS 해외선물=long/short, 주식 잔고=side 없음(롱). 한 곳으로 정규화해 reconcile이
+    롱/숏을 분리 매칭한다. 미지정/주식/매수/buy/long = 'long'."""
+    v = str(s or "").strip().lower()
+    if v in ("short", "sell", "sll", "매도", "s"):
+        return "short"
+    return "long"
+
+
 def reconcile_ledger(kis_positions: list[dict], ledger: dict) -> dict:
     """KIS 실 잔고와 로컬 ledger를 비교해 drift를 카테고리별로 분류.
 
@@ -447,42 +459,50 @@ def reconcile_ledger(kis_positions: list[dict], ledger: dict) -> dict:
     """
     from datetime import datetime
 
-    kis_by_symbol = {p["symbol"]: int(p.get("qty", 0)) for p in kis_positions
-                      if p.get("symbol") and int(p.get("qty", 0)) > 0}
+    # (symbol, side) 단위 매칭 — 롱/숏을 분리(같은 종목 헤지·숏 포지션 구분). 주식·롱은
+    # side="long"으로 정규화돼 종전 symbol-only 동작과 동치(전부 롱이면 키가 (sym,long) 하나).
+    kis_by_key: dict[tuple, int] = defaultdict(int)
+    for p in kis_positions:
+        sym = p.get("symbol")
+        qty = int(p.get("qty", 0) or 0)
+        if sym and qty > 0:                       # qty=계약/주 magnitude(숏도 양수)
+            kis_by_key[(sym, norm_side(p.get("side")))] += qty
 
-    # ledger를 symbol → [{sid, qty}, ...]로 그룹핑 (한 종목을 여러 전략이 보유 가능)
-    ledger_by_symbol: dict[str, list[dict]] = defaultdict(list)
+    # (symbol, side) → [{sid, qty}, ...] (한 종목·방향을 여러 전략이 보유 가능)
+    ledger_by_key: dict[tuple, list[dict]] = defaultdict(list)
     for sid, lg in ledger.items():
         sym = lg.get("symbol")
         qty = int(lg.get("qty", 0))
         if sym and qty > 0:
-            ledger_by_symbol[sym].append({"sid": sid, "qty": qty})
+            ledger_by_key[(sym, norm_side(lg.get("side")))].append({"sid": sid, "qty": qty})
 
     orphans = []
     extras = []
     in_sync = []
 
-    all_symbols = set(kis_by_symbol) | set(ledger_by_symbol)
-    for sym in sorted(all_symbols):
-        kis_qty = kis_by_symbol.get(sym, 0)
-        ledger_sids = ledger_by_symbol.get(sym, [])
+    for key in sorted(set(kis_by_key) | set(ledger_by_key)):
+        sym, side = key
+        kis_qty = kis_by_key.get(key, 0)
+        ledger_sids = ledger_by_key.get(key, [])
         ledger_total = sum(s["qty"] for s in ledger_sids)
 
         if kis_qty == ledger_total and ledger_total > 0:
             in_sync.append(sym)
         elif kis_qty < ledger_total:
-            # 외부 매도 — ledger 차감 필요
+            # 외부 청산 — ledger 차감 필요(롱=외부매도·숏=외부환매). side 분리 매칭.
             orphans.append({
                 "symbol": sym,
+                "side": side,
                 "ledger_sids": ledger_sids,
                 "ledger_total_qty": ledger_total,
                 "kis_qty": kis_qty,
                 "shortfall": ledger_total - kis_qty,
             })
         else:
-            # kis_qty > ledger_total — 외부 매수 (신규 또는 추가)
+            # kis_qty > ledger_total — 외부 진입 (신규 또는 추가)
             extras.append({
                 "symbol": sym,
+                "side": side,
                 "kis_qty": kis_qty,
                 "ledger_total_qty": ledger_total,
                 "excess": kis_qty - ledger_total,
@@ -494,8 +514,8 @@ def reconcile_ledger(kis_positions: list[dict], ledger: dict) -> dict:
         "external_extras": extras,
         "in_sync": in_sync,
         "checked_at": datetime.now(timezone.utc).isoformat(),
-        "ledger_symbol_count": len(ledger_by_symbol),
-        "kis_symbol_count": len(kis_by_symbol),
+        "ledger_symbol_count": len({k[0] for k in ledger_by_key}),
+        "kis_symbol_count": len({k[0] for k in kis_by_key}),
     }
 
 
