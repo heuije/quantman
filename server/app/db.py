@@ -4,6 +4,7 @@ import logging
 
 from sqlmodel import Session, SQLModel, create_engine
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from .config import settings
 
@@ -144,3 +145,37 @@ def create_db_and_tables() -> None:
 def get_session():
     with Session(engine) as session:
         yield session
+
+
+# Phase 60 — Neon 서버리스 연결 끊김 재시도.
+# Neon은 유휴 시 compute를 suspend하며 연결을 끊는다. pool_pre_ping(checkout 시
+# SELECT 1)은 Neon `-pooler`(PgBouncer)에선 ping과 실제 쿼리가 다른 백엔드를 쓸 수
+# 있어 mid-request/cron 연결 끊김을 못 막는다(`server conn crashed?`가 그대로 전파).
+# C1은 "계산 중 연결 점유"만 제거했고, 이 헬퍼는 *남은 부류* — 끊긴 연결로의 쿼리
+# 자체 — 를 닫는다: 끊김 감지 시 pool을 폐기(fresh 연결 강제)하고 1회 재시도.
+
+def is_disconnect(exc: BaseException) -> bool:
+    """예외가 DB 연결 끊김(Neon suspend 등)인지 판별.
+
+    SQLAlchemy가 disconnect로 분류하면 connection_invalidated=True로 표시하고 해당
+    연결을 pool에서 제거한다. 분류 못 한 경우를 위해 Neon 특유 메시지도 함께 본다.
+    """
+    if isinstance(exc, DBAPIError) and getattr(exc, "connection_invalidated", False):
+        return True
+    return "server conn crashed" in str(exc).lower()
+
+
+def call_with_disconnect_retry(fn, *args, **kwargs):
+    """fn(*args, **kwargs) 실행 — DB 연결 끊김이면 pool 폐기 후 fresh 연결로 1회 재시도.
+
+    서버리스 Postgres(Neon)의 표준 대응. 끊김이 아닌 예외는 그대로 전파한다.
+    재시도도 끊김으로 실패하면(드뭄) 전파 — 호출자(cron 재시도 큐 등)가 처리.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:  # noqa: BLE001 — is_disconnect로 선별, 나머지는 즉시 재전파
+        if not is_disconnect(e):
+            raise
+        _log.warning("DB 연결 끊김 감지(Neon suspend 추정) — pool 재생성 후 1회 재시도")
+        engine.dispose()
+        return fn(*args, **kwargs)

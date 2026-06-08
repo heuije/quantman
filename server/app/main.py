@@ -108,10 +108,16 @@ def _initial_master_refresh():
 
 
 def _trigger_preview(data_source: str) -> None:
-    """데이터 갱신 직후 preview 자동 갱신. 실패해도 cron 본 작업엔 영향 X."""
+    """데이터 갱신 직후 preview 자동 갱신. 실패해도 cron 본 작업엔 영향 X.
+
+    Phase 60 — Neon 연결 끊김(`server conn crashed?`) 시 fresh 연결로 1회 재시도.
+    이게 없으면 데이터 fetch는 성공했는데 preview 갱신만 끊김으로 실패→예외가 여기서
+    삼켜져 _run_with_retry가 재시도를 안 걸고, preview가 stale해진다(국장 후보결정 누락 근본원인).
+    """
     try:
         from . import preview_engine
-        preview_engine.refresh_all_users_preview(data_source)
+        from .db import call_with_disconnect_retry
+        call_with_disconnect_retry(preview_engine.refresh_all_users_preview, data_source)
     except Exception:
         _log.exception("preview 자동 갱신 실패 [%s]", data_source)
 
