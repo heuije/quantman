@@ -123,3 +123,39 @@ def test_json_decodes_utf8_korean():
         content = '{"rt_cd":"1","msg1":"모의투자 주문처리가 안되었습니다."}'.encode("utf-8")
     out = _json(_Resp())
     assert out["msg1"] == "모의투자 주문처리가 안되었습니다."
+
+
+def test_overseas_limit_buy_routes_to_overseas_endpoint(monkeypatch):
+    """overseas_buy_limit은 해외 엔드포인트로 라우팅하고 올바른 바디를 전송해야 한다."""
+    import localapp.kis_futures_broker as kfb
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        content = b'{"rt_cd":"0","msg_cd":"APBK0013","msg1":"ok","output":{"ODNO":"00298040","ORD_DT":"20260608"}}'
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(
+        kfb.requests, "post",
+        lambda url, headers=None, json=None, timeout=None:
+            (captured.update(url=url, body=json, tr=headers.get("tr_id")), _Resp())[1]
+    )
+
+    b = kfb.KisFuturesBroker.__new__(kfb.KisFuturesBroker)
+    # inject overseas context (match __init__ attribute names):
+    b._ov_key = "AK"
+    b._ov_secret = "SK"
+    b._ov_cano = "80012345"
+    b._ov_acnt_prdt_cd = "08"
+    b._ov_base = kfb._REAL
+    b._ov_tok = "TKN"
+    b._ov_tok_exp = 9999999999.0
+
+    r = b.overseas_buy_limit("GCZ25", 1, 1922.5)
+
+    assert "overseas-futureoption/v1/trading/order" in captured["url"]
+    assert captured["tr"] == "OTFM3001U"
+    assert captured["body"]["OVRS_FUTR_FX_PDNO"] == "GCZ25"
+    assert captured["body"]["SLL_BUY_DVSN_CD"] == "02"
+    assert captured["body"]["PRIC_DVSN_CD"] == "1"
+    assert r["output"]["ODNO"] == "00298040"

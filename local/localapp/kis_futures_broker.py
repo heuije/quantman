@@ -30,6 +30,8 @@ import json
 
 import requests
 
+from .kis_overseas_futures import build_overseas_order_body, parse_overseas_balance, scale_overseas_price
+
 
 def _json(resp) -> dict:
     """KIS 응답을 UTF-8로 명시 디코딩. KIS는 charset=utf-8 본문을 주지만 requests 자동탐지가
@@ -42,6 +44,14 @@ _ORDER_PATH = "/uapi/domestic-futureoption/v1/trading/order"
 _BALANCE_PATH = "/uapi/domestic-futureoption/v1/trading/inquire-balance"
 _QUOTE_PATH = "/uapi/domestic-futureoption/v1/quotations/inquire-price"
 _QUOTE_TR = "FHMIF10000000"   # 선물옵션 시세(실전·모의 공통)
+
+# ── 해외선물옵션 상수 (OTFM/HHDFC TR, 실전 전용) ─────────────────────────────────
+_OV_ORDER_PATH   = "/uapi/overseas-futureoption/v1/trading/order"
+_OV_BALANCE_PATH = "/uapi/overseas-futureoption/v1/trading/inquire-unpd"
+_OV_QUOTE_PATH   = "/uapi/overseas-futureoption/v1/quotations/inquire-price"
+_OV_ORDER_TR     = "OTFM3001U"
+_OV_BALANCE_TR   = "OTFM1412R"
+_OV_QUOTE_TR     = "HHDFC55010000"
 
 
 def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
@@ -154,18 +164,47 @@ class KisFuturesBroker:
     """
 
     def __init__(self):
-        from .secrets_store import load_kis_futures   # 지연 import — 순수 헬퍼는 keyring 없이 테스트 가능
-        creds = load_kis_futures()
-        if not creds:
-            raise RuntimeError("선물옵션 KIS 자격증명이 없습니다 — secrets_store.save_kis_futures로 등록(모의 먼저).")
-        self.key = creds["app_key"]
-        self.secret = creds["app_secret"]
-        self.virtual = creds.get("virtual", True)
-        self.base = _VTS if self.virtual else _REAL
-        no = str(creds["account_no"]).split("-")
-        self.cano, self.acnt_prdt_cd = no[0], (no[1] if len(no) > 1 else "03")
-        self._tok = None
-        self._tok_exp = 0.0
+        # 지연 import — 순수 헬퍼는 keyring 없이 테스트 가능
+        from .secrets_store import load_kis_futures, load_kis_overseas_futures
+
+        domestic = load_kis_futures()
+        overseas = load_kis_overseas_futures()
+
+        if not domestic and not overseas:
+            raise RuntimeError(
+                "KIS 자격증명이 없습니다. "
+                "국내선물: secrets_store.save_kis_futures, "
+                "해외선물: secrets_store.save_kis_overseas_futures 로 등록하세요."
+            )
+
+        # ── 국내선물 컨텍스트 (없으면 None — 국내 메서드 호출 시 명시 오류) ────────────
+        if domestic:
+            self.key = domestic["app_key"]
+            self.secret = domestic["app_secret"]
+            self.virtual = domestic.get("virtual", True)
+            self.base = _VTS if self.virtual else _REAL
+            no = str(domestic["account_no"]).split("-")
+            self.cano, self.acnt_prdt_cd = no[0], (no[1] if len(no) > 1 else "03")
+            self._tok = None
+            self._tok_exp = 0.0
+        else:
+            self.key = self.secret = self.base = self.cano = self.acnt_prdt_cd = None
+            self.virtual = None
+            self._tok = None
+            self._tok_exp = 0.0
+
+        # ── 해외선물 컨텍스트 (없으면 None — 해외 메서드 호출 시 명시 오류) ────────────
+        if overseas:
+            self._ov_key = overseas["app_key"]
+            self._ov_secret = overseas["app_secret"]
+            ov_no = str(overseas["account_no"]).split("-")
+            self._ov_cano = ov_no[0]
+            self._ov_acnt_prdt_cd = ov_no[1] if len(ov_no) > 1 else "08"
+            self._ov_base = _REAL   # 해외선물은 실전 전용
+            self._ov_tok = None
+            self._ov_tok_exp = 0.0
+        else:
+            self._ov_key = None
 
     def _token(self) -> str:
         import time
@@ -191,6 +230,28 @@ class KisFuturesBroker:
 
     def _balance_tr(self) -> str:
         return "VTFO6118R" if self.virtual else "CTFO6118R"
+
+    # ── 해외선물 인증 (실전 전용, 토큰 캐시) ─────────────────────────────────────────
+
+    def _ov_token(self) -> str:
+        import time
+        if self._ov_tok and time.time() < self._ov_tok_exp - 60:
+            return self._ov_tok
+        r = requests.post(f"{self._ov_base}/oauth2/tokenP",
+                          json={"grant_type": "client_credentials",
+                                "appkey": self._ov_key, "appsecret": self._ov_secret},
+                          timeout=10)
+        r.raise_for_status()
+        d = _json(r)
+        self._ov_tok = d["access_token"]
+        self._ov_tok_exp = time.time() + int(d.get("expires_in", 86400))
+        return self._ov_tok
+
+    def _ov_headers(self, tr_id: str) -> dict:
+        return {"content-type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {self._ov_token()}",
+                "appkey": self._ov_key, "appsecret": self._ov_secret,
+                "tr_id": tr_id, "custtype": "P"}
 
     # ── Broker Protocol(계약수 기반) — 핵심 거래 메서드 ───────────────────────────
 
@@ -228,6 +289,60 @@ class KisFuturesBroker:
 
     def today_open(self, symbol: str) -> float:
         return float(self._quote(symbol).get("futs_oprc", 0) or 0)        # 당일 시가
+
+    # ── 해외선물 거래 메서드 (CME via KIS, 실전 전용) ─────────────────────────────────
+
+    def overseas_buy_limit(self, symbol: str, qty: int, limit_price) -> dict:
+        body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
+                                         symbol=symbol, side="buy", qty=qty,
+                                         price=limit_price, order_type="limit")
+        r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
+                          headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
+        r.raise_for_status()
+        return _json(r)
+
+    def overseas_sell_limit(self, symbol: str, qty: int, limit_price) -> dict:
+        body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
+                                         symbol=symbol, side="sell", qty=qty,
+                                         price=limit_price, order_type="limit")
+        r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
+                          headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
+        r.raise_for_status()
+        return _json(r)
+
+    def overseas_buy(self, symbol: str, qty: int) -> dict:
+        body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
+                                         symbol=symbol, side="buy", qty=qty,
+                                         price=0, order_type="market")
+        r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
+                          headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
+        r.raise_for_status()
+        return _json(r)
+
+    def overseas_sell(self, symbol: str, qty: int) -> dict:
+        body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
+                                         symbol=symbol, side="sell", qty=qty,
+                                         price=0, order_type="market")
+        r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
+                          headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
+        r.raise_for_status()
+        return _json(r)
+
+    def overseas_account_snapshot(self) -> dict:
+        params = {"CANO": self._ov_cano, "ACNT_PRDT_CD": self._ov_acnt_prdt_cd,
+                  "FUOP_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""}
+        r = requests.get(f"{self._ov_base}{_OV_BALANCE_PATH}",
+                         headers=self._ov_headers(_OV_BALANCE_TR), params=params, timeout=10)
+        r.raise_for_status()
+        return parse_overseas_balance(_json(r))
+
+    def overseas_price(self, symbol: str, scalc_desz: int = 0) -> float:
+        r = requests.get(f"{self._ov_base}{_OV_QUOTE_PATH}",
+                         headers=self._ov_headers(_OV_QUOTE_TR),
+                         params={"SRS_CD": symbol}, timeout=10)
+        r.raise_for_status()
+        raw = _json(r).get("output1", {}).get("last_price", "")
+        return scale_overseas_price(raw, scalc_desz)
 
     # ── phase 2 (연속장 라이브 검증 후 구현) — 시장가·정정취소·체결조회 ──────────────
     # spec 확보 완료(시장가 ORD_DVSN_CD=02, 취소 order-rvsecncl, 체결조회 inquire-ccnl).
