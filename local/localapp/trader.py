@@ -751,6 +751,44 @@ class Trader:
         self._after_submit(r, sid, strat_name, None, symbol, "buy", qty,
                             ref_price, limit, policy, decisions, reason=reason)
 
+    def _submit_open_short(self, sid: str, strat_name: str, strat_def: dict,
+                           symbol: str, qty: int, ref_price: float, policy: dict,
+                           decisions: list[dict]) -> None:
+        """숏 진입(sell-to-open) — 매도 주문이나 의미는 신규 숏 포지션 개시. 선물 전용.
+
+        _submit_buy의 매도판. strat_def를 _after_submit에 전달해 ledger에 definition 저장(나중
+        _submit_close_short가 그 청산규칙으로 환매). 멱등 'sell' intent. _after_submit side='sell'
+        → _apply_fill(M4)이 보유없는 선물 매도를 숏진입으로 해석. 선물 전용→예약 분기 없음.
+        """
+        today_iso = kst_today().isoformat()
+        intent_id = intents.new_intent_id()
+        intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell", qty, ref_price)
+        if bool(policy["use_limit"]):
+            limit = qc.round_to_tick(ref_price * (1 - policy["sell_tolerance_pct"] / 100.0),
+                                     direction="down", currency=_currency_of(symbol))
+            limit = qc.apply_daily_price_limit(limit, ref_price, "sell", _currency_of(symbol))
+            try:
+                r = self.broker.sell_limit(symbol, qty, limit)
+            except Exception as e:
+                intents.mark_failed(today_iso, intent_id, f"sell_limit(open): {e}")
+                log.error("숏 진입 지정가 발주 실패 [%s]: %s", symbol, e)
+                decisions.append(order_log.decision(
+                    "error", sid, strat_name, symbol, f"숏진입 발주 예외: {e}"))
+                return
+        else:
+            limit = 0
+            try:
+                r = self.broker.sell(symbol, qty)
+            except Exception as e:
+                intents.mark_failed(today_iso, intent_id, f"sell(open): {e}")
+                log.error("숏 진입 시장가 발주 실패 [%s]: %s", symbol, e)
+                decisions.append(order_log.decision(
+                    "error", sid, strat_name, symbol, f"숏진입 발주 예외: {e}"))
+                return
+        intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
+        self._after_submit(r, sid, strat_name, strat_def, symbol, "sell", qty,
+                            ref_price, limit, policy, decisions, reason="숏진입")
+
     def _after_submit(self, r: dict, sid: str, strat_name: str,
                       strat_def: dict | None, symbol: str, side: str, qty: int,
                       intended_price: float, limit_price: int,
@@ -874,6 +912,16 @@ class Trader:
 
         policy = _policy(strat_def)
 
+        # M5c — 진입 방향. long(기본)=매수진입·short=매도진입(sell-to-open, 선물만).
+        # long_short(횡단 score 랭킹)는 라이브 이벤트진입에서 v1 미지원 → 명시 skip(무음 롱전환 방지).
+        direction = (strat_def.get("position") or {}).get("direction", "long")
+        if direction == "long_short":
+            decisions.append(order_log.decision(
+                "skip_unsupported", strategy_id, strat_name, symbol,
+                "long_short(횡단 롱숏)은 라이브 자동매매 v1 미지원 — long/short 단방향 전략만"))
+            return False
+        is_short = direction == "short"
+
         # 통화별 가용자금 결정.
         #  - 미국: psamount(매수가능금액) — KIS 통합증거금을 반영한 USD 주문가능액.
         #    USD 예수금이 0이어도 KRW 담보로 주문 가능하므로 예수금이 아니라
@@ -932,20 +980,27 @@ class Trader:
                 f"수량 부족 (현금 {cash:,.0f} / 전일종가 {prev_close:,.0f})"))
             return False
 
-        # L-01 멱등 게이트 — 오늘 같은 (sid, symbol, buy)로 이미 발주됐다면 skip.
-        # 크래시 후 재기동 + reconcile이 submitted/ambiguous로 마감했으면 차단.
+        # L-01 멱등 게이트 — 오늘 같은 (sid, symbol, 진입방향)로 이미 발주됐다면 skip.
+        # 진입측 = short면 'sell'(sell-to-open)·long이면 'buy'. 크래시 재기동 + reconcile이
+        # submitted/ambiguous로 마감했으면 차단.
+        entry_side = "sell" if is_short else "buy"
         today_iso = kst_today().isoformat()
-        if intents.is_active(today_iso, ledger_key, symbol, "buy"):
+        if intents.is_active(today_iso, ledger_key, symbol, entry_side):
             decisions.append(order_log.decision(
                 "skip_idempotent", strategy_id, strat_name, symbol,
                 "오늘 이미 발주된 intent 존재 — 중복 차단"))
-            log.info("[L-01] 중복 매수 차단 %s/%s", ledger_key, symbol)
+            log.info("[L-01] 중복 진입 차단 %s/%s (%s)", ledger_key, symbol, entry_side)
             return False
 
-        # 발주가는 _submit_buy 내부에서 prev_close × (1 + tolerance%) 계산.
-        # catchup=True면 시장가 매수만 시초가 limit으로 변환 (지정가는 그대로).
-        self._submit_buy(ledger_key, strat_name, strat_def, symbol, qty,
-                          prev_close, policy, decisions, catchup=catchup)
+        # 발주가는 submit 내부에서 prev_close × (1 ± tolerance%) 계산.
+        if is_short:
+            # 숏 진입(sell-to-open) — 선물 전용. 예약·catchup 없음(선물은 즉시주문).
+            self._submit_open_short(ledger_key, strat_name, strat_def, symbol, qty,
+                                    prev_close, policy, decisions)
+        else:
+            # 롱 진입(buy). catchup=True면 시장가 매수만 시초가 limit으로 변환(지정가는 그대로).
+            self._submit_buy(ledger_key, strat_name, strat_def, symbol, qty,
+                              prev_close, policy, decisions, catchup=catchup)
         return True
 
     # ── 메인 사이클 ───────────────────────────────────────────────────────────
