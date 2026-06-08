@@ -15,6 +15,7 @@ if str(_LOCAL) not in sys.path:
     sys.path.insert(0, str(_LOCAL))
 
 from localapp.kis_futures_broker import (
+    _balance_rows,
     _json,
     build_balance_params,
     build_futures_order_body,
@@ -56,17 +57,44 @@ def test_build_balance_params():
     assert "CTX_AREA_FK200" in p and "CTX_AREA_NK200" in p   # 연속조회 키 (필수)
 
 
-def test_parse_balance_contracts():
+def test_balance_rows_both_shapes():
+    # 빈잔고=[], 행형(list of dicts), 컬럼형(dict of arrays) 모두 행 리스트로 정규화.
+    assert _balance_rows([]) == []
+    assert _balance_rows(None) == []
+    assert _balance_rows([{"a": "1"}]) == [{"a": "1"}]
+    assert _balance_rows({"a": ["1", "2"], "b": ["x", "y"]}) == [
+        {"a": "1", "b": "x"}, {"a": "2", "b": "y"}]
+
+
+def test_parse_balance_contracts_row():
+    # 행형 output1. 신규 키: shtn_pdno(6자 거래코드)·side(롱숏)·settle_price·eval_pnl.
     resp = {"output1": [
-        {"pdno": "167R12", "cblc_qty": "2", "ccld_avg_unpr1": "344.70",
-         "excc_unpr": "345.70", "trad_pfls_amt": "500000"},
-        {"pdno": "EMPTY", "cblc_qty": "0"},     # 0계약 → 제외
+        {"shtn_pdno": "A01606", "sll_buy_dvsn_name": "매수", "cblc_qty": "2",
+         "ccld_avg_unpr1": "344.70", "excc_unpr": "345.70", "evlu_pfls_amt": "500000"},
+        {"shtn_pdno": "EMPTY", "cblc_qty": "0"},     # 0계약 → 제외
     ]}
     out = parse_futures_balance(resp)
     assert len(out["positions"]) == 1
     p = out["positions"][0]
-    assert p["symbol"] == "167R12" and p["qty"] == 2
-    assert p["avg_price"] == 344.70 and p["eval_price"] == 345.70 and p["pnl"] == 500000.0
+    assert p["symbol"] == "A01606" and p["side"] == "buy" and p["qty"] == 2
+    assert p["avg_price"] == 344.70 and p["settle_price"] == 345.70 and p["eval_pnl"] == 500000.0
+
+
+def test_parse_balance_columnar():
+    # KIS 공식 spec 예시 형태: output1=컬럼형(dict of arrays). 병렬배열 전치 + 롱숏 구분.
+    resp = {"output1": {
+        "shtn_pdno": ["A01606", "A01609"],
+        "sll_buy_dvsn_name": ["매수", "매도"],
+        "cblc_qty": ["3", "1"],
+        "ccld_avg_unpr1": ["1178.25", "1165.00"],
+        "excc_unpr": ["1180.00", "1160.00"],
+        "evlu_pfls_amt": ["131250", "-12500"],
+    }}
+    out = parse_futures_balance(resp)
+    assert len(out["positions"]) == 2
+    assert out["positions"][0]["symbol"] == "A01606" and out["positions"][0]["side"] == "buy" and out["positions"][0]["qty"] == 3
+    assert out["positions"][1]["symbol"] == "A01609" and out["positions"][1]["side"] == "sell"
+    assert out["positions"][1]["eval_pnl"] == -12500.0
 
 
 def test_parse_balance_account_summary():
