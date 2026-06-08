@@ -4,6 +4,7 @@ import type {
   IrStrategyDef, IrStrategyResult,
   MarketContext, NextDayPreview, PortfolioRisk,
   PortfolioAnalyzeIn, PortfolioAnalysis, PortfolioHoldings, SymbolDetail, SymbolListing,
+  CompareResult,
   ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO, ScreenerUserPreset,
   StrategyDef, StrategyRow, StrategyStats, StrategyVersionRow,
   SymbolInfo, SyncSnapshot, TradingTimeline, UserSettingsIO,
@@ -163,6 +164,9 @@ export const api = {
   // 대시보드/포트폴리오 탭 — on-demand (서버 dataset 미의존)
   symbolDetail: (symbol: string, range = "1y") =>
     req<SymbolDetail>(`/market/symbol/${encodeURIComponent(symbol)}?range=${range}`),
+  marketCompare: (symbols: string[], range = "1y") =>
+    req<CompareResult>(
+      `/market/compare?symbols=${encodeURIComponent(symbols.join(","))}&range=${range}`),
   marketListings: () => req<{ listings: SymbolListing[] }>("/market/listings"),
   analyzePortfolio: (body: PortfolioAnalyzeIn) =>
     req<PortfolioAnalysis>("/portfolio/analyze", {

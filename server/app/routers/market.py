@@ -125,13 +125,11 @@ def market_listings(user: User = Depends(get_current_user)):
     return {"listings": _all_listings_cached(date.today().isoformat())}
 
 
-# 지표 카탈로그 — 드롭다운용. pane: price(주가 그래프 오버레이) / sub(별도 패널).
-# fields: 한 지표가 여러 라인일 때 series의 키들.
+# 지표 카탈로그 — 선택 대상(최대 4개, 2×2 그리드에 표시). 이동평균 5/20/60/120/240은
+# 선택과 무관하게 모든 차트에 상시 오버레이되므로 카탈로그에서 제외한다.
+# fields: 한 지표가 여러 라인일 때 series의 키들. pane=price인 bb는 그리드에서
+# 미니 가격+밴드 차트로 렌더(프론트).
 _INDICATORS = [
-    {"key": "ma5", "label": "이동평균 5", "pane": "price"},
-    {"key": "ma20", "label": "이동평균 20", "pane": "price"},
-    {"key": "ma60", "label": "이동평균 60", "pane": "price"},
-    {"key": "ma120", "label": "이동평균 120", "pane": "price"},
     {"key": "bb", "label": "볼린저밴드(20,2σ)", "pane": "price",
      "fields": ["bb_upper", "bb_mid", "bb_lower"]},
     {"key": "rsi_14", "label": "RSI(14)", "pane": "sub"},
@@ -182,7 +180,8 @@ def symbol_detail(symbol: str, range: str = "1y",
     if not sym:
         raise HTTPException(status_code=400, detail="종목 코드가 필요합니다.")
     span = _RANGE_DAYS.get(range, 400)
-    fetch_start = (datetime.now().date() - timedelta(days=span + 320)).isoformat()
+    # ma240 워밍업: 240 거래일(≈350 달력일) 확보 위해 표시구간 + 여유분 fetch
+    fetch_start = (datetime.now().date() - timedelta(days=span + 400)).isoformat()
     try:
         raw = fdr.DataReader(sym, fetch_start)
     except Exception as e:  # 외부 데이터 소스 한계 — 호출자에 명확히 전달
@@ -193,9 +192,13 @@ def symbol_detail(symbol: str, range: str = "1y",
 
     ind = compute_all(raw.copy())     # rsi_14·atr_14·realized_vol 등 기본 지표
     c = ind["Close"]
-    # 이동평균
-    for w in (5, 20, 60, 120):
+    # 이동평균 (가격) — 5/20/60/120/240, 모든 차트에 상시 오버레이
+    for w in (5, 20, 60, 120, 240):
         ind[f"ma{w}"] = c.rolling(w).mean()
+    # 거래량 이동평균 — 거래량 차트에도 동일 MA 표시 요건
+    vser = ind["Volume"]
+    for w in (5, 20, 60, 120, 240):
+        ind[f"vma{w}"] = vser.rolling(w).mean()
     # 볼린저밴드 (20, 2σ)
     m20, s20 = c.rolling(20).mean(), c.rolling(20).std()
     ind["bb_upper"], ind["bb_mid"], ind["bb_lower"] = m20 + 2 * s20, m20, m20 - 2 * s20
@@ -215,13 +218,47 @@ def symbol_detail(symbol: str, range: str = "1y",
     # 전일대비 % (급등락 마커용)
     ind["chg_pct"] = c.pct_change() * 100
     show = ind.tail(span)
+    is_kr = symbol.strip().isdigit()
 
     def _n(v, nd=2):
         return None if v is None or pd.isna(v) else round(float(v), nd)
 
+    # 벤치마크 시계열 + 베타 — 종목이 추종하는 지수(코스피/코스닥/나스닥/S&P500)를
+    # 같은 구간에 받아 ① 종목 시작가로 리베이스해 겹쳐보기(초록 점선) ② 베타 회귀.
+    # 한 번 fetch한 braw를 두 용도에 공유한다(중복 조회 제거).
+    mkt = ""
+    try:
+        for it in _all_listings_cached(datetime.now().date().isoformat()):
+            if it["symbol"] == sym:
+                mkt = it["market"]
+                break
+    except Exception:
+        pass
+    bench_sym, bench_name = _benchmark_for(mkt, is_kr)
+    bench_rebased = None
+    beta = None
+    try:
+        braw = fdr.DataReader(bench_sym, fetch_start)
+        if braw is not None and not braw.empty and "Close" in braw.columns:
+            bclose = braw["Close"].reindex(show.index, method="ffill")
+            base_s, base_b = show["Close"].iloc[0], bclose.iloc[0]
+            if base_s and base_b and not pd.isna(base_b):
+                bench_rebased = bclose / base_b * base_s   # 종목 시작가 기준 리베이스
+            sret = show["Close"].pct_change().dropna()
+            bret = braw["Close"].pct_change().dropna()
+            common = sret.index.intersection(bret.index)
+            if len(common) > 20:
+                sv, bv = sret.reindex(common), bret.reindex(common)
+                if bv.var() and bv.var() > 0:
+                    beta = round(float(np.cov(sv, bv)[0, 1] / bv.var()), 2)
+    except Exception as e:  # 벤치마크 fetch 실패 — 베타·오버레이 생략
+        _log.warning("벤치마크 조회 실패 %s vs %s: %s", sym, bench_sym, e)
+
     series = []
     for idx, r in show.iterrows():
         d = idx.date().isoformat() if hasattr(idx, "date") else str(idx)
+        bval = (bench_rebased.loc[idx] if bench_rebased is not None
+                and idx in bench_rebased.index else None)
         series.append({
             "date": d,
             "open": _n(r.get("Open")), "high": _n(r.get("High")),
@@ -230,6 +267,11 @@ def symbol_detail(symbol: str, range: str = "1y",
             "chg_pct": _n(r.get("chg_pct")),
             "ma5": _n(r.get("ma5")), "ma20": _n(r.get("ma20")),
             "ma60": _n(r.get("ma60")), "ma120": _n(r.get("ma120")),
+            "ma240": _n(r.get("ma240")),
+            "vma5": _n(r.get("vma5"), 0), "vma20": _n(r.get("vma20"), 0),
+            "vma60": _n(r.get("vma60"), 0), "vma120": _n(r.get("vma120"), 0),
+            "vma240": _n(r.get("vma240"), 0),
+            "bench": _n(bval),
             "bb_upper": _n(r.get("bb_upper")), "bb_mid": _n(r.get("bb_mid")),
             "bb_lower": _n(r.get("bb_lower")),
             "rsi_14": _n(r.get("rsi_14"), 1),
@@ -245,32 +287,6 @@ def symbol_detail(symbol: str, range: str = "1y",
     last = show.iloc[-1]
     prev = show.iloc[-2] if len(show) >= 2 else last
     close = float(last["Close"]); pclose = float(prev["Close"])
-    is_kr = symbol.strip().isdigit()
-
-    # 베타 — 종목이 추종하는 벤치마크(코스피/코스닥/나스닥/S&P500) 대비 민감도.
-    # 시장은 전종목 listing(캐시)에서 판별, 벤치마크 지수를 fetch해 회귀.
-    mkt = ""
-    try:
-        for it in _all_listings_cached(datetime.now().date().isoformat()):
-            if it["symbol"] == sym:
-                mkt = it["market"]
-                break
-    except Exception:
-        pass
-    bench_sym, bench_name = _benchmark_for(mkt, is_kr)
-    beta = None
-    try:
-        braw = fdr.DataReader(bench_sym, fetch_start)
-        if braw is not None and not braw.empty and "Close" in braw.columns:
-            sret = show["Close"].pct_change().dropna()
-            bret = braw["Close"].pct_change().dropna()
-            common = sret.index.intersection(bret.index)
-            if len(common) > 20:
-                sv, bv = sret.reindex(common), bret.reindex(common)
-                if bv.var() and bv.var() > 0:
-                    beta = round(float(np.cov(sv, bv)[0, 1] / bv.var()), 2)
-    except Exception as e:  # 벤치마크 fetch 실패 — 베타 생략
-        _log.warning("베타 계산 실패 %s vs %s: %s", sym, bench_sym, e)
 
     return {
         "symbol": sym,
@@ -292,6 +308,54 @@ def symbol_detail(symbol: str, range: str = "1y",
         "indicators": _INDICATORS,
         "series": series,
     }
+
+
+@router.get("/compare")
+def market_compare(symbols: str, range: str = "1y",
+                   user: User = Depends(get_current_user)):
+    """다종목 비교 — 각 종목을 시작점=0% 기준 정규화 수익률로 반환(최대 10종목).
+
+    지표 계산 없이 종가만 받아 경량(겹쳐보기 전용) — symbol_detail보다 빠르다.
+    스케일이 다른 종목(국내 30만원 vs 미국 $200)도 같은 축에서 비교 가능.
+    """
+    import FinanceDataReader as fdr
+    import pandas as pd
+
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()][:10]
+    if not syms:
+        raise HTTPException(status_code=400, detail="비교할 종목이 필요합니다.")
+    span = _RANGE_DAYS.get(range, 400)
+    fetch_start = (datetime.now().date() - timedelta(days=span + 10)).isoformat()
+    try:
+        name_map = {it["symbol"]: it["name"]
+                    for it in _all_listings_cached(datetime.now().date().isoformat())}
+    except Exception:
+        name_map = {}
+
+    items = []
+    for sym in syms:
+        try:
+            raw = fdr.DataReader(sym, fetch_start)
+        except Exception as e:  # 외부 소스 한계 — 해당 종목만 skip(부분 제공)
+            _log.warning("비교 조회 실패 %s: %s", sym, e)
+            continue
+        if raw is None or raw.empty or "Close" not in raw.columns:
+            continue
+        cs = raw["Close"].dropna().tail(span)
+        if cs.empty:
+            continue
+        base = float(cs.iloc[0])
+        if not base:
+            continue
+        s = [
+            {"date": (idx.date().isoformat() if hasattr(idx, "date") else str(idx)),
+             "ret_pct": round((float(v) / base - 1) * 100, 2)}
+            for idx, v in cs.items()
+        ]
+        items.append({"symbol": sym, "name": name_map.get(sym, sym), "series": s})
+    if not items:
+        raise HTTPException(status_code=404, detail="비교할 데이터를 찾을 수 없습니다.")
+    return {"items": items, "range": range}
 
 
 def _session_now() -> dict:

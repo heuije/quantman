@@ -61,6 +61,32 @@ a:hover { text-decoration: underline; }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .main-inner { padding: 28px 32px; max-width: 1100px; width: 100%; flex: 1; }
 
+/* 개별 종목 분석(Company Analysis) — 전체폭(우측 여백 제거) + 차트 그리드.
+   :has()로 이 페이지에서만 1100px 캡 해제(다른 페이지 영향 없음). */
+.main-inner:has(.dashboard-fullwidth) { max-width: none; }
+.ca-summary {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px;
+}
+@media (max-width: 760px) { .ca-summary { grid-template-columns: repeat(2, 1fr); } }
+.ca-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .ca-grid { grid-template-columns: 1fr; } }
+.ca-symchip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 6px 4px 11px; background: var(--accent-soft);
+  border: 1px solid var(--accent); border-radius: 999px; font-size: 13px;
+}
+.ca-symchip .x-btn { min-width: 22px; min-height: 22px; padding: 2px 6px; }
+.ca-expl {
+  margin-top: 8px; padding: 12px 14px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; line-height: 1.65;
+}
+.ca-expl b { color: var(--text); }
+.ca-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.ca-card-head select { padding: 3px 6px; font-size: 11px; }
+
 /* Phase 50 — 법적 fine print는 페이지 footer로 (sidebar에서 제거). */
 .page-footer {
   display: flex; justify-content: center; gap: 10px;

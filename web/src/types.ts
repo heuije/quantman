@@ -561,7 +561,13 @@ export interface SymbolPoint {
   date: string;
   open: number | null; high: number | null; low: number | null; close: number | null;
   volume: number | null; chg_pct: number | null;
-  ma5: number | null; ma20: number | null; ma60: number | null; ma120: number | null;
+  ma5: number | null; ma20: number | null; ma60: number | null;
+  ma120: number | null; ma240: number | null;
+  // 거래량 이동평균 (거래량 차트 오버레이)
+  vma5: number | null; vma20: number | null; vma60: number | null;
+  vma120: number | null; vma240: number | null;
+  // 벤치마크 지수(종목 시작가로 리베이스) — 주가차트 초록 점선 오버레이
+  bench: number | null;
   bb_upper: number | null; bb_mid: number | null; bb_lower: number | null;
   rsi_14: number | null;
   macd: number | null; macd_signal: number | null; macd_hist: number | null;
@@ -581,6 +587,11 @@ export interface SymbolDetail {
   indicators: IndicatorSpec[];
   series: SymbolPoint[];
 }
+
+// 다종목 비교 — 시작점=0% 정규화 수익률(겹쳐보기 전용, 지표 미포함).
+export interface ComparePoint { date: string; ret_pct: number | null }
+export interface CompareItem { symbol: string; name: string; series: ComparePoint[] }
+export interface CompareResult { items: CompareItem[]; range: string }
 
 // ── 포트폴리오 탭 — 현재 vs 예상 비교 분석 ──────────────────────────────────
 export interface PositionInput { symbol: string; weight: number }
