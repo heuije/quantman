@@ -37,7 +37,7 @@ def _multi():
 def _patch(monkeypatch):
     # all/screener는 컬럼 프로젝션(get_projected) 경로 — 합성 dataset 반환.
     monkeypatch.setattr(ir.data_cache, "get_projected",
-                        lambda columns, symbols=None: _multi())
+                        lambda columns, symbols=None, recent_days=None: _multi())
     # strat: 조합 등 결정 불가 폴백 경로(get_dataset)도 동일 합성 dataset.
     monkeypatch.setattr(ir, "get_dataset", _multi)
     # single/list 경로(load_dataset_for)도 합성 — describe 단일/포트폴리오 리서치 테스트용.

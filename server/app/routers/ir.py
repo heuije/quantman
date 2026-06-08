@@ -177,19 +177,27 @@ def ir_strategy(body: dict, user: User = Depends(get_current_user),
     #   · strat: 조합 등 결정 불가 → 안전하게 전체(get_dataset). 드묾.
     # 무결성 매니페스트는 그 dataset으로 빌드 — 게이트 판정은 동일(생존편향 D-surv는 universe=all 전용).
     # 파싱 실패는 needed=cols=None→전체 경로로 두면 strategy_from_spec이 동일 에러를 반환(중복 검증 회피).
+    is_select = False
     try:
         _sir = StrategyIR.model_validate(body)
         needed = needed_symbols(_sir)
         cols = needed_columns(_sir)
+        is_select = _sir.query == "select"
     except ValidationError:
         needed = cols = None
     if needed is not None:               # single/list — 필요 종목만
         dataset = qc.load_dataset_for(needed)
     elif cols is not None:               # all/screener — 전 종목 × 참조 컬럼만(프로젝션)
-        dataset = data_cache.get_projected(cols, symbols=None)
+        # SELECT(as-of 스냅샷)는 최신 단면만 쓰므로 최근 구간(~400행)만 로드 — 전체이력×전종목
+        # 프로젝션(전 유니버스 OOM·타임아웃 근본원인)을 회피. 분포·IC 등은 전체이력 필요(None).
+        dataset = data_cache.get_projected(cols, symbols=None,
+                                           recent_days=400 if is_select else None)
     else:                                # strat: 조합 등 — 안전하게 전체
         dataset = get_dataset()
-    manifest = build_dataset_manifest(dataset, version=data_cache.get_version())
+    # SELECT는 읽기전용 스냅샷 — 무결성 매니페스트(전체이력 패스·생존편향 게이트)는 백테스트
+    # 자금투입 가드라 불필요·무거움 → skip. 게이트는 simulate 전용(manifest=None=게이트 미가동).
+    manifest = (None if is_select
+                else build_dataset_manifest(dataset, version=data_cache.get_version()))
     # 무결성 4액션 게이트 가동 — manifest(실측) vs DataSpec(요구). meta는 manifest에서 도출.
     # strict=true(body)면 편향형 경고를 거부로 승격(실전 자금 투입 前 게이트).
     res = strategy_from_spec(
