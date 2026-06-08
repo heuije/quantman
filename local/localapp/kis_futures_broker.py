@@ -55,13 +55,18 @@ _OV_QUOTE_TR     = "HHDFC55010000"
 
 
 def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
-                             qty: int, price, side: str) -> dict:
-    """TTTO1101U/VTTO1101U 주문 바디(지정가). side: 'buy'|'sell', qty=계약수, price=지정가.
+                             qty: int, price, side: str, order_type: str = "limit") -> dict:
+    """TTTO1101U/VTTO1101U 주문 바디(지정가·시장가). side: 'buy'|'sell', qty=계약수,
+    price=지정가(limit) 또는 0(market). order_type='limit'(01)|'market'(02).
 
     순수함수 — 네트워크 없음(단위검증 대상). SLL_BUY_DVSN_CD: 02 매수 / 01 매도.
     """
     if side not in ("buy", "sell"):
         raise ValueError(f"side는 buy|sell: {side}")
+    if order_type not in ("limit", "market"):
+        raise ValueError(f"order_type는 limit|market: {order_type}")
+    _is_limit = order_type == "limit"
+
     return {
         "ORD_PRCS_DVSN_CD": "02",                         # 02: 주문전송
         "CANO": cano,
@@ -69,10 +74,10 @@ def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
         "SLL_BUY_DVSN_CD": "02" if side == "buy" else "01",
         "SHTN_PDNO": symbol,                              # 단축상품번호(종목코드)
         "ORD_QTY": str(int(qty)),                         # 계약수
-        "UNIT_PRICE": str(price),                         # 지정가 가격
+        "UNIT_PRICE": str(price) if _is_limit else "0",  # 시장가는 0
         "NMPR_TYPE_CD": "",
         "KRX_NMPR_CNDT_CD": "",
-        "ORD_DVSN_CD": "01",                              # 01: 지정가
+        "ORD_DVSN_CD": "01" if _is_limit else "02",      # 01 지정가 / 02 시장가
     }
 
 
@@ -261,9 +266,11 @@ class KisFuturesBroker:
     def sell_limit(self, symbol: str, qty: int, limit_price) -> dict:
         return self._submit_order(symbol, qty, limit_price, "sell")
 
-    def _submit_order(self, symbol: str, qty: int, price, side: str) -> dict:
+    def _submit_order(self, symbol: str, qty: int, price, side: str,
+                      order_type: str = "limit") -> dict:
         body = build_futures_order_body(cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd,
-                                        symbol=symbol, qty=qty, price=price, side=side)
+                                        symbol=symbol, qty=qty, price=price, side=side,
+                                        order_type=order_type)
         r = requests.post(f"{self.base}{_ORDER_PATH}", headers=self._headers(self._order_tr()),
                           json=body, timeout=10)
         r.raise_for_status()
@@ -344,14 +351,15 @@ class KisFuturesBroker:
         raw = _json(r).get("output1", {}).get("last_price", "")
         return scale_overseas_price(raw, scalc_desz)
 
-    # ── phase 2 (연속장 라이브 검증 후 구현) — 시장가·정정취소·체결조회 ──────────────
-    # spec 확보 완료(시장가 ORD_DVSN_CD=02, 취소 order-rvsecncl, 체결조회 inquire-ccnl).
-    # 추측 발주 방지를 위해 라이브 라운드트립 검증 전까지 미구현 유지.
     def buy(self, symbol: str, qty: int) -> dict:
-        raise NotImplementedError("선물 시장가(ORD_DVSN_CD=02) — 연속장 라이브 검증 후 구현(phase2). buy_limit 사용.")
+        return self._submit_order(symbol, qty, 0, "buy", order_type="market")
 
     def sell(self, symbol: str, qty: int) -> dict:
-        raise NotImplementedError("선물 시장가(ORD_DVSN_CD=02) — 연속장 라이브 검증 후 구현(phase2). sell_limit 사용.")
+        return self._submit_order(symbol, qty, 0, "sell", order_type="market")
+
+    # ── phase 2 (연속장 라이브 검증 후 구현) — 정정취소·체결조회 ──────────────────────
+    # spec 확보 완료(취소 order-rvsecncl, 체결조회 inquire-ccnl).
+    # 추측 발주 방지를 위해 라이브 라운드트립 검증 전까지 미구현 유지.
 
     def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
         raise NotImplementedError("정정취소 VTTO1103U(order-rvsecncl) — phase2(라이브 검증 후).")

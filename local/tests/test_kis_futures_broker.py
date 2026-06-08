@@ -125,6 +125,21 @@ def test_json_decodes_utf8_korean():
     assert out["msg1"] == "모의투자 주문처리가 안되었습니다."
 
 
+def test_build_order_body_market_buy():
+    b = build_futures_order_body(cano="50188802", acnt_prdt_cd="03", symbol="A01606",
+                                 qty=1, price=0, side="buy", order_type="market")
+    assert b["ORD_DVSN_CD"] == "02"            # 시장가
+    assert b["UNIT_PRICE"] == "0"              # 시장가 가격 0
+    assert b["SLL_BUY_DVSN_CD"] == "02"
+
+
+def test_build_order_body_limit_default_unchanged():
+    # order_type 미지정 → 기존 지정가 동작(회귀).
+    b = build_futures_order_body(cano="5", acnt_prdt_cd="03", symbol="A01606",
+                                 qty=2, price=375.0, side="sell")
+    assert b["ORD_DVSN_CD"] == "01" and b["UNIT_PRICE"] == "375.0"
+
+
 def test_overseas_limit_buy_routes_to_overseas_endpoint(monkeypatch):
     """overseas_buy_limit은 해외 엔드포인트로 라우팅하고 올바른 바디를 전송해야 한다."""
     import localapp.kis_futures_broker as kfb
