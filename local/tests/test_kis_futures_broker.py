@@ -18,6 +18,7 @@ from localapp.kis_futures_broker import (
     _balance_rows,
     _json,
     build_balance_params,
+    build_futures_cancel_body,
     build_futures_order_body,
     parse_futures_balance,
 )
@@ -138,6 +139,19 @@ def test_build_order_body_limit_default_unchanged():
     b = build_futures_order_body(cano="5", acnt_prdt_cd="03", symbol="A01606",
                                  qty=2, price=375.0, side="sell")
     assert b["ORD_DVSN_CD"] == "01" and b["UNIT_PRICE"] == "375.0"
+
+
+def test_build_cancel_body():
+    b = build_futures_cancel_body(cano="50188802", acnt_prdt_cd="03",
+                                  order_no="0000005605", qty=1)
+    assert b["RVSE_CNCL_DVSN_CD"] == "02"      # 취소
+    assert b["ORGN_ODNO"] == "0000005605"
+    assert b["ORD_QTY"] == "1"                 # 모의 필수
+    assert b["UNIT_PRICE"] == "0"              # 취소 시 0
+    assert b["KRX_NMPR_CNDT_CD"] == "0"        # 취소 시 0
+    assert b["ORD_DVSN_CD"] == "01"            # 취소 시 01
+    assert b["RMN_QTY_YN"] == "Y"
+    assert b["ORD_PRCS_DVSN_CD"] == "02"
 
 
 def test_overseas_limit_buy_routes_to_overseas_endpoint(monkeypatch):

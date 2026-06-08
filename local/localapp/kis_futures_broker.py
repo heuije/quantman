@@ -42,6 +42,7 @@ _REAL = "https://openapi.koreainvestment.com:9443"
 _VTS = "https://openapivts.koreainvestment.com:29443"
 _ORDER_PATH = "/uapi/domestic-futureoption/v1/trading/order"
 _BALANCE_PATH = "/uapi/domestic-futureoption/v1/trading/inquire-balance"
+_CANCEL_PATH = "/uapi/domestic-futureoption/v1/trading/order-rvsecncl"
 _QUOTE_PATH = "/uapi/domestic-futureoption/v1/quotations/inquire-price"
 _QUOTE_TR = "FHMIF10000000"   # 선물옵션 시세(실전·모의 공통)
 
@@ -78,6 +79,28 @@ def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
         "NMPR_TYPE_CD": "",
         "KRX_NMPR_CNDT_CD": "",
         "ORD_DVSN_CD": "01" if _is_limit else "02",      # 01 지정가 / 02 시장가
+    }
+
+
+def build_futures_cancel_body(*, cano: str, acnt_prdt_cd: str, order_no, qty: int) -> dict:
+    """VTTO1103U/TTTO1103U 취소 바디(전량). 순수함수 — 단위검증 대상.
+
+    취소: RVSE_CNCL_DVSN_CD=02·UNIT_PRICE=0·KRX_NMPR_CNDT_CD=0·ORD_DVSN_CD=01·RMN_QTY_YN=Y.
+    ORD_QTY는 모의계좌 필수(전량이라도 입력).
+    """
+    return {
+        "ORD_PRCS_DVSN_CD": "02",
+        "CANO": cano,
+        "ACNT_PRDT_CD": acnt_prdt_cd,
+        "RVSE_CNCL_DVSN_CD": "02",          # 02: 취소
+        "ORGN_ODNO": str(order_no),
+        "ORD_QTY": str(int(qty)),
+        "UNIT_PRICE": "0",
+        "NMPR_TYPE_CD": "",
+        "KRX_NMPR_CNDT_CD": "0",
+        "RMN_QTY_YN": "Y",                  # 전량
+        "FUOP_ITEM_DVSN_CD": "",
+        "ORD_DVSN_CD": "01",
     }
 
 
@@ -362,7 +385,13 @@ class KisFuturesBroker:
     # 추측 발주 방지를 위해 라이브 라운드트립 검증 전까지 미구현 유지.
 
     def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
-        raise NotImplementedError("정정취소 VTTO1103U(order-rvsecncl) — phase2(라이브 검증 후).")
+        body = build_futures_cancel_body(cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd,
+                                         order_no=order_no, qty=qty)
+        tr = "VTTO1103U" if self.virtual else "TTTO1103U"
+        r = requests.post(f"{self.base}{_CANCEL_PATH}", headers=self._headers(tr),
+                          json=body, timeout=10)
+        r.raise_for_status()
+        return _json(r)
 
     def order_status(self, order_no: str) -> dict:
         raise NotImplementedError("주문체결내역 VTTO5201R(inquire-ccnl) — phase2(라이브 검증 후).")
