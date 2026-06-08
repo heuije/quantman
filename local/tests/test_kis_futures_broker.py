@@ -14,7 +14,10 @@ _LOCAL = Path(__file__).resolve().parent.parent   # tests → local
 if str(_LOCAL) not in sys.path:
     sys.path.insert(0, str(_LOCAL))
 
+import pytest
+
 from localapp.kis_futures_broker import (
+    KisFuturesBroker,
     _balance_rows,
     _json,
     build_balance_params,
@@ -23,6 +26,15 @@ from localapp.kis_futures_broker import (
     parse_ccnl_order_status,
     parse_futures_balance,
 )
+
+
+def test_reservation_orders_raise_for_futures():
+    """선물은 예약주문 미지원 — buy_resv_limit/sell_resv_moo는 명시 오류(__init__ 우회로 가드만 검증)."""
+    b = object.__new__(KisFuturesBroker)              # creds 불요 — 가드는 즉시 raise
+    with pytest.raises(NotImplementedError):
+        b.buy_resv_limit("A01606", 1, 350.0)
+    with pytest.raises(NotImplementedError):
+        b.sell_resv_moo("A01606", 1)
 
 
 def test_build_order_body_buy():

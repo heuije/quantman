@@ -34,18 +34,30 @@ _ORDER_WS_RETRIES = 2
 
 
 def make_broker() -> Broker:
-    """KisBroker 생성. KIS 자격증명이 없으면 명시적 RuntimeError (Phase 38.3).
+    """주식 브로커(KisBroker). 선물 자격증명이 있으면 선물 라우팅 어댑터로 감싼다 (M3).
 
-    이전엔 자격증명 없으면 조용히 MockBroker로 fallback해 사용자가 "모의투자
-    중"이라고 착각할 수 있는 신뢰 위험이 있었음. 이제는 페어링·자격증명을
-    먼저 마치도록 요구.
+    KIS 자격증명이 없으면 명시적 RuntimeError (Phase 38.3) — 이전엔 자격증명 없으면 조용히
+    MockBroker로 fallback해 사용자가 "모의투자 중"이라고 착각할 신뢰 위험이 있었음.
+
+    선물(국내/해외) 자격증명이 등록돼 있을 때만 BrokerRouter로 감싼다(심볼이 선물이면
+    KisFuturesBroker로 라우팅·계약코드 해석). **선물 자격증명이 없으면 KisBroker를 그대로
+    반환 — 주식 전용 환경은 완전 무변경.** (선물 전략 라이브 승격 게이트는 M1에서 개방.)
     """
     if load_kis() is None:
         raise RuntimeError(
             "KIS 자격증명이 등록되지 않았습니다. setup을 실행해 페어링·KIS 키를 "
             "먼저 등록하세요. (KIS 모의투자 가입은 무료이며 즉시 발급됩니다.)")
     from .kis_broker import KisBroker          # KIS 자격증명 필요 시에만 import
-    return KisBroker()
+    stock = KisBroker()
+
+    from .secrets_store import load_kis_futures, load_kis_overseas_futures
+    if not (load_kis_futures() or load_kis_overseas_futures()):
+        return stock                           # 선물 미등록 → 기존 KisBroker 그대로(무변경)
+
+    from .kis_futures_broker import KisFuturesBroker
+    from .futures_contracts import ContractResolver
+    from .broker_router import BrokerRouter
+    return BrokerRouter(stock, KisFuturesBroker(), resolve=ContractResolver().resolve)
 
 
 def _flush_pending() -> None:
