@@ -18,10 +18,13 @@ import quant_core as qc
 class BrokerRouter:
     """stock(KisBroker) + futures(KisFuturesBroker)를 심볼로 라우팅. Broker Protocol 충족(duck)."""
 
-    def __init__(self, stock, futures, *, resolve):
+    def __init__(self, stock, futures, *, resolve, resolve_expiry=None):
         self._stock = stock
         self._futures = futures
         self._resolve = resolve          # callable(symbol) -> 계약코드 | None
+        # M6: callable(symbol) -> (계약코드, 만기일date) — 진입 시 ledger 기록(만기 자동청산).
+        # 미주입(구 배선)이면 contract_expiry가 (None,None) → Trader는 만기 미기록.
+        self._resolve_expiry = resolve_expiry
 
     # ── 라우팅 헬퍼 ─────────────────────────────────────────────────────────────
     def _is_fut(self, symbol) -> bool:
@@ -74,6 +77,19 @@ class BrokerRouter:
         if symbol is not None and self._is_fut(symbol):
             return self._futures.order_status(order_no)
         return self._stock.order_status(order_no, symbol)
+
+    # ── 진입 시 계약코드·만기일 (M6 만기 자동청산 — Trader가 ledger에 기록) ──────────
+    def contract_expiry(self, symbol):
+        """선물 심볼 → (라이브 계약코드, 만기일date). 비선물·미주입·해석실패 → (None, None).
+
+        실패해도 (None,None)만 반환 — 진입 자체를 막지 않는다(거래는 _code 경로가 별도 검증).
+        만기 미해석이면 그 포지션의 만기 백스톱이 비활성될 뿐(Trader가 경고 표면화)."""
+        if self._resolve_expiry is None or not self._is_fut(symbol):
+            return None, None
+        try:
+            return self._resolve_expiry(symbol)
+        except Exception:                            # noqa: BLE001 — 해석 실패는 미기록(발주 비차단)
+            return None, None
 
     # ── 그 외(주식 전용·잔고·여력 등)는 stock으로 위임 ────────────────────────────
     def __getattr__(self, name):

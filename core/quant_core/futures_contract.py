@@ -19,9 +19,10 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date
 
 from .exec_defaults import instrument_spec, is_futures
+from .futures_expiry import last_trading_date
 
 # 데이터셋 한글 상품명 → CME globex root. 카탈로그(exec_defaults)의 6종 CME 선물.
 # root는 ffcode.mst 'CME 다음 컬럼'과 정확일치해야 하며, 승수로 교차검증한다(풀계약 확정).
@@ -39,14 +40,12 @@ _DOMESTIC = ("코스피200선물",)
 
 
 def _second_thursday(y: int, m: int) -> date:
-    """KOSPI200 선물 최종거래일 = 그 달 2번째 목요일."""
-    first = date(y, m, 1)
-    first_thu = first + timedelta(days=(3 - first.weekday()) % 7)   # 목요일=3
-    return first_thu + timedelta(days=7)
+    """KOSPI200 선물 최종거래일 = 그 달 2번째 목요일. (futures_expiry 단일출처 위임)"""
+    return last_trading_date("kospi200_2nd_thu", y, m)
 
 
-def parse_front_month_domestic(master_text: str, today: date) -> str | None:
-    """fo_idx_code.mst → KOSPI200 정규선물 최근월물 단축코드(만기≥today 중 최근). 없으면 None.
+def _front_domestic(master_text: str, today: date) -> tuple[date, str] | None:
+    """fo_idx_code.mst → KOSPI200 정규선물 근월물 (만기일, 단축코드). 없으면 None.
 
     정규선물('1' 시작)만 — 미니('B')·옵션('2', C/P) 제외. 만기=2번째 목요일. 순수함수.
     """
@@ -62,12 +61,18 @@ def parse_front_month_domestic(master_text: str, today: date) -> str | None:
         exp = _second_thursday(int(ym[:4]), int(ym[4:6]))
         if exp >= today and (best is None or exp < best[0]):
             best = (exp, code)
-    return best[1] if best else None
+    return best
 
 
-def parse_front_month_overseas(master_text: str, today: date,
-                               root: str, multiplier: float) -> str | None:
-    """ffcode.mst → 해당 root 풀계약의 근월물 globex 코드(만기月≥today 중 최소). 없으면 None.
+def parse_front_month_domestic(master_text: str, today: date) -> str | None:
+    """fo_idx_code.mst → KOSPI200 정규선물 최근월물 단축코드(만기≥today 중 최근). 없으면 None."""
+    r = _front_domestic(master_text, today)
+    return r[1] if r else None
+
+
+def _front_overseas(master_text: str, today: date,
+                    root: str, multiplier: float) -> tuple[int, str] | None:
+    """ffcode.mst → 해당 root 풀계약 근월물 (인도월 YYYYMM, globex 코드). 없으면 None.
 
     필터: exchange=CME ∧ root 정확일치(마이크로/미니/스프레드 root 자동 배제) ∧ 승수 교차검증
           ∧ code에 '-' 없음(스프레드 GCM26-N26 제외). name의 -YYYYMM으로 근월 선택. 순수함수.
@@ -97,7 +102,14 @@ def parse_front_month_overseas(master_text: str, today: date,
             continue
         if best is None or ym < best[0]:
             best = (ym, code)
-    return best[1] if best else None
+    return best
+
+
+def parse_front_month_overseas(master_text: str, today: date,
+                               root: str, multiplier: float) -> str | None:
+    """ffcode.mst → 해당 root 풀계약의 근월물 globex 코드(만기月≥today 중 최소). 없으면 None."""
+    r = _front_overseas(master_text, today, root, multiplier)
+    return r[1] if r else None
 
 
 def futures_market(symbol: str) -> str:
@@ -126,4 +138,39 @@ def resolve_contract(symbol: str, today: date, *,
             return None
         return parse_front_month_overseas(overseas_master, today, root,
                                           instrument_spec(symbol).multiplier)
+    return None                                        # 미등록 선물(방어)
+
+
+def front_contract(symbol: str, today: date, *,
+                   domestic_master: str | None = None,
+                   overseas_master: str | None = None) -> tuple[str, date] | None:
+    """선물 심볼 → (라이브 계약코드, 최종거래일). 진입 시 ledger 기록용(M6 만기 자동청산).
+
+    resolve_contract와 같은 근월물을 고르되 만기일까지 함께 반환한다(단일 해석). 만기일은
+    국내=2번째 목요일, 해외=인도월 + 상품 규칙(futures_expiry). 비선물·마스터 미수신·미해석
+    시 None → 호출부(Trader)는 만기 미기록(백스톱 비활성)으로 처리. 순수함수.
+    """
+    if not is_futures(symbol):
+        return None                                    # 주식: 만기 개념 없음
+    spec = instrument_spec(symbol)
+    if symbol in _DOMESTIC:
+        if not domestic_master:
+            return None
+        r = _front_domestic(domestic_master, today)
+        if r is None:
+            return None
+        exp, code = r
+        return code, exp
+    root = OVERSEAS_ROOTS.get(symbol)
+    if root is not None:
+        if not overseas_master:
+            return None
+        r = _front_overseas(overseas_master, today, root, spec.multiplier)
+        if r is None:
+            return None
+        ym, code = r
+        exp = last_trading_date(spec.expiry_rule, ym // 100, ym % 100)
+        if exp is None:
+            return None                                # 규칙 미등록(방어) — 만기 불명 시 미기록
+        return code, exp
     return None                                        # 미등록 선물(방어)
