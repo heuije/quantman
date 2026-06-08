@@ -78,9 +78,25 @@ def _policy(strat_def: dict) -> dict:
 
 
 def _currency_of(symbol: str) -> str:
-    """결제 통화 — 미국 종목이면 USD, 그 외 KRW. 사이징·틱·잔고 단위 결정."""
+    """결제 통화 — 미국 종목이면 USD, 그 외 KRW. 사이징·잔고 단위 결정.
+
+    ⚠ 선물엔 이 함수를 사이징 통화로 쓰지 않는다(해외선물을 USD로 보면 buying_power_usd
+    주식 API로 라우팅돼 깨짐). 지정가 호가단위는 _round_limit이 instrument_spec으로 분기."""
     from . import market_index
     return "USD" if market_index.is_us(symbol) else "KRW"
+
+
+def _round_limit(price: float, direction: str, symbol: str) -> float:
+    """지정가 호가단위 라운딩 — 선물은 계약 틱(instrument_spec.tick), 주식은 통화별 호가표(C3).
+
+    선물(KOSPI200 0.05·GC 0.10·NQ 0.25·BTC 5 등)은 계약 틱 그리드에 맞춰야 KIS가 수용한다 —
+    통화별 정수 라운딩은 BTC(틱5)처럼 그리드를 이탈하거나 0.05·0.25 틱 정밀도를 잃는다.
+    round_to_tick은 tick>0이면 통화 무관 틱 배수로 라운딩하므로 선물엔 tick만 넘긴다.
+    주식은 tick=0(기본) → 통화별 호가표 그대로 — **주식 동작 byte-identical**."""
+    spec = instrument_spec(symbol)
+    if spec.asset_class == "futures":
+        return qc.round_to_tick(price, direction=direction, tick=spec.tick)
+    return qc.round_to_tick(price, direction=direction, currency=_currency_of(symbol))
 
 
 def _market_group_safe(symbol: str) -> str:
@@ -625,9 +641,9 @@ class Trader:
         # catch-up과 배타적(_reserved_us는 정상 cycle US에서만 True).
         is_resv = self._is_reserved_us(symbol)
         if is_resv:
-            limit = qc.round_to_tick(
+            limit = _round_limit(
                 ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
-                direction="up", currency=_currency_of(symbol))
+                "up", symbol)
             limit = qc.apply_daily_price_limit(
                 limit, ref_price, "buy", _currency_of(symbol))
             try:
@@ -658,9 +674,7 @@ class Trader:
                 log.info("[catch-up] %s 시가 미제공 — prev_close 기반 발주 "
                           "(open=%.4f)", symbol, open_price)
             slip = qc.DEFAULT_EXECUTION["bt_slippage_bps"] / 10_000.0
-            limit = qc.round_to_tick(open_price * (1 + slip),
-                                       direction="up",
-                                       currency=_currency_of(symbol))
+            limit = _round_limit(open_price * (1 + slip), "up", symbol)
             limit = qc.apply_daily_price_limit(
                 limit, ref_price, "buy", _currency_of(symbol))
             try:
@@ -676,9 +690,9 @@ class Trader:
             log.info("[catch-up] %s 시장가→시초가 limit: open=%s limit=%s",
                       symbol, open_price, limit)
         elif use_limit:
-            limit = qc.round_to_tick(
+            limit = _round_limit(
                 ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
-                direction="up", currency=_currency_of(symbol))
+                "up", symbol)
             # 한국 ±30% 가격제한폭 사전 클램프 — KIS 서버 거부 누적 방지
             limit = qc.apply_daily_price_limit(
                 limit, ref_price, "buy", _currency_of(symbol))
@@ -736,8 +750,7 @@ class Trader:
                 return
             log.info("[us-resv] %s 예약매도 MOO", symbol)
         elif use_limit:
-            limit = qc.round_to_tick(ref_price * (1 - tol / 100.0),
-                                      direction="down", currency=_currency_of(symbol))
+            limit = _round_limit(ref_price * (1 - tol / 100.0), "down", symbol)
             # 한국 ±30% 가격제한폭 사전 클램프 — 하한가 cap
             limit = qc.apply_daily_price_limit(
                 limit, ref_price, "sell", _currency_of(symbol))
@@ -779,8 +792,8 @@ class Trader:
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "buy", qty, ref_price)
         if bool(policy["use_limit"]):
-            limit = qc.round_to_tick(ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
-                                     direction="up", currency=_currency_of(symbol))
+            limit = _round_limit(ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
+                                 "up", symbol)
             limit = qc.apply_daily_price_limit(limit, ref_price, "buy", _currency_of(symbol))
             try:
                 r = self.broker.buy_limit(symbol, qty, limit)
@@ -817,8 +830,8 @@ class Trader:
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell", qty, ref_price)
         if bool(policy["use_limit"]):
-            limit = qc.round_to_tick(ref_price * (1 - policy["sell_tolerance_pct"] / 100.0),
-                                     direction="down", currency=_currency_of(symbol))
+            limit = _round_limit(ref_price * (1 - policy["sell_tolerance_pct"] / 100.0),
+                                 "down", symbol)
             limit = qc.apply_daily_price_limit(limit, ref_price, "sell", _currency_of(symbol))
             try:
                 r = self.broker.sell_limit(symbol, qty, limit)
