@@ -123,3 +123,38 @@ def test_summary_is_readable_prose():
     assert "리밸런싱" in s                       # scheduled 반영
     assert "0.03%" in s                          # 비용 기본가정이 산문에도 명시
     assert "10,000,000원" in s                   # 자본 기본값
+
+
+# ── 리서치 질의 서술 — "백테스트" 오서술 회귀 차단 (P6 시각화 정합) ──────────────
+
+def _summary(ir_dict):
+    return explain_ir(StrategyIR.model_validate(ir_dict))["summary"]
+
+
+def test_select_narrative_not_backtest():
+    """select는 스크리닝 — '백테스트합니다'로 오서술하면 안 된다(explain_ir 동사 분기)."""
+    s = _summary({"query": "select",
+                  "universe": {"kind": "all"},
+                  "signal": {"op": "data", "params": {"ref": "__SELF__.pb_ratio"}},
+                  "select": {"top_n": 3, "descending": False}})
+    assert "백테스트합니다" not in s and "스크리닝" in s
+
+
+def test_describe_report_narrative_not_backtest():
+    s = _summary({"query": "describe", "universe": {"kind": "single", "symbols": ["005930"]},
+                  "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}}})
+    assert "백테스트합니다" not in s and "리포트" in s
+
+
+def test_describe_portfolio_narrative_not_backtest():
+    s = _summary({"query": "describe", "universe": {"kind": "portfolio", "symbols": ["005930", "000660"]},
+                  "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}}})
+    assert "백테스트합니다" not in s and "진단" in s
+
+
+def test_simulate_narrative_still_backtest():
+    """simulate는 기존 백테스트 서술 유지(회귀 가드)."""
+    s = explain_ir(StrategyIR(signal=data("momentum_12_1m"), universe=Universe(kind="all"),
+                              position=PositionSpec(entry=Entry(mode="scheduled", top_n=5)),
+                              simulation=SimSpec()))["summary"]
+    assert "백테스트합니다" in s

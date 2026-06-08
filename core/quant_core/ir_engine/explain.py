@@ -336,8 +336,76 @@ def _analysis(ir: StrategyIR) -> dict | None:
     return _bucket("analysis", "⑨ 분석 차원 (결과 펼침)", "단일 결과인가, 쪼개 보나?", items)
 
 
+def _research_narrative(ir: StrategyIR) -> str | None:
+    """리서치 질의(select/describe/relate/extremize)는 백테스트가 아니라 분석 — 동사별 서술.
+
+    simulate(extremize 제외)면 None → 기존 백테스트 서술로 폴백. explain_ir이 select·리포트·
+    진단·회귀를 "…일봉 백테스트합니다"로 오서술하던 문제(프로덕션 확인)를 동사별로 교정한다.
+    """
+    u, st = ir.universe, ir.study
+
+    def _uni() -> str:
+        if u.kind == "single" and u.symbols:
+            return u.symbols[0]
+        if u.kind in ("list", "portfolio") and u.symbols:
+            head = ", ".join(u.symbols[:4]) + ("…" if len(u.symbols) > 4 else "")
+            return f"{len(u.symbols)}종목({head})"
+        return "전체 종목"
+
+    def _cols(node) -> str:
+        c = sorted(referenced_columns(node)) if node is not None else []
+        return ", ".join(c) if c else "지정 신호"
+
+    if ir.query == "select":
+        sel = ir.select
+        n = (f"상위 {sel.top_n}종목" if sel and sel.top_n
+             else f"상위 {_pct(sel.top_pct)}" if sel and sel.top_pct else "상위 종목")
+        asof = sel.as_of if (sel and sel.as_of and sel.as_of != "latest") else "현 시점"
+        order = "낮은" if (sel and not sel.descending) else "높은"
+        return (f"{_uni()} 중 {_cols(ir.signal)} 점수가 {order} 순으로 {asof} 스냅샷에서 {n}을 "
+                f"선별합니다 — 스크리닝(현 시점 종목 리스트)이며 백테스트 손익은 산출하지 않습니다.")
+
+    if ir.query == "describe":
+        if u.kind == "single":
+            sym = u.symbols[0] if u.symbols else "이 종목"
+            return (f"{sym} 한 종목의 가격·기간수익·리스크(변동성·낙폭)·밸류·섹터 현황을 요약합니다 "
+                    f"— 손익 백테스트가 아니라 현황 리포트입니다.")
+        if u.kind == "portfolio":
+            return (f"보유 {len(u.symbols)}종목의 집중도(HHI)·섹터 노출·가중 밸류·포트 변동성을 "
+                    f"진단합니다 — 손익 백테스트가 아니라 포트폴리오 진단입니다.")
+        return (f"{_uni()}의 {_cols(st.target_node)} 신호값 분포를 (선택 시 국면별로) 살펴봅니다 "
+                f"— 손익이 아니라 신호값 자체의 분포입니다.")
+
+    if ir.query == "relate":
+        if st.event is not None:
+            return (f"{_uni()}에서 이벤트 발생 후 경과일별 forward 수익(평균·최대낙폭/상승)을 "
+                    f"봅니다 — 분석 전용(미래참조).")
+        if st.relation_kind == "regression":
+            fn = []
+            for fac in (st.factors or []):
+                c = sorted(referenced_columns(fac))
+                fn.append(c[0] if c else "팩터")
+            fl = ", ".join(fn) if fn else "설명변수"
+            return (f"{_uni()}에서 {fl} 다중 팩터의 forward 수익 횡단 회귀(Fama-MacBeth 계수·t값·"
+                    f"신뢰구간)로 예측력을 봅니다 — 분석 전용(미래참조), 손익 아님.")
+        return (f"{_uni()}에서 {_cols(st.target_node)}의 forward 수익 횡단 예측력(IC)을 봅니다 "
+                f"— 분석 전용(미래참조).")
+
+    if st.reduction == "extremize":          # simulate + 최적화
+        obj = ir.study.objective
+        metric = obj.metric if obj else "sharpe"
+        direction = "최대" if (not obj or obj.direction == "max") else "최소"
+        axis_word = "파라미터 격자" if st.axis == "parameter" else "종목"
+        return (f"{axis_word}를 바꿔가며 {metric}를 {direction}화하는 최적 설정을 찾고, "
+                f"시간폴드 OOS 일관성으로 과최적화 위험을 점검합니다.")
+    return None
+
+
 def _narrative(ir: StrategyIR) -> str:
     """전략 전체를 흐르는 한국어 한 문단으로 묘사 — 직관적 요약(MECE 항목의 산문 버전)."""
+    research = _research_narrative(ir)
+    if research is not None:
+        return research
     u, pos, sim = ir.universe, ir.position, ir.simulation
     e, x, s = pos.entry, pos.exit, pos.sizing
     st = signal_out_type(ir.signal)

@@ -1,9 +1,12 @@
 import { useState } from "react";
 import {
   Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, LineChart,
-  ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import type { IrDistribution, IrEventStat, IrICStat, IrPartition, IrSweepBucket } from "../types";
+import type {
+  IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
+  IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrSweepBucket,
+} from "../types";
 
 /* recharts SVG는 CSS var를 못 받아 토큰값(DESIGN.md)을 직접 인라인한다(EquityChart와 동일 규약).
    변경 시 web/src/index.css :root와 동기화. up=상승/이익(빨강) · down=하락/손실(파랑, 한국 관례). */
@@ -15,6 +18,29 @@ const C = {
 const num = (v: unknown): number => Number(String(v).split("=").pop());
 const f2 = (v: number | null | undefined) =>
   v == null || Number.isNaN(v) ? "—" : (Number.isInteger(v) ? String(v) : v.toFixed(2));
+
+// ── 공통 헬퍼 (신규 동사 차트 공유) ────────────────────────────────────────────
+// 범주형 섹터 팔레트 — 색맹 안전 톤(파랑/주황/청록/보라/올리브 계열 회피 충돌).
+// 같은 섹터명은 항상 같은 색(모든 차트 공유)이도록 이름 해시로 고정 인덱싱.
+const SECTOR_PALETTE = [
+  "#4e79a7", "#f28e2b", "#59a14f", "#b07aa1", "#76b7b2",
+  "#edc948", "#e15759", "#9c755f", "#bab0ac", "#ff9da7",
+];
+export function sectorColor(name: string): string {
+  const s = name || "기타";
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return SECTOR_PALETTE[Math.abs(h) % SECTOR_PALETTE.length];
+}
+
+// 영문 지표키 → 한글 라벨. 미정의 키는 원본 그대로 사용.
+export const METRIC_LABEL: Record<string, string> = {
+  pb_ratio: "PBR", trailing_pe: "PER", ev_ebitda: "EV/EBITDA",
+  sharpe: "샤프", cagr: "CAGR", cum_return: "누적수익", mdd: "MDD",
+  sortino: "소르티노", market_cap: "시가총액", vol_annualized: "연변동성",
+  max_drawdown: "최대낙폭",
+};
+const mlabel = (k: string): string => METRIC_LABEL[k] ?? k;
 
 function Box({ title, sub, children }:
   { title: string; sub?: string; children: React.ReactNode }) {
@@ -251,6 +277,501 @@ export function EventStudyChart({ windows, overall }: {
             dot={{ r: 2 }} isAnimationActive={false} />
         </ComposedChart>
       </ResponsiveContainer>
+    </Box>
+  );
+}
+
+// ════════ 신규 동사 결과 컴포넌트 (select·describe·relate-regression·extremize) ════════
+// 모두 위 C 토큰·Box·f2 규약을 미러. 결측 None=f2로 "—". 엔진이 준 메타(eligible/
+// coverage/CI/t/oos_guard)를 버리지 않고 표면화(visualization_spec §2 정직성).
+
+// 작은 배지/칩 — 리스크·밸류·PIT 라벨용.
+function Badge({ children, tone = "muted" }:
+  { children: React.ReactNode; tone?: "muted" | "up" | "down" | "accent" | "warn" }) {
+  const map = {
+    muted: { bg: "#f4f2ee", fg: C.muted, bd: C.grid },
+    up: { bg: C.upSoft, fg: C.up, bd: C.up },
+    down: { bg: C.downSoft, fg: C.down, bd: C.down },
+    accent: { bg: "#f7ece5", fg: C.strong, bd: C.accent },
+    warn: { bg: "#fff4e5", fg: "#b45309", bd: "#f59e0b" },
+  }[tone];
+  return (
+    <span style={{
+      display: "inline-block", fontSize: 11, padding: "1px 7px", borderRadius: 999,
+      background: map.bg, color: map.fg, border: `1px solid ${map.bd}`, whiteSpace: "nowrap",
+    }}>{children}</span>
+  );
+}
+
+// % 포맷 — 결측 "—", 그 외 소수 2자리 + "%". 부호색은 호출측이 결정.
+const pct = (v: number | null | undefined) =>
+  v == null || Number.isNaN(v) ? "—" : `${v.toFixed(2)}%`;
+
+const tdStyle: React.CSSProperties = {
+  padding: "5px 8px", borderBottom: `1px solid ${C.grid}`, fontSize: 12,
+  color: C.text, fontVariantNumeric: "tabular-nums",
+};
+const thStyle: React.CSSProperties = {
+  padding: "5px 8px", borderBottom: `2px solid ${C.grid}`, fontSize: 11,
+  color: C.muted, fontWeight: 600, textAlign: "left", whiteSpace: "nowrap",
+};
+
+// 작은 KPI 카드 래퍼.
+function Card({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{
+      border: `1px solid ${C.grid}`, borderRadius: 10, padding: "10px 12px",
+      background: "#fff", minWidth: 0,
+    }}>
+      <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, marginBottom: 6 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+// 신규 동사용 커스텀 툴팁(모듈 스코프 — 렌더마다 재생성 방지). 다필드라 tip()로는 표현 불가.
+const tipBox: React.CSSProperties = {
+  background: "#fff", border: `1px solid ${C.grid}`, borderRadius: 8,
+  padding: "8px 10px", fontSize: 12, color: C.muted,
+};
+function RankedTip({ active, payload }: {
+  active?: boolean;
+  payload?: { payload: { symbol: string; score: number | null; sector: string } }[];
+}) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div style={tipBox}>
+      <div style={{ fontWeight: 600, color: C.text }}>{d.symbol}</div>
+      <div>섹터 {d.sector || "—"}</div>
+      <div>점수 {f2(d.score)}</div>
+    </div>
+  );
+}
+function SectorPieTip({ active, payload }: {
+  active?: boolean; payload?: { payload: { name: string; value: number } }[];
+}) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div style={{ ...tipBox, padding: "6px 9px" }}>
+      <span style={{ color: C.text, fontWeight: 600 }}>{d.name}</span> {pct(d.value * 100)}
+    </div>
+  );
+}
+function RegressionTip({ active, payload }: {
+  active?: boolean;
+  payload?: { payload: { name: string; coef: number; ci_low: number; ci_high: number;
+                         t_stat: number | null; t_inf: boolean } }[];
+}) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div style={tipBox}>
+      <div style={{ fontWeight: 600, color: C.text }}>{d.name}</div>
+      <div>계수 {f2(d.coef)}</div>
+      <div>95% CI [{f2(d.ci_low)}, {f2(d.ci_high)}]</div>
+      <div>t {d.t_inf ? "유의(∞)" : f2(d.t_stat)}</div>
+    </div>
+  );
+}
+
+// ── RankedListChart (select) ──────────────────────────────────────────────────
+export function RankedListChart({ results, as_of, universe_size, eligible_size }: {
+  results: { symbol: string; score: number | null; sector: string;
+             metrics: Record<string, number | null> }[];
+  as_of?: string; universe_size?: number; eligible_size?: number;
+}) {
+  const rows = results ?? [];
+  if (!rows.length) {
+    return <Box title="랭킹 선별" sub="조건을 만족하는 종목이 없습니다."><div /></Box>;
+  }
+  // metric 컬럼 합집합(순서 보존) — 표 헤더.
+  const metricKeys: string[] = [];
+  for (const r of rows) {
+    for (const k of Object.keys(r.metrics ?? {})) if (!metricKeys.includes(k)) metricKeys.push(k);
+  }
+  const data = rows.map((r) => ({ symbol: r.symbol, score: r.score ?? null, sector: r.sector }));
+  const cap = `${as_of ?? "—"} 기준 · 전체 ${universe_size ?? "—"} 중 자격 ${eligible_size ?? "—"}`
+    + ` → 상위 ${rows.length}`;
+  return (
+    <Box title="랭킹 선별" sub={cap}>
+      <ResponsiveContainer width="100%" height={Math.max(160, rows.length * 30 + 30)}>
+        <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
+          <CartesianGrid stroke={C.grid} horizontal={false} />
+          <XAxis type="number" tick={{ fontSize: 11 }} />
+          <YAxis type="category" dataKey="symbol" tick={{ fontSize: 11 }} width={88}
+            interval={0} />
+          <Tooltip content={<RankedTip />} cursor={{ fill: C.accent + "14" }} />
+          <Bar dataKey="score" isAnimationActive={false}>
+            {data.map((d, i) => <Cell key={i} fill={sectorColor(d.sector)} />)}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+      <div style={{ overflowX: "auto", marginTop: 8 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead><tr>
+            <th style={thStyle}>종목</th><th style={thStyle}>섹터</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>점수</th>
+            {metricKeys.map((k) => (
+              <th key={k} style={{ ...thStyle, textAlign: "right" }}>{mlabel(k)}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td style={tdStyle}>{r.symbol}</td>
+                <td style={tdStyle}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: 2,
+                      background: sectorColor(r.sector), display: "inline-block" }} />
+                    {r.sector || "—"}
+                  </span>
+                </td>
+                <td style={{ ...tdStyle, textAlign: "right" }}>{f2(r.score)}</td>
+                {metricKeys.map((k) => (
+                  <td key={k} style={{ ...tdStyle, textAlign: "right" }}>{f2(r.metrics?.[k])}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Box>
+  );
+}
+
+// ── ReportCards (describe single) ─────────────────────────────────────────────
+export function ReportCards({ r }: { r: IrSingleReport }) {
+  const price = r.price ?? ({} as IrSingleReport["price"]);
+  const risk = r.risk ?? ({} as IrSingleReport["risk"]);
+  const fund = r.fundamentals ?? ({} as IrSingleReport["fundamentals"]);
+  const longTermNA = r.data_points != null && r.data_points < 252;   // 장기수익 None 자연 표기
+
+  // 기간수익 막대 — 1/3/6/12m, 부호색 up/down.
+  const retOrder: ("1m" | "3m" | "6m" | "12m")[] = ["1m", "3m", "6m", "12m"];
+  const retData = retOrder.map((k) => ({
+    label: k, value: price.returns?.[k] ?? null,
+  }));
+
+  // 52주 레인지바 — low~high 위 last 마커.
+  const lo = price.low_52w, hi = price.high_52w, last = price.last;
+  const range = hi != null && lo != null && hi > lo ? hi - lo : null;
+  const lastPos = range != null && last != null
+    ? Math.min(100, Math.max(0, ((last - lo!) / range) * 100)) : null;
+
+  const RetTip = tip([["수익", "value"]]);
+  const grid: React.CSSProperties = {
+    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10,
+  };
+  return (
+    <Box title={`${r.symbol} · ${r.sector || "—"} · ${r.as_of ?? "—"}`}
+      sub={`데이터 ${r.data_points ?? "—"}일${longTermNA ? " · 252일 미만 — 장기수익 일부 미표기" : ""}`}>
+      <div style={grid}>
+        {/* ① 가격 + 52주 레인지 */}
+        <Card title="가격 · 52주 위치">
+          <div style={{ fontSize: 20, fontWeight: 700, color: C.text,
+            fontVariantNumeric: "tabular-nums" }}>{f2(last)}</div>
+          <div style={{ margin: "8px 0 4px" }}>
+            <div style={{ position: "relative", height: 8, borderRadius: 999, background: C.grid }}>
+              {lastPos != null && (
+                <div style={{ position: "absolute", left: `calc(${lastPos}% - 4px)`, top: -2,
+                  width: 8, height: 12, borderRadius: 2, background: C.accent }} />
+              )}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11,
+              color: C.muted, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
+              <span>저 {f2(lo)}</span><span>고 {f2(hi)}</span>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: C.muted }}>
+            52주 고점 대비 <span style={{ color: (price.pct_from_52w_high ?? 0) < 0 ? C.down : C.up }}>
+              {pct(price.pct_from_52w_high)}</span>
+          </div>
+        </Card>
+
+        {/* ② 기간 수익 */}
+        <Card title="기간 수익 (1·3·6·12개월)">
+          <ResponsiveContainer width="100%" height={120}>
+            <BarChart data={retData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+              <CartesianGrid stroke={C.grid} vertical={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 10 }} width={36} />
+              <Tooltip content={<RetTip />} cursor={{ fill: C.accent + "14" }} />
+              <ReferenceLine y={0} stroke={C.muted} />
+              <Bar dataKey="value" isAnimationActive={false}>
+                {retData.map((d, i) => (
+                  <Cell key={i} fill={(d.value ?? 0) >= 0 ? C.up : C.down} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+
+        {/* ③ 리스크 */}
+        <Card title="리스크">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <Badge tone="muted">연변동성 {pct(risk.vol_annualized)}</Badge>
+            <Badge tone="down">MDD {pct(risk.max_drawdown)}</Badge>
+          </div>
+        </Card>
+
+        {/* ④ 밸류 — null이면 "데이터 없음" */}
+        <Card title="밸류에이션">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {(["pb_ratio", "trailing_pe", "ev_ebitda"] as const).map((k) => (
+              fund[k] == null
+                ? <Badge key={k} tone="muted">{mlabel(k)} 데이터 없음</Badge>
+                : <Badge key={k} tone="accent">{mlabel(k)} {f2(fund[k])}</Badge>
+            ))}
+          </div>
+        </Card>
+      </div>
+    </Box>
+  );
+}
+
+// ── DiagnosisPanel (describe portfolio) ───────────────────────────────────────
+export function DiagnosisPanel({ r }: { r: IrPortfolioDiagnosis }) {
+  const holdings = r.holdings ?? [];
+  const conc = r.concentration ?? ({} as IrPortfolioDiagnosis["concentration"]);
+  const risk = r.risk ?? ({} as IrPortfolioDiagnosis["risk"]);
+  const val = r.valuation ?? ({} as IrPortfolioDiagnosis["valuation"]);
+  const cov = r.coverage ?? ({} as IrPortfolioDiagnosis["coverage"]);
+  const exposure = r.sector_exposure ?? {};
+
+  const pieData = Object.entries(exposure)
+    .map(([sector, weight]) => ({ name: sector, value: weight }))
+    .sort((a, b) => b.value - a.value);
+  const concentrated = conc.hhi != null && conc.hhi > 0.25;
+  const valCovNote = cov.with_fundamentals != null && r.n_holdings != null
+    && cov.with_fundamentals < r.n_holdings;
+
+  const grid: React.CSSProperties = {
+    display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10,
+  };
+  return (
+    <Box title={`포트폴리오 진단 · ${r.as_of ?? "—"}`}
+      sub={`보유 ${r.n_holdings ?? holdings.length}종목${valCovNote
+        ? ` · 가중밸류 ${cov.with_fundamentals}/${r.n_holdings} 종목 기준` : ""}`}>
+      <div style={grid}>
+        {/* 섹터 노출 도넛 */}
+        <Card title="섹터 노출">
+          {pieData.length ? (
+            <ResponsiveContainer width="100%" height={180}>
+              <PieChart>
+                <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%"
+                  innerRadius={42} outerRadius={70} isAnimationActive={false}>
+                  {pieData.map((d, i) => <Cell key={i} fill={sectorColor(d.name)} />)}
+                </Pie>
+                <Tooltip content={<SectorPieTip />} />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : <div style={{ fontSize: 12, color: C.muted }}>섹터 정보 없음</div>}
+        </Card>
+
+        {/* 집중도 */}
+        <Card title="집중도">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <Badge tone={concentrated ? "warn" : "muted"}>HHI {f2(conc.hhi)}</Badge>
+            <Badge tone="muted">유효종목수 {f2(conc.effective_n)}</Badge>
+            <Badge tone="muted">최대비중 {pct(conc.top_weight != null ? conc.top_weight * 100 : null)}</Badge>
+            <Badge tone="muted">상위3 {pct(conc.top3_weight != null ? conc.top3_weight * 100 : null)}</Badge>
+          </div>
+          {concentrated && (
+            <div style={{ fontSize: 11, color: "#b45309", marginTop: 6 }}>
+              HHI &gt; 0.25 — 집중된 포트폴리오</div>
+          )}
+        </Card>
+
+        {/* 리스크 */}
+        <Card title="리스크">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <Badge tone="muted">연변동성 {pct(risk.portfolio_vol_annualized)}</Badge>
+            <Badge tone="muted">평균상관 {f2(risk.avg_pairwise_corr)}</Badge>
+          </div>
+        </Card>
+
+        {/* 가중 밸류 */}
+        <Card title="가중 밸류에이션">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <Badge tone={val.weighted_pb == null ? "muted" : "accent"}>
+              가중 PBR {f2(val.weighted_pb)}</Badge>
+            <Badge tone={val.weighted_pe == null ? "muted" : "accent"}>
+              가중 PER {f2(val.weighted_pe)}</Badge>
+          </div>
+        </Card>
+      </div>
+
+      {/* holdings 테이블 */}
+      <div style={{ overflowX: "auto", marginTop: 10 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead><tr>
+            <th style={thStyle}>종목</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>비중</th>
+            <th style={thStyle}>섹터</th>
+          </tr></thead>
+          <tbody>
+            {holdings.map((h, i) => (
+              <tr key={i}>
+                <td style={tdStyle}>{h.symbol}</td>
+                <td style={{ ...tdStyle, textAlign: "right" }}>
+                  {pct(h.weight != null ? h.weight * 100 : null)}</td>
+                <td style={tdStyle}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: 2,
+                      background: sectorColor(h.sector), display: "inline-block" }} />
+                    {h.sector || "—"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Box>
+  );
+}
+
+// ── RegressionChart (relate regression) ───────────────────────────────────────
+export function RegressionChart({ r }: { r: IrRegressionResult }) {
+  const windows = r.windows ?? [];
+  const [wi, setWi] = useState(0);
+  const w = windows[wi] ?? windows[0];
+  const wd = w != null ? r.by_window?.[w] : undefined;
+  const factors = wd?.factors ?? null;
+
+  const data = (factors ?? []).map((f) => ({
+    name: f.name, coef: f.coef, ci_low: f.ci_low, ci_high: f.ci_high,
+    t_stat: f.t_stat, t_inf: f.t_inf,
+  }));
+  return (
+    <Box title="다중팩터 회귀 (Fama-MacBeth)"
+      sub="분석 전용(forward 미래참조) · 계수가 0에서 멀고 CI가 0을 비포함하면 예측 기여">
+      {windows.length > 1 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+          {windows.map((ww, i) => (
+            <button key={ww} type="button" onClick={() => setWi(i)}
+              style={{
+                fontSize: 12, padding: "3px 9px", borderRadius: 999, cursor: "pointer",
+                border: `1px solid ${i === wi ? C.accent : C.grid}`,
+                background: i === wi ? C.accent : "#fff", color: i === wi ? "#fff" : C.muted,
+              }}>{ww}일</button>
+          ))}
+        </div>
+      )}
+      {factors == null ? (
+        <div style={{ fontSize: 12, color: C.muted }}>
+          {wd?.note ?? "이 윈도우는 회귀 결과가 없습니다(기간 부족)."}</div>
+      ) : (
+        <>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
+            {w}일 forward · 기간 {wd?.n_periods ?? "—"}</div>
+          <ResponsiveContainer width="100%" height={Math.max(160, data.length * 34 + 30)}>
+            <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
+              <CartesianGrid stroke={C.grid} horizontal={false} />
+              <XAxis type="number" tick={{ fontSize: 11 }} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={96} interval={0} />
+              <Tooltip content={<RegressionTip />} cursor={{ fill: C.accent + "14" }} />
+              <ReferenceLine x={0} stroke={C.text} />
+              <Bar dataKey="coef" isAnimationActive={false}>
+                {data.map((d, i) => (
+                  <Cell key={i} fill={(d.coef ?? 0) >= 0 ? C.up : C.down} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+            {data.map((d) => `${d.name}: β=${f2(d.coef)} t=${d.t_inf ? "∞" : f2(d.t_stat)}`)
+              .join(" · ")}
+          </div>
+        </>
+      )}
+    </Box>
+  );
+}
+
+// ── ExtremizeChart (extremize) ────────────────────────────────────────────────
+export function ExtremizeChart({ r }: { r: IrExtremizeResult }) {
+  const ranked = r.ranked ?? [];
+  const obj = r.objective ?? ({} as IrExtremizeResult["objective"]);
+  const best = r.best ?? ({} as IrExtremizeResult["best"]);
+  const data = ranked.map((d) => ({ label: d.label, value: d.metric_value ?? null,
+    best: d.label === best.label }));
+
+  const dirLabel = obj.direction === "min" ? "최소" : obj.direction === "max" ? "최대" : obj.direction;
+  const Tip = tip([[mlabel(obj.metric ?? "값"), "value"]]);
+
+  // OOS 가드 — buckets(폴드별) 일관성. 부호 반전·큰 분산이면 경고.
+  const guard = r.oos_guard;
+  const buckets = guard && !("error" in guard) ? (guard.buckets as
+    Record<string, unknown> | undefined) : undefined;
+  const bucketRows = buckets
+    ? Object.entries(buckets).map(([k, v]) => {
+        const val = typeof v === "number" ? v
+          : (v && typeof v === "object" && "metric_value" in v
+              ? (v as { metric_value: number | null }).metric_value : null);
+        return { label: k, value: val as number | null };
+      })
+    : [];
+  const signs = bucketRows.map((b) => b.value).filter((v): v is number => v != null);
+  const flipped = signs.length > 1 && signs.some((v) => v >= 0) && signs.some((v) => v < 0);
+
+  return (
+    <Box title="최적해 탐색"
+      sub={`목적: ${mlabel(obj.metric ?? "")} ${dirLabel ?? ""}`
+        + (obj.oos_guard ? " · OOS 과최적화 가드" : "")}>
+      {data.length ? (
+        <ResponsiveContainer width="100%" height={Math.max(160, data.length * 30 + 30)}>
+          <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
+            <CartesianGrid stroke={C.grid} horizontal={false} />
+            <XAxis type="number" tick={{ fontSize: 11 }} />
+            <YAxis type="category" dataKey="label" tick={{ fontSize: 11 }} width={110} interval={0} />
+            <Tooltip content={<Tip />} cursor={{ fill: C.accent + "14" }} />
+            <ReferenceLine x={0} stroke={C.muted} strokeDasharray="3 3" />
+            <Bar dataKey="value" isAnimationActive={false}>
+              {data.map((d, i) => (
+                <Cell key={i} fill={d.best ? C.accent : C.muted}
+                  stroke={d.best ? C.strong : "none"} strokeWidth={d.best ? 1.5 : 0} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      ) : <div style={{ fontSize: 12, color: C.muted }}>탐색 결과가 없습니다.</div>}
+
+      <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
+        최적: <span style={{ color: C.strong, fontWeight: 600 }}>{best.label ?? "—"}</span>
+        {" "}({mlabel(obj.metric ?? "")} {f2(best.metric_value)})
+      </div>
+
+      {/* OOS 폴드 일관성 */}
+      {guard && "error" in guard && guard.error ? (
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+          OOS 가드: {guard.error}</div>
+      ) : bucketRows.length ? (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
+            OOS 폴드 일관성{flipped
+              ? <span style={{ color: "#b45309", fontWeight: 600 }}> · 부호 반전 — 과최적화 주의</span>
+              : null}
+          </div>
+          <table style={{ borderCollapse: "collapse" }}>
+            <thead><tr>
+              <th style={thStyle}>폴드</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>{mlabel(obj.metric ?? "값")}</th>
+            </tr></thead>
+            <tbody>
+              {bucketRows.map((b, i) => (
+                <tr key={i}>
+                  <td style={tdStyle}>{b.label}</td>
+                  <td style={{ ...tdStyle, textAlign: "right",
+                    color: b.value != null && b.value < 0 ? C.down : C.text }}>{f2(b.value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </Box>
   );
 }
