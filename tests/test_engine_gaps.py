@@ -79,32 +79,39 @@ def test_budget_sizing_warns_in_scheduled():
     assert not any(i.rule == "S-pair" and i.is_error for i in iss)
 
 
-# ── A5: 기간분할 ──────────────────────────────────────────────────────────────
+# ── A5: 기간분할 (study.axis=time_fold) ───────────────────────────────────────
 
-def _factor_spec(**sim):
-    return {"signal": {"op": "data", "params": {"ref": "momentum_12_1m"}},
+def _factor_spec(study=None):
+    spec = {"signal": {"op": "data", "params": {"ref": "momentum_12_1m"}},
             "universe": {"kind": "all"},
             "position": {"entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 2}},
-            "simulation": {"initial_capital": 1e7, **sim}}
+            "simulation": {"initial_capital": 1e7}}
+    if study is not None:
+        spec["study"] = study
+    return spec
 
 
 def test_period_split_walk_forward():
-    res = strategy_from_spec(_factor_spec(period_split="walk_forward"), _multi())
+    # walk_forward = time_fold 4분할 일관성(folds=4).
+    res = strategy_from_spec(
+        _factor_spec({"axis": "time_fold", "reduction": "consistency", "folds": 4}), _multi())
     assert res["success"] and res["axis"] == "period_split"
     assert len(res["buckets"]) >= 2
     assert "consistency" in res
 
 
 def test_period_split_oos_two_folds():
-    res = strategy_from_spec(_factor_spec(period_split="oos"), _multi())
+    # oos = time_fold 2분할(인샘플/아웃샘플, folds=2).
+    res = strategy_from_spec(
+        _factor_spec({"axis": "time_fold", "reduction": "consistency", "folds": 2}), _multi())
     assert res["success"]
     assert set(res["buckets"].keys()) == {"인샘플", "아웃샘플"}
 
 
 def test_period_split_vs_sweep_conflict():
-    spec = _factor_spec(period_split="oos")
-    spec["sweep"] = {"axis": "parameter",
-                     "param_grid": [{"path": "position.entry.top_n", "values": [1, 2]}]}
+    # 기간분할(time_fold) × 펼침(param_grid) 동시 사용 금지 — study 평면에 둘 다 채우면 S-split 거부.
+    spec = _factor_spec({"axis": "time_fold", "reduction": "consistency", "folds": 2,
+                         "param_grid": [{"path": "position.entry.top_n", "values": [1, 2]}]})
     res = strategy_from_spec(spec, _multi())
     assert not res["success"]
     assert any(i["rule"] == "S-split" for i in res["issues"])

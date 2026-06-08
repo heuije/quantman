@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 
 from quant_core.blocks import Node, const, data  # noqa: E402
 from quant_core.ir_engine import (  # noqa: E402
-    Entry, Exit, Overlays, PositionSpec, Sizing, SimSpec, StrategyIR, SweepSpec, Universe,
-    run_backtest_ir, run_strategy_ir, run_sweep,
+    Entry, Exit, Overlays, PositionSpec, Sizing, SimSpec, StrategyIR, Study, Universe,
+    run_backtest_ir, run_query, run_strategy_ir, run_sweep,
 )
 # 선택·사이징 단위 테스트는 통합 엔진(engine.py)으로 이전 — test_engine_unified.py 참조.
 
@@ -119,19 +119,19 @@ def test_engine_rejects_unsupported_root_boundaries():
     # 펼침 분할 라벨에 score → 거부 (label 요구), label이면 통과
     r = run_sweep(StrategyIR(
         signal=score, universe=Universe(kind="all"), position=PositionSpec(entry=sched),
-        sweep=SweepSpec(axis="condition", label=score)), d)
+        query="simulate", study=Study(axis="label", reduction="contrast", label=score)), d)
     assert not r["success"] and "펼침 분할 라벨" in r.get("error", "")
 
     # 펼침 이벤트에 score → 거부 (condition 요구)
-    r = run_sweep(StrategyIR(
+    r = run_query(StrategyIR(
         signal=score, universe=Universe(kind="all"), position=PositionSpec(entry=sched),
-        sweep=SweepSpec(axis="time", event=score, windows=[5])), d)
+        query="relate", study=Study(event=score, windows=[5])), d)
     assert not r["success"] and "펼침 이벤트" in r.get("error", "")
 
     # label을 올바로 꽂으면 펼침 통과 (positive control)
     r = run_sweep(StrategyIR(
         signal=score, universe=Universe(kind="all"), position=PositionSpec(entry=sched),
-        sweep=SweepSpec(axis="condition", label=label)), d)
+        query="simulate", study=Study(axis="label", reduction="contrast", label=label)), d)
     assert r["success"]
 
 

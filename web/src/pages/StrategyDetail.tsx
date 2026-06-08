@@ -200,6 +200,22 @@ const IR_REBALANCE_LABEL: Record<string, string> = {
   every_n_days: "N일마다",
 };
 
+// query(동사) + study(축×환원) → 분석 유형 한글 요약(빌더 드롭다운 라벨과 동기).
+// none(단일 백테스트)이면 null을 돌려 행을 숨긴다.
+function summarizeIrAnalysis(def: IrStrategyDef): string | null {
+  const query = def.query ?? "simulate";
+  const st = def.study;
+  if (query === "describe") return "신호값 분포";
+  if (query === "relate") return st?.relation_kind === "ic" ? "팩터 IC (예측력)" : "이벤트 분석";
+  switch (st?.axis) {
+    case "parameter": return "파라미터 민감도";
+    case "entity": return "종목별";
+    case "label": return "국면별 비교";
+    case "time_fold": return "기간 분할 / 워크포워드";
+    default: return null;   // none — 단일 백테스트
+  }
+}
+
 function summarizeIrUniverse(def: IrStrategyDef): string {
   const u = def.universe ?? { kind: "single" };
   const detail = u.screener ? " · 세부조건 적용" : "";
@@ -233,6 +249,7 @@ function IrConfigTab({ strategy, onRemove, onDemote }: {
   const sim = def.simulation ?? {};
   const entry = p.entry ?? ({} as IrStrategyDef["position"]["entry"]);
   const sizing = p.sizing ?? ({} as IrStrategyDef["position"]["sizing"]);
+  const analysisSummary = summarizeIrAnalysis(def);
 
   return (
     <div className="strategy-detail-body">
@@ -272,9 +289,7 @@ function IrConfigTab({ strategy, onRemove, onDemote }: {
         <Rule label="초기자본" v={`${(sim.initial_capital ?? 10_000_000).toLocaleString()}원`} />
         <Rule label="체결" v={`지연 ${sim.delay ?? 1}일 · ${sim.fill === "close" ? "당일 종가"
           : sim.fill === "typical" ? "당일 (고+저+종)/3" : "익일 시가"}`} />
-        {sim.period_split && sim.period_split !== "single" && (
-          <Rule label="기간분할" v={sim.period_split} />
-        )}
+        {analysisSummary && <Rule label="분석" v={analysisSummary} />}
       </section>
 
       <StrategyActionBar

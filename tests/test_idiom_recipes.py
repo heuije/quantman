@@ -40,7 +40,7 @@ def test_idiom1_signed_score_two_sided_validates():
                      "entry": {"mode": "scheduled", "rebalance": "daily", "threshold": 0},
                      "exit": {}},
         "simulation": {"initial_capital": 10000000, "fill": "next_open"},
-        "sweep": {"axis": "parameter", "param_grid": [
+        "study": {"axis": "parameter", "param_grid": [
             {"path": "signal.inputs.cond.inputs.right.params.value", "values": [50000, 60000]},
             {"path": "signal.inputs.b.inputs.cond.inputs.right.params.value", "values": [80000, 90000]}]},
     }

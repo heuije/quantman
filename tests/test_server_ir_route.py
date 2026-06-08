@@ -37,7 +37,10 @@ def _fake_dataset():
 
 @pytest.fixture(autouse=True)
 def _patch_dataset(monkeypatch):
+    # ir_backtest는 qc.load_dataset_for(needed)로 부분집합 로드한다(get_dataset 아님).
+    # ir_strategy의 strat: 폴백 경로만 get_dataset 사용 — 둘 다 합성 데이터로 패치.
     monkeypatch.setattr(ir, "get_dataset", _fake_dataset)
+    monkeypatch.setattr(ir.qc, "load_dataset_for", lambda needed: _fake_dataset())
 
 
 def _buy(indicator, op, value):

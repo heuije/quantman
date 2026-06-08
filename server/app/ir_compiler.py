@@ -68,7 +68,7 @@ _FEWSHOT = [
         "out": {
             "intent_summary": "KODEX200(069500) 단일. 종가가 N일 이동평균 상향 돌파 시 매수. 이동평균 기간과 보유일을 격자로 펼쳐 성과 비교.",
             "strategy_archetype": "파라미터 펼침(민감도)",
-            "mapping_rationale": "단일→universe.single. 'N일선 위로 올라오면 매수'=신호 compare(종가>ts_mean(종가,N))+entry.on_signal. '바꿔가며 한눈에 비교'=sweep.axis=parameter. 두 변수→param_grid 두 축. **각 축은 {path:점경로, values:[값들]}** — 항목을 이름으로 감싸지 않는다. 신호의 기간은 ts_mean 블록의 window 경로, 보유일은 position.exit.hold_days 경로. 2축이면 데카르트곱.",
+            "mapping_rationale": "단일→universe.single. 'N일선 위로 올라오면 매수'=신호 compare(종가>ts_mean(종가,N))+entry.on_signal. '바꿔가며 한눈에 비교'=study.axis=parameter(query는 기본 simulate). 두 변수→study.param_grid 두 축. **각 축은 {path:점경로, values:[값들]}** — 항목을 이름으로 감싸지 않는다. 신호의 기간은 ts_mean 블록의 window 경로, 보유일은 position.exit.hold_days 경로. 2축이면 데카르트곱.",
             "strategy": {
                 "name": "KODEX200 이동평균 돌파 민감도",
                 "universe": {"kind": "single", "symbols": ["069500"]},
@@ -79,7 +79,7 @@ _FEWSHOT = [
                 "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
                              "entry": {"mode": "on_signal"}, "exit": {"hold_days": 20}},
                 "simulation": {"initial_capital": 10000000, "fill": "next_open"},
-                "sweep": {"axis": "parameter", "param_grid": [
+                "study": {"axis": "parameter", "param_grid": [
                     {"path": "signal.inputs.right.params.window", "values": [10, 20, 60]},
                     {"path": "position.exit.hold_days", "values": [20, 40]}]},
             },
@@ -160,9 +160,11 @@ StrategyIR = {{
   "universe": {{"kind": "single|list|all", "symbols": [..], "screener": {{"condition": <블록>, "refresh": "each_rebalance|once_at_start"}}}},
   "signal": <블록트리>,          // 신호. {{op, params, inputs:{{slot: 자식블록}}}} 재귀. 잎: data{{ref}}, const{{value}}
   "position": {{"direction":.., "sizing":{{"mode":..}}, "entry":{{"mode":..}}, "exit":{{..}}, "overlays":{{..}}}},
-  "simulation": {{"initial_capital":.., "fill":.., "leverage":.., "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", ...}}
+  "simulation": {{"initial_capital":.., "fill":.., "leverage":.., "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", ...}},
+  "query": "simulate|select|describe|relate",   // 무엇을 묻는가(기본 simulate=손익 백테스트). select=현시점 스크리닝, describe=살펴보기(단일종목 리포트·포트폴리오 진단·신호 분포), relate=관계/이벤트.
+  "study": {{"axis":"none|parameter|entity|label|time_fold", "reduction":"enumerate|contrast|consistency|extremize", "param_grid":[{{"path":점경로,"values":[..]}}], "assets":[..], "label":<블록>, "target_node":<블록>, "relation_kind":"ic|regression", "factors":[<블록>,..], "windows":[..], "event":<블록>, "objective":{{"metric":..,"direction":"max|min","oos_guard":bool}}}}  // objective는 extremize 전용
 }}
-종목 자신의 컬럼은 ref에 "__SELF__." 접두(예 "__SELF__.Close"). 신호 out_type: condition(룰)·score(팩터)·value·label.
+펼침/분석이 없으면 query·study를 생략(기본 simulate·axis=none). 종목 자신의 컬럼은 ref에 "__SELF__." 접두(예 "__SELF__.Close"). 신호 out_type: condition(룰)·score(팩터)·value·label.
 </ir_structure>
 
 <capabilities>
@@ -198,7 +200,9 @@ StrategyIR = {{
    signal=score(팩터), entry.mode="scheduled"+rebalance, top_n 또는 top_pct. 롱숏이면 부호/순위로 양다리.
    "거래대금·시총·밸류 등으로 선별한 종목에서"처럼 자격 필터가 붙으면 universe.screener={{condition, refresh}}로 2차 선별.
 4. [국면별 비교] "상승장/하락장 등 국면에 따라 신호·성과가 어떻게 다른가" → 신호 대수는 그대로 두고
-   sweep.target="signal"(또는 "relation") + label 블록(국면 라벨)으로 분리. axis는 바꾸지 않는다.
+   분할 라벨로 본다. *신호 자체의 분포*가 국면별로 어떤지면 query="describe"+study.target_node(그 신호)
+   +study.label(국면 라벨); *전략 성과*가 국면별로 다른지면 query는 기본 simulate, study.axis="label"
+   +study.reduction="contrast"+study.label(국면 라벨). 어느 쪽이든 신호 대수(signal)는 바꾸지 않는다.
 5. [조건 지속/최근 발생] "N일 연속 충족"·"최근 M일 내 발생" → condition을 modifier 블록으로 감싼다.
 6. [선물 디렉셔널·추세추종] 선물 심볼(코스피200선물·원유선물·금선물·나스닥선물·은선물(COMEX)·
    천연가스선물·비트코인선물)은 카탈로그가 승수·증거금·통화를 알아 엔진이 자동 인식 — IR엔
@@ -210,6 +214,28 @@ StrategyIR = {{
      (선물 숏은 차입 불필요·대칭.) 레버리지는 증거금으로 내재 → leverage=1 기본(명목 더 키울 때만 >1).
    · ⚠ roll_method·series_adjust·roll_cost_pct·account_currency는 **현재 엔진 미적용(예약)** — 채우지
      말 것(단일 연속 시계열·단일통화 가정). 사용자가 강하게 명시하면 채우되 "현재 미적용"을 assumptions에 명시.
+7. [스크리닝(현 시점 종목 선별)] "저평가 X 상위 N개"·"조건 맞는 종목 골라줘"처럼 *백테스트 손익이
+   아니라 지금 시점 종목 리스트*가 답이면 → query="select" + signal=랭킹 score(예: 낮은 PBR이면
+   data(__SELF__.pb_ratio)) + universe.kind=all + universe.screener.condition=
+   is_in(attribute("Sector"), ["반도체"]) 같은 섹터/자격 필터 + select={top_n:N,
+   descending:false(저평가=낮은값 우선)·true(높은값 우선), display:[pb_ratio, ...](근거 지표)}.
+   (※ 레시피 3은 *정기 리밸런싱 백테스트*(simulate), 본 레시피는 *현 시점 스냅샷 선별*(select) — 둘 구분.)
+8. [단일종목 360 리포트] "삼성전자 어때"·"이 종목 분석/요약"처럼 *한 종목의 현황*이 답이면 →
+   query="describe" + universe.kind="single" + symbols=[그 종목] + signal=data("__SELF__.Close")
+   (분석 동사라 신호는 명목 — 엔진이 가격·수익·리스크·밸류·섹터를 자동 조립). study 불필요.
+   (※ '왜 올랐나/성장전망/실적후확률'은 뉴스·추정치·이벤트 데이터 필요 — 아직 미지원이면 assumptions에 명시.)
+9. [포트폴리오 진단] "내 포트폴리오 진단"·"보유종목 집중·리스크 봐줘"처럼 *보유 집합의 진단*이면 →
+   query="describe" + universe.kind="portfolio" + symbols=[보유들] + (보유 비중 알면 universe.weights={{종목:비중}}, 없으면 동일가중)
+   + signal=data("__SELF__.Close")(명목). 엔진이 집중도(HHI)·섹터노출·가중밸류·포트 변동성 산출. study 불필요.
+10. [최적 파라미터/종목 찾기(extremize)] "샤프(또는 수익률·CAGR)를 *최대화*하는 [기간/임계값/top_n] 찾아줘"·
+    "어떤 종목이 제일 나은가"처럼 *그리드 중 최적 1개*가 답이면 → study.axis="parameter"(+param_grid)
+    또는 "entity"(+assets) + study.reduction="extremize" + study.objective={{metric, direction, oos_guard:true}}.
+    metric은 sharpe(기본)·sortino·cagr·cum_return·mdd만. ⚠ mdd는 음수라 "낙폭 최소"=direction:"max".
+    oos_guard=true(기본)면 최적값을 시간폴드로 재검(과최적화 경고). (※ enumerate=모든 셀 나열, extremize=최적 1개.)
+11. [다중팩터 횡단 회귀] "밸류·모멘텀·퀄리티 중 무엇이 forward 수익을 설명하나(상호 통제)"·"여러 지표로
+    수익 횡단 회귀"처럼 *여러 설명변수의 동시 예측력*이면 → query="relate" + study.relation_kind="regression"
+    + study.factors=[팩터1, 팩터2, ...](각 score 블록) + study.windows. universe.kind=all/list(종목 2+).
+    Fama-MacBeth(날짜별 횡단 OLS→계수 시계열 평균+t값/신뢰구간). (※ 단일팩터 예측력=relation_kind="ic"+target_node.)
 </idioms>
 
 <process>

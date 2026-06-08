@@ -241,13 +241,14 @@ export interface IrIssue {
 export interface IrStrategyDef {
   name: string;
   universe: {
-    kind: "single" | "list" | "all";
+    kind: "single" | "list" | "all" | "portfolio";
     symbols?: string[];
     screener?: {
       condition: IrNode;
       refresh: "each_rebalance" | "once_at_start";
     } | null;
     exclude_macro?: boolean;
+    weights?: Record<string, number> | null;   // portfolio 전용 — 보유 비중(없으면 동일가중)
   };
   signal: IrNode;
   position: {
@@ -279,21 +280,82 @@ export interface IrStrategyDef {
     leverage?: number;
     short_borrow_pct?: number | null; funding_cost_pct?: number | null; rfr_pct?: number | null;
     maintenance_margin_pct?: number | null;    // 레버리지 마진콜 유지증거금률(%)
-    start?: string | null; end?: string | null; period_split?: string;
-    split_dates?: string[];                    // G6 — 명시 분할 시점(워크포워드)
+    start?: string | null; end?: string | null;
   };
-  sweep: {
-    axis: "none" | "condition" | "parameter" | "asset" | "time";
-    target?: "return" | "signal" | "relation"; // G7·G2 — 분석 대상
-    target_node?: IrNode | null;               // signal/relation 분석 노드
-    relation_kind?: string;
-    label?: IrNode | null;
+  // 조사형 쿼리 — query(동사) × study(축 × 환원). 옛 sweep+period_split을 흡수.
+  // describe=신호값 분포, relate=이벤트/IC, simulate=백테스트(+축별 펼침·기간분할),
+  // select=as-of 스냅샷 횡단 랭킹 스크리닝.
+  query?: "select" | "describe" | "relate" | "simulate";
+  study?: {
+    axis?: "none" | "parameter" | "entity" | "label" | "time_fold";
+    reduction?: "enumerate" | "contrast" | "consistency" | "extremize";
     param_grid?: { path: string; values: (number | string)[] }[];
-    assets?: string[];
-    event?: IrNode | null;
-    windows?: number[];
-    event_basis?: string;
+    assets?: string[];                         // axis=entity
+    label?: IrNode | null;                     // 국면 라벨 블록(축 또는 조건 분할)
+    folds?: number;                            // axis=time_fold — 균등 분할 수
+    split_dates?: string[];                    // axis=time_fold — 명시 분할 시점(워크포워드)
+    target_node?: IrNode | null;               // describe/relate 분석 노드
+    relation_kind?: "ic" | "regression";       // relate — IC(단일) 또는 다중팩터 회귀
+    factors?: IrNode[];                         // relation_kind=regression 설명변수
+    event?: IrNode | null;                     // relate(이벤트) — 별도 이벤트 조건
+    windows?: number[];                        // relate — forward/예측 윈도우
+    event_basis?: "close" | "intraday" | "excess";
+    objective?: {                              // reduction=extremize 전용 목적함수
+      metric?: "sharpe" | "sortino" | "cagr" | "cum_return" | "mdd";
+      direction?: "max" | "min"; oos_guard?: boolean;
+    } | null;
   };
+  // query="select" 전용 — as-of 스냅샷 횡단 랭킹 선별 설정(core SelectSpec과 동기).
+  select?: {
+    as_of?: string; top_n?: number; top_pct?: number;
+    descending?: boolean; display?: string[];
+  };
+}
+
+// query="describe" + universe.kind="single" — 단일종목 360 리포트 결과.
+export interface IrSingleReport {
+  success: boolean; query: "describe"; report: "single";
+  symbol: string; sector: string; as_of: string; data_points: number;
+  price: {
+    last: number;
+    returns: Record<"1m" | "3m" | "6m" | "12m", number | null>;
+    high_52w: number; low_52w: number; pct_from_52w_high: number | null;
+  };
+  risk: { vol_annualized: number | null; max_drawdown: number | null };
+  fundamentals: Record<"pb_ratio" | "trailing_pe" | "ev_ebitda", number | null>;
+}
+
+// query="describe" + universe.kind="portfolio" — 포트폴리오 진단 결과.
+export interface IrPortfolioDiagnosis {
+  success: boolean; query: "describe"; report: "portfolio";
+  as_of: string; n_holdings: number;
+  holdings: { symbol: string; weight: number; sector: string }[];
+  concentration: { hhi: number; effective_n: number | null; top_weight: number; top3_weight: number };
+  sector_exposure: Record<string, number>;
+  valuation: { weighted_pb: number | null; weighted_pe: number | null };
+  risk: { portfolio_vol_annualized: number | null; avg_pairwise_corr: number | null };
+  coverage: { with_price: number; with_fundamentals: number };
+}
+
+// reduction="extremize" — 최적해 + OOS 과최적화 가드 결과.
+export interface IrExtremizeResult {
+  success: boolean; axis: "parameter" | "asset"; reduction: "extremize";
+  objective: { metric: string; direction: string; oos_guard: boolean };
+  best: { label: string; metric_value: number | null; perf: Record<string, number> };
+  ranked: { label: string; metric_value: number | null }[];
+  oos_guard?: { buckets?: Record<string, unknown>; consistency?: unknown; error?: string };
+}
+
+// query="relate" + relation_kind="regression" — 다중팩터 Fama-MacBeth 회귀 결과.
+export interface IrRegressionResult {
+  success: boolean; axis: "relation"; relation: "regression";
+  windows: string[]; factor_names: string[];
+  by_window: Record<string, {
+    n_periods: number;
+    factors: { name: string; coef: number; se: number; t_stat: number | null;
+               t_inf: boolean; ci_low: number; ci_high: number }[] | null;
+    note?: string;
+  }>;
 }
 
 // 모든 펼침 버킷의 단일 지표 어휘 (engine perf_from_returns와 동기) — 갭 A.
@@ -337,6 +399,8 @@ export interface IrICStat {
 export interface IrStrategyResult extends BacktestResult {
   warnings?: IrIssue[];
   issues?: IrIssue[];
+  // 결과 dict의 axis는 백엔드가 옛 라벨을 parity로 유지한다(요청의 study.axis 신값과
+  // 다를 수 있음 — 예: study.axis="entity" 요청 → 결과 axis="asset"). 표시 전용.
   axis?: "condition" | "parameter" | "asset" | "time" | "period_split" | "signal" | "relation";
   buckets?: Record<string, IrSweepBucket>;
   overall?: IrSweepBucket | Record<string, IrEventStat> | IrDistribution;
@@ -345,7 +409,7 @@ export interface IrStrategyResult extends BacktestResult {
   by_window?: Record<string, { overall: IrICStat; by_regime?: IrPartition | null }>;
   // parameter축 격자 메타 (다축 Cartesian) — 갭 B
   axes?: { path: string; values: (number | string)[] }[];
-  // period_split 일관성
+  // time_fold(기간분할) 일관성 — study.reduction="consistency" 결과
   consistency?: { n_folds: number; positive_folds: number; consistency: number };
   // condition축 유의성 (A1)
   compare?: { pairwise?: Record<string, IrPairTest> };

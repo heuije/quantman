@@ -48,7 +48,7 @@ def _strat(*, exit_spec=None, sizing=None, universe=None):
             "entry": {"mode": "on_signal"},
             "exit": exit_spec or {}, "overlays": {},
         },
-        "simulation": {}, "sweep": {"axis": "none"},
+        "simulation": {},
     })
 
 

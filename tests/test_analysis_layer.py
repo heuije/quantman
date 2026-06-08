@@ -42,17 +42,19 @@ def _data(ref):
 
 
 def _spec(target, target_node, label=None, windows=None):
-    sw = {"target": target, "target_node": target_node}
+    # target=signal → query=describe(신호값 분포), target=relation → query=relate(횡단 IC).
+    study = {"target_node": target_node}
     if label is not None:
-        sw["label"] = label
+        study["label"] = label
     if windows is not None:
-        sw["windows"] = windows
+        study["windows"] = windows
     return {"signal": _data("Close"),
             "universe": {"kind": "list", "symbols": ["S0", "S1", "S2", "S3"]},
             "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
                          "entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 2}},
             "simulation": {"initial_capital": 1e7},
-            "sweep": sw}
+            "query": "describe" if target == "signal" else "relate",
+            "study": study}
 
 
 # ── 통계층 (compare.py) 단위 ───────────────────────────────────────────────────

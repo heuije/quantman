@@ -3,8 +3,9 @@
 명세 §7·§8. run_strategy_ir은 §5.4 루트 경계 계약을 강제한 뒤 **통합 실행 엔진**
 (engine.run_unified, §7.6)에 위임한다 — 이벤트·스케줄을 단일 포지션 기반 일별 루프로
 처리(진입×청산·롱숏·refill 임의 조합). 이 모듈은 그 위의 분석 레이어를 담는다:
-  - run_sweep: 펼침(조건/파라미터/자산/시간 축) → resultset
-  - run_period_split: 시간순 폴드 OOS 일관성
+  - run_query: 최상위 질문 디스패치(query 동사 + study 펼침)
+  - run_sweep: 펼침(label/parameter/entity 축) → resultset
+  - run_period_split: 시간순 폴드 OOS 일관성(study.axis=time_fold)
   - _run_event_study: 이벤트(신호 참) 발생일 기준 forward 수익·경로지표
 """
 
@@ -24,7 +25,7 @@ from .compare import (
     two_sample_test, walk_forward_consistency,
 )
 from .comparison import compare_by_partition
-from .spec import StrategyIR
+from .spec import StrategyIR, Study
 from .sweep import (
     daily_returns, partition_by_label, summarize_returns,
 )
@@ -71,7 +72,7 @@ def _root_type_error(strategy: StrategyIR) -> str | None:
     타입을 조용히 캐스팅(astype(bool)·임의 그룹화)하지 않고 명시 거부한다. 검증을 우회하거나
     엔진을 직접 호출해도 안전(label 코드가 조건으로 둔갑·연속 점수가 무의미 분할 생성 차단).
     """
-    u, pos, sw = strategy.universe, strategy.position, strategy.sweep
+    u, pos, st = strategy.universe, strategy.position, strategy.study
     if (u.screener or {}).get("condition") is not None:
         ft = _out_type(Node.model_validate(u.screener["condition"]))
         if ft != "condition":
@@ -80,10 +81,10 @@ def _root_type_error(strategy: StrategyIR) -> str | None:
         return f"매도 조건은 condition이어야 합니다 (현재: {_out_type(pos.exit.condition) or '알 수 없는 블록'})."
     if pos.overlays.group_label is not None and _out_type(pos.overlays.group_label) != "label":
         return f"그룹 노출 라벨은 label이어야 합니다 (현재: {_out_type(pos.overlays.group_label) or '알 수 없는 블록'})."
-    if sw.label is not None and _out_type(sw.label) != "label":
-        return f"펼침 분할 라벨은 label이어야 합니다 (현재: {_out_type(sw.label) or '알 수 없는 블록'})."
-    if sw.event is not None and _out_type(sw.event) != "condition":
-        return f"펼침 이벤트는 condition이어야 합니다 (현재: {_out_type(sw.event) or '알 수 없는 블록'})."
+    if st.label is not None and _out_type(st.label) != "label":
+        return f"펼침 분할 라벨은 label이어야 합니다 (현재: {_out_type(st.label) or '알 수 없는 블록'})."
+    if st.event is not None and _out_type(st.event) != "condition":
+        return f"펼침 이벤트는 condition이어야 합니다 (현재: {_out_type(st.event) or '알 수 없는 블록'})."
     return None
 
 
@@ -107,6 +108,38 @@ def run_strategy_ir(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> d
     return run_unified(strategy, dataset)
 
 
+def run_query(strategy: StrategyIR, dataset: dict) -> dict:
+    """최상위 질문 디스패치 — 동사(query) + 펼침(study)으로 경로 선택."""
+    err = _root_type_error(strategy)
+    if err is not None:
+        return _empty(err)
+    q = strategy.query
+    if q == "select":
+        return run_select(strategy, dataset)
+    if q == "describe":
+        u = strategy.universe
+        if u.kind == "single":
+            return run_describe_report(strategy, dataset)
+        if u.kind == "portfolio":
+            return run_portfolio_diagnosis(strategy, dataset)
+        return _run_signal_study(strategy, dataset)
+    if q == "relate":
+        st = strategy.study
+        if st.event is not None:
+            return _run_event_study(strategy, dataset)
+        if st.relation_kind == "regression":
+            return _run_regression_study(strategy, dataset)
+        return _run_ic_study(strategy, dataset)
+    st = strategy.study
+    if st.axis == "time_fold":
+        return run_period_split(strategy, dataset)
+    if st.axis == "none":
+        return run_strategy_ir(strategy, dataset)
+    if st.reduction == "extremize":
+        return run_extremize(strategy, dataset)
+    return run_sweep(strategy, dataset)
+
+
 # ── 유니버스 (펼침·이벤트스터디 공용) ─────────────────────────────────────────
 
 def _label_panel(lab, idx, cols: list) -> pd.DataFrame:
@@ -124,7 +157,7 @@ def _label_panel(lab, idx, cols: list) -> pd.DataFrame:
 
 def _universe_symbols(strategy: StrategyIR, dataset: dict) -> list[str]:
     u = strategy.universe
-    if u.kind in ("single", "list"):
+    if u.kind in ("single", "list", "portfolio"):
         return [s for s in u.symbols if s in dataset and not dataset[s].empty]
     # all — 매크로/자산 지수 제외, OHLC 보유 종목(전 유니버스 후보).
     # universe.screener 세부조건은 list/all 모두 _scoped·_screener_mask가 직교 적용한다.
@@ -165,18 +198,12 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
     err = _root_type_error(strategy)
     if err is not None:
         return _empty(err)
-    sw = strategy.sweep
-    # 분석 대상 일반화 — target!=return이면 측정 대상이 수익률이 아니라 신호값/관계.
-    # axis와 직교한 전용 경로로 분기(읽기층만, 신호 대수 무관).
-    if sw.target == "signal":
-        return _run_signal_study(strategy, dataset)
-    if sw.target == "relation":
-        return _run_ic_study(strategy, dataset)
-    if sw.axis == "none":
+    st = strategy.study
+    if st.axis == "none":
         return run_strategy_ir(strategy, dataset)
 
-    if sw.axis == "parameter":
-        grid = sw.param_grid
+    if st.axis == "parameter":
+        grid = st.param_grid
         if not grid or any(not ax.values for ax in grid):
             return _empty("파라미터 축은 param_grid(경로·값)가 필요합니다.")
         import itertools
@@ -185,7 +212,7 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
         buckets = {}
         for combo in itertools.product(*[ax.values for ax in grid]):
             d = copy.deepcopy(base)
-            d["sweep"] = {"axis": "none"}
+            d["study"] = {"axis": "none"}; d["query"] = "simulate"
             for ax, v in zip(grid, combo):
                 _set_path(d, ax.path, v)
             key = " | ".join(f"{ax.path.split('.')[-1]}={v}" for ax, v in zip(grid, combo))
@@ -194,14 +221,14 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
                             if res.get("success") else {"error": res.get("error")})
         return {"success": True, "axis": "parameter", "axes": axes_meta, "buckets": buckets}
 
-    if sw.axis == "asset":
-        if not sw.assets:
+    if st.axis == "entity":
+        if not st.assets:
             return _empty("자산 축은 assets가 필요합니다.")
         base = strategy.model_dump()
         buckets = {}
-        for a in sw.assets:
+        for a in st.assets:
             d = copy.deepcopy(base)
-            d["sweep"] = {"axis": "none"}
+            d["study"] = {"axis": "none"}; d["query"] = "simulate"
             d["universe"] = {"kind": "single", "symbols": [a],
                              "screener": None, "exclude_macro": True}
             res = run_strategy_ir(StrategyIR.model_validate(d), dataset)
@@ -209,8 +236,8 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
                           if res.get("success") else {"error": res.get("error")})
         return {"success": True, "axis": "asset", "buckets": buckets}
 
-    if sw.axis == "condition":
-        if sw.label is None:
+    if st.axis == "label":
+        if st.label is None:
             return _empty("조건 축은 라벨 블록이 필요합니다.")
         res = run_strategy_ir(strategy, dataset)
         if not res.get("success"):
@@ -224,8 +251,8 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
         sym_ret = closes.reindex(weight.index).pct_change().fillna(0.0)
         contribution = (weight.shift(1).fillna(0.0) * sym_ret).reindex(columns=cols).fillna(0.0)
         # 라벨 노드 → (일×종목) 패널(종목별=섹터, 일별=국면 broadcast). 옛 단일컬럼 붕괴 대체.
-        lab = evaluate(sw.label, EvalContext.from_dataset(
-            _scoped(dataset, _universe_symbols(strategy, dataset), sw.label)))
+        lab = evaluate(st.label, EvalContext.from_dataset(
+            _scoped(dataset, _universe_symbols(strategy, dataset), st.label)))
         label_panel = _label_panel(lab, weight.index, cols)
         cmp = compare_by_partition(contribution, weight, label_panel)
         # 버킷 요약 = 고유성과(그 그룹만 거래 시 수익) 시리즈. overall = 마크투마켓 합.
@@ -238,10 +265,82 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
                 "compare": compare_partition(parts),   # 그룹 간 유의성
                 "metrics": res["metrics"], "equity": res["equity"]}
 
-    if sw.axis == "time":
-        return _run_event_study(strategy, dataset)
+    return _empty(f"미지원 펼침 축: {st.axis}")
 
-    return _empty(f"미지원 펼침 축: {sw.axis}")
+
+# ── 최적화 (extremize 환원 — 최적해 + 과최적화 OOS 가드) ────────────────────────
+
+def run_extremize(strategy: StrategyIR, dataset: dict) -> dict:
+    """펼침 축의 셀 중 목적함수 최대/최소 셀(최적해)을 찾고 OOS 일관성으로 과최적화를 가드.
+
+    axis=parameter: param_grid 데카르트곱 / axis=entity: assets — 각 셀을 simulate 백테스트해
+    summarize_returns로 perf 산출, objective.metric를 direction대로 argmax/argmin. in-sample
+    argmax는 과최적화 위험이라 oos_guard=True면 최적 셀을 시간폴드(run_period_split)로 재검해
+    OOS 일관성을 표면화한다(견고한 최적 vs 우연한 spike 구분). 새 평가기 없이 기존 머신 재사용.
+    """
+    from .spec import Objective
+    st = strategy.study
+    obj = st.objective or Objective()
+    base = strategy.model_dump()
+
+    combos: list = []   # [(label, kind, payload)]  kind∈{"param","entity"}
+    if st.axis == "parameter":
+        grid = st.param_grid
+        if not grid or any(not ax.values for ax in grid):
+            return _empty("파라미터 최적화는 param_grid(경로·값)가 필요합니다.")
+        import itertools
+        for combo in itertools.product(*[ax.values for ax in grid]):
+            patch = {ax.path: v for ax, v in zip(grid, combo)}
+            label = " | ".join(f"{ax.path.split('.')[-1]}={v}" for ax, v in zip(grid, combo))
+            combos.append((label, "param", patch))
+    elif st.axis == "entity":
+        if not st.assets:
+            return _empty("종목 최적화는 assets(종목 목록)가 필요합니다.")
+        for a in st.assets:
+            combos.append((a, "entity", a))
+    else:
+        return _empty(f"extremize는 parameter 또는 entity 축이 필요합니다 (현재: {st.axis}).")
+
+    def _build(kind, payload) -> StrategyIR:
+        d = copy.deepcopy(base)
+        d["study"] = {"axis": "none"}; d["query"] = "simulate"
+        if kind == "entity":
+            d["universe"] = {"kind": "single", "symbols": [payload],
+                             "screener": None, "exclude_macro": True}
+        else:
+            for path, v in payload.items():
+                _set_path(d, path, v)
+        return StrategyIR.model_validate(d)
+
+    cells: list = []   # [(label, perf, kind, payload)]
+    for label, kind, payload in combos:
+        res = run_strategy_ir(_build(kind, payload), dataset)
+        if res.get("success"):
+            cells.append((label, summarize_returns(daily_returns(res["equity"])), kind, payload))
+    if not cells:
+        return _empty("최적화할 유효 결과가 없습니다(모든 셀 실패).")
+
+    sign = 1.0 if obj.direction == "max" else -1.0
+
+    def _score(perf):
+        v = perf.get(obj.metric)
+        return sign * float(v) if (v is not None and v == v) else float("-inf")  # NaN=최악
+
+    cells.sort(key=lambda c: _score(c[1]), reverse=True)
+    best_label, best_perf, best_kind, best_payload = cells[0]
+    out = {
+        "success": True, "axis": ("asset" if st.axis == "entity" else "parameter"),
+        "reduction": "extremize", "objective": obj.model_dump(),
+        "best": {"label": best_label, "metric_value": best_perf.get(obj.metric), "perf": best_perf},
+        "ranked": [{"label": l, "metric_value": p.get(obj.metric)} for l, p, _, _ in cells],
+    }
+    if obj.oos_guard:
+        guard = _build(best_kind, best_payload)
+        guard.study = Study(axis="time_fold", reduction="consistency", folds=4)
+        ps = run_period_split(guard, dataset)
+        out["oos_guard"] = ({"buckets": ps.get("buckets"), "consistency": ps.get("consistency")}
+                            if ps.get("success") else {"error": ps.get("error")})
+    return out
 
 
 # ── 기간분할 (비전 §3.5·§6) — 워크포워드/OOS/시계열 k-fold ────────────────────
@@ -256,12 +355,12 @@ def run_period_split(strategy: StrategyIR, dataset: dict) -> dict:
     if not res.get("success"):
         return res
     rets = daily_returns(res["equity"])
-    sim = strategy.simulation
+    st = strategy.study
     buckets: dict = {}
-    if sim.split_dates:
+    if st.split_dates:
         # 명시 날짜 경계 — 지정 시점으로 분할(세그먼트 라벨=실제 기간 span). 학습/검증을
         # 등분이 아닌 사용자 지정 시점으로 가른다(예: ["2018-01-01"] → 2010-17 / 2018-25).
-        cuts = sorted(pd.Timestamp(d) for d in sim.split_dates)
+        cuts = sorted(pd.Timestamp(d) for d in st.split_dates)
         seg = np.zeros(len(rets), dtype=int)
         for c in cuts:
             seg += (rets.index >= c).astype(int)
@@ -274,11 +373,11 @@ def run_period_split(strategy: StrategyIR, dataset: dict) -> dict:
             n_seg += 1
         consistency = walk_forward_consistency(rets, n_folds=max(n_seg, 1))
     else:
-        mode = sim.period_split
-        n = 2 if mode == "oos" else 4
+        n = st.folds                       # oos=2(인/아웃), walk_forward·kfold=4(시간순 등분)
+        is_oos = n == 2
         folds = [f for f in np.array_split(rets.to_numpy(), n) if len(f) > 0]
         for i, f in enumerate(folds):
-            label = ("인샘플" if i == 0 else "아웃샘플") if mode == "oos" else f"구간{i + 1}"
+            label = ("인샘플" if i == 0 else "아웃샘플") if is_oos else f"구간{i + 1}"
             buckets[label] = summarize_returns(pd.Series(f))
         consistency = walk_forward_consistency(rets, n_folds=n)
     return {"success": True, "axis": "period_split", "buckets": buckets,
@@ -296,18 +395,18 @@ def _run_signal_study(strategy: StrategyIR, dataset: dict) -> dict:
     syms = _universe_symbols(strategy, dataset)
     if not syms:
         return _empty("분석 유니버스에 종목이 없습니다.")
-    node = strategy.sweep.target_node
+    node = strategy.study.target_node
     if node is None:
         return _empty("분석 노드(target_node)가 없습니다.")
-    ctx = EvalContext.from_dataset(_scoped(dataset, syms, node, strategy.sweep.label))
+    ctx = EvalContext.from_dataset(_scoped(dataset, syms, node, strategy.study.label))
     panel = evaluate(node, ctx)
     if not isinstance(panel, pd.DataFrame):
         return _empty("분석 노드가 패널(시계열)을 산출하지 않습니다.")
     pv = panel.to_numpy(dtype=float)
     overall = distribution(pd.Series(pv.ravel()), pct=False)
     by_regime = None
-    if strategy.sweep.label is not None:
-        lp = evaluate(strategy.sweep.label, ctx)
+    if strategy.study.label is not None:
+        lp = evaluate(strategy.study.label, ctx)
         if isinstance(lp, pd.DataFrame):
             lv = lp.reindex(index=panel.index, columns=panel.columns).to_numpy(dtype=float)
             mask = np.isfinite(pv) & np.isfinite(lv)
@@ -331,11 +430,11 @@ def _run_ic_study(strategy: StrategyIR, dataset: dict) -> dict:
     syms = _universe_symbols(strategy, dataset)
     if len(syms) < 2:
         return _empty("IC 분석은 종목이 2개 이상이어야 합니다.")
-    node = strategy.sweep.target_node
+    node = strategy.study.target_node
     if node is None:
         return _empty("분석 노드(target_node)가 없습니다.")
-    windows = strategy.sweep.windows or [21]
-    ctx = EvalContext.from_dataset(_scoped(dataset, syms, node, strategy.sweep.label))
+    windows = strategy.study.windows or [21]
+    ctx = EvalContext.from_dataset(_scoped(dataset, syms, node, strategy.study.label))
     factor = evaluate(node, ctx)
     if not isinstance(factor, pd.DataFrame):
         return _empty("팩터 노드가 패널(시계열)을 산출하지 않습니다.")
@@ -343,8 +442,8 @@ def _run_ic_study(strategy: StrategyIR, dataset: dict) -> dict:
                           if s in dataset and "Close" in dataset[s].columns}).reindex(factor.index)
     fr = factor.rank(axis=1)                       # 횡단 순위(Spearman용)
     label_series = None
-    if strategy.sweep.label is not None:
-        lp = evaluate(strategy.sweep.label, ctx)
+    if strategy.study.label is not None:
+        lp = evaluate(strategy.study.label, ctx)
         if isinstance(lp, pd.DataFrame) and len(lp.columns):
             label_series = lp[lp.columns[0]]        # 국면은 시장 전역(브로드캐스트) 가정
     by_window: dict = {}
@@ -361,6 +460,288 @@ def _run_ic_study(strategy: StrategyIR, dataset: dict) -> dict:
         by_window[str(w)] = block
     return {"success": True, "axis": "relation", "relation": "ic",
             "windows": [str(w) for w in windows], "by_window": by_window}
+
+
+# ── 다중팩터 횡단 회귀 (RELATE 심화 — Fama-MacBeth) ────────────────────────────
+
+def _fama_macbeth(betas: np.ndarray):
+    """per-date 계수 (T기간×K팩터) → Fama-MacBeth 집계 (평균·표준오차·t·95% CI).
+
+    날짜별 횡단 회귀 계수의 시계열을 평균하고, 그 시계열 분산으로 t값을 낸다(횡단 상관에
+    강건한 표준 방법). T=1이면 se=0. 정확관계(분산 0)면 t는 무한대(완전 유의)로 표기.
+    """
+    mean = betas.mean(axis=0)
+    T = betas.shape[0]
+    sd = betas.std(axis=0, ddof=1) if T > 1 else np.zeros(betas.shape[1])
+    se = sd / np.sqrt(T)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.where(se > 0, mean / se,
+                     np.where(mean != 0, np.inf * np.sign(mean), 0.0))
+    return mean, se, t, mean - 1.96 * se, mean + 1.96 * se
+
+
+def _run_regression_study(strategy: StrategyIR, dataset: dict) -> dict:
+    """다중 설명변수의 forward수익 횡단 예측력 — Fama-MacBeth 계수·t값·신뢰구간.
+
+    "밸류·모멘텀·퀄리티 중 무엇이 다음 달 수익을 횡단으로 설명하나(다중 통제 후)"에 답한다.
+    날짜별 횡단 OLS(절편+팩터들, numpy lstsq=OLS) → per-date 계수 → Fama-MacBeth 집계.
+    forward수익은 미래참조라 분석 전용(IC 스터디와 동일 규약). 단일팩터=IC, 다중·통제=이것.
+    """
+    from ..blocks.node import referenced_columns
+    syms = _universe_symbols(strategy, dataset)
+    if len(syms) < 2:
+        return _empty("횡단 회귀는 종목이 2개 이상이어야 합니다.")
+    nodes = list(strategy.study.factors)
+    if not nodes:
+        return _empty("다중 회귀는 설명변수(factors)가 1개 이상 필요합니다.")
+    windows = strategy.study.windows or [21]
+    ctx = EvalContext.from_dataset(_scoped(dataset, syms, *nodes))
+    panels = [evaluate(n, ctx) for n in nodes]
+    if any(not isinstance(p, pd.DataFrame) for p in panels):
+        return _empty("설명변수가 패널(종목×날짜)을 산출하지 않습니다.")
+    idx = panels[0].index
+    close = pd.DataFrame({s: dataset[s]["Close"] for s in syms
+                          if s in dataset and "Close" in dataset[s].columns}).reindex(idx)
+    K = len(nodes)
+    names = []
+    for i, n in enumerate(nodes):
+        cols = sorted(referenced_columns(n))
+        names.append(cols[0] if cols else f"f{i}")
+
+    by_window: dict = {}
+    for w in windows:
+        fwd = close.shift(-int(w)) / close - 1.0
+        betas = []
+        for d in idx:
+            yv = fwd.loc[d].to_numpy(dtype=float)
+            Xcols = [panels[k].loc[d].reindex(close.columns).to_numpy(dtype=float)
+                     for k in range(K)]
+            X = np.column_stack(Xcols)
+            mask = np.isfinite(yv) & np.isfinite(X).all(axis=1)
+            if int(mask.sum()) < K + 2:        # 자유도 확보
+                continue
+            Xd = np.column_stack([np.ones(int(mask.sum())), X[mask]])   # 절편 + 팩터
+            try:
+                coef, *_ = np.linalg.lstsq(Xd, yv[mask], rcond=None)
+            except Exception:                  # noqa: BLE001 — 특이행렬 등
+                continue
+            betas.append(coef[1:])             # 절편 제외 팩터 계수
+        if len(betas) < 2:
+            by_window[str(w)] = {"n_periods": len(betas), "factors": None,
+                                 "note": "회귀 가능한 기간이 부족합니다(종목·결측 확인)."}
+            continue
+        mean, se, t, lo, hi = _fama_macbeth(np.array(betas))
+        by_window[str(w)] = {
+            "n_periods": int(len(betas)),
+            "factors": [{"name": names[k], "coef": float(mean[k]), "se": float(se[k]),
+                         "t_stat": (float(t[k]) if np.isfinite(t[k]) else None),
+                         "t_inf": bool(not np.isfinite(t[k])),
+                         "ci_low": float(lo[k]), "ci_high": float(hi[k])} for k in range(K)],
+        }
+    return {"success": True, "axis": "relation", "relation": "regression",
+            "windows": [str(w) for w in windows], "factor_names": names, "by_window": by_window}
+
+
+# ── 선택 (SELECT 동사 — as-of 횡단 랭킹 스크리닝) ─────────────────────────────
+
+def run_select(strategy: StrategyIR, dataset: dict) -> dict:
+    """SELECT 동사 — as-of 스냅샷에서 score를 횡단 랭크해 상위 종목 선별(스크리닝).
+
+    시계열 시뮬 없음. signal(score)을 평가해 as_of 시점 단면을 랭크한다. universe.screener는
+    자격 마스크(PIT), select.display는 결과에 붙일 지표 컬럼. 미래행 미참조(PIT).
+    """
+    from .engine import _screener_mask
+    from ..expression_parser import get_symbol_group
+
+    sel = strategy.select
+    if sel is None:
+        return _empty("select 질의는 select 설정이 필요합니다.")
+    if _out_type(strategy.signal) != "score":
+        return _empty("select(스크리닝)은 랭킹용 score 신호가 필요합니다.")
+    syms = _universe_symbols(strategy, dataset)
+    if not syms:
+        return _empty("선별 유니버스에 종목이 없습니다.")
+    screener = strategy.universe.screener or {}
+    filt = Node.model_validate(screener["condition"]) if screener.get("condition") else None
+    ds = _scoped(dataset, syms, strategy.signal, filt)
+    ctx = EvalContext.from_dataset(ds)
+    score = evaluate(strategy.signal, ctx)
+    if not isinstance(score, pd.DataFrame) or score.empty:
+        return _empty("score 신호가 패널(종목×날짜)을 산출하지 않습니다.")
+    cols = [c for c in syms if c in score.columns]
+    if not cols:
+        return _empty("score가 유니버스 종목을 포함하지 않습니다.")
+    score = score[cols]
+
+    # as_of 스냅샷 (PIT — 미래행 미참조)
+    if sel.as_of == "latest":
+        asof = score.index[-1]
+    else:
+        prior = score.index[score.index <= pd.Timestamp(sel.as_of)]
+        if len(prior) == 0:
+            return _empty(f"as_of {sel.as_of} 이전 데이터가 없습니다.")
+        asof = prior[-1]
+    row = score.loc[asof]
+
+    # 자격 마스크(screener) 적용 — 같은 as_of 단면
+    if filt is not None:
+        elig = _screener_mask(screener, ctx, cols)
+        elig_row = (elig.loc[asof] if asof in elig.index
+                    else elig.reindex([asof]).iloc[0]).reindex(cols).fillna(False).astype(bool)
+        row = row.where(elig_row)
+    eligible = row.dropna()
+    eligible_size = int(eligible.shape[0])
+
+    ranked = eligible.sort_values(ascending=not sel.descending)
+    if sel.top_n is not None:
+        ranked = ranked.head(int(sel.top_n))
+    elif sel.top_pct is not None:
+        k = max(1, int(round(eligible_size * float(sel.top_pct) / 100.0)))
+        ranked = ranked.head(k)
+
+    results = []
+    for sym in ranked.index:
+        df = dataset.get(sym)
+        metrics = {}
+        for col in sel.display:
+            if df is not None and col in df.columns:
+                sub = df.loc[df.index <= asof, col].dropna()
+                metrics[col] = float(sub.iloc[-1]) if len(sub) else None
+        results.append({
+            "symbol": sym,
+            "score": (float(ranked[sym]) if pd.notna(ranked[sym]) else None),
+            "sector": get_symbol_group(sym, "Sector"),
+            "metrics": metrics,
+        })
+    return {"success": True, "query": "select", "as_of": str(asof)[:10],
+            "universe_size": len(syms), "eligible_size": eligible_size,
+            "results": results}
+
+
+# ── DESCRIBE 대상 확장 (P2 — 단일종목 360 리포트 + 포트폴리오 진단) ───────────
+
+def run_describe_report(strategy: StrategyIR, dataset: dict) -> dict:
+    """단일종목 360 리포트 — 한 종목의 가격·수익·리스크·밸류·섹터 스냅샷(DESCRIBE+단일대상).
+
+    시계열 시뮬·신호 평가 없음(signal은 분석동사 명목값). 보유 데이터(가격/펀더멘털/분류)에서
+    결정적 요약을 조립. 미수집 펀더멘털은 None으로 정직 표기(가짜 채움 금지). 데이터 기반 답변
+    패러다임의 단일대상 슬라이스 — 뉴스/추정치/이벤트 기반 facet(왜 올랐나·성장전망·실적후확률)은 P3.
+    """
+    from ..expression_parser import get_symbol_group
+    syms = _universe_symbols(strategy, dataset)
+    if not syms:
+        return _empty("리포트 대상 종목 데이터가 없습니다.")
+    sym = syms[0]
+    df = dataset.get(sym)
+    if df is None or "Close" not in df.columns or df["Close"].dropna().empty:
+        return _empty(f"{sym} 가격 데이터가 없습니다.")
+    close = df["Close"].astype(float).dropna()
+    asof = close.index[-1]
+    last = float(close.iloc[-1])
+
+    def _ret(days):
+        if len(close) <= days:
+            return None
+        prev = float(close.iloc[-1 - days])
+        return (last / prev - 1.0) if prev > 0 else None
+    returns = {"1m": _ret(21), "3m": _ret(63), "6m": _ret(126), "12m": _ret(252)}
+
+    win = close.iloc[-252:]
+    hi_52w, lo_52w = float(win.max()), float(win.min())
+    pct_from_high = (last / hi_52w - 1.0) if hi_52w > 0 else None
+
+    rets = close.pct_change().dropna()
+    rwin = rets.iloc[-252:]
+    vol_ann = (float(rwin.std()) * (TRADING_DAYS ** 0.5)) if len(rwin) > 1 else None
+    dd = close / close.cummax() - 1.0
+    max_dd = float(dd.min()) if len(dd) else None
+
+    fundamentals = {}
+    for col in ("pb_ratio", "trailing_pe", "ev_ebitda"):
+        if col in df.columns:
+            s = df.loc[df.index <= asof, col].dropna()
+            fundamentals[col] = float(s.iloc[-1]) if len(s) else None
+        else:
+            fundamentals[col] = None
+
+    return {
+        "success": True, "query": "describe", "report": "single",
+        "symbol": sym, "sector": get_symbol_group(sym, "Sector"),
+        "as_of": str(asof)[:10], "data_points": int(len(close)),
+        "price": {"last": last, "returns": returns, "high_52w": hi_52w,
+                  "low_52w": lo_52w, "pct_from_52w_high": pct_from_high},
+        "risk": {"vol_annualized": vol_ann, "max_drawdown": max_dd},
+        "fundamentals": fundamentals,
+    }
+
+
+def run_portfolio_diagnosis(strategy: StrategyIR, dataset: dict) -> dict:
+    """포트폴리오 진단 — 보유 종목의 집중도·섹터노출·가중밸류·리스크 스냅샷(DESCRIBE+포트폴리오 대상).
+
+    universe.kind="portfolio", symbols=보유, universe.weights(없으면 동일가중). 시뮬 없음.
+    집중도(HHI·유효종목수)·섹터노출(분류)·가중 밸류·포트 변동성/평균상관을 보유 데이터로 결정적 계산.
+    미수집은 coverage로 정직 표기. 실제 계좌 포지션 배선은 별개(엔진은 명시 holdings 입력).
+    """
+    from ..expression_parser import get_symbol_group
+    u = strategy.universe
+    holdings = [s for s in u.symbols if s in dataset and dataset[s] is not None
+                and not dataset[s].empty and "Close" in dataset[s].columns]
+    if not holdings:
+        return _empty("진단할 보유 종목 데이터가 없습니다.")
+    raw = u.weights or {}
+    w = {s: float(raw[s]) for s in holdings if s in raw and float(raw[s]) > 0}
+    if not w:
+        w = {s: 1.0 for s in holdings}
+    tot = sum(w.values())
+    weights = {s: w.get(s, 0.0) / tot for s in holdings}
+    asof = max(dataset[s]["Close"].dropna().index[-1] for s in holdings)
+
+    wv = np.array([weights[s] for s in holdings], dtype=float)
+    hhi = float((wv ** 2).sum())
+    ws = sorted(wv, reverse=True)
+    concentration = {"hhi": hhi, "effective_n": (float(1.0 / hhi) if hhi > 0 else None),
+                     "top_weight": float(ws[0]), "top3_weight": float(sum(ws[:3]))}
+
+    sector_exposure: dict = {}
+    holdings_out = []
+    for s in holdings:
+        sec = get_symbol_group(s, "Sector")
+        sector_exposure[sec] = sector_exposure.get(sec, 0.0) + weights[s]
+        holdings_out.append({"symbol": s, "weight": weights[s], "sector": sec})
+
+    def _wavg(col):
+        num = wsum = 0.0
+        for s in holdings:
+            df = dataset[s]
+            if col in df.columns:
+                v = df.loc[df.index <= asof, col].dropna()
+                if len(v):
+                    num += weights[s] * float(v.iloc[-1]); wsum += weights[s]
+        return (num / wsum) if wsum > 0 else None
+    valuation = {"weighted_pb": _wavg("pb_ratio"), "weighted_pe": _wavg("trailing_pe")}
+
+    closes = pd.DataFrame({s: dataset[s]["Close"].astype(float) for s in holdings})
+    rets = closes.pct_change().dropna(how="any")
+    risk = {"portfolio_vol_annualized": None, "avg_pairwise_corr": None}
+    if rets.shape[0] > 1:
+        cov = rets[holdings].cov().to_numpy() * TRADING_DAYS
+        pvar = float(wv @ cov @ wv)
+        risk["portfolio_vol_annualized"] = float(pvar ** 0.5) if pvar >= 0 else None
+        if len(holdings) >= 2:
+            cc = rets[holdings].corr().to_numpy()
+            iu = np.triu_indices(len(holdings), k=1)
+            vals = cc[iu][np.isfinite(cc[iu])]
+            risk["avg_pairwise_corr"] = float(vals.mean()) if vals.size else None
+
+    return {
+        "success": True, "query": "describe", "report": "portfolio",
+        "as_of": str(asof)[:10], "n_holdings": len(holdings), "holdings": holdings_out,
+        "concentration": concentration, "sector_exposure": sector_exposure,
+        "valuation": valuation, "risk": risk,
+        "coverage": {"with_price": len(holdings),
+                     "with_fundamentals": sum(1 for s in holdings if "pb_ratio" in dataset[s].columns
+                                              and dataset[s]["pb_ratio"].dropna().shape[0] > 0)},
+    }
 
 
 # ── 이벤트 스터디 (비전 §4 시간축) ────────────────────────────────────────────
@@ -430,18 +811,18 @@ def _run_event_study(strategy: StrategyIR, dataset: dict) -> dict:
     syms = _universe_symbols(strategy, dataset)
     if not syms:
         return _empty("이벤트 분석 유니버스에 종목이 없습니다.")
-    windows = strategy.sweep.windows or [5, 10, 20]
-    basis = strategy.sweep.event_basis
-    ev_node = strategy.sweep.event or strategy.signal
-    ctx = EvalContext.from_dataset(_scoped(dataset, syms, ev_node, strategy.sweep.label))
+    windows = strategy.study.windows or [5, 10, 20]
+    basis = strategy.study.event_basis
+    ev_node = strategy.study.event or strategy.signal
+    ctx = EvalContext.from_dataset(_scoped(dataset, syms, ev_node, strategy.study.label))
     ev_panel = evaluate(ev_node, ctx)
     if not isinstance(ev_panel, pd.DataFrame):
         return _empty("이벤트 신호가 패널을 산출하지 않습니다.")
     ev_panel = ev_panel.astype(bool)
 
     label_panel = None
-    if strategy.sweep.label is not None:
-        lp = evaluate(strategy.sweep.label, ctx)
+    if strategy.study.label is not None:
+        lp = evaluate(strategy.study.label, ctx)
         label_panel = lp if isinstance(lp, pd.DataFrame) else None
 
     market = _market_index(dataset, syms) if basis == "excess" else None

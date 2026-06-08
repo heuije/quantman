@@ -9,7 +9,6 @@ preview cron이 build_user_preview→get_dataset(full)을 호출하던 것이 OO
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -21,7 +20,10 @@ pe = pytest.importorskip("app.preview_engine")
 
 
 def _strat(definition: dict):
-    return SimpleNamespace(definition=definition, id=1, engine="ir")
+    # _preview_dataset는 전략 *definition dict* 리스트를 받는다 — build_user_preview가
+    # [d["definition"] for d in ir_defs]로 호출(C1 리팩터 후 ORM/객체 아닌 plain dict).
+    # 테스트도 동일 계약으로 definition dict를 그대로 전달한다.
+    return definition
 
 
 _ALL_MOM = _strat({

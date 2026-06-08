@@ -20,6 +20,8 @@ def capability_spec() -> dict:
              "use_for": "소수 종목 고정 바스켓 (세부조건으로 2차 선별 가능)"},
             {"value": "all", "does": "데이터 보유 전체 종목",
              "use_for": "전체 유니버스 팩터/포트폴리오 (scheduled·always 진입과 함께)"},
+            {"value": "portfolio", "does": "내 보유 종목 집합(진단 대상). universe.weights로 비중(없으면 동일가중)",
+             "use_for": "포트폴리오 진단 — 집중도(HHI)·섹터 노출·가중 밸류·포트 변동성. query=describe와 함께."},
         ],
         "screener": {
             "field": "universe.screener",
@@ -151,43 +153,88 @@ def capability_spec() -> dict:
             {"value": "replace", "does": "빈 슬롯을 차순위 종목으로 즉시 충원",
              "use_for": "항상 top_n 종목 수를 채워 풀투자 유지."},
         ],
-        "period_split": [
-            {"value": "single", "does": "단일 구간 1회 백테스트(기본)"},
-            {"value": "walk_forward", "does": "1회 실행 후 수익을 시간순 4등분해 구간별 성과 일관성 확인(재학습 없음)",
-             "use_for": "'시간이 지나도 성과가 일관적인가' 강건성 점검."},
-            {"value": "oos", "does": "1회 실행 후 앞/뒤 2등분 구간별 성과(재학습 없음)"},
-            {"value": "kfold", "does": "현재 walk_forward와 동일(시간순 4등분) — 진짜 교차검증(fold 회전) 아님"},
+        # 질문(query) — '무엇을 묻는가'의 동사. 기본은 simulate(손익 백테스트).
+        # describe·relate는 분석 질문(신호 분포·예측력)으로, study.target_node 등 분석 입력을 동반.
+        "query": [
+            {"value": "simulate", "does": "전략 모의매매(손익)",
+             "use_for": "백테스트 — 기본"},
+            {"value": "select",
+             "does": "as-of 스냅샷에서 score를 횡단 랭크해 상위 종목을 선별(시계열 시뮬 없음)",
+             "use_for": "저평가주·고배당주 등 '조건 맞는 상위 N개 종목' 스크리닝. "
+                        "signal=랭킹 score(예: 낮은 PBR), universe.screener로 섹터·자격 필터, "
+                        "select.top_n/top_pct·descending·display(근거 지표)."},
+            {"value": "describe", "does": ("살펴보기 — 대상에 따라: 단일종목(universe.kind=single)=가격·수익·"
+                                           "리스크·밸류·섹터 360 리포트; 포트폴리오(kind=portfolio)=집중·섹터노출·"
+                                           "리스크 진단; 종목군(kind=all/list)=임의 score 노드 값의 분포·요약(study.target_node)"),
+             "use_for": "'이 종목 어때'(single)·'내 포트폴리오 진단'(portfolio)·신호 분포 연구(all/list+target_node)."},
+            {"value": "relate", "does": "factor↔forward수익 횡단 IC(또는 event 지정 시 이벤트 스터디)",
+             "use_for": "예측력·이벤트 반응. IC=study.target_node·windows·universe.kind!=single; "
+                        "이벤트 스터디=study.event·windows."},
         ],
-        # 펼침/분석(sweep) — axis(어떻게 나눠 볼까)와 target(무엇을 측정할까)은 직교.
-        # 기본은 단일 백테스트(axis='none'·target='return'). 분석 펼침은 명시 요청 시에만.
-        "sweep_axis": [
-            {"value": "none", "does": "펼침 없이 단일 백테스트(기본)"},
-            {"value": "parameter", "does": "param_grid의 점경로별 값 격자로 반복",
+        # SELECT 동사 전용 설정 — query="select"일 때만. as-of 단면 랭킹 스크리닝의 모양 제어.
+        "select": {
+            "field": "select",
+            "does": "SELECT 동사 설정 — as_of(기준시점·기본 latest)·top_n|top_pct·descending·display(근거 지표).",
+            "use_for": "스크리닝 결과 모양 제어. 저PBR=descending:false, 고배당=descending:true 등.",
+        },
+        # 스터디(study) — 질문을 한 축(axis)으로 펼치고 환원(reduction)한다. axis·reduction은 직교.
+        # 기본은 단일 실행(axis='none'·reduction='enumerate'). 펼침은 명시 요청 시에만.
+        "study_axis": [
+            {"value": "none", "does": "펼침 없이 단일 실행(기본)",
+             "use_for": "한 번만 돌릴 때."},
+            {"value": "parameter", "does": "param_grid의 점경로별 값 격자로 재실행",
              "use_for": "'기간·비용 등을 바꿔가며 성과 비교'(민감도·최적화). 축 2개+면 데카르트곱."},
-            {"value": "condition",
-             "does": "1회 백테스트의 종목별 기여(비중×수익)를 임의 라벨로 그룹 분할해 그룹별 성과 비교",
+            {"value": "entity", "does": "assets 목록의 종목별 개별 성과",
+             "use_for": "'종목마다 따로 성과를 본다'. assets(종목 목록) 필요."},
+            {"value": "label",
+             "does": "1회 실행의 종목별 기여(비중×수익)를 임의 라벨로 사후 그룹 분할해 그룹별 비교",
              "use_for": "라벨이 종목 함수면 '섹터·업종별'(label=attribute('Sector'·'Industry'))·'종목별'; "
                         "일 함수면 '시장 국면별'(label=bucket(임의 신호) — 예: S&P가 20일선 위/아래)·"
                         "'요일·월별'(label=calendar)·'점수 구간별'(label=bucket). 섹터×국면 조합도 가능. "
-                        "label은 기존 블록(bucket·calendar·attribute + 임의 신호 조립)으로 자유 구성. label 필수, target='return'."},
-            {"value": "asset", "does": "assets 목록의 종목별 개별 성과",
-             "use_for": "'종목마다 따로 성과를 본다'."},
-            {"value": "time", "does": "이벤트 시점 기준 forward 수익 분포(event·windows)",
-             "use_for": "'이벤트 발생 후 N일 수익'(이벤트 스터디). event 미지정 시 signal 사용."},
+                        "label은 기존 블록(bucket·calendar·attribute + 임의 신호 조립)으로 자유 구성. label 필수."},
+            {"value": "time_fold", "does": "1회 실행 후 수익을 시간순 폴드(folds)로 나눠 구간별 성과 일관성 확인(재학습 없음)",
+             "use_for": "'시간이 지나도 성과가 일관적인가' 강건성 점검(OOS). reduction=consistency와 함께. "
+                        "folds로 분할 수(기본 4), split_dates로 명시 경계도 가능."},
         ],
-        "sweep_target": [
-            {"value": "return", "does": "전략 일별수익(기본). axis로 분할·반복.",
-             "use_for": "손익·성과가 답일 때. target_node 불필요."},
-            {"value": "signal", "does": "임의 score 노드 *값*의 분포를 (선택)라벨별로 — 신호 자체 연구",
-             "use_for": "신호 반감기·레짐별 분포. sweep.target_node(score 또는 condition) 필요."},
-            {"value": "relation", "does": "factor 노드와 forward수익의 횡단 IC 시계열 — 예측력·팩터 타이밍",
-             "use_for": "팩터 예측력 측정. target_node·windows 필요, universe.kind!=single."},
+        "study_reduction": [
+            {"value": "enumerate", "does": "축의 모든 점을 그대로 나열(각 셀의 성과)"},
+            {"value": "contrast", "does": "축의 그룹들을 대조하고 차이의 통계 검정",
+             "use_for": "label축 그룹 비교 — 국면·섹터 간 성과 차이가 유의한가."},
+            {"value": "consistency", "does": "폴드 간 성과의 일관성 요약",
+             "use_for": "time_fold축 — 구간이 바뀌어도 성과가 유지되는가."},
+            {"value": "extremize", "does": "축의 셀 중 목적함수(objective)를 최대/최소화하는 최적 셀 선택 + OOS 과최적화 가드",
+             "use_for": "파라미터·종목 최적해 — '샤프 최대 파라미터'·'가장 나은 종목'. axis=parameter(+param_grid) "
+                        "또는 entity(+assets) + study.objective와 함께. (enumerate=모든 셀 나열과 구분 — 최적 1개 선택.)"},
         ],
-        "sweep_relation_kind": [
+        # extremize 목적함수 — metric(최적화 대상)·direction·과최적화 가드. summarize_returns 산출 지표만.
+        "objective_metric": [
+            {"value": "sharpe", "does": "샤프 비율(위험조정수익, 기본)"},
+            {"value": "sortino", "does": "소르티노(하방위험조정)"},
+            {"value": "cagr", "does": "연복리수익률(%)"},
+            {"value": "cum_return", "does": "누적수익률(%)"},
+            {"value": "mdd", "does": "최대낙폭(음수%) — ⚠ '낙폭 최소화'는 direction=max(0에 가까울수록 좋음)"},
+        ],
+        "objective_direction": [
+            {"value": "max", "does": "최대화"},
+            {"value": "min", "does": "최소화"},
+        ],
+        "objective": {
+            "field": "study.objective",
+            "does": "extremize 목적함수 — metric·direction·oos_guard(in-sample 최적을 시간폴드 OOS 일관성으로 교차검증).",
+            "use_for": "최적화 기준 지정. 기본=sharpe/max/guard. 예: '낙폭 최소'=metric:mdd+direction:max.",
+        },
+        "study_relation_kind": [
             {"value": "ic", "does": "횡단 정보계수(Information Coefficient) — 팩터값과 forward수익의 순위상관"},
+            {"value": "regression", "does": "다중 설명변수(factors)의 forward수익 횡단 회귀 — Fama-MacBeth 계수·t값·95% 신뢰구간",
+             "use_for": "'여러 팩터 중 무엇이 수익을 설명하나(상호 통제 후)'. study.factors=[score 블록들]·windows·universe 2+종목. 단일=ic."},
         ],
-        "sweep_event_basis": [
-            {"value": "close", "does": "종가→종가 수익(time축 기본)"},
+        "regression_factors": {
+            "field": "study.factors",
+            "does": "relation_kind=regression의 설명변수 목록(각 score/condition 블록). 날짜별 횡단 OLS로 동시 통제.",
+            "use_for": "다중팩터 회귀. 예: [pb_ratio, momentum, ...]. IC(target_node 단일)와 구분.",
+        },
+        "study_event_basis": [
+            {"value": "close", "does": "종가→종가 수익(이벤트 스터디 기본)"},
             {"value": "intraday", "does": "시가→종가 수익(당일 반등 포착)"},
             {"value": "excess", "does": "시장 대비 초과수익(universe.kind!=single 필요)"},
         ],

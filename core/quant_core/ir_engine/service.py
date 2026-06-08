@@ -15,7 +15,7 @@ from ..blocks import (
 )
 from ..blocks.validate import prioritize
 from .backtest import run_backtest_ir
-from .run import run_period_split, run_strategy_ir, run_sweep
+from .run import run_query
 from .spec import StrategyIR, validate_strategy
 
 # run_backtest_ir로 그대로 전달할 청산/체결/기간 파라미터 (None이면 drop → 엔진 기본값).
@@ -104,7 +104,7 @@ def strategy_from_spec(
 ) -> dict:
     """완전한 StrategyIR(dict)을 검증·실행. 단일/팩터/포트폴리오/펼침 모두 처리.
 
-    sweep.axis != none이면 펼침(resultset), 아니면 1회 백테스트.
+    query/study가 단일·펼침(resultset)·분석·기간분할 경로를 결정(run_query 디스패치).
     manifest 제공 시 데이터 무결성 4액션 게이트(생존편향·조정·PIT·가용성·캘린더)를 함께 적용.
     strict=True면 편향형 경고를 거부로 승격(실전 자금 투입 前 게이트).
     strategy_resolver(token)->자식 spec: strat:<id> 합성 자산을 물질화(전략 조합 G3). server가 주입.
@@ -138,13 +138,8 @@ def strategy_from_spec(
         return {"success": False, "error": errors[0].message,
                 "issues": [_issue_dict(i) for i in issues]}
 
-    # target!=return(신호값·IC 분석)은 axis와 무관하게 run_sweep이 전용 경로로 분기.
-    if s.sweep.axis != "none" or s.sweep.target != "return":
-        res = run_sweep(s, dataset)
-    elif s.simulation.period_split != "single" or s.simulation.split_dates:
-        res = run_period_split(s, dataset)
-    else:
-        res = run_strategy_ir(s, dataset)
+    # 최상위 디스패치 — query(동사) + study(펼침)로 단일/펼침/분석/기간분할 경로 선택.
+    res = run_query(s, dataset)
     if res.get("success"):
         res["warnings"] = [_issue_dict(i) for i in issues]
     return res

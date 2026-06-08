@@ -41,6 +41,28 @@ CASES = [
     ("TSMOM 롱숏",
      "코스피200선물을 20일 추세가 양이면 롱, 음이면 숏.",
      lambda ir: ir.get("position", {}).get("direction") == "long_short"),
+    ("저평가 반도체주 3개",
+     "저평가된 반도체 종목 3개만 골라줘 — PBR 낮은 순으로, PBR과 시가총액도 같이 보여줘.",
+     lambda ir: (ir.get("query") == "select"
+                 and (ir.get("select") or {}).get("top_n") == 3
+                 and (ir.get("select") or {}).get("descending") is False)),
+    ("단일종목 360 리포트",
+     "삼성전자 어때? 분석해줘.",
+     lambda ir: ir.get("query") == "describe" and ir.get("universe", {}).get("kind") == "single"
+                and bool(ir.get("universe", {}).get("symbols"))),
+    ("포트폴리오 진단",
+     "내 포트폴리오 진단해줘. 보유: 삼성전자, SK하이닉스, NAVER.",
+     lambda ir: ir.get("query") == "describe" and ir.get("universe", {}).get("kind") == "portfolio"
+                and len(ir.get("universe", {}).get("symbols", [])) >= 2),
+    ("최적 파라미터(extremize)",
+     "RSI 진입 임계값을 10부터 40까지 5단위로 바꿔가며 샤프를 최대화하는 값을 찾아줘.",
+     lambda ir: ir.get("study", {}).get("reduction") == "extremize"
+                and ir.get("study", {}).get("axis") == "parameter"),
+    ("다중팩터 회귀(relate)",
+     "PBR과 12개월 모멘텀이 forward 수익을 설명하는지 다중 횡단 회귀로 보여줘. 코스피 종목.",
+     lambda ir: ir.get("query") == "relate"
+                and ir.get("study", {}).get("relation_kind") == "regression"
+                and len(ir.get("study", {}).get("factors", [])) >= 1),
 ]
 
 
@@ -83,8 +105,8 @@ def main():
         print("=" * 64)
         print(f"[{label}] success={ok} prop={prop_ok} repair={res.get('repair_count')}")
         print("  direction:", ir.get("position", {}).get("direction"))
-        sw = ir.get("sweep", {}) or {}
-        print("  sweep.axis:", sw.get("axis"), "| param_grid 축:", len(sw.get("param_grid", []) or []))
+        st = ir.get("study", {}) or {}
+        print("  study.axis:", st.get("axis"), "| param_grid 축:", len(st.get("param_grid", []) or []))
         print("  assumptions:", json.dumps(res.get("assumptions") or [], ensure_ascii=False)[:300])
         if not ok:
             print("  error:", res.get("error"))

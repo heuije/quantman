@@ -28,6 +28,9 @@ from quant_core.ir_engine import capability_spec
 from quant_core.ir_engine.spec import StrategyIR
 
 # LLM에 의도적으로 숨기는 내부 전용 enum 값 — 비우는 게 기본. 추가 시 반드시 사유 주석.
+# query/study 평면(describe·relate·simulate / none·parameter·entity·label·time_fold /
+# enumerate·contrast·consistency)은 이제 capability_spec()이 query·study_axis·study_reduction
+# 항목으로 직접 기술한다(NL 컴파일러가 신 어휘를 산출). 숨길 내부 전용 값이 없으므로 비어 있다.
 _ALLOWLIST: set[str] = set()
 
 
