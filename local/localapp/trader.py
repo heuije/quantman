@@ -126,16 +126,20 @@ def _exit_reason_for(defn: dict, held_days: int,
         ir, held_days=held_days, dataset=dataset, symbol=symbol), None
 
 
-def held_qty_from_snapshot(snap: dict, symbol: str) -> int:
-    """account_snapshot positions에서 symbol의 실 보유 수량 합 — 단일 출처(L-04).
+def held_qty_from_snapshot(snap: dict, symbol: str, side: str = "long") -> int:
+    """account_snapshot positions에서 symbol·side의 실 보유 수량 합 — 단일 출처(L-04).
 
-    매도 발주 직전 over-sell 클램프의 공유 헬퍼. 장중 손절(intraday_stop)과 EOD
+    청산 발주 직전 over-close 클램프의 공유 헬퍼. 장중 손절(intraday_stop)과 EOD
     cycle 청산이 같은 기준으로 'KIS가 실제로 들고 있는 수량'을 읽어, ledger가
-    외부 수동매매로 drift해도 보유 초과 매도를 발주하지 않는다.
+    외부 수동매매로 drift해도 보유 초과 청산을 발주하지 않는다.
+
+    M5b: side 인지(롱/숏 분리). 주식·롱은 side='long' 기본(positions에 side 없으면 norm_side가
+    long→포함) — 종전 동작 보존. 숏 환매 클램프는 side='short'로 호출.
     """
+    from .analytics import norm_side
     return sum(int(p.get("qty") or 0)
                for p in (snap or {}).get("positions", [])
-               if p.get("symbol") == symbol)
+               if p.get("symbol") == symbol and norm_side(p.get("side")) == side)
 
 
 def clamp_sell_qty(broker_qty: int | None, ledger_qty: int) -> int | None:
@@ -543,8 +547,14 @@ class Trader:
 
         M3: _submit_buy/_submit_sell에 동일 derivation이 중복돼 있던 것을 단일화.
         _reserved_us는 __init__/매 cycle에서 항상 설정되므로 getattr 방어 불필요.
+
+        ⚠ M5b: **선물 제외**. 예약주문은 *대상 시장이 닫힌 시점*(미국주식)에 예약하는 흐름인데,
+        선물은 국내(KRX 주간)·해외(CME 거의 24h) 모두 예약 개념이 없다(KisFuturesBroker는
+        예약 메서드가 NotImplementedError 가드). 통화 휴리스틱상 해외선물(USD)이 여기 걸려
+        롱 진입조차 깨지던 것을 차단 — 선물은 즉시주문(buy_limit/sell_limit) 경로로 간다.
         """
-        return self._reserved_us and _currency_of(symbol) == "USD"
+        return (self._reserved_us and _currency_of(symbol) == "USD"
+                and not qc.is_futures(symbol))
 
     def _submit_buy(self, sid: str, strat_name: str, strat_def: dict,
                     symbol: str, qty: int, ref_price: float, policy: dict,
@@ -698,6 +708,47 @@ class Trader:
                 return
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, None, symbol, "sell", qty,
+                            ref_price, limit, policy, decisions, reason=reason)
+
+    def _submit_close_short(self, sid: str, strat_name: str, symbol: str, qty: int,
+                            ref_price: float, policy: dict, reason: str,
+                            decisions: list[dict]) -> None:
+        """숏 포지션 환매(buy-to-close) — 청산이므로 매수 주문이나 의미는 청산.
+
+        _submit_sell의 매수판. 선물 전용(숏은 선물만)이라 예약주문 분기 없음(선물은 즉시주문).
+        멱등 게이트는 'buy' intent. _after_submit side='buy' → _apply_fill(M4)이 숏 환매로
+        해석해 ledger 숏을 차감·정산손익 기록. tolerance는 매수(위로 허용).
+        """
+        today_iso = kst_today().isoformat()
+        if intents.is_active(today_iso, sid, symbol, "buy"):
+            log.info("[L-01] 중복 환매 차단 %s/%s", sid, symbol)
+            return
+        intent_id = intents.new_intent_id()
+        intents.begin(today_iso, intent_id, sid, strat_name, symbol, "buy", qty, ref_price)
+        if bool(policy["use_limit"]):
+            limit = qc.round_to_tick(ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
+                                     direction="up", currency=_currency_of(symbol))
+            limit = qc.apply_daily_price_limit(limit, ref_price, "buy", _currency_of(symbol))
+            try:
+                r = self.broker.buy_limit(symbol, qty, limit)
+            except Exception as e:
+                intents.mark_failed(today_iso, intent_id, f"buy_limit(close): {e}")
+                log.error("숏 환매 지정가 발주 실패 [%s]: %s", symbol, e)
+                decisions.append(order_log.decision(
+                    "error", sid, strat_name, symbol, f"환매 발주 예외: {e}"))
+                return
+        else:
+            limit = 0
+            try:
+                r = self.broker.buy(symbol, qty)
+            except Exception as e:
+                intents.mark_failed(today_iso, intent_id, f"buy(close): {e}")
+                log.error("숏 환매 시장가 발주 실패 [%s]: %s", symbol, e)
+                decisions.append(order_log.decision(
+                    "error", sid, strat_name, symbol, f"환매 발주 예외: {e}"))
+                return
+        intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
+        self._after_submit(r, sid, strat_name, None, symbol, "buy", qty,
                             ref_price, limit, policy, decisions, reason=reason)
 
     def _after_submit(self, r: dict, sid: str, strat_name: str,
@@ -1199,7 +1250,8 @@ class Trader:
             # L-04(EOD): 발주 직전 KIS 실 보유로 클램프 — 외부 수동매도 시 over-sell
             # 방지(intraday 손절과 동일 안전망, 같은 헬퍼). snap_pre는 cycle 진입부
             # 잔고 재사용이라 추가 KIS 호출 없음. ledger drift는 settlement reconcile이 정리.
-            held = held_qty_from_snapshot(snap_pre, pos["symbol"])
+            pos_side = pos.get("side", "long")
+            held = held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side)
             clamped = clamp_sell_qty(held, sell_qty)   # snap_pre 기반이라 None 아님
             if not clamped:                            # 0 = 외부 매도(보유 0)
                 log.info("[L-04 EOD] %s KIS 실 보유 0 (외부 매도 추정) — 청산 발주 skip",
@@ -1212,9 +1264,14 @@ class Trader:
                 log.info("[L-04 EOD] %s 청산 수량 클램프 ledger=%d → broker=%d",
                           pos["symbol"], sell_qty, clamped)
             sell_qty = clamped
-            self._submit_sell(sid, pos.get("strategy_name", ""), pos["symbol"],
-                              sell_qty, ref_price, policy, reason, decisions)
-            # sold_this_cycle은 sid 단위 — 같은 cycle 중복 매도 차단.
+            # M5b: 청산 방향은 포지션 side대로 — 롱=매도청산(_submit_sell), 숏=환매(buy-to-close).
+            if pos_side == "short":
+                self._submit_close_short(sid, pos.get("strategy_name", ""), pos["symbol"],
+                                         sell_qty, ref_price, policy, reason, decisions)
+            else:
+                self._submit_sell(sid, pos.get("strategy_name", ""), pos["symbol"],
+                                  sell_qty, ref_price, policy, reason, decisions)
+            # sold_this_cycle은 sid 단위 — 같은 cycle 중복 청산 차단.
             sold_this_cycle.add(sid)
 
         # ── 3. 진입 패스 (kill switch·drawdown 활성 시 건너뜀, preview 전용) ──
