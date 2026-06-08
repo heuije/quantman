@@ -260,6 +260,42 @@ def test_gate_draft_skips_direction_checks():
     _gate("draft", "short", ["005930"])
 
 
+# ── M1a: 선물 라이브 개방 플래그(QP_FUTURES_LIVE_ENABLED) — KOSPI200만, 기본 OFF ────
+def test_m1a_futures_blocked_when_flag_off(monkeypatch):
+    # 플래그 OFF(기본) → KOSPI200 선물은 tradable에 없어 차단(현재 동작·휴면)
+    import pytest
+    from fastapi import HTTPException
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    monkeypatch.delenv("QP_FUTURES_LIVE_ENABLED", raising=False)
+    with pytest.raises(HTTPException) as e:
+        _gate("live", "long", ["코스피200선물"])
+    assert e.value.status_code == 422
+
+
+def test_m1a_futures_allowed_when_flag_on(monkeypatch):
+    # 플래그 ON → KOSPI200 선물 라이브 승격 허용(M8 검증 후 운영자가 켬)
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    monkeypatch.setenv("QP_FUTURES_LIVE_ENABLED", "1")
+    _gate("live", "long", ["코스피200선물"])       # 예외 없으면 통과
+
+
+def test_m1a_short_kospi200_allowed_when_flag_on(monkeypatch):
+    # 숏+KOSPI200(M1b forward-compat) + M1a 개방 → 통과
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    monkeypatch.setenv("QP_FUTURES_LIVE_ENABLED", "1")
+    _gate("live", "short", ["코스피200선물"])
+
+
+def test_m1a_only_kospi200_overseas_futures_still_blocked(monkeypatch):
+    # KOSPI200만 개방 — 금선물(해외)은 플래그 ON이어도 tradable에 없어 차단
+    import pytest
+    from fastapi import HTTPException
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    monkeypatch.setenv("QP_FUTURES_LIVE_ENABLED", "1")
+    with pytest.raises(HTTPException):
+        _gate("live", "long", ["금선물"])
+
+
 # ── 비매매 유니버스·이벤트 세부조건 게이트 — 모의/실전 승격 차단 ─────────────────
 #
 # tradable 판정은 KIS 마스터(네트워크 다운로드)에 의존해 테스트 환경에선 비어 있다

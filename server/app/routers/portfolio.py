@@ -12,12 +12,27 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 import quant_core as qc
+from quant_core.exec_defaults import instrument_spec
 
 from ..db import get_session
 from ..deps import get_current_user
 from ..models import SyncSnapshot, User
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
+
+
+def _position_value(p: dict) -> float:
+    """보유 1종목의 평가금액 — 선물은 승수 반영(M9 F4). 주식은 multiplier=1로 무변경.
+
+    선물 1계약의 가치 = 가격 × 계약수 × 승수(예 KOSPI200 250,000). 승수를 빼면 1계약을 1주처럼
+    저평가해 비중·상관 노출이 왜곡된다. 가격 필드는 동기화 스냅샷 형태별로 다름(주식·해외선물
+    eval_price / 국내선물 settle_price / 차선 avg_price). instrument_spec.multiplier가 단일 출처."""
+    sym = p.get("symbol") or ""
+    price = (float(p.get("eval_price", 0) or 0)
+             or float(p.get("settle_price", 0) or 0)
+             or float(p.get("avg_price", 0) or 0))
+    qty = float(p.get("qty", 0) or 0)
+    return price * qty * instrument_spec(sym).multiplier
 
 
 # ── 포트폴리오 비교 분석 (현재 vs 예상) — on-demand fetch ─────────────────────
@@ -171,7 +186,7 @@ def portfolio_holdings(user: User = Depends(get_current_user),
     rows = []
     for p in positions:
         sym = p.get("symbol")
-        amt = float(p.get("eval_price", 0) or 0) * float(p.get("qty", 0) or 0)
+        amt = _position_value(p)
         if sym and amt > 0:
             rows.append((sym, amt))
     total = sum(a for _, a in rows) or 1.0
@@ -214,7 +229,7 @@ def portfolio_risk(window: int = 60,
         closes = df["Close"].tail(window + 1).tolist()
         rets = [(closes[i] - closes[i - 1]) / closes[i - 1]
                 for i in range(1, len(closes)) if closes[i - 1]]
-        eval_v = float(p.get("eval_price", 0) or 0) * float(p.get("qty", 0) or 0)
+        eval_v = _position_value(p)
         valid.append((sym, rets, eval_v))
 
     syms = [s for s, _, _ in valid]
