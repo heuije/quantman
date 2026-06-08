@@ -22,7 +22,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import quant_core as qc
-from quant_core.exec_defaults import merged_execution
+from quant_core.exec_defaults import instrument_spec, merged_execution
 
 from .broker import Broker
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
@@ -364,49 +364,101 @@ class Trader:
         # M3: self.ledger 읽기-수정-쓰기를 단일 락으로 직렬화 — WS 체결 thread·
         # monitor·cycle이 같은 원장을 동시 변경하는 race(lost update) 차단.
         with _CYCLE_LOCK:
+            # M4 — 선물 인지 회계: ledger에 side(long/short) 추적, 청산 시 정산손익 기록.
+            # 주식(equity)은 항상 long·multiplier=1이라 기존 경로와 동일(side="long" 키만 추가).
+            # 선물 정산손익 = (청산−진입)×계약수×승수×부호(롱+1/숏−1).
+            spec = instrument_spec(symbol)
+            is_fut = spec.asset_class == "futures"
+            mult = spec.multiplier
+            realized: float | None = None       # 선물 청산 실현손익(정산)
+            pxs = f"${fill_price:,.2f}" if spec.currency == "USD" else f"{fill_price:,.2f}"
+
             if side == "buy":
-                if sid in self.ledger:
-                    # 추가 매수 — 평균단가 갱신
-                    lg = self.ledger[sid]
+                lg = self.ledger.get(sid)
+                if lg is not None and lg.get("side", "long") == "short":
+                    # 숏 환매(close/축소) — 선물만 숏 보유 가능. 정산 = (진입−청산)×계약×승수.
+                    realized = (lg["entry_price"] - fill_price) * filled_qty * mult
+                    lg["qty"] -= filled_qty
+                    if lg["qty"] <= 0:
+                        del self.ledger[sid]
+                elif lg is not None:
+                    # 추가 매수(롱) — 평균단가 갱신
                     total = lg["qty"] + filled_qty
                     # L-05 — 정상 경로엔 두 값 모두 양수라 안전하나, 경로 변경 또는
-                    # 비정상 fill_qty/ledger qty=0 잔존 시 ZeroDivisionError 잠재.
-                    # 1줄 가드로 명시. 둘 다 0이면 의미 없는 호출이므로 조용히 return.
+                    # 비정상 fill_qty/ledger qty=0 잔존 시 ZeroDivisionError 잠재. 1줄 가드.
                     if total <= 0:
                         return
                     lg["entry_price"] = (lg["entry_price"] * lg["qty"]
                                           + fill_price * filled_qty) / total
                     lg["qty"] = total
                 else:
+                    # 신규 롱 진입
                     self.ledger[sid] = {
                         "symbol": symbol, "qty": filled_qty,
                         "entry_date": today, "entry_price": fill_price,
-                        "peak_price": fill_price,
+                        "peak_price": fill_price, "side": "long",
                         "strategy_name": p.get("strategy_name", ""),
                         "definition": p.get("definition", {}),
                     }
                 ev = {"ts": today, "action": "buy", "symbol": symbol,
                       "qty": filled_qty, "price": fill_price,
-                      "strategy": p.get("strategy_name", ""), "reason": "매수신호"}
+                      "strategy": p.get("strategy_name", ""),
+                      "reason": ("숏청산" if realized is not None else "매수신호")}
+                if realized is not None:
+                    ev["realized_pnl"] = round(realized, 2)
                 self._log_trade(ev)
+                if is_fut:
+                    detail = f"{filled_qty}계약 @ {pxs}"
+                    if realized is not None:
+                        detail += f" 정산 {realized:+,.0f}"
+                else:
+                    detail = f"{filled_qty}주 @ {fill_price:,.0f}원"
                 decisions.append(order_log.decision(
-                    "bought", sid, p.get("strategy_name", ""), symbol,
-                    f"{filled_qty}주 @ {fill_price:,.0f}원",
+                    "bought", sid, p.get("strategy_name", ""), symbol, detail,
                     {"intended": intended, "fill": fill_price}))
             else:
-                if sid in self.ledger:
-                    lg = self.ledger[sid]
+                lg = self.ledger.get(sid)
+                if lg is not None and lg.get("side", "long") == "short":
+                    # 숏 추가(확대) — 평균단가 갱신
+                    total = lg["qty"] + filled_qty
+                    if total <= 0:
+                        return
+                    lg["entry_price"] = (lg["entry_price"] * lg["qty"]
+                                          + fill_price * filled_qty) / total
+                    lg["qty"] = total
+                elif lg is not None:
+                    # 롱 청산/축소 — 선물이면 정산손익 = (청산−진입)×계약×승수.
+                    if is_fut:
+                        realized = (fill_price - lg["entry_price"]) * filled_qty * mult
                     lg["qty"] -= filled_qty
                     if lg["qty"] <= 0:
                         del self.ledger[sid]
+                elif is_fut:
+                    # 신규 숏 진입 (선물만 — sell-to-open). 주식은 보유 없는 매도=무동작(보존).
+                    self.ledger[sid] = {
+                        "symbol": symbol, "qty": filled_qty,
+                        "entry_date": today, "entry_price": fill_price,
+                        "peak_price": fill_price, "side": "short",
+                        "strategy_name": p.get("strategy_name", ""),
+                        "definition": p.get("definition", {}),
+                    }
                 ev = {"ts": today, "action": "sell", "symbol": symbol,
                       "qty": filled_qty, "price": fill_price,
                       "strategy": p.get("strategy_name", ""),
                       "reason": p.get("reason", "")}
+                if realized is not None:
+                    ev["realized_pnl"] = round(realized, 2)
                 self._log_trade(ev)
+                if is_fut:
+                    detail = f"{filled_qty}계약 @ {pxs}"
+                    if realized is not None:
+                        detail += f" 정산 {realized:+,.0f}"
+                    if p.get("reason"):
+                        detail += f" ({p.get('reason')})"
+                else:
+                    detail = f"{filled_qty}주 @ {fill_price:,.0f}원 ({p.get('reason', '')})"
                 decisions.append(order_log.decision(
-                    "sold", sid, p.get("strategy_name", ""), symbol,
-                    f"{filled_qty}주 @ {fill_price:,.0f}원 ({p.get('reason', '')})"))
+                    "sold", sid, p.get("strategy_name", ""), symbol, detail))
 
         # Q5 Tier 1 — 체결 직후 kill switch 평가. 시초가 매수가 장중에 잡혀 자본이
         # day_start 대비 -X% 도달하는 정확한 순간을 잡는다. _daily_loss_limit_pct가
