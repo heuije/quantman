@@ -339,6 +339,30 @@ export default function FuturesAnalytics() {
       <section className="panel" style={{ marginBottom: 16 }}>
         <h2 className="section-title">
           BACKTEST DETAIL · 백테스트 상세 {selected && <span className="title-tag">{selected.side.toUpperCase()} {priceSym}{selected.threshold} × {selected.horizon}D</span>}
+          {selected && backtest && (
+            <button
+              className="export-btn"
+              disabled={exporting}
+              title="임계·보유기간·비용·롤을 엑셀에서 바꿔가며 재계산 (앱 결과와 일치)"
+              onClick={async () => {
+                setExporting(true);
+                try {
+                  await futuresApi.exportExcel(symbol, {
+                    side: selected.side,
+                    threshold: selected.threshold,
+                    horizon_days: selected.horizon,
+                    roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
+                  });
+                } catch (e) {
+                  alert("엑셀 내보내기 실패: " + (e as Error).message);
+                } finally {
+                  setExporting(false);
+                }
+              }}
+            >
+              {exporting ? "엑셀 생성 중…" : "📥 엑셀로 내보내기 (라이브 수식)"}
+            </button>
+          )}
         </h2>
 
         {/* 🅒 SL/TP 시뮬레이터 */}
@@ -405,35 +429,7 @@ export default function FuturesAnalytics() {
         ) : btLoading || !backtest ? (
           <div className="muted">백테스트 실행 중…</div>
         ) : (
-          <>
-            <div className="bt-export">
-              <button
-                className="ghost"
-                disabled={exporting}
-                onClick={async () => {
-                  setExporting(true);
-                  try {
-                    await futuresApi.exportExcel(symbol, {
-                      side: selected.side,
-                      threshold: selected.threshold,
-                      horizon_days: selected.horizon,
-                      roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
-                    });
-                  } catch (e) {
-                    alert("엑셀 내보내기 실패: " + (e as Error).message);
-                  } finally {
-                    setExporting(false);
-                  }
-                }}
-              >
-                {exporting ? "엑셀 생성 중…" : "📥 엑셀로 내보내기 (라이브 수식)"}
-              </button>
-              <span className="muted bt-export-help">
-                임계·보유기간·비용·롤을 엑셀에서 바꿔가며 재계산 (앱 결과와 일치)
-              </span>
-            </div>
-            <BacktestDetail bt={backtest} side={selected.side} cur={cur} curCode={curCode} priceSym={priceSym} />
-          </>
+          <BacktestDetail bt={backtest} side={selected.side} cur={cur} curCode={curCode} priceSym={priceSym} />
         )}
       </section>
 
