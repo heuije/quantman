@@ -10,14 +10,26 @@
 - 잔고  CTFO6118R(실전)/VTFO6118R(모의) GET .../trading/inquire-balance
         output: pdno·cblc_qty(계약수)·ccld_avg_unpr1(평단)·excc_unpr(정산가)·trad_pfls_amt(손익)
 
-⚠ 미검증: 실제 KIS 연결(토큰·주문 응답·잔고 output1/2 구조·시장가 ORD_DVSN_CD)은 자격증명이
-있어야 검증 가능 — **국내선물 모의(virtual=True)부터** 1회 검증 후 실전. 이 모듈은 *자동 Trader
-루프에 아직 배선되지 않음*(standalone) — 임의 발주가 일어나지 않는다. build/parse 순수함수는
-모의 응답으로 단위검증됨.
+라이브 모의 검증(2026-06-08, VTFO6118R):
+- ✅ 토큰 발급·잔고조회 정상. 잔고 필수 파라미터 MGNA_DVSN·EXCC_STAT_CD·CTX_AREA_FK/NK200
+  확정(누락 시 KIS가 'INPUT_FIELD_NAME MGNA_DVSN'로 거절). output1=포지션 list·output2=계좌요약 dict.
+- ⚠ 미검증(파생 모의계좌 증거금 0이라 보류): 주문 성공 응답(ODNO)·포지션 행 키(output1[0])·
+  시장가 ORD_DVSN_CD(모의 미지원 가능성). 파생상품 모의투자 충전 후 1회 검증 필요.
+
+이 모듈은 *자동 Trader 루프에 아직 배선되지 않음*(standalone) — 임의 발주가 일어나지 않는다.
+build/parse/params 순수함수는 단위검증됨.
 """
 from __future__ import annotations
 
+import json
+
 import requests
+
+
+def _json(resp) -> dict:
+    """KIS 응답을 UTF-8로 명시 디코딩. KIS는 charset=utf-8 본문을 주지만 requests 자동탐지가
+    한글(종목명·메시지)을 U+FFFD로 깨뜨리는 경우가 있어 r.json() 대신 사용한다."""
+    return json.loads(resp.content.decode("utf-8"))
 
 _REAL = "https://openapi.koreainvestment.com:9443"
 _VTS = "https://openapivts.koreainvestment.com:29443"
@@ -47,10 +59,28 @@ def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
     }
 
 
-def parse_futures_balance(resp: dict) -> dict:
-    """CTFO6118R 응답 → {positions:[{symbol,qty,avg_price,eval_price,pnl}]}.
+def build_balance_params(cano: str, acnt_prdt_cd: str) -> dict:
+    """VTFO6118R/CTFO6118R 잔고조회 파라미터. 순수함수 — 단위검증 대상.
 
-    종목별 잔고 배열(output1 추정). 0계약 종목은 제외. ⚠ output1/output2 키는 모의 응답으로 확정 필요.
+    라이브 모의 검증: MGNA_DVSN·EXCC_STAT_CD·CTX_AREA_FK200·CTX_AREA_NK200 필수
+    (누락 시 KIS가 'INPUT_FIELD_NAME MGNA_DVSN'로 거절). MGNA_DVSN 01=위탁증거금.
+    """
+    return {
+        "CANO": cano,
+        "ACNT_PRDT_CD": acnt_prdt_cd,             # 선물옵션 "03"
+        "MGNA_DVSN": "01",                        # 01: 위탁증거금
+        "EXCC_STAT_CD": "1",                      # 1: 정산가 기준
+        "CTX_AREA_FK200": "",                     # 연속조회 키(최초 공란)
+        "CTX_AREA_NK200": "",
+    }
+
+
+def parse_futures_balance(resp: dict) -> dict:
+    """잔고 응답 → {positions:[{symbol,qty,avg_price,eval_price,pnl}], account:{...}}.
+
+    output1=종목별 포지션 배열(0계약 제외), output2=계좌 요약(주문가능현금·증거금·예수금·평가손익).
+    output1=list·output2=dict 형태는 라이브 모의(VTFO6118R)로 확정. 단 포지션 행 키(cblc_qty 등)는
+    보유 포지션이 없어 KIS 공식 spec 기준(라이브 미확정 — 파생 모의 충전 후 검증).
     """
     holdings = resp.get("output1")
     if not isinstance(holdings, list):
@@ -73,7 +103,26 @@ def parse_futures_balance(resp: dict) -> dict:
             "eval_price": float(r.get("excc_unpr", 0) or 0),
             "pnl": float(r.get("trad_pfls_amt", 0) or 0),
         })
-    return {"positions": positions}
+
+    summary = resp.get("output2")
+    if isinstance(summary, list):                 # 일부 TR은 output2를 단일원소 배열로 반환
+        summary = summary[0] if summary else {}
+    if not isinstance(summary, dict):
+        summary = {}
+
+    def _num(key):
+        try:
+            return float(summary.get(key, 0) or 0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    account = {
+        "order_cash": _num("ord_psbl_cash"),      # 주문가능현금
+        "margin_total": _num("mgna_tota"),        # 증거금 합계
+        "deposit_cash": _num("dnca_cash"),        # 예수금(현금)
+        "eval_pnl": _num("futr_evlu_pfls_amt"),   # 선물 평가손익
+    }
+    return {"positions": positions, "account": account}
 
 
 class KisFuturesBroker:
@@ -104,7 +153,7 @@ class KisFuturesBroker:
                           json={"grant_type": "client_credentials",
                                 "appkey": self.key, "appsecret": self.secret}, timeout=10)
         r.raise_for_status()
-        d = r.json()
+        d = _json(r)
         self._tok = d["access_token"]
         self._tok_exp = time.time() + int(d.get("expires_in", 86400))
         return self._tok
@@ -135,14 +184,14 @@ class KisFuturesBroker:
         r = requests.post(f"{self.base}{_ORDER_PATH}", headers=self._headers(self._order_tr()),
                           json=body, timeout=10)
         r.raise_for_status()
-        return r.json()
+        return _json(r)
 
     def account_snapshot(self) -> dict:
-        params = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd}
+        params = build_balance_params(self.cano, self.acnt_prdt_cd)
         r = requests.get(f"{self.base}{_BALANCE_PATH}", headers=self._headers(self._balance_tr()),
                          params=params, timeout=10)
         r.raise_for_status()
-        return parse_futures_balance(r.json())
+        return parse_futures_balance(_json(r))
 
     # ── phase 2 (모의 검증 후 구현) — 시장가·정정취소·체결조회·실시간·시세 ──────────
     def buy(self, symbol: str, qty: int) -> dict:

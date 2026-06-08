@@ -1,7 +1,7 @@
-"""KisFuturesBroker 순수 헬퍼 — 주문 바디(TTTO1101U)·잔고 파싱(CTFO6118R) 단위검증.
+"""KisFuturesBroker 순수 헬퍼 — 주문 바디(TTTO1101U)·잔고 파라미터·잔고 파싱(VTFO6118R) 단위검증.
 
-네트워크·자격증명 없이 검증 가능한 부분만(build/parse). 실제 KIS 주문·토큰·잔고 output 구조는
-국내선물 모의(virtual=True) 연결 시점에 검증(#4 phase2). 계약수 기반 단위 확인.
+네트워크·자격증명 없이 검증 가능한 부분만(build/params/parse/_json). 잔고 파라미터·output1/2 형태는
+라이브 모의(2026-06-08)로 확정. 주문 성공 응답·포지션 행 키·시장가 코드는 파생 모의 충전 후 검증(phase2).
 
     cd platform/local && python -m pytest tests/test_kis_futures_broker.py -q
 """
@@ -14,7 +14,12 @@ _LOCAL = Path(__file__).resolve().parent.parent   # tests → local
 if str(_LOCAL) not in sys.path:
     sys.path.insert(0, str(_LOCAL))
 
-from localapp.kis_futures_broker import build_futures_order_body, parse_futures_balance
+from localapp.kis_futures_broker import (
+    _json,
+    build_balance_params,
+    build_futures_order_body,
+    parse_futures_balance,
+)
 
 
 def test_build_order_body_buy():
@@ -42,6 +47,15 @@ def test_build_order_body_bad_side():
                                  qty=1, price=1, side="hold")
 
 
+def test_build_balance_params():
+    # 라이브 검증: MGNA_DVSN 누락 시 KIS가 'INPUT_FIELD_NAME MGNA_DVSN'로 거절 → 필수.
+    p = build_balance_params("50188802", "03")
+    assert p["CANO"] == "50188802" and p["ACNT_PRDT_CD"] == "03"
+    assert p["MGNA_DVSN"] == "01"               # 위탁증거금 (필수)
+    assert p["EXCC_STAT_CD"] == "1"             # 정산가 기준 (필수)
+    assert "CTX_AREA_FK200" in p and "CTX_AREA_NK200" in p   # 연속조회 키 (필수)
+
+
 def test_parse_balance_contracts():
     resp = {"output1": [
         {"pdno": "167R12", "cblc_qty": "2", "ccld_avg_unpr1": "344.70",
@@ -55,5 +69,29 @@ def test_parse_balance_contracts():
     assert p["avg_price"] == 344.70 and p["eval_price"] == 345.70 and p["pnl"] == 500000.0
 
 
+def test_parse_balance_account_summary():
+    # output2 = 계좌 요약(라이브 모의 VTFO6118R 키). 자동매매가 쓰는 주문가능현금·증거금.
+    resp = {"output1": [], "output2": {
+        "ord_psbl_cash": "5000000", "mgna_tota": "1200000",
+        "dnca_cash": "5000000", "futr_evlu_pfls_amt": "-30000"}}
+    out = parse_futures_balance(resp)
+    assert out["positions"] == []
+    acc = out["account"]
+    assert acc["order_cash"] == 5000000.0 and acc["margin_total"] == 1200000.0
+    assert acc["deposit_cash"] == 5000000.0 and acc["eval_pnl"] == -30000.0
+
+
 def test_parse_balance_empty():
-    assert parse_futures_balance({}) == {"positions": []}
+    # output1/output2 부재여도 안전. account는 0으로 채움.
+    out = parse_futures_balance({})
+    assert out["positions"] == []
+    assert out["account"] == {"order_cash": 0.0, "margin_total": 0.0,
+                              "deposit_cash": 0.0, "eval_pnl": 0.0}
+
+
+def test_json_decodes_utf8_korean():
+    # KIS는 charset=utf-8 본문을 주지만 requests 자동탐지가 한글을 깨뜨림 → 명시 UTF-8 디코딩.
+    class _Resp:
+        content = '{"rt_cd":"1","msg1":"모의투자 주문처리가 안되었습니다."}'.encode("utf-8")
+    out = _json(_Resp())
+    assert out["msg1"] == "모의투자 주문처리가 안되었습니다."
