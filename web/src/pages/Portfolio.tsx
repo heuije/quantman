@@ -211,7 +211,7 @@ function Results({ result }: { result: PortfolioAnalysis }) {
             <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
             <YAxis tick={{ fontSize: 11 }} width={44}
               tickFormatter={(v) => `${Math.round((v - 1) * 100)}%`} />
-            <Tooltip formatter={(v: number) => `${((v - 1) * 100).toFixed(1)}%`} />
+            <Tooltip formatter={(v) => `${((Number(v) - 1) * 100).toFixed(1)}%`} />
             <Legend />
             {current && <Line type="monotone" dataKey="현재" stroke={CUR_COLOR} strokeWidth={1.5} dot={false} />}
             {proposed && <Line type="monotone" dataKey="예상" stroke={PROP_COLOR} strokeWidth={2} dot={false} />}
