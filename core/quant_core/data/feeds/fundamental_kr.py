@@ -117,6 +117,26 @@ def _pick(fs, ids: list[str], nms: list[str]):
     return None
 
 
+# 총차입금(이자부부채) — OpenDART에 단일 '총차입금' 표준계정이 없어 표준 차입금 라인을 합산한다.
+# account_nm 우선(KR filer는 account_id가 비표준인 경우 많음). 비차입금 부채(매입채무·미지급금 등)는
+# 제외 → EV·net_debt는 *이자부부채* 기준(총부채 tl과 구분). 빠진 계정은 보수적 과소추정(정직).
+_DEBT_IDS = ["ifrs-full_ShorttermBorrowings", "ifrs-full_LongtermBorrowings",
+             "ifrs-full_BondsIssued", "ifrs-full_CurrentPortionOfLongtermBorrowings"]
+_DEBT_NMS = ["단기차입금", "유동성장기부채", "유동성장기차입금", "장기차입금", "사채", "유동성사채"]
+
+
+def _pick_sum(fs, ids: list[str], nms: list[str]):
+    """매칭되는 *모든* 행의 thstrm_amount 합 — 단일 표준계정이 없는 총차입금 등 다계정 항목용.
+    하나도 없으면 None(0으로 가장하지 않음 — 정직)."""
+    total = None
+    for _, r in fs.iterrows():
+        if str(r.get("account_id")) in ids or str(r.get("account_nm")) in nms:
+            v = _amt(r.get("thstrm_amount"))
+            if v is not None:
+                total = (total or 0.0) + v
+    return total
+
+
 def _report(code: str, year: int, reprt_code: str):
     """CFS(연결) 우선, 없으면 OFS(별도) — 백업 소스가 아니라 필러별 명세 차이."""
     dart = _client()
@@ -142,6 +162,7 @@ def fetch_one(code: str, years: list[int]) -> "object":
             if fs is None:
                 continue
             vals = {f: _pick(fs, d[0], d[1]) for f, d in _FIELD_DEFS.items()}
+            vals["td"] = _pick_sum(fs, _DEBT_IDS, _DEBT_NMS)   # 총차입금(다계정 합산)
             rcept = str(fs["rcept_no"].iloc[0])
             vals["_rcept"] = f"{rcept[:4]}-{rcept[4:6]}-{rcept[6:8]}" if len(rcept) >= 8 else None
             raw[q] = vals
@@ -176,6 +197,7 @@ def fetch_one(code: str, years: list[int]) -> "object":
             # BS: 분기말 시점값
             for f in _BS:
                 row[f] = v[f]
+            row["td"] = v.get("td")          # 총차입금(다계정 합산) — _FIELD_DEFS 단일픽 밖
             ocf, capex = row.pop("ocf"), row.pop("capex")
             row["fcf"] = (ocf - capex) if (ocf is not None and capex is not None) else None
             periods.append(row)
