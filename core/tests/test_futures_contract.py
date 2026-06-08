@@ -11,6 +11,7 @@ from datetime import date
 
 from quant_core.futures_contract import (
     OVERSEAS_ROOTS,
+    front_contract,
     futures_market,
     parse_front_month_domestic,
     parse_front_month_overseas,
@@ -120,3 +121,40 @@ def test_futures_market_routing():
     assert futures_market("금선물") == "CME"
     assert futures_market("원유선물") == "CME"
     assert futures_market("005930") == ""      # 주식은 선물 market 아님
+
+
+# ── front_contract — (계약코드, 만기일) 동시 해석 (M6 진입 시 ledger 기록용) ──────
+def test_front_contract_domestic_code_and_expiry():
+    # A01606(6월물) → 만기 = 2026-06 2번째 목요일 = 6/11
+    assert front_contract("코스피200선물", date(2026, 6, 7),
+                          domestic_master=_DOM) == ("A01606", date(2026, 6, 11))
+
+
+def test_front_contract_overseas_metals():
+    # GCM26(인도월 6월) → COMEX 금 3번째 마지막 영업일 = 6/26
+    assert front_contract("금선물", date(2026, 6, 7),
+                          overseas_master=_OV) == ("GCM26", date(2026, 6, 26))
+
+
+def test_front_contract_overseas_crude_prior_month():
+    # CLN26(인도월 7월) → 전월 6/25의 3영업일 전 = 6/22 (이름월=인도월이라 만기는 전월)
+    assert front_contract("원유선물", date(2026, 6, 7),
+                          overseas_master=_OV) == ("CLN26", date(2026, 6, 22))
+
+
+def test_front_contract_overseas_crypto():
+    # BTCM26(인도월 6월) → 마지막 금요일 = 6/26
+    assert front_contract("비트코인선물", date(2026, 6, 7),
+                          overseas_master=_OV) == ("BTCM26", date(2026, 6, 26))
+
+
+def test_front_contract_equity_none():
+    # 주식은 만기 개념 없음 → None (호출부 = Trader가 비선물엔 호출 안 함)
+    assert front_contract("005930", date(2026, 6, 7)) is None
+    assert front_contract("AAPL", date(2026, 6, 7)) is None
+
+
+def test_front_contract_without_master_none():
+    # 마스터 미수신 → None (발주 skip과 동일 — 추측 만기 금지)
+    assert front_contract("코스피200선물", date(2026, 6, 7)) is None
+    assert front_contract("금선물", date(2026, 6, 7)) is None

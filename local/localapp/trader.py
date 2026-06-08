@@ -17,12 +17,13 @@ import logging
 import os
 import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import quant_core as qc
 from quant_core.exec_defaults import instrument_spec, merged_execution
+from quant_core.futures_expiry import roll_lead_days
 
 from .broker import Broker
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
@@ -347,6 +348,56 @@ class Trader:
                 del self.pending[order_no]
             # else: 여전히 미체결 — 다음 폴링/사이클에서 재확인. 로컬 timeout 없음.
 
+    def _record_contract_meta(self, sid: str, symbol: str) -> None:
+        """신규 진입 ledger에 라이브 계약코드·만기일ISO 부착 (M6 만기 자동청산).
+
+        만기일은 진입 시점에 확정해 보관한다(현 front-month는 보유 중 롤로 바뀌므로 진입 때
+        고정). 비선물·브로커 미지원(SimBroker·구 배선)·해석 실패 시 키를 붙이지 않는다 —
+        **주식은 키가 안 붙어 ledger byte-identical**, 선물은 만기 미해석 시 백스톱만 비활성."""
+        if not qc.is_futures(symbol):
+            return                            # 주식: 만기 개념 없음 → 키 무부착(무변경)
+        lg = self.ledger.get(sid)
+        if lg is None:
+            return
+        fn = getattr(self.broker, "contract_expiry", None)
+        if fn is None:                        # SimBroker·구 배선 등 — 만기 해석 미지원
+            return
+        try:
+            code, exp = fn(symbol)
+        except Exception as e:                # noqa: BLE001 — 해석 실패는 미기록(진입 비차단)
+            log.warning("계약/만기 해석 실패 [%s]: %s", symbol, e)
+            return
+        if code:
+            lg["contract_code"] = code
+        if exp:
+            lg["expiry_date"] = exp.isoformat()
+        else:
+            log.warning("선물 진입 만기일 미해석 [%s] — 만기 백스톱 비활성", symbol)
+
+    def _expiry_close_reason(self, pos: dict, today: date) -> str | None:
+        """만기 백스톱(M6 tier-2) — 선물이 만기 임박이면 강제청산 사유, 아니면 None.
+
+        유저 청산규칙(_exit_reason_for)이 None일 때만 평가된다(tier-1 우선: 유저 롤오버/청산
+        규칙이 먼저, 미발동 시 이 백스톱이 만기 前 강제청산해 물리인도·현금정산으로 포지션이
+        사라지는 사고를 막는다). 만기일은 진입 시 ledger에 기록(_record_contract_meta).
+        lead = 상품 default_roll(days_before:N), 없으면 5일(futures_expiry.roll_lead_days).
+        만기 미기록(M6 이전 진입 등)이면 만기를 알 수 없어 백스톱 불가 → 경고 후 None."""
+        if not qc.is_futures(pos.get("symbol", "")):
+            return None
+        exp_iso = pos.get("expiry_date")
+        if not exp_iso:
+            log.warning("선물 보유 만기일 미기록 [%s] — 만기 백스톱 평가 불가(수동 점검 필요)",
+                        pos.get("symbol"))
+            return None
+        try:
+            exp = date.fromisoformat(exp_iso)
+        except (TypeError, ValueError):
+            return None
+        lead = roll_lead_days(instrument_spec(pos["symbol"]).default_roll)
+        if today >= exp - timedelta(days=lead):
+            return f"만기 자동청산(만기 {exp_iso})"
+        return None
+
     def _apply_fill(self, order_no: str, p: dict, filled_qty: int,
                     fill_price: float, decisions: list[dict],
                     partial: bool = False) -> None:
@@ -404,6 +455,7 @@ class Trader:
                         "strategy_name": p.get("strategy_name", ""),
                         "definition": p.get("definition", {}),
                     }
+                    self._record_contract_meta(sid, symbol)
                 ev = {"ts": today, "action": "buy", "symbol": symbol,
                       "qty": filled_qty, "price": fill_price,
                       "strategy": p.get("strategy_name", ""),
@@ -446,6 +498,7 @@ class Trader:
                         "strategy_name": p.get("strategy_name", ""),
                         "definition": p.get("definition", {}),
                     }
+                    self._record_contract_meta(sid, symbol)
                 ev = {"ts": today, "action": "sell", "symbol": symbol,
                       "qty": filled_qty, "price": fill_price,
                       "strategy": p.get("strategy_name", ""),
@@ -1271,6 +1324,12 @@ class Trader:
             # kill switch 활성 시 모든 보유 강제 청산(파싱 실패 고아 포함).
             if ks_active and not reason:
                 reason = "kill-switch"
+
+            # M6 tier-2 만기 백스톱: 유저 청산규칙 미발동 + 선물 만기 임박 → 강제청산.
+            # ledger 기록 만기 기반이라 정의 파싱 실패(고아)여도 평가된다 — 물리인도/현금정산
+            # 으로 포지션이 사라지기 전에 닫는 안전망(고아도 만기 임박이면 닫아야 안전).
+            if not reason and qc.is_futures(pos["symbol"]):
+                reason = self._expiry_close_reason(pos, today)
 
             if not reason:
                 # 파싱 실패 고아(구 스키마 등)는 청산 규칙 평가 불가 → 자동 청산이 안 된다

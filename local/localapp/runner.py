@@ -57,7 +57,11 @@ def make_broker() -> Broker:
     from .kis_futures_broker import KisFuturesBroker
     from .futures_contracts import ContractResolver
     from .broker_router import BrokerRouter
-    return BrokerRouter(stock, KisFuturesBroker(), resolve=ContractResolver().resolve)
+    # 단일 ContractResolver 인스턴스 — resolve(계약코드)와 resolve_expiry(M6 만기)가 같은
+    # 마스터 캐시(하루 1회 다운로드)를 공유한다(중복 다운로드 방지).
+    cr = ContractResolver()
+    return BrokerRouter(stock, KisFuturesBroker(),
+                        resolve=cr.resolve, resolve_expiry=cr.resolve_expiry)
 
 
 def _flush_pending() -> None:

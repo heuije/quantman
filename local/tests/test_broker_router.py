@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from localapp.broker_router import BrokerRouter
@@ -66,11 +68,13 @@ class _FakeFutures(_Fake):
         self.calls.append(("order_status", order_no)); return {"tag": "fut"}
 
 
-def _router():
+def _router(resolve_expiry=None):
     stock, fut = _FakeStock("stock"), _FakeFutures("fut")
     # 스텁 resolver: 선물 한글명 → 계약코드
     codes = {"금선물": "GCM26", "코스피200선물": "A01606"}
-    return BrokerRouter(stock, fut, resolve=lambda s: codes.get(s)), stock, fut
+    return (BrokerRouter(stock, fut, resolve=lambda s: codes.get(s),
+                         resolve_expiry=resolve_expiry),
+            stock, fut)
 
 
 # ── 라우팅 ────────────────────────────────────────────────────────────────────
@@ -135,3 +139,29 @@ def test_no_futures_broker_routes_all_to_stock():
     r = BrokerRouter(stock, None, resolve=lambda s: None)
     r.buy("금선물", 1)              # 선물브로커 없으면 선물도 stock으로(라우터 미사용 상정 방어)
     assert ("buy", "금선물", 1) in stock.calls
+
+
+# ── contract_expiry — 진입 시 ledger 기록용 (계약코드+만기일, M6) ──────────────
+def test_contract_expiry_futures_returns_code_and_date():
+    exp = {"금선물": ("GCM26", date(2026, 6, 26))}
+    r, _, _ = _router(resolve_expiry=lambda s: exp.get(s, (None, None)))
+    assert r.contract_expiry("금선물") == ("GCM26", date(2026, 6, 26))
+
+
+def test_contract_expiry_equity_returns_none():
+    # 주식은 선물 아님 → (None, None) (resolver 호출 안 함)
+    r, _, _ = _router(resolve_expiry=lambda s: ("X", date(2026, 1, 1)))
+    assert r.contract_expiry("005930") == (None, None)
+
+
+def test_contract_expiry_without_resolver_returns_none():
+    # resolve_expiry 미주입(구 배선 호환) → (None, None) → Trader는 만기 미기록
+    r, _, _ = _router(resolve_expiry=None)
+    assert r.contract_expiry("금선물") == (None, None)
+
+
+def test_contract_expiry_swallows_resolver_error():
+    def _boom(s):
+        raise RuntimeError("마스터 다운로드 실패")
+    r, _, _ = _router(resolve_expiry=_boom)
+    assert r.contract_expiry("금선물") == (None, None)   # 실패해도 진입 자체는 막지 않음

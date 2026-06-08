@@ -15,7 +15,7 @@ import zipfile
 import requests
 
 import quant_core as qc
-from quant_core.futures_contract import resolve_contract
+from quant_core.futures_contract import front_contract, resolve_contract
 
 log = logging.getLogger("localapp.futures_contracts")
 
@@ -55,3 +55,16 @@ class ContractResolver:
         today = datetime.date.today()
         self._ensure(today)
         return resolve_contract(symbol, today, domestic_master=self._dom, overseas_master=self._ov)
+
+    def resolve_expiry(self, symbol: str):
+        """선물 → (계약코드, 만기일date). 진입 시 ledger 기록용(M6 만기 자동청산).
+
+        resolve와 같은 마스터 캐시를 재사용(추가 다운로드 없음). 비선물·마스터 미수신·미해석
+        시 (None, None) → 호출부(BrokerRouter→Trader)는 만기 미기록(백스톱 비활성). 순수 해석은
+        quant_core.front_contract(단일 진실원천)."""
+        if not qc.is_futures(symbol):
+            return None, None
+        today = datetime.date.today()
+        self._ensure(today)
+        r = front_contract(symbol, today, domestic_master=self._dom, overseas_master=self._ov)
+        return r if r is not None else (None, None)
