@@ -177,14 +177,20 @@ def _refresh_us_fundamentals() -> None:
 
 
 def _refresh_kr_fundamentals() -> None:
-    """KR 펀더멘털(OpenDART 분기) — 증분 백필(10k콜/일 예산). dataset_kr(18:15) 직전 → 그 invalidate가 반영."""
+    """KR 펀더멘털(OpenDART 분기) — **현재값 우선 적재**(최근 2년 = 현재 TTM 산출 범위).
+
+    전 종목의 현재 pb/pe/ev/roic/마진을 빠르게 채워 스크리닝·360을 *전 종목* 즉시 가용하게 한다.
+    OpenDART 일일 20k콜 한도 내 예산 18000(여유는 US·diag 등) → 종목당 ~10콜 → 1회 ~1800종목,
+    전 4304종목 ~2-3일. (이전 8년치×9000은 종목당 ~50초·전체 ~수주라 초기 적재 병목이었음.)
+    8년 이력(백테스트용) backfill은 별도 후속 단계 — 현재값을 먼저 채운다."""
     from datetime import datetime
     from quant_core import data_fetcher
     from quant_core.data.feeds import fundamental_kr
     codes = data_fetcher.load_managed_kr_codes()
     yr = datetime.now().year
-    res = fundamental_kr.fetch(codes, list(range(yr - 7, yr + 1)), budget_calls=9000)
-    _log.info("KR 펀더멘털(OpenDART) %d종목 대상: %s", len(codes), res)
+    res = fundamental_kr.fetch(codes, [yr - 1, yr], budget_calls=18000)
+    _log.info("KR 펀더멘털(OpenDART) %d종목 대상(최근2년): %s", len(codes), res)
+    data_cache.invalidate()                      # 다음 로드 시 펀더멘털 attach(전 경로 일관, US와 동일)
 
 
 # ── 시작 시 1회 초기 fetch (실패해도 다음 정시 cron이 재시도) ─────────────────

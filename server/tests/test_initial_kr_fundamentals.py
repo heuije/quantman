@@ -31,3 +31,28 @@ def test_initial_kr_fundamentals_swallows_exception(monkeypatch):
 
     monkeypatch.setattr(main, "_refresh_kr_fundamentals", _boom)
     main._initial_kr_fundamentals_refresh()        # 예외 전파 없이 리턴해야 통과
+
+
+def test_refresh_kr_fundamentals_recent_years_and_budget(monkeypatch):
+    """적재 가속 — 현재값 우선: fetch를 최근 2년·예산 18000으로 호출하고 캐시 invalidate.
+
+    이전 8년치×9000은 종목당 ~50초·전체 ~수주라 초기 적재 병목이었음. 최근 2년(현재 TTM)·예산
+    상향으로 전 종목 현재 pb/pe/ev를 ~2-3일에 채운다(스크리닝·360 전종목 즉시 가용)."""
+    from datetime import datetime
+
+    import quant_core.data.feeds.fundamental_kr as fk
+    import quant_core.data_fetcher as df
+
+    monkeypatch.setattr(df, "load_managed_kr_codes", lambda: ["005930", "000660"])
+    cap: dict = {}
+    monkeypatch.setattr(fk, "fetch", lambda codes, years, budget_calls=9000, fresh_days=80:
+                        (cap.update(years=years, budget=budget_calls), {"ok": 2, "fail": 0})[1])
+    inval: list = []
+    monkeypatch.setattr(main.data_cache, "invalidate", lambda: inval.append(True))
+
+    main._refresh_kr_fundamentals()
+
+    yr = datetime.now().year
+    assert cap["years"] == [yr - 1, yr]            # 최근 2년(현재 TTM)
+    assert cap["budget"] == 18000                  # 예산 상향(OpenDART 20k 한도 내)
+    assert inval == [True]                          # 적재 후 캐시 무효화(전 경로 일관)
