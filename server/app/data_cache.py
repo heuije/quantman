@@ -96,13 +96,19 @@ def get_raw_dataset() -> dict[str, pd.DataFrame]:
     return _raw
 
 
-def get_projected(columns, symbols=None) -> dict[str, pd.DataFrame]:
+def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataFrame]:
     """요청 지표 컬럼만 계산한 dataset(컬럼 프로젝션). symbols=None이면 전 유니버스.
 
     raw 공유 캐시에서 compute_columns로 그때그때 계산하며 **상주시키지 않는다**(호출자가
     쓰고 버림 → 피크 메모리 = raw + 진행 중 1건). 반환값의 요청 컬럼은 compute_all(전체)과
     **byte 동일**(quant_core.compute_columns의 순수성 — test_compute_columns·골든 불변식).
     fund 지표가 요청되면 펀더멘털을 1회 로드해 attach(아니면 로드 안 함 → 가벼움).
+
+    recent_days=N이면 각 종목 raw를 **최근 N행으로 잘라** 계산한다 — SELECT(as-of 스냅샷)는
+    최신 단면 1행만 쓰므로 전체이력×전종목 프로젝션(전 유니버스 OOM 원인)을 회피한다. N이
+    신호 룩백(예: 200일MA·252모멘텀)보다 크면 **최신 행 값은 full 계산과 동일**(룩백 충족).
+    ⚠ 잘린 tail의 *앞쪽* 행은 룩백 부족으로 full과 다를 수 있어, 최신 단면만 쓰는 SELECT
+    전용이다(백테스트·분포 등 전체이력이 필요한 경로엔 recent_days 금지).
     """
     raw = get_raw_dataset()
     cols = set(columns)
@@ -114,6 +120,8 @@ def get_projected(columns, symbols=None) -> dict[str, pd.DataFrame]:
         df = raw[s]
         if df is None or df.empty:
             continue
+        if recent_days is not None and len(df) > recent_days:
+            df = df.tail(int(recent_days))
         fd = funds.get(s) if want_fund else None
         out[s] = compute_columns(df, cols, fd if (fd is not None and not fd.empty) else None)
     return out
