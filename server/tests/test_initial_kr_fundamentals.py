@@ -73,3 +73,16 @@ def test_refresh_kr_fundamentals_invalidates_only(monkeypatch):
 
     assert inval == [True]                          # attach
     assert fetched == []                            # 수집은 청크가 — 여기선 안 함
+
+
+def test_refresh_naver_materializes_valuation(monkeypatch):
+    """NAVER 고유필드 merge 직후 스크리너 밸류 일원화(materialize)를 호출한다 — 360과 같은 출처(OpenDART).
+
+    배선이 이 자리(부팅+120s·17:00)여야 스냅샷 통째 재구축(15:45·부팅) 후에도 NAVER와 동일 cadence로
+    pbr/per가 채워진다 — 17:30 앵커에만 두면 부팅~17:30 사이 스크리너 밸류 공백(회귀)."""
+    monkeypatch.setattr(main.naver_fundamentals, "refresh", lambda: {"ok": 1})
+    called = []
+    monkeypatch.setattr(main, "_materialize_kr_valuation", lambda: called.append(True))
+
+    main._refresh_naver()
+    assert called == [True]
