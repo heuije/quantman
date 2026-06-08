@@ -46,6 +46,75 @@ def build_overseas_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
     }
 
 
+def build_overseas_cancel_body(*, cano: str, acnt_prdt_cd: str,
+                               orgn_ord_dt: str, orgn_odno: str) -> dict:
+    """OTFM3003U 주문취소 바디 (order-rvsecncl, tr_id OTFM3003U).
+
+    취소는 *원주문일자*(ORGN_ORD_DT=현지거래일, 원주문 응답의 ORD_DT)와 원주문번호
+    (ORGN_ODNO, "0" 포함 8자리)가 필수다 — 국내선물 취소(order_no만)와 다른 점.
+    FM_HDGE_ORD_SCRN_YN="N"(필수), FM_MKPR_CVSN_YN="N"(취소 후 시장가 재주문 안 함). 순수함수.
+    """
+    return {
+        "CANO": cano,
+        "ACNT_PRDT_CD": acnt_prdt_cd,
+        "ORGN_ORD_DT": str(orgn_ord_dt),
+        "ORGN_ODNO": str(orgn_odno),
+        "FM_HDGE_ORD_SCRN_YN": "N",
+        "FM_MKPR_CVSN_YN": "N",
+    }
+
+
+def parse_overseas_ccld_order_status(resp: dict, order_no) -> dict:
+    """OTFM3116R(inquire-ccld 당일주문내역) output에서 order_no 행 →
+    {order_no,status,filled_qty,remain_qty,fill_price} (국내 parse_ccnl_order_status와 동일 shape).
+
+    canonical odno 비교(lstrip "0"). status: filled(잔량0·체결>0)/partial(체결>0)/submitted(체결0)/
+    unknown(행 없음). fm_ccld_pric=실제 체결가(FM=정형가, raw 스케일 불요).
+    """
+    rows = resp.get("output")
+    if not isinstance(rows, list):
+        rows = []
+    target = str(order_no).lstrip("0")
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("odno", "")).lstrip("0") == target:
+            def _i(k):
+                try:
+                    return int(float(r.get(k, 0) or 0))
+                except (ValueError, TypeError):
+                    return 0
+            filled, remain = _i("fm_ccld_qty"), _i("fm_ord_rmn_qty")
+            if remain == 0 and filled > 0:
+                status = "filled"
+            elif filled > 0:
+                status = "partial"
+            else:
+                status = "submitted"
+            return {"order_no": str(r.get("odno", "")), "status": status,
+                    "filled_qty": filled, "remain_qty": remain,
+                    "fill_price": float(r.get("fm_ccld_pric", 0) or 0)}
+    return {"order_no": str(order_no), "status": "unknown",
+            "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
+
+
+def parse_overseas_orderable_qty(resp: dict) -> int:
+    """OTFM3304R(inquire-psamount 주문가능조회) output → 신규주문가능 계약수(fm_new_ord_psbl_qty).
+
+    KIS가 가격·증거금·예수금을 반영해 산출한 *주문가능 계약수*. 해외선물 사이징의 상한 클램프로
+    쓴다(국내주식 buying_power_usd max_qty와 동일 역할). 파싱 불가/없음 → 0. 순수함수.
+    """
+    out = resp.get("output")
+    if isinstance(out, list):
+        out = out[0] if out else {}
+    if not isinstance(out, dict):
+        return 0
+    try:
+        return int(float(out.get("fm_new_ord_psbl_qty", 0) or 0))
+    except (ValueError, TypeError):
+        return 0
+
+
 def parse_overseas_balance(resp: dict) -> dict:
     """OTFM1412R(미결제내역=잔고) → {positions:[{symbol,side,qty,avg_price,eval_price,eval_pnl,currency}]}.
 

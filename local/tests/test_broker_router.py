@@ -72,6 +72,12 @@ class _FakeFutures(_Fake):
     def order_status(self, order_no):
         self.calls.append(("order_status", order_no)); return {"tag": "fut"}
 
+    def overseas_order_status(self, order_no):
+        self.calls.append(("overseas_order_status", order_no)); return {"tag": "ov"}
+
+    def overseas_price(self, symbol, scalc_desz=0):
+        self.calls.append(("overseas_price", symbol)); return 1950.0
+
     # 해외선물 주문 메서드(P2) — CME 심볼은 라우터가 이쪽으로 dispatch
     def overseas_buy(self, symbol, qty):
         self.calls.append(("overseas_buy", symbol, qty)); return {"tag": self.tag}
@@ -151,15 +157,45 @@ def test_futures_resolve_failure_raises_skip():
 
 def test_cancel_and_order_status_routing():
     r, stock, fut = _router()
+    # 주식·국내선물(코스피200·KRX) cancel은 그대로 라우팅
     r.cancel("ORD1", "005930", 10)
-    r.cancel("ORD2", "금선물", 2)
+    r.cancel("ORD3", "코스피200선물", 1)
     assert ("cancel", "ORD1", "005930", 10) in stock.calls
-    assert ("cancel", "ORD2", "GCM26", 2) in fut.calls
-    # order_status: 주식 2-arg, 선물 1-arg
+    assert ("cancel", "ORD3", "A01606", 1) in fut.calls
+    # order_status: 주식 2-arg, 국내선물 1-arg
     r.order_status("ORD1", "005930")
-    r.order_status("ORD2", "금선물")
+    r.order_status("ORD3", "코스피200선물")
     assert ("order_status", "ORD1", "005930") in stock.calls
-    assert ("order_status", "ORD2") in fut.calls
+    assert ("order_status", "ORD3") in fut.calls
+
+
+# ── 해외선물(CME) phase2 dispatch — order_status·cancel·price (M10 라이브 완성) ────
+def test_overseas_order_status_routes_to_overseas():
+    r, stock, fut = _router()
+    r.order_status("ORD2", "금선물")
+    assert ("overseas_order_status", "ORD2") in fut.calls   # CME → inquire-ccld
+    assert ("order_status", "ORD2") not in fut.calls         # 국내 ccnl 아님
+
+
+def test_overseas_cancel_blocked_needs_orgn_ord_dt():
+    # 해외선물 취소는 ORGN_ORD_DT 필요 → 라우터 취소는 명시 차단(국내로 오라우팅 방지)
+    import pytest
+    r, stock, fut = _router()
+    with pytest.raises(NotImplementedError):
+        r.cancel("ORD2", "금선물", 1)
+
+
+def test_overseas_price_routes_to_overseas():
+    r, stock, fut = _router()
+    px = r.price("금선물")
+    assert ("overseas_price", "GCM26") in fut.calls and px == 1950.0
+    assert ("price", "GCM26") not in fut.calls               # 국내 시세 아님
+
+
+def test_domestic_futures_price_unchanged():
+    r, stock, fut = _router()
+    r.price("코스피200선물")
+    assert ("price", "A01606") in fut.calls                  # KRX는 기존 domestic 시세
 
 
 # ── 주식 전용 메서드 위임 (__getattr__) ────────────────────────────────────────

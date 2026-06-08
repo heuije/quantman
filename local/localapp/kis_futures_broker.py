@@ -30,7 +30,14 @@ import json
 
 import requests
 
-from .kis_overseas_futures import build_overseas_order_body, parse_overseas_balance, scale_overseas_price
+from .kis_overseas_futures import (
+    build_overseas_cancel_body,
+    build_overseas_order_body,
+    parse_overseas_balance,
+    parse_overseas_ccld_order_status,
+    parse_overseas_orderable_qty,
+    scale_overseas_price,
+)
 
 
 def _json(resp) -> dict:
@@ -48,12 +55,18 @@ _QUOTE_PATH = "/uapi/domestic-futureoption/v1/quotations/inquire-price"
 _QUOTE_TR = "FHMIF10000000"   # 선물옵션 시세(실전·모의 공통)
 
 # ── 해외선물옵션 상수 (OTFM/HHDFC TR, 실전 전용) ─────────────────────────────────
-_OV_ORDER_PATH   = "/uapi/overseas-futureoption/v1/trading/order"
-_OV_BALANCE_PATH = "/uapi/overseas-futureoption/v1/trading/inquire-unpd"
-_OV_QUOTE_PATH   = "/uapi/overseas-futureoption/v1/quotations/inquire-price"
+_OV_ORDER_PATH     = "/uapi/overseas-futureoption/v1/trading/order"
+_OV_BALANCE_PATH   = "/uapi/overseas-futureoption/v1/trading/inquire-unpd"
+_OV_QUOTE_PATH     = "/uapi/overseas-futureoption/v1/quotations/inquire-price"
+_OV_RVSECNCL_PATH  = "/uapi/overseas-futureoption/v1/trading/order-rvsecncl"
+_OV_CCLD_PATH      = "/uapi/overseas-futureoption/v1/trading/inquire-ccld"
+_OV_PSAMOUNT_PATH  = "/uapi/overseas-futureoption/v1/trading/inquire-psamount"
 _OV_ORDER_TR     = "OTFM3001U"
 _OV_BALANCE_TR   = "OTFM1412R"
 _OV_QUOTE_TR     = "HHDFC55010000"
+_OV_CANCEL_TR    = "OTFM3003U"   # 취소(정정 OTFM3002U는 Trader 미사용)
+_OV_CCLD_TR      = "OTFM3116R"   # 당일주문내역(체결조회)
+_OV_PSAMOUNT_TR  = "OTFM3304R"   # 주문가능조회(신규주문가능 계약수)
 
 
 def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
@@ -409,6 +422,49 @@ class KisFuturesBroker:
         r.raise_for_status()
         raw = _json(r).get("output1", {}).get("last_price", "")
         return scale_overseas_price(raw, scalc_desz)
+
+    # ── 해외선물 phase2 — 취소·체결조회·주문가능 (OTFM3003U/3116R/3304R, 실전 전용) ────
+    # ⚠ 모의 미지원이라 라이브 검증은 사용자 첫 실거래(M10)에서. 순수 파서는 단위검증됨.
+
+    def overseas_cancel(self, order_no, qty, orgn_ord_dt: str) -> dict:
+        """해외선물 주문취소(OTFM3003U). 원주문일자(현지거래일, 원주문 응답 ORD_DT)·원주문번호 필수.
+
+        국내 취소(order_no만)와 달리 ORGN_ORD_DT가 필요 — 호출부가 원주문 ORD_DT를 보관·전달해야 한다.
+        qty는 KIS 취소 바디에 불요(전량취소)나 Broker 시그니처 호환 위해 받되 미사용."""
+        body = build_overseas_cancel_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
+                                          orgn_ord_dt=str(orgn_ord_dt), orgn_odno=str(order_no))
+        r = requests.post(f"{self._ov_base}{_OV_RVSECNCL_PATH}",
+                          headers=self._ov_headers(_OV_CANCEL_TR), json=body, timeout=10)
+        r.raise_for_status()
+        return _json(r)
+
+    def _ov_inquire_ccld(self, only_unfilled: bool = False) -> dict:
+        """inquire-ccld(OTFM3116R) 당일주문내역 조회. only_unfilled=True면 미체결만(03)."""
+        params = {"CANO": self._ov_cano, "ACNT_PRDT_CD": self._ov_acnt_prdt_cd,
+                  "CCLD_NCCS_DVSN": "03" if only_unfilled else "01",   # 01전체/02체결/03미체결
+                  "SLL_BUY_DVSN_CD": "%%", "FUOP_DVSN": "01",          # %%전체 / 01선물
+                  "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""}
+        r = requests.get(f"{self._ov_base}{_OV_CCLD_PATH}",
+                         headers=self._ov_headers(_OV_CCLD_TR), params=params, timeout=10)
+        r.raise_for_status()
+        return _json(r)
+
+    def overseas_order_status(self, order_no) -> dict:
+        return parse_overseas_ccld_order_status(self._ov_inquire_ccld(), order_no)
+
+    def overseas_pending_orders(self) -> list[dict]:
+        rows = self._ov_inquire_ccld(only_unfilled=True).get("output") or []
+        return [parse_overseas_ccld_order_status({"output": [r]}, r.get("odno", ""))
+                for r in rows if isinstance(r, dict)]
+
+    def overseas_orderable_qty(self, symbol: str, price) -> int:
+        """OTFM3304R 신규주문가능 계약수 — 해외선물 사이징 상한 클램프(라이브 배선은 M10)."""
+        params = {"CANO": self._ov_cano, "ACNT_PRDT_CD": self._ov_acnt_prdt_cd,
+                  "OVRS_FUTR_FX_PDNO": symbol, "FM_ORD_PRIC": str(price or "")}
+        r = requests.get(f"{self._ov_base}{_OV_PSAMOUNT_PATH}",
+                         headers=self._ov_headers(_OV_PSAMOUNT_TR), params=params, timeout=10)
+        r.raise_for_status()
+        return parse_overseas_orderable_qty(_json(r))
 
     def buy(self, symbol: str, qty: int) -> dict:
         return self._submit_order(symbol, qty, 0, "buy", order_type="market")

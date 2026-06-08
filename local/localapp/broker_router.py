@@ -89,17 +89,31 @@ class BrokerRouter:
         return self._broker(symbol).sell_resv_moo(self._code(symbol), qty)
 
     def price(self, symbol):
+        # 해외선물(CME)은 overseas_price(별도 시세 엔드포인트). ⚠ scalc_desz 미전달이라 raw
+        # 스케일 미적용(자동매매는 dataset yfinance 가격 사용, 이 경로는 드문 fallback) — 라이브 완성 M10.
+        if self._is_fut(symbol) and futures_market(symbol) == "CME":
+            return self._futures.overseas_price(self._code(symbol))
         return self._broker(symbol).price(self._code(symbol))
 
     def today_open(self, symbol):
         return self._broker(symbol).today_open(self._code(symbol))
 
     def cancel(self, order_no, symbol, qty):
+        # 해외선물 취소(OTFM3003U)는 원주문일자(ORGN_ORD_DT)가 필수인데 이 시그니처엔 없다.
+        # 국내 취소 메서드로 잘못 라우팅하면 다른 계좌를 건드리므로 명시 차단(취소는 Trader
+        # 핫패스 아님 — KIS DAY 자동취소). 라이브 배선은 ORD_DT 보관 후 overseas_cancel 직접 호출(M10).
+        if self._is_fut(symbol) and futures_market(symbol) == "CME":
+            raise NotImplementedError(
+                "해외선물 취소는 원주문일자(ORGN_ORD_DT)가 필요 — broker.overseas_cancel 직접 호출. "
+                "(라우터 취소는 ORD_DT 미보유; M10 라이브 배선에서 주문 ORD_DT 추적 후 연결)")
         return self._broker(symbol).cancel(order_no, self._code(symbol), qty)
 
     def order_status(self, order_no, symbol=None):
         # 선물 order_status는 1-arg(order_no), 주식은 2-arg(order_no, symbol).
+        # 해외선물(CME)은 overseas_order_status(OTFM3116R inquire-ccld)로 분기.
         if symbol is not None and self._is_fut(symbol):
+            if futures_market(symbol) == "CME":
+                return self._futures.overseas_order_status(order_no)
             return self._futures.order_status(order_no)
         return self._stock.order_status(order_no, symbol)
 
