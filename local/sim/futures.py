@@ -12,6 +12,8 @@ _SIGN = {"long": 1.0, "short": -1.0}
 
 def settlement_pnl(symbol: str, side: str, qty: int, entry: float, exit_: float) -> float:
     """정산/실현 손익(통화단위). side: long|short."""
+    if side not in _SIGN:
+        raise ValueError(f"side는 long|short: {side}")
     mult = instrument_spec(symbol).multiplier
     return (exit_ - entry) * qty * mult * _SIGN[side]
 

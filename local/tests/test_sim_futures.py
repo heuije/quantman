@@ -22,6 +22,22 @@ def test_settlement_pnl_short_profits_on_drop():
     assert settlement_pnl("코스피200선물", "short", 1, 377.0, 375.0) == 500_000.0
 
 
+def test_settlement_pnl_long_loss():
+    # 롱 2계약, 375.0→373.0(하락) = −2pt×2×250k = −1,000,000 (부호 회귀)
+    assert settlement_pnl("코스피200선물", "long", 2, 375.0, 373.0) == -1_000_000.0
+
+
+def test_settlement_pnl_short_loss_on_rise():
+    # 숏 1계약, 375.0→377.0(상승) = −2pt×250k = −500,000 (숏 손실 부호 회귀)
+    assert settlement_pnl("코스피200선물", "short", 1, 375.0, 377.0) == -500_000.0
+
+
+def test_settlement_pnl_rejects_bad_side():
+    import pytest
+    with pytest.raises(ValueError, match="long|short"):
+        settlement_pnl("코스피200선물", "flat", 1, 375.0, 377.0)
+
+
 def test_required_margin():
     # notional = 375×2×250_000 = 187_500_000; 개시증거금률 0.10 → 18_750_000
     assert required_margin("코스피200선물", 2, 375.0) == 18_750_000.0
