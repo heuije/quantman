@@ -230,6 +230,16 @@ def get_master_set() -> set[str]:
         return set(_state["symbols"])
 
 
+def get_name(code: str) -> str:
+    """종목 코드 → 표시 종목명(없으면 빈 문자열). /symbols와 동일 마스터 출처 — O(1) 조회.
+
+    360 리포트 뉴스 facet의 네이버 검색어("005930"→"삼성전자")로 쓴다. 마스터에 없으면
+    빈 문자열(가짜 채움 0) — 호출부가 뉴스 조회를 건너뛴다.
+    """
+    with _lock:
+        return _state["by_symbol"].get(code, {}).get("name", "")
+
+
 def get_master_list() -> list[dict]:
     """전 종목 — [{symbol, name, market, kind, currency, ticker?}, ...]."""
     with _lock:

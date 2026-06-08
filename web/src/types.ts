@@ -313,6 +313,11 @@ export interface IrStrategyDef {
 }
 
 // query="describe" + universe.kind="single" — 단일종목 360 리포트 결과.
+// 종목 뉴스 헤드라인(네이버 검색 API) — 360 리포트 '왜 움직였나' facet.
+export interface NewsItem {
+  title: string; link: string; desc: string; pub: string | null;
+}
+
 export interface IrSingleReport {
   success: boolean; query: "describe"; report: "single";
   symbol: string; sector: string; as_of: string; data_points: number;
@@ -323,6 +328,7 @@ export interface IrSingleReport {
   };
   risk: { vol_annualized: number | null; max_drawdown: number | null };
   fundamentals: Record<"pb_ratio" | "trailing_pe" | "ev_ebitda", number | null>;
+  news?: NewsItem[];   // 서버 엣지 enrich(키 미설정·이름 미해석이면 빈 배열)
 }
 
 // query="describe" + universe.kind="portfolio" — 포트폴리오 진단 결과.
