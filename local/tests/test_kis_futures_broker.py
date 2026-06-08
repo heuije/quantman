@@ -200,7 +200,9 @@ def test_overseas_limit_buy_routes_to_overseas_endpoint(monkeypatch):
     assert captured["body"]["OVRS_FUTR_FX_PDNO"] == "GCZ25"
     assert captured["body"]["SLL_BUY_DVSN_CD"] == "02"
     assert captured["body"]["PRIC_DVSN_CD"] == "1"
-    assert r["output"]["ODNO"] == "00298040"
+    # 반환은 Broker 프로토콜 정규형({success, order_no, ...}) — raw KIS json 아님(근본수정).
+    assert r["success"] is True
+    assert r["order_no"] == "00298040"
 
 
 def test_parse_ccnl_filled():
