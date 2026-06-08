@@ -1,4 +1,4 @@
-"""마이스톡 API 서버."""
+"""MyStock API 서버."""
 
 from __future__ import annotations
 
@@ -624,7 +624,7 @@ async def lifespan(app: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="마이스톡 API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="MyStock API", version="0.2.0", lifespan=lifespan)
 
 # 응답 gzip 압축 — /symbols 같은 대용량 JSON이 ~1/10로 줄어 전송 시간이 급감.
 # Accept-Encoding: gzip을 보내는 클라이언트(브라우저)에만 적용.
