@@ -1021,8 +1021,13 @@ class Trader:
                 capital = (equity_now / fx) if (fx > 0 and equity_now > 0) else cash
             else:
                 # KRX 사이징은 국내 현금만 필요 — 해외 API 2건 skip (효율)
-                cash = float(self.broker.account_snapshot(
-                    overseas=False)["balance"]["cash"])
+                bal = self.broker.account_snapshot(overseas=False)["balance"]
+                if qc.is_futures(symbol):
+                    # 선물 주문은 선물계좌 가용증거금현금으로 사이징(주식계좌 현금이 아님).
+                    # 미배선/구브로커(키 없음)면 주식 cash로 graceful fallback.
+                    cash = float(bal.get("futures_order_cash") or bal.get("cash") or 0)
+                else:
+                    cash = float(bal["cash"])
                 capital = equity_now if equity_now > 0 else cash
         except Exception as e:
             log.error("가용자금 조회 실패 [%s]: %s", symbol, e)
@@ -1040,8 +1045,10 @@ class Trader:
         qty = ir_live.event_buy_qty(StrategyIR.model_validate(strat_def),
                                     cash=cash, prev_close=prev_close, capital=capital)
 
-        # 가용 현금 한도 (모든 모드 공통)
-        qty = min(qty, int(cash // prev_close))
+        # 가용 현금 한도 — 주식만. 선물은 event_buy_qty가 이미 증거금으로 클램프했고,
+        # cash//prev_close(현금÷지수가)는 선물 계약수에 무의미(과대 → 비바인딩)하므로 제외.
+        if not qc.is_futures(symbol):
+            qty = min(qty, int(cash // prev_close))
 
         # 미국: 주문가능수량(통합증거금 상한) 초과 방지
         if max_cap is not None:

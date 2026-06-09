@@ -15,8 +15,11 @@ def _strat_def(direction: str) -> dict:
     ir = StrategyIR(
         universe=Universe(kind="single", symbols=["코스피200선물"]),
         signal=const(True),
+        # futures_margin_pct=100 → full-margin 예산(이 테스트는 *방향 라우팅* 검증이므로 qty≥1만
+        # 보장하면 됨. 기본 20%면 fixture 현금에서 0계약이 나와 라우팅을 못 봄).
         position=PositionSpec(direction=direction, entry=Entry(mode="always"),
-                              sizing=Sizing(mode="pct_cash", amount_pct=100.0)),
+                              sizing=Sizing(mode="pct_cash", amount_pct=100.0,
+                                            futures_margin_pct=100.0)),
     )
     return ir.model_dump()
 

@@ -190,6 +190,9 @@ def _sizing(pos: PositionSpec, sim: SimSpec) -> dict:
                      _SET if lev != _D_SIM.leverage else _DEF, _CAP.get("leverage", {}).get("does", "")))
     if s.max_position_pct != _D_POS.sizing.max_position_pct:
         items.append(_it("종목당 상한", _pct(s.max_position_pct), _SET))
+    if s.futures_margin_pct != _D_POS.sizing.futures_margin_pct:
+        items.append(_it("선물 증거금 사용률", _pct(s.futures_margin_pct), _SET,
+                         "선물 진입 시 가용현금의 이 %를 증거금으로 사용 — 레버리지 안전상한(100%=full-margin)"))
     return _bucket("sizing", "④ 포지션 사이징 (얼마나)", "각 종목에 자본을 어떻게 배분하나?", items)
 
 

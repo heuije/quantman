@@ -175,6 +175,7 @@ export default function IrBuilder() {
   const [maintMargin, setMaintMargin] = useState<number | "">("");   // 유지증거금률(%) — 마진콜
   // 포지션 세부·오버레이 (A6)
   const [maxPositionPct, setMaxPositionPct] = useState<number | "">("");
+  const [futuresMarginPct, setFuturesMarginPct] = useState<number | "">("");
   const [volWindow, setVolWindow] = useState(20);
   const [volTarget, setVolTarget] = useState<number | "">("");
   const [turnoverDamp, setTurnoverDamp] = useState<number | "">("");
@@ -274,6 +275,9 @@ export default function IrBuilder() {
     // max_position_pct 기본 100(무제한)은 빈칸으로 환원해 placeholder 유지
     setMaxPositionPct(sz.max_position_pct != null && sz.max_position_pct !== 100
       ? sz.max_position_pct : "");
+    // 선물 증거금 사용률 기본 20은 빈칸으로 환원해 placeholder 유지
+    setFuturesMarginPct(sz.futures_margin_pct != null && sz.futures_margin_pct !== 20
+      ? sz.futures_margin_pct : "");
     setTargetVolPct(numOrEmpty(sz.target_vol_pct) === "" ? 20 : numOrEmpty(sz.target_vol_pct));
     setWeightsText(weightsToText(sz.weights));
     setAmountPct(sz.mode === "pct_cash" ? numOrEmpty(sz.amount_pct) : "");
@@ -392,6 +396,7 @@ export default function IrBuilder() {
     // ── 사이징 (전 모드 노출 — 검증이 부적합 조합 안내) ──
     const sizing: Record<string, unknown> = { mode: sizingMode, vol_window: volWindow };
     if (maxPositionPct !== "") sizing.max_position_pct = maxPositionPct;
+    if (futuresMarginPct !== "") sizing.futures_margin_pct = futuresMarginPct;
     if (sizingMode === "target_vol" && targetVolPct !== "") sizing.target_vol_pct = targetVolPct;
     if (sizingMode === "fixed_weight") sizing.weights = parseWeights(weightsText);
     if (sizingMode === "pct_cash" && amountPct !== "") sizing.amount_pct = amountPct;
@@ -840,6 +845,10 @@ export default function IrBuilder() {
           <label className="lab-field">종목당 상한(%)
             <input type="number" value={maxPositionPct} placeholder="무제한"
                    onChange={(e) => setMaxPositionPct(e.target.value === "" ? "" : Number(e.target.value))} />
+          </label>
+          <label className="lab-field">선물 증거금 사용률(%)
+            <input type="number" value={futuresMarginPct} placeholder="20 (선물 전용)"
+                   onChange={(e) => setFuturesMarginPct(e.target.value === "" ? "" : Number(e.target.value))} />
           </label>
           {(sizingMode === "vol_inverse" || sizingMode === "target_vol") && (
             <label className="lab-field">변동성 창(일)

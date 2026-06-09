@@ -281,8 +281,13 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     equity = np.empty(n, dtype=float)
     last_valid_close: dict[str, float] = {sym: 0.0 for sym in syms}
 
-    def _budget(cash_snapshot: float) -> float:
-        return float(amount_krw) if amount_krw else cash_snapshot * (amount_pct / 100.0)
+    def _budget(cash_snapshot: float, sym: str) -> float:
+        if amount_krw:
+            return float(amount_krw)
+        # 선물: 증거금 사용률(futures_margin_pct, 기본 20%) — full-margin 레버리지 상한을 유저가
+        # 조절. 주식: 단일=100%·다종목=amount_pct(기존 보존). live.event_buy_qty와 동일 식.
+        pct = sz.futures_margin_pct if aligned[sym]["is_fut"] else amount_pct
+        return cash_snapshot * (pct / 100.0)
 
     def _open(sym: str, i: int, raw_price: float, budget: float):
         nonlocal cash
@@ -358,7 +363,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             for sym in pending_buys:
                 if len(positions) >= _MAX_POSITIONS_GLOBAL or sym in positions:
                     continue
-                _open(sym, i, aligned[sym]["open"][i], min(_budget(cash_snapshot), cash))
+                _open(sym, i, aligned[sym]["open"][i], min(_budget(cash_snapshot, sym), cash))
             pending_buys.clear()
 
         # 청산 검사
@@ -405,7 +410,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                         or (elig_arrs is not None and not elig_arrs[sym][i])
                         or np.isnan(aligned[sym]["close"][i])):
                     continue
-                _open(sym, i, aligned[sym]["exec"][i], min(_budget(cash_snapshot), cash))
+                _open(sym, i, aligned[sym]["exec"][i], min(_budget(cash_snapshot, sym), cash))
 
         nav = cash
         for sym, pos in positions.items():
