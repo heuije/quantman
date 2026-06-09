@@ -62,6 +62,10 @@ class Sizing(BaseModel):
     vol_window: int = 20                # vol_inverse·target_vol 변동성 창
     # 종목당 상한(%) — opt-in. 기본 100=무제한(집중 사이징 보존). 분산 원하면 낮춤.
     max_position_pct: float = 100.0
+    # 선물 증거금 사용률(%) — 이벤트(on_signal) 진입 시 선물 예산 = 가용현금 × 이 %.
+    # 선물 1계약은 명목의 증거금률(예 10%)만 필요하므로 100%면 full-margin(≈1/증거금률 레버리지).
+    # 기본 20(보수적) — 유저가 조절하는 안전상한. 주식엔 무영향(주식은 단일=100%·다종목=amount_pct).
+    futures_margin_pct: float = 20.0
 
 
 class Entry(BaseModel):

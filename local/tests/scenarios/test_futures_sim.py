@@ -50,18 +50,24 @@ def test_overleverage_caught_by_invariant():
 
 def test_event_buy_qty_futures_sizing_reused():
     # 사이징 재사용 회귀: 증거금예산/(px×승수×증거금률) = floor.
-    # 코스피200선물 단일 유니버스, 예산=cash(100%). px=375, 승수 250k, 증거금률 0.10.
-    # denom = 375×250_000×0.10 = 9_375_000. cash 50,000,000 → floor(50M/9.375M)=5계약.
+    # 코스피200선물 단일. px=375, 승수 250k, 증거금률 0.10 → 1계약 증거금 9,375,000.
+    # 선물 예산 = cash × futures_margin_pct%(amount_pct 아님). cash 50M:
+    #   기본 20%  → 10M / 9.375M = 1계약   (보수적 기본·유저 조절 가능 안전상한)
+    #   100%(full-margin) → 50M / 9.375M = 5계약
     from quant_core.blocks import const
     from quant_core.ir_engine import StrategyIR, Universe, PositionSpec, Entry, Sizing
     from quant_core.ir_engine import live as ir_live
-    ir = StrategyIR(
-        universe=Universe(kind="single", symbols=["코스피200선물"]),
-        signal=const(True),
-        position=PositionSpec(
-            entry=Entry(mode="always"),
-            sizing=Sizing(mode="pct_cash", amount_pct=100.0),
-        ),
-    )
-    qty = ir_live.event_buy_qty(ir, cash=50_000_000.0, prev_close=375.0, capital=50_000_000.0)
-    assert qty == 5
+
+    def _ir(fmp: float) -> StrategyIR:
+        return StrategyIR(
+            universe=Universe(kind="single", symbols=["코스피200선물"]),
+            signal=const(True),
+            position=PositionSpec(
+                entry=Entry(mode="always"),
+                sizing=Sizing(mode="pct_cash", futures_margin_pct=fmp),
+            ),
+        )
+    assert ir_live.event_buy_qty(_ir(20.0), cash=50_000_000.0, prev_close=375.0,
+                                 capital=50_000_000.0) == 1     # 기본 20%
+    assert ir_live.event_buy_qty(_ir(100.0), cash=50_000_000.0, prev_close=375.0,
+                                 capital=50_000_000.0) == 5     # full-margin

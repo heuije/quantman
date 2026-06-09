@@ -258,6 +258,7 @@ export interface IrStrategyDef {
       amount_pct?: number; amount_krw?: number | null;
       target_vol_pct?: number | null; weights?: Record<string, number> | null;
       vol_window?: number; max_position_pct?: number;
+      futures_margin_pct?: number;   // 선물 증거금 사용률(%) — 진입 시 가용현금의 N%를 증거금으로. 레버리지 안전상한(기본 20·100%=full-margin)
     };
     entry: {
       mode: string; rebalance?: string; every_n_days?: number | null;

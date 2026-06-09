@@ -141,10 +141,17 @@ class BrokerRouter:
                 continue
             # 선물계좌 equity(국내 추정예탁자산, KRW)를 통합자산에 합산 → kill-switch·drawdown이
             # 선물 PnL을 인지(미배선 시 완전 무시). 해외선물 equity(USD)는 라이브검증 후(Phase 5).
-            fut_eq = (fsnap.get("account") or {}).get("equity")
+            fut_acct = fsnap.get("account") or {}
+            fut_eq = fut_acct.get("equity")
             if fut_eq:
                 out["balance"]["futures_eval_krw"] = (
                     float(out["balance"].get("futures_eval_krw", 0) or 0) + float(fut_eq))
+            # 선물 주문가능 증거금현금 — 선물 사이징 예산 base(trader). 주식 현금(balance["cash"])과
+            # 분리: 선물 주문은 선물계좌 증거금으로 체결되므로 주식 현금으로 사이징하면 안 된다.
+            fut_cash = fut_acct.get("order_cash")
+            if fut_cash:
+                out["balance"]["futures_order_cash"] = (
+                    float(out["balance"].get("futures_order_cash", 0) or 0) + float(fut_cash))
             for p in (fsnap.get("positions") or []):
                 np = dict(p)
                 code = str(p.get("symbol", "") or "")

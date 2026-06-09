@@ -110,25 +110,37 @@ def test_event_path_equity_runs():
     assert res["success"], res.get("error")   # NameError였다면 success=False·error에 트레이스
 
 
-def _event_hold(symbol: str) -> StrategyIR:
+def _event_hold(symbol: str, futures_margin_pct: float = 20.0) -> StrategyIR:
     # on_signal 진입(Close>0 항상 참 → 1일차 진입) + 청산규칙 없음 → 기간말까지 *보유*.
     # 보유형이라 always의 일일 리밸런싱 vol drag 없음 — E1b 레버리지를 순수 격리.
     cond = Node(op="compare", params={"op": ">"},
                 inputs={"left": data("Close"), "right": const(0)})
     return StrategyIR(
         signal=cond, universe=Universe(kind="single", symbols=[symbol]),
-        position=PositionSpec(entry=Entry(mode="on_signal"), exit=Exit()),
+        position=PositionSpec(entry=Entry(mode="on_signal"), exit=Exit(),
+                              sizing=Sizing(futures_margin_pct=futures_margin_pct)),
         simulation=SimSpec(initial_capital=1e7, commission=0.0, slippage=0.0))
 
 
-def test_event_futures_leverage_amplifies():
-    """E1b: 선물 on_signal 보유 포지션이 1% 가격상승 → ~10% 자본수익(증거금 레버리지 10x).
-    예전엔 가드로 차단됐던 경로 — 이제 보유형 증거금 회계로 작동(vol drag 없음)."""
-    res = run_strategy_ir(_event_hold("코스피200선물"), _ds("코스피200선물", _UP))
+def test_event_futures_default_margin_amplifies_2x():
+    """선물 on_signal 보유가 *기본* 증거금 사용률 20%로 ~2x 노출(20%÷증거금률10%).
+    1% 가격상승 → ~2% 자본수익. (full-margin 100%=10x가 아니라 유저 조절 기본 20%.)
+    원유선물 승수 1,000·증거금 0.10: 1e7×20%=2e6 / (400×1000×0.10=40,000) = 50계약 → 명목 2e7 = 2x."""
+    res = run_strategy_ir(_event_hold("원유선물"), _ds("원유선물", _UP))
     assert res["success"], res.get("error")
     ret = res["equity"].iloc[-1] / res["equity"].iloc[0] - 1
-    assert ret > 0.05, f"선물 이벤트 레버리지 미작동(수익 {ret:.3%})"
-    assert abs(ret - 0.10) < 0.03, f"증거금 레버리지 배수 이상: {ret:.3%}"
+    assert abs(ret - 0.02) < 0.01, f"기본 20% 증거금 = ~2x 기대, 실제 {ret:.3%}"
+
+
+def test_event_futures_margin_pct_scales_engine_return():
+    """엔진 백테스트가 futures_margin_pct를 실제 사용 — 40%는 20%의 ~2배 수익(레버리지 2배).
+    라이브(event_buy_qty)와 동일 식이라 backtest=live 정합."""
+    r20 = run_strategy_ir(_event_hold("원유선물", futures_margin_pct=20.0), _ds("원유선물", _UP))
+    r40 = run_strategy_ir(_event_hold("원유선물", futures_margin_pct=40.0), _ds("원유선물", _UP))
+    ret20 = r20["equity"].iloc[-1] / r20["equity"].iloc[0] - 1
+    ret40 = r40["equity"].iloc[-1] / r40["equity"].iloc[0] - 1
+    assert ret20 > 0.005 and abs(ret40 - 2 * ret20) < abs(ret20) * 0.3 + 0.003, \
+        f"futures_margin_pct 미반영: 20%={ret20:.3%} 40%={ret40:.3%}"
 
 
 def test_event_equity_baseline_no_leverage():
@@ -140,12 +152,20 @@ def test_event_equity_baseline_no_leverage():
     assert abs(ret) < 0.02, f"주식 이벤트인데 레버리지 효과({ret:.3%})"
 
 
-def test_event_buy_qty_futures_matches_engine():
-    """live.py event_buy_qty가 선물을 계약수=floor(증거금/(px×승수×mr))로 — 라이브=백테스트(E1b) 일치."""
-    fut = _event_hold("코스피200선물")    # single, 승수 250,000·증거금 0.10
-    assert event_buy_qty(fut, cash=1e7, prev_close=400.0) == 1     # 1e7/(400×250000×0.10)=1계약
-    eq = _event_hold("005930")            # 주식: 정수주
-    assert event_buy_qty(eq, cash=1e7, prev_close=400.0) == 25000  # 1e7//400
+def test_event_buy_qty_futures_uses_margin_pct():
+    """선물 event_buy_qty = floor(cash×futures_margin_pct% / (px×승수×증거금률)). 기본 20%,
+    유저 조절 가능. 엔진 _budget과 동일 식 → 라이브=백테스트. 주식은 무영향(단일=100% 정수주)."""
+    # 원유선물: 승수 1,000·증거금 0.10 → px=400에서 1계약 증거금 40,000.
+    fut = _event_hold("원유선물")                                  # 기본 20%
+    assert event_buy_qty(fut, cash=1e7, prev_close=400.0) == 50     # 1e7×20%/40,000
+    fut40 = _event_hold("원유선물", futures_margin_pct=40.0)
+    assert event_buy_qty(fut40, cash=1e7, prev_close=400.0) == 100  # 2배(유저 상한 조절)
+    # 코스피200선물(승수 250,000): 1계약 증거금 1e7 → 1e7×20%=2e6 부족 → 0계약(정확한 0).
+    big = _event_hold("코스피200선물")
+    assert event_buy_qty(big, cash=1e7, prev_close=400.0) == 0
+    assert event_buy_qty(big, cash=1e8, prev_close=400.0) == 2      # 1e8×20%=2e7 / 1e7 = 2계약
+    eq = _event_hold("005930")                                     # 주식 단일=100% 정수주
+    assert event_buy_qty(eq, cash=1e7, prev_close=400.0) == 25000   # 1e7//400
 
 
 # ── H1: event(on_signal) 경로 마진콜 — 선물 손실이 NAV를 음수로 무한 발산시키던 결함 차단 ──
@@ -160,7 +180,10 @@ def _event_hold_maint(symbol: str, maint=None) -> StrategyIR:
                 inputs={"left": data("Close"), "right": const(0)})
     return StrategyIR(
         signal=cond, universe=Universe(kind="single", symbols=[symbol]),
-        position=PositionSpec(entry=Entry(mode="on_signal"), exit=Exit()),
+        # futures_margin_pct=100 → full-margin(10x) 급락 NAV 음수 발산 시나리오를 격리(마진콜
+        # 메커니즘 검증용). 기본 20%면 2x라 -15% 급락에도 NAV 양수라 이 테스트 의도가 안 선다.
+        position=PositionSpec(entry=Entry(mode="on_signal"), exit=Exit(),
+                              sizing=Sizing(futures_margin_pct=100.0)),
         simulation=SimSpec(initial_capital=1e7, commission=0.0, slippage=0.0,
                            maintenance_margin_pct=maint))
 
