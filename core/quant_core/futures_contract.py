@@ -19,10 +19,10 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
 from .exec_defaults import instrument_spec, is_futures
-from .futures_expiry import last_trading_date
+from .futures_expiry import last_trading_date, roll_lead_days
 
 # 데이터셋 한글 상품명 → CME globex root. 카탈로그(exec_defaults)의 6종 CME 선물.
 # root는 ffcode.mst 'CME 다음 컬럼'과 정확일치해야 하며, 승수로 교차검증한다(풀계약 확정).
@@ -44,11 +44,18 @@ def _second_thursday(y: int, m: int) -> date:
     return last_trading_date("kospi200_2nd_thu", y, m)
 
 
-def _front_domestic(master_text: str, today: date) -> tuple[date, str] | None:
+def _front_domestic(master_text: str, today: date,
+                    lead_days: int = 0) -> tuple[date, str] | None:
     """fo_idx_code.mst → KOSPI200 정규선물 근월물 (만기일, 단축코드). 없으면 None.
 
     정규선물('1' 시작)만 — 미니('B')·옵션('2', C/P) 제외. 만기=2번째 목요일. 순수함수.
+
+    lead_days>0이면 **만기 lead일 전부터 차월물로 롤** — 진입 시 만기 임박 계약을 피한다.
+    백스톱(_expiry_close_reason)이 보유분을 만기 lead일 전 청산하는 것과 대칭: 진입도
+    같은 lead를 존중해야 "사자마자 백스톱이 롤청산"하는 만기임박 진입을 막는다. 기본 0은
+    하위호환(만기 당일까지 유지) — 호출부(resolve_contract/front_contract)가 실제 lead 주입.
     """
+    cutoff = today + timedelta(days=lead_days)
     best: tuple[date, str] | None = None
     for line in master_text.splitlines():
         if "KOSPI200" not in line or not line.startswith("1"):
@@ -59,25 +66,31 @@ def _front_domestic(master_text: str, today: date) -> tuple[date, str] | None:
         code = line[1:7].strip()                     # 단축코드 A01606
         ym = m.group(1)
         exp = _second_thursday(int(ym[:4]), int(ym[4:6]))
-        if exp >= today and (best is None or exp < best[0]):
+        if exp >= cutoff and (best is None or exp < best[0]):
             best = (exp, code)
     return best
 
 
-def parse_front_month_domestic(master_text: str, today: date) -> str | None:
-    """fo_idx_code.mst → KOSPI200 정규선물 최근월물 단축코드(만기≥today 중 최근). 없으면 None."""
-    r = _front_domestic(master_text, today)
+def parse_front_month_domestic(master_text: str, today: date,
+                               lead_days: int = 0) -> str | None:
+    """fo_idx_code.mst → KOSPI200 정규선물 근월물 단축코드(만기≥today+lead 중 최근). 없으면 None."""
+    r = _front_domestic(master_text, today, lead_days)
     return r[1] if r else None
 
 
 def _front_overseas(master_text: str, today: date,
-                    root: str, multiplier: float) -> tuple[int, str] | None:
+                    root: str, multiplier: float,
+                    lead_days: int = 0) -> tuple[int, str] | None:
     """ffcode.mst → 해당 root 풀계약 근월물 (인도월 YYYYMM, globex 코드). 없으면 None.
 
     필터: exchange=CME ∧ root 정확일치(마이크로/미니/스프레드 root 자동 배제) ∧ 승수 교차검증
           ∧ code에 '-' 없음(스프레드 GCM26-N26 제외). name의 -YYYYMM으로 근월 선택. 순수함수.
+
+    lead_days>0이면 today+lead의 인도월 기준으로 근월 선택 — 진입 시 만기 임박월 회피
+    (국내와 대칭, 백스톱 lead 존중). 인도월 근사라 정밀 만기일은 백스톱이 별도 처리.
     """
-    today_ym = today.year * 100 + today.month
+    cutoff = today + timedelta(days=lead_days)
+    today_ym = cutoff.year * 100 + cutoff.month
     want_mult = str(int(multiplier))
     best: tuple[int, str] | None = None
     for line in master_text.splitlines():
@@ -106,9 +119,10 @@ def _front_overseas(master_text: str, today: date,
 
 
 def parse_front_month_overseas(master_text: str, today: date,
-                               root: str, multiplier: float) -> str | None:
-    """ffcode.mst → 해당 root 풀계약의 근월물 globex 코드(만기月≥today 중 최소). 없으면 None."""
-    r = _front_overseas(master_text, today, root, multiplier)
+                               root: str, multiplier: float,
+                               lead_days: int = 0) -> str | None:
+    """ffcode.mst → 해당 root 풀계약의 근월물 globex 코드(인도월≥today+lead 중 최소). 없으면 None."""
+    r = _front_overseas(master_text, today, root, multiplier, lead_days)
     return r[1] if r else None
 
 
@@ -152,14 +166,18 @@ def resolve_contract(symbol: str, today: date, *,
     """
     if not is_futures(symbol):
         return symbol                                  # 주식·ETF·지수: 심볼이 곧 거래코드
+    # 진입 롤 lead — 백스톱(_expiry_close_reason)과 동일 lead를 써서 만기 임박 계약 진입을
+    # 피한다(사자마자 롤청산되는 만기임박 진입 방지). resolve_contract(주문 라우팅)와
+    # front_contract(원장 기록)가 같은 lead로 같은 계약을 골라야 정합.
+    lead = roll_lead_days(instrument_spec(symbol).default_roll)
     if symbol in _DOMESTIC:
-        return parse_front_month_domestic(domestic_master, today) if domestic_master else None
+        return parse_front_month_domestic(domestic_master, today, lead) if domestic_master else None
     root = OVERSEAS_ROOTS.get(symbol)
     if root is not None:
         if not overseas_master:
             return None
         return parse_front_month_overseas(overseas_master, today, root,
-                                          instrument_spec(symbol).multiplier)
+                                          instrument_spec(symbol).multiplier, lead)
     return None                                        # 미등록 선물(방어)
 
 
@@ -175,10 +193,11 @@ def front_contract(symbol: str, today: date, *,
     if not is_futures(symbol):
         return None                                    # 주식: 만기 개념 없음
     spec = instrument_spec(symbol)
+    lead = roll_lead_days(spec.default_roll)           # resolve_contract와 동일 lead(같은 계약 선택 정합)
     if symbol in _DOMESTIC:
         if not domestic_master:
             return None
-        r = _front_domestic(domestic_master, today)
+        r = _front_domestic(domestic_master, today, lead)
         if r is None:
             return None
         exp, code = r
@@ -187,7 +206,7 @@ def front_contract(symbol: str, today: date, *,
     if root is not None:
         if not overseas_master:
             return None
-        r = _front_overseas(overseas_master, today, root, spec.multiplier)
+        r = _front_overseas(overseas_master, today, root, spec.multiplier, lead)
         if r is None:
             return None
         ym, code = r
