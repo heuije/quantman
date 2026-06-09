@@ -128,7 +128,7 @@ def test_parse_balance_empty():
     out = parse_futures_balance({})
     assert out["positions"] == []
     assert out["account"] == {"order_cash": 0.0, "margin_total": 0.0,
-                              "deposit_cash": 0.0, "eval_pnl": 0.0}
+                              "deposit_cash": 0.0, "eval_pnl": 0.0, "equity": 0.0}
 
 
 def test_json_decodes_utf8_korean():
