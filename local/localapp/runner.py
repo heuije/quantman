@@ -77,6 +77,32 @@ def _flush_pending() -> None:
         log.warning("보류 스냅샷 재전송 실패 (다음 사이클 재시도): %s", e)
 
 
+def run_emergency_liquidation() -> dict:
+    """비상 전량 청산 — run_cycle과 독립 경로(웹 LIQUIDATE_ALL 전용).
+
+    dataset 번들 다운로드·preview·전략 풀·시장 스케줄 의존 없이, 브로커 실보유를
+    즉시 매도/환매한다. 정규 run_cycle은 dataset 다운로드를 선행 필수로 두어
+    네트워크 불안정 시 비상정지가 무한 대기(hang)하던 구조적 결함이 있었다 — 이 경로는
+    그 의존을 제거해 비상정지가 항상 빠르게 동작하도록 격리한다.
+
+    호출자(gui)가 killswitch.activate를 먼저 한다. 결과 스냅샷은 여기서 push.
+    """
+    setup_logging()
+    _flush_pending()
+    broker = make_broker()
+    trader = Trader(broker)
+    payload = trader.liquidate_all_held()
+    try:
+        push_snapshot(payload)
+    except Exception as e:
+        log.warning("비상청산 스냅샷 push 실패 (보류 큐 저장): %s", e)
+        try:
+            save_json(PENDING_PATH, payload)
+        except Exception:
+            pass
+    return payload
+
+
 def _wait_for_order_ws() -> None:
     """메인 사이클 진입 직전 체결통보 WebSocket ready 확인.
 

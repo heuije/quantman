@@ -957,10 +957,16 @@ class SettingsApp:
             if secrets_store.load_kis() is None:
                 return {"error": "KIS 자격증명 없음 — setup 후 다시 시도하세요"}
             killswitch.activate("웹 명령: LIQUIDATE_ALL")
-            from .runner import run_cycle
-            payload = run_cycle()
+            # 비상 청산은 dataset 다운로드·preview·전략파싱에 의존하는 run_cycle이 아니라
+            # 격리된 경로로 — 브로커 실보유를 즉시 매도. (run_cycle 재사용 시 dataset
+            # 번들 다운로드 hang에 비상정지 전체가 막히던 구조적 결함 회피.)
+            from .runner import run_emergency_liquidation
+            payload = run_emergency_liquidation()
             self.root.after(100, self.refresh_status)
-            return {"liquidated_positions": len(payload.get("positions", []))}
+            cs = payload.get("cycle_summary", {})
+            return {"liquidated_positions": len(payload.get("positions", [])),
+                    "n_sold": cs.get("n_sold", 0),
+                    "n_rejected": cs.get("n_rejected", 0)}
 
         if t == "CANCEL_ORDER":
             order_no = params.get("order_no")

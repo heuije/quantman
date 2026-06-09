@@ -1189,6 +1189,108 @@ class Trader:
             log.warning("[P1-D] today_buy_summary 읽기 실패: %s", e)
         return count, turnover
 
+    def liquidate_all_held(self) -> dict:
+        """비상 전량 청산 — 일반 cycle과 독립. dataset·preview·전략파싱·시장스코프 무의존.
+
+        근본 원칙: 비상정지는 안전 기능이므로 최소 의존·격리돼야 한다. 보유분을 파는
+        데엔 신호·dataset이 필요 없으므로, 청산 대상을 **브로커 계좌 실보유**
+        (account_snapshot)에서 직접 취득한다 — ledger/전략 파싱/dataset 다운로드와 무관.
+        전략이 삭제된 고아·외부 매수분도 보유면 청산된다(run_cycle 재사용 시 dataset
+        다운로드 hang·파싱 실패·단일 시장 스코프에 막히던 구조적 결함을 닫음).
+
+        시세는 KIS 현재가(_safe_price), 못 구하면 시장가 주문(가격 의존 제거). KR·US·선물
+        보유 전체를 시장 무관하게 즉시 매도(롱)·환매(숏). 열린 시장은 체결, 닫힌 시장은
+        broker가 거부를 반환(decisions에 rejected로 명확 표면화). 매도 경로는 정규
+        cycle과 동일한 _submit_sell/_submit_close_short(멱등 게이트·pending 기록 공유).
+
+        호출자(gui LIQUIDATE_ALL)가 killswitch.activate를 먼저 수행하고 이 결과를
+        push_snapshot한다.
+        """
+        decisions: list[dict] = []
+        today = kst_today()
+        # 직전 미체결 상태 먼저 정리(이중매도 방지 게이트 정합).
+        self._resolve_pending(decisions)
+        try:
+            snap = self.broker.account_snapshot()
+        except Exception as e:
+            log.error("[비상청산] KIS 잔고 조회 실패 — 청산 보류(다음 시도 가능): %s", e)
+            decisions.append(order_log.decision(
+                "skip_kis_health", "", "", "", f"KIS 잔고 조회 실패: {e}"))
+            return self._emergency_payload(decisions, today)
+
+        global_policy = merged_execution(None)
+        market_policy = {**global_policy, "use_limit": False}   # 시세 없으면 시장가
+        positions = snap.get("positions") or []
+        log.info("[비상청산] 보유 %d종 전량 청산 시작 (dataset 무의존)", len(positions))
+        for pos in positions:
+            symbol = str(pos.get("symbol") or "")
+            qty = int(pos.get("qty") or 0)
+            side = pos.get("side", "long")
+            if not symbol or qty <= 0:
+                continue
+            ref_price = self._safe_price(symbol) or 0.0
+            policy = global_policy if ref_price > 0 else market_policy
+            # 비상 청산은 보유 sid 무관 — 종목 단위 멱등 키.
+            sid = f"liquidate:{symbol}"
+            if side == "short":
+                self._submit_close_short(sid, "비상청산", symbol, qty,
+                                         ref_price, policy, "kill-switch", decisions)
+            else:
+                self._submit_sell(sid, "비상청산", symbol, qty,
+                                  ref_price, policy, "kill-switch", decisions)
+        # 즉시 체결/거부 반영(시장가 체결·장마감 거부를 결과에 표면화).
+        self._resolve_pending(decisions)
+        return self._emergency_payload(decisions, today)
+
+    def _emergency_payload(self, decisions: list[dict], today: date) -> dict:
+        """비상 청산 결과를 Monitor용 스냅샷 payload로 — 정규 cycle 출력은 건드리지 않음.
+
+        정규 _cycle_body 꼬리를 재사용하지 않는다(주식 골든 cycle byte-identical 보존이
+        우선 — 비상 경로는 blast radius 0으로 격리). balance·positions·decisions·killswitch만
+        충실히 싣고 나머지는 Monitor가 기존대로 렌더.
+        """
+        try:
+            snap = self.broker.account_snapshot()
+            balance = snap.get("balance", {}) or {}
+            positions = snap.get("positions", []) or []
+        except Exception as e:
+            log.warning("[비상청산] 결과 스냅샷 조회 실패: %s", e)
+            balance, positions = {}, []
+        self._save()
+        try:
+            broker_pending = self.broker.pending_orders()
+        except Exception:
+            broker_pending = []
+        cycle_summary = {
+            "today": today.isoformat(),
+            "market": "ALL",
+            "kind": "emergency_liquidation",
+            "n_sold": sum(1 for d in decisions if d["action"] == "sold"),
+            "n_rejected": sum(1 for d in decisions if d["action"] == "rejected"),
+            "n_unfilled": sum(1 for d in decisions if d["action"] == "unfilled"),
+            "n_errors": sum(1 for d in decisions if d["action"] == "error"),
+            "kill_switch": True,
+        }
+        order_log.log_cycle(decisions, cycle_summary)
+        positions_rich = analytics.enrich_positions(
+            positions, self.ledger, today.isoformat())
+        return {
+            "balance": balance,
+            "positions": positions_rich,
+            "equity": self.equity[-365:],
+            "trades": [d for d in decisions if d["action"] in ("bought", "sold")],
+            "decisions": decisions,
+            "broker_pending": broker_pending,
+            "pending_local": list(self.pending.values()),
+            "recent_orders": order_log.read_orders(50),
+            "recent_cycles": order_log.read_cycles(10),
+            "slippage": order_log.slippage_stats(),
+            "kill_switch": killswitch.load(),
+            "cycle_summary": cycle_summary,
+            "drawdown": analytics.drawdown_state(),
+            "health": analytics.local_health(),
+        }
+
     def cycle(self, strategies: list[dict], dataset: dict,
               today: date | None = None,
               buy_candidates: list[dict] | None = None,
