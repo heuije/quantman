@@ -476,12 +476,13 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
         if signal_out_type(pos.exit.condition) != "condition":
             issues.append(Issue("S-exit", SEV_ERROR, "매도 조건은 condition 블록이어야 합니다.", "exit.condition"))
 
-    # M5 — 청산 규칙 부호·범위 (관례: 익절>0%, 손절<0%, 보유기간≥1, 트레일링>0).
+    # M5 — 청산 규칙 부호·범위 (관례: 익절>0%, 손절<0%, 보유기간≥0, 트레일링>0).
     # 부호가 틀리면 즉시청산/미청산으로 조용히 퇴화한다. position.exit 전용 — 리서치 스킵.
+    # hold_days=0 = 당일매매(진입한 바의 종가에 청산) — fill=next_open과 결합 시 시가→종가.
     ex = pos.exit
     if not is_research:
-        if ex.hold_days is not None and ex.hold_days < 1:
-            issues.append(Issue("M-exit", SEV_ERROR, "보유기간(hold_days)은 1 이상이어야 합니다.", "position.exit"))
+        if ex.hold_days is not None and ex.hold_days < 0:
+            issues.append(Issue("M-exit", SEV_ERROR, "보유기간(hold_days)은 0 이상이어야 합니다(0=당일 종가 청산).", "position.exit"))
         if ex.take_profit is not None and ex.take_profit <= 0:
             issues.append(Issue("M-exit", SEV_ERROR, "익절(take_profit)은 양수(%)여야 합니다.", "position.exit"))
         if ex.stop_loss is not None and ex.stop_loss >= 0:

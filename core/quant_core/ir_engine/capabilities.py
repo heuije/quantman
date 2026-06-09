@@ -119,7 +119,7 @@ def capability_spec() -> dict:
             "does": "on_signal·scheduled 진입의 청산 규칙(OR 결합, 가장 먼저 닿는 것). always는 무시.",
             "knobs": {
                 "take_profit": "익절(+%, 양수)", "stop_loss": "손절(-%, 음수)",
-                "hold_days": "보유기간(일, ≥1)", "trail_pct": "트레일링 스탑(+%)",
+                "hold_days": "보유기간(거래일, ≥0; 0=당일 종가 청산)", "trail_pct": "트레일링 스탑(+%)",
                 "trail_atr_mult": "ATR 배수 트레일링", "condition": "매도 신호(condition 블록)",
             },
         },

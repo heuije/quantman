@@ -888,6 +888,7 @@ export default function IrBuilder() {
         <div className="panel-title">청산</div>
         <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
           채운 규칙들이 함께 적용되어 가장 먼저 닿는 조건에서 청산합니다. 정기 리밸런싱에도 적용(상시 진입은 매일 교체라 무시).
+          <br />보유일수 <b>0 = 당일 종가 청산</b>(시가 진입 시 시가→종가 당일매매).
         </div>
         <div className="lab-row">
           <label className="lab-field">보유일수

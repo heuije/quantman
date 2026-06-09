@@ -381,7 +381,12 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                 pos.peak_close = float(close)
             reason = _exit_reason(pos, i, close, high, atr_v, sell_arrs[sym], exits)
             if reason:
-                if defer:
+                if defer and exits.hold_days == 0:
+                    # 당일매매(hold_days=0): 진입한 바의 종가에 즉시 청산 — 익일 시가로
+                    # 미루지 않는다. next_open 진입 + 이 청산 = 시가→종가 당일 왕복
+                    # (일봉에 시가·종가가 다 있어 분봉 불필요). exec[i]==close[i].
+                    _close(sym, i, aligned[sym]["exec"][i], reason, _sell_pct(reason, sz))
+                elif defer:
                     pending_sells[sym] = reason
                 else:
                     _close(sym, i, aligned[sym]["exec"][i], reason, _sell_pct(reason, sz))
