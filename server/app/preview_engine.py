@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from quant_core import market_calendar as _mc
+from quant_core.exec_defaults import instrument_spec as _instrument_spec
 from quant_core.ir_engine import StrategyIR, needed_columns, needed_symbols
 from sqlmodel import Session, select
 
@@ -285,6 +286,20 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
             out["skipped"].append({"symbol": sym, "reason": "전일 종가 없음"})
             continue
         meta = master_by_code.get(sym, {})
+        if _instrument_spec(sym).asset_class == "futures":
+            # 선물 — 서버는 선물계좌 가용증거금현금을 모른다(보안경계: KIS 자격증명·계좌가
+            # 로컬 PC 전용) → 미국 종목과 동일하게 preview 사이징 불가(qty=None). 단 한글 선물
+            # 표시심볼('코스피200선물')은 _is_kr_symbol(6자리 숫자)에 안 걸려 아래 US 분기로
+            # 빠지면 통화가 'USD'로 오분류된다 → 계약 스펙의 통화로 명시(KOSPI200=KRW,
+            # 해외 CME 선물=USD). 실제 사이징은 발주 시점 로컬앱이 선물계좌로 수행.
+            out["candidates"].append({
+                "symbol": sym, "name": meta.get("name", ""), "qty": None,
+                "prev_close": round(prev_close, 2), "est_limit_price": None,
+                "est_total": None, "sizing_mode": sz.mode,
+                "data_as_of": _last_date(dataset, sym), "source": "ir",
+                "currency": _instrument_spec(sym).currency,
+                "note": "선물 — 발주 시점 로컬 선물계좌로 사이징 (preview 미지원)"})
+            continue
         if not _is_kr_symbol(sym):
             out["candidates"].append({
                 "symbol": sym, "name": meta.get("name", ""), "qty": None,
