@@ -109,44 +109,91 @@ class KisBroker:
         self.quote_base = _REAL          # 시세는 항상 실전 도메인
         no = creds["account_no"].split("-")
         self.cano, self.acnt_cd = no[0], (no[1] if len(no) > 1 else "01")
-        # 토큰 캐시 귀속 지문 — 실전/모의 + appkey. KIS access token은 발급 도메인
-        # (VTS=모의 / REAL=실전)에 묶이므로, 단일 캐시 파일을 만료시각만으로 재사용하면
-        # 모의↔실전 전환 직후 이전 계정 토큰을 잘못 재사용해 인증 실패한다. _token()이 검증.
+        # 시세 조회용 자격증명 — KIS는 시세를 실전 도메인 전용으로 제공하고 모의 앱키를 거부
+        # (EGW02004)한다. 모의(virtual)면 별도 실전 앱키 필수, 실전이면 주문 앱키가 곧 실전이라
+        # 그대로 재사용. 시세 호출만 이 키로(주문·잔고는 self.key 그대로).
+        if self.virtual:
+            self.quote_key = creds.get("quote_app_key") or ""
+            self.quote_secret = creds.get("quote_app_secret") or ""
+            if not (self.quote_key and self.quote_secret):
+                raise RuntimeError(
+                    "모의투자 시세 조회용 실전 앱키가 없습니다. KIS 실전 앱키를 발급해 "
+                    "setup에서 '시세용 실전 앱키'로 등록하세요 (모의 앱키는 시세 도메인에서 거부됨).")
+        else:
+            self.quote_key, self.quote_secret = self.key, self.secret
+        # 토큰 캐시 귀속 지문 — (도메인, appkey)별. KIS access token은 발급 도메인
+        # (VTS=모의 / REAL=실전)에 묶이므로 단일 캐시를 만료시각만으로 재사용하면 모의↔실전
+        # 전환·이중키에서 잘못된 토큰을 재사용한다. _token_for가 fp로 분리 캐시·검증.
         self._token_fp = hashlib.sha256(
-            f"{self.virtual}:{self.key}".encode()).hexdigest()[:16]
+            f"{self.base}:{self.key}".encode()).hexdigest()[:16]
+        self._quote_fp = hashlib.sha256(
+            f"{self.quote_base}:{self.quote_key}".encode()).hexdigest()[:16]
 
     # ── 토큰 ──────────────────────────────────────────────────────────────────
 
-    def _token(self) -> str:
-        if _TOKEN_CACHE.exists():
+    @staticmethod
+    def _read_token_cache() -> dict:
+        """토큰 캐시(다중 엔트리: {fp: {access_token, expires_at}})를 읽는다.
+
+        구버전 단일 엔트리({access_token, expires_at, fp})는 fp 키 구조와 충돌하므로
+        무시(빈 dict 반환) → 재발급으로 자동 마이그레이션."""
+        if not _TOKEN_CACHE.exists():
+            return {}
+        try:
             c = json.loads(_TOKEN_CACHE.read_text(encoding="utf-8"))
-            # 캐시는 발급 계정(self._token_fp)에 귀속 — 지문 불일치(모의↔실전·다른 appkey)면
-            # 무시하고 재발급. 일치 + 만료 30분 마진 이내일 때만 적중.
-            if (c.get("fp") == self._token_fp
-                    and datetime.fromisoformat(c["expires_at"]) > datetime.now() + timedelta(minutes=30)):
-                return c["access_token"]
-        r = requests.post(f"{self.base}/oauth2/tokenP",
+            if not isinstance(c, dict) or "access_token" in c:   # 구버전 단일 엔트리
+                return {}
+            return c
+        except Exception:
+            return {}
+
+    def _token_for(self, appkey: str, appsecret: str, base: str, fp: str) -> str:
+        """(appkey, 도메인) 조합별 access token — fp로 분리 캐시. 주문·시세 공용 발급기.
+
+        KIS access token은 발급 도메인(VTS/REAL)에 묶이므로 주문(모의)·시세(실전)가 서로
+        다른 토큰을 갖는다. 만료 30분 마진 이내 캐시 적중, 아니면 재발급."""
+        cache = self._read_token_cache()
+        ent = cache.get(fp)
+        if ent and datetime.fromisoformat(ent["expires_at"]) > datetime.now() + timedelta(minutes=30):
+            return ent["access_token"]
+        r = requests.post(f"{base}/oauth2/tokenP",
                            json={"grant_type": "client_credentials",
-                                 "appkey": self.key, "appsecret": self.secret},
+                                 "appkey": appkey, "appsecret": appsecret},
                            timeout=10)
         r.raise_for_status()
         d = r.json()
-        # 토큰 파일은 같은 PC의 다른 사용자·프로세스가 읽으면 안 되는 자격증명.
-        # state_store 위임 (R5): owner-only ACL + 원자적 저장. 이전엔 plain write_text라
-        # 쓰는 중 종료 시 파일이 깨져 다음 _token() json.loads(104행)가 크래시할 수 있었다.
-        save_json(_TOKEN_CACHE, {
+        cache[fp] = {
             "access_token": d["access_token"],
             "expires_at": (datetime.now()
                            + timedelta(seconds=int(d.get("expires_in", 86400)))).isoformat(),
-            "fp": self._token_fp,
-        })
+        }
+        # owner-only ACL + 원자적 저장(R5). 쓰는 중 종료에도 파일 무결성 유지.
+        save_json(_TOKEN_CACHE, cache)
         return d["access_token"]
 
+    def _token(self) -> str:
+        """주문·잔고용 토큰 — self.base(모의=VTS/실전=REAL) + 주문 앱키."""
+        return self._token_for(self.key, self.secret, self.base, self._token_fp)
+
+    def _quote_token(self) -> str:
+        """시세용 토큰 — 실전 도메인 + 시세 앱키(모의면 별도 실전 앱키, 실전이면 주문 앱키)."""
+        return self._token_for(self.quote_key, self.quote_secret, self.quote_base, self._quote_fp)
+
     def _headers(self, tr_id: str) -> dict:
+        """주문·잔고 헤더 — 주문 앱키/토큰(모의 도메인)."""
         return {
             "content-type": "application/json",
             "authorization": f"Bearer {self._token()}",
             "appkey": self.key, "appsecret": self.secret,
+            "tr_id": tr_id, "custtype": "P",
+        }
+
+    def _quote_headers(self, tr_id: str) -> dict:
+        """시세 헤더 — 시세(실전) 앱키/토큰. KIS 시세 도메인은 실전 앱키만 허용(EGW02004)."""
+        return {
+            "content-type": "application/json",
+            "authorization": f"Bearer {self._quote_token()}",
+            "appkey": self.quote_key, "appsecret": self.quote_secret,
             "tr_id": tr_id, "custtype": "P",
         }
 
@@ -241,11 +288,15 @@ class KisBroker:
         8건/초 한도 자체 페이싱. EGW00201 reactive retry는 안전망으로 유지.
         """
         base = base or self.base
+        # 시세(실전 도메인) 호출이고 모의 계정이면 시세용 실전 앱키 헤더, 아니면 주문 헤더.
+        # 실전 계정(virtual=False)은 주문 앱키가 이미 실전이라 _headers로 충분.
+        hdr = (self._quote_headers(tr) if (base == self.quote_base and self.virtual)
+               else self._headers(tr))
         last = None
         for i in range(tries):
             _GLOBAL_THROTTLE.acquire()
             r = requests.get(f"{base}{path}",
-                             headers=self._headers(tr), timeout=15, params=params)
+                             headers=hdr, timeout=15, params=params)
             if r.status_code == 200:
                 return _kis_check(r)
             mc = ""

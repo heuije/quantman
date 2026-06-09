@@ -34,8 +34,11 @@ def _fake_token_source(tokens):
 
 
 def _creds(app_key, virtual):
+    # 모의(virtual)면 시세용 실전 앱키가 필수 — 토큰 캐시 테스트는 _token()(주문)만 호출하므로
+    # 시세 앱키 존재만 충족하면 됨(quote 토큰은 발급 안 함).
     return {"app_key": app_key, "app_secret": "sec", "virtual": virtual,
-            "account_no": "12345678-01"}
+            "account_no": "12345678-01",
+            "quote_app_key": "QKEY", "quote_app_secret": "qsec"}
 
 
 def test_token_cache_not_shared_across_accounts(tmp_path, monkeypatch):

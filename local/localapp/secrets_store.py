@@ -19,14 +19,23 @@ _DEVICE = "device_token"
 
 
 def save_kis(app_key: str, app_secret: str, account_no: str,
-             virtual: bool = True, hts_id: str = "") -> None:
-    """KIS 자격증명 저장. hts_id는 체결통보 WebSocket(H0STCNI0)의 tr_key용 — 선택."""
+             virtual: bool = True, hts_id: str = "",
+             quote_app_key: str = "", quote_app_secret: str = "") -> None:
+    """KIS 자격증명 저장. hts_id는 체결통보 WebSocket(H0STCNI0)의 tr_key용 — 선택.
+
+    quote_app_key/secret: 시세 조회용 **실전** 앱키. KIS는 시세를 실전 도메인 전용으로
+    제공하고 모의 앱키를 거부(EGW02004)하므로, 모의(virtual=True) 사용 시 시세 조회에는
+    별도 실전 앱키가 필수다. 주문·잔고는 app_key(모의)로, 시세만 quote_app_key(실전)로
+    호출한다. 실전(virtual=False)이면 app_key가 이미 실전이라 비워둬도 된다.
+    """
     keyring.set_password(KEYRING_SERVICE, _KIS, json.dumps({
         "app_key": app_key,
         "app_secret": app_secret,
         "account_no": account_no,
         "virtual": virtual,
         "hts_id": hts_id,
+        "quote_app_key": quote_app_key,
+        "quote_app_secret": quote_app_secret,
     }))
 
 
