@@ -716,6 +716,8 @@ export interface SyncSnapshot {
     next_day_preview?: NextDayPreview;
     // Phase 40 — KIS 잔고 ↔ ledger 정합성
     reconciliation?: ReconciliationResult;
+    // 자동매매 스케줄러 상태 — 로컬앱이 모든 push에 실어 보냄(실시간 동기화).
+    auto_status?: "running" | "paused" | "stopped";
   };
   received_at: string; device_id: number | null;
   // Phase 58 — 5분 주기 heartbeat. snapshot보다 최신이면 "살아있음" 지표로

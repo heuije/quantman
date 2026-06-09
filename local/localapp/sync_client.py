@@ -36,7 +36,15 @@ def _headers() -> dict:
 
 
 def push_snapshot(payload: dict) -> None:
-    """안전정보 스냅샷을 플랫폼에 푸시."""
+    """안전정보 스냅샷을 플랫폼에 푸시.
+
+    모든 snapshot egress의 단일 출구 — 자동매매 상태(auto_status)를 여기서 일괄 주입해
+    cycle·비상청산·reconcile·상태변경 등 어느 경로로 push되든 웹이 현재 running/paused/
+    stopped를 항상 받게 한다(builder마다 중복 배선 없이 한 곳에서 보장). builder가 이미
+    넣었으면 보존(setdefault).
+    """
+    from . import auto_state
+    payload.setdefault("auto_status", auto_state.load())
     r = requests.post(f"{PLATFORM_URL}/sync/push", headers=_headers(),
                       json={"payload": payload}, timeout=15)
     r.raise_for_status()

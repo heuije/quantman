@@ -28,6 +28,7 @@ PREVIEW_CACHE_TTL_SEC = 24 * 60 * 60
 ORDERS_PATH = APP_DIR / "orders.jsonl"           # 주문 이벤트 로그 (제출/체결/취소/거부)
 CYCLES_PATH = APP_DIR / "cycles.jsonl"           # 사이클별 의사결정 로그
 KILLSWITCH_PATH = APP_DIR / "killswitch.json"    # kill switch 상태
+AUTO_STATE_PATH = APP_DIR / "auto_state.json"    # 자동매매 스케줄러 상태(running/paused/stopped) — 웹 실시간 표시
 PENDING_ORDERS_PATH = APP_DIR / "pending_orders.json"  # 미체결 추적
 SLIPPAGE_PATH = APP_DIR / "slippage.json"        # 누적 슬리피지 통계
 # L-01 — 발주 의도(intent) 저널 (append-only). 발주 직전 "submitting"으로 fsync,

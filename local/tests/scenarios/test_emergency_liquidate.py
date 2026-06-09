@@ -76,3 +76,23 @@ def test_skips_zero_qty_and_empty_holdings(isolated_trader):
     payload = trader.liquidate_all_held()
     assert [s for s in broker.submitted if s["side"] in ("buy", "sell")] == []
     assert payload["cycle_summary"]["kind"] == "emergency_liquidation"
+
+
+def test_state_snapshot_reflects_killswitch_without_trading(isolated_trader):
+    """state_snapshot은 거래 없이 현 kill-switch 상태를 반영(웹 실시간 동기화용)."""
+    from localapp import killswitch
+    trader, broker = isolated_trader
+    broker.set_positions([{"symbol": "005930", "qty": 5, "avg_price": 70000}])
+
+    killswitch.activate("test")
+    snap = trader.state_snapshot()
+    assert snap["cycle_summary"]["kind"] == "state_sync"
+    assert snap["cycle_summary"]["kill_switch"] is True
+    assert snap["kill_switch"]["active"] is True
+    assert [s for s in broker.submitted if s["side"] in ("buy", "sell")] == []  # 거래 없음
+
+    killswitch.reset()
+    snap2 = trader.state_snapshot()
+    assert snap2["cycle_summary"]["kill_switch"] is False
+    assert snap2["kill_switch"]["active"] is False
+    assert snap2["positions"]                              # 잔고·포지션은 그대로 실림

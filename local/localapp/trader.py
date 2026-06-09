@@ -1216,7 +1216,7 @@ class Trader:
             log.error("[비상청산] KIS 잔고 조회 실패 — 청산 보류(다음 시도 가능): %s", e)
             decisions.append(order_log.decision(
                 "skip_kis_health", "", "", "", f"KIS 잔고 조회 실패: {e}"))
-            return self._emergency_payload(decisions, today)
+            return self._state_payload(decisions, today, kind="emergency_liquidation")
 
         global_policy = merged_execution(None)
         market_policy = {**global_policy, "use_limit": False}   # 시세 없으면 시장가
@@ -1240,21 +1240,29 @@ class Trader:
                                   ref_price, policy, "kill-switch", decisions)
         # 즉시 체결/거부 반영(시장가 체결·장마감 거부를 결과에 표면화).
         self._resolve_pending(decisions)
-        return self._emergency_payload(decisions, today)
+        return self._state_payload(decisions, today, kind="emergency_liquidation")
 
-    def _emergency_payload(self, decisions: list[dict], today: date) -> dict:
-        """비상 청산 결과를 Monitor용 스냅샷 payload로 — 정규 cycle 출력은 건드리지 않음.
+    def state_snapshot(self) -> dict:
+        """현 상태(잔고·포지션·kill_switch) 스냅샷 — 거래 없이 상태 변경(kill-switch 해제·
+        일시정지·재개·주문취소 등)을 웹에 즉시 반영하기 위한 push용. decisions 없음·cycle
+        로그 미기록(타임라인 오염 방지). auto_status는 push_snapshot이 일괄 주입한다.
+        """
+        return self._state_payload([], kst_today(), kind="state_sync",
+                                   record_cycle=False)
 
-        정규 _cycle_body 꼬리를 재사용하지 않는다(주식 골든 cycle byte-identical 보존이
-        우선 — 비상 경로는 blast radius 0으로 격리). balance·positions·decisions·killswitch만
-        충실히 싣고 나머지는 Monitor가 기존대로 렌더.
+    def _state_payload(self, decisions: list[dict], today: date, *,
+                       kind: str = "emergency_liquidation",
+                       record_cycle: bool = True) -> dict:
+        """현재 잔고·포지션·결정·kill_switch를 Monitor용 스냅샷 payload로 — 정규 cycle 출력
+        (_cycle_body 꼬리)은 건드리지 않는다(주식 골든 byte-identical 보존, blast radius 0).
+        비상청산(kind=emergency_liquidation)·상태동기화(kind=state_sync) 공용 빌더.
         """
         try:
             snap = self.broker.account_snapshot()
             balance = snap.get("balance", {}) or {}
             positions = snap.get("positions", []) or []
         except Exception as e:
-            log.warning("[비상청산] 결과 스냅샷 조회 실패: %s", e)
+            log.warning("[%s] 스냅샷 조회 실패: %s", kind, e)
             balance, positions = {}, []
         self._save()
         try:
@@ -1264,14 +1272,15 @@ class Trader:
         cycle_summary = {
             "today": today.isoformat(),
             "market": "ALL",
-            "kind": "emergency_liquidation",
+            "kind": kind,
             "n_sold": sum(1 for d in decisions if d["action"] == "sold"),
             "n_rejected": sum(1 for d in decisions if d["action"] == "rejected"),
             "n_unfilled": sum(1 for d in decisions if d["action"] == "unfilled"),
             "n_errors": sum(1 for d in decisions if d["action"] == "error"),
-            "kill_switch": True,
+            "kill_switch": bool(killswitch.load().get("active")),
         }
-        order_log.log_cycle(decisions, cycle_summary)
+        if record_cycle:
+            order_log.log_cycle(decisions, cycle_summary)
         positions_rich = analytics.enrich_positions(
             positions, self.ledger, today.isoformat())
         return {

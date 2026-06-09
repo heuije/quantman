@@ -90,6 +90,7 @@ export default function Monitor() {
   const cycles = p?.recent_cycles ?? [];
   const positions = p?.positions ?? [];
   const equityNow = p?.balance?.total_eval;
+  const autoStatus = p?.auto_status;   // running | paused | stopped (실시간 동기화)
   // 청산 불가 고아(삭제·구버전 전략 보유분) — 최신 사이클 decisions에서 종목 추출.
   const orphanSyms = (p?.decisions ?? [])
     .filter((d) => d.action === "unparseable_orphan")
@@ -185,6 +186,14 @@ export default function Monitor() {
       <div className="panel" style={{ display: "flex", flexWrap: "wrap",
                                          gap: 8, alignItems: "center" }}>
         <strong style={{ marginRight: 8 }}>액션:</strong>
+        {paired && autoStatus && (
+          <span className="muted" style={{ fontSize: 12, marginRight: 4 }}
+                title="로컬앱 자동매매 스케줄러 상태(실시간 동기화)">
+            {autoStatus === "running" ? "🟢 자동매매 실행 중"
+              : autoStatus === "paused" ? "⏸ 일시정지됨"
+              : "⚪ 정지됨"}
+          </span>
+        )}
         <button className="ghost sm" onClick={() => send("PAUSE_AUTO")}
                 disabled={actionDisabled} title={pairTooltip}>
           일시정지
