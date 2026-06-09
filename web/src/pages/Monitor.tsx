@@ -59,20 +59,25 @@ export default function Monitor() {
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  const paired = devices.length > 0;
+  // 명령 대상 = 지금 화면에 보이는 스냅샷을 보낸 그 기기(snap.device_id) — "보는 것 =
+  // 제어하는 것". 없으면 가장 최근 활동 기기(서버가 /auth/devices를 last_seen desc로
+  // 정렬해 devices[0]가 곧 활성 기기). 같은 PC 재페어링으로 죽은 device row가 쌓여도
+  // 명령(재개·전량매도·킬스위치 해제)이 살아있는 기기로 가게 한다.
+  const targetDevice = devices.find((d) => d.id === snap?.device_id) ?? devices[0];
+
   async function send(type: CommandType,
                       params: Record<string, string | number> = {}) {
-    const dev = devices[0];
-    if (!dev) { setErr("기기 페어링이 필요합니다."); return; }
+    if (!targetDevice) { setErr("기기 페어링이 필요합니다."); return; }
     setBusy(true);
     try {
-      await api.createCommand(dev.id, type, params);
+      await api.createCommand(targetDevice.id, type, params);
       await load();
     } catch (e) {
       setErr((e as Error).message);
     } finally { setBusy(false); }
   }
 
-  const paired = devices.length > 0;
   // Phase 42-3 — 페어링 해제 시 옛 snapshot(킬스위치·잔고·포지션 등)을
   // 노출하지 않는다. paired=false 분기에서 PairingOnboarding이 표시되므로
   // 본 데이터는 어차피 가려지지만, kill switch banner 같은 page-level
@@ -201,8 +206,8 @@ export default function Monitor() {
                                   heartbeatAt={snap?.last_heartbeat_at}
                                   health={p?.health} />}
           <span className="muted" style={{ fontSize: 12 }}>
-            {paired
-              ? `대상 기기: ${devices[0].name} (#${devices[0].id})`
+            {targetDevice
+              ? `대상 기기: ${targetDevice.name} (#${targetDevice.id})`
               : "기기 페어링 필요"}
           </span>
         </div>

@@ -2,10 +2,31 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Optional
+from datetime import datetime, timezone
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, PlainSerializer
+
+
+def _serialize_utc(dt: datetime) -> str:
+    """naive datetime을 UTC로 간주해 offset(+00:00)을 달아 직렬화.
+
+    근본 이유: DB(Postgres `timestamp without time zone`)는 모든 시각을 UTC(_now=
+    datetime.now(timezone.utc))로 저장하지만 round-trip 시 tzinfo를 잃어 naive로
+    읽힌다. naive ISO(offset 없음)를 그대로 JSON으로 내보내면 브라우저
+    `new Date("...15:45:01")`가 이를 **현지시간(KST 등)으로 오해**해 시각이 어긋난다
+    (KST 사용자는 정확히 -9h). 출력 datetime은 항상 UTC offset을 달아야 한다.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+# 모든 출력 스키마의 datetime 필드는 이 타입으로 UTC offset 직렬화를 보장한다
+# (부류 전체를 한 진입점에서 닫음 — 신규 출력 스키마도 datetime 대신 UtcDateTime 사용).
+UtcDateTime = Annotated[
+    datetime, PlainSerializer(_serialize_utc, return_type=str, when_used="json")
+]
 
 
 # ── 인증 ──────────────────────────────────────────────────────────────────────
@@ -32,7 +53,7 @@ class TokenOut(BaseModel):
 class UserOut(BaseModel):
     id: int
     email: str
-    created_at: datetime
+    created_at: UtcDateTime
 
 
 # ── 기기 페어링 ────────────────────────────────────────────────────────────────
@@ -66,8 +87,8 @@ class DeviceTokenOut(BaseModel):
 class DeviceOut(BaseModel):
     id: int
     name: str
-    created_at: datetime
-    last_seen_at: Optional[datetime] = None
+    created_at: UtcDateTime
+    last_seen_at: Optional[UtcDateTime] = None
 
 
 # ── 전략 ──────────────────────────────────────────────────────────────────────
@@ -84,18 +105,18 @@ class StrategyOut(BaseModel):
     run_mode: str
     engine: str = "ir"
     definition: dict[str, Any]
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDateTime
+    updated_at: UtcDateTime
     # Phase 59 — 적용 기간 계산용
-    paper_started_at: Optional[datetime] = None
-    live_started_at: Optional[datetime] = None
+    paper_started_at: Optional[UtcDateTime] = None
+    live_started_at: Optional[UtcDateTime] = None
 
 
 class StrategyVersionOut(BaseModel):
     """전략 버전 이력 한 항목."""
     version_no: int
     name: str
-    created_at: datetime
+    created_at: UtcDateTime
     created_reason: str
     definition: Optional[dict[str, Any]] = None     # list endpoint에선 omit
 
@@ -112,7 +133,7 @@ class StrategyStatsOut(BaseModel):
     win_rate: Optional[float] = None
     n_trades: Optional[int] = None
     n_positions: int = 0                            # 현재 보유 종목 수
-    last_snapshot_at: Optional[datetime] = None
+    last_snapshot_at: Optional[UtcDateTime] = None
 
 
 class StrategyRestoreIn(BaseModel):
@@ -127,12 +148,12 @@ class SyncPushIn(BaseModel):
 
 class SyncSnapshotOut(BaseModel):
     payload: dict[str, Any]
-    received_at: datetime
+    received_at: UtcDateTime
     device_id: Optional[int] = None
     # Phase 58 — cycle 외 시간(새벽 등) 로컬앱 alive 신호. snapshot 갱신과 별도로
     # 5분 주기로 갱신. 웹앱이 last_heartbeat_at 또는 received_at 중 최신을 사용해
     # "끊김" 판단. 메모리 dict 기반이라 server restart 시 최대 5분 stale 가능.
-    last_heartbeat_at: Optional[datetime] = None
+    last_heartbeat_at: Optional[UtcDateTime] = None
 
 
 # ── 종목마스터 sync ───────────────────────────────────────────────────────────
@@ -189,7 +210,7 @@ class CommandOut(BaseModel):
     type: str
     params: dict[str, Any]
     status: str
-    created_at: datetime
-    delivered_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
+    created_at: UtcDateTime
+    delivered_at: Optional[UtcDateTime] = None
+    completed_at: Optional[UtcDateTime] = None
     result: dict[str, Any]

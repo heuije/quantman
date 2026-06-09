@@ -175,7 +175,12 @@ def list_devices(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    devices = session.exec(select(Device).where(Device.user_id == user.id)).all()
+    devices = list(session.exec(select(Device).where(Device.user_id == user.id)).all())
+    # 최근 활동 기기 먼저(None은 뒤). 웹은 devices[0]을 명령 대상으로 쓰므로,
+    # 같은 PC 재페어링으로 죽은 device row가 쌓여도 살아있는 기기가 선택되게 한다
+    # (ORDER BY 없으면 비결정 — 명령이 죽은 기기로 가 영영 미전달되는 버그 방지).
+    # device 수는 소수라 Python 정렬로 DB dialect(NULLS LAST 미지원) 의존 제거.
+    devices.sort(key=lambda d: d.last_seen_at or datetime.min, reverse=True)
     return [DeviceOut(id=d.id, name=d.name, created_at=d.created_at,
                       last_seen_at=d.last_seen_at) for d in devices]
 
