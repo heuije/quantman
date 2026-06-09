@@ -20,6 +20,13 @@ from .secrets_store import load_device_token
 
 log = logging.getLogger("localapp.sync")
 
+# dataset 번들 다운로드 timeout — (connect, read) 튜플로 stalled stream을 fast-fail.
+# read는 "청크 간 무수신 허용 시간"이므로 정상 스트리밍(연속 수신)엔 영향 없고, 소켓이
+# 멈추면 ~30초 내 ReadTimeout → refresh_market_data가 캐시로 폴백. 옛 단일 timeout=300은
+# stall 시 최대 5분 hang(정규 cycle 멈춤·과거 비상정지 hang 원인)이라 제거.
+_BUNDLE_CONNECT_TIMEOUT_SEC = 10
+_BUNDLE_READ_TIMEOUT_SEC = 30
+
 
 def _headers() -> dict:
     token = load_device_token()
@@ -71,8 +78,9 @@ def fetch_dataset_bundle(local_data_dir: Path) -> dict:
     t0 = time.time()
     log.info("dataset bundle 다운로드 시도 (etag=%s)...",
              cached_etag[:12] if cached_etag else "(없음)")
-    r = requests.get(f"{PLATFORM_URL}/dataset/bundle",
-                     headers=headers, timeout=300, stream=True)
+    r = requests.get(
+        f"{PLATFORM_URL}/dataset/bundle", headers=headers, stream=True,
+        timeout=(_BUNDLE_CONNECT_TIMEOUT_SEC, _BUNDLE_READ_TIMEOUT_SEC))
     if r.status_code == 304:
         log.info("dataset bundle: 변경 없음 (ETag 일치) — skip")
         return {"ok": True, "skipped": True}
