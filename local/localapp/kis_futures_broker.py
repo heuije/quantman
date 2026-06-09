@@ -241,7 +241,9 @@ def parse_futures_balance(resp: dict) -> dict:
         "order_cash": _num("ord_psbl_cash"),      # 주문가능현금
         "margin_total": _num("mgna_tota"),        # 증거금 합계
         "deposit_cash": _num("dnca_cash"),        # 예수금(현금)
-        "eval_pnl": _num("futr_evlu_pfls_amt"),   # 선물 평가손익
+        "eval_pnl": _num("futr_evlu_pfls_amt"),   # 선물 평가손익(미실현)
+        "equity": _num("prsm_dpast_amt"),         # 추정예탁자산(계좌 전체 equity, KRW) — kill-switch용.
+                                                   # 라이브 확인 2026-06-09: 예수금±미실현PnL−수수료.
     }
     return {"positions": positions, "account": account}
 

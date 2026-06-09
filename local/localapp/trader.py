@@ -111,13 +111,20 @@ def _market_group_safe(symbol: str) -> str:
 def _unified_equity_krw(bal: dict) -> float:
     """국내+해외 통합 자산(KRW) — kill switch·drawdown용 계좌 전체 equity.
 
-    국내 평가금액 + 외화 평가총액(KRW) + USD 예수금(KRW 환산).
+    주식 국내 평가금액 + 외화 평가총액(KRW) + USD 예수금(KRW 환산) + 선물계좌 추정예탁자산(KRW).
+
+    선물계좌는 별도 KIS 계좌라 그 equity(BrokerRouter가 잔고병합 시 채우는 futures_eval_krw)를
+    합산해야 kill-switch·drawdown이 선물 PnL을 인지한다(미합산 시 선물 손익이 안전망에 안 잡힘).
+    ⚠단일 풀 모델: 주식+선물을 한 위험풀로 본다 — 선물 단독 급락이 주식 자본에 희석돼 보호가
+    약해질 수 있다(주식 비중 큰 사용자). 계좌별 분리 kill-switch는 Phase 3(실거래) 전 재검토.
+    선물 미등록 사용자는 futures_eval_krw 키 부재 → 주식 동작 byte-identical.
     """
     dom = float(bal.get("total_eval", 0) or 0)
     foreign = float(bal.get("foreign_eval_krw", 0) or 0)
     usd_cash = float(bal.get("cash_usd", 0) or 0)
     fx = float(bal.get("fx_usdkrw", 0) or 0)
-    return dom + foreign + usd_cash * fx
+    futures = float(bal.get("futures_eval_krw", 0) or 0)
+    return dom + foreign + usd_cash * fx + futures
 
 
 def _gap_pct(prev_close: float, cur_price: float) -> float:

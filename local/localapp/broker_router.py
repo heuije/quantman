@@ -139,6 +139,12 @@ class BrokerRouter:
             except Exception as e:                   # noqa: BLE001 — 미구성/통신 실패는 병합 skip
                 log.warning("선물 잔고 조회 실패(%s) — 병합 skip: %s", getter, e)
                 continue
+            # 선물계좌 equity(국내 추정예탁자산, KRW)를 통합자산에 합산 → kill-switch·drawdown이
+            # 선물 PnL을 인지(미배선 시 완전 무시). 해외선물 equity(USD)는 라이브검증 후(Phase 5).
+            fut_eq = (fsnap.get("account") or {}).get("equity")
+            if fut_eq:
+                out["balance"]["futures_eval_krw"] = (
+                    float(out["balance"].get("futures_eval_krw", 0) or 0) + float(fut_eq))
             for p in (fsnap.get("positions") or []):
                 np = dict(p)
                 code = str(p.get("symbol", "") or "")
