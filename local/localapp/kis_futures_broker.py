@@ -26,10 +26,13 @@ build/parse/params 순수함수는 단위검증됨. price/today_open(읽기전�
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 
 import requests
 
+from .config import APP_DIR
 from .kis_overseas_futures import (
     build_overseas_cancel_body,
     build_overseas_order_body,
@@ -38,6 +41,7 @@ from .kis_overseas_futures import (
     parse_overseas_orderable_qty,
     scale_overseas_price,
 )
+from .state_store import save_json
 
 
 def _json(resp) -> dict:
@@ -67,6 +71,49 @@ _OV_QUOTE_TR     = "HHDFC55010000"
 _OV_CANCEL_TR    = "OTFM3003U"   # 취소(정정 OTFM3002U는 Trader 미사용)
 _OV_CCLD_TR      = "OTFM3116R"   # 당일주문내역(체결조회)
 _OV_PSAMOUNT_TR  = "OTFM3304R"   # 주문가능조회(신규주문가능 계약수)
+
+# ── 토큰 디스크 캐시 ─────────────────────────────────────────────────────────────
+# 주식 KisBroker처럼 토큰을 디스크에 캐싱한다. 없으면 프로세스/인스턴스마다 재발급해
+# KIS의 앱키당 토큰 발급 throttle(403)에 걸린다(reconcile broker + cycle broker가 한
+# 사이클에 make_broker를 2번 호출하면 즉시 충돌). 라이브 검증 2026-06-09에서 확인.
+# 국내·해외 2개 토큰을 계정지문(fp)별로 한 파일에 보관(서로 덮어쓰지 않음).
+_FUT_TOKEN_CACHE = APP_DIR / ".kis_futures_token.json"
+
+
+def _load_fut_token(fp: str):
+    """fp에 귀속된 (access_token, exp_epoch) — 만료 30분 마진 이내만 적중. 파일 부재/손상=미스."""
+    try:
+        cache = json.loads(_FUT_TOKEN_CACHE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    e = cache.get(fp) if isinstance(cache, dict) else None
+    if not isinstance(e, dict):
+        return None
+    exp = float(e.get("exp", 0) or 0)
+    if exp > time.time() + 1800:
+        return str(e.get("access_token", "")), exp
+    return None
+
+
+def _save_fut_token(fp: str, token: str, exp: float) -> None:
+    """fp-keyed 토큰 저장. owner-only ACL + 원자적 저장은 save_json(state_store)이 담당."""
+    cache = {}
+    try:
+        cur = json.loads(_FUT_TOKEN_CACHE.read_text(encoding="utf-8"))
+        if isinstance(cur, dict):
+            cache = cur
+    except (OSError, ValueError):
+        cache = {}
+    cache[fp] = {"access_token": token, "exp": exp}
+    save_json(_FUT_TOKEN_CACHE, cache)
+
+
+def _canon_odno(s) -> str:
+    """주문번호 정규화 — KIS는 발주응답 ODNO를 0패딩("0000003156"), 체결조회 odno를 공백패딩
+    ("      3156")으로 준다. 둘을 같은 기준으로 매칭하려면 공백·선행0을 모두 제거해야 한다
+    (주식 kis_broker.canonical_odno와 동일 개념 — 모듈 결합 회피 위해 로컬 복제).
+    라이브 검증 2026-06-09: lstrip("0")만으론 공백패딩이 남아 매칭 실패 → 체결 영영 미감지."""
+    return str(s).strip().lstrip("0") if s is not None else ""
 
 
 def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
@@ -208,11 +255,11 @@ def parse_ccnl_order_status(resp: dict, order_no) -> dict:
     rows = resp.get("output1")
     if not isinstance(rows, list):
         rows = []
-    target = str(order_no).lstrip("0")
+    target = _canon_odno(order_no)
     for r in rows:
         if not isinstance(r, dict):
             continue
-        if str(r.get("odno", "")).lstrip("0") == target:
+        if _canon_odno(r.get("odno")) == target:
             def _i(k):
                 try:
                     return int(float(r.get(k, 0) or 0))
@@ -227,7 +274,7 @@ def parse_ccnl_order_status(resp: dict, order_no) -> dict:
                 status = "partial"
             else:
                 status = "submitted"
-            return {"order_no": str(r.get("odno", "")), "status": status,
+            return {"order_no": str(r.get("odno", "")).strip(), "status": status,
                     "filled_qty": filled, "remain_qty": remain,
                     "fill_price": float(r.get("avg_idx", 0) or 0)}
     return {"order_no": str(order_no), "status": "unknown",
@@ -284,6 +331,8 @@ class KisFuturesBroker:
             self.base = _VTS if self.virtual else _REAL
             no = str(domestic["account_no"]).split("-")
             self.cano, self.acnt_prdt_cd = no[0], (no[1] if len(no) > 1 else "03")
+            # 토큰 캐시 귀속 지문 — 모의/실전 + appkey (모의↔실전 전환 시 이전 토큰 오재사용 방지)
+            self._token_fp = hashlib.sha256(f"{self.virtual}:{self.key}".encode()).hexdigest()[:16]
             self._tok = None
             self._tok_exp = 0.0
         else:
@@ -300,14 +349,18 @@ class KisFuturesBroker:
             self._ov_cano = ov_no[0]
             self._ov_acnt_prdt_cd = ov_no[1] if len(ov_no) > 1 else "08"
             self._ov_base = _REAL   # 해외선물은 실전 전용
+            self._ov_token_fp = hashlib.sha256(f"ov:{self._ov_key}".encode()).hexdigest()[:16]
             self._ov_tok = None
             self._ov_tok_exp = 0.0
         else:
             self._ov_key = None
 
     def _token(self) -> str:
-        import time
         if self._tok and time.time() < self._tok_exp - 60:
+            return self._tok
+        cached = _load_fut_token(self._token_fp)   # 프로세스 간 공유 → 403 throttle 회피
+        if cached:
+            self._tok, self._tok_exp = cached
             return self._tok
         r = requests.post(f"{self.base}/oauth2/tokenP",
                           json={"grant_type": "client_credentials",
@@ -316,6 +369,7 @@ class KisFuturesBroker:
         d = _json(r)
         self._tok = d["access_token"]
         self._tok_exp = time.time() + int(d.get("expires_in", 86400))
+        _save_fut_token(self._token_fp, self._tok, self._tok_exp)
         return self._tok
 
     def _headers(self, tr_id: str) -> dict:
@@ -333,8 +387,11 @@ class KisFuturesBroker:
     # ── 해외선물 인증 (실전 전용, 토큰 캐시) ─────────────────────────────────────────
 
     def _ov_token(self) -> str:
-        import time
         if self._ov_tok and time.time() < self._ov_tok_exp - 60:
+            return self._ov_tok
+        cached = _load_fut_token(self._ov_token_fp)
+        if cached:
+            self._ov_tok, self._ov_tok_exp = cached
             return self._ov_tok
         r = requests.post(f"{self._ov_base}/oauth2/tokenP",
                           json={"grant_type": "client_credentials",
@@ -344,6 +401,7 @@ class KisFuturesBroker:
         d = _json(r)
         self._ov_tok = d["access_token"]
         self._ov_tok_exp = time.time() + int(d.get("expires_in", 86400))
+        _save_fut_token(self._ov_token_fp, self._ov_tok, self._ov_tok_exp)
         return self._ov_tok
 
     def _ov_headers(self, tr_id: str) -> dict:
@@ -555,5 +613,8 @@ class KisFuturesBroker:
 
     def pending_orders(self) -> list[dict]:
         rows = self._inquire_ccnl(only_unfilled=True).get("output1") or []
+        # 미체결 쿼리(CCLD_NCCS_DVSN=02)는 취소/정정 주문(orgn_odno≠0)도 함께 반환한다 — 이는
+        # resting 신규주문이 아니므로 제외(라이브 2026-06-09: 취소주문이 pending으로 오보고됨).
         return [parse_ccnl_order_status({"output1": [r]}, r.get("odno", ""))
-                for r in rows if isinstance(r, dict)]
+                for r in rows
+                if isinstance(r, dict) and _canon_odno(r.get("orgn_odno")) == ""]
