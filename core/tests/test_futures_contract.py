@@ -97,7 +97,29 @@ def test_resolve_equity_passthrough():
 
 
 def test_resolve_domestic_futures():
-    assert resolve_contract("코스피200선물", date(2026, 6, 7), domestic_master=_DOM) == "A01606"
+    # 만기(6/11)에서 충분히 떨어진 날 → 근월물 A01606
+    assert resolve_contract("코스피200선물", date(2026, 6, 1), domestic_master=_DOM) == "A01606"
+
+
+def test_resolve_domestic_rolls_within_lead():
+    """진입 resolver는 만기 lead(5일) 안이면 차월물로 롤 — 만기 임박 계약 진입 회피.
+
+    백스톱(_expiry_close_reason)이 보유분을 만기 5일 전 청산하는 것과 대칭. 이게 없으면
+    '사자마자 백스톱이 롤청산'하는 만기임박 진입이 발생(라이브 sharp-edge)."""
+    # 6/11 만기 — 6/7·6/10·6/11(만기당일) 모두 lead(5일) 안이라 9월물로 롤
+    assert resolve_contract("코스피200선물", date(2026, 6, 7), domestic_master=_DOM) == "A01609"
+    assert resolve_contract("코스피200선물", date(2026, 6, 10), domestic_master=_DOM) == "A01609"
+    assert resolve_contract("코스피200선물", date(2026, 6, 11), domestic_master=_DOM) == "A01609"
+    # front_contract도 같은 계약 + 그 만기(9/10) 반환(주문 라우팅·원장 기록 정합)
+    code, exp = front_contract("코스피200선물", date(2026, 6, 10), domestic_master=_DOM)
+    assert code == "A01609" and exp == date(2026, 9, 10)
+
+
+def test_parse_front_domestic_lead_param():
+    """lead_days 파라미터 직접 검증 — lead=0은 만기당일까지 유지(하위호환)."""
+    assert parse_front_month_domestic(_DOM, date(2026, 6, 7)) == "A01606"          # 기본 lead=0
+    assert parse_front_month_domestic(_DOM, date(2026, 6, 7), 5) == "A01609"        # lead=5 → 롤
+    assert parse_front_month_domestic(_DOM, date(2026, 6, 11)) == "A01606"          # 만기당일·lead0 → 유지
 
 
 def test_resolve_overseas_futures():
@@ -153,8 +175,8 @@ def test_dataset_for_contract_unknown_none():
 
 # ── front_contract — (계약코드, 만기일) 동시 해석 (M6 진입 시 ledger 기록용) ──────
 def test_front_contract_domestic_code_and_expiry():
-    # A01606(6월물) → 만기 = 2026-06 2번째 목요일 = 6/11
-    assert front_contract("코스피200선물", date(2026, 6, 7),
+    # A01606(6월물) → 만기 = 2026-06 2번째 목요일 = 6/11. (6/1은 만기 lead 5일 밖 → 근월물 유지)
+    assert front_contract("코스피200선물", date(2026, 6, 1),
                           domestic_master=_DOM) == ("A01606", date(2026, 6, 11))
 
 
