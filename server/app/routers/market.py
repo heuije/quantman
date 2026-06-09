@@ -232,7 +232,7 @@ def symbol_detail(symbol: str, range: str = "1y",
     # 확장 기술지표 38종 (EMA·일목·DMI·CCI·MFI·이격도 등) — 별도 모듈에서 계산
     dashboard_indicators.compute(ind)
     show = ind.tail(span)
-    is_kr = symbol.strip().isdigit()
+    is_kr = qc.instrument_region(symbol.strip()) == "KRX"   # 국내선물 포함(SSOT)
 
     def _n(v, nd=2):
         return None if v is None or pd.isna(v) else round(float(v), nd)
@@ -377,7 +377,7 @@ def market_compare(symbols: str, range: str = "1y",
         if not s:
             continue
         items.append({"symbol": sym, "name": name_map.get(sym, sym),
-                      "currency": "KRW" if sym.isdigit() else "USD", "series": s})
+                      "currency": qc.instrument_spec(sym).currency, "series": s})
     if not items:
         raise HTTPException(status_code=404, detail="비교할 데이터를 찾을 수 없습니다.")
     return {"items": items, "range": range}
