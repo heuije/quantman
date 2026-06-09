@@ -224,6 +224,11 @@ def _write_updater_bat(bat_path: Path, src_dir: Path, dst_dir: Path,
     content = (
         "@echo off\r\n"
         "REM Quantman auto-updater (atomic folder-swap). 머지 아닌 통째 교체.\r\n"
+        # 🔴 근본 fix (v0.9.20→0.9.21 실측 사고): 앱은 설치 폴더에서 실행되고, updater
+        # cmd.exe는 그 cwd를 상속한다. Windows는 *프로세스의 cwd인 폴더*를 rename 못 한다
+        # ("used by another process") → ren 스왑이 영영 실패(:LOCKED)해 업데이트가 안 됐다.
+        # cmd를 설치 폴더 밖(SystemRoot)으로 cd시켜 잠금을 푼다. 이후 경로는 전부 절대경로.
+        'cd /d "%SystemRoot%"\r\n'
         f'taskkill /F /IM "{app_exe.name}" > nul 2>&1\r\n'
         # 이전 실패의 잔여 .old 정리 — 스왑 차단 방지.
         f'rmdir /S /Q "{dst_old}" 2>nul\r\n'
@@ -361,6 +366,9 @@ def perform_update(zip_url: str,
             CREATE_NO_WINDOW = 0x08000000
             subprocess.Popen(
                 ["cmd.exe", "/c", str(bat_path)],
+                # cwd를 설치 폴더 밖(시스템 temp)으로 — cmd가 설치 폴더를 cwd로 상속하면
+                # 그 폴더 ren(스왑)이 잠겨 실패한다(근본 fix, .bat의 cd와 이중 방어).
+                cwd=tempfile.gettempdir(),
                 creationflags=(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP),
                 close_fds=True,
                 stdin=subprocess.DEVNULL,
