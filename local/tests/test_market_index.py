@@ -107,5 +107,15 @@ def test_market_group_unknown_ticker_raises(fake_index):
         market_index.market_group_of("TSLA")
 
 
+def test_market_group_futures_uses_spec(fake_index):
+    """선물은 계약 스펙(instrument_spec)이 SSOT — US 마스터·도메스틱 휴리스틱보다 우선.
+
+    국내선물(KRW)=KRX(코스피200 진입 사이클 보존), 해외선물(USD)=US.
+    회귀 가드: 한글 해외선물명('원유선물')이 폴백 KRX로 새던 잠재 오라우팅 차단."""
+    assert market_index.market_group_of("코스피200선물") == "KRX"
+    for sym in ("원유선물", "천연가스선물", "금선물", "나스닥선물", "비트코인선물"):
+        assert market_index.market_group_of(sym) == "US", sym
+
+
 def test_case_insensitive(fake_index):
     assert market_index.exchange_of("aapl") == "NAS"

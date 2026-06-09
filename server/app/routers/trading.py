@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
+from quant_core import instrument_region
 from quant_core import market_calendar as mc
 
 from ..db import get_session
@@ -364,7 +365,10 @@ def _preview_events(snaps: list[SyncSnapshot], now: datetime,
         for bs in pv.get("by_strategy") or []:
             for c in bs.get("candidates") or []:
                 sym = c.get("symbol", "")
-                if sym.isdigit():
+                # 세션 그룹으로 분리(국장/미장). instrument_region이 SSOT —
+                # sym.isdigit()는 한글 선물 심볼('코스피200선물')을 미장으로 오집계했다
+                # (국내선물은 KRX 08:55 사이클에 진입하므로 국장 후보).
+                if instrument_region(sym) == "KRX":
                     krx_n += 1
                 else:
                     us_n += 1

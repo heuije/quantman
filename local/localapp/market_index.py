@@ -171,9 +171,17 @@ def kis_ticker_of(symbol: str) -> str:
 def market_group_of(symbol: str) -> str:
     """스케줄·사이클 배칭용 시장 그룹 — 'US' 또는 'KRX'.
 
-    미국 인덱스에 있으면 US. 국내 코드 형태면 KRX. 둘 다 아니고 미국 티커
+    선물은 계약 스펙(instrument_spec)이 SSOT — 국내선물(KRW)=KRX, 해외선물(USD)=US.
+    주식은 미국 인덱스에 있으면 US, 국내 코드 형태면 KRX. 둘 다 아니고 미국 티커
     형태면(인덱스 미로드 등) 추측하지 않고 RoutingError — 잘못된 배칭 방지.
+
+    ※ 선물을 먼저 가르는 이유: US 마스터·_looks_domestic 휴리스틱은 주식용이라 한글
+    선물명을 잘못 분류한다 — 해외선물('원유선물' 등)이 폴백 KRX로 새던 잠재 오라우팅 차단.
     """
+    from quant_core.exec_defaults import instrument_spec
+    sp = instrument_spec(symbol)
+    if sp.asset_class == "futures":
+        return "KRX" if sp.currency == "KRW" else "US"
     if is_us(symbol):
         return "US"
     if _looks_domestic(symbol):

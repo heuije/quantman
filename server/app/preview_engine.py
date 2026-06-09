@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from quant_core import market_calendar as _mc
+from quant_core.exec_defaults import instrument_region as _instrument_region
 from quant_core.exec_defaults import instrument_spec as _instrument_spec
 from quant_core.ir_engine import StrategyIR, needed_columns, needed_symbols
 from sqlmodel import Session, select
@@ -113,7 +114,9 @@ def _data_freshness_ok(dataset: dict, symbol: str,
         # today만 명시 호출(테스트 등) — 시간 정보 없음. 보수적으로 한낮 가정 → US 어제 마감 끝났다고 셈.
         now_kst = datetime(today.year, today.month, today.day, 12, 0, tzinfo=_KST)
 
-    market = "KR" if _is_kr_symbol(symbol) else "US"
+    # 데이터 신선도 캘린더 — 국내선물도 KRX 거래일 기준이어야(_is_kr_symbol은 한글 선물을
+    # 미국으로 오분류). instrument_region(KRX/US)을 캘린더 코드(KR/US)로 매핑.
+    market = "KR" if _instrument_region(symbol) == "KRX" else "US"
     # US 정규장은 EDT 16:00 = KST 익일 05:00 마감.
     # 따라서 "마지막 마감된 US 거래일"은 시각에 따라 달라진다:
     #   - KST 한낮(5/27 12:00): 어제 KST(5/26)의 US 거래 = 5/26 종가 확정. ref = 5/26.

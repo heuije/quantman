@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from quant_core import data_fetcher as _df
 from quant_core.data import DataManifest, build_manifest
+from quant_core.exec_defaults import instrument_spec as _instrument_spec
 from quant_core.data.feeds import (
     PRICE_FEED_POLICY,
     classification as _cls,
@@ -47,7 +48,8 @@ def build_dataset_manifest(dataset: dict, *, version: int = 0) -> DataManifest:
             meta["feed"] = feed
             meta["adjustment"] = policy.adjustment
             meta["calendar"] = policy.calendar
-            meta.setdefault("currency", "KRW" if (sym.isdigit() and len(sym) == 6) else "USD")
+            # 통화 SSOT — instrument_spec(국내선물=KRW·해외선물=USD·주식은 숫자코드 휴리스틱).
+            meta.setdefault("currency", _instrument_spec(sym).currency)
             feed_count[feed] = feed_count.get(feed, 0) + 1
         crec = cls_map.get(sym)                   # 섹터(업종 우선) — 그룹 블록·게이트 참조
         if crec:

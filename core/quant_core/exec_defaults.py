@@ -150,6 +150,26 @@ def is_futures(symbol: str) -> bool:
     return instrument_spec(symbol).asset_class == "futures"
 
 
+def instrument_region(symbol: str) -> str:
+    """거래 지역(세션 그룹) — 'KRX'(국내) | 'US'(해외).
+
+    국내주식·국내선물=KRX, 해외주식·해외선물=US. instrument_spec.currency(KRW→KRX,
+    USD→US)로 판별 — 우리 유니버스에서 통화↔거래지역이 1:1(KRW 상품은 KRX, USD 상품은
+    US/CME 세션)이라 currency가 곧 세션 그룹의 SSOT다. sym.isdigit() 류의 임시 판별이
+    한글 선물 심볼('코스피200선물')을 비-KR로 오분류하던 부류 버그를 한 곳으로 모은다."""
+    return "KRX" if instrument_spec(symbol).currency == "KRW" else "US"
+
+
+def instrument_category(symbol: str) -> str:
+    """4분류 — 'kr_equity' | 'kr_futures' | 'us_equity' | 'us_futures'.
+
+    asset_class(equity/futures) × region(KRW/USD)의 곱. 국장/미장 2분류로는 못 가르는
+    국내주식·국내선물·해외주식·해외선물을 정확히 구분(표시·집계용 SSOT)."""
+    sp = instrument_spec(symbol)
+    region = "kr" if sp.currency == "KRW" else "us"
+    return f"{region}_{sp.asset_class}"
+
+
 def margin_rate(symbol: str) -> float:
     """레버리지 백테스트용 개시증거금률(0~1). 선물=부분증거금, 그 외=1.0(전액).
 
