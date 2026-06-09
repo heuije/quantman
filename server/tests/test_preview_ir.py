@@ -112,6 +112,27 @@ def test_ir_evaluator_no_signal_no_candidates():
     assert out["candidates"] == []
 
 
+def test_ir_evaluator_futures_candidate_is_krw_not_usd():
+    """국내 선물 후보 — 서버는 선물계좌 가용증거금현금을 모름(보안경계: 자격증명·계좌
+    로컬 전용)이라 preview 사이징 불가(qty=None). 단 통화·노트는 국내(KRW)여야 한다.
+
+    회귀 가드: _is_kr_symbol이 '6자리 숫자'만 KR로 인정해 한글 선물 표시심볼
+    ('코스피200선물')을 '미국 종목(USD)'으로 오분류하던 버그. 로컬 실행엔 무영향
+    (트레이더가 자체 분류)이나 웹/Monitor 표시가 틀렸다."""
+    fut = {"코스피200선물": _df([10, 11, 12, 13, 14, 15, 16, 17, 18, 30])}
+    d = _ir_def()
+    d["universe"] = {"kind": "single", "symbols": ["코스피200선물"]}
+    out = preview_engine._evaluate_ir_strategy(
+        d, fut, cash=10_000_000.0, held_keys=set(), master_by_code={})
+    assert out["signal_passed"] is True, out
+    assert [c["symbol"] for c in out["candidates"]] == ["코스피200선물"], out
+    c = out["candidates"][0]
+    assert c["qty"] is None, c               # 서버 사이징 불가 → 로컬 선물계좌
+    assert c["currency"] == "KRW", c         # ← 핵심: USD 오분류 금지
+    assert "선물" in c["note"], c
+    assert "USD" not in c["note"], c
+
+
 # ── build_user_preview engine 디스패치 ─────────────────────────────────────────
 
 def _seed_db():
