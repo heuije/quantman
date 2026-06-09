@@ -13,6 +13,7 @@ import json
 import socket
 import threading
 import tkinter as tk
+from datetime import datetime
 import webbrowser
 from tkinter import font as tkfont, messagebox, ttk
 
@@ -801,13 +802,29 @@ class SettingsApp:
     def _fmt_ts(iso: str) -> str:
         return (iso or "").replace("T", " ")[:19]
 
+    @staticmethod
+    def _fmt_submit_ts(p: dict) -> str:
+        """제출시각 — pending 레코드의 submitted_ts(epoch)를 로컬시각 문자열로.
+
+        트레이더는 `submitted_ts = time.time()`(epoch float)로 저장하는데, 이 화면이
+        존재하지 않는 `submitted_ts_iso` 키를 읽어 제출시각이 늘 빈칸이었다(근본: 필드 불일치).
+        실제 저장 키(submitted_ts)를 읽어 포맷. 구버전 submitted_ts_iso(ISO)도 폴백 지원."""
+        ts = p.get("submitted_ts")
+        if ts:
+            try:
+                return datetime.fromtimestamp(float(ts)).strftime("%m-%d %H:%M:%S")
+            except (ValueError, OSError, OverflowError):
+                pass
+        iso = p.get("submitted_ts_iso", "")
+        return (iso or "").replace("T", " ")[:19]
+
     def _refresh_pending(self):
         self.tv_pending.delete(*self.tv_pending.get_children())
         local = _read_json(PENDING_ORDERS_PATH, {})
         for p in local.values():
             side = "buy" if p.get("side") == "buy" else "sell"
             self.tv_pending.insert("", "end", values=(
-                self._fmt_ts(p.get("submitted_ts_iso", "")) or "",
+                self._fmt_submit_ts(p),
                 "매수" if side == "buy" else "매도",
                 p.get("symbol", ""), "",
                 p.get("qty", ""),
