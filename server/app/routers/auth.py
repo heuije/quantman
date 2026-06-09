@@ -10,7 +10,8 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..db import get_session
 from ..deps import get_current_device, get_current_user
-from ..models import Device, PairingRequest, User
+from ..models import (Command, Device, HeartbeatEvent, PairingRequest,
+                      SyncSnapshot, User)
 from ..schemas import (DeviceApproveIn, DeviceOut, DeviceStartIn, DeviceStartOut,
                        DeviceTokenIn, DeviceTokenOut, GoogleLoginIn, LoginIn,
                        SignupIn, TokenOut, UserOut)
@@ -194,6 +195,15 @@ def revoke_device(
     device = session.get(Device, device_id)
     if device is None or device.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "기기를 찾을 수 없습니다.")
+    # 종속행을 먼저 정리 — Command·SyncSnapshot·HeartbeatEvent가 device.id를 FK로
+    # 참조한다. cascade가 없어 한 번이라도 사용된 기기는 device row만 삭제하면 FK
+    # 위반(Postgres)으로 실패한다. revoke = "이 기기의 페어링·잔여 명령·이력 제거"이므로
+    # 종속행 동반 삭제가 의도. (스냅샷·heartbeat는 알림/타임라인용 안전정보일 뿐.)
+    for model in (Command, SyncSnapshot, HeartbeatEvent):
+        for row in session.exec(
+            select(model).where(model.device_id == device_id)
+        ).all():
+            session.delete(row)
     session.delete(device)
     session.commit()
     return {"ok": True}
