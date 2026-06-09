@@ -95,6 +95,16 @@ def _assert_live_tradable(run_mode: str, definition: dict) -> None:
             "롱숏(횡단 랭킹) 전략은 백테스트 전용입니다 — 모의·실전 미지원. "
             "라이브 자동매매는 단일 방향(long 또는 short)만 체결합니다.")
 
+    # ⑤ 당일매매(hold_days=0): 백테스트는 진입 바 종가에 청산하나, 라이브는 *종가청산
+    # 사이클이 아직 미배선*이라 EOD 사이클(cycle_exit_reason)이 익일 시가에 청산 →
+    # backtest≠live 발산. 종가청산 사이클(scheduler+trader) 배선 전까지 라이브 차단.
+    exit_hold = ((definition.get("position") or {}).get("exit") or {}).get("hold_days")
+    if exit_hold == 0:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "당일매매(보유일수 0=당일 종가 청산)는 백테스트 전용입니다 — 모의·실전 준비 중. "
+            "자동매매 종가청산 사이클이 배선되면 지원됩니다.")
+
     u = definition.get("universe") or {}
     syms = u.get("symbols") or []
     if u.get("kind") == "all" or not syms:

@@ -260,6 +260,44 @@ def test_gate_draft_skips_direction_checks():
     _gate("draft", "short", ["005930"])
 
 
+# ── 당일매매 게이트 — hold_days=0은 자동매매 종가청산 미배선 → paper/live 차단 ──────
+
+def _gate_exit(run_mode, hold_days, symbols=("005930",)):
+    return strategies_router._assert_live_tradable(
+        run_mode, {"position": {"direction": "long", "exit": {"hold_days": hold_days}},
+                   "universe": {"kind": "single", "symbols": list(symbols)}})
+
+
+def test_gate_blocks_intraday_day_trade_paper(monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    with pytest.raises(HTTPException) as e:
+        _gate_exit("paper", 0)
+    assert e.value.status_code == 422
+    assert "당일매매" in e.value.detail
+
+
+def test_gate_blocks_intraday_day_trade_live(monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    with pytest.raises(HTTPException) as e:
+        _gate_exit("live", 0)
+    assert e.value.status_code == 422
+
+
+def test_gate_allows_hold_days_positive(monkeypatch):
+    # hold_days>=1은 기존대로 허용(회귀 가드)
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    _gate_exit("paper", 5)            # 예외 없으면 통과
+
+
+def test_gate_draft_skips_intraday_check():
+    # draft(백테스트)는 당일매매 허용
+    _gate_exit("draft", 0)
+
+
 # ── M1a: 선물 라이브 개방 플래그(QP_FUTURES_LIVE_ENABLED) — KOSPI200만, 기본 OFF ────
 def test_m1a_futures_blocked_when_flag_off(monkeypatch):
     # 플래그 OFF(기본) → KOSPI200 선물은 tradable에 없어 차단(현재 동작·휴면)
