@@ -17,8 +17,8 @@ from datetime import datetime
 import webbrowser
 from tkinter import font as tkfont, messagebox, ttk
 
-from . import (__version__, killswitch, kis_health, order_log, pairing,
-                secrets_store, sync_client, updater)
+from . import (__version__, auto_state, killswitch, kis_health, order_log,
+                pairing, secrets_store, sync_client, updater)
 from .commands_client import CommandClient
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
                        PLATFORM_URL)
@@ -917,7 +917,21 @@ class SettingsApp:
                 "발동 사유가 충분히 해소됐는지 확인했습니까?"):
             return
         killswitch.reset()
+        self._push_state_async()          # 해제 즉시 웹 반영(웹 RESET 명령과 동일)
         self.refresh_status()
+
+    def _push_state_async(self) -> None:
+        """현 상태 스냅샷 push를 백그라운드로 — 상태변경(해제·정지·재개·취소)을 웹에 실시간
+        반영. KIS 호출이 GUI/명령 스레드를 막지 않도록 데몬 스레드. best-effort(실패 무시)."""
+        import threading
+
+        def _run():
+            try:
+                from .runner import push_state_snapshot
+                push_state_snapshot()
+            except Exception:
+                pass
+        threading.Thread(target=_run, daemon=True, name="state-push").start()
 
     # ── 웹에서 발행한 명령 처리 ───────────────────────────────────────────────
 
@@ -943,6 +957,8 @@ class SettingsApp:
             self.auto_paused = True
             if self.scheduler and self.scheduler.running:
                 self.scheduler.pause()
+            auto_state.set_status("paused")
+            self._push_state_async()          # 웹 실시간 반영(일시정지 상태)
             self.root.after(100, self.refresh_status)
             return {"paused": True}
 
@@ -950,6 +966,8 @@ class SettingsApp:
             self.auto_paused = False
             if self.scheduler and self.scheduler.running:
                 self.scheduler.resume()
+            auto_state.set_status("running")
+            self._push_state_async()          # 웹 실시간 반영(재개 상태)
             self.root.after(100, self.refresh_status)
             return {"paused": False}
 
@@ -978,10 +996,12 @@ class SettingsApp:
                 return {"error": "KIS 자격증명 없음"}
             from .kis_broker import KisBroker
             r = KisBroker().cancel(order_no, symbol, qty)
+            self._push_state_async()          # 취소 후 미체결 목록 웹 실시간 반영
             return r
 
         if t == "RESET_KILL_SWITCH":
             killswitch.reset()
+            self._push_state_async()          # 해제 즉시 웹 반영(stale "활성" 제거)
             self.root.after(100, self.refresh_status)
             return {"reset": True}
 
@@ -1687,6 +1707,9 @@ class SettingsApp:
         if self.scheduler and self.scheduler.running:
             self.scheduler.shutdown(wait=False)
             self.scheduler = None
+            self.auto_paused = False
+            auto_state.set_status("stopped")
+            self._push_state_async()          # 정지 상태 웹 반영
             self.refresh_status()
             return
         # Phase 60+ — GUI 모드도 scheduler.register_jobs를 그대로 호출.
@@ -1712,6 +1735,9 @@ class SettingsApp:
             pass
 
         self.scheduler.start()
+        self.auto_paused = False
+        auto_state.set_status("running")
+        self._push_state_async()              # 가동 상태 웹 반영
         self.refresh_status()
 
     def _cycle_job(self):

@@ -103,6 +103,24 @@ def run_emergency_liquidation() -> dict:
     return payload
 
 
+def push_state_snapshot() -> dict | None:
+    """현 상태 스냅샷을 즉시 push — 상태 변경(kill-switch 해제·일시정지·재개·주문취소 등)을
+    웹에 실시간 반영. 거래/사이클 없이 잔고·포지션·kill_switch·auto_status만 갱신.
+
+    **best-effort**: 자격증명 부재·KIS·네트워크 실패해도 호출자(이미 로컬 상태는 반영됨)에
+    영향 없음 — 웹은 다음 사이클에 어차피 따라잡는다. 동기화 지연만 줄이는 보조 경로.
+    """
+    try:
+        broker = make_broker()
+        trader = Trader(broker)
+        payload = trader.state_snapshot()
+        push_snapshot(payload)
+        return payload
+    except Exception as e:
+        log.warning("상태 스냅샷 push 실패 (무시 — 다음 사이클 반영): %s", e)
+        return None
+
+
 def _wait_for_order_ws() -> None:
     """메인 사이클 진입 직전 체결통보 WebSocket ready 확인.
 
