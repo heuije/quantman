@@ -529,15 +529,19 @@ export function HealthCard({ snapAt, heartbeatAt, health }: {
     ? (new Date(health.kis_token_expires_at).getTime() - now) / 3600000 : null;
   const warnings = health?.warnings ?? [];
 
-  // 가장 심각한 상태가 칩 톤 결정.
+  // 가장 심각한 상태가 칩 톤 결정. 임계는 서버 _heartbeat_status(trading.py)와 동일:
+  // heartbeat는 5분 주기 갱신이므로 normal<5분·warn 5분~1시간·error>1시간.
+  // (옛 30초/5분 임계는 snapshot이 자주 갱신되던 Phase58 이전 가정 — 5분 주기 heartbeat
+  //  에선 인터벌 대부분을 "응답 지연"으로 오표시하고 1회 누락을 "끊김"으로 과장. 헤더
+  //  타임라인(서버 status)과 칩이 어긋나던 원인을 임계 일치로 닫음.)
   let tone: "ok" | "warn" | "error" = "ok";
   const reasons: string[] = [];
-  if (syncAgeSec > 300) {       // 5분 이상 끊김
+  if (syncAgeSec > 3600) {        // 1시간 이상 — 끊김
     tone = "error";
     reasons.push("끊김 — 자동매매 중단됨");
-  } else if (syncAgeSec > 30) { // 30초~5분 응답 지연
+  } else if (syncAgeSec > 300) {  // 5분~1시간 — 동기화 지연
     tone = "warn";
-    reasons.push("응답 지연");
+    reasons.push("동기화 지연");
   }
   if (tokenHoursLeft != null) {
     if (tokenHoursLeft < 0) {
