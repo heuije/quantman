@@ -778,6 +778,10 @@ class SettingsApp:
             # secret은 보안상 미리 채우지 않음 (사용자가 매번 재입력).
             self.e_hts.delete(0, "end")
             self.e_hts.insert(0, kis.get("hts_id", ""))
+            # 시세용 실전 앱키 — 키만 미리 채움(시크릿은 secret과 동일하게 매번 재입력).
+            if hasattr(self, "e_quote_key"):
+                self.e_quote_key.delete(0, "end")
+                self.e_quote_key.insert(0, kis.get("quote_app_key", ""))
 
         eq = _read_json(EQUITY_PATH, [])
         led = _read_json(LEDGER_PATH, {})
@@ -1433,9 +1437,15 @@ class SettingsApp:
         # KIS HTS 또는 영웅문에 로그인할 때 쓰는 사용자 ID (이메일 아님). 없으면
         # 체결통보 WebSocket 구독 skip → REST 폴링이 fill 인지 (~수십초 지연).
         self.e_hts = self._make_wizard_entry(f, "HTS ID (선택 — 실시간 체결통보용)")
+        # 시세용 실전 앱키 — KIS는 시세를 실전 도메인 전용 제공 + 모의 앱키 거부(EGW02004)라,
+        # 모의투자도 시세 조회엔 별도 실전 앱키가 필수. 주문은 위 모의 앱키, 시세만 이 키로.
+        # 실전투자 선택 시엔 위 App Key가 곧 실전이라 비워도 됨.
+        self.e_quote_key = self._make_wizard_entry(f, "시세용 실전 App Key (모의투자 시 필수)")
+        self.e_quote_secret = self._make_wizard_entry(f, "시세용 실전 App Secret (모의투자 시 필수)", show="*")
 
         # 입력 변경 시 결과·버튼 reset (다시 테스트해야 저장 가능)
-        for ent in (self.e_key, self.e_secret, self.e_acct, self.e_hts):
+        for ent in (self.e_key, self.e_secret, self.e_acct, self.e_hts,
+                    self.e_quote_key, self.e_quote_secret):
             ent.bind("<KeyRelease>", lambda _e: self._wizard_on_input_change())
 
         # 결과·진행 상태 (한 줄 안내)
@@ -1589,9 +1599,23 @@ class SettingsApp:
         secret = self.e_secret.get().strip()
         acct = self.e_acct.get().strip()
         hts_id = self.e_hts.get().strip()  # v0.9.15 — 선택 입력, 빈 문자열이면 WS 구독 skip
+        quote_key = self.e_quote_key.get().strip()
+        quote_secret = self.e_quote_secret.get().strip()
+        # 모의투자는 시세용 실전 앱키 필수 — 없으면 장중 손절/청산이 현재가 미수신으로 무력화.
+        # KIS가 모의 앱키의 실전 시세 도메인 호출을 거부(EGW02004)하기 때문.
+        if self.wizard_virtual and not (quote_key and quote_secret):
+            messagebox.showerror(
+                "시세용 실전 앱키 필요",
+                "모의투자는 시세 조회에 실전 앱키가 필수입니다.\n\n"
+                "KIS 개발자센터에서 실전 App Key/Secret을 발급해 "
+                "'시세용 실전 App Key/Secret' 칸에 입력하세요.\n"
+                "(주문은 위 모의 앱키로, 시세만 실전 앱키로 호출됩니다.)")
+            return
         secrets_store.save_kis(key, secret, acct, virtual=self.wizard_virtual,
-                                hts_id=hts_id)
+                                hts_id=hts_id, quote_app_key=quote_key,
+                                quote_app_secret=quote_secret)
         self.e_secret.delete(0, "end")
+        self.e_quote_secret.delete(0, "end")
         self.setup_collapsed = True
         mode = "모의투자" if self.wizard_virtual else "실전투자"
         messagebox.showinfo(
