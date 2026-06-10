@@ -31,66 +31,6 @@ def invalidate_dataset_cache(user: User = Depends(get_current_user)):
     return {"ok": True, "generation": data_fetcher.data_generation()}
 
 
-@router.get("/fundamental-coverage")
-def fundamental_coverage(user: User = Depends(get_current_user)):
-    """KR 펀더멘털(OpenDART) 백필 진척 — parquet 수 기준 경량 집계(데이터 로드 0).
-
-    A1 게이트 판정·백필 진단을 Railway 로그 긁기 없이 한 번에. coverage 산출은 core가
-    파일시스템 스캔으로(수천 종목 ~1초), 라우터는 total·coverage_pct만 덧붙인다."""
-    from datetime import datetime, timezone
-
-    from quant_core.data.feeds import fundamental_kr
-
-    codes = data_fetcher.load_managed_kr_codes()
-    cov = fundamental_kr.coverage(codes)
-    total = len(codes)
-
-    def _iso(ts):
-        return datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else None
-
-    return {
-        "total_managed": total,
-        "have_fundamentals": cov["have_fundamentals"],
-        "coverage_pct": round(cov["have_fundamentals"] / total * 100, 1) if total else None,
-        "empty_marked": cov["empty_marked"],
-        "written_last_24h": cov["written_last_24h"],
-        "newest": _iso(cov["newest_mtime"]),
-        "oldest": _iso(cov["oldest_mtime"]),
-    }
-
-
-@router.post("/clear-fundamental-markers")
-def clear_fundamental_markers(user: User = Depends(get_current_user)):
-    """빈결과(.empty) 마커 전체 제거 — false 마커 회복용(한도초과로 잘못 막힌 종목 재수집 재개).
-
-    제거 후 다음 백필 청크가 해당 종목을 재수집·재분류한다(genuine 무데이터는 013으로 재마킹)."""
-    from quant_core.data.feeds import fundamental_kr
-    removed = fundamental_kr.clear_markers()
-    return {"ok": True, "removed": removed}
-
-
-@router.post("/refetch-kr-shares-null")
-def refetch_kr_shares_null(user: User = Depends(get_current_user)):
-    """일회성 마이그레이션 — 주식수(shares_outstanding) 누락 parquet 삭제 → 백필 재수집 유도.
-
-    보통주 'se' 라벨 정확매칭 버그로 주식수가 빠져 pb가 안 뜨던 종목들의 parquet을 삭제한다(정상은
-    보존). 다음 백필 청크가 수정된 _shares_history로 재수집한다. 수정 배포 후 1회 호출."""
-    from quant_core.data.feeds import fundamental_kr
-    codes = data_fetcher.load_managed_kr_codes()
-    return {"ok": True, **fundamental_kr.delete_shares_null(codes)}
-
-
-@router.get("/fundamental-probe")
-def fundamental_probe(codes: str, user: User = Depends(get_current_user)):
-    """종목별 백필 상태(parquet/marker/corp_code) — false 빈결과 근본원인 분리.
-
-    codes=쉼표구분 6자리. corp_code=None이면 배포 환경 find_corp_code 미해석 → 모든 종목이
-    빈결과로 마킹되는 부류 사고의 원인(데이터 부재 아님). 데이터 미로드·quota 무영향."""
-    from quant_core.data.feeds import fundamental_kr
-    code_list = [c.strip() for c in codes.split(",") if c.strip()]
-    return {"probe": fundamental_kr.probe(code_list)}
-
-
 @router.get("/compile-stats")
 def compile_stats(user: User = Depends(get_current_user),
                   session: Session = Depends(get_session)):
