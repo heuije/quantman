@@ -259,7 +259,7 @@
 - `풀리뷰 실행`
 - `full review run`
 
-산출물은 `platform/docs/review-reports/YYYY-MM-DD-HHMM/` 폴더에 phase별로 저장,
+산출물은 `docs/review-reports/YYYY-MM-DD-HHMM/` 폴더에 phase별로 저장,
 최종 `SUMMARY.md`로 통합.
 
 총 예산 ~2.5~3시간. 중간 STOP/PAUSE 시 진행 상태 저장 후 멈춤.
@@ -318,12 +318,12 @@ ls -la ~/.quant-platform/*.json               # 모든 state 파일 mtime
 KIS·yfinance·Polygon·ECOS 등 외부 API 호출·결함 진단·새 endpoint 사용 시
 **작업 전 반드시** 다음 순서로 확인:
 
-1. **`platform/docs/kis-api/INDEX.md`** grep으로 endpoint 후보 찾기
+1. **`docs/kis-api/INDEX.md`** grep으로 endpoint 후보 찾기
    ```bash
-   grep -i "시초가\|open\|시가" platform/docs/kis-api/INDEX.md
+   grep -i "시초가\|open\|시가" docs/kis-api/INDEX.md
    ```
-2. **`platform/docs/kis-api/endpoints/{TR_ID}_*.md`** 읽기 — request/response/모의실전/한계
-3. **`platform/docs/kis-api/GOTCHAS.md`** 한 번 훑기 (1~2분) — 실측 발견사항
+2. **`docs/kis-api/endpoints/{TR_ID}_*.md`** 읽기 — request/response/모의실전/한계
+3. **`docs/kis-api/GOTCHAS.md`** 한 번 훑기 (1~2분) — 실측 발견사항
 4. raw docs (`docs/kis-api/raw/*.xlsx`) 더 깊은 정보 필요 시 직접 열어 확인
 
 작업 중 발견·새 endpoint 사용·결함 진단 시 **즉시 기록** (자가발전):
@@ -336,9 +336,9 @@ KIS·yfinance·Polygon·ECOS 등 외부 API 호출·결함 진단·새 endpoint 
 | 우리 코드에서 사용 위치 | endpoint .md의 `우리 코드 위치` 섹션에 file:line 추가 |
 
 **doc 부족 시 사용자에게 명시 요청**: "KIS docs '해외주식 주문' sheet xlsx
-필요합니다. 받아서 `platform/docs/kis-api/raw/`에 추가해주세요" 형식.
+필요합니다. 받아서 `docs/kis-api/raw/`에 추가해주세요" 형식.
 
-다른 API도 동일 패턴: `platform/docs/{api-name}/`. 신규 API knowledge base
+다른 API도 동일 패턴: `docs/{api-name}/`. 신규 API knowledge base
 구축은 사용자가 docs 제공 시점에 같은 구조로 추가.
 
 ## 9. 자주 쓰는 명령

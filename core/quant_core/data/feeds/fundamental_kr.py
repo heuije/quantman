@@ -216,34 +216,93 @@ def _fund_path(code: str):
     return default_manifest_path().parent / "fundamentals" / f"{code.replace('/', '_')}.parquet"
 
 
+def _marker_path(code: str):
+    """빈결과(OpenDART에 추출할 데이터 없음) 시도 마커 — parquet 옆 `.empty`.
+
+    금융지주·상폐 등은 표준 계정과 안 맞아 매번 빈 결과를 낸다. parquet을 안 쓰면 mtime이
+    0으로 남아 **매일 맨 앞으로 재정렬돼 재시도** → 일일 콜 예산을 영구히 갉아먹는다. 시도했음을
+    마커 mtime으로 남겨 fresh_days 동안 skip한다(reader는 `{code}.parquet`만 읽으므로 마커 무영향).
+    """
+    return _fund_path(code).with_suffix(".empty")
+
+
+def _write_marker(code: str) -> None:
+    m = _marker_path(code)
+    m.parent.mkdir(parents=True, exist_ok=True)
+    m.write_text("")                              # 내용 불필요 — mtime만 신선도 신호로 사용
+
+
+def _clear_marker(code: str) -> None:
+    """빈결과였다가 데이터가 생기면(성공 적재 시) 스테일 마커 제거."""
+    m = _marker_path(code)
+    if m.exists():
+        m.unlink()
+
+
 def fetch(codes: list[str], years: list[int], budget_calls: int = 9000,
           fresh_days: int = 80) -> dict:
     """KR 분기 펀더멘털 증분 수급 — 미수집·오래된 것 우선, 일일 콜 예산 내(10k/일 준수).
 
-    parquet mtime을 신선도 신호로 — fresh_days 이내 수집분은 skip. 종목당 4×len(years) 콜.
-    여러 날 cron이 점진적으로 전 종목·연도를 채운다. 한번 모은 history는 정적이라 전 사용자 공유.
+    성공 parquet 또는 빈결과 마커 중 최신 시도 mtime을 신선도 신호로 — fresh_days 이내 시도분은
+    skip. 종목당 4×len(years)+1 콜. 여러 날 cron이 점진적으로 전 종목·연도를 채운다.
+    빈결과(데이터 없음)는 `.empty` 마커를 남겨 매일 재시도로 예산 낭비하지 않게 한다(_marker_path).
     """
     import time
     now = time.time()
 
-    def _mtime(c: str) -> float:
-        p = _fund_path(c)
-        return p.stat().st_mtime if p.exists() else 0.0
+    def _attempted_mtime(c: str) -> float:
+        """직전 시도 시각 — 성공 parquet 또는 빈결과 마커 중 최신(없으면 0)."""
+        ts = 0.0
+        for p in (_fund_path(c), _marker_path(c)):
+            if p.exists():
+                ts = max(ts, p.stat().st_mtime)
+        return ts
 
-    calls = n_ok = n_fail = 0
-    for c in sorted(codes, key=_mtime):          # 미수집(0)·오래된 것 우선
-        p = _fund_path(c)
-        if p.exists() and (now - p.stat().st_mtime) < fresh_days * 86400:
-            continue                              # 최근 수집 — skip
+    calls = n_ok = n_fail = n_empty = 0
+    for c in sorted(codes, key=_attempted_mtime):     # 미시도(0)·오래된 시도 우선
+        at = _attempted_mtime(c)
+        if at and (now - at) < fresh_days * 86400:
+            continue                                   # 최근 시도(성공·빈결과 무관) — skip
         try:
             df = fetch_one(c, years)
         except Exception:
             n_fail += 1
         else:
             if df is not None and not df.empty:
-                write_parquet_atomic(df, p)       # 원자적 — 중단 시 잘린 파일 안 남김
+                write_parquet_atomic(df, _fund_path(c))   # 원자적 — 중단 시 잘린 파일 안 남김
+                _clear_marker(c)                          # 빈결과→데이터 생김 시 마커 정리
                 n_ok += 1
+            else:
+                _write_marker(c)                          # 빈결과 — fresh_days 동안 재시도 차단
+                n_empty += 1
         calls += 5 * len(years)                  # 재무 4분기 + 주식총수 1(연간)
         if calls >= budget_calls:
             break
-    return {"ok": n_ok, "fail": n_fail, "calls": calls}
+    return {"ok": n_ok, "fail": n_fail, "empty": n_empty, "calls": calls}
+
+
+def coverage(codes: list[str]) -> dict:
+    """백필 진척 스냅샷 — 파일시스템 스캔만(데이터 미로드, 경량). /admin/fundamental-coverage 소비.
+
+    have_fundamentals=성공 parquet 수, empty_marked=빈결과 마커 수, written_last_24h=최근 24h
+    적재(직전 크론 순증분 근사), newest/oldest_mtime=적재 신선도(epoch). 데이터를 로드하지 않아
+    수천 종목도 ~1초.
+    """
+    import time
+    now = time.time()
+    have = empty = recent = 0
+    newest = oldest = 0.0
+    for c in codes:
+        p = _fund_path(c)
+        if p.exists():
+            have += 1
+            mt = p.stat().st_mtime
+            newest = max(newest, mt)
+            oldest = mt if oldest == 0.0 else min(oldest, mt)
+            if now - mt < 86400:
+                recent += 1
+        elif _marker_path(c).exists():
+            empty += 1
+    return {"have_fundamentals": have, "empty_marked": empty,
+            "written_last_24h": recent,
+            "newest_mtime": newest or None, "oldest_mtime": oldest or None}
