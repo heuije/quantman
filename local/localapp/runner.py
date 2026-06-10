@@ -242,16 +242,24 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
     for attempt in range(1, n_attempts + 1):
         try:
             from .datafetch import refresh_market_data
+            _t0 = time.monotonic()
+            log.info("[cycle] ① 시세 데이터 갱신 시작 (market=%s, reserved=%s, catchup=%s)",
+                      market, reserved, catchup)
             refresh_market_data()
+            log.info("[cycle] ② 시세 갱신 완료 %.1fs — broker 준비", time.monotonic() - _t0)
             broker = make_broker()
             trader = Trader(broker)
 
             # Phase 38.4 — preview 신뢰 + 누락 시 청산만. legacy 평가 경로 제거.
             preview = None
+            _t0 = time.monotonic()
+            log.info("[cycle] ③ preview pull 시작")
             try:
                 preview = pull_preview()
             except Exception as e:
                 log.warning("preview pull 예외 — 신규 진입 차단: %s", e)
+            log.info("[cycle] ③ preview pull 완료 %.1fs (missing=%s)",
+                      time.monotonic() - _t0, preview is None)
             preview_missing = preview is None
             buy_candidates = (preview or {}).get("by_strategy") if preview else []
             if preview_missing:
@@ -271,17 +279,25 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             from . import dataset_scope
             needed = dataset_scope.needed_symbols(
                 strategies, buy_candidates, trader.ledger)
+            _t0 = time.monotonic()
+            log.info("[cycle] ④ dataset 로드 시작 (%d종목 needed, 지표계산 포함)", len(needed))
             dataset = qc.load_dataset_for(needed, with_indicators=True)
-            log.info("dataset 로드 — %d종목 (scoped, 전체 universe 대신)", len(dataset))
+            log.info("[cycle] ④ dataset 로드 완료 — %d종목 %.1fs", len(dataset), time.monotonic() - _t0)
 
             # Phase 38.7/38.10 — 사용자 위험 한도. 실패 시 빈 dict → default fallback.
             risk_limits = pull_risk_limits()
             # Phase 48 — KRX 종목 상태 (거래정지·관리). 매수 직전 trader가 차단 판단.
             krx_status = pull_krx_status()
+            log.info("[cycle] ⑤ 본문 실행 시작 (trader.cycle, market=%s)", market)
+            _t0 = time.monotonic()
             payload = trader.cycle(strategies, dataset, buy_candidates=buy_candidates,
                                      risk_limits=risk_limits, market=market,
                                      krx_status=krx_status, catchup=catchup,
                                      reserved=reserved)
+            _cs = (payload or {}).get("cycle_summary") or {}
+            log.info("[cycle] ⑤ 본문 완료 %.1fs — bought=%s sold=%s skip_held=%s errors=%s",
+                      time.monotonic() - _t0, _cs.get("n_bought"), _cs.get("n_sold"),
+                      _cs.get("n_skip_held"), _cs.get("n_errors"))
             if preview_missing:
                 payload.setdefault("cycle_summary", {})["preview_missing"] = True
             cycle_err = None
