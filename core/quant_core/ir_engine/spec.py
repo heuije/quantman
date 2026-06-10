@@ -347,8 +347,12 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
 
     # 신호 타입 × 진입/방향 호환 (position 전용 — 리서치 스킵)
     if not is_research and ent.mode == "on_signal" and st != "condition":
-        issues.append(Issue("S-entry", SEV_ERROR,
-                            "on_signal 진입은 신호가 condition(참/거짓)이어야 합니다.", "signal"))
+        # 예외(M5d): 부호방향 long_short는 score 부호로 바별 방향을 정하므로 on_signal 허용
+        # (directional 당일/스윙 경로 — 엔진 _direction_for seam). 라이브 가능 범위(선물 등)는
+        # 서버 게이트가 별도 통제한다.
+        if not (pos.direction == "long_short" and st == "score"):
+            issues.append(Issue("S-entry", SEV_ERROR,
+                                "on_signal 진입은 신호가 condition(참/거짓)이어야 합니다.", "signal"))
     if not is_research and pos.direction == "long_short" and st != "score":
         issues.append(Issue("S-dir", SEV_ERROR,
                             "long_short는 신호가 score(점수)여야 순위로 롱·숏을 가릅니다.", "signal"))

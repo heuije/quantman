@@ -248,9 +248,11 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
 
     d = alpha.index[-1]
     out["signal_summary"] = f"마지막 신호일 {str(d)[:10]} 기준"
-    longs, _shorts = _select(alpha.loc[d], pos, is_condition)
-    if not longs:
-        out["skipped"].append({"reason": "다음날 진입 신호(롱) 종목 없음"})
+    # 부호방향 directional·단방향 숏 지원 — longs·shorts 둘 다 후보로(각 direction 부착).
+    # executor가 후보 direction으로 _submit_buy/_submit_open_short 분기(엔진 _direction_for 거울).
+    longs, shorts = _select(alpha.loc[d], pos, is_condition)
+    if not longs and not shorts:
+        out["skipped"].append({"reason": "다음날 진입 신호 종목 없음"})
         return out
     out["signal_passed"] = True
 
@@ -279,7 +281,8 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
 
     now_kst = datetime.now(_KST)
     today_kst = now_kst.date()
-    for sym in longs:
+    _cands = [(s, "long") for s in longs] + [(s, "short") for s in shorts]
+    for sym, side in _cands:
         fresh, freshness_msg = _data_freshness_ok(dataset, sym, today_kst, now_kst=now_kst)
         if not fresh:
             out["skipped"].append({"symbol": sym, "reason": freshness_msg})
@@ -300,7 +303,7 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
                 "prev_close": round(prev_close, 2), "est_limit_price": None,
                 "est_total": None, "sizing_mode": sz.mode,
                 "data_as_of": _last_date(dataset, sym), "source": "ir",
-                "currency": _instrument_spec(sym).currency,
+                "currency": _instrument_spec(sym).currency, "direction": side,
                 "note": "선물 — 발주 시점 로컬 선물계좌로 사이징 (preview 미지원)"})
             continue
         if not _is_kr_symbol(sym):
@@ -309,7 +312,7 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
                 "prev_close": round(prev_close, 2), "est_limit_price": None,
                 "est_total": None, "sizing_mode": sz.mode,
                 "data_as_of": _last_date(dataset, sym), "source": "ir",
-                "currency": "USD",
+                "currency": "USD", "direction": side,
                 "note": "미국 종목 — 발주 시점 USD 잔고로 사이징 (preview 미지원)"})
             continue
         if event_budget:
@@ -317,7 +320,7 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
         else:
             budget = (float(weights[sym]) * cash
                       if weights is not None and sym in weights.index
-                      else cash / len(longs))
+                      else cash / max(len(longs), 1))
             qty = int(budget // prev_close) if prev_close > 0 else 0
         if qty <= 0:
             out["skipped"].append({
@@ -330,7 +333,7 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
             "prev_close": round(prev_close, 2), "est_limit_price": est_price,
             "est_total": est_price * qty, "sizing_mode": sz.mode,
             "data_as_of": _last_date(dataset, sym), "source": "ir",
-            "currency": "KRW"})
+            "currency": "KRW", "direction": side})
     return out
 
 

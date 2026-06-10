@@ -132,6 +132,22 @@
   아침은 보유 유지). `trader.liquidate_day_trades(dataset, instrument_class)` + `runner.run_close_cycle`
   + 스케줄러 종가 cron(주식 15:25·선물 15:43, 단일가 발주창 내). 게이트 ⑤ 제거 → paper/live 허용.
   ⚠라이브 E2E(실 KIS 단일가 체결) 검증은 사용자 업데이트 후 대기(SimBroker·단위까지만 검증).
+- **부호방향 long_short 라이브 양방향(M5d, 신규).** 조건별 롱/숏(예: S&P 부호→코스피200선물
+  시가매수 or 시가매도) = `direction="long_short"` + score 부호방향. 핵심: **방향정책의 단일 출처
+  `engine._direction_for(buy_bool, score_vals, base_sign, threshold)`** — condition은 base_sign×bool
+  (단방향 보존), score는 부호방향(>thr 롱·<thr 숏·사이 0). `run_unified`(on_signal)가 `long_short`+score를
+  허용(spec.py 예외)하고 `_open(sign)`·`dir_arrs`로 바별 방향 체결. **랭킹 long_short(top_n/top_pct·
+  scheduled)와 구분** — 랭킹은 라이브 미지원 유지. ⚠`_direction_for`는 향후 scheduled 경로도 호출해
+  방향정책 일원화할 **엔진 직교화의 1번 축**(현재는 on_signal만). 4계층 배선: spec 예외(on_signal+
+  long_short+score) → 게이트(`_assert_live_tradable`: on_signal+전종목 선물 directional만 라이브 허용·
+  랭킹/비선물 차단) → preview(`_evaluate_ir_strategy`가 shorts도 emit + 후보에 `direction` 부착) →
+  executor(`_try_buy_one_symbol(cand_direction=)`로 `_submit_buy`/`_submit_open_short` 분기; 방향
+  없는 long_short 후보는 무음 롱전환 방지 skip). 골든 14 byte-identical 보존. **단일/선물 한정**(다종목
+  per-symbol 방향은 사이징 정규화 패리티 협의 후 — 현재 범위 외). 라이브 E2E는 사용자 모의 대기.
+  **NL 컴파일러 라우팅(M5d):** `ir_compiler._route_directional`이 결정적으로 부호방향 long_short
+  당일매매(비랭킹·hold_days=0)를 `on_signal`로 강제(LLM이 옛 쿡북대로 scheduled 내도 수렴) +
+  idiom 1·6이 의도(이벤트/당일→on_signal·정기→scheduled)로 안내. scheduled+long_short+hold_days=0
+  부정합을 닫음(scheduled는 당일청산 불가 → backtest≠live였음).
 - **완성도 ~70~80%.** 보류: P3 데이터 4종, P4 2차최적화(QP), 일부 P6 결과형태 브라우저 미확인.
   NL·웹 라이브 검증 일부는 로그인 자격 경계로 자동검증 불가(사용자 세션 필요).
 - 프로덕션 검증 채널 = 로그인된 `quantman.vercel.app` 페이지 컨텍스트에서

@@ -27,3 +27,42 @@ def test_system_prompt_exposes_question_vocabulary():
     prompt = ic._system_prompt(catalog_spec(), capability_spec(), ["pb_ratio"])
     for kw in ("select", "describe", "relate", "extremize", "regression", "portfolio"):
         assert kw in prompt, f"프롬프트에 '{kw}' 어휘 누락 — 컴파일러가 해당 기능을 못 본다"
+
+
+# ── M5d 라우팅 — 조건양방향 당일매매를 on_signal directional로(scheduled 강등 회귀 차단) ──
+
+def test_prompt_routes_conditional_bidirectional_to_on_signal():
+    """레시피1이 조건양방향 이벤트/당일을 on_signal로 안내하는지 — 프롬프트에 라우팅 노출."""
+    prompt = ic._system_prompt(catalog_spec(), capability_spec(), ["pb_ratio"])
+    assert "이벤트/당일" in prompt and 'entry.mode="on_signal"' in prompt
+
+
+def _ls(mode, hold_days, **entry_extra):
+    entry = {"mode": mode, **entry_extra}
+    return {"position": {"direction": "long_short", "entry": entry,
+                         "exit": {"hold_days": hold_days}}}
+
+
+def test_route_directional_daytrade_forces_on_signal():
+    """부호방향 long_short 당일매매(hold_days=0·비랭킹)는 scheduled로 와도 on_signal로 정규화."""
+    out = ic._route_directional(_ls("scheduled", 0))
+    assert out["position"]["entry"]["mode"] == "on_signal"
+
+
+def test_route_directional_ranking_stays_scheduled():
+    """랭킹(top_n) long_short는 횡단 — hold_days=0이어도 on_signal로 바꾸지 않는다."""
+    out = ic._route_directional(_ls("scheduled", 0, top_n=5))
+    assert out["position"]["entry"]["mode"] == "scheduled"
+
+
+def test_route_directional_swing_stays_scheduled():
+    """비당일(hold_days>=1) long_short는 불변(기존 scheduled TSMOM/팩터 보존)."""
+    out = ic._route_directional(_ls("scheduled", 5))
+    assert out["position"]["entry"]["mode"] == "scheduled"
+
+
+def test_route_directional_long_not_targeted():
+    """long(단방향)은 long_short 정규화 대상 아님 — 불변."""
+    strat = {"position": {"direction": "long", "entry": {"mode": "scheduled"},
+                          "exit": {"hold_days": 0}}}
+    assert ic._route_directional(strat)["position"]["entry"]["mode"] == "scheduled"

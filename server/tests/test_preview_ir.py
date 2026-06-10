@@ -221,3 +221,47 @@ def test_build_user_preview_releases_connection_during_compute(monkeypatch):
     assert preview["available"] is True, preview
     assert seen.get("in_txn") is False, \
         "C1 위반: 무거운 계산 동안 세션이 DB 커넥션(트랜잭션)을 점유 중"
+
+
+# ── M5d 부호방향 long_short preview — 마지막 바 score 부호로 롱/숏 후보 + direction 부착 ──
+
+def _score_df(closes, moms):
+    idx = pd.date_range("2026-05-01", periods=len(closes), freq="B")
+    return pd.DataFrame(
+        {"Open": closes, "High": closes, "Low": closes, "Close": closes, "mom": moms},
+        index=idx)
+
+
+def _directional_def():
+    return {
+        "name": "S&P 역추세 당일",
+        "universe": {"kind": "single", "symbols": ["코스피200선물"]},
+        "signal": {"op": "data", "params": {"ref": "__SELF__.mom"}},   # score
+        "position": {
+            "direction": "long_short",
+            "sizing": {"mode": "pct_cash", "amount_pct": 100},
+            "entry": {"mode": "on_signal", "threshold": 0.0},
+            "exit": {"hold_days": 0}, "overlays": {},
+        },
+        "simulation": {"initial_capital": 10_000_000},
+    }
+
+
+def test_preview_directional_emits_short():
+    """마지막 바 score<0 → 숏 후보(direction='short'). 선물이라 qty=None(로컬 사이징)."""
+    ds = {"코스피200선물": _score_df([300.0] * 5, [1.0, 1.0, -1.0, -1.0, -1.0])}
+    out = preview_engine._evaluate_ir_strategy(_directional_def(), ds, 1e7, set(), {})
+    assert out["signal_passed"], out.get("skipped")
+    assert len(out["candidates"]) == 1, out["candidates"]
+    c = out["candidates"][0]
+    assert c["symbol"] == "코스피200선물" and c["direction"] == "short", c
+    assert c["qty"] is None        # 선물 — 발주 시점 로컬 선물계좌 사이징
+
+
+def test_preview_directional_emits_long():
+    """대칭 — 마지막 바 score>0 → 롱 후보(direction='long')."""
+    ds = {"코스피200선물": _score_df([300.0] * 5, [-1.0, -1.0, 1.0, 1.0, 1.0])}
+    out = preview_engine._evaluate_ir_strategy(_directional_def(), ds, 1e7, set(), {})
+    assert out["signal_passed"], out.get("skipped")
+    assert len(out["candidates"]) == 1
+    assert out["candidates"][0]["direction"] == "long", out["candidates"][0]

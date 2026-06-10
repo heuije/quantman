@@ -41,6 +41,12 @@ CASES = [
     ("TSMOM 롱숏",
      "코스피200선물을 20일 추세가 양이면 롱, 음이면 숏.",
      lambda ir: ir.get("position", {}).get("direction") == "long_short"),
+    ("조건 양방향 선물 당일매매(M5d)",
+     "S&P500 전일대비가 -0.1% 미만이면 코스피200 선물을 시가에 사서 종가에 팔고, "
+     "0.1% 초과면 시가에 팔아(공매도) 종가에 청산.",
+     lambda ir: (ir.get("position", {}).get("direction") == "long_short"
+                 and (ir.get("position", {}).get("entry", {}) or {}).get("mode") == "on_signal"
+                 and (ir.get("position", {}).get("exit", {}) or {}).get("hold_days") == 0)),
     ("저평가 반도체주 3개",
      "저평가된 반도체 종목 3개만 골라줘 — PBR 낮은 순으로, PBR과 시가총액도 같이 보여줘.",
      lambda ir: (ir.get("query") == "select"
@@ -104,7 +110,11 @@ def main():
         n_prop += prop_ok
         print("=" * 64)
         print(f"[{label}] success={ok} prop={prop_ok} repair={res.get('repair_count')}")
-        print("  direction:", ir.get("position", {}).get("direction"))
+        _pos = ir.get("position", {})
+        print("  direction:", _pos.get("direction"),
+              "| entry.mode:", (_pos.get("entry") or {}).get("mode"),
+              "| threshold:", (_pos.get("entry") or {}).get("threshold"),
+              "| hold_days:", (_pos.get("exit") or {}).get("hold_days"))
         st = ir.get("study", {}) or {}
         print("  study.axis:", st.get("axis"), "| param_grid 축:", len(st.get("param_grid", []) or []))
         print("  assumptions:", json.dumps(res.get("assumptions") or [], ensure_ascii=False)[:300])

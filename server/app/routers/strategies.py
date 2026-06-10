@@ -90,10 +90,19 @@ def _assert_live_tradable(run_mode: str, definition: dict) -> None:
 
     direction = ((definition.get("position") or {}).get("direction")) or "long"
     if direction == "long_short":
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "롱숏(횡단 랭킹) 전략은 백테스트 전용입니다 — 모의·실전 미지원. "
-            "라이브 자동매매는 단일 방향(long 또는 short)만 체결합니다.")
+        # 횡단 랭킹(scheduled) long_short는 라이브 단방향 체결기가 재현 못 한다(포트폴리오
+        # 정합화·주식 공매도 불가) → 계속 차단. 단, on_signal 부호방향(directional) long_short는
+        # 종목별 독립 방향(롱=매수·숏=선물 sell-to-open, 엔진 _direction_for seam M5d)이라
+        # 라이브 체결 가능 — 선물 한정 허용(숏 레그가 동적 발생하므로 전 종목 선물이어야).
+        _entry = (definition.get("position") or {}).get("entry") or {}
+        _syms = (definition.get("universe") or {}).get("symbols") or []
+        directional_ok = (_entry.get("mode") == "on_signal"
+                          and bool(_syms) and all(is_futures(s) for s in _syms))
+        if not directional_ok:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "롱숏(횡단 랭킹) 전략은 백테스트 전용입니다 — 모의·실전 미지원. "
+                "조건별 롱/숏 양방향은 선물·이벤트(on_signal) 전략으로 만들면 라이브 가능합니다.")
 
     # 당일매매(hold_days=0)는 Stage B(자동매매 종가청산 사이클: trader.liquidate_day_trades +
     # scheduler 종가 cron)가 배선돼 paper/live 승격을 허용한다 — 종가 사이클이 진입 바 종가에

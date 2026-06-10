@@ -98,6 +98,29 @@ def _sym_bool(panel, sym: str, index) -> np.ndarray | None:
     return series.reindex(index, fill_value=False).fillna(False).to_numpy(dtype=bool)
 
 
+def _sym_float(panel, sym: str, index) -> np.ndarray | None:
+    """패널에서 sym 컬럼을 float 배열로 (없으면 NaN). score 부호방향 평가용."""
+    if panel is None:
+        return None
+    series = select_symbol(panel, sym) if not isinstance(panel, pd.DataFrame) else (
+        panel[sym] if sym in panel.columns else pd.Series(np.nan, index=index))
+    return series.reindex(index).to_numpy(dtype=float)
+
+
+def _direction_for(buy_bool, score_vals, *, base_sign: float,
+                   threshold: float) -> np.ndarray:
+    """바별 진입 방향 부호(+1 롱·-1 숏·0 무진입) — 방향 결정의 단일 seam(M5d).
+
+    - condition(buy_bool): 참이면 전략 방향(base_sign)·거짓이면 0 — 단방향 기존 동작 보존.
+    - score(score_vals): 부호방향 — value>thr 롱(+1)·value<thr 숏(-1)·임계 사이/NaN 0.
+    둘 중 하나만 받는다(다른 쪽 None). 향후 scheduled 경로도 이 seam을 호출해 방향정책을
+    일원화한다(엔진 직교화의 1번 축). NaN은 비교가 모두 False라 자연히 0(무진입)."""
+    if score_vals is None:
+        return np.where(buy_bool, base_sign, 0.0)
+    return np.where(score_vals > threshold, 1.0,
+                    np.where(score_vals < threshold, -1.0, 0.0))
+
+
 # ── 청산 사유 판정 (backtest.py 캐스케이드와 동일 우선순위) ────────────────────
 
 def price_exit_reason(*, cur_ret: float, close: float, peak_high: float,
@@ -172,7 +195,15 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
 
     # 신호 타입 계약 (엔진 불변식 — §5.4)
     st = get(strategy.signal.op).out_type.value if has(strategy.signal.op) else None
-    if st != "condition":
+    # M5d — 방향정책(방향 결정의 단일 출처 = _direction_for). long_short = 부호방향:
+    # score 부호가 곧 방향(>thr 롱·<thr 숏·임계 사이 무진입). 그 외는 기존 condition 트리거
+    # (롱/숏 단방향). long_short만 score 요구 — on_signal+condition 단방향은 byte-identical 보존.
+    directional = (pos_spec.direction == "long_short")
+    if directional:
+        if st != "score":
+            return _empty("롱숏(부호방향) 이벤트 진입은 score(점수) 신호가 필요합니다 "
+                          f"(현재: {st or '알 수 없는 블록'}).")
+    elif st != "condition":
         return _empty("이벤트(on_signal) 진입은 신호가 condition(참/거짓)이어야 합니다 "
                       f"(현재: {st or '알 수 없는 블록'}).")
     if exits.condition is not None:
@@ -229,8 +260,12 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             if not {"High", "Low"}.issubset(df.columns):
                 return _empty(f"'{sym}'에 고가·저가가 없어 typical 체결을 쓸 수 없습니다.")
 
+    # 방향정책 seam(M5d) — long_short는 score 부호로 바별 방향, 그 외는 condition×고정방향.
+    base_sign = -1.0 if pos_spec.direction == "short" else 1.0
+    threshold = ent.threshold if ent.threshold is not None else 0.0
+
     aligned: dict[str, dict] = {}
-    buy_arrs: dict[str, np.ndarray] = {}
+    dir_arrs: dict[str, np.ndarray] = {}      # 바별 진입 방향 부호(+1 롱·-1 숏·0 무진입)
     sell_arrs: dict[str, np.ndarray | None] = {}
     for sym in syms:
         df = symbol_dfs[sym].reindex(master_idx)
@@ -247,7 +282,12 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             "mult": _spec.multiplier, "mr": _spec.init_margin_rate,
             "is_fut": _spec.asset_class == "futures",
         }
-        buy_arrs[sym] = _sym_bool(buy_panel, sym, master_idx)
+        dir_arrs[sym] = (
+            _direction_for(None, _sym_float(buy_panel, sym, master_idx),
+                           base_sign=base_sign, threshold=threshold)
+            if directional else
+            _direction_for(_sym_bool(buy_panel, sym, master_idx), None,
+                           base_sign=base_sign, threshold=threshold))
         sell_arrs[sym] = _sym_bool(sell_panel, sym, master_idx) if sell_panel is not None else None
 
     elig_arrs: dict[str, np.ndarray] | None = None
@@ -274,11 +314,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     rfr_daily = 0.0  # 현금 무위험수익(연율) hook — Stage 1 기본 0(패리티). 후속: sim 필드.
 
     defer = (fill == "next_open")
-    # 포지션 방향(이벤트 경로). short만 신규 처리 — long·long_short는 롱 유지(기존 동작 byte-identical).
-    pos_sign = -1.0 if pos_spec.direction == "short" else 1.0
     cash = float(sim.initial_capital)
     positions: dict[str, Position] = {}
-    pending_buys: list[str] = []
+    pending_buys: dict[str, float] = {}     # sym → 진입 방향 부호(defer 시 보류 후 시가 체결)
     pending_sells: dict[str, str] = {}
     trades: list[dict] = []
     equity = np.empty(n, dtype=float)
@@ -292,7 +330,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         pct = sz.futures_margin_pct if aligned[sym]["is_fut"] else amount_pct
         return cash_snapshot * (pct / 100.0)
 
-    def _open(sym: str, i: int, raw_price: float, budget: float):
+    def _open(sym: str, i: int, raw_price: float, budget: float, sign: float):
         nonlocal cash
         if np.isnan(raw_price) or raw_price <= 0 or budget <= 0:
             return
@@ -313,14 +351,14 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             per_share_cost = price * (1 + commission)
             # 숏은 매도-개시라 현금을 *받는다* — cash//per 한도(매수 지출 한도)를 적용하지 않는다.
             # 사이징(budget)은 방향 무관(증거금/예산 동일)이라 budget//per만으로 계약수를 정한다.
-            if pos_sign < 0:
+            if sign < 0:
                 new_shares = int(budget // per_share_cost)
             else:
                 new_shares = min(int(budget // per_share_cost), int(cash // per_share_cost))
             if new_shares <= 0:
                 return
         notional = new_shares * price * a["mult"]
-        if pos_sign < 0:
+        if sign < 0:
             # 숏 개시 = sell-to-open. 수수료·거래세 차감한 순매도대금 수취(open이 매도 레그).
             cash += notional * (1 - commission - stx)
         else:
@@ -330,7 +368,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         positions[sym] = Position(
             legs=[(sym, 1.0)], shares=float(new_shares), entry_price=price, entry_i=i,
             peak_high=price if np.isnan(ph) else float(ph),
-            peak_close=price if np.isnan(pc) else float(pc), sign=pos_sign)
+            peak_close=price if np.isnan(pc) else float(pc), sign=sign)
 
     def _close(sym: str, i: int, raw_price: float, reason: str, sell_pct: float = 100.0):
         nonlocal cash
@@ -385,10 +423,10 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                     positions[sym].executed_rules.add(key)
             pending_sells.clear()
             cash_snapshot = cash
-            for sym in pending_buys:
+            for sym, sgn in pending_buys.items():
                 if len(positions) >= _MAX_POSITIONS_GLOBAL or sym in positions:
                     continue
-                _open(sym, i, aligned[sym]["open"][i], min(_budget(cash_snapshot, sym), cash))
+                _open(sym, i, aligned[sym]["open"][i], min(_budget(cash_snapshot, sym), cash), sgn)
             pending_buys.clear()
 
         # 청산 검사
@@ -427,8 +465,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             for sym in syms:
                 if sym in positions or sym in pending_buys:
                     continue
-                if buy_arrs[sym][i] and (elig_arrs is None or elig_arrs[sym][i]):
-                    pending_buys.append(sym)
+                d = dir_arrs[sym][i]
+                if d != 0 and (elig_arrs is None or elig_arrs[sym][i]):
+                    pending_buys[sym] = d
         else:
             cash_snapshot = cash
             for sym in syms:
@@ -436,11 +475,12 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                     continue
                 if len(positions) >= _MAX_POSITIONS_GLOBAL:
                     break
-                if (not buy_arrs[sym][i]
+                d = dir_arrs[sym][i]
+                if (d == 0
                         or (elig_arrs is not None and not elig_arrs[sym][i])
                         or np.isnan(aligned[sym]["close"][i])):
                     continue
-                _open(sym, i, aligned[sym]["exec"][i], min(_budget(cash_snapshot, sym), cash))
+                _open(sym, i, aligned[sym]["exec"][i], min(_budget(cash_snapshot, sym), cash), d)
 
         nav = cash
         for sym, pos in positions.items():
