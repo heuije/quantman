@@ -135,19 +135,24 @@ def _gap_pct(prev_close: float, cur_price: float) -> float:
 
 
 def _exit_reason_for(defn: dict, held_days: int,
-                     dataset: dict, symbol: str) -> tuple[str | None, object | None]:
+                     dataset: dict, symbol: str,
+                     *, is_close: bool = False) -> tuple[str | None, object | None]:
     """청산 사유를 IR 엔진(전략 연구소)으로 평가. (reason, None) 튜플 반환.
 
     ir_engine.live.cycle_exit_reason이 보유기간+매도조건 Node를 백테스트와 동일한
     IR exit 스펙으로 평가한다. 두 번째 원소는 항상 None — 호출자는 None이면
     리밸런스·sell_rules(operand) 경로를 건너뛰고 전량(100%) 청산한다.
     파싱 실패는 예외 전파(호출자가 잡아 skip).
+
+    is_close: 종가 사이클 여부. 당일매매(hold_days==0)만 영향 — 종가 사이클(True)에서만
+    "당일청산". 일반 cycle 루프는 종가 사이클이 아니므로 기본 False(종전 동작 byte-identical).
     """
     from quant_core.ir_engine import StrategyIR
     from quant_core.ir_engine import live as ir_live
     ir = StrategyIR.model_validate(defn)
     return ir_live.cycle_exit_reason(
-        ir, held_days=held_days, dataset=dataset, symbol=symbol), None
+        ir, held_days=held_days, dataset=dataset, symbol=symbol,
+        is_close=is_close), None
 
 
 def held_qty_from_snapshot(snap: dict, symbol: str, side: str = "long") -> int:
@@ -1241,6 +1246,76 @@ class Trader:
         # 즉시 체결/거부 반영(시장가 체결·장마감 거부를 결과에 표면화).
         self._resolve_pending(decisions)
         return self._state_payload(decisions, today, kind="emergency_liquidation")
+
+    def liquidate_day_trades(self, dataset: dict, instrument_class: str, *,
+                             market: str = "KRX") -> dict:
+        """당일매매(hold_days==0) 종가 청산 사이클 — 일반 cycle과 독립·additive (Stage B).
+
+        당일매매는 백테스트에서 진입 바 종가에 청산한다. 라이브는 사이클이 아침·종가로
+        나뉘므로 종가 단일가 발주창(주식 15:20~15:30·선물 15:35~15:45)에 이 사이클을 돌려
+        당일매매 포지션만 종가 기준 청산 → backtest=live를 맞춘다(아침 cycle은 is_close=False라
+        당일매매를 건드리지 않는다 — cycle_exit_reason Stage B 분기).
+
+        instrument_class ∈ {"stock","futures"} — 주식/선물 종가 발주창이 다르므로(스케줄러가
+        분리 cron으로 호출) 종목 클래스로 라우팅한다. 유저 execution.use_limit를 존중(_policy)
+        — 시장가/지정가. 청산 수량은 main loop와 동일하게 KIS 실보유로 클램프(L-04, snap_pre).
+        파싱 실패 고아는 hold_days 불명 → skip(main loop·Monitor가 표면화).
+        """
+        decisions: list[dict] = []
+        today = kst_today()
+        snap_pre = self.broker.account_snapshot()   # KIS 실보유(clamp 기준) — main loop와 동일
+        for sid, pos in list(self.ledger.items()):
+            if _market_group_safe(pos["symbol"]) != market:
+                continue
+            # instrument_class 라우팅: 선물 vs 주식
+            is_fut = qc.is_futures(pos["symbol"])
+            if instrument_class == "futures" and not is_fut:
+                continue
+            if instrument_class == "stock" and is_fut:
+                continue
+            # 당일매매(hold_days==0)만 — 정의에서 직접 읽음(파싱 실패 고아는 hold_days 불명 → skip)
+            hold_days = (((pos.get("definition") or {}).get("position") or {})
+                         .get("exit") or {}).get("hold_days")
+            if hold_days != 0:
+                continue
+            held = (today - date.fromisoformat(pos["entry_date"])).days
+            try:
+                reason, _ = _exit_reason_for(
+                    pos["definition"], held, dataset, pos["symbol"], is_close=True)
+            except Exception as e:
+                # 파싱 실패 → skip(고아는 main loop·monitor가 처리)
+                log.warning("종가청산 정의 파싱 실패 [%s]: %s", sid, e)
+                continue
+            if not reason:
+                # 방어적 — is_close=True면 "당일청산"이 떠야 정상. None이면 청산 보류.
+                continue
+            # ref_price = 현재가(종가 무렵). 종가 매도는 전일종가가 아니라 현재가 기준.
+            ref_price = self._safe_price(pos["symbol"]) or 0.0
+            if ref_price <= 0:
+                sdf = dataset.get(pos["symbol"])
+                if sdf is not None and len(sdf) and "Close" in sdf.columns:
+                    ref_price = float(sdf["Close"].iloc[-1])
+            if ref_price <= 0:
+                log.warning("종가청산 ref_price 없음 [%s] — skip", pos["symbol"])
+                continue
+            policy = _policy(pos.get("definition"))   # 유저 execution.use_limit 존중 — 시장가/지정가
+            sell_qty = int(pos["qty"])
+            # L-04: 발주 직전 KIS 실보유로 클램프 — 외부 수동매도 over-sell 방지(main loop와 동일).
+            pos_side = pos.get("side", "long")
+            held_now = held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side)
+            clamped = clamp_sell_qty(held_now, sell_qty)
+            if not clamped:                           # None=잔고 미상, 0=외부 매도(보유 0) → skip
+                log.info("[종가청산] %s KIS 실보유 0/미상 — 발주 skip", pos["symbol"])
+                continue
+            if pos_side == "short":
+                self._submit_close_short(sid, pos.get("strategy_name", ""), pos["symbol"],
+                                         clamped, ref_price, policy, reason, decisions)
+            else:
+                self._submit_sell(sid, pos.get("strategy_name", ""), pos["symbol"],
+                                  clamped, ref_price, policy, reason, decisions)
+        # 즉시 체결/거부 반영(단일가 체결·발주창 외 거부를 결과에 표면화).
+        self._resolve_pending(decisions)
+        return self._state_payload(decisions, today, kind="day_trade_close")
 
     def state_snapshot(self) -> dict:
         """현 상태(잔고·포지션·kill_switch) 스냅샷 — 거래 없이 상태 변경(kill-switch 해제·

@@ -260,6 +260,33 @@ def test_gate_draft_skips_direction_checks():
     _gate("draft", "short", ["005930"])
 
 
+# ── 당일매매 게이트 — Stage B: 종가청산 사이클 배선됨 → hold_days=0 paper/live 허용 ──
+
+def _gate_exit(run_mode, hold_days, symbols=("005930",)):
+    return strategies_router._assert_live_tradable(
+        run_mode, {"position": {"direction": "long", "exit": {"hold_days": hold_days}},
+                   "universe": {"kind": "single", "symbols": list(symbols)}})
+
+
+def test_gate_allows_intraday_day_trade_paper(monkeypatch):
+    # Stage B: 자동매매 종가청산 사이클(liquidate_day_trades + scheduler)이 배선돼
+    # hold_days=0 당일매매가 paper/live로 승격 가능 — 게이트가 더는 차단하지 않는다.
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    _gate_exit("paper", 0)            # 예외 없으면 통과
+    _gate_exit("live", 0)
+
+
+def test_gate_allows_hold_days_positive(monkeypatch):
+    # hold_days>=1은 기존대로 허용(회귀 가드)
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    _gate_exit("paper", 5)            # 예외 없으면 통과
+
+
+def test_gate_draft_skips_intraday_check():
+    # draft(백테스트)는 당일매매 허용
+    _gate_exit("draft", 0)
+
+
 # ── M1a: 선물 라이브 개방 플래그(QP_FUTURES_LIVE_ENABLED) — KOSPI200만, 기본 OFF ────
 def test_m1a_futures_blocked_when_flag_off(monkeypatch):
     # 플래그 OFF(기본) → KOSPI200 선물은 tradable에 없어 차단(현재 동작·휴면)

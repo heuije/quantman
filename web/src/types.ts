@@ -283,6 +283,8 @@ export interface IrStrategyDef {
     maintenance_margin_pct?: number | null;    // 레버리지 마진콜 유지증거금률(%)
     start?: string | null; end?: string | null;
   };
+  // 자동매매 체결 정책 — 주문 유형(use_limit: 지정가/시장가) 등. 미지정 시 글로벌 default.
+  execution?: ExecutionPolicy | null;
   // 조사형 쿼리 — query(동사) × study(축 × 환원). 옛 sweep+period_split을 흡수.
   // describe=신호값 분포, relate=이벤트/IC, simulate=백테스트(+축별 펼침·기간분할),
   // select=as-of 스냅샷 횡단 랭킹 스크리닝.

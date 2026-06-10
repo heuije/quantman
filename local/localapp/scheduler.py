@@ -3,8 +3,10 @@
 국내(KRX) — 고정 cron:
 - 평일 08:50  장중 loop 시작 (시세+체결통보 WebSocket)
 - 평일 08:55  메인 사이클 (KRX 매수/청산 평가 + 발주)
+- 평일 15:25  종가 매도 사이클 (주식·당일매매 hold_days=0)
 - 평일 15:30  장중 loop 종료
 - 평일 15:35  장 마감 후 settlement
+- 평일 15:43  종가 매도 사이클 (선물·당일매매 hold_days=0)
 
 미국(US) — 동적 야간 플래너:
 - 매일 12:00  오늘 밤 미국 세션을 시장 캘린더로 계산해 one-shot 잡 등록
@@ -31,7 +33,8 @@ from apscheduler.triggers.date import DateTrigger
 from quant_core import market_calendar as mc
 
 from . import intraday_loop
-from .runner import run_cycle, run_post_close_settlement, run_post_open_reconcile
+from .runner import (run_close_cycle, run_cycle, run_post_close_settlement,
+                     run_post_open_reconcile)
 
 log = logging.getLogger("localapp.scheduler")
 KST = ZoneInfo("Asia/Seoul")
@@ -109,7 +112,8 @@ def register_jobs(sched) -> None:
     출처(여기) — gui._start_scheduler·headless start() 모두 이걸 호출.
 
     등록 항목:
-      · KRX 08:50 loop / 08:55 cycle / 15:30 loop stop / 15:35 settlement
+      · KRX 08:50 loop / 08:55 cycle / 15:25 종가매도(주식) / 15:30 loop stop /
+        15:35 settlement / 15:43 종가매도(선물)
       · US 매일 12:00 야간 플래너 + 기동 시 즉시 1회 plan
       · 캘린더 04:00 일일 sync
       · heartbeat 5분 주기 + 기동 시 1회
@@ -133,6 +137,19 @@ def register_jobs(sched) -> None:
         run_post_close_settlement, kwargs={"market": "KRX"},
         trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=35, timezone="Asia/Seoul"),
         id="krx_settlement", name="KRX 장 마감 후 settlement", misfire_grace_time=600)
+
+    # 종가 매도 사이클(당일매매 hold_days=0) — 주식 종가단일가 15:20~15:30 / 선물 15:35~15:45
+    # 구간 내 발주 → 단일가 체결. 진입은 아침 메인 cycle, 청산만 종가창에서 전담.
+    sched.add_job(
+        run_close_cycle, kwargs={"market": "KRX", "instrument_class": "stock"},
+        trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=25, timezone="Asia/Seoul"),
+        id="krx_close_cycle_stock", name="KRX 종가 매도 사이클 (주식·당일매매)",
+        misfire_grace_time=300)
+    sched.add_job(
+        run_close_cycle, kwargs={"market": "KRX", "instrument_class": "futures"},
+        trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=43, timezone="Asia/Seoul"),
+        id="krx_close_cycle_futures", name="KRX 종가 매도 사이클 (선물·당일매매)",
+        misfire_grace_time=300)
 
     # ── 미국(US) 동적 야간 플래너 ────────────────────────────────────────────
     sched.add_job(
@@ -207,7 +224,8 @@ def start() -> None:
 
     print("=" * 52)
     print("  로컬앱 스케줄러 시작 (KST)")
-    print("  [KRX] 08:50 loop · 08:55 사이클 · 15:30 loop종료 · 15:35 정산")
+    print("  [KRX] 08:50 loop · 08:55 사이클 · 15:25 종가매도(주식) · 15:30 loop종료 · "
+          "15:35 정산 · 15:43 종가매도(선물)")
     print("  [US ] 매일 12:00 야간 플래너 → open−20분 예약발주 / open+5분 reconcile / close+5분 정산")
     print("        (DST·휴장 자동 반영, 오늘 밤 세션은 기동 시 즉시 등록)")
     print("  [캘린더] 04:00 시장 캘린더 일일 sync (임시공휴일 반영)")

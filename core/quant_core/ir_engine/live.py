@@ -22,14 +22,32 @@ from .spec import StrategyIR
 
 
 def cycle_exit_reason(strategy: StrategyIR, *, held_days: int,
-                      dataset: dict, symbol: str) -> Optional[str]:
+                      dataset: dict, symbol: str,
+                      is_close: bool = False) -> Optional[str]:
     """로컬앱 EOD 사이클 청산 사유 — 보유기간 + 매도조건(Node). 없으면 None.
 
     신호·시간 기반만. 가격기반(tp/sl/trail)은 intraday_loop가 장중 tick으로 전담.
     매도조건 Node는 dataset에서 평가해 symbol의 마지막 바 값을 본다([이 종목]=symbol
     으로 치환; 외부 참조 종목은 _scoped가 보존).
+
+    **당일매매(hold_days==0)**: 백테스트는 진입한 바의 종가에 청산한다(시가 진입 → 같은 날
+    종가 청산). 라이브는 사이클이 아침(08:55)·종가(15:25/15:43) 둘로 나뉘므로 호출자가
+    `is_close`로 어느 사이클인지 알린다 — 종가 사이클에서만 당일 청산해 backtest=live를 맞춘다.
+      · is_close=True  → "당일청산"(종가 사이클: 당일 청산)
+      · is_close=False·held_days==0 → None(아침 진입 직후: 종가까지 보유)
+      · is_close=False·held_days>=1 → "보유기간"(종가 사이클을 놓쳐 보유가 익일로 넘어감 →
+        다음 아침 안전청산)
+    ⚠ hold_days==0은 반드시 `== 0`으로 검사한다 — None·>=1은 아래 기존 로직으로 떨어져
+    byte-identical(골든·회귀 보존).
     """
     exit_spec = strategy.position.exit
+    if exit_spec.hold_days == 0:               # 당일매매(day-trade)
+        if is_close:
+            return "당일청산"                   # 종가 사이클 — 청산
+        if held_days >= 1:
+            return "보유기간"                   # 종가 사이클 놓쳐 보유가 넘어감 → 다음 아침 안전청산
+        return None                             # 아침 진입 직후 — 종가까지 보유(청산 안 함)
+    # (이하 기존 로직 그대로 — hold_days>=1·매도조건)
     if exit_spec.hold_days is not None and held_days >= exit_spec.hold_days:
         return "보유기간"
     cond = exit_spec.condition

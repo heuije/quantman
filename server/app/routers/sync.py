@@ -327,6 +327,8 @@ def pull_preview(
 
 @router.get("/timeline")
 def pull_timeline(
+    request: Request,
+    response: Response,
     device: Device = Depends(get_current_device),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -356,16 +358,26 @@ def pull_timeline(
     if last_hb and last_hb.tzinfo is None:
         last_hb = last_hb.replace(tzinfo=_tz.utc)
 
+    # tag-first ETag(D2) — /trading/timeline과 동일 헬퍼·동일 동인. window 조회 *전에*
+    # scalar(최신 received_at + last_hb)로 ETag 계산, If-None-Match 매칭 시 304만 반환해
+    # window 조회·이벤트 합성을 건너뛴다(Neon egress 절감). 로컬앱 sync_client.pull_timeline이
+    # If-None-Match를 송신·304 캐시 처리한다. 근거: docs/incidents/2026-06-10-neon-data-transfer-quota.md
+    latest_received = session.exec(
+        select(SyncSnapshot.received_at)
+        .where(SyncSnapshot.user_id == device.user_id)
+        .order_by(SyncSnapshot.received_at.desc())
+    ).first()
+    etag = trading._timeline_etag(latest_received, last_hb, now)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304)
+    response.headers["ETag"] = etag
+
     snaps = trading._snapshots_in_window(session, device.user_id, window_start, window_end)
     heartbeats = trading._heartbeats_in_window(session, device.user_id,
                                                  window_start, window_end)
     preview = trading._latest_preview_in_window(session, device.user_id,
                                                  window_start, window_end)
 
-    # ETag tag-first(D2)는 /trading/timeline에만 적용 — 로컬앱 클라이언트가 아직
-    # If-None-Match를 보내지 않으므로 추가해도 무의미하다. 이 디바이스 경로의 ETag
-    # 도입은 로컬앱 릴리즈와 함께 하는 후속 작업. 단 cycle_summary/preview projection
-    # (Fix A)은 _snapshots_in_window·_latest_preview_in_window 재사용으로 여기도 이미 적용됨.
     events = (
         trading._krx_events(snaps, heartbeats, now, window_start, window_end)
         + trading._us_events(snaps, heartbeats, now, window_start, window_end)

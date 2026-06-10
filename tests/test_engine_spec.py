@@ -250,9 +250,13 @@ def test_m4_top_pct_out_of_range_rejected():
     assert any(i.rule == "M-select" and i.is_error for i in validate_strategy(s))
 
 
-def test_m5_hold_days_zero_rejected():
+def test_m5_hold_days_zero_accepted_negative_rejected():
+    """hold_days=0 = 당일 종가 청산(허용). 음수만 부호 오류로 거부."""
+    zero = [i for i in validate_strategy(_on_signal(_cond(), Exit(hold_days=0)))
+            if i.rule == "M-exit" and i.is_error]
+    assert not zero, "hold_days=0(당일 청산)이 거부됨"
     assert any(i.rule == "M-exit" and i.is_error
-               for i in validate_strategy(_on_signal(_cond(), Exit(hold_days=0))))
+               for i in validate_strategy(_on_signal(_cond(), Exit(hold_days=-1))))
 
 
 def test_m5_positive_stop_loss_rejected():

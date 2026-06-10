@@ -209,7 +209,8 @@ def _exit(pos: PositionSpec) -> dict:
     if x.stop_loss is not None:
         items.append(_it("손절", _frac_pct(x.stop_loss), _SET))
     if x.hold_days is not None:
-        items.append(_it("보유 기간", f"{x.hold_days}거래일 후 청산", _SET))
+        _hd = "당일 종가 청산" if x.hold_days == 0 else f"{x.hold_days}거래일 후 청산"
+        items.append(_it("보유 기간", _hd, _SET))
     if x.trail_pct is not None:
         items.append(_it("트레일링 스탑", _pct(x.trail_pct), _SET))
     if x.trail_atr_mult is not None:
@@ -459,7 +460,8 @@ def _narrative(ir: StrategyIR) -> str:
         if x.stop_loss is not None:
             bits.append(f"{_frac_pct(x.stop_loss)} 손절")
         if x.hold_days is not None:
-            bits.append(f"{x.hold_days}거래일 보유 후 청산")
+            bits.append("당일 종가 청산" if x.hold_days == 0
+                        else f"{x.hold_days}거래일 보유 후 청산")
         if x.trail_pct is not None:
             bits.append(f"{_pct(x.trail_pct)} 트레일링 스탑")
         if x.condition is not None:

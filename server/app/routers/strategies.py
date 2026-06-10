@@ -95,6 +95,10 @@ def _assert_live_tradable(run_mode: str, definition: dict) -> None:
             "롱숏(횡단 랭킹) 전략은 백테스트 전용입니다 — 모의·실전 미지원. "
             "라이브 자동매매는 단일 방향(long 또는 short)만 체결합니다.")
 
+    # 당일매매(hold_days=0)는 Stage B(자동매매 종가청산 사이클: trader.liquidate_day_trades +
+    # scheduler 종가 cron)가 배선돼 paper/live 승격을 허용한다 — 종가 사이클이 진입 바 종가에
+    # 청산해 backtest=live를 맞춘다. 선물은 아래 QP_FUTURES_LIVE_ENABLED 게이트로 별도 통제.
+
     u = definition.get("universe") or {}
     syms = u.get("symbols") or []
     if u.get("kind") == "all" or not syms:

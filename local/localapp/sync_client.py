@@ -338,27 +338,45 @@ def pull_preview() -> dict | None:
     return data
 
 
+# timeline ETag 캐시 — 변경 없으면 서버가 304(body 0) → 마지막 데이터 재사용(Neon egress 절감).
+# GUI가 60s 폴링하지만 새 cycle·heartbeat가 없으면 If-None-Match로 304만 받는다.
+_timeline_cache: dict = {"etag": "", "data": None}
+
+
 def pull_timeline() -> dict | None:
     """서버 자동매매 timeline 조회 — GUI 풀 timeline 패널용.
 
     /sync/timeline (device-authed) 호출 — 어제·오늘·내일 6 종류 event +
     heartbeat 상태. 응답 형식은 /trading/timeline과 동일 (서버에서 같은
     헬퍼 재사용). 실패 시 None (caller가 마지막 표시 유지).
+
+    egress: 서버 tag-first ETag를 캐시하고 다음 호출에 If-None-Match로 보낸다.
+    변경 없으면 304(body 0) → 캐시 데이터 재사용(docs/incidents/2026-06-10-…).
     """
+    headers = _headers()
+    if _timeline_cache["etag"]:
+        headers["If-None-Match"] = _timeline_cache["etag"]
     try:
-        r = requests.get(f"{PLATFORM_URL}/sync/timeline", headers=_headers(),
+        r = requests.get(f"{PLATFORM_URL}/sync/timeline", headers=headers,
                           timeout=10)
     except Exception as e:
         log.debug("timeline pull 네트워크 실패: %s", e)
         return None
+    if r.status_code == 304:
+        return _timeline_cache["data"]          # 변경 없음 — 캐시 재사용(egress 0)
     if not r.ok:
         log.debug("timeline pull 응답 오류: %s", r.status_code)
         return None
     try:
-        return r.json()
+        data = r.json()
     except Exception as e:
         log.debug("timeline pull JSON 파싱 실패: %s", e)
         return None
+    etag = r.headers.get("ETag")
+    if etag:
+        _timeline_cache["etag"] = etag
+        _timeline_cache["data"] = data
+    return data
 
 
 # ── Phase 29: 서버 dataset 단일 진실 공급원 pull ─────────────────────────────────

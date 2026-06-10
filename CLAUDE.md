@@ -117,6 +117,15 @@
 - **결정적 core 불변식.** 엔진은 네트워크·env·시계 의존 0 — 그래야 골든 테스트가
   고정된다. 라이브 데이터(뉴스 등)는 **서버 엣지에서 결과에 덧붙인다**(엔진 안에 넣지 말 것).
 - `signal`은 describe에도 **필수**(스키마 계약).
+- **당일매매(hold_days=0, 신규).** `Exit.hold_days=0` = 진입한 바의 종가에 청산
+  (`fill=next_open`과 결합 시 시가→종가 당일 O→C, 분봉 불필요). 엔진은 **hold_days==0일 때만**
+  next_open defer 청산을 같은 바 종가로 즉시 실행(engine.py 청산 디스패치) — hold_days≥1은
+  byte-identical(골든 보존). ⚠이 게이트(`== 0`)를 일반화하면 진입 바 가격청산이 익일시가→당일종가로
+  바뀌어 골든이 깨진다. **자동매매 종가청산 사이클(Stage B) 배선 완료** — 라이브는 사이클이
+  아침·종가로 나뉘므로 `live.cycle_exit_reason(is_close=)`로 어느 사이클인지 구분(종가에만 당일청산,
+  아침은 보유 유지). `trader.liquidate_day_trades(dataset, instrument_class)` + `runner.run_close_cycle`
+  + 스케줄러 종가 cron(주식 15:25·선물 15:43, 단일가 발주창 내). 게이트 ⑤ 제거 → paper/live 허용.
+  ⚠라이브 E2E(실 KIS 단일가 체결) 검증은 사용자 업데이트 후 대기(SimBroker·단위까지만 검증).
 - **완성도 ~70~80%.** 보류: P3 데이터 4종, P4 2차최적화(QP), 일부 P6 결과형태 브라우저 미확인.
   NL·웹 라이브 검증 일부는 로그인 자격 경계로 자동검증 불가(사용자 세션 필요).
 - 프로덕션 검증 채널 = 로그인된 `quantman.vercel.app` 페이지 컨텍스트에서

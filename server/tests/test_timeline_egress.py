@@ -27,7 +27,7 @@ if str(_SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVER_DIR))
 
 from app.db import get_session
-from app.deps import get_current_user
+from app.deps import get_current_device, get_current_user
 from app.models import Device, SyncSnapshot, User, UserSettings
 from app.routers import sync as sync_router
 from app.routers import trading as trading_router
@@ -70,7 +70,10 @@ def _build(seed):
     with Session(engine) as s:
         seeded_user = s.exec(
             sqlalchemy.select(User)).scalars().first()
+        seeded_device = s.exec(
+            sqlalchemy.select(Device)).scalars().first()
     app.dependency_overrides[get_current_user] = lambda: seeded_user
+    app.dependency_overrides[get_current_device] = lambda: seeded_device
 
     return TestClient(app), engine
 
@@ -273,3 +276,31 @@ def test_snapshot_200_shape_unchanged():
     assert body["device_id"] == 1
     assert body["received_at"] is not None
     assert body["last_heartbeat_at"] is not None
+
+
+# ── 6. /sync/timeline (device) — tag-first ETag/304 (egress 후속) ──────────────
+
+def test_sync_timeline_etag_304():
+    """디바이스 timeline도 tag-first ETag — If-None-Match 매칭 시 304(window 조회 회피).
+
+    /trading/timeline(웹)과 동일 동인(D2)을 디바이스 경로에도 닫는다. 로컬앱
+    sync_client가 If-None-Match를 보내야 효과가 나므로 이 PR에서 양쪽 동봉.
+    """
+    snap_kst = datetime(2026, 6, 10, 8, 55, tzinfo=KST)
+    hb = datetime(2026, 6, 10, 14, 0, tzinfo=timezone.utc)
+
+    def seed(s, user, device):
+        s.add(SyncSnapshot(
+            user_id=user.id, device_id=device.id,
+            payload={"cycle_summary": {"market": "KRX", "n_bought": 1}},
+            received_at=_kst_to_naive_utc(snap_kst)))
+        s.add(UserSettings(user_id=user.id, last_heartbeat_at=hb))
+
+    client, engine = _build(seed)
+    r1 = client.get("/sync/timeline")
+    assert r1.status_code == 200, r1.text
+    etag = r1.headers.get("ETag")
+    assert etag, "ETag 헤더 없음"
+    r2 = client.get("/sync/timeline", headers={"If-None-Match": etag})
+    assert r2.status_code == 304
+    assert r2.content == b""
