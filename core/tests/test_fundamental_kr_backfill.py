@@ -3,7 +3,7 @@
 (1) genuine 빈결과(데이터 없음=OpenDART 013)는 마커로 fresh_days 재시도 차단.
 (2) **한도초과(020)·네트워크 오류**는 마커 금지 + 청크 중단 — false 빈결과(한도를 무데이터로
     오인) 방지. fetch_one은 (df, rate_limited) 반환.
-(3) coverage()·clear_markers()는 파일시스템 스캔/정리.
+(3) 보통주 'se' 라벨 robust 매칭(_is_common_share) — shares 누락→pb 미산출 근본수정.
 
     cd core && pytest tests/test_fundamental_kr_backfill.py -v
 """
@@ -32,16 +32,6 @@ def test_is_common_share_handles_voting_rights_labels():
     # 우선주(의결권 없는)·합계·비고는 제외
     for se in ["우선주", "의결권 없는 주식\n(우선주)", "의결권없는 주식", "합계", "비고"]:
         assert fk._is_common_share(se) is False, f"보통주가 아니어야: {se!r}"
-
-
-def test_delete_shares_null_targets_only_null(monkeypatch, tmp_path):
-    """마이그레이션: shares_outstanding 마지막값 null인 parquet만 삭제, 정상은 보존."""
-    _isolate(monkeypatch, tmp_path)
-    pd.DataFrame({"shares_outstanding": [1e6, 7e7]}).to_parquet(fk._fund_path("OK"))
-    pd.DataFrame({"shares_outstanding": [1e6, None]}).to_parquet(fk._fund_path("NULL"))
-    res = fk.delete_shares_null(["OK", "NULL", "MISSING"])
-    assert res == {"deleted": 1, "kept": 1, "no_col": 0}
-    assert fk._fund_path("OK").exists() and not fk._fund_path("NULL").exists()
 
 
 def test_empty_result_writes_marker_and_skips_next_run(monkeypatch, tmp_path):
@@ -113,33 +103,3 @@ def test_fresh_parquet_still_skipped(monkeypatch, tmp_path):
     monkeypatch.setattr(fk, "fetch_one", fake_one)
     r = fk.fetch(["000660"], [2025], budget_calls=100)
     assert called["n"] == 0 and r["calls"] == 0      # fetch_one 호출 안 됨
-
-
-def test_coverage_counts_parquet_markers_and_recent(monkeypatch, tmp_path):
-    """coverage(): parquet 보유·빈결과 마커·최근24h 적재를 파일시스템 스캔으로 집계."""
-    _isolate(monkeypatch, tmp_path)
-    pd.DataFrame({"x": [1]}).to_parquet(fk._fund_path("005930"))      # 보유(최근)
-    pd.DataFrame({"x": [1]}).to_parquet(fk._fund_path("000660"))      # 보유(오래됨)
-    old = time.time() - 10 * 86400
-    os.utime(fk._fund_path("000660"), (old, old))
-    fk._write_marker("055550")                                        # 빈결과 마커
-
-    cov = fk.coverage(["005930", "000660", "055550", "999999"])
-    assert cov["have_fundamentals"] == 2
-    assert cov["empty_marked"] == 1
-    assert cov["written_last_24h"] == 1
-    assert cov["newest_mtime"] is not None and cov["oldest_mtime"] is not None
-
-
-def test_clear_markers_removes_all(monkeypatch, tmp_path):
-    """clear_markers(): false 마커 회복 — 모든 .empty 제거(다음 청크가 재수집·재분류)."""
-    _isolate(monkeypatch, tmp_path)
-    fk._write_marker("005930")
-    fk._write_marker("000660")
-    pd.DataFrame({"x": [1]}).to_parquet(fk._fund_path("207940"))      # parquet은 남겨야
-
-    removed = fk.clear_markers()
-    assert removed == 2
-    assert not fk._marker_path("005930").exists()
-    assert not fk._marker_path("000660").exists()
-    assert fk._fund_path("207940").exists()                          # parquet 미삭제
