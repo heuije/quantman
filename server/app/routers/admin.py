@@ -69,6 +69,17 @@ def clear_fundamental_markers(user: User = Depends(get_current_user)):
     return {"ok": True, "removed": removed}
 
 
+@router.get("/fundamental-probe")
+def fundamental_probe(codes: str, user: User = Depends(get_current_user)):
+    """종목별 백필 상태(parquet/marker/corp_code) — false 빈결과 근본원인 분리.
+
+    codes=쉼표구분 6자리. corp_code=None이면 배포 환경 find_corp_code 미해석 → 모든 종목이
+    빈결과로 마킹되는 부류 사고의 원인(데이터 부재 아님). 데이터 미로드·quota 무영향."""
+    from quant_core.data.feeds import fundamental_kr
+    code_list = [c.strip() for c in codes.split(",") if c.strip()]
+    return {"probe": fundamental_kr.probe(code_list)}
+
+
 @router.get("/compile-stats")
 def compile_stats(user: User = Depends(get_current_user),
                   session: Session = Depends(get_session)):
