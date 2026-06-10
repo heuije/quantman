@@ -69,6 +69,17 @@ def clear_fundamental_markers(user: User = Depends(get_current_user)):
     return {"ok": True, "removed": removed}
 
 
+@router.post("/refetch-kr-shares-null")
+def refetch_kr_shares_null(user: User = Depends(get_current_user)):
+    """일회성 마이그레이션 — 주식수(shares_outstanding) 누락 parquet 삭제 → 백필 재수집 유도.
+
+    보통주 'se' 라벨 정확매칭 버그로 주식수가 빠져 pb가 안 뜨던 종목들의 parquet을 삭제한다(정상은
+    보존). 다음 백필 청크가 수정된 _shares_history로 재수집한다. 수정 배포 후 1회 호출."""
+    from quant_core.data.feeds import fundamental_kr
+    codes = data_fetcher.load_managed_kr_codes()
+    return {"ok": True, **fundamental_kr.delete_shares_null(codes)}
+
+
 @router.get("/fundamental-probe")
 def fundamental_probe(codes: str, user: User = Depends(get_current_user)):
     """종목별 백필 상태(parquet/marker/corp_code) — false 빈결과 근본원인 분리.
