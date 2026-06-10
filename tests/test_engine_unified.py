@@ -367,6 +367,69 @@ def test_unified_tsmom_sign_split_runs():
     assert res["metrics"]["total_return"] > 0
 
 
+# ── M5d: on_signal 부호방향 당일매매 (라이브 양방향 경로의 backtest 거울) ──────────
+
+def _daytrade_bars():
+    """방향전환 당일매매 검증용 결정적 일봉 + 부호 신호(sig).
+
+    defer(next_open): 신호 바 i → 시가 진입 바 i+1. sig[i]가 바 i+1 방향을 정한다.
+      bar0 sig=+1 → bar1 롱(open100→close110, +10%)
+      bar1 sig=-1 → bar2 숏(open100→close 90, +10% 환매이익)
+      bar2 sig= 0 → bar3 무진입
+    """
+    idx = pd.date_range("2020-01-01", periods=4, freq="B")
+    df = pd.DataFrame({
+        "Open":   [100.0, 100.0, 100.0, 100.0],
+        "High":   [100.0, 110.0, 100.0, 100.0],
+        "Low":    [100.0, 100.0,  90.0, 100.0],
+        "Close":  [100.0, 110.0,  90.0, 100.0],
+        "Volume": [1e6, 1e6, 1e6, 1e6],
+        "sig":    [1.0, -1.0, 0.0, 0.0],
+    }, index=idx)
+    return {"005930": df}
+
+
+def test_unified_directional_long_short_daytrade():
+    """M5d — on_signal + long_short(부호방향) + hold_days=0 당일매매.
+
+    score 부호로 바별 방향 결정: 롱일 종가↑·숏일 종가↓ 둘 다 +10%, 보유일 0.
+    엔진 _direction_for seam이 단일종목 directional을 횡단 랭킹 없이 처리하는지 고정."""
+    d = _daytrade_bars()
+    s = StrategyIR(
+        signal=data("__SELF__.sig"),
+        universe=Universe(kind="single", symbols=["005930"]),
+        position=PositionSpec(direction="long_short",
+                              entry=Entry(mode="on_signal", threshold=0.0),
+                              exit=Exit(hold_days=0)),
+        simulation=SimSpec(initial_capital=1e7, fill="next_open",
+                           commission=0.0, slippage=0.0, sell_tax=0.0))
+    res = run_unified(s, d)
+    assert res["success"], res.get("error")
+    tr = res["trades"]
+    assert len(tr) == 2, f"롱1·숏1 두 당일 트레이드 기대, 실제 {len(tr)}: {tr}"
+    assert (tr["보유일"] == 0).all(), tr[["보유일"]]             # 당일청산
+    assert (tr["수익률(%)"] > 0).all(), tr[["수익률(%)"]]        # 롱↑·숏↓ 둘 다 이익
+    # 1e7 → +10%(롱) → 1.1e7 → +10%(숏) → 1.21e7 복리
+    assert np.isclose(res["equity"].iloc[-1], 1.21e7, rtol=1e-6), res["equity"].iloc[-1]
+
+
+def test_unified_directional_requires_score():
+    """on_signal+long_short인데 condition 신호면 엔진이 명시 거부(부호방향 불가)."""
+    d = _daytrade_bars()
+    s = StrategyIR(
+        signal=_cond_self(),                                   # condition 신호
+        universe=Universe(kind="single", symbols=["005930"]),
+        position=PositionSpec(direction="long_short",
+                              entry=Entry(mode="on_signal"),
+                              exit=Exit(hold_days=0)),
+        simulation=SimSpec(initial_capital=1e7, fill="next_open"))
+    # _cond_self는 __SELF__.ma_dev_20d 참조 — _daytrade_bars엔 그 컬럼이 없으나
+    # 신호 타입(condition) 거부가 먼저 걸린다.
+    res = run_unified(s, d)
+    assert not res["success"]
+    assert "score" in (res.get("error") or "")
+
+
 def test_threshold_requires_score_signal():
     """임계 선택은 score 신호 전용 — condition 신호에 threshold면 S-select 에러."""
     from quant_core.ir_engine import validate_strategy

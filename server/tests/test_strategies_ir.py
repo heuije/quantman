@@ -260,6 +260,40 @@ def test_gate_draft_skips_direction_checks():
     _gate("draft", "short", ["005930"])
 
 
+# ── M5d 부호방향 long_short 게이트 — on_signal directional + 선물만 라이브 허용 ──────
+
+def _gate_ls(run_mode, mode, symbols):
+    return strategies_router._assert_live_tradable(
+        run_mode, {"position": {"direction": "long_short", "entry": {"mode": mode}},
+                   "universe": {"kind": "single", "symbols": list(symbols)}})
+
+
+def test_gate_allows_directional_long_short_futures(monkeypatch):
+    # on_signal 부호방향 long_short + 선물은 라이브 가능(종목별 독립 방향, 엔진 _direction_for seam).
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"코스피200선물"})
+    _gate_ls("paper", "on_signal", ["코스피200선물"])   # 예외 없으면 통과
+    _gate_ls("live", "on_signal", ["코스피200선물"])
+
+
+def test_gate_blocks_directional_long_short_equity():
+    # 부호방향이라도 비선물은 숏 레그 불가(현금계좌 공매도 불가) → 차단
+    import pytest
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        _gate_ls("paper", "on_signal", ["005930"])
+    assert e.value.status_code == 422
+
+
+def test_gate_blocks_scheduled_long_short_futures(monkeypatch):
+    # scheduled long_short = 횡단 랭킹 → 라이브 단방향 체결기가 재현 못 함 → 선물이어도 차단
+    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"코스피200선물"})
+    import pytest
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        _gate_ls("paper", "scheduled", ["코스피200선물"])
+    assert e.value.status_code == 422
+
+
 # ── 당일매매 게이트 — Stage B: 종가청산 사이클 배선됨 → hold_days=0 paper/live 허용 ──
 
 def _gate_exit(run_mode, hold_days, symbols=("005930",)):

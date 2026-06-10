@@ -931,7 +931,8 @@ class Trader:
                               symbol: str,
                               dataset: dict, equity_now: float,
                               decisions: list[dict],
-                              catchup: bool = False) -> bool:
+                              catchup: bool = False,
+                              cand_direction: str | None = None) -> bool:
         """수동(단일/다중) 종목 1개에 대해 사이징 + 발주 (EOD-순수 모델).
 
         Phase 30: 매수 path는 전일 종가만으로 결정. KIS 현재가 호출 없음.
@@ -990,14 +991,18 @@ class Trader:
 
         policy = _policy(strat_def)
 
-        # M5c — 진입 방향. long(기본)=매수진입·short=매도진입(sell-to-open, 선물만).
-        # long_short(횡단 score 랭킹)는 라이브 이벤트진입에서 v1 미지원 → 명시 skip(무음 롱전환 방지).
+        # M5c/M5d — 진입 방향. long(기본)=매수진입·short=매도진입(sell-to-open, 선물만).
+        # long_short(부호방향 directional)는 종목별 당일 방향을 preview 후보(_select 부호)가
+        # 가져온다 → cand_direction으로 체결(엔진 _direction_for 거울). 방향 정보 없는
+        # long_short 후보(구 preview·횡단 랭킹)는 무음 롱전환 방지 위해 명시 skip.
         direction = (strat_def.get("position") or {}).get("direction", "long")
         if direction == "long_short":
-            decisions.append(order_log.decision(
-                "skip_unsupported", strategy_id, strat_name, symbol,
-                "long_short(횡단 롱숏)은 라이브 자동매매 v1 미지원 — long/short 단방향 전략만"))
-            return False
+            if cand_direction not in ("long", "short"):
+                decisions.append(order_log.decision(
+                    "skip_unsupported", strategy_id, strat_name, symbol,
+                    "long_short 후보에 방향 정보 없음 — 부호방향 directional 전략만 라이브 가능"))
+                return False
+            direction = cand_direction
         is_short = direction == "short"
 
         # 통화별 가용자금 결정.
@@ -1157,7 +1162,7 @@ class Trader:
                 if self._try_buy_one_symbol(
                         ledger_key, sid, strat_name, strat_def,
                         symbol, dataset, equity_now, decisions,
-                        catchup=catchup):
+                        catchup=catchup, cand_direction=c.get("direction")):
                     bought += 1
                     n_preview_used += 1
 
