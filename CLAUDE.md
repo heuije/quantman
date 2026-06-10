@@ -342,8 +342,11 @@ ls -la ~/.quant-platform/*.json               # 모든 state 파일 mtime
 
 ## 8. 외부 API knowledge base — 작업 전 필수 참조
 
-KIS·yfinance·Polygon·ECOS 등 외부 API 호출·결함 진단·새 endpoint 사용 시
-**작업 전 반드시** 다음 순서로 확인:
+외부 API 호출·결함 진단·새 endpoint 사용 시 **추측 금지** — 먼저 **`docs/api-index.md`(레지스트리)**에서
+그 API의 *검증된 문서 접근법*을 찾아 확인한다(🟢 WebFetch / 🟠 WebSearch(봇차단 API) / 🟡 패키지소스 /
+🔵 로컬 / 🟣 스킬). OpenDART status를 안 보고 추측해 사고 난 부류의 재발 방지.
+
+**KIS**는 로컬 knowledge base가 가장 충실 — 작업 전 다음 순서:
 
 1. **`docs/kis-api/INDEX.md`** grep으로 endpoint 후보 찾기
    ```bash
@@ -365,8 +368,8 @@ KIS·yfinance·Polygon·ECOS 등 외부 API 호출·결함 진단·새 endpoint 
 **doc 부족 시 사용자에게 명시 요청**: "KIS docs '해외주식 주문' sheet xlsx
 필요합니다. 받아서 `docs/kis-api/raw/`에 추가해주세요" 형식.
 
-다른 API도 동일 패턴: `docs/{api-name}/`. 신규 API knowledge base
-구축은 사용자가 docs 제공 시점에 같은 구조로 추가.
+**KIS 외 API의 접근법·gotcha는 `docs/api-index.md` 참조.** 신규 API knowledge base(로컬 `docs/{api-name}/`)
+구축은 사용자가 docs 제공 시점에 KIS와 같은 구조로 추가하고 `docs/api-index.md`에 행을 등록한다.
 
 ## 9. 자주 쓰는 명령
 
