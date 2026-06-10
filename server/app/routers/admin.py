@@ -31,6 +31,34 @@ def invalidate_dataset_cache(user: User = Depends(get_current_user)):
     return {"ok": True, "generation": data_fetcher.data_generation()}
 
 
+@router.get("/fundamental-coverage")
+def fundamental_coverage(user: User = Depends(get_current_user)):
+    """KR 펀더멘털(OpenDART) 백필 진척 — parquet 수 기준 경량 집계(데이터 로드 0).
+
+    A1 게이트 판정·백필 진단을 Railway 로그 긁기 없이 한 번에. coverage 산출은 core가
+    파일시스템 스캔으로(수천 종목 ~1초), 라우터는 total·coverage_pct만 덧붙인다."""
+    from datetime import datetime, timezone
+
+    from quant_core.data.feeds import fundamental_kr
+
+    codes = data_fetcher.load_managed_kr_codes()
+    cov = fundamental_kr.coverage(codes)
+    total = len(codes)
+
+    def _iso(ts):
+        return datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else None
+
+    return {
+        "total_managed": total,
+        "have_fundamentals": cov["have_fundamentals"],
+        "coverage_pct": round(cov["have_fundamentals"] / total * 100, 1) if total else None,
+        "empty_marked": cov["empty_marked"],
+        "written_last_24h": cov["written_last_24h"],
+        "newest": _iso(cov["newest_mtime"]),
+        "oldest": _iso(cov["oldest_mtime"]),
+    }
+
+
 @router.get("/compile-stats")
 def compile_stats(user: User = Depends(get_current_user),
                   session: Session = Depends(get_session)):
