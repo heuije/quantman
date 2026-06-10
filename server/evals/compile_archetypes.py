@@ -110,7 +110,11 @@ def main():
         n_prop += prop_ok
         print("=" * 64)
         print(f"[{label}] success={ok} prop={prop_ok} repair={res.get('repair_count')}")
-        print("  direction:", ir.get("position", {}).get("direction"))
+        _pos = ir.get("position", {})
+        print("  direction:", _pos.get("direction"),
+              "| entry.mode:", (_pos.get("entry") or {}).get("mode"),
+              "| threshold:", (_pos.get("entry") or {}).get("threshold"),
+              "| hold_days:", (_pos.get("exit") or {}).get("hold_days"))
         st = ir.get("study", {}) or {}
         print("  study.axis:", st.get("axis"), "| param_grid 축:", len(st.get("param_grid", []) or []))
         print("  assumptions:", json.dumps(res.get("assumptions") or [], ensure_ascii=False)[:300])
