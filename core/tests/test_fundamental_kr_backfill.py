@@ -1,7 +1,9 @@
-"""fundamental_kr 백필 견고성·관측.
+"""fundamental_kr 백필 견고성·관측·한도구분.
 
-(1) 빈결과(데이터 없음) 종목은 마커를 남겨 fresh_days 동안 재시도 안 함 — 금융주·상폐가
-    매일 예산을 갉아먹던 비효율을 차단. (2) coverage()는 파일시스템 스캔만으로 진척을 집계.
+(1) genuine 빈결과(데이터 없음=OpenDART 013)는 마커로 fresh_days 재시도 차단.
+(2) **한도초과(020)·네트워크 오류**는 마커 금지 + 청크 중단 — false 빈결과(한도를 무데이터로
+    오인) 방지. fetch_one은 (df, rate_limited) 반환.
+(3) coverage()·clear_markers()는 파일시스템 스캔/정리.
 
     cd core && pytest tests/test_fundamental_kr_backfill.py -v
 """
@@ -15,29 +17,46 @@ fk = pytest.importorskip("quant_core.data.feeds.fundamental_kr")
 
 
 def _isolate(monkeypatch, tmp_path):
-    """_fund_path를 tmp로 격리 — 마커·coverage는 _fund_path 파생이라 함께 격리됨."""
+    """_fund_path를 tmp로 격리 — 마커·coverage·clear는 _fund_path 파생이라 함께 격리됨."""
     monkeypatch.setattr(fk, "_fund_path", lambda c: tmp_path / f"{c.replace('/', '_')}.parquet")
 
 
 def test_empty_result_writes_marker_and_skips_next_run(monkeypatch, tmp_path):
-    """빈결과 종목 → 마커 기록 + 다음 실행에서 skip(예산 미소모)."""
+    """genuine 빈결과(데이터 없음) → 마커 기록 + 다음 실행 skip(예산 미소모)."""
     _isolate(monkeypatch, tmp_path)
     n = {"calls": 0}
 
     def fake_one(c, years):
         n["calls"] += 1
-        return pd.DataFrame()                      # 빈결과(금융주·상폐 모사)
+        return pd.DataFrame(), False               # 빈결과·한도아님(013)
 
     monkeypatch.setattr(fk, "fetch_one", fake_one)
 
     r1 = fk.fetch(["055550"], [2025], budget_calls=100)
-    assert r1["empty"] == 1 and r1["ok"] == 0
-    assert fk._marker_path("055550").exists()       # 마커 기록
+    assert r1["empty"] == 1 and r1["ok"] == 0 and r1["rate_limited"] == 0
+    assert fk._marker_path("055550").exists()
     assert n["calls"] == 1
 
     r2 = fk.fetch(["055550"], [2025], budget_calls=100)   # 마커 신선 → skip
-    assert n["calls"] == 1                           # 재시도 안 함
-    assert r2["calls"] == 0                          # 예산 미소모
+    assert n["calls"] == 1 and r2["calls"] == 0
+
+
+def test_rate_limited_no_marker_and_stops_chunk(monkeypatch, tmp_path):
+    """OpenDART 한도(rate_limited) → 마커 금지 + 청크 즉시 중단(false 빈결과·망치질 방지)."""
+    _isolate(monkeypatch, tmp_path)
+    n = {"calls": 0}
+
+    def fake_one(c, years):
+        n["calls"] += 1
+        return pd.DataFrame(), True                # 한도 신호
+
+    monkeypatch.setattr(fk, "fetch_one", fake_one)
+
+    r = fk.fetch(["005930", "000660"], [2025], budget_calls=1000)
+    assert r["rate_limited"] == 1 and r["ok"] == 0 and r["empty"] == 0
+    assert n["calls"] == 1                          # 첫 종목에서 중단(망치질 없음)
+    assert not fk._marker_path("005930").exists()   # 마커 금지 → 재시도 유지
+    assert not fk._marker_path("000660").exists()
 
 
 def test_success_writes_parquet_and_clears_stale_marker(monkeypatch, tmp_path):
@@ -50,7 +69,7 @@ def test_success_writes_parquet_and_clears_stale_marker(monkeypatch, tmp_path):
     os.utime(m, (old, old))
 
     df = pd.DataFrame({"pb_ratio": [1.5]}, index=pd.to_datetime(["2025-03-31"]))
-    monkeypatch.setattr(fk, "fetch_one", lambda c, y: df)
+    monkeypatch.setattr(fk, "fetch_one", lambda c, y: (df, False))
 
     r = fk.fetch(["005930"], [2025], budget_calls=100)
     assert r["ok"] == 1
@@ -63,11 +82,14 @@ def test_fresh_parquet_still_skipped(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
     pd.DataFrame({"pb_ratio": [1.0]}).to_parquet(fk._fund_path("000660"))
     called = {"n": 0}
-    monkeypatch.setattr(fk, "fetch_one", lambda c, y: called.__setitem__("n", called["n"] + 1))
 
+    def fake_one(c, y):
+        called["n"] += 1
+        return pd.DataFrame(), False
+
+    monkeypatch.setattr(fk, "fetch_one", fake_one)
     r = fk.fetch(["000660"], [2025], budget_calls=100)
-    assert called["n"] == 0                          # fetch_one 호출 안 됨
-    assert r["calls"] == 0
+    assert called["n"] == 0 and r["calls"] == 0      # fetch_one 호출 안 됨
 
 
 def test_coverage_counts_parquet_markers_and_recent(monkeypatch, tmp_path):
@@ -78,10 +100,23 @@ def test_coverage_counts_parquet_markers_and_recent(monkeypatch, tmp_path):
     old = time.time() - 10 * 86400
     os.utime(fk._fund_path("000660"), (old, old))
     fk._write_marker("055550")                                        # 빈결과 마커
-    # 999999 = 미수집
 
     cov = fk.coverage(["005930", "000660", "055550", "999999"])
     assert cov["have_fundamentals"] == 2
     assert cov["empty_marked"] == 1
-    assert cov["written_last_24h"] == 1                               # 005930만 최근
+    assert cov["written_last_24h"] == 1
     assert cov["newest_mtime"] is not None and cov["oldest_mtime"] is not None
+
+
+def test_clear_markers_removes_all(monkeypatch, tmp_path):
+    """clear_markers(): false 마커 회복 — 모든 .empty 제거(다음 청크가 재수집·재분류)."""
+    _isolate(monkeypatch, tmp_path)
+    fk._write_marker("005930")
+    fk._write_marker("000660")
+    pd.DataFrame({"x": [1]}).to_parquet(fk._fund_path("207940"))      # parquet은 남겨야
+
+    removed = fk.clear_markers()
+    assert removed == 2
+    assert not fk._marker_path("005930").exists()
+    assert not fk._marker_path("000660").exists()
+    assert fk._fund_path("207940").exists()                          # parquet 미삭제

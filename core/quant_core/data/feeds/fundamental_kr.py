@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import os
 
+import requests
+
 from ..manifest import default_manifest_path
 from .fundamentals_common import compute_fundamentals
 from ...parquet_io import write_parquet_atomic
@@ -137,28 +139,58 @@ def _pick_sum(fs, ids: list[str], nms: list[str]):
     return total
 
 
+_FINSTATE_URL = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json"
+
+
 def _report(code: str, year: int, reprt_code: str):
-    """CFS(연결) 우선, 없으면 OFS(별도) — 백업 소스가 아니라 필러별 명세 차이."""
+    """CFS(연결) 우선, 없으면 OFS(별도). 반환 (fs|None, rate_limited).
+
+    OpenDartReader.finstate_all은 013(데이터없음)·020(요청제한)을 **둘 다 빈 df로 뭉개** status를
+    숨긴다 → 한도초과를 무데이터로 오인해 false 빈결과 마커를 찍는 사고의 근본원인. 그래서 직접
+    호출해 status를 본다: 020(요청제한)·HTTP/파싱 오류 = rate_limited True(호출자가 마커 금지+청크
+    중단), 013·정상-무데이터 = (None, False). 정상 데이터 = (df, False).
+    """
+    import pandas as pd
     dart = _client()
-    for div in ("CFS", "OFS"):
+    corp = dart.find_corp_code(code)             # 6자리→corp_code(라이브러리와 동일 캐시 해석)
+    if not corp:
+        return None, False
+    key = os.environ.get("OPENDART_API_KEY")
+    for div in ("CFS", "OFS"):                   # 필러별 명세 차이(백업 소스 아님)
         try:
-            fs = dart.finstate_all(code, str(year), reprt_code=reprt_code, fs_div=div)
+            r = requests.get(_FINSTATE_URL, params={
+                "crtfc_key": key, "corp_code": corp, "bsns_year": str(year),
+                "reprt_code": reprt_code, "fs_div": div}, timeout=20)
+            jo = r.json()
         except Exception:
-            fs = None
-        if fs is not None and len(fs) > 0 and "rcept_no" in fs.columns:
-            return fs
-    return None
+            return None, True                    # 네트워크/파싱 오류 = transient(마커 금지)
+        status = jo.get("status")
+        if status == "020":                      # 요청 제한 초과 — transient
+            return None, True
+        if status == "000" and jo.get("list"):
+            return pd.DataFrame(jo["list"]), False
+        # 013(데이터없음)·list 없음 → 이 div 없음, 다음 div 시도
+    return None, False                           # 양 div 다 무데이터(genuine 013)
 
 
-def fetch_one(code: str, years: list[int]) -> "object":
-    """KR 종목의 분기 펀더멘털(years) → fund_df(as_of 인덱스). 종목당 연 4콜."""
+def fetch_one(code: str, years: list[int]) -> tuple:
+    """KR 종목의 분기 펀더멘털(years) → (fund_df, rate_limited). 종목당 연 ~5콜.
+
+    rate_limited=True면 OpenDART 요청제한(020)·네트워크 오류를 만난 것 — 호출자(fetch)가 마커를
+    안 찍고 청크를 중단해 false 빈결과를 방지한다(데이터 부재와 한도초과를 구분)."""
     import pandas as pd
 
     periods: list[dict] = []
+    rate_limited = False
     for y in years:
+        if rate_limited:
+            break
         raw: dict = {}                           # q -> {field: amount, "_rcept": date}
         for q, rc, _ in _QUARTERS:
-            fs = _report(code, y, rc)
+            fs, rl = _report(code, y, rc)
+            if rl:
+                rate_limited = True
+                break                            # 한도 — 더 안 긁고 호출자에 신호
             if fs is None:
                 continue
             vals = {f: _pick(fs, d[0], d[1]) for f, d in _FIELD_DEFS.items()}
@@ -166,6 +198,8 @@ def fetch_one(code: str, years: list[int]) -> "object":
             rcept = str(fs["rcept_no"].iloc[0])
             vals["_rcept"] = f"{rcept[:4]}-{rcept[4:6]}-{rcept[6:8]}" if len(rcept) >= 8 else None
             raw[q] = vals
+        if rate_limited:
+            break
 
         is_sum = {f: 0.0 for f in _IS}           # Q1~Q3 IS 누적(Q4 도출용)
         is_have = {f: True for f in _IS}
@@ -203,13 +237,14 @@ def fetch_one(code: str, years: list[int]) -> "object":
             periods.append(row)
 
     # PIT 발행주식수(OpenDART 주식총수) 주입 — 각 분기 as_of 시점에 알려진 최신 보통주 발행총수.
-    share_hist = _shares_history(code, years)
-    for p in periods:
-        p["shares"] = _shares_asof(share_hist, p["as_of"])
+    if not rate_limited:
+        share_hist = _shares_history(code, years)
+        for p in periods:
+            p["shares"] = _shares_asof(share_hist, p["as_of"])
     periods.sort(key=lambda p: p["end"])
-    if not periods:
-        return pd.DataFrame()
-    return compute_fundamentals(periods, quarterly=True)
+    if rate_limited or not periods:
+        return pd.DataFrame(), rate_limited
+    return compute_fundamentals(periods, quarterly=True), False
 
 
 def _fund_path(code: str):
@@ -258,27 +293,35 @@ def fetch(codes: list[str], years: list[int], budget_calls: int = 9000,
                 ts = max(ts, p.stat().st_mtime)
         return ts
 
-    calls = n_ok = n_fail = n_empty = 0
+    calls = n_ok = n_fail = n_empty = n_rl = 0
     for c in sorted(codes, key=_attempted_mtime):     # 미시도(0)·오래된 시도 우선
         at = _attempted_mtime(c)
         if at and (now - at) < fresh_days * 86400:
             continue                                   # 최근 시도(성공·빈결과 무관) — skip
         try:
-            df = fetch_one(c, years)
+            df, rate_limited = fetch_one(c, years)
         except Exception:
-            n_fail += 1
+            n_fail += 1                                # 예외도 마커 안 찍음(재시도 유지)
+            calls += 5 * len(years)
+            if calls >= budget_calls:
+                break
+            continue
+        if rate_limited:
+            # OpenDART 요청제한(020)·네트워크 오류 — false 빈결과 방지: 마커 금지 + 청크 중단.
+            # 이 종목은 미시도로 남아 다음 청크 재시도(한도 후 망치질도 방지).
+            n_rl += 1
+            break
+        if df is not None and not df.empty:
+            write_parquet_atomic(df, _fund_path(c))   # 원자적 — 중단 시 잘린 파일 안 남김
+            _clear_marker(c)                          # 빈결과→데이터 생김 시 마커 정리
+            n_ok += 1
         else:
-            if df is not None and not df.empty:
-                write_parquet_atomic(df, _fund_path(c))   # 원자적 — 중단 시 잘린 파일 안 남김
-                _clear_marker(c)                          # 빈결과→데이터 생김 시 마커 정리
-                n_ok += 1
-            else:
-                _write_marker(c)                          # 빈결과 — fresh_days 동안 재시도 차단
-                n_empty += 1
+            _write_marker(c)                          # 확정 무데이터(013) — genuine 마커
+            n_empty += 1
         calls += 5 * len(years)                  # 재무 4분기 + 주식총수 1(연간)
         if calls >= budget_calls:
             break
-    return {"ok": n_ok, "fail": n_fail, "empty": n_empty, "calls": calls}
+    return {"ok": n_ok, "fail": n_fail, "empty": n_empty, "rate_limited": n_rl, "calls": calls}
 
 
 def coverage(codes: list[str]) -> dict:
@@ -306,3 +349,21 @@ def coverage(codes: list[str]) -> dict:
     return {"have_fundamentals": have, "empty_marked": empty,
             "written_last_24h": recent,
             "newest_mtime": newest or None, "oldest_mtime": oldest or None}
+
+
+def clear_markers(codes: list[str] | None = None) -> int:
+    """빈결과(.empty) 마커 제거 — false 마커(한도초과를 무데이터로 오인) 회복용.
+
+    codes=None이면 fundamentals 디렉터리의 모든 .empty 제거(다음 청크가 재수집·재분류).
+    genuine 무데이터(ETF 등)는 재수집 시 013으로 다시 정상 마킹된다. 반환=제거 개수."""
+    if codes is None:
+        d = _fund_path("_").parent
+        markers = list(d.glob("*.empty")) if d.exists() else []
+    else:
+        markers = [_marker_path(c) for c in codes]
+    removed = 0
+    for m in markers:
+        if m.exists():
+            m.unlink()
+            removed += 1
+    return removed

@@ -59,6 +59,16 @@ def fundamental_coverage(user: User = Depends(get_current_user)):
     }
 
 
+@router.post("/clear-fundamental-markers")
+def clear_fundamental_markers(user: User = Depends(get_current_user)):
+    """빈결과(.empty) 마커 전체 제거 — false 마커 회복용(한도초과로 잘못 막힌 종목 재수집 재개).
+
+    제거 후 다음 백필 청크가 해당 종목을 재수집·재분류한다(genuine 무데이터는 013으로 재마킹)."""
+    from quant_core.data.feeds import fundamental_kr
+    removed = fundamental_kr.clear_markers()
+    return {"ok": True, "removed": removed}
+
+
 @router.get("/compile-stats")
 def compile_stats(user: User = Depends(get_current_user),
                   session: Session = Depends(get_session)):
