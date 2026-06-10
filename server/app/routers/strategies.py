@@ -151,6 +151,27 @@ def _clear_active_period(row: Strategy) -> None:
     row.live_capital_at_start = None
 
 
+def _current_capital(session: Session, user_id: int) -> float | None:
+    """live 승격 시점의 손익률 기준자본 — 가장 최근 동기화 스냅샷의 총 평가금액.
+
+    로컬앱이 push한 SyncSnapshot.payload.balance.total_eval(현금+보유 평가)을 쓴다
+    (sync.py가 day_start_equity 비교에 쓰는 것과 동일 필드). 스냅샷이 없거나
+    (미페어링·미동기화) 평가금액이 유효하지 않으면(부재·0·비수치) None을 반환한다
+    — 없는 값을 지어내지 않는 best-effort. 이 경우 stats는 pnl_total만 노출하고
+    pnl_pct는 보류하며, 로컬앱이 동기화된 뒤 재승격하면 채워진다."""
+    snap = session.exec(
+        select(SyncSnapshot).where(SyncSnapshot.user_id == user_id)
+        .order_by(SyncSnapshot.received_at.desc())
+    ).first()
+    if snap is None or not snap.payload:
+        return None
+    total_eval = (snap.payload.get("balance") or {}).get("total_eval")
+    # 외부(로컬앱) payload 검증 — total_eval은 보통 수치지만 누락·0일 수 있다.
+    if not isinstance(total_eval, (int, float)) or total_eval <= 0:
+        return None
+    return float(total_eval)
+
+
 def _next_version_no(session: Session, strategy_id: int) -> int:
     cur = session.exec(
         select(StrategyVersion.version_no)
@@ -214,7 +235,9 @@ def create_strategy(
     row = Strategy(user_id=user.id, name=name, run_mode=body.run_mode,
                    engine=body.engine, definition=definition,
                    paper_started_at=now if body.run_mode == "paper" else None,
-                   live_started_at=now if body.run_mode == "live" else None)
+                   live_started_at=now if body.run_mode == "live" else None,
+                   live_capital_at_start=(_current_capital(session, user.id)
+                                          if body.run_mode == "live" else None))
     session.add(row)
     session.commit()
     session.refresh(row)
@@ -260,6 +283,8 @@ def update_strategy(
         row.paper_started_at = now
     if body.run_mode == "live" and row.run_mode != "live":
         row.live_started_at = now
+        # 손익률 기준자본 캡처 — 승격 시점 평가금액(없으면 best-effort None).
+        row.live_capital_at_start = _current_capital(session, user.id)
     # draft 강등(=정지) — 활성기간 기준점 초기화(재승격 시 stale 방지).
     if body.run_mode == "draft":
         _clear_active_period(row)

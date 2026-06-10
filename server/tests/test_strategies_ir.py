@@ -568,3 +568,115 @@ def test_ir_validate_endpoint_flags_constant_signal(monkeypatch):
     body = r.json()
     assert body["ok"] is False
     assert any(i["rule"] == "M-const" for i in body["issues"])
+
+
+# ── 실전 승격 시 손익률 기준자본(live_capital_at_start) 캡처 ──────────────────────
+#
+# 결함: live 승격 경로가 live_capital_at_start를 한 번도 set하지 않아 stats의 pnl_pct가
+# 영구 None이었다. 승격 시점에 최신 SyncSnapshot.payload.balance.total_eval(총 평가금액)을
+# 기준자본으로 캡처한다. 스냅샷/평가금액 부재 시 best-effort로 None(없는 값 미창조).
+
+def _build_eng():
+    """_build()의 변형 — engine·user_id도 반환해 스냅샷 시딩·DB 필드 직접 검증을 허용."""
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        user = User(email="cap@example.com")
+        s.add(user); s.commit(); s.refresh(user)
+        uid = user.id
+    app = FastAPI()
+    app.include_router(strategies_router.router)
+
+    def _override():
+        with Session(engine) as s:
+            yield s
+    app.dependency_overrides[get_session] = _override
+    return TestClient(app), create_access_token(uid), engine, uid
+
+
+def _seed_snapshot(engine, uid: int, *, total_eval, pnl=500_000):
+    """승격 전 잔고 스냅샷 시딩 — 평가금액 + 전략명 매칭 누적손익.
+
+    total_eval=None이면 balance에 평가금액을 넣지 않는다(부재 케이스 재현)."""
+    from app.models import SyncSnapshot
+    balance = {} if total_eval is None else {"total_eval": total_eval}
+    with Session(engine) as s:
+        s.add(SyncSnapshot(user_id=uid, device_id=1, payload={
+            "balance": balance,
+            "strategy_pnl": {"by_strategy": [
+                {"strategy": _IR_DEF["name"], "pnl": pnl, "trades": 3, "win_rate": 0.6}]},
+            "positions": []}))
+        s.commit()
+
+
+def _capital_of(engine, sid: int):
+    """저장된 전략의 live_capital_at_start 필드를 DB에서 직접 읽는다(StrategyOut 미노출)."""
+    from sqlmodel import select as _select
+    from app.models import Strategy
+    with Session(engine) as s:
+        return s.exec(_select(Strategy).where(Strategy.id == sid)).first().live_capital_at_start
+
+
+def test_live_create_captures_capital_at_start(monkeypatch):
+    """create로 직접 live 생성 시 최신 스냅샷 평가금액을 기준자본으로 캡처 →
+    DB 필드가 채워지고 stats의 pnl_pct가 계산된다(영구 None 결함 회귀 가드)."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok, engine, uid = _build_eng()
+    _seed_snapshot(engine, uid, total_eval=10_000_000, pnl=500_000)
+    sid = client.post("/strategies", headers=_auth(tok),
+                      json={"definition": _IR_DEF, "run_mode": "live", "engine": "ir"}).json()["id"]
+    assert _capital_of(engine, sid) == 10_000_000
+    stats = client.get(f"/strategies/{sid}/stats", headers=_auth(tok)).json()
+    assert stats["pnl_total"] == 500_000
+    assert round(stats["pnl_pct"], 6) == 5.0          # 50만 / 1000만 * 100
+
+
+def test_live_promote_via_update_captures_capital(monkeypatch):
+    """draft→live 승격(update)도 기준자본을 캡처한다."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok, engine, uid = _build_eng()
+    _seed_snapshot(engine, uid, total_eval=20_000_000, pnl=1_000_000)
+    sid = client.post("/strategies", headers=_auth(tok),
+                      json={"definition": _IR_DEF, "run_mode": "draft", "engine": "ir"}).json()["id"]
+    assert _capital_of(engine, sid) is None           # draft 생성 — 미캡처
+    r = client.put(f"/strategies/{sid}", headers=_auth(tok),
+                   json={"definition": _IR_DEF, "run_mode": "live", "engine": "ir"})
+    assert r.status_code == 200, r.text
+    assert _capital_of(engine, sid) == 20_000_000
+    stats = client.get(f"/strategies/{sid}/stats", headers=_auth(tok)).json()
+    assert round(stats["pnl_pct"], 6) == 5.0          # 100만 / 2000만 * 100
+
+
+def test_demote_to_draft_clears_capital_base(monkeypatch):
+    """draft 강등 시 _clear_active_period가 기준자본을 None으로 초기화 →
+    pnl_pct 다시 보류(재승격 시 stale 기준점 방지). 손익 자체(pnl_total)는 유지."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok, engine, uid = _build_eng()
+    _seed_snapshot(engine, uid, total_eval=10_000_000, pnl=500_000)
+    sid = client.post("/strategies", headers=_auth(tok),
+                      json={"definition": _IR_DEF, "run_mode": "live", "engine": "ir"}).json()["id"]
+    assert _capital_of(engine, sid) == 10_000_000
+    r = client.put(f"/strategies/{sid}", headers=_auth(tok),
+                   json={"definition": _IR_DEF, "run_mode": "draft", "engine": "ir"})
+    assert r.status_code == 200, r.text
+    assert _capital_of(engine, sid) is None
+    stats = client.get(f"/strategies/{sid}/stats", headers=_auth(tok)).json()
+    assert stats["pnl_total"] == 500_000              # 손익은 여전히 노출
+    assert stats["pnl_pct"] is None                   # 기준자본 None → 손익률 보류
+
+
+def test_live_promote_without_valid_eval_leaves_capital_none(monkeypatch):
+    """best-effort — 평가금액(total_eval) 부재 스냅샷이면 기준자본 None(없는 값 미창조).
+    승격은 차단되지 않고(게이트 없음) 201, pnl_total 노출·pnl_pct만 보류."""
+    _patch_tradable(monkeypatch, {"005930"})
+    client, tok, engine, uid = _build_eng()
+    _seed_snapshot(engine, uid, total_eval=None, pnl=500_000)   # balance에 평가금액 없음
+    r = client.post("/strategies", headers=_auth(tok),
+                    json={"definition": _IR_DEF, "run_mode": "live", "engine": "ir"})
+    assert r.status_code == 201, r.text
+    sid = r.json()["id"]
+    assert _capital_of(engine, sid) is None
+    stats = client.get(f"/strategies/{sid}/stats", headers=_auth(tok)).json()
+    assert stats["pnl_total"] == 500_000
+    assert stats["pnl_pct"] is None
