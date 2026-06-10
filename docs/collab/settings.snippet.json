@@ -1,0 +1,15 @@
+{
+  "_README": "이 블록을 각자 개인 ~/.claude/settings.json 의 hooks 에 병합한다(덮어쓰기 아님). command 의 경로는 각자 절대경로로 교체. Windows 예: python \"C:\\Users\\<당신>\\.claude\\hooks\\read_briefings.py\" / mac·linux 예: python3 ~/.claude/hooks/read_briefings.py . 자세한 건 docs/COLLABORATION.md.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:\\Users\\<당신>\\.claude\\hooks\\read_briefings.py\""
+          }
+        ]
+      }
+    ]
+  }
+}
