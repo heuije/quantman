@@ -72,12 +72,15 @@ Claude 세션을 새로 열면 시작 시 열린 PR 목록이 뜸.
 ### 원리
 inter-session 실시간 broadcast는 **휘발성**(그 순간 연결된 세션만 받음)이라 align엔 부족하다.
 대신 **지속되는 브리핑 로그**에 각 세션이 기록하고, **`UserPromptSubmit` 훅**이 매 작업
-시작(유저 쿼리) 시점에 **최근 24h 브리핑을 읽어 context에 주입**한다. → 늦게 연 세션도,
-이미 닫힌 세션의 결과도 catch-up 된다.
+시작(유저 쿼리) 시점에 **안 본 것만 catch-up해 context에 주입**한다. 각 세션(session_id)마다
+'마지막으로 본 시각' 커서를 두고 그 이후 새 브리핑만 보여준다 → **같은 항목 반복 없음 +
+나이 무관 절대 안 놓침**. 새 세션은 전체를 catch-up(브랜치별 최신 1건으로 자연 상한).
+→ 늦게 연 세션도, 이미 닫힌 세션의 결과도 빠짐없이 catch-up 된다.
 
 ### 구성 요소 (`docs/collab/` 의 템플릿을 개인 `~/.claude/` 로 복사)
 - **`brief.py`** — 쓰기. 작업 `start`/`done`을 로그에 한 줄 append.
-- **`read_briefings.py`** — 읽기. 최근 24h·브랜치별 최신 이벤트를 출력(`[진행중]`/`[완료]`).
+- **`read_briefings.py`** — 읽기. 세션별 커서로 **안 본 브리핑만** catch-up 출력(`[진행중]`/`[완료]`).
+  커서는 `~/.claude/briefing-cursors/<session_id>` 에 저장된다.
 - **`settings.snippet.json`** — `UserPromptSubmit` 훅(개인 settings에 병합).
 - **`personal-CLAUDE.snippet.md`** — 브리핑 프로토콜(개인 `~/.claude/CLAUDE.md`에 추가).
 - 로그 파일: `~/.claude/session-briefings.jsonl` (자동 생성, machine-local, git 아님).
@@ -101,7 +104,10 @@ python ~/.claude/hooks/read_briefings.py     # 출력에 안 뜨면(자기 브�
 - **작업 시작 시:** `brief.py start --intent --plan --files`
 - **작업 완료 시:** `brief.py done --intent --plan --files --impl --outcome`
   (`--impl`=구현/결정 요지, `--outcome`=어떻게 끝났나: 머지/PR/보류/중단)
-- 매 프롬프트 시작 시 다른 세션 현황이 자동 주입됨 → 겹치면 시작 전 고려.
+- **`--intent` 는 self-contained 핸드오프로 2~3문장.** 다른 세션이 사전 맥락 없이 읽고
+  이해하도록: 무엇을·왜 + 배경(어느 시스템/계층·어떤 문제·어디로) + 범위 경계. 한 구절 금지.
+  나머지 필드는 한 줄로 충분. (렌더링이 intent를 `의도:` 자체 줄에 wrap해 보여준다.)
+- 매 프롬프트 시작 시 다른 세션 현황이 자동 주입됨(안 본 것만) → 겹치면 시작 전 고려.
 - **상태 공유만 — 다른 세션에 명령하지 않는다.**
 
 ### 동작 예시
@@ -110,28 +116,32 @@ python ~/.claude/hooks/read_briefings.py     # 출력에 안 뜨면(자기 브�
   → brief.py start: 의도=선물 사이징 근본수정 / 파일=trader.py, live.py
 
 09:30  세션 B (fix/preview-label) 첫 쿼리 → UserPromptSubmit 훅이 주입:
-  === 다른 세션 작업 현황 (최근 24h) ===
-    [진행중] [09:00] feat/futures-sizing: 선물 사이징 근본수정
-             파일: trader.py, live.py
-  → B: "A가 trader.py 수정 중. 내 preview_engine.py와 안 겹침 → 진행."
+  === 다른 세션 작업 현황 (전체 catch-up) ===
+    [진행중] [06-10 09:00] feat/futures-sizing
+        의도: 선물 자동매매 사이징이 주식계좌 현금으로 계산돼 0계약이 나오는 버그를 고친다.
+            선물계좌 가용증거금현금으로 사이징하고 유저 상한(margin_pct)을 두는 게 목표.
+        파일: trader.py, live.py
+  → B: "A가 trader.py·선물 사이징 수정 중. 내 preview_engine.py와 안 겹침 → 진행."
+  (B의 다음 쿼리부터는 새 소식이 없으면 무출력 — 반복 안 함)
 
 09:55  세션 A 완료
   → brief.py done: 구현=margin_pct 20% 기본·선물계좌 현금 / outcome=PR #59 머지
 
-14:00  세션 C 새로 열림(A는 이미 닫힘) → 훅 주입:
-  === 다른 세션 작업 현황 (최근 24h) ===
-    [완료] [09:55] feat/futures-sizing: 선물 사이징 근본수정 -> PR #59 머지
+14:00  세션 C 새로 열림(A는 이미 닫힘) → 훅 주입(C는 처음이라 전체 catch-up):
+  === 다른 세션 작업 현황 (전체 catch-up) ===
+    [완료] [06-10 09:55] feat/futures-sizing: 선물 사이징 근본수정 -> PR #59 머지
            구현: margin_pct 20% 기본·선물계좌 가용현금
   → C: "선물 사이징은 #59에서 구현됨. 중복 대신 그 위에 얹겠습니다."
 ```
-A가 닫혔어도 **C가 "무엇이·어떻게 끝났는지"를 이어받아** 중복을 피한다(broadcast로는 불가능).
+A가 닫혔어도, **나이 무관**(24h 넘어도) C가 안 본 것이면 catch-up되어 **"무엇이·어떻게
+끝났는지"를 이어받아** 중복을 피한다(broadcast로는 불가능).
 
 ### 한계 (솔직히)
 - **읽기는 결정론적(훅), 쓰기(start/done)는 Claude가 프로토콜대로** 호출(model-driven).
   Claude가 `done`을 빠뜨리면 그 작업은 `[진행중]`으로 남는다 — 치명적이진 않지만 완벽 보장은 아님.
   (Claude Code엔 "작업 단위 완료"를 잡는 결정론적 이벤트가 없어 `done`은 지시 기반이 최선.)
-- **매 프롬프트 주입**이라, 한 작업 내 후속 질문에도 같은 요약이 반복된다(브랜치별 최신 1건이라
-  짧게 유지됨).
+- **세션 커서는 session_id 기반.** 훅 stdin에 session_id가 없으면(드문 경우) `_default` 공유
+  커서로 폴백한다 — 여러 세션이 한 커서를 공유해 catch-up이 거칠어질 수 있으나 동작은 한다.
 
 ---
 
@@ -149,8 +159,9 @@ A가 닫혔어도 **C가 "무엇이·어떻게 끝났는지"를 이어받아** �
 - **매 세션·매 작업마다 명령을 실행해야 하나?** 아니다. 1회 설정 후 fetch·PR 표시·브리핑
   주입은 전부 **세션 열 때/쿼리 입력 시 자동**. 사람이 손으로 칠 명령은 없다(brief 기록은
   Claude가 프로토콜대로 함).
-- **닫힌 세션에도 공유되나?** Layer 2 로그는 **지속**되므로 닫힌 세션의 결과도 24h간 보인다.
-  (inter-session 실시간 broadcast는 연결된 세션만 받아 불가 — 그래서 로그 방식을 택했다.)
+- **닫힌 세션에도 공유되나?** Layer 2 로그는 **지속**되므로 닫힌 세션의 결과도 **나이 무관**
+  catch-up된다(세션이 아직 안 봤다면). inter-session 실시간 broadcast는 연결된 세션만 받아
+  불가 — 그래서 지속 로그 + 세션 커서 방식을 택했다.
 - **inter-session 플러그인이 필요한가?** 이 방식(로그+훅)은 **불필요**. 더 단순하고 지속된다.
 - **`core.hooksPath` 는 worktree마다?** 아니다. `.git/config` 공유 → clone당 1회면 모든
   worktree에 적용.

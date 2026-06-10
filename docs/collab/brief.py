@@ -40,7 +40,8 @@ def _branch() -> str:
 def main() -> None:
     p = argparse.ArgumentParser(description="공유 브리핑 로그 기록 (start/done)")
     p.add_argument("event", choices=["start", "done"])
-    p.add_argument("--intent", default="", help="무엇을, 왜")
+    p.add_argument("--intent", default="",
+                   help="self-contained 핸드오프 2~3문장: 무엇을·왜·배경·범위경계 (한 구절 금지)")
     p.add_argument("--plan", default="", help="어떻게 - 핵심 단계(start) / 실제 한 것(done)")
     p.add_argument("--files", default="", help="건드릴/변경한 파일·영역")
     p.add_argument("--impl", default="", help="[done] 구현·결정 요지")
