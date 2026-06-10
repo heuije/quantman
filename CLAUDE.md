@@ -117,6 +117,12 @@
 - **결정적 core 불변식.** 엔진은 네트워크·env·시계 의존 0 — 그래야 골든 테스트가
   고정된다. 라이브 데이터(뉴스 등)는 **서버 엣지에서 결과에 덧붙인다**(엔진 안에 넣지 말 것).
 - `signal`은 describe에도 **필수**(스키마 계약).
+- **이벤트(on_signal) 단일종목 숏 백테스트(신규).** `engine._run_on_signal`(이벤트 경로)이
+  `direction="short"`를 무시(롱으로 계산)하던 갭 수정 — `_open`/`_close`/NAV를 `Position.sign`
+  인지로(숏=sell-to-open·open에 거래세·buy-to-cover, NAV=`sign*shares*close*mult`). **롱(sign=+1)
+  byte-identical(골든 보존)**. ⚠`_open`/`_close`/NAV/weight·margin-call NAV recompute 어디든 부호를
+  빠뜨리면 숏 손익이 틀어진다(전부 `pos.sign` 경유). long_short 이벤트는 범위 외(롱 유지). 라이브
+  숏(M5c 진입·Stage B 청산)과 backtest=live 패리티 회복.
 - **당일매매(hold_days=0, 신규).** `Exit.hold_days=0` = 진입한 바의 종가에 청산
   (`fill=next_open`과 결합 시 시가→종가 당일 O→C, 분봉 불필요). 엔진은 **hold_days==0일 때만**
   next_open defer 청산을 같은 바 종가로 즉시 실행(engine.py 청산 디스패치) — hold_days≥1은

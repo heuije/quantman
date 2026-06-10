@@ -56,6 +56,7 @@ class Position:
     entry_i: int
     peak_high: float
     peak_close: float
+    sign: float = 1.0               # +1 롱(기본)·-1 숏. shares는 항상 양수 — 부호는 여기.
     executed_rules: set = field(default_factory=set)
 
     @property
@@ -273,6 +274,8 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     rfr_daily = 0.0  # 현금 무위험수익(연율) hook — Stage 1 기본 0(패리티). 후속: sim 필드.
 
     defer = (fill == "next_open")
+    # 포지션 방향(이벤트 경로). short만 신규 처리 — long·long_short는 롱 유지(기존 동작 byte-identical).
+    pos_sign = -1.0 if pos_spec.direction == "short" else 1.0
     cash = float(sim.initial_capital)
     positions: dict[str, Position] = {}
     pending_buys: list[str] = []
@@ -297,6 +300,8 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         price = round_to_tick(raw_price * (1 + slippage), "up", a["currency"], a["tick"])
         if price <= 0:
             return
+        # 거래세(거래세)는 매도 레그에만. 롱=open이 매수(세 0)·close가 매도, 숏=open이 매도(세 적용)·close가 매수.
+        stx = 0.0 if a["is_fut"] else sell_tax        # 선물은 증권거래세 면제
         if a["is_fut"]:
             # 선물: budget=증거금. 계약수=floor(증거금/(px×승수×증거금률)) → 명목=증거금/mr 레버리지.
             # cash-=명목(차입 허용, _run_scheduled Model A 동일; 증거금≤budget≤cash라 한도 내). 거래세는 _close 면제.
@@ -304,18 +309,28 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             new_shares = int(budget / denom) if denom > 0 else 0
             if new_shares <= 0:
                 return
-            cash -= new_shares * price * a["mult"] * (1 + commission)
         else:
             per_share_cost = price * (1 + commission)
-            new_shares = min(int(budget // per_share_cost), int(cash // per_share_cost))
+            # 숏은 매도-개시라 현금을 *받는다* — cash//per 한도(매수 지출 한도)를 적용하지 않는다.
+            # 사이징(budget)은 방향 무관(증거금/예산 동일)이라 budget//per만으로 계약수를 정한다.
+            if pos_sign < 0:
+                new_shares = int(budget // per_share_cost)
+            else:
+                new_shares = min(int(budget // per_share_cost), int(cash // per_share_cost))
             if new_shares <= 0:
                 return
-            cash -= new_shares * per_share_cost
+        notional = new_shares * price * a["mult"]
+        if pos_sign < 0:
+            # 숏 개시 = sell-to-open. 수수료·거래세 차감한 순매도대금 수취(open이 매도 레그).
+            cash += notional * (1 - commission - stx)
+        else:
+            # 롱 개시 = buy-to-open (UNCHANGED — byte-identical). 명목+수수료 지출.
+            cash -= notional * (1 + commission)
         ph, pc = a["high"][i], a["close"][i]
         positions[sym] = Position(
             legs=[(sym, 1.0)], shares=float(new_shares), entry_price=price, entry_i=i,
             peak_high=price if np.isnan(ph) else float(ph),
-            peak_close=price if np.isnan(pc) else float(pc))
+            peak_close=price if np.isnan(pc) else float(pc), sign=pos_sign)
 
     def _close(sym: str, i: int, raw_price: float, reason: str, sell_pct: float = 100.0):
         nonlocal cash
@@ -334,15 +349,25 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             return
         mult = a["mult"]
         stx = 0.0 if a["is_fut"] else sell_tax        # 선물은 증권거래세 면제
-        proceeds = sell_shares * price * mult * (1 - commission - stx)
-        cost = sell_shares * pos.entry_price * mult * (1 + commission)
         is_partial = sell_shares < pos.shares - 1e-9
+        if pos.sign < 0:
+            # 숏 청산 = buy-to-cover (매수 레그라 거래세 없음). 수익률은 진입(숏)가 기준.
+            # open_proceeds = 개시 시 받은 순매도대금(거래세 포함; 선물 stx=0). cover_cost = 환매 명목+수수료.
+            open_proceeds = sell_shares * pos.entry_price * mult * (1 - commission - stx)
+            cover_cost = sell_shares * price * mult * (1 + commission)
+            ret = (open_proceeds - cover_cost) / open_proceeds * 100 if open_proceeds else 0.0
+            cash -= cover_cost
+        else:
+            # 롱 청산 = sell-to-close (UNCHANGED — byte-identical). 매도 레그에 거래세.
+            proceeds = sell_shares * price * mult * (1 - commission - stx)
+            cost = sell_shares * pos.entry_price * mult * (1 + commission)
+            ret = (proceeds - cost) / cost * 100 if cost else 0.0
+            cash += proceeds
         trades.append({
             "종목": sym, "진입일": master_idx[pos.entry_i], "청산일": master_idx[i],
             "보유일": i - pos.entry_i, "진입가": pos.entry_price, "청산가": price,
-            "수익률(%)": (proceeds - cost) / cost * 100,
+            "수익률(%)": ret,
             "청산사유": reason + (f"({sell_pct:.0f}%)" if is_partial else "")})
-        cash += proceeds
         pos.shares -= sell_shares
         if pos.shares <= 1e-9:
             del positions[sym]
@@ -379,7 +404,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                 pos.peak_high = float(high)
             if close > pos.peak_close:
                 pos.peak_close = float(close)
-            reason = _exit_reason(pos, i, close, high, atr_v, sell_arrs[sym], exits)
+            reason = _exit_reason(pos, i, close, high, atr_v, sell_arrs[sym], exits, sign=pos.sign)
             if reason:
                 if defer and exits.hold_days == 0:
                     # 당일매매(hold_days=0): 진입한 바의 종가에 즉시 청산 — 익일 시가로
@@ -423,11 +448,11 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             cl = aligned[sym]["close"][i]
             if not np.isnan(cl):
                 last_valid_close[sym] = float(cl)
-                nav += pos.shares * cl * m
+                nav += pos.sign * pos.shares * cl * m
             elif last_valid_close[sym] > 0:
-                nav += pos.shares * last_valid_close[sym] * m
+                nav += pos.sign * pos.shares * last_valid_close[sym] * m
             else:
-                nav += pos.shares * pos.entry_price * m
+                nav += pos.sign * pos.shares * pos.entry_price * m
         equity[i] = nav
         # H1: EOD 마진콜 — 자기자본비율(nav/gross)<유지율이면 목표 레버리지로 강제 축소(nav≤0이면 전량
         # 청산). 보유 경로엔 디레버리지 트리거가 없어 선물 손실이 NAV를 음수로 무한 발산시키던 결함 차단.
@@ -445,14 +470,14 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                 nav = cash
                 for sym, pos in positions.items():
                     cl = aligned[sym]["close"][i]
-                    nav += pos.shares * (float(cl) if not np.isnan(cl) else last_valid_close[sym]) * aligned[sym]["mult"]
+                    nav += pos.sign * pos.shares * (float(cl) if not np.isnan(cl) else last_valid_close[sym]) * aligned[sym]["mult"]
                 equity[i] = nav
-        if nav > 0:                                    # end-of-day 비중 기록(기여 패널)
+        if nav > 0:                                    # end-of-day 비중 기록(기여 패널) — 숏은 음(-)비중
             for sym, pos in positions.items():
                 cl = aligned[sym]["close"][i]
                 if np.isnan(cl):
                     cl = last_valid_close[sym] if last_valid_close[sym] > 0 else pos.entry_price
-                _wrec[i][sym] = pos.shares * cl * aligned[sym]["mult"] / nav
+                _wrec[i][sym] = pos.sign * pos.shares * cl * aligned[sym]["mult"] / nav
 
     # 기간말 강제청산
     for sym in list(positions.keys()):
@@ -463,7 +488,9 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                 final_close = float(cl_arr[j])
                 break
         if np.isnan(final_close):
-            cash += positions[sym].shares * positions[sym].entry_price * aligned[sym]["mult"]
+            # 유효 종가가 한 번도 없는 퇴화 케이스 — 진입가로 마킹(손익 0). 숏은 sign(-1) 반영.
+            p = positions[sym]
+            cash += p.sign * p.shares * p.entry_price * aligned[sym]["mult"]
             del positions[sym]
         else:
             _close(sym, n - 1, final_close, "기간종료", 100.0)
