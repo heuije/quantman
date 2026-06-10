@@ -45,3 +45,11 @@ def test_fundamental_coverage_empty_universe(monkeypatch):
     assert out["total_managed"] == 0
     assert out["coverage_pct"] is None
     assert out["newest"] is None
+
+
+def test_clear_fundamental_markers(monkeypatch):
+    """POST /admin/clear-fundamental-markers가 core clear_markers 호출 + removed 반환."""
+    from quant_core.data.feeds import fundamental_kr
+    monkeypatch.setattr(fundamental_kr, "clear_markers", lambda: 42)
+    out = admin.clear_fundamental_markers(user=None)
+    assert out["ok"] is True and out["removed"] == 42

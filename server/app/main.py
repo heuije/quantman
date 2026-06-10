@@ -190,7 +190,7 @@ def _backfill_kr_fundamentals_chunk() -> None:
     codes = data_fetcher.load_managed_kr_codes()
     yr = datetime.now().year
     res = fundamental_kr.fetch(codes, [yr - 1, yr], budget_calls=1500)
-    if res.get("ok") or res.get("empty"):        # 진행 있을 때만 로그(무작업 폴은 침묵 — 로그 폭주 방지)
+    if res.get("ok") or res.get("empty") or res.get("rate_limited"):   # 진행/한도 있을 때만 로그(무작업 폴 침묵)
         _log.info("KR 펀더멘털 백필 청크(OpenDART): %s", res)
 
 
