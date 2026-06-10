@@ -1,0 +1,4 @@
+# 셸 스크립트·git 훅은 LF 고정 — Windows 체크아웃 시 CRLF로 변환되면
+# `#!/bin/sh` 해석 실패(bad interpreter)로 pre-push 훅이 깨진다.
+.githooks/** text eol=lf
+*.sh text eol=lf
