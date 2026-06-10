@@ -163,6 +163,8 @@ export default function IrBuilder() {
   const [endFocus, setEndFocus] = useState(false);
   const [delay, setDelay] = useState(1);
   const [fill, setFill] = useState("next_open");
+  // 자동매매 주문 유형 — 지정가(전일 종가 ± tolerance) 기본 / 시장가. execution.use_limit로 직렬화.
+  const [orderType, setOrderType] = useState<"limit" | "market">("limit");
   const [leverage, setLeverage] = useState(1);
   const [periodSplit, setPeriodSplit] = useState("single");
   // 비용 (연율% — borrow/funding/rfr; 거래비용은 비율)
@@ -320,6 +322,8 @@ export default function IrBuilder() {
     setFunding(numOrEmpty(sim.funding_cost_pct));
     setRfr(numOrEmpty(sim.rfr_pct));
     setMaintMargin(numOrEmpty(sim.maintenance_margin_pct));
+    // 자동매매 주문 유형 — execution.use_limit(false=시장가). 미지정/true는 기본 지정가.
+    setOrderType(def.execution?.use_limit === false ? "market" : "limit");
     // 분석 — query(동사) + study(축×환원)를 평면 analysisType로 역매핑.
     // describe→signal, relate→(relation_kind=ic ? relation : time),
     // simulate→study.axis(parameter/entity→asset/label→condition/time_fold→period/none→none).
@@ -431,6 +435,8 @@ export default function IrBuilder() {
       signal,
       position: { direction, sizing, entry, exit, overlays },
       simulation: sim,
+      // 자동매매 주문 유형만 명시 — 나머지 체결 정책은 백엔드 merged_execution이 채움.
+      execution: { use_limit: orderType === "limit" },
       query,
       ...(study ? { study } : {}),
     };
@@ -988,6 +994,13 @@ export default function IrBuilder() {
               <option value="typical">당일 (고+저+종)/3</option>
             </select>
           </label>
+          <label className="lab-field">주문 유형
+            <select value={orderType}
+                    onChange={(e) => setOrderType(e.target.value as "limit" | "market")}>
+              <option value="limit">지정가</option>
+              <option value="market">시장가</option>
+            </select>
+          </label>
           <label className="lab-field">레버리지
             <input type="number" step={0.5} value={leverage}
                    onChange={(e) => setLeverage(Number(e.target.value))} />
@@ -996,6 +1009,9 @@ export default function IrBuilder() {
             <input type="number" step={5} value={maintMargin} placeholder="없음(마진콜 끄기)"
                    onChange={(e) => setMaintMargin(e.target.value === "" ? "" : Number(e.target.value))} />
           </label>
+        </div>
+        <div className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
+          당일매매(보유일수 0)는 시장가 권장 — 시가·종가 단일가 체결 보장.
         </div>
         {leverage > 1 && (
           <div className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>

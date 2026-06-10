@@ -320,6 +320,50 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
     return payload
 
 
+def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dict:
+    """종가 청산 사이클 — 당일매매(hold_days==0) 포지션만 종가 기준 청산 (Stage B).
+
+    아침 메인 cycle(08:55)은 시가 진입까지만 담당하고, 당일매매 청산은 이 사이클이
+    종가 단일가 발주창에 전담한다(주식 15:20~15:30·선물 15:35~15:45). 매수·preview·
+    KIS intent reconcile은 불필요 — 청산은 ledger(보유)+dataset(ref/clamp)만 있으면 되므로
+    run_cycle의 무거운 진입 경로를 재사용하지 않고 격리한다(Over-engineering 회피).
+
+    instrument_class ∈ {"stock","futures"} — 주식/선물 종가창이 달라 스케줄러가 분리 cron으로
+    호출한다. trader.liquidate_day_trades가 종목 클래스로 라우팅·유저 execution.use_limit 존중.
+    """
+    setup_logging()
+    _flush_pending()
+
+    # L-03: KRX 휴장일이면 종가 청산도 무의미(체결 없음) — run_cycle과 동일 가드.
+    if market == "KRX":
+        from quant_core import market_calendar as _mc
+        from .trader import kst_today
+        today = kst_today()
+        if not _mc.is_session_day("KR", today):
+            log.info("KRX 휴장일 — 종가청산 사이클 skip (today=%s)", today.isoformat())
+            return {"status": "skipped_holiday", "market": "KRX",
+                    "today": today.isoformat()}
+
+    broker = make_broker()
+    trader = Trader(broker)
+
+    # B1 — dataset을 보유 종목만 로드(매수 후보 없음 — 종가 청산은 진입 안 함).
+    # ref_price는 _safe_price(현재가) 우선, dataset Close는 fallback.
+    from . import dataset_scope
+    needed = dataset_scope.needed_symbols([], [], trader.ledger)
+    dataset = qc.load_dataset_for(needed, with_indicators=True)
+    log.info("종가청산 dataset 로드 — %d종목 (보유 scoped)", len(dataset))
+
+    payload = trader.liquidate_day_trades(dataset, instrument_class, market=market)
+    try:
+        push_snapshot(payload)
+        log.info("종가청산 사이클 완료 (market=%s, class=%s)", market, instrument_class)
+    except Exception as e:
+        save_json(PENDING_PATH, payload)
+        log.warning("종가청산 동기화 실패 — 보류 큐 저장: %s", e)
+    return payload
+
+
 def run_post_close_settlement(market: str = "KRX") -> dict:
     """장 마감 후 미체결 정리 + 잔고 reconcile + 잔고 스냅샷 push.
 

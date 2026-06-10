@@ -260,7 +260,7 @@ def test_gate_draft_skips_direction_checks():
     _gate("draft", "short", ["005930"])
 
 
-# ── 당일매매 게이트 — hold_days=0은 자동매매 종가청산 미배선 → paper/live 차단 ──────
+# ── 당일매매 게이트 — Stage B: 종가청산 사이클 배선됨 → hold_days=0 paper/live 허용 ──
 
 def _gate_exit(run_mode, hold_days, symbols=("005930",)):
     return strategies_router._assert_live_tradable(
@@ -268,23 +268,12 @@ def _gate_exit(run_mode, hold_days, symbols=("005930",)):
                    "universe": {"kind": "single", "symbols": list(symbols)}})
 
 
-def test_gate_blocks_intraday_day_trade_paper(monkeypatch):
-    import pytest
-    from fastapi import HTTPException
+def test_gate_allows_intraday_day_trade_paper(monkeypatch):
+    # Stage B: 자동매매 종가청산 사이클(liquidate_day_trades + scheduler)이 배선돼
+    # hold_days=0 당일매매가 paper/live로 승격 가능 — 게이트가 더는 차단하지 않는다.
     monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
-    with pytest.raises(HTTPException) as e:
-        _gate_exit("paper", 0)
-    assert e.value.status_code == 422
-    assert "당일매매" in e.value.detail
-
-
-def test_gate_blocks_intraday_day_trade_live(monkeypatch):
-    import pytest
-    from fastapi import HTTPException
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
-    with pytest.raises(HTTPException) as e:
-        _gate_exit("live", 0)
-    assert e.value.status_code == 422
+    _gate_exit("paper", 0)            # 예외 없으면 통과
+    _gate_exit("live", 0)
 
 
 def test_gate_allows_hold_days_positive(monkeypatch):

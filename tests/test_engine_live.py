@@ -86,6 +86,36 @@ def test_cycle_exit_hold_precedes_condition():
     assert cycle_exit_reason(s, held_days=10, dataset=ds, symbol="005930") == "보유기간"
 
 
+# ── cycle_exit_reason — 당일매매(hold_days=0, Stage B) ─────────────────────────
+
+def test_cycle_exit_reason_day_trade():
+    """당일매매(hold_days=0): 아침 사이클은 보유 유지, 종가 사이클에만 청산.
+
+    - is_close=False·held=0 → None (아침 진입 직후 — 종가까지 보유, 같은 날 청산 금지)
+    - is_close=True·held=0 → "당일청산" (종가 사이클 — 당일 청산)
+    - is_close=False·held=1 → "보유기간" (종가 사이클 놓쳐 보유 넘어감 → 다음 아침 안전청산)
+    - hold_days>=1은 is_close와 무관하게 종전 그대로(회귀 가드).
+    """
+    dt = _strat(exit_spec={"hold_days": 0})
+    # 아침 진입 직후 — 종가까지 보유(청산 안 함)
+    assert cycle_exit_reason(dt, held_days=0, dataset={}, symbol="005930",
+                             is_close=False) is None
+    # 종가 사이클 — 당일 청산
+    assert cycle_exit_reason(dt, held_days=0, dataset={}, symbol="005930",
+                             is_close=True) == "당일청산"
+    # 종가 놓쳐 보유 넘어감 → 다음 아침 안전청산
+    assert cycle_exit_reason(dt, held_days=1, dataset={}, symbol="005930",
+                             is_close=False) == "보유기간"
+
+    # hold_days>=1: 종가 사이클이라도 만기 전이면 건드리지 않음(비당일 보호)
+    s3 = _strat(exit_spec={"hold_days": 3})
+    assert cycle_exit_reason(s3, held_days=1, dataset={}, symbol="005930",
+                             is_close=True) is None
+    # 회귀: hold_days>=1 만기 도달은 종전 그대로 "보유기간"(is_close 기본 False)
+    assert cycle_exit_reason(s3, held_days=3, dataset={}, symbol="005930",
+                             is_close=False) == "보유기간"
+
+
 # ── event_buy_qty ──────────────────────────────────────────────────────────────
 
 def test_event_qty_pct_cash_list():
