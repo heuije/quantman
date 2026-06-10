@@ -356,7 +356,11 @@ def probe(codes: list[str]) -> list[dict]:
 
     false 빈결과의 원인 분리용: corp_code가 None이면 _report가 즉시 (None,False)로 빈결과 마킹
     (line 156). 배포 컨테이너에서 OpenDartReader corp 캐시(CORPCODE) 해석이 깨졌는지를 데이터
-    미로드로 드러낸다. 데이터는 안 받고 corp 해석만 — quota 무영향(CORPCODE는 1회 캐시)."""
+    미로드로 드러낸다. 데이터는 안 받고 corp 해석만 — quota 무영향(CORPCODE는 1회 캐시).
+
+    parquet은 있는데 pb가 안 뜨는 부류 진단을 위해, parquet 존재 시 내용도 peek한다(최신 행 전
+    컬럼값 — eq·shares 등 pb 입력 중 무엇이 null인지)."""
+    import pandas as pd
     dart = _client()
     out: list[dict] = []
     for c in codes:
@@ -364,8 +368,20 @@ def probe(codes: list[str]) -> list[dict]:
             corp = dart.find_corp_code(c)
         except Exception as e:                    # 진단 — 다운로드/파싱 실패를 삼키지 말고 표면화
             corp = f"ERROR:{type(e).__name__}"
-        out.append({"code": c, "parquet": _fund_path(c).exists(),
-                    "marker": _marker_path(c).exists(), "corp_code": corp or None})
+        rec = {"code": c, "parquet": _fund_path(c).exists(),
+               "marker": _marker_path(c).exists(), "corp_code": corp or None}
+        if rec["parquet"]:
+            try:
+                df = pd.read_parquet(_fund_path(c))
+                rec["content"] = {"rows": int(len(df)),
+                                  "last_date": str(df.index[-1])[:10] if len(df) else None,
+                                  "last_row": {k: (None if pd.isna(v) else
+                                                   (round(float(v), 4) if isinstance(v, (int, float))
+                                                    else str(v)))
+                                               for k, v in df.iloc[-1].items()} if len(df) else None}
+            except Exception as e:
+                rec["content"] = {"error": f"{type(e).__name__}:{e}"}
+        out.append(rec)
     return out
 
 
