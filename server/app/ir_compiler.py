@@ -191,9 +191,14 @@ StrategyIR = {{
 1. [조건 기반 롱/숏/중립] "A 규칙이면 롱, (다른) B 규칙이면 숏, 아니면 미보유"처럼 롱·숏에 *서로 다른 조건*.
    → long_short는 단일 score의 부호로 방향을 가르므로, select로 **부호 점수**를 만든다:
      signal = select(cond=A, a=const(1), b=select(cond=B, a=const(-1), b=const(0)))
-     position.direction="long_short", entry.mode="scheduled"(rebalance="daily"), entry.threshold=0.
-   부호>0=롱·<0=숏·=0=미보유(중립밴드 자동). A·B 안의 임계 const를 param_grid 두 축으로 독립 스윕 가능.
-   (※ on_signal+condition은 단방향 전용. 서로 다른 조건의 양방향은 반드시 이 부호점수+long_short 경로.)
+     position.direction="long_short", entry.threshold=0. 부호>0=롱·<0=숏·=0=미보유(중립밴드 자동).
+   **entry.mode는 의도로 가른다(M5d):**
+   · 이벤트/당일·룰 트리거("시가 매수 종가 매도"·"~면 진입") → entry.mode="on_signal". 부호방향이
+     바별로 롱/숏을 가르며 라이브 양방향 체결 가능(선물 sell-to-open). 당일매매면 exit.hold_days=0
+     (+ simulation.fill="next_open" → 시가진입·종가청산).
+   · 정기 리밸런스/추세 보유(주기적으로 부호 재평가해 계속 보유) → entry.mode="scheduled"(rebalance="daily").
+   A·B 안의 임계 const를 param_grid 두 축으로 독립 스윕 가능.
+   (단방향만이면 on_signal+condition+direction="long"/"short". 양방향은 위 부호점수+long_short.)
 2. [시계열 모멘텀(TSMOM) 롱숏] "추세가 양이면 롱, 음이면 숏" → signal=score(예: ts_delta(Close,N)),
    direction="long_short", entry.threshold=0. 부호가 곧 방향(중립=정확히 0).
 3. [정기 리밸런스 팩터(횡단)] "매월/매주 ___ 상위 N(또는 X%) 보유" → universe.kind=all(또는 list+세부조건),
@@ -210,8 +215,10 @@ StrategyIR = {{
    · 단발 룰("선물이 ___면 롱, N% 손절"): single + on_signal(condition) — 증거금 레버리지 *보유*
      포지션으로 진입, take_profit/stop_loss(%)·hold_days·매도조건으로 청산(보유형이라 vol drag 없음).
    · 추세추종 보유/팩터: single+always(보유 마스크, 신호 참인 동안 보유) 또는 scheduled(daily).
-   · 숏/양방향: on_signal은 롱 전용이므로 숏·롱숏은 부호점수+long_short(레시피 1·2)+scheduled(daily).
-     (선물 숏은 차입 불필요·대칭.) 레버리지는 증거금으로 내재 → leverage=1 기본(명목 더 키울 때만 >1).
+   · 숏(단방향): on_signal+condition+direction="short"(선물 sell-to-open). 양방향(조건별 롱/숏)은
+     부호점수+long_short(레시피 1) — 이벤트/당일이면 entry.mode="on_signal"(라이브 양방향 가능·당일은
+     hold_days=0), 정기 리밸런스/추세 보유면 scheduled(daily). (선물 숏은 차입 불필요·대칭.)
+     레버리지는 증거금으로 내재 → leverage=1 기본(명목 더 키울 때만 >1).
    · ⚠ roll_method·series_adjust·roll_cost_pct·account_currency는 **현재 엔진 미적용(예약)** — 채우지
      말 것(단일 연속 시계열·단일통화 가정). 사용자가 강하게 명시하면 채우되 "현재 미적용"을 assumptions에 명시.
 7. [스크리닝(현 시점 종목 선별)] "저평가 X 상위 N개"·"조건 맞는 종목 골라줘"처럼 *백테스트 손익이
@@ -306,6 +313,28 @@ def _resolve_symbols(strat: dict, valid_keys: set[str], name_map: dict[str, str]
     return strat
 
 
+def _route_directional(strat: dict) -> dict:
+    """결정적 라우팅 정규화(M5d) — 부호방향 long_short 당일매매를 on_signal로 보장.
+
+    long_short 당일매매(hold_days=0)는 scheduled 리밸런스 경로가 종가청산을 못 해
+    backtest≠live가 된다(엔진은 on_signal 경로에서만 hold_days==0 당일청산 — engine.py:409).
+    랭킹(top_n/top_pct)이 아닌 부호방향 long_short + hold_days==0이면 entry.mode를
+    on_signal로 강제한다 — LLM이 옛 쿡북 습관으로 scheduled를 내도 라이브 가능 경로로
+    수렴시킨다(엔진 _direction_for가 score 부호로 방향 결정). 랭킹·비당일은 불변
+    (기존 scheduled 팩터/TSMOM 보존). 결정적이라 LLM 변동과 무관하게 재현."""
+    pos = strat.get("position")
+    if not isinstance(pos, dict) or pos.get("direction") != "long_short":
+        return strat
+    entry = pos.get("entry")
+    if not isinstance(entry, dict):
+        return strat
+    is_ranking = entry.get("top_n") is not None or entry.get("top_pct") is not None
+    hold_days = (pos.get("exit") or {}).get("hold_days")
+    if not is_ranking and hold_days == 0:
+        entry["mode"] = "on_signal"
+    return strat
+
+
 def compile_nl(
     nl: str,
     *,
@@ -358,6 +387,7 @@ def compile_nl(
                     "ir": {}, "assumptions": assumptions, "issues": [], "repair_count": attempt}
 
         strat = _resolve_symbols(dict(inp.get("strategy") or {}), valid_keys, name_map)
+        strat = _route_directional(strat)          # M5d 결정적 라우팅(부호방향 당일매매→on_signal)
         issues, ok = validate_fn(strat)
         last = {"ir": strat, "assumptions": assumptions, "issues": issues, "repair_count": attempt}
         if ok:

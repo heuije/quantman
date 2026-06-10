@@ -144,6 +144,10 @@
   executor(`_try_buy_one_symbol(cand_direction=)`로 `_submit_buy`/`_submit_open_short` 분기; 방향
   없는 long_short 후보는 무음 롱전환 방지 skip). 골든 14 byte-identical 보존. **단일/선물 한정**(다종목
   per-symbol 방향은 사이징 정규화 패리티 협의 후 — 현재 범위 외). 라이브 E2E는 사용자 모의 대기.
+  **NL 컴파일러 라우팅(M5d):** `ir_compiler._route_directional`이 결정적으로 부호방향 long_short
+  당일매매(비랭킹·hold_days=0)를 `on_signal`로 강제(LLM이 옛 쿡북대로 scheduled 내도 수렴) +
+  idiom 1·6이 의도(이벤트/당일→on_signal·정기→scheduled)로 안내. scheduled+long_short+hold_days=0
+  부정합을 닫음(scheduled는 당일청산 불가 → backtest≠live였음).
 - **완성도 ~70~80%.** 보류: P3 데이터 4종, P4 2차최적화(QP), 일부 P6 결과형태 브라우저 미확인.
   NL·웹 라이브 검증 일부는 로그인 자격 경계로 자동검증 불가(사용자 세션 필요).
 - 프로덕션 검증 채널 = 로그인된 `quantman.vercel.app` 페이지 컨텍스트에서
