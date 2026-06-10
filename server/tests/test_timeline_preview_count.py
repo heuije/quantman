@@ -9,7 +9,6 @@ from __future__ import annotations
 import sys
 from datetime import timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 _SERVER_DIR = Path(__file__).resolve().parent.parent
@@ -23,24 +22,26 @@ from app.routers import trading
 KST = ZoneInfo("Asia/Seoul")
 
 
-def _snap(generated_at: str, symbols: list[str]):
-    """next_day_preview 한 전략·여러 후보를 담은 가짜 SyncSnapshot."""
-    return SimpleNamespace(payload={
-        "next_day_preview": {
-            "generated_at": generated_at,
-            "by_strategy": [{
-                "candidates": [{"symbol": s} for s in symbols],
-            }],
-        }
-    })
+def _preview(generated_at: str, symbols: list[str]) -> dict:
+    """next_day_preview 한 전략·여러 후보를 담은 preview dict.
+
+    Neon egress 절감 리팩토링(D1) 후 _preview_events는 전체 snaps 대신 윈도우 내
+    최신 preview dict 1개를 받는다 — 여기서 그 dict를 직접 구성.
+    """
+    return {
+        "generated_at": generated_at,
+        "by_strategy": [{
+            "candidates": [{"symbol": s} for s in symbols],
+        }],
+    }
 
 
 def _done_summaries(symbols: list[str]) -> dict[str, str]:
     """주어진 후보로 _preview_events를 돌려 kind별 'done' 이벤트 summary 매핑."""
     now = datetime(2026, 6, 9, 19, 0, tzinfo=KST)         # 18:15·07:30 둘 다 지난 시각
-    snaps = [_snap("2026-06-09T18:16:00+09:00", symbols)]  # 18:15 직후 생성(=done 조건)
+    preview = _preview("2026-06-09T18:16:00+09:00", symbols)  # 18:15 직후 생성(=done 조건)
     events = trading._preview_events(
-        snaps, now, now - timedelta(hours=24), now + timedelta(hours=24))
+        preview, now, now - timedelta(hours=24), now + timedelta(hours=24))
     out = {}
     for e in events:
         if e["status"] == "done":

@@ -20,10 +20,10 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
 from quant_core import instrument_region
@@ -81,16 +81,60 @@ def _build_event(at: datetime, kind: str, status: str,
     }
 
 
+class SnapLite(NamedTuple):
+    """스냅샷의 timeline 소비 표면만 담는 경량 행.
+
+    consumers(_classify_missed·_match_snapshot·_summarize_cycle·_krx/_us_events)는
+    received_at·payload 두 속성만 읽으므로, full SyncSnapshot 대신 cycle_summary만
+    담은 이 경량 행으로 충분하다.
+    """
+    received_at: datetime
+    payload: dict
+
+
 def _snapshots_in_window(session: Session, user_id: int,
-                          start: datetime, end: datetime) -> list[SyncSnapshot]:
-    """기간 안의 push 스냅샷. cycle 완료 추정에 쓴다."""
-    return list(session.exec(
-        select(SyncSnapshot)
+                          start: datetime, end: datetime) -> list["SnapLite"]:
+    """기간 안의 push 스냅샷(cycle_summary만). cycle 완료 추정에 쓴다.
+
+    Neon egress 인시던트 driver D1 — 과거 여기서 full payload(잔고·체결·자산곡선
+    수십~수백KB JSON 컬럼)를 통째로 SELECT한 뒤 cycle_summary만 사용했다. /trading·
+    /sync timeline이 둘 다 60s 폴링이라 egress가 폭증, 월 쿼터를 소진시킨 주범.
+    cycle_summary 필드만 DB-level projection(SQLite=json_extract / Postgres=->)으로
+    읽어 payload 본문을 서버로 전송하지 않는다. 누락 키는 None → consumers가 모두
+    `(payload or {}).get("cycle_summary") or {}`로 방어하므로 안전.
+    근거: docs/incidents/2026-06-10-neon-data-transfer-quota.md
+    """
+    rows = session.exec(
+        select(SyncSnapshot.received_at, SyncSnapshot.payload["cycle_summary"])
         .where(SyncSnapshot.user_id == user_id)
         .where(SyncSnapshot.received_at >= start)
         .where(SyncSnapshot.received_at <= end)
         .order_by(SyncSnapshot.received_at)
-    ).all())
+    ).all()
+    return [SnapLite(received_at=r[0], payload={"cycle_summary": r[1]}) for r in rows]
+
+
+def _latest_preview_in_window(session: Session, user_id: int,
+                               start: datetime, end: datetime) -> dict | None:
+    """기간 안에서 generated_at이 채워진 가장 최신 next_day_preview 1개.
+
+    D1 동일 — preview만 쓰는데 full payload를 읽지 않도록 next_day_preview 필드만
+    projection. received_at DESC로 최신부터 훑어, generated_at이 truthy인 첫 dict를
+    반환(과거 `for s in reversed(snaps): pv=...; if pv.get("generated_at"): break`와
+    동일 의미). 없으면 None.
+    """
+    rows = session.exec(
+        select(SyncSnapshot.payload["next_day_preview"])
+        .where(SyncSnapshot.user_id == user_id)
+        .where(SyncSnapshot.received_at >= start)
+        .where(SyncSnapshot.received_at <= end)
+        .where(SyncSnapshot.payload["next_day_preview"].isnot(None))
+        .order_by(SyncSnapshot.received_at.desc())
+    ).all()
+    for pv in rows:
+        if isinstance(pv, dict) and pv.get("generated_at"):
+            return pv
+    return None
 
 
 def _heartbeats_in_window(session: Session, user_id: int,
@@ -135,7 +179,7 @@ DOWNSTREAM_IMPACT: dict[str, str] = {
 
 def _classify_missed(sched: datetime, kind: str,
                       heartbeats: list[datetime],
-                      snaps: list[SyncSnapshot],
+                      snaps: list["SnapLite"],
                       market: Optional[str]) -> tuple[str, str]:
     """missed 이벤트의 원인을 A/B/C/D로 분류해 (원인 카테고리, detail 문자열) 반환.
 
@@ -175,8 +219,8 @@ def _classify_missed(sched: datetime, kind: str,
     return (cause[0], cause[1] + ("  " + impact if impact else ""))
 
 
-def _match_snapshot(snaps: list[SyncSnapshot], scheduled: datetime,
-                     market: str) -> Optional[SyncSnapshot]:
+def _match_snapshot(snaps: list["SnapLite"], scheduled: datetime,
+                     market: str) -> Optional["SnapLite"]:
     """scheduled 직후 push된 첫 스냅샷이 그 cycle의 결과로 본다.
 
     오차 허용: scheduled-2min ~ scheduled+30min. KRX 08:55 cycle은 보통
@@ -230,7 +274,7 @@ def _match_snapshot(snaps: list[SyncSnapshot], scheduled: datetime,
     return None
 
 
-def _summarize_cycle(snap: SyncSnapshot) -> str:
+def _summarize_cycle(snap: "SnapLite") -> str:
     cs = (snap.payload or {}).get("cycle_summary") or {}
     bought = cs.get("n_bought", 0) or 0
     sold = cs.get("n_sold", 0) or 0
@@ -269,7 +313,7 @@ def _emit_scheduled(events: list[dict], sched: datetime, kind: str,
         events.append(_build_event(sched, kind, "missed", "", missed_detail))
 
 
-def _krx_events(snaps: list[SyncSnapshot], heartbeats: list[datetime], now: datetime,
+def _krx_events(snaps: list["SnapLite"], heartbeats: list[datetime], now: datetime,
                  window_start: datetime, window_end: datetime) -> list[dict]:
     """KRX 사이클(08:55) + 정산(15:35) 평일 occurrences."""
     events: list[dict] = []
@@ -303,7 +347,7 @@ def _krx_events(snaps: list[SyncSnapshot], heartbeats: list[datetime], now: date
     return events
 
 
-def _us_events(snaps: list[SyncSnapshot], heartbeats: list[datetime], now: datetime,
+def _us_events(snaps: list["SnapLite"], heartbeats: list[datetime], now: datetime,
                 window_start: datetime, window_end: datetime) -> list[dict]:
     """US 사이클(open-5min) + 정산(close+5min) 캘린더 기반 동적 occurrences."""
     events: list[dict] = []
@@ -343,36 +387,37 @@ def _us_events(snaps: list[SyncSnapshot], heartbeats: list[datetime], now: datet
     return events
 
 
-def _preview_events(snaps: list[SyncSnapshot], now: datetime,
+def _preview_events(preview: dict | None, now: datetime,
                      window_start: datetime, window_end: datetime) -> list[dict]:
     """매매 후보 결정 — 시장별 분리. 서버 cron이므로 heartbeat·로컬앱과 무관.
 
     · krx_preview (07:30 KST): yfinance/FRED publish 직후 → 국장 cycle 8:55용
     · us_preview  (18:15 KST): KRX 종가·NAVER·technical 완성 직후 → 미장 cycle용
+
+    preview = 윈도우 내 최신 next_day_preview 1개(_latest_preview_in_window). D1
+    egress 절감으로 전체 snaps를 받지 않고 단일 preview만 받는다.
     """
     events: list[dict] = []
     latest_gen: Optional[datetime] = None
     krx_n = us_n = 0
-    for s in reversed(snaps):
-        pv = (s.payload or {}).get("next_day_preview") or {}
-        gen = pv.get("generated_at")
-        if not gen:
-            continue
+    pv = preview or {}
+    gen = pv.get("generated_at")
+    if gen:
         try:
             latest_gen = datetime.fromisoformat(gen.replace("Z", "+00:00")).astimezone(KST)
         except ValueError:
-            continue
-        for bs in pv.get("by_strategy") or []:
-            for c in bs.get("candidates") or []:
-                sym = c.get("symbol", "")
-                # 세션 그룹으로 분리(국장/미장). instrument_region이 SSOT —
-                # sym.isdigit()는 한글 선물 심볼('코스피200선물')을 미장으로 오집계했다
-                # (국내선물은 KRX 08:55 사이클에 진입하므로 국장 후보).
-                if instrument_region(sym) == "KRX":
-                    krx_n += 1
-                else:
-                    us_n += 1
-        break
+            latest_gen = None
+        if latest_gen is not None:
+            for bs in pv.get("by_strategy") or []:
+                for c in bs.get("candidates") or []:
+                    sym = c.get("symbol", "")
+                    # 세션 그룹으로 분리(국장/미장). instrument_region이 SSOT —
+                    # sym.isdigit()는 한글 선물 심볼('코스피200선물')을 미장으로 오집계했다
+                    # (국내선물은 KRX 08:55 사이클에 진입하므로 국장 후보).
+                    if instrument_region(sym) == "KRX":
+                        krx_n += 1
+                    else:
+                        us_n += 1
 
     d = window_start.date()
     end_d = window_end.date()
@@ -408,15 +453,47 @@ def _is_session_day_safe(market: str, d: date) -> bool:
         return True
 
 
+def _timeline_etag(latest_received: Optional[datetime],
+                   last_hb: Optional[datetime], now: datetime) -> str:
+    """timeline 응답의 약한 ETag — `W/"<data_ms>-<bucket>"`.
+
+    data_ms = (최신 snapshot.received_at, last_heartbeat_at) 중 max의 epoch ms.
+      → snapshot push·heartbeat 갱신마다 자동으로 새 tag.
+    bucket = now.timestamp() // 300 (5분 버킷).
+      → timeline 내용은 `now`에도 의존한다(scheduled→missed 전이, heartbeat_status
+        escalation). 버킷이 없으면 로컬앱이 죽어 heartbeat·snapshot이 끊긴 동안
+        tag가 영원히 고정돼 timeline이 stale 상태에 박제된다. 300s는 heartbeat
+        주기·5분 상태 임계와 일치 → stale은 최대 5분으로 bounded.
+    """
+    parts: list[float] = []
+    for ts in (latest_received, last_hb):
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        parts.append(ts.timestamp())
+    data_ms = int(max(parts) * 1000) if parts else 0
+    bucket = int(now.timestamp() // 300)
+    return f'W/"{data_ms}-{bucket}"'
+
+
 @router.get("/timeline")
 def get_timeline(
+    request: Request,
+    response: Response,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """[now-24h, now+24h] 윈도우 자동매매 이벤트 + heartbeat 상태."""
+    """[now-24h, now+24h] 윈도우 자동매매 이벤트 + heartbeat 상태.
+
+    tag-first ETag(인시던트 driver D2) — 윈도우 조회 전에 scalar 2개(최신
+    received_at·last_heartbeat_at)로 ETag를 계산해, If-None-Match 매칭 시 무거운
+    window 조회·이벤트 합성을 모두 건너뛰고 304만 반환한다. 웹 클라이언트는 60s
+    폴링하지만 변경이 없으면 304로 끝나 Neon egress가 사실상 0이 된다(web/src/api.ts
+    etagCache가 이미 If-None-Match 송신·304 캐시 처리 → 웹 API 변경 불요).
+    근거: docs/incidents/2026-06-10-neon-data-transfer-quota.md
+    """
     now = _now_kst()
-    window_start = now - timedelta(hours=WINDOW_HOURS)
-    window_end = now + timedelta(hours=WINDOW_HOURS)
 
     settings = session.exec(
         select(UserSettings).where(UserSettings.user_id == user.id)
@@ -425,13 +502,29 @@ def get_timeline(
     if last_hb and last_hb.tzinfo is None:
         last_hb = last_hb.replace(tzinfo=timezone.utc)
 
+    latest_received = session.exec(
+        select(SyncSnapshot.received_at)
+        .where(SyncSnapshot.user_id == user.id)
+        .order_by(SyncSnapshot.received_at.desc())
+    ).first()
+
+    etag = _timeline_etag(latest_received, last_hb, now)
+    if request.headers.get("if-none-match") == etag:
+        # window 조회 0회 — egress 절감의 핵심 경로.
+        return Response(status_code=304)
+    response.headers["ETag"] = etag
+
+    window_start = now - timedelta(hours=WINDOW_HOURS)
+    window_end = now + timedelta(hours=WINDOW_HOURS)
+
     snaps = _snapshots_in_window(session, user.id, window_start, window_end)
     heartbeats = _heartbeats_in_window(session, user.id, window_start, window_end)
+    preview = _latest_preview_in_window(session, user.id, window_start, window_end)
 
     events = (
         _krx_events(snaps, heartbeats, now, window_start, window_end)
         + _us_events(snaps, heartbeats, now, window_start, window_end)
-        + _preview_events(snaps, now, window_start, window_end)
+        + _preview_events(preview, now, window_start, window_end)
     )
     events.sort(key=lambda e: e["at"])
 

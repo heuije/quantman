@@ -150,6 +150,9 @@
   어디에도 들어가지 않는다. 서버엔 **안전정보만**(전략 정의·체결 요약·잔고 스냅샷·dataset).
 - **국내선물은 라이브 검증 완료, 해외선물은 KIS 모의 미지원**(실전+SimBroker로만 검증).
 - kill switch(일일 손실 한도)·backtest=live parity는 깨지면 자금 위험 — 변경 시 모의 1회 검증 필수.
+- **폴링 endpoint 설계 원칙 〔작성: 조대표〕**: ETag는 scalar로 먼저 계산(tag-first)해
+  304면 큰 컬럼(payload)을 아예 SELECT하지 않게 하고, window 조회는 필요한 JSON 필드만
+  projection한다(Neon egress 인시던트 재발 방지 — `docs/incidents/2026-06-10-neon-data-transfer-quota.md`).
 - KIS endpoint 작업 전 **§8 API knowledge base 필수 참조**.
 
 ---

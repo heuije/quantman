@@ -53,6 +53,31 @@ A1 백필 커버리지를 확인하려 Railway 런타임 로그를 보다가, pr
 - [ ] **[모니터]** Neon 사용량(전송/컴퓨트) 주기 점검 — 한도 근접 시 사전 경고.
 - [ ] A1 백필 커버리지 확인은 이 장애로 보류 → 복구됐으므로 로그인된 세션에서 재개.
 
+## 재발 방지 구현 (2026-06-10, 폴링 endpoint egress 절감)
+
+코드 리딩으로 egress 주요 동인 3건(D1·D2·D3)을 확정하고 4개 수정으로 닫았다.
+
+### 동인 → 수정 매핑
+
+| ID | 동인 (코드 리딩 확정) | 수정 |
+|--|--|--|
+| **D1** | `/trading/timeline`(웹 60s)·`/sync/timeline`(로컬앱 60s, 24/7)이 둘 다 `_snapshots_in_window`로 ±24h 윈도우의 **full SyncSnapshot row(수십~수백KB payload JSON 포함)**를 SELECT한 뒤 `cycle_summary`(+최신 `next_day_preview`)만 사용. 폴 1회당 수백KB, 일 ~2400폴. | **Fix A** — `_snapshots_in_window`를 `cycle_summary` 필드만 DB-level projection(SQLite=json_extract / PG=`->`)으로 변경, `SnapLite`(received_at·payload) 경량 행 반환. preview는 `_latest_preview_in_window`로 `next_day_preview` 필드만 projection. consumers·이벤트 동등성 무변경. 두 timeline endpoint 공통 적용. |
+| **D2** | `/trading/timeline`에 ETag 부재 — 폴 1회마다 full rebuild+response. | **Fix B** — tag-first ETag(`W/"<data_ms>-<bucket>"`). 윈도우 조회 *전에* scalar 2개(최신 received_at·last_hb)로 ETag 계산, If-None-Match 매칭 시 윈도우 조회 0회로 304. 300s 버킷으로 로컬앱 사망 시에도 stale ≤5분(scheduled→missed 전이 보장). 웹은 `api.ts` etagCache가 이미 처리 → 웹 API 변경 0. |
+| **D3** | `/sync/snapshot`(웹 15s)이 ETag 계산 *전에* full snapshot row(payload 포함)를 로드 — 304 응답조차 매 폴마다 payload를 Neon에서 읽음. | **Fix C** — received_at scalar로 ETag를 먼저 계산, 304 경로에서 payload 컬럼 미열람. ETag 공식·값은 종전과 byte-identical(기존 클라이언트 캐시 유효). |
+| — | 304로 `data.now`가 응답 사이 stale → 상대 시각("4h 29m 후") 동결. | **Fix D** — `TradingTimeline.tsx`가 상대 시각을 서버 now가 아닌 클라이언트 시계(30s 갱신)로 계산. 폴링은 60s 유지, 절대 시각은 서버 응답 그대로. |
+
+### 기대 효과
+- timeline 경로: 변경 없는 폴은 304(body 0·윈도우 조회 0) → 이 경로 egress **~99% 절감**.
+- `/sync/snapshot`: payload 읽기가 **실제 변경(snapshot push·heartbeat) 시에만** 발생.
+
+### 의도적 후속(이번 범위 제외)
+- **로컬앱 `/sync/timeline` If-None-Match**: 로컬앱 클라이언트가 아직 미송신 → ETag 추가는 **로컬앱 릴리즈**와 함께. 단 Fix A projection은 이 경로에도 이미 적용됨.
+- **payload 다이어트**(스냅샷 payload 자체 축소): 스키마·로컬앱 양쪽을 건드리는 침습적 변경 → egress가 여전히 문제일 때만.
+
+### 검증
+- 서버: `test_timeline_egress.py` 5건 추가(projection json_extract·이벤트 동등성·ETag 304/버킷·304 무-payload·shape 무변경) + 전체 스위트 그린.
+- 웹: `tsc -b` 통과·`eslint TradingTimeline.tsx` 무오류.
+
 ## 관련
 - 인프라/배포 토폴로지: 메모리 `infra_neon_db_and_deploy.md`
 - 진단 채널(CLI): `CLAUDE.md` §7
