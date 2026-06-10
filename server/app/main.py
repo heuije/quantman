@@ -176,21 +176,29 @@ def _refresh_us_fundamentals() -> None:
     data_cache.invalidate()                      # 다음 로드 시 펀더멘털 attach
 
 
-def _refresh_kr_fundamentals() -> None:
-    """KR 펀더멘털(OpenDART 분기) — **현재값 우선 적재**(최근 2년 = 현재 TTM 산출 범위).
+def _backfill_kr_fundamentals_chunk() -> None:
+    """KR 펀더멘털(OpenDART) 증분 백필 청크 — **10분마다 짧게**(재배포 견딤).
 
-    전 종목의 현재 pb/pe/ev/roic/마진을 빠르게 채워 스크리닝·360을 *전 종목* 즉시 가용하게 한다.
-    OpenDART 일일 20k콜 한도 내 예산 18000(여유는 US·diag 등) → 종목당 ~10콜 → 1회 ~1800종목,
-    전 4304종목 ~2-3일. (이전 8년치×9000은 종목당 ~50초·전체 ~수주라 초기 적재 병목이었음.)
-    8년 이력(백테스트용) backfill은 별도 후속 단계 — 현재값을 먼저 채운다."""
+    한 번에 크게(부팅+420초 의존) 받던 방식은 재배포 폭주에 fetch가 시작도 못 해 정체했다
+    (2026-06-10 실측: 24h 0건). 짧은 청크를 자주 돌려 재배포 사이에 완료·재개되게 한다. fetch는
+    멱등·미수집 우선·종목별 원자기록이라 죽어도 진행분 보존+자동 재개. 다 채우면(전부 fresh)
+    콜 0으로 자연 무비용. invalidate는 비싼 재빌드라 여기서 안 하고(144회/일 폭주 방지)
+    일일 attach(_refresh_kr_fundamentals 17:30·dataset_kr 18:15)가 담당."""
     from datetime import datetime
     from quant_core import data_fetcher
     from quant_core.data.feeds import fundamental_kr
     codes = data_fetcher.load_managed_kr_codes()
     yr = datetime.now().year
-    res = fundamental_kr.fetch(codes, [yr - 1, yr], budget_calls=18000)
-    _log.info("KR 펀더멘털(OpenDART) %d종목 대상(최근2년): %s", len(codes), res)
-    data_cache.invalidate()                      # 다음 로드 시 펀더멘털 attach(전 경로 일관, US와 동일)
+    res = fundamental_kr.fetch(codes, [yr - 1, yr], budget_calls=1500)
+    if res.get("ok") or res.get("empty"):        # 진행 있을 때만 로그(무작업 폴은 침묵 — 로그 폭주 방지)
+        _log.info("KR 펀더멘털 백필 청크(OpenDART): %s", res)
+
+
+def _refresh_kr_fundamentals() -> None:
+    """KR 펀더멘털 일일 attach 앵커 — 실제 수집은 10분 백필 청크가 한다.
+
+    누적된 펀더멘털 parquet를 캐시에 attach(invalidate)만 한다(다음 로드 시 반영, US와 동일)."""
+    data_cache.invalidate()
 
 
 # ── 시작 시 1회 초기 fetch (실패해도 다음 정시 cron이 재시도) ─────────────────
@@ -216,19 +224,16 @@ def _initial_naver_refresh():
 
 
 def _initial_kr_fundamentals_refresh():
-    """시작 시 1회 KR 펀더멘털(OpenDART) 초기 fetch — 펀더멘털 공백의 구조적 보강.
+    """부팅 직후 1회 백필 청크 — 신규 볼륨·재배포 후 빠른 첫 진행(10분 cron을 기다리지 않게).
 
-    OpenDART 펀더멘털은 17:30 cron만 있어, 재배포·신규 볼륨 후 다음 17:30까지 pb_ratio·PER·EV가
-    전 종목 NaN이었다(스크리닝·360 밸류·진단 동시 빈값의 근본원인). 부팅 시 한 번 채워 그 공백을
-    없앤다. OpenDART 호출이 무거워(증분 예산) dataset 초기 갱신 등 이후 충분히 지연한다.
-    OPENDART_API_KEY 미설정이면 _refresh_kr_fundamentals 내부에서 예외→로그 후 17:30 cron 재시도."""
+    짧은 지연 후 한 청크를 받는다. 실패(키 미설정 등)는 부팅을 막지 않고 10분 cron이 재시도한다."""
     import time
     try:
-        time.sleep(420)            # dataset 초기 갱신(240s)·기타 fetch 이후 — 외부 호출 분산
-        _log.info("KR 펀더멘털(OpenDART) 초기 fetch 시작")
-        _refresh_kr_fundamentals()
+        time.sleep(60)             # dataset 초기 갱신·마스터 이후 — 외부 호출 분산(짧게)
+        _log.info("KR 펀더멘털(OpenDART) 초기 백필 청크 시작")
+        _backfill_kr_fundamentals_chunk()
     except Exception:
-        _log.exception("KR 펀더멘털 초기 fetch 중 예외 — 17:30 cron 재시도")
+        _log.exception("KR 펀더멘털 초기 청크 중 예외 — 10분 cron 재시도")
 
 
 def _initial_technical_refresh():
@@ -610,7 +615,13 @@ async def lifespan(app: FastAPI):
         CronTrigger(hour=18, minute=30),
         id="bundle_evening", replace_existing=True)
 
-    # 17:30 — KR 펀더멘털(OpenDART 분기, 증분 백필). dataset_kr(18:15) invalidate 직전 → 매니페스트 반영.
+    # 10분마다 — KR 펀더멘털(OpenDART) 증분 백필 청크. 짧게 자주 → 재배포 폭주에도 정체 없이
+    # 전진(한 방 17:30 의존이 폭주에 죽어 24h 0건이던 근본 수정, 2026-06-10). budget 1500=~150종목.
+    scheduler.add_job(
+        lambda: _run_with_retry("kr_fund_chunk", _backfill_kr_fundamentals_chunk, scheduler),
+        CronTrigger(minute="*/10"),
+        id="kr_fund_chunk", replace_existing=True)
+    # 17:30 — 누적 펀더멘털 일일 attach(invalidate). dataset_kr(18:15) 직전 매니페스트 반영.
     scheduler.add_job(
         lambda: _run_with_retry("kr_fundamentals", _refresh_kr_fundamentals, scheduler),
         CronTrigger(hour=17, minute=30),
