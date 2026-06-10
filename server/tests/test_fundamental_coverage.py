@@ -53,3 +53,14 @@ def test_clear_fundamental_markers(monkeypatch):
     monkeypatch.setattr(fundamental_kr, "clear_markers", lambda: 42)
     out = admin.clear_fundamental_markers(user=None)
     assert out["ok"] is True and out["removed"] == 42
+
+
+def test_fundamental_probe(monkeypatch):
+    """GET /admin/fundamental-probe가 쉼표구분 codes를 파싱해 core probe 결과를 반환."""
+    from quant_core.data.feeds import fundamental_kr
+    monkeypatch.setattr(fundamental_kr, "probe",
+                        lambda codes: [{"code": c, "parquet": True, "marker": False,
+                                        "corp_code": "00126380"} for c in codes])
+    out = admin.fundamental_probe(codes="005930, 066570", user=None)
+    assert [p["code"] for p in out["probe"]] == ["005930", "066570"]
+    assert out["probe"][0]["corp_code"] == "00126380"

@@ -351,6 +351,24 @@ def coverage(codes: list[str]) -> dict:
             "newest_mtime": newest or None, "oldest_mtime": oldest or None}
 
 
+def probe(codes: list[str]) -> list[dict]:
+    """종목별 백필 상태 진단 — parquet/marker 존재 + **이 프로세스의** find_corp_code 결과.
+
+    false 빈결과의 원인 분리용: corp_code가 None이면 _report가 즉시 (None,False)로 빈결과 마킹
+    (line 156). 배포 컨테이너에서 OpenDartReader corp 캐시(CORPCODE) 해석이 깨졌는지를 데이터
+    미로드로 드러낸다. 데이터는 안 받고 corp 해석만 — quota 무영향(CORPCODE는 1회 캐시)."""
+    dart = _client()
+    out: list[dict] = []
+    for c in codes:
+        try:
+            corp = dart.find_corp_code(c)
+        except Exception as e:                    # 진단 — 다운로드/파싱 실패를 삼키지 말고 표면화
+            corp = f"ERROR:{type(e).__name__}"
+        out.append({"code": c, "parquet": _fund_path(c).exists(),
+                    "marker": _marker_path(c).exists(), "corp_code": corp or None})
+    return out
+
+
 def clear_markers(codes: list[str] | None = None) -> int:
     """빈결과(.empty) 마커 제거 — false 마커(한도초과를 무데이터로 오인) 회복용.
 
