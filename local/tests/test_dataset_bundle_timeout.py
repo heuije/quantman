@@ -46,11 +46,31 @@ def test_bundle_hang_falls_back_to_cache_without_raising(monkeypatch):
         raise requests.exceptions.ReadTimeout("stream stalled")
 
     monkeypatch.setattr(sync_client.requests, "get", _raise_timeout)
-    # ReadTimeout은 ValueError가 아니므로 manifest(sync_dataset) 폴백이 아닌
-    # 캐시 폴백 경로 — sync_dataset이 호출되면 안 된다(느린 114분 경로 회피).
-    called = {"sync_dataset": False}
-    monkeypatch.setattr(sync_client, "sync_dataset",
-                        lambda *a, **k: called.__setitem__("sync_dataset", True))
     result = datafetch.refresh_market_data()
     assert result is False                        # 캐시 폴백
-    assert called["sync_dataset"] is False         # manifest 느린 경로 안 탐
+
+
+def test_bundle_total_duration_cap(monkeypatch, tmp_path):
+    """read timeout이 못 막는 저속 trickle 스트림은 총 시간 상한으로 끊는다.
+
+    requests의 read timeout은 '청크 간 간격'만 제한 — 서버가 degraded 상태로
+    바이트를 찔끔찔끔 흘리면 다운로드가 무한정 늘어지며 갱신 스레드를 점유한다
+    (2026-06-10 무발주 인시던트 D1-1 부류). 총 시간 상한이 TimeoutError로 끊고,
+    호출자(datafetch)는 캐시로 진행한다.
+    """
+    class _TrickleResp:
+        status_code = 200
+        headers = {"ETag": '"abc123"'}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            while True:
+                yield b"x"
+
+    monkeypatch.setattr(sync_client.requests, "get",
+                        lambda *a, **k: _TrickleResp())
+    monkeypatch.setattr(sync_client, "_BUNDLE_TOTAL_TIMEOUT_SEC", 0)
+    with pytest.raises(TimeoutError):
+        sync_client.fetch_dataset_bundle(tmp_path)

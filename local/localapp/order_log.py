@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Iterable
+from zoneinfo import ZoneInfo
 
 from .config import CYCLES_PATH, ORDERS_PATH, SLIPPAGE_PATH
 from .state_store import append_jsonl, save_json
@@ -25,10 +26,14 @@ from .state_store import append_jsonl, save_json
 log = logging.getLogger("localapp.orderlog")
 
 _SLIPPAGE_KEEP = 100   # 최근 N건만 유지
+_KST = ZoneInfo("Asia/Seoul")
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    # 로컬 저널 타임존 단일화(KST) — orders/cycles만 UTC라 intents.jsonl(+09:00)과
+    # 섞여 사람이 9시간 오독하던 불일치 정리(리뷰 D6-3, 실제 진단 오독 발생).
+    # 파서들(catchup._entry_ts 등)은 tz-aware iso만 가정하므로 호환.
+    return datetime.now(_KST).isoformat()
 
 
 def _append(path, obj: dict) -> None:

@@ -32,4 +32,11 @@ def setup_logging(console: bool = True) -> None:
         ch.setFormatter(fmt)
         root.addHandler(ch)
 
+    # APScheduler 자체 로그(미스파이어·skip 경고)도 같은 파일로 — 핸들러 미부착이면
+    # windowed 앱에서 통째로 소실돼 "사이클이 트리거조차 안 됐는데 무로그"의 관측
+    # 공백이었다(2026-06-10 무발주 인시던트 리뷰 D6-4).
+    aps = logging.getLogger("apscheduler")
+    aps.setLevel(logging.WARNING)
+    aps.addHandler(fh)
+
     _configured = True

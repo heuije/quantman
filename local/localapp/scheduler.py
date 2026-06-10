@@ -119,6 +119,26 @@ def register_jobs(sched) -> None:
       · heartbeat 5분 주기 + 기동 시 1회
       · dataset 08:00·08:20·08:40 시도 + 기동 시 1회
     """
+    # APScheduler 이벤트 표면화 — 미스파이어 skip·동시실행 skip·잡 예외가 이전엔
+    # apscheduler 로거(핸들러 미부착, windowed 앱이라 stderr도 소실)에만 남아
+    # "사이클이 트리거조차 안 됐는데 아무 흔적 없음"의 관측 공백이었다(리뷰 D6-4).
+    from apscheduler.events import (EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES,
+                                    EVENT_JOB_MISSED)
+
+    def _on_job_event(event):
+        if event.code == EVENT_JOB_MISSED:
+            log.warning("[sched] job 미스파이어 skip: %s (예정 %s)",
+                        event.job_id, getattr(event, "scheduled_run_time", "?"))
+        elif event.code == EVENT_JOB_MAX_INSTANCES:
+            log.warning("[sched] job skip — 이전 인스턴스 아직 실행 중: %s",
+                        event.job_id)
+        else:  # EVENT_JOB_ERROR
+            log.error("[sched] job 예외: %s — %s", event.job_id,
+                      getattr(event, "exception", "?"))
+
+    sched.add_listener(_on_job_event,
+                       EVENT_JOB_ERROR | EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES)
+
     # ── 국내(KRX) 고정 cron ──────────────────────────────────────────────────
     sched.add_job(
         intraday_loop.start,

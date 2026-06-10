@@ -386,7 +386,7 @@ def _catchup_cycle(market: str) -> dict:
     """
     from .runner import run_cycle
     try:
-        return run_cycle(market=market, catchup=True)
+        return run_cycle(market=market, catchup=True, trigger="catchup")
     except Exception as e:
         log.exception("catch-up cycle [%s] 실패: %s", market, e)
         return {"error": str(e), "market": market, "kind": "catchup_cycle"}

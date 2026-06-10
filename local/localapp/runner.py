@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 
 import quant_core as qc
 
@@ -165,7 +166,7 @@ def _cycle_backoffs(reserved: bool) -> tuple[int, ...]:
 
 
 def run_cycle(market: str = "KRX", catchup: bool = False,
-              reserved: bool = False) -> dict:
+              reserved: bool = False, trigger: str = "cron") -> dict:
     """1회 자동매매 사이클을 실행하고 동기화 스냅샷을 반환한다.
 
     market: 이번 사이클이 다룰 시장 그룹('KRX' 또는 'US'). 스케줄러가 각 시장의
@@ -178,6 +179,9 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
     reserved: 미국 개장 전 entry cycle(스케줄러 us_cycle)에서만 True. trader가
     매수=지정가 예약·매도=MOO 예약으로 라우팅(개장 시 자동전송). 장중 손절/킬
     스위치 청산은 즉시 시장주문이어야 하므로 항상 False.
+
+    trigger: 사이클 트리거 출처("cron"/"manual"/"web"/"catchup"/"cli") —
+    cycles.jsonl 시작 레코드에 기록돼 다중 트리거 표면(리뷰 D6-5)을 사후 식별.
     """
     setup_logging()
     _flush_pending()
@@ -197,6 +201,17 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             log.info("KRX 휴장일 — 사이클 skip (today=%s)", today.isoformat())
             return {"status": "skipped_holiday", "market": "KRX",
                     "today": today.isoformat()}
+
+    # 사이클 lifecycle 저널 — 시작을 먼저 기록해 "시작 안 함 vs 시작 후 정지"를
+    # 구분 가능하게 한다(리뷰 D6-2: stall된 사이클이 cycles.jsonl에 무흔적이라
+    # 진단이 py-spy까지 필요했던 관측 공백). kind="cycle_started"는 catchup
+    # idempotency(_classify_entry의 kind 매칭)와 충돌하지 않는다 — catchup은
+    # "cycle"/"post_close_settlement" 류 완료 kind만 매칭한다.
+    from . import order_log
+    cycle_id = uuid.uuid4().hex[:12]
+    order_log.log_cycle([], {"market": market, "kind": "cycle_started",
+                             "cycle_id": cycle_id, "trigger": trigger,
+                             "reserved": reserved, "catchup": catchup})
 
     # 체결통보 WebSocket ready 확인 (08:50 intraday_loop과 race condition 방지)
     _wait_for_order_ws()
@@ -218,13 +233,6 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
         # 중복 발주 위험을 보수적으로 차단.
         log.warning("[L-01] intent reconcile 실패(보수적 차단 유지): %s", e)
 
-    try:
-        strategies = pull_strategies()
-        log.info("배정된 전략 %d개", len(strategies))
-    except Exception as e:
-        log.warning("전략 풀 실패 — 신규 진입 없이 보유분 청산만 평가: %s", e)
-        strategies = []
-
     # 본 사이클 실행 — 데이터 fetch·broker·trader. 어디서 예외가 나도 서버에
     # error snapshot push해 서버가 missed를 case C(cycle 실행 실패)로 정확히
     # 분류할 수 있게 함. 이전엔 예외가 그대로 propagate해 서버는 그냥 push
@@ -239,8 +247,25 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
     payload = None
     cycle_err: Exception | None = None
     n_attempts = len(backoffs) + 1
+    strategies_pull_failed = False
     for attempt in range(1, n_attempts + 1):
         try:
+            # 전략 풀 — backoff 루프 안에서 수행해 transient 서버 장애가 cycle
+            # 재시도로 회복되게 한다(리뷰 D4-3: 이전엔 루프 밖 1회 시도라 일시
+            # 502가 즉시 "신규 진입 없음"으로 무음 확정). 마지막 시도에서도
+            # 실패하면 보유분 청산만 진행하되 cycle_summary에 표면화.
+            strategies_pull_failed = False
+            try:
+                strategies = pull_strategies()
+                log.info("배정된 전략 %d개", len(strategies))
+            except Exception:
+                if attempt <= len(backoffs):
+                    raise  # transient — cycle backoff 재시도로 회복
+                strategies_pull_failed = True
+                strategies = []
+                log.warning("전략 풀 %d회 모두 실패 — 신규 진입 없이 보유분 "
+                            "청산만 평가", n_attempts)
+
             from .datafetch import refresh_market_data
             _t0 = time.monotonic()
             log.info("[cycle] ① 시세 데이터 갱신 시작 (market=%s, reserved=%s, catchup=%s)",
@@ -293,13 +318,15 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             payload = trader.cycle(strategies, dataset, buy_candidates=buy_candidates,
                                      risk_limits=risk_limits, market=market,
                                      krx_status=krx_status, catchup=catchup,
-                                     reserved=reserved)
+                                     reserved=reserved, cycle_id=cycle_id)
             _cs = (payload or {}).get("cycle_summary") or {}
             log.info("[cycle] ⑤ 본문 완료 %.1fs — bought=%s sold=%s skip_held=%s errors=%s",
                       time.monotonic() - _t0, _cs.get("n_bought"), _cs.get("n_sold"),
                       _cs.get("n_skip_held"), _cs.get("n_errors"))
             if preview_missing:
                 payload.setdefault("cycle_summary", {})["preview_missing"] = True
+            if strategies_pull_failed:
+                payload.setdefault("cycle_summary", {})["strategies_pull_failed"] = True
             cycle_err = None
             break
         except Exception as e:
@@ -314,16 +341,23 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
                           attempt, n_attempts, e)
 
     if cycle_err is not None or payload is None:
+        _err_str = (f"{type(cycle_err).__name__}: {cycle_err}"
+                    if cycle_err else "unknown")
         payload = {
             "balance": {"cash": 0, "total_eval": 0},
             "positions": [], "equity": [], "trades": [], "decisions": [],
             "cycle_summary": {
-                "market": market,
-                "error": (f"{type(cycle_err).__name__}: {cycle_err}"
-                          if cycle_err else "unknown"),
+                "market": market, "cycle_id": cycle_id,
+                "error": _err_str,
                 "n_bought": 0, "n_sold": 0,
             },
         }
+        # 전 재시도 실패도 로컬 진실(cycles.jsonl)에 남긴다 — 이전엔 서버 push만
+        # 시도해 서버가 죽어 있으면 로컬 무흔적이었다(리뷰 D1-4). summary.error가
+        # 있는 entry는 catchup의 _last_of가 "완료"로 보지 않으므로(v0.9.13 D-1)
+        # catch-up 자동 재시도와 정합.
+        order_log.log_cycle([], {"market": market, "kind": "cycle_error",
+                                 "cycle_id": cycle_id, "error": _err_str})
 
     try:
         push_snapshot(payload)
