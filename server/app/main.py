@@ -660,6 +660,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # ETag는 CORS-safelisted 응답 헤더가 아니라 expose 없이는 교차출처 브라우저
+    # JS가 못 읽는다 → api.ts etagCache가 If-None-Match를 한 번도 못 보내
+    # ETag/304 최적화 전체(P0-1·PR#75)가 웹에서 불발이었다(2026-06-10 라이브 실측).
+    expose_headers=["ETag"],
 )
 
 app.include_router(auth.router)
