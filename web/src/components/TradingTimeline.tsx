@@ -2,7 +2,11 @@
  * 자동매매 타임라인 — 사용자에게 "다음에 무슨 일이 언제 일어나는지" 한눈에.
  *
  * 데이터: GET /trading/timeline. 60초마다 자동 새로고침 (cycle 자체가 5분 이상
- * 간격이라 그보다 더 자주 폴링할 필요 없음).
+ * 간격이라 그보다 더 자주 폴링할 필요 없음). 서버는 변경이 없으면 ETag로 304를
+ * 줄 수 있어 data.now가 응답 사이에 stale해진다 — 따라서 상대 시각("4h 29m 후")은
+ * 서버의 now가 아니라 클라이언트 시계(nowIso)로 계산한다. 절대 시각(hhmm)·표시
+ * 데이터는 서버 응답 그대로 쓰므로, 클라이언트 시계의 소소한 skew는 상대 라벨에만
+ * 영향을 준다(인시던트 2026-06-10 Neon egress 재발 방지 D2와 한 쌍).
  *
  * 표시 원칙: 가독성 우선. 핵심만(시각·이름·상태) 보이고 detail은 hover로.
  */
@@ -78,6 +82,8 @@ function groupKey(iso: string): string {
 export default function TradingTimeline() {
   const [data, setData] = useState<TradingTimeline | null>(null);
   const [err, setErr] = useState<string>("");
+  // 클라이언트 시계 — 304 응답 시 data.now가 stale해도 상대 시각이 흐르도록 30s마다 갱신.
+  const [nowIso, setNowIso] = useState(() => new Date().toISOString());
 
   useEffect(() => {
     let cancelled = false;
@@ -95,6 +101,11 @@ export default function TradingTimeline() {
     load();
     const t = setInterval(load, 60_000);     // 60s polling
     return () => { cancelled = true; clearInterval(t); };
+  }, []);
+
+  useEffect(() => {
+    const c = setInterval(() => setNowIso(new Date().toISOString()), 30_000);
+    return () => clearInterval(c);
   }, []);
 
   if (err) {
@@ -125,7 +136,7 @@ export default function TradingTimeline() {
   }
 
   const heartbeatRel = data.heartbeat_at
-    ? relativeTime(data.heartbeat_at, data.now)
+    ? relativeTime(data.heartbeat_at, nowIso)
     : "한 번도 응답 없음";
 
   return (
@@ -144,7 +155,7 @@ export default function TradingTimeline() {
       ) : (
         groups.map(g => (
           <div key={g.key} className="tl-group">
-            <div className="tl-group-label">{dayLabel(g.events[0].at, data.now)}</div>
+            <div className="tl-group-label">{dayLabel(g.events[0].at, nowIso)}</div>
             <ul className="tl-list">
               {g.events.map((ev, i) => {
                 const badge = STATUS_BADGE[ev.status];
@@ -158,7 +169,7 @@ export default function TradingTimeline() {
                       <span className="tl-icon">{badge.icon}</span>
                       <span className="tl-summary">
                         {isFuture
-                          ? relativeTime(ev.at, data.now)
+                          ? relativeTime(ev.at, nowIso)
                           : (ev.summary || (ev.status === "missed" ? "누락" : ""))}
                       </span>
                     </span>

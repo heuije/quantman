@@ -359,11 +359,17 @@ def pull_timeline(
     snaps = trading._snapshots_in_window(session, device.user_id, window_start, window_end)
     heartbeats = trading._heartbeats_in_window(session, device.user_id,
                                                  window_start, window_end)
+    preview = trading._latest_preview_in_window(session, device.user_id,
+                                                 window_start, window_end)
 
+    # ETag tag-first(D2)는 /trading/timeline에만 적용 — 로컬앱 클라이언트가 아직
+    # If-None-Match를 보내지 않으므로 추가해도 무의미하다. 이 디바이스 경로의 ETag
+    # 도입은 로컬앱 릴리즈와 함께 하는 후속 작업. 단 cycle_summary/preview projection
+    # (Fix A)은 _snapshots_in_window·_latest_preview_in_window 재사용으로 여기도 이미 적용됨.
     events = (
         trading._krx_events(snaps, heartbeats, now, window_start, window_end)
         + trading._us_events(snaps, heartbeats, now, window_start, window_end)
-        + trading._preview_events(snaps, now, window_start, window_end)
+        + trading._preview_events(preview, now, window_start, window_end)
     )
     events.sort(key=lambda e: e["at"])
     return {
@@ -441,9 +447,16 @@ def latest_snapshot(
     snapshot.received_at + last_heartbeat_at 중 max를 ms epoch으로 ETag화 →
     클라이언트 If-None-Match 매칭 시 304 (body 0). egress·DB JSON serialization
     부담 큰 폭 절감. snapshot push 또는 heartbeat 갱신마다 자동으로 새 ETag.
+
+    tag-first(인시던트 driver D3) — ETag를 received_at scalar로 먼저 계산해, 304
+    경로에서는 큰 payload JSON 컬럼을 *아예 SELECT하지 않는다*. 15s 폴링이라
+    과거엔 full snapshot row(payload 포함)를 매번 읽고 ETag를 계산해 304여도 egress가
+    발생했다. 단 ETag 공식·값은 종전과 byte-identical(received_at·last_hb의 .timestamp()
+    max) — 기존 클라이언트 캐시가 그대로 유효하다.
+    근거: docs/incidents/2026-06-10-neon-data-transfer-quota.md
     """
-    snap = session.exec(
-        select(SyncSnapshot)
+    latest_received = session.exec(
+        select(SyncSnapshot.received_at)
         .where(SyncSnapshot.user_id == user.id)
         .order_by(SyncSnapshot.received_at.desc())
     ).first()
@@ -451,19 +464,26 @@ def latest_snapshot(
         select(UserSettings).where(UserSettings.user_id == user.id)
     ).first()
     last_hb = settings.last_heartbeat_at if settings else None
-    if snap is None and last_hb is None:
+    if latest_received is None and last_hb is None:
         return None
 
     ts_components = []
-    if snap and snap.received_at:
-        ts_components.append(snap.received_at.timestamp())
+    if latest_received:
+        ts_components.append(latest_received.timestamp())
     if last_hb:
         ts_components.append(last_hb.timestamp())
     etag = f'W/"{int(max(ts_components) * 1000)}"'
     if request.headers.get("if-none-match") == etag:
+        # payload 컬럼 미열람 — egress 절감의 핵심.
         return Response(status_code=304)
     response.headers["ETag"] = etag
 
+    # tag 불일치(실제 변경) — 이제서야 full row를 로드해 응답.
+    snap = session.exec(
+        select(SyncSnapshot)
+        .where(SyncSnapshot.user_id == user.id)
+        .order_by(SyncSnapshot.received_at.desc())
+    ).first()
     if snap is None:
         # snapshot 없지만 heartbeat 있음 — 새 가동 + 첫 cycle 전 케이스
         return SyncSnapshotOut(payload={}, received_at=last_hb,
