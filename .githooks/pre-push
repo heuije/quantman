@@ -1,0 +1,20 @@
+#!/bin/sh
+# 팀 협업 규칙 강제: main 직접 push 금지 (작업은 브랜치 + PR로만)
+# 활성화: 각자 clone 후 1회 →  git config core.hooksPath .githooks
+# 우회(비권장, 정말 필요할 때만): git push --no-verify
+protected_branch="main"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    "refs/heads/$protected_branch")
+      echo "" >&2
+      echo "  '$protected_branch' 브랜치에 직접 push가 차단됐습니다 (팀 협업 규칙)." >&2
+      echo "  작업은 브랜치 + PR로 합치세요:" >&2
+      echo "      git switch -c feat/작업이름" >&2
+      echo "      git push -u origin feat/작업이름   → GitHub에서 PR 생성" >&2
+      echo "" >&2
+      exit 1
+      ;;
+  esac
+done
+exit 0

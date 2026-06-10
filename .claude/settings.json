@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "git fetch --quiet origin" },
+          { "type": "command", "command": "gh pr list --repo MercKR/quantman --state open" }
+        ]
+      }
+    ]
+  }
+}
