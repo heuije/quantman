@@ -21,6 +21,29 @@ def _isolate(monkeypatch, tmp_path):
     monkeypatch.setattr(fk, "_fund_path", lambda c: tmp_path / f"{c.replace('/', '_')}.parquet")
 
 
+def test_is_common_share_handles_voting_rights_labels():
+    """주식총수 'se' 라벨이 필러마다 달라도 보통주 행을 robust 판별(shares=null→pb 미산출 근본수정).
+
+    실측 라벨(전부 보통주): 정확매칭 '보통주'는 LG화학만 잡고 나머지 5종을 놓쳤었다."""
+    commons = ["보통주", "의결권 있는 주식\n(보통주)", "의결권있는 주식",
+               "의결권 있는\n보통주", "의결권이 있는주식(보통주)"]
+    for se in commons:
+        assert fk._is_common_share(se) is True, f"보통주로 판별돼야: {se!r}"
+    # 우선주(의결권 없는)·합계·비고는 제외
+    for se in ["우선주", "의결권 없는 주식\n(우선주)", "의결권없는 주식", "합계", "비고"]:
+        assert fk._is_common_share(se) is False, f"보통주가 아니어야: {se!r}"
+
+
+def test_delete_shares_null_targets_only_null(monkeypatch, tmp_path):
+    """마이그레이션: shares_outstanding 마지막값 null인 parquet만 삭제, 정상은 보존."""
+    _isolate(monkeypatch, tmp_path)
+    pd.DataFrame({"shares_outstanding": [1e6, 7e7]}).to_parquet(fk._fund_path("OK"))
+    pd.DataFrame({"shares_outstanding": [1e6, None]}).to_parquet(fk._fund_path("NULL"))
+    res = fk.delete_shares_null(["OK", "NULL", "MISSING"])
+    assert res == {"deleted": 1, "kept": 1, "no_col": 0}
+    assert fk._fund_path("OK").exists() and not fk._fund_path("NULL").exists()
+
+
 def test_empty_result_writes_marker_and_skips_next_run(monkeypatch, tmp_path):
     """genuine 빈결과(데이터 없음) → 마커 기록 + 다음 실행 skip(예산 미소모)."""
     _isolate(monkeypatch, tmp_path)

@@ -63,6 +63,19 @@ def _client():
     return _dart
 
 
+def _is_common_share(se) -> bool:
+    """주식총수 보고서의 보통주(의결권 있는) 행 판별 — 필러별 'se' 표기가 제각각이라 robust 매칭.
+
+    실측 표기(같은 '보통주'인데 라벨이 다 다름): '보통주' · '의결권 있는 주식\\n(보통주)' ·
+    '의결권있는 주식' · '의결권 있는\\n보통주' · '의결권이 있는주식(보통주)'. 우선주(의결권 없는)·
+    합계·비고는 제외. `se=='보통주'` 정확매칭은 LG전자·SK·신한지주·셀트리온·삼성전기 등 다수를 놓쳐
+    shares=null→pb 미산출의 근본원인이었다(공백·개행 제거 후 '보통주' 또는 '의결권있는' 포함 판정)."""
+    s = str(se).replace("\n", "").replace(" ", "")
+    if "합계" in s or "비고" in s:
+        return False
+    return "보통주" in s or "의결권있는" in s   # 의결권 있는 = 보통주(우선주는 '의결권 없는')
+
+
 def _shares_history(code: str, years: list[int]) -> list:
     """OpenDART 주식총수(사업보고서·연간)의 보통주 발행주식총수 시계열 → [(as_of, shares), ...] 정렬.
 
@@ -78,7 +91,7 @@ def _shares_history(code: str, years: list[int]) -> list:
             continue
         if r is None or len(r) == 0 or "se" not in r.columns:
             continue
-        common = r[r["se"] == "보통주"]
+        common = r[r["se"].apply(_is_common_share)]
         if not len(common):
             continue
         sh = _amt(common.iloc[0].get("istc_totqy"))
@@ -401,3 +414,28 @@ def clear_markers(codes: list[str] | None = None) -> int:
             m.unlink()
             removed += 1
     return removed
+
+
+def delete_shares_null(codes: list[str]) -> dict:
+    """일회성 마이그레이션 — shares_outstanding 마지막 값이 null인 parquet 삭제.
+
+    보통주 라벨 정확매칭 버그(_is_common_share 도입 전)로 주식수가 누락된 parquet들이 'fresh'(최근
+    mtime)라 백필이 skip한다 → 삭제해 미수집 상태로 만들어 수정된 _shares_history로 재수집되게 한다.
+    shares 정상 parquet은 보존(재수집 중 데이터 손실 방지). 반환={'deleted','kept','no_col'}."""
+    import pandas as pd
+    deleted = kept = no_col = 0
+    for c in codes:
+        p = _fund_path(c)
+        if not p.exists():
+            continue
+        try:
+            df = pd.read_parquet(p, columns=["shares_outstanding"])
+        except Exception:
+            no_col += 1                              # 컬럼 없음 등 — 보수적으로 보존
+            continue
+        if len(df) and pd.isna(df["shares_outstanding"].iloc[-1]):
+            p.unlink()
+            deleted += 1
+        else:
+            kept += 1
+    return {"deleted": deleted, "kept": kept, "no_col": no_col}
