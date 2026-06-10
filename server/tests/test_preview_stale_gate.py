@@ -225,3 +225,54 @@ def test_kr_freshness_unaffected_by_us_cutoff(monkeypatch):
     ok, _ = preview_engine._data_freshness_ok(
         dataset, "005930", today, now_kst=now_kst)
     assert ok is True
+
+
+# ── KR 19:00 수집 cutoff 회귀 (2026-06-10 무발주 인시던트 D4-2) ─────────────
+#
+# KR 종가 수집은 18:15 cron — 그 전에 preview가 rebuild되면(재배포 boot refresh,
+# 07:30 글로벌 cron의 trigger 등) "오늘 종가"는 아직 존재할 수 없는데 ref_anchor가
+# today에 고정돼 있어, 가장 신선한 상태인 전일 종가를 "1일 지연 stale"로 오판 →
+# KR 후보 전멸·무발주. 실측: 2026-06-10 04:27 KST 생성 preview가 코스피200선물을
+# "데이터 stale (last=2026-06-09, 직전 KR 거래일 2026-06-10, 1일 지연)"으로 skip.
+# docs/incidents/2026-06-10-autotrading-week-retrospective.md 참조.
+
+def test_kr_freshness_morning_rebuild_accepts_prev_close(monkeypatch):
+    """KST 19:00 이전(예: 새벽 boot rebuild) — 전일 종가가 신선도 기준이어야 함."""
+    from app import preview_engine
+
+    today = date(2026, 6, 10)
+    kr_sessions = {date(2026, 6, 9), date(2026, 6, 10)}
+    monkeypatch.setattr(
+        preview_engine._mc, "is_session_day",
+        lambda market, d: market == "KR" and d in kr_sessions)
+
+    # 04:27 KST — 06-10 종가는 18:15에야 수집 가능. last=06-09가 최신 상태.
+    now_kst = datetime(2026, 6, 10, 4, 27, tzinfo=ZoneInfo("Asia/Seoul"))
+    dataset = {"005930": _df_with_last_date("2026-06-09")}
+    ok, msg = preview_engine._data_freshness_ok(
+        dataset, "005930", today, now_kst=now_kst)
+    assert ok is True, f"19:00 이전 — 전일 종가는 stale 아님. msg={msg}"
+
+
+def test_kr_freshness_evening_requires_today_close(monkeypatch):
+    """KST 19:00 이후 — 오늘 종가(18:15 수집)가 있어야 신선. 전일 종가는 1일 stale."""
+    from app import preview_engine
+
+    today = date(2026, 6, 10)
+    kr_sessions = {date(2026, 6, 9), date(2026, 6, 10)}
+    monkeypatch.setattr(
+        preview_engine._mc, "is_session_day",
+        lambda market, d: market == "KR" and d in kr_sessions)
+
+    now_kst = datetime(2026, 6, 10, 19, 30, tzinfo=ZoneInfo("Asia/Seoul"))
+
+    dataset = {"005930": _df_with_last_date("2026-06-09")}
+    ok, msg = preview_engine._data_freshness_ok(
+        dataset, "005930", today, now_kst=now_kst)
+    assert ok is False, "19:00 이후 — 전일 종가는 1일 stale"
+    assert "1일 지연" in msg
+
+    dataset = {"005930": _df_with_last_date("2026-06-10")}
+    ok, _ = preview_engine._data_freshness_ok(
+        dataset, "005930", today, now_kst=now_kst)
+    assert ok is True

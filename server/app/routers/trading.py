@@ -167,11 +167,11 @@ DOWNSTREAM_IMPACT: dict[str, str] = {
         "→ 오늘 국장 미체결 정리·KIS↔ledger reconcile 누락. "
         "다음 KRX cycle 시작 시 _resolve_pending이 자동으로 처리 — 큰 지장 없음.",
     "us_preview":
-        "→ 오늘 22:25 미장 자동매매가 stale preview로 동작 — "
+        "→ 오늘 미장 자동매매(개장 20분 전 시작)가 stale preview로 동작 — "
         "오늘 KRX 종가·NAVER·technical 반영 안 된 후보 사용.",
     "us_cycle":
         "→ 오늘 미장 신규 매수 0건, 보유 US 종목 청산 평가 누락. "
-        "다음 미장 cycle은 캘린더상 다음 거래일 open-5min.",
+        "다음 미장 cycle은 캘린더상 다음 거래일 개장 20분 전.",
     "us_settlement":
         "→ 미장 미체결 정리 누락. 다음 미장 cycle 시작 시 자동 reconcile — 큰 지장 없음.",
 }
@@ -349,7 +349,7 @@ def _krx_events(snaps: list["SnapLite"], heartbeats: list[datetime], now: dateti
 
 def _us_events(snaps: list["SnapLite"], heartbeats: list[datetime], now: datetime,
                 window_start: datetime, window_end: datetime) -> list[dict]:
-    """US 사이클(open-5min) + 정산(close+5min) 캘린더 기반 동적 occurrences."""
+    """US 사이클(개장−20분) + 정산(close+5min) 캘린더 기반 동적 occurrences."""
     events: list[dict] = []
     cursor = window_start - timedelta(hours=2)  # 직전 세션이 윈도우 걸칠 수 있어 마진
     for _ in range(5):
@@ -363,7 +363,11 @@ def _us_events(snaps: list["SnapLite"], heartbeats: list[datetime], now: datetim
         if open_kst > window_end + timedelta(hours=1):
             break
 
-        cycle_sched = open_kst - timedelta(minutes=5)
+        # 로컬 scheduler.py의 us_cycle(개장−20분, 예약 접수창 마감 전 발주 완료용)과
+        # 반드시 정합 — 한쪽만 바꾸면 timeline이 실제 실행 시각을 거짓 표시하고
+        # _match_snapshot 윈도우가 어긋나 성공 사이클을 missed로 오분류한다
+        # (2026-06-10 "UI 22:25 vs 실행 22:10" 사고, 리뷰 D6-1).
+        cycle_sched = open_kst - timedelta(minutes=20)
         settle_sched = close_kst + timedelta(minutes=5)
         cycle_snap = _match_snapshot(snaps, cycle_sched, "US") if cycle_sched <= now else None
         settle_snap = _match_snapshot(snaps, settle_sched, "US") if settle_sched <= now else None

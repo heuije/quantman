@@ -129,7 +129,13 @@ def _data_freshness_ok(dataset: dict, symbol: str,
         days_back = 2 if now_kst.hour < 5 else 1
         ref_anchor = today - timedelta(days=days_back)
     else:
-        ref_anchor = today
+        # KR도 같은 원리의 수집시각 cutoff가 필요하다. KR 종가 수집은 18:15 cron —
+        # 그 전에 평가하면 "오늘 종가"는 아직 존재할 수 없으므로 직전 거래일이
+        # 신선도 기준(여유 마진 포함 19:00 경계). 이전 코드(`today` 고정)는 새벽
+        # 재배포 boot refresh 등이 preview를 rebuild할 때 가장 신선한 상태인 전일
+        # 종가를 "1일 지연 stale"로 오판 → KR 후보 전멸·무발주 (2026-06-10 인시던트,
+        # docs/incidents/2026-06-10-autotrading-week-retrospective.md RC-4/D4-2).
+        ref_anchor = today - timedelta(days=1) if now_kst.hour < 19 else today
     ref = _last_session_on_or_before(market, ref_anchor)
     if ref is None:
         # 캘린더 미작동 — stale 판정 자체가 불가하므로 통과 (다른 신호가 잡음)
