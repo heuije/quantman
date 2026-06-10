@@ -104,7 +104,10 @@ python ~/.claude/hooks/read_briefings.py     # 출력에 안 뜨면(자기 브�
 - **작업 시작 시:** `brief.py start --intent --plan --files`
 - **작업 완료 시:** `brief.py done --intent --plan --files --impl --outcome`
   (`--impl`=구현/결정 요지, `--outcome`=어떻게 끝났나: 머지/PR/보류/중단)
-- 매 프롬프트 시작 시 다른 세션 현황이 자동 주입됨 → 겹치면 시작 전 고려.
+- **`--intent` 는 self-contained 핸드오프로 2~3문장.** 다른 세션이 사전 맥락 없이 읽고
+  이해하도록: 무엇을·왜 + 배경(어느 시스템/계층·어떤 문제·어디로) + 범위 경계. 한 구절 금지.
+  나머지 필드는 한 줄로 충분. (렌더링이 intent를 `의도:` 자체 줄에 wrap해 보여준다.)
+- 매 프롬프트 시작 시 다른 세션 현황이 자동 주입됨(안 본 것만) → 겹치면 시작 전 고려.
 - **상태 공유만 — 다른 세션에 명령하지 않는다.**
 
 ### 동작 예시
@@ -114,9 +117,11 @@ python ~/.claude/hooks/read_briefings.py     # 출력에 안 뜨면(자기 브�
 
 09:30  세션 B (fix/preview-label) 첫 쿼리 → UserPromptSubmit 훅이 주입:
   === 다른 세션 작업 현황 (전체 catch-up) ===
-    [진행중] [06-10 09:00] feat/futures-sizing: 선물 사이징 근본수정
-             파일: trader.py, live.py
-  → B: "A가 trader.py 수정 중. 내 preview_engine.py와 안 겹침 → 진행."
+    [진행중] [06-10 09:00] feat/futures-sizing
+        의도: 선물 자동매매 사이징이 주식계좌 현금으로 계산돼 0계약이 나오는 버그를 고친다.
+            선물계좌 가용증거금현금으로 사이징하고 유저 상한(margin_pct)을 두는 게 목표.
+        파일: trader.py, live.py
+  → B: "A가 trader.py·선물 사이징 수정 중. 내 preview_engine.py와 안 겹침 → 진행."
   (B의 다음 쿼리부터는 새 소식이 없으면 무출력 — 반복 안 함)
 
 09:55  세션 A 완료

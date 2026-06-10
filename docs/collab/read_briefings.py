@@ -10,6 +10,7 @@
   - 커서 저장: ~/.claude/briefing-cursors/<session_id>
   - 새 세션(커서 없음): 전체 미열람으로 간주 → 브랜치별 최신 1건 전부 catch-up
   - 내 브랜치(=내 작업)는 제외 / 브랜치별 최신 이벤트로 압축([진행중]=start, [완료]=done)
+  - intent는 self-contained 핸드오프(2~3문장)라 자체 줄에 wrap해 보여준다
   - 표시 후 커서를 로그 최신 시각으로 전진 → 다음 턴엔 새 것만
 
 설치: 이 파일을 ~/.claude/hooks/read_briefings.py 로 복사. (docs/COLLABORATION.md 참조)
@@ -22,6 +23,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import textwrap
 
 # Windows 기본 콘솔(cp949)에서도 UTF-8 출력 — Claude Code가 UTF-8로 캡처한다.
 try:
@@ -33,6 +35,7 @@ HOME = pathlib.Path.home()
 LOG = HOME / ".claude" / "session-briefings.jsonl"
 CURSORS = HOME / ".claude" / "briefing-cursors"
 MAX_SHOW = 25  # 한 번에 표시할 브랜치 상한(폭주 방지)
+WRAP_W = 84    # 라벨 줄 wrap 폭(긴 intent/plan을 2~3줄로)
 
 
 def _branch() -> "str | None":
@@ -57,6 +60,17 @@ def _session_id() -> str:
     except Exception:
         pass
     return "_default"
+
+
+def _emit(label: str, text) -> None:
+    """라벨 줄을 wrap해 출력 — 긴 intent/plan도 들여쓰기 정렬돼 읽힌다."""
+    if not text:
+        return
+    prefix = f"      {label}: "
+    cont = " " * len(prefix)
+    print(textwrap.fill(str(text), width=WRAP_W,
+                        initial_indent=prefix, subsequent_indent=cont,
+                        break_long_words=False, break_on_hyphens=False))
 
 
 def main() -> None:
@@ -111,22 +125,16 @@ def main() -> None:
     label = "전체 catch-up" if cursor is None else "새 소식"
     print(f"=== 다른 세션 작업 현황 ({label}) ===")
     for t, r in rows:
-        when = r["ts"][5:10] + " " + r["ts"][11:16]  # MM-DD HH:MM (오래된 항목도 떠 날짜 표기)
+        when = r["ts"][5:10] + " " + r["ts"][11:16]  # MM-DD HH:MM
+        marker = "[완료]" if r.get("event") == "done" else "[진행중]"
+        print(f"  {marker} [{when}] {r.get('branch', '')}")
+        _emit("의도", r.get("intent"))            # self-contained 핸드오프(2~3문장)
         if r.get("event") == "done":
-            head = f"  [완료] [{when}] {r.get('branch', '')}: {r.get('intent', '')}"
-            if r.get("outcome"):
-                head += f" -> {r['outcome']}"
-            print(head)
-            if r.get("impl"):
-                print(f"         구현: {r['impl']}")
-            if r.get("files"):
-                print(f"         파일: {r['files']}")
+            _emit("구현", r.get("impl"))
+            _emit("결과", r.get("outcome"))
         else:
-            print(f"  [진행중] [{when}] {r.get('branch', '')}: {r.get('intent', '')}")
-            if r.get("plan"):
-                print(f"           계획: {r['plan']}")
-            if r.get("files"):
-                print(f"           파일: {r['files']}")
+            _emit("계획", r.get("plan"))
+        _emit("파일", r.get("files"))
     if extra > 0:
         print(f"  (외 오래된 {extra}개 브랜치 생략)")
 
