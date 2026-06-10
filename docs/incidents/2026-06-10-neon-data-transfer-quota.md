@@ -78,6 +78,23 @@ A1 백필 커버리지를 확인하려 Railway 런타임 로그를 보다가, pr
 - 서버: `test_timeline_egress.py` 5건 추가(projection json_extract·이벤트 동등성·ETag 304/버킷·304 무-payload·shape 무변경) + 전체 스위트 그린.
 - 웹: `tsc -b` 통과·`eslint TradingTimeline.tsx` 무오류.
 
+### D4 — 교차출처 ETag 미노출(라이브 검증 중 실측, PR #76)
+PR #75 머지·배포 후 로그인 세션에서 라이브 검증하니 `fetch('/trading/timeline').headers.get('ETag')` = **null**.
+원인: **CORSMiddleware에 `expose_headers` 미설정**. ETag는 CORS-safelisted 응답 헤더가 아니라 expose
+없이는 교차출처(vercel→railway) 브라우저 JS가 읽지 못한다. → `web/src/api.ts`의 etagCache가 ETag를
+저장 못 해 **If-None-Match를 한 번도 송신하지 않았고**, 기존 P0-1·이번 PR#75의 ETag/304 최적화가
+**프로덕션 웹에서 0회 동작**(모든 폴이 full payload 200)이었다 — egress 폭증의 숨은 공범.
+- **Fix(PR #76)**: `expose_headers=["ETag"]` 1줄 + Origin 동반 요청으로 `Access-Control-Expose-Headers`를
+  검증하는 테스트. **교훈: ETag류 헤더 최적화는 반드시 교차출처 라이브로 검증** — same-origin TestClient는 이 부류를 못 잡는다.
+
+### 라이브 검증 결과 (2026-06-10, 배포 60dbf8e, 로그인 세션)
+| 경로 | 1차 | If-None-Match 재요청 |
+|--|--|--|
+| `/trading/timeline` | 200 · ETag `W/"<data_ms>-<bucket>"` · 1.3KB | **304 · body 0** |
+| `/sync/snapshot` | 200 · ETag `W/"<data_ms>"`(기존 공식) · **30.4KB** | **304 · body 0**(payload 미전송) |
+
+→ 30KB 스냅샷이 변경 없을 때 0바이트 304로 종결, ETag 교차출처 read 정상. egress 절감 실증 완료.
+
 ## 관련
 - 인프라/배포 토폴로지: 메모리 `infra_neon_db_and_deploy.md`
 - 진단 채널(CLI): `CLAUDE.md` §7
