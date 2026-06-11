@@ -170,11 +170,15 @@ def test_run_select_sector_contains_matches_ksic_industry(monkeypatch):
 
 
 def test_run_select_sector_exact_match_is_default(monkeypatch):
-    """match 미지정=정확매칭 유지 — 회귀 가드(버킷·국면 라벨 is_in의 정확 멤버십 불변)."""
+    """match 미지정=정확매칭 유지 — 부분일치 안 함(버킷·국면 라벨 정확 멤버십 회귀 가드).
+
+    표준 섹터 정규화로 의약품 제조업 → 테마 "제약·바이오". match 없는 정확매칭은
+    "제약·바이오" != "바이오"라 0건(부분일치였다면 1건). exact가 기본임을 고정.
+    """
     from quant_core.data.feeds import classification
     monkeypatch.setattr(classification, "load",
-                        lambda: {"000660": {"Industry": "반도체 제조업"}})
-    ds = {"000660": _df_pb(1.0)}
-    s = StrategyIR.model_validate(_sector_ir(["반도체"], top_n=3, descending=False))
+                        lambda: {"207940": {"Industry": "의약품 제조업"}})   # → 테마 "제약·바이오"
+    ds = {"207940": _df_pb(1.0)}
+    s = StrategyIR.model_validate(_sector_ir(["바이오"], top_n=3, descending=False))
     res = run_query(s, ds)
-    assert res["success"] and res["eligible_size"] == 0   # "반도체 제조업" ≠ "반도체"
+    assert res["success"] and res["eligible_size"] == 0   # "제약·바이오" != "바이오" (정확매칭)
