@@ -26,6 +26,11 @@ log = logging.getLogger("localapp.sync")
 # stall 시 최대 5분 hang(정규 cycle 멈춤·과거 비상정지 hang 원인)이라 제거.
 _BUNDLE_CONNECT_TIMEOUT_SEC = 10
 _BUNDLE_READ_TIMEOUT_SEC = 30
+# read timeout은 "청크 간 간격"만 제한해 저속 trickle 스트림의 총 시간은 못 막는다 —
+# 서버 degraded 시 다운로드가 이론상 무한정 늘어지며 발주 사이클을 점유할 수 있어
+# (2026-06-10 무발주 인시던트 D1-1 부류) 총 시간 상한을 별도로 강제한다.
+# 정상 bundle은 ~1-5분(실측 282s) — 10분이면 충분한 여유.
+_BUNDLE_TOTAL_TIMEOUT_SEC = 600
 
 
 def _headers() -> dict:
@@ -53,10 +58,11 @@ def push_snapshot(payload: dict) -> None:
 def fetch_dataset_bundle(local_data_dir: Path) -> dict:
     """Phase 58-C — server tar.zst bundle 단일 다운로드 + 압축 해제.
 
-    종목별 4445 req 직렬 다운로드(~114분) → 단일 파일(~150MB, 1분)으로 단축.
-    ETag로 변경 시만 다운로드, 동일 ETag면 server 304 → skip.
+    단일 파일(~150MB, 1분) 다운로드. ETag로 변경 시만 다운로드, 동일 ETag면
+    server 304 → skip.
 
-    실패 시 ValueError raise → 호출자가 manifest fallback으로 폴백.
+    실패 시(410 포함) 예외 raise → 호출자(datafetch)가 기존 로컬 캐시로 진행.
+    종목별 manifest 폴백은 제거됨 — 2026-06-10 무발주 인시던트(D1-2) 참조.
 
     v0.9.5-beta — `r.raw` stream + Transfer-Encoding chunked 충돌 fix.
     이전(v0.9.0~v0.9.4)은 `dctx.stream_reader(r.raw)`로 디코드 시도. Railway
@@ -103,8 +109,13 @@ def fetch_dataset_bundle(local_data_dir: Path) -> dict:
     tmp_path: str | None = None
     n_extracted = 0
     try:
+        _deadline = time.monotonic() + _BUNDLE_TOTAL_TIMEOUT_SEC
         with tempfile.NamedTemporaryFile(delete=False, suffix=".zst") as tmp:
             for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if time.monotonic() > _deadline:
+                    raise TimeoutError(
+                        f"bundle 다운로드 총 시간 초과({_BUNDLE_TOTAL_TIMEOUT_SEC}s)"
+                        " — 저속 스트림(read timeout 미발동) 보호")
                 if chunk:
                     tmp.write(chunk)
             tmp_path = tmp.name
@@ -403,74 +414,12 @@ def fetch_dataset_manifest() -> list[dict]:
     return []
 
 
-def fetch_dataset_symbol(key: str, dest_path: Path) -> bool:
-    """단일 종목 parquet을 다운로드해 dest_path에 저장. 성공 시 True.
-
-    404는 False 반환 — 서버에 해당 종목이 아직 없는 정상 상태.
-    그 외 네트워크 오류는 예외 그대로 전파.
-    """
-    r = requests.get(
-        f"{PLATFORM_URL}/dataset/{key}", headers=_headers(), timeout=60)
-    if r.status_code == 404:
-        return False
-    r.raise_for_status()
-    import io
-    import pandas as pd
-    from quant_core.parquet_io import write_parquet_atomic
-    # 잘린 다운로드(네트워크 중단) 검증 — 손상이면 저장하지 않고 실패 처리(다음 sync에서 재시도).
-    try:
-        df = pd.read_parquet(io.BytesIO(r.content))
-    except Exception as e:
-        log.warning("다운로드 parquet 손상, 저장 skip [%s]: %s", key, e)
-        return False
-    write_parquet_atomic(df, dest_path)    # 원자적 — 쓰기 중단돼도 잘린 파일 안 남김
-    return True
-
-
-def sync_dataset(local_data_dir: Path) -> dict:
-    """서버 manifest와 로컬 parquet을 비교해 변경분만 다운로드.
-
-    "변경분" 판정: 로컬에 parquet이 없거나, 로컬 마지막 일자가 서버보다 옛날이면 다운로드.
-    날짜 비교는 문자열(YYYY-MM-DD) 직접 비교로 충분.
-
-    실패한 종목은 skip + 로그 — 한 종목 실패가 전체 sync를 막지 않는다.
-    서버 도달 자체가 실패하면 예외 그대로 던짐 → 호출자가 로컬 캐시로 fallback.
-    """
-    import pandas as pd
-
-    manifest = fetch_dataset_manifest()
-    n_total = len(manifest)
-    n_skipped = n_pulled = n_failed = 0
-
-    for entry in manifest:
-        key = entry["key"]
-        server_last = entry.get("last_date", "")
-        safe_key = key.replace("/", "_")
-        local_path = local_data_dir / f"{safe_key}.parquet"
-
-        if local_path.exists():
-            try:
-                df_local = pd.read_parquet(local_path)
-                local_last = str(df_local.index[-1])[:10] if len(df_local) else ""
-            except Exception:
-                local_last = ""
-            if local_last and local_last >= server_last:
-                n_skipped += 1
-                continue
-
-        try:
-            if fetch_dataset_symbol(key, local_path):
-                n_pulled += 1
-            else:
-                n_failed += 1
-        except Exception as e:
-            log.warning("dataset sync 실패 [%s]: %s", key, e)
-            n_failed += 1
-
-    log.info("dataset sync: 총 %d → 다운로드 %d · 최신 유지 %d · 실패 %d",
-              n_total, n_pulled, n_skipped, n_failed)
-    return {"total": n_total, "pulled": n_pulled,
-            "skipped": n_skipped, "failed": n_failed}
+# (제거됨) fetch_dataset_symbol·sync_dataset — bundle 410 시 종목별 manifest 폴백.
+# 수만 parquet 직렬 신선도 검사(파일당 read_parquet)로 시간 단위를 소모하며
+# _REFRESH_LOCK을 점유, 발주 사이클을 통째로 막았다(2026-06-10 무발주 인시던트
+# D1-2 — docs/incidents/2026-06-10-autotrading-week-retrospective.md). bundle
+# 실패는 이제 "기존 캐시로 진행"이 유일한 동작(datafetch 참조).
+# fetch_dataset_manifest는 업로드 diff(push_local_dataset)가 계속 사용한다.
 
 
 # ── 로컬앱 → 서버 Parquet 데이터 동기화 업로드 ─────────────────────────────────────

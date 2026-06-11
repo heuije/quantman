@@ -1387,7 +1387,8 @@ class Trader:
               market: str = "KRX",
               krx_status: dict[str, dict] | None = None,
               catchup: bool = False,
-              reserved: bool = False) -> dict:
+              reserved: bool = False,
+              cycle_id: str = "") -> dict:
         """전략 목록을 1회 평가하고 매매한 뒤 동기화용 스냅샷을 반환한다.
 
         market: 이번 사이클이 다룰 시장 그룹('KRX' 또는 'US'). 청산은 해당 시장
@@ -1412,11 +1413,12 @@ class Trader:
             return self._cycle_locked(strategies, dataset, today,
                                        buy_candidates, risk_limits, market,
                                        krx_status, catchup=catchup,
-                                       reserved=reserved)
+                                       reserved=reserved, cycle_id=cycle_id)
 
     def _cycle_locked(self, strategies, dataset, today, buy_candidates,
                        risk_limits, market, krx_status,
-                       catchup: bool = False, reserved: bool = False) -> dict:
+                       catchup: bool = False, reserved: bool = False,
+                       cycle_id: str = "") -> dict:
         # Q5(데드락 방지): _in_cycle 플래그를 try/finally로 보장 — 예외 발생 시에도
         # 반드시 reset되어야 다음 cycle에서 _apply_fill의 평가가 정상 동작.
         self._in_cycle = True
@@ -1430,13 +1432,14 @@ class Trader:
         try:
             return self._cycle_body(strategies, dataset, today,
                                      buy_candidates, risk_limits, market,
-                                     catchup=catchup)
+                                     catchup=catchup, cycle_id=cycle_id)
         finally:
             self._in_cycle = False
             self._reserved_us = False
 
     def _cycle_body(self, strategies, dataset, today, buy_candidates,
-                     risk_limits, market, catchup: bool = False) -> dict:
+                     risk_limits, market, catchup: bool = False,
+                     cycle_id: str = "") -> dict:
         today = today or kst_today()
         decisions: list[dict] = []
 
@@ -1470,7 +1473,8 @@ class Trader:
             return {"balance": {"cash": 0, "total_eval": 0},
                     "positions": [], "equity": self.equity[-365:],
                     "trades": [], "decisions": decisions,
-                    "cycle_summary": {"skipped_reason": "kis_health_fail"}}
+                    "cycle_summary": {"skipped_reason": "kis_health_fail",
+                                       "cycle_id": cycle_id}}
 
         killswitch.update_day_start(equity_now, today.isoformat())
         ks_state = killswitch.load()
@@ -1647,6 +1651,7 @@ class Trader:
             "today": today.isoformat(),
             "market": market,                        # Phase 7 catch-up — 시장 식별
             "kind": "catchup_cycle" if catchup else "cycle",   # catch-up 구분
+            "cycle_id": cycle_id,                    # 시작 저널(cycle_started)과 join
             "n_strategies": len(strategies),
             "n_bought": sum(1 for d in decisions if d["action"] == "bought"),
             "n_sold": sum(1 for d in decisions if d["action"] == "sold"),

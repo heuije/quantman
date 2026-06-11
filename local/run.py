@@ -54,7 +54,7 @@ def cmd_cycle():
     _guard_or_exit()
     try:
         from localapp.runner import run_cycle
-        payload = run_cycle()
+        payload = run_cycle(trigger="cli")
         bal = payload["balance"]
         print(f"평가금액 {bal['total_eval']:,}원 · 예수금 {bal['cash']:,}원 · "
               f"보유 {len(payload['positions'])}종목 · 체결 {len(payload['trades'])}건")

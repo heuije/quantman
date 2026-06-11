@@ -858,6 +858,8 @@ class SettingsApp:
         self.tv_cycles.delete(*self.tv_cycles.get_children())
         for c in order_log.read_cycles(20):
             s = c.get("summary", {})
+            if s.get("kind") == "cycle_started":
+                continue   # lifecycle 시작 마커(진단용) — 결과 테이블엔 완료분만
             self.tv_cycles.insert("", "end", values=(
                 self._fmt_ts(c.get("ts", "")),
                 s.get("n_bought", 0), s.get("n_sold", 0),
@@ -947,7 +949,7 @@ class SettingsApp:
             if secrets_store.load_kis() is None:
                 return {"error": "KIS 자격증명 없음 — setup 후 다시 시도하세요"}
             from .runner import run_cycle
-            payload = run_cycle()
+            payload = run_cycle(trigger="web")
             # GUI는 다음 자동 갱신에서 반영
             self.root.after(100, self.refresh_status)
             return {"balance": payload.get("balance"),
@@ -1740,15 +1742,6 @@ class SettingsApp:
         self._push_state_async()              # 가동 상태 웹 반영
         self.refresh_status()
 
-    def _cycle_job(self):
-        if secrets_store.load_kis() is None:
-            import logging
-            logging.getLogger("localapp.gui").warning(
-                "KIS 자격증명 없음 — 자동 사이클 skip")
-            return
-        from .runner import run_cycle
-        run_cycle()
-
     def _run_once(self):
         if secrets_store.load_kis() is None:
             messagebox.showwarning(
@@ -1761,7 +1754,7 @@ class SettingsApp:
 
         def job():
             from .runner import run_cycle
-            return run_cycle()
+            return run_cycle(trigger="manual")
 
         def done(payload, err):
             self.btn_cycle.config(state="normal")
