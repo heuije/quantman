@@ -35,6 +35,9 @@ def strategy_buy_and_fill(trader, broker, sid: str, strat_def: dict, symbol: str
     (order_no, decisions) 반환 — 발주 안 됐으면 order_no=None.
     """
     decisions: list[dict] = []
+    # 가격 평면 정책 — 즉시 지정가는 broker 실시간 시세(quote_band) 기준이라
+    # sim 시세 미설정이면 발주가 정당하게 보류된다. 시나리오의 체결가를 시세로 등록.
+    broker._prices.setdefault(symbol, fill_price)
     n_before = len(broker.submitted)
     trader._try_buy_one_symbol(sid, sid, strat_def.get("name", ""), strat_def,
                                symbol, dataset, equity, decisions)

@@ -41,6 +41,7 @@ def _router_trader(isolated_trader, monkeypatch):
     """Trader를 BrokerRouter(stock+futures Sim) 위에 — 라이브 토폴로지 모사."""
     trader, _ = isolated_trader
     stock, fut = SimBroker(), SimBroker()
+    fut._prices["A01606"] = 350.0                 # 가격 평면 정책 — 발주는 broker 시세 필요(계약코드 키)
     router = BrokerRouter(stock, fut, resolve=lambda s: _CODES.get(s),
                           resolve_expiry=lambda s: _EXPS.get(s, (None, None)))
     trader.broker = router

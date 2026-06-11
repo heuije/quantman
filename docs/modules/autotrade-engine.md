@@ -9,6 +9,13 @@
 - **해외선물은 KIS 모의 미지원 → 실전+SimBroker로만 검증.** 국내선물은 라이브 검증 완료.
 - **폴링 endpoint: ETag tag-first**(scalar 먼저 계산, 304면 큰 payload SELECT 안 함)**+필드 projection.** ETag는 scalar로 먼저 계산(tag-first)해 304면 큰 컬럼(payload)을 아예 SELECT하지 않게 하고, window 조회는 필요한 JSON 필드만 projection한다(Neon egress 인시던트 재발 방지 — `docs/incidents/2026-06-10-neon-data-transfer-quota.md`). 〔작성: 조대표〕
 - **KIS endpoint 작업 전 API knowledge base 필수 참조**(`docs/kis-api/`).
+- **가격 평면 정책 — 신호·사이징 근거는 데이터 평면, 주문 가격·밴드는 거래 평면(발주 직전
+  KIS 시세).** 백테스트용 dataset 값(특히 선물 연속물)을 주문 가격에 쓰면 실계약과의 괴리가
+  만기·롤 시점에 터진다(2026-06-11 만기일 "상/하한가 오류" 거부 — `docs/incidents/2026-06-10-…retrospective.md`).
+  즉시 지정가는 `trader._live_limit`(broker.quote_band: 실시간 현재가+거래소 상·하한가 클램프)
+  단일 출처 — 시세 실패 시 dataset 폴백 금지(발주 보류+표면화). 예외(정당): 미국 예약매수=
+  전일종가+버퍼(개장 전 표준), catch-up=당일 시가. 거부(rejected)는 주문 미생성 → intent를
+  failed로 마감해 당일 재시도 허용(D5-5). 〔작성: 조대표〕
 
 ## 현재 구조 (안정)
 

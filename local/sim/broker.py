@@ -39,6 +39,10 @@ class SimBroker:
     def price(self, symbol: str) -> float:
         return float(self._prices.get(symbol, 0.0))
 
+    def quote_band(self, symbol: str) -> dict:
+        """발주용 시세 — 가격 평면 정책(주문 가격=거래 평면). 시뮬레이션은 밴드 미제공."""
+        return {"price": self.price(symbol), "upper": None, "lower": None}
+
     def today_open(self, symbol: str) -> float:
         return float(self._prices.get(symbol, 0.0))
 

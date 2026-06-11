@@ -31,6 +31,7 @@ def test_held_qty_side_aware():
 
 def test_submit_close_short_places_buy_and_closes(isolated_trader):
     trader, broker = isolated_trader
+    broker._prices["금선물"] = 1900.0             # 가격 평면 정책 — 발주는 broker 시세 필요
     # 숏 포지션을 ledger에 직접 구성(M5c 진입 배선 전이라 합성).
     trader.ledger["s2"] = {"symbol": "금선물", "qty": 1, "entry_price": 1950.0,
                             "side": "short", "entry_date": "2026-06-01",
