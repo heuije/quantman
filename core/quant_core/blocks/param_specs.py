@@ -83,6 +83,8 @@ PARAM_SPECS: dict[str, list[dict]] = {
     "attribute": [{"name": "attr", "kind": "select", "label": "분류",
                    "options": ["Industry", "Sector"], "default": "Industry"}],
     "is_in": [{"name": "values", "kind": "value_list", "label": "값 목록(섹터·버킷 등)", "required": True},
+              {"name": "match", "kind": "select", "label": "매칭",
+               "options": ["exact", "contains"], "default": "exact"},
               {"name": "negate", "kind": "bool", "label": "제외(체크 시 집합 밖)", "default": False}],
 }
 
@@ -106,6 +108,7 @@ OPTION_LABELS: dict[str, dict] = {
     "rank.unit": {"pct": "분위(0~1)", "count": "개수"},
     "rank.descending": {"false": "작은 값이 상위", "true": "큰 값이 상위"},
     "attribute.attr": {"Industry": "업종", "Sector": "섹터"},
+    "is_in.match": {"exact": "정확 일치", "contains": "부분 일치"},
     "calendar.unit": {"weekday": "요일", "month": "월", "monthweek": "월중주차",
                       "dom": "월중일", "bday": "영업일서수", "turn_of_month": "월말월초"},
     "is_in.negate": {"false": "중 하나", "true": "외(제외)"},
