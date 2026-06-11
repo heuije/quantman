@@ -67,6 +67,55 @@ def test_band_clamp_uses_broker_limits(isolated_trader, monkeypatch):
         f"상한가(1225) 클램프 실패: {buys[0]['limit']} — 만기일 거부 재현 위험"
 
 
+def test_krx_futures_buy_clamped_to_realtime_band(isolated_trader, monkeypatch):
+    """KRX 선물 매수 지정가 ≤ 직전가×1.01 (실시간가격제한, 틱 내림).
+
+    06-11 실측: 현재가 1235.15에 tol 1% 틱 올림 → 1247.55가 밴드 상단
+    1247.50을 1틱 초과해 "모의투자 상/하한가 오류" 거부. 클램프로 1247.50.
+    """
+    trader, broker = isolated_trader
+    monkeypatch.setattr(broker, "quote_band",
+                        lambda s: {"price": 1235.15, "upper": None, "lower": None})
+    decisions: list[dict] = []
+    trader._submit_buy("s5", "양방향", {}, "코스피200선물", 1, 1208.5,
+                       _policy(), decisions)
+    buys = [s for s in broker.submitted if s["side"] == "buy"]
+    assert len(buys) == 1
+    assert abs(buys[0]["limit"] - 1247.50) < 1e-9, \
+        f"실시간가격제한 클램프 실패: {buys[0]['limit']} (거부 재현 값=1247.55)"
+
+
+def test_krx_futures_sell_clamped_to_realtime_band(isolated_trader, monkeypatch):
+    """KRX 선물 매도 지정가 ≥ 직전가×0.99 (틱 올림) — 종가 청산(매도)도 동일 밴드.
+
+    매수만 고치면 15:43 당일청산 매도가 같은 1틱 초과로 거부된다(대칭 필수).
+    """
+    trader, broker = isolated_trader
+    monkeypatch.setattr(broker, "quote_band",
+                        lambda s: {"price": 1235.15, "upper": None, "lower": None})
+    decisions: list[dict] = []
+    trader._submit_sell("s6", "양방향", "코스피200선물", 1, 1208.5,
+                        _policy(), "청산", decisions)
+    sells = [s for s in broker.submitted if s["side"] == "sell"]
+    assert len(sells) == 1
+    assert abs(sells[0]["limit"] - 1222.80) < 1e-9, \
+        f"실시간가격제한 클램프 실패: {sells[0]['limit']} (틱 내림이면 1222.75)"
+
+
+def test_stock_limit_not_clamped_by_futures_band(isolated_trader, monkeypatch):
+    """주식은 실시간가격제한 비대상 — tol 틱 올림 그대로(기존 동작 보존)."""
+    trader, broker = isolated_trader
+    monkeypatch.setattr(broker, "quote_band",
+                        lambda s: {"price": 70050.0, "upper": None, "lower": None})
+    decisions: list[dict] = []
+    trader._submit_buy("s7", "주식전략", {}, "005930", 1, 70000.0,
+                       _policy(), decisions)
+    buys = [s for s in broker.submitted if s["side"] == "buy"]
+    assert len(buys) == 1
+    # 70050×1.01=70750.5 → 호가단위(100) 올림 70800 — ±1% 클램프(70700)가 아님
+    assert buys[0]["limit"] == 70800, f"주식 지정가 변화: {buys[0]['limit']}"
+
+
 def test_rejected_order_releases_intent_for_retry(isolated_trader, monkeypatch):
     """KIS 거부(주문 미생성) → intent 해제 → 당일 재시도 가능 (리뷰 D5-5).
 

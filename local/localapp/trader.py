@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 import quant_core as qc
 from quant_core.exec_defaults import instrument_spec, merged_execution
+from quant_core.futures_contract import futures_market
 from quant_core.futures_expiry import roll_lead_days
 
 from .broker import Broker
@@ -43,6 +44,12 @@ log = logging.getLogger("localapp.trader")
 # 같은 thread 재획득이 필요하다(일반 Lock이면 self-deadlock). 데드락의 다른
 # 경로(_apply_fill→ks hook→cycle)는 hook을 임계구역 밖에서 호출해 회피한다.
 _CYCLE_LOCK = threading.RLock()
+
+# KRX 파생 실시간가격제한 — 직전약정가 대비 주문 수용 밴드(%). 코스피200선물 ±1%
+# (KRX 파생상품시장 업무규정; 06-11 모의 실측 2건과 일치). 정적 상·하한(±8%)과
+# 별개의 동적 제약으로, 이를 넘는 지정가는 거래소/모의서버가 즉시 거부한다.
+# ⚠ 타 상품(코스닥150선물 등) 라이브 확장 시 상품별 밴드폭 확인 후 분기할 것.
+_KRX_FUT_RT_BAND_PCT = 1.0
 
 
 def _load_json(path: Path, default):
@@ -633,6 +640,14 @@ class Trader:
 
         시세 조회 실패/0이면 None — dataset 값으로 폴백하지 않는다(평면 혼용이
         사고 원인). 호출자가 발주를 보류하고 사유를 decisions로 표면화한다.
+
+        KRX 국내선물은 정적 상·하한 외에 **실시간가격제한**(직전약정가 ±1%,
+        코스피200선물)이 주문 수용의 binding 제약 — tolerance 1%를 틱 올림하면
+        밴드를 1틱 초과해 거부된다(06-11 실측 2건: 1231.30>1231.25,
+        1247.55>1247.50 — 둘 다 "모의투자 상/하한가 오류"). 밴드 *안쪽*으로
+        틱 라운딩(매수 down·매도 up)해 클램프한다. anchor와 발주 도달 사이
+        가격이 밴드폭 이상 움직이면 거부될 수 있으나, 거부는 intent failed로
+        마감돼 다음 사이클이 재시도한다(D5-5).
         """
         try:
             band = self.broker.quote_band(symbol)
@@ -642,14 +657,23 @@ class Trader:
         anchor = float(band.get("price") or 0)
         if anchor <= 0:
             return None
+        krx_fut = qc.is_futures(symbol) and futures_market(symbol) == "KRX"
         if side == "buy":
             limit = _round_limit(
                 anchor * (1 + policy["buy_tolerance_pct"] / 100.0), "up", symbol)
             upper = band.get("upper")
+            if krx_fut:
+                rt_up = _round_limit(
+                    anchor * (1 + _KRX_FUT_RT_BAND_PCT / 100.0), "down", symbol)
+                upper = min(upper, rt_up) if upper else rt_up
             return min(limit, upper) if upper else limit
         limit = _round_limit(
             anchor * (1 - policy["sell_tolerance_pct"] / 100.0), "down", symbol)
         lower = band.get("lower")
+        if krx_fut:
+            rt_dn = _round_limit(
+                anchor * (1 - _KRX_FUT_RT_BAND_PCT / 100.0), "up", symbol)
+            lower = max(lower, rt_dn) if lower else rt_dn
         return max(limit, lower) if lower else limit
 
     def _is_reserved_us(self, symbol: str) -> bool:
