@@ -1449,7 +1449,11 @@ class Trader:
         # 보다 실측 fallback이 본질적 해결.
 
         # ── 0. 이전 사이클 미체결 정리 ─────────────────────────────────────
+        log.info("[cycle-body] 미체결 정리 시작 (pending=%d건)", len(self.pending))
+        _t0 = time.monotonic()
         self._resolve_pending(decisions)
+        log.info("[cycle-body] 미체결 정리 완료 %.1fs (잔여=%d건) — 잔고 조회 시작",
+                  time.monotonic() - _t0, len(self.pending))
 
         # ── 1. 자본·day_start 갱신, kill switch 평가 ──────────────────────
         # equity는 계좌 전체 통합(국내+해외, KRW) — kill switch는 시장 무관 계좌 단위.
