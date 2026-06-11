@@ -998,8 +998,15 @@ export default function IrBuilder() {
                    onChange={(e) => setMaintMargin(e.target.value === "" ? "" : Number(e.target.value))} />
           </label>
         </div>
-        <div className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
-          발주는 시장이 결정합니다 — 국내(주식·선물)는 동시호가 시장가, 미국주식은 지정가.
+        <div className="muted" style={{ fontSize: 12, margin: "8px 0 0", lineHeight: 1.6 }}>
+          <strong>발주 방식은 거래 시장이 자동으로 정합니다</strong> (주문 유형 선택 없음):
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            <li>국내 주식·선물 — <strong>시장가</strong>. 진입은 개장 동시호가(→시초가),
+              청산은 종가 동시호가(→종가)에 단일가 체결.</li>
+            <li>미국 주식 — <strong>지정가</strong>. 개장 전 예약발주(실시간가 기준).
+              KIS가 미국 시장가를 지원하지 않습니다.</li>
+            <li>해외선물 — 실전 전용(모의투자 미지원).</li>
+          </ul>
         </div>
         {leverage > 1 && (
           <div className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
