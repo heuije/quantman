@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer,
   Scatter, Tooltip, XAxis, YAxis,
@@ -19,6 +19,13 @@ const C = {
   accent: "#d97757", muted: "#6f6a62", grid: "#e8e3db",
   up: "#de3033", down: "#1668c4", ink: "#20201d",
 };
+
+// 전체기간 백테스트는 equity가 수천 포인트(15년 ≈ 3,700 거래일)·trades가 수천 건까지 커지고,
+// recharts는 포인트·SVG 노드 수에 비례해 느려져 그대로 그리면 메인스레드가 멎는다.
+// 렌더만 줄인다(수신 데이터·지표는 불변): 버킷 min/max 보존 다운샘플 + 거래 마커 캡.
+const MAX_FULL_POINTS = 600;   // 이하는 다운샘플 생략 — 라이브 곡선 등 기존 소비처 렌더 보존
+const TARGET_BUCKETS = 200;    // 버킷당 최저·최고 2점 유지 → 렌더 ≤ ~400점, MDD 골짜기 보존
+const MARKER_CAP = 200;        // 거래가 이를 넘으면 마커 기본 OFF (토글로 수동 표시는 가능)
 
 const won = (v: number | null | undefined) =>
   v == null ? "—" : `${Math.round(v).toLocaleString()}원`;
@@ -76,11 +83,72 @@ function ChartTooltip({ active, payload, label }:
 }
 
 /** 자산곡선 차트 — 전략 vs Buy&Hold. trades가 있으면 진입▲/청산▼ 마킹. */
-export default function EquityChart({ equity, benchmark, trades }: Props) {
-  const [showTrades, setShowTrades] = useState(true);
+function EquityChart({ equity, benchmark, trades }: Props) {
+  const tradeCount = trades?.length ?? 0;
+  // 거래 마커 기본값 = 건수 기반(과다 마커는 SVG 노드 폭발). 사용자 토글은 해당 결과(trades
+  // 참조)에만 유효 — 새 결과로 바뀌면 기본값 복귀(이전 결과의 토글이 대용량 결과에 박제 방지).
+  const [override, setOverride] = useState<{ trades?: Trade[]; show: boolean } | null>(null);
+  const showTrades = override && override.trades === trades
+    ? override.show : tradeCount <= MARKER_CAP;
+
+  const { rows, distinctDates } = useMemo(() => {
+    const idx = new Map<string, number>();
+    const merged: Row[] = equity.map((p, i) => {
+      idx.set(p.date, i);
+      return {
+        date: p.date, 전략: p.value, "Buy&Hold": benchmark?.[i]?.value ?? null,
+        buy: null, sell: null, buyInfo: [], sellInfo: [],
+      };
+    });
+
+    if (tradeCount && showTrades) {
+      for (const t of trades!) {
+        const sym = (t["종목"] as string) ?? undefined;
+        const bi = idx.get(t["진입일"] as string);
+        const si = idx.get(t["청산일"] as string);
+        if (bi != null) {
+          merged[bi].buy = merged[bi].전략;            // 마커는 그날 자산곡선 값 위에
+          merged[bi].buyInfo.push({ sym, price: (t["진입가"] as number) ?? null });
+        }
+        if (si != null) {
+          merged[si].sell = merged[si].전략;
+          merged[si].sellInfo.push({
+            sym, price: (t["청산가"] as number) ?? null,
+            ret: (t["수익률(%)"] as number) ?? null,
+          });
+        }
+      }
+    }
+
+    if (merged.length <= MAX_FULL_POINTS) return { rows: merged, distinctDates: idx.size };
+
+    // 다운샘플 — 280px 차트에서 수천 점은 픽셀상 구분 불가. 버킷별 전략값 min/max를 남겨
+    // 곡선 형태(MDD 골짜기·고점)를 보존하고, 마커 행은 강제 포함해 거래 표식의 날짜·값을
+    // 원본 그대로 유지한다. 트레이드오프: 툴팁이 유지된 날짜에서만 뜬다(표시 한정, 데이터 불변).
+    const keep = new Set<number>([0, merged.length - 1]);
+    const bucket = Math.ceil(merged.length / TARGET_BUCKETS);
+    for (let b = 0; b < merged.length; b += bucket) {
+      const end = Math.min(b + bucket, merged.length);
+      let loI = -1, hiI = -1, lo = Infinity, hi = -Infinity;
+      for (let i = b; i < end; i++) {
+        const v = merged[i].전략;
+        if (v == null) continue;
+        if (v < lo) { lo = v; loI = i; }
+        if (v > hi) { hi = v; hiI = i; }
+      }
+      if (loI >= 0) keep.add(loI);
+      if (hiI >= 0) keep.add(hiI);
+    }
+    if (showTrades) {
+      for (let i = 0; i < merged.length; i++) {
+        if (merged[i].buyInfo.length || merged[i].sellInfo.length) keep.add(i);
+      }
+    }
+    const rows = [...keep].sort((a, z) => a - z).map((i) => merged[i]);
+    return { rows, distinctDates: idx.size };
+  }, [equity, benchmark, trades, tradeCount, showTrades]);
 
   // 데이터가 1점뿐이면 recharts가 x축에 같은 날짜를 반복 렌더해 버그처럼 보인다.
-  const distinctDates = new Set(equity.map((p) => p.date)).size;
   if (distinctDates < 2) {
     return (
       <div className="empty" style={{ height: 120 }}>
@@ -89,35 +157,7 @@ export default function EquityChart({ equity, benchmark, trades }: Props) {
     );
   }
 
-  const idx = new Map<string, number>();
-  const merged: Row[] = equity.map((p, i) => {
-    idx.set(p.date, i);
-    return {
-      date: p.date, 전략: p.value, "Buy&Hold": benchmark?.[i]?.value ?? null,
-      buy: null, sell: null, buyInfo: [], sellInfo: [],
-    };
-  });
-
-  const hasTrades = !!(trades && trades.length);
-  if (hasTrades && showTrades) {
-    for (const t of trades!) {
-      const sym = (t["종목"] as string) ?? undefined;
-      const bi = idx.get(t["진입일"] as string);
-      const si = idx.get(t["청산일"] as string);
-      if (bi != null) {
-        merged[bi].buy = merged[bi].전략;            // 마커는 그날 자산곡선 값 위에
-        merged[bi].buyInfo.push({ sym, price: (t["진입가"] as number) ?? null });
-      }
-      if (si != null) {
-        merged[si].sell = merged[si].전략;
-        merged[si].sellInfo.push({
-          sym, price: (t["청산가"] as number) ?? null,
-          ret: (t["수익률(%)"] as number) ?? null,
-        });
-      }
-    }
-  }
-
+  const hasTrades = tradeCount > 0;
   const fmt = (v: number) =>
     v >= 1e8 ? `${(v / 1e8).toFixed(1)}억`
       : v >= 1e4 ? `${Math.round(v / 1e4)}만` : `${v}`;
@@ -130,21 +170,25 @@ export default function EquityChart({ equity, benchmark, trades }: Props) {
           color: C.muted, marginBottom: 6, cursor: "pointer", userSelect: "none",
         }}>
           <input type="checkbox" checked={showTrades}
-                 onChange={(e) => setShowTrades(e.target.checked)} />
+                 onChange={(e) => setOverride({ trades, show: e.target.checked })} />
           거래 표시 (매수 ▲ · 매도 ▼)
+          {tradeCount > MARKER_CAP && (
+            <span>— 거래 {tradeCount.toLocaleString()}건이라 기본 꺼짐</span>
+          )}
         </label>
       )}
       <ResponsiveContainer width="100%" height={280}>
-        <ComposedChart data={merged} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
+        <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
           <CartesianGrid stroke={C.grid} />
           <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={50} />
           <YAxis tickFormatter={fmt} tick={{ fontSize: 11 }} width={52} />
           <Tooltip content={<ChartTooltip />} />
           <Legend />
           <Line type="monotone" dataKey="전략" stroke={C.accent}
-                dot={false} strokeWidth={2} />
+                dot={false} strokeWidth={2} isAnimationActive={false} />
           <Line type="monotone" dataKey="Buy&Hold" stroke={C.muted}
-                dot={false} strokeWidth={1.5} strokeDasharray="4 3" />
+                dot={false} strokeWidth={1.5} strokeDasharray="4 3"
+                isAnimationActive={false} />
           {hasTrades && showTrades && (
             <Scatter name="매수" dataKey="buy" fill={C.up}
                      shape={<BuyMarker />} legendType="triangle" isAnimationActive={false} />
@@ -158,3 +202,7 @@ export default function EquityChart({ equity, benchmark, trades }: Props) {
     </div>
   );
 }
+
+// 부모 상태 변경(예: 모의적용 클릭이 켜는 saving 토글)이 무거운 차트 재렌더로 번지지 않게,
+// props(결과 객체의 배열 참조)가 같으면 렌더를 건너뛴다.
+export default memo(EquityChart);
