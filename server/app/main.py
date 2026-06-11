@@ -143,6 +143,10 @@ def _refresh_krx() -> None:
 def _refresh_naver() -> None:
     result = naver_fundamentals.refresh()
     _log.info("NAVER 펀더멘털 갱신 결과: %s", result)
+    # 밸류(PBR/PER)는 NAVER가 아닌 canonical OpenDART에서 — NAVER 고유필드(EPS·BPS·DPS·배당·
+    # 외국인) merge 직후 같은 자리에 적재해야, 스냅샷 통째 재구축(15:45·부팅) 후에도 NAVER와 동일
+    # cadence로 항상 채워진다(17:30 앵커에만 두면 부팅~17:30 사이 스크리너 밸류 공백 = 회귀).
+    _materialize_kr_valuation()
     # preview trigger 없음 — 위와 동일
 
 
@@ -174,6 +178,28 @@ def _refresh_us_fundamentals() -> None:
     res = fundamental_us.fetch(tickers)
     _log.info("US 펀더멘털(SEC) %d종목: %s", len(tickers), res)
     data_cache.invalidate()                      # 다음 로드 시 펀더멘털 attach
+
+
+def _materialize_kr_valuation() -> None:
+    """canonical OpenDART 밸류(pb_ratio·trailing_pe) 최신 단면을 스크리너 스냅샷에 적재.
+
+    스크리너 PBR/PER을 360·백테스트와 동일 출처(OpenDART)로 일원화 — 같은 get_projected 계산을
+    쓰므로 값이 구조적으로 일치(NAVER 별도 소스 제거). recent_days 소량이어도 펀더멘털은 full로
+    attach되고 pb는 룩백이 없어 최신 행 값이 full 계산과 동일(get_projected 불변식). 스냅샷에 있는
+    종목만 갱신, OpenDART 미적재 종목은 None(가짜 채움 0 — 정직)."""
+    proj = data_cache.get_projected(["pb_ratio", "trailing_pe"], symbols=None, recent_days=10)
+    updates: dict[str, dict] = {}
+    for sym, df in proj.items():
+        row: dict = {}
+        for col, key in (("pb_ratio", "pbr"), ("trailing_pe", "per")):
+            if col in df.columns:
+                s = df[col].dropna()
+                if len(s):
+                    row[key] = float(s.iloc[-1])
+        if row:
+            updates[sym] = row
+    n = krx_cache.merge_fields(updates)
+    _log.info("스크리너 밸류 일원화(OpenDART) — %d종목 pbr/per 적재", n)
 
 
 def _backfill_kr_fundamentals_chunk() -> None:

@@ -35,9 +35,8 @@ _API_URL = "https://m.stock.naver.com/api/stock/{code}/integration"
 _UA = "Mozilla/5.0 (Linux; Android 10) quant-platform/0.6"
 
 # 우리가 뽑을 NAVER totalInfos.code → daily_metrics 필드 매핑
+# PBR/PER은 canonical OpenDART로 일원화(360·백테스트와 동일 출처) — 여기서 안 가져온다.
 _FIELD_MAP = {
-    "per":                "per",
-    "pbr":                "pbr",
     "eps":                "eps",
     "bps":                "bps",
     "dividend":           "dps",
@@ -96,9 +95,6 @@ def _fetch_one(symbol: str, timeout: int = 8) -> dict | None:
             continue
         val = _parse_num(it.get("value"))
         if val is None:
-            continue
-        # PER/PBR 음수·0 → None (적자/자본잠식)
-        if code in ("per", "pbr") and val <= 0:
             continue
         out[_FIELD_MAP[code]] = val
     return out if out else None
