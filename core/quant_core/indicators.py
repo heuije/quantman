@@ -240,14 +240,17 @@ def add_fundamentals(df: pd.DataFrame, fund_df: Optional[pd.DataFrame]) -> pd.Da
         df["fcf_yield"] = fund_d["ttm_fcf"] / mkt_cap.replace(0, np.nan) * 100
 
     # ── Trailing P/E = Close / (TTM 순이익 / 주식수)
+    # EPS<=0(적자)이면 PER은 미정의(NaN) — 음수 PER은 '싼 것'이 아니라 적자 신호라
+    # "저평가"=낮은값 랭킹을 오염시킨다(분모 비양수 → NaN).
     if "ttm_ni" in fund_d.columns:
         ttm_eps = fund_d["ttm_ni"] / shares.replace(0, np.nan)
-        df["trailing_pe"] = df["Close"] / ttm_eps.replace(0, np.nan)
+        df["trailing_pe"] = df["Close"] / ttm_eps.where(ttm_eps > 0)
 
     # ── P/B = Close / (자기자본 / 주식수)
+    # BVPS<=0(자본잠식)이면 PBR은 미정의(NaN) — 음수 PBR은 부실 신호지 저평가가 아니다.
     if "stockholders_equity" in fund_d.columns:
         bvps = fund_d["stockholders_equity"] / shares.replace(0, np.nan)
-        df["pb_ratio"] = df["Close"] / bvps.replace(0, np.nan)
+        df["pb_ratio"] = df["Close"] / bvps.where(bvps > 0)
 
     # ── Altman Z-Score = 1.2×WC/TA + 1.4×RE/TA + 3.3×EBIT/TA + 0.6×MktCap/TL + 1.0×Rev/TA
     z_cols = ["z_wc_ta", "z_re_ta", "z_ebit_ta", "z_tl", "z_rev_ta"]
