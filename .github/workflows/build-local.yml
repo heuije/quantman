@@ -1,10 +1,16 @@
 name: Build Local App
 
-# Windows·macOS 양쪽 PyInstaller 빌드 + (옵션) GitHub Release publish.
+# Windows·macOS 양쪽 PyInstaller 빌드 + GitHub Release publish.
 #
 # Trigger:
 #   - workflow_dispatch: 수동 실행 (publish 여부 입력)
 #   - push tag (v*.*.*): tag 푸시 시 자동 빌드 + publish
+#
+# 구조 (2026-06-11 재설계): 이전의 build → upload-artifact → publish(download) 3단은
+# 릴리즈마다 zip 수백 MB를 artifact 저장소(Free 플랜 500MB 쿼터)에 누적해
+# v0.9.31-beta publish가 "Artifact storage quota has been hit"으로 실패했다.
+# 이제 release를 먼저 만들고 각 빌드 잡이 zip을 release에 **직접 업로드**한다 —
+# artifact는 수동 smoke build(workflow_dispatch publish=false)에서만 사용(쿼터 무관).
 #
 # macOS는 cross-compile 불가 — macos-14 (Apple Silicon) runner에서 직접 빌드.
 # Release publish는 cross-repo (source: MercKR/quantman → asset: MercKR/quantman-releases).
@@ -25,13 +31,70 @@ on:
       - 'v*-rc*'
 
 jobs:
+  create-release:
+    # 빌드 전에 release를 먼저 생성 — 빌드 잡들이 asset을 직접 업로드할 대상.
+    # 릴리즈노트 파일 검증도 여기서 — 없으면 3~4분 빌드를 돌리기 전에 fail fast.
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            v=$(grep -oP '__version__ = "\K[^"]+' local/localapp/__init__.py)
+            tag="v$v"
+          else
+            tag="${{ github.ref_name }}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag"
+
+      - name: Verify release notes file exists
+        run: |
+          notes="local/RELEASE_NOTES_${{ steps.tag.outputs.tag }}.md"
+          if [[ ! -f "$notes" ]]; then
+            echo "::error::Release notes file not found: $notes"
+            echo "Create local/RELEASE_NOTES_${{ steps.tag.outputs.tag }}.md before tagging."
+            exit 1
+          fi
+
+      - name: Create release (asset 없이 — 빌드 잡이 직접 업로드)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_PAT }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          # 재실행 멱등 — 이미 존재하면 그대로 사용 (asset은 --clobber로 덮어씀).
+          if gh release view "$tag" --repo MercKR/quantman-releases >/dev/null 2>&1; then
+            echo "release $tag already exists — reuse"
+            exit 0
+          fi
+          # --prerelease와 --latest는 GitHub API에서 동시 사용 불가 (422).
+          # v0.8.x 흐름과 일관성 위해 --latest 단독 (베타 표시는 tag '-beta' suffix로).
+          # 우리 updater는 /releases 전체에서 SemVer 정렬 후 첫 항목 선택이라
+          # latest 라벨이 자동 업데이트 cycle에 결정적.
+          gh release create "$tag" \
+            --repo MercKR/quantman-releases \
+            --title "$tag" \
+            --notes-file "local/RELEASE_NOTES_${tag}.md" \
+            --latest
+
   build-windows:
     runs-on: windows-latest
+    needs: [create-release]
+    # smoke build(dispatch publish=false)에선 create-release가 skip — 빌드는 항상 수행.
+    # create-release가 '실패'(릴리즈노트 누락 등)면 빌드도 중단(fail fast).
+    if: |
+      always() && !cancelled() &&
+      (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
     defaults:
       run:
         working-directory: local
-    outputs:
-      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -70,19 +133,32 @@ jobs:
           Compress-Archive -Path $src -DestinationPath $dst -CompressionLevel Optimal
           Get-Item $dst | Select-Object Name, Length
 
+      - name: Upload zip to release
+        if: needs.create-release.result == 'success'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_PAT }}
+        run: |
+          gh release upload "${{ needs.create-release.outputs.tag }}" `
+            --repo MercKR/quantman-releases --clobber `
+            "dist/MyStock-v${{ steps.ver.outputs.version }}-windows.zip"
+
       - uses: actions/upload-artifact@v4
+        if: needs.create-release.result == 'skipped'
         with:
           name: windows-zip
           path: local/dist/MyStock-v${{ steps.ver.outputs.version }}-windows.zip
-          retention-days: 14
+          retention-days: 3
 
   build-macos:
     runs-on: macos-14   # Apple Silicon (M-series). Intel은 macos-13.
+    needs: [create-release]
+    if: |
+      always() && !cancelled() &&
+      (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
     defaults:
       run:
         working-directory: local
-    outputs:
-      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -130,61 +206,18 @@ jobs:
             "MyStock-v$v-macos-arm64.zip"
           ls -lh "MyStock-v$v-macos-arm64.zip"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-zip
-          path: local/dist/MyStock-v${{ steps.ver.outputs.version }}-macos-arm64.zip
-          retention-days: 14
-
-  publish:
-    needs: [build-windows, build-macos]
-    if: |
-      startsWith(github.ref, 'refs/tags/v') ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish == true)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist-artifacts
-
-      - name: Determine tag
-        id: tag
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            tag="v${{ needs.build-windows.outputs.version }}"
-          else
-            tag="${{ github.ref_name }}"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "Release tag: $tag"
-
-      - name: Verify release notes file exists
-        run: |
-          notes="local/RELEASE_NOTES_${{ steps.tag.outputs.tag }}.md"
-          if [[ ! -f "$notes" ]]; then
-            echo "::error::Release notes file not found: $notes"
-            echo "Create local/RELEASE_NOTES_${{ steps.tag.outputs.tag }}.md before tagging."
-            exit 1
-          fi
-
-      - name: Publish to MercKR/quantman-releases
+      - name: Upload zip to release
+        if: needs.create-release.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.RELEASES_PAT }}
         run: |
-          tag="${{ steps.tag.outputs.tag }}"
-          notes="local/RELEASE_NOTES_${tag}.md"
-          # --prerelease와 --latest는 GitHub API에서 동시 사용 불가 (422).
-          # v0.8.x 흐름과 일관성 위해 --latest 단독 (베타 표시는 tag '-beta' suffix로).
-          # 우리 updater는 /releases 전체에서 SemVer 정렬 후 첫 항목 선택이라
-          # latest 라벨이 자동 업데이트 cycle에 결정적.
-          gh release create "$tag" \
-            --repo MercKR/quantman-releases \
-            --title "$tag" \
-            --notes-file "$notes" \
-            --latest \
-            dist-artifacts/windows-zip/*.zip \
-            dist-artifacts/macos-zip/*.zip
+          gh release upload "${{ needs.create-release.outputs.tag }}" \
+            --repo MercKR/quantman-releases --clobber \
+            "dist/MyStock-v${{ steps.ver.outputs.version }}-macos-arm64.zip"
+
+      - uses: actions/upload-artifact@v4
+        if: needs.create-release.result == 'skipped'
+        with:
+          name: macos-zip
+          path: local/dist/MyStock-v${{ steps.ver.outputs.version }}-macos-arm64.zip
+          retention-days: 3
