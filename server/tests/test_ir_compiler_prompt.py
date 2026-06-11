@@ -55,6 +55,16 @@ def test_route_directional_ranking_stays_scheduled():
     assert out["position"]["entry"]["mode"] == "scheduled"
 
 
+def test_route_directional_sets_explicit_threshold():
+    """라우팅 시 threshold 미지정(None)을 0으로 명시 — None은 _select(랭킹 추락)와
+    _direction_for(0.0)가 다르게 해석돼 단일 종목 롱·숏 동시 후보 사고를 냈다(2026-06-11)."""
+    out = ic._route_directional(_ls("scheduled", 0))
+    assert out["position"]["entry"]["threshold"] == 0.0
+    # 랭킹은 불변 — threshold를 건드리지 않는다
+    out2 = ic._route_directional(_ls("scheduled", 0, top_n=5))
+    assert out2["position"]["entry"].get("threshold") is None
+
+
 def test_route_directional_swing_stays_scheduled():
     """비당일(hold_days>=1) long_short는 불변(기존 scheduled TSMOM/팩터 보존)."""
     out = ic._route_directional(_ls("scheduled", 5))

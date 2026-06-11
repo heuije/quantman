@@ -667,6 +667,13 @@ def _select(alpha_row: pd.Series, pos, is_condition: bool):
         sel = list(a[a > 0].index)
         return ([], sel) if direction == "short" else (sel, [])
     thr = pos.entry.threshold
+    if (thr is None and direction == "long_short"
+            and pos.entry.top_n is None and pos.entry.top_pct is None):
+        # 부호방향 long_short(랭킹 파라미터 없음)의 기본 임계 = 0 — run_unified의
+        # _direction_for(threshold None→0.0)와 단일 의미. 이전엔 None이 아래 랭킹
+        # 분기(n//5)로 추락해 단일 종목이 nlargest/nsmallest 양쪽에 들어가 preview가
+        # 같은 종목을 롱·숏 동시 후보로 생성(양방향 동시 발주 위험, 2026-06-11 발견).
+        thr = 0.0
     if thr is not None:                  # 임계 선택 — 부호·수준 기준(횡단 랭킹과 직교; TSMOM 등)
         longs, shorts = list(a[a > thr].index), list(a[a < thr].index)
         if direction == "long":
