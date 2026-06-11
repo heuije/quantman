@@ -575,7 +575,12 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
 
     # as_of 스냅샷 (PIT — 미래행 미참조)
     if sel.as_of == "latest":
-        asof = score.index[-1]
+        # 마스터 인덱스 꼬리는 24/7 시리즈(암호화폐 등) 때문에 주식 마지막 종가일보다
+        # 미래로 뻗을 수 있고 그 행은 score 전부 NaN — 마지막 '유효' 단면을 집는다.
+        valid = score.dropna(how="all")
+        if valid.empty:
+            return _empty("score가 비결측 값을 가진 날짜가 없습니다.")
+        asof = valid.index[-1]
     else:
         prior = score.index[score.index <= pd.Timestamp(sel.as_of)]
         if len(prior) == 0:

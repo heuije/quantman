@@ -76,6 +76,28 @@ def test_run_select_screener_eligibility():
     assert [r["symbol"] for r in res["results"]] == ["AAA", "CCC"]
 
 
+def test_run_select_latest_skips_trailing_all_nan_rows():
+    # kind=all 유니버스에 24/7 시리즈(암호화폐 등)가 섞이면 마스터 인덱스가 주식 마지막
+    # 종가일 너머(주말·당일 새벽)까지 뻗고, 그 끝 행은 score(pb_ratio)가 전부 NaN이다.
+    # latest는 마지막 인덱스가 아니라 score가 하나라도 비결측인 마지막 단면을 집어야 한다.
+    stock_end = _DS["AAA"].index[-1]
+    btc_idx = pd.date_range("2021-01-01", stock_end + pd.Timedelta(days=3), freq="D")
+    n = len(btc_idx)
+    btc = pd.DataFrame({"Open": np.full(n, 50.0), "High": np.full(n, 51.0),
+                        "Low": np.full(n, 49.0), "Close": np.full(n, 50.0),
+                        "Volume": np.full(n, 1e6)}, index=btc_idx)   # pb_ratio 없음
+    ds = {**_DS, "BTC": btc}
+    s = StrategyIR.model_validate({"universe": {"kind": "all"}, "signal": _PB,
+                                   "query": "select",
+                                   "select": {"top_n": 3, "descending": False,
+                                              "display": ["pb_ratio"]}})
+    res = run_query(s, ds)
+    assert res["success"]
+    assert res["as_of"] == str(stock_end)[:10]               # BTC 꼬리 날짜가 아님
+    assert res["eligible_size"] == 5                          # 주식 5종 전부 유효
+    assert [r["symbol"] for r in res["results"]] == ["DDD", "AAA", "CCC"]
+
+
 def test_run_select_rejects_condition_signal():
     bad = {"universe": {"kind": "list", "symbols": ["AAA"]},
            "signal": {"op": "compare", "params": {"op": ">"},
