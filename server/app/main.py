@@ -263,6 +263,20 @@ def _refresh_dataset_all() -> None:
     _refresh_kr_dataset()
 
 
+def _package_bundle() -> None:
+    """dataset bundle 재패키징 — 반드시 dataset refresh '완료' 뒤에서만 호출한다.
+
+    이전 구조(고정 시각 cron 07:45/18:30 + boot+300s 고정 sleep)는 refresh '진행 중'
+    디스크를 묶은 부분 bundle을 만들 수 있었고(재배포 직후엔 빈 디스크), bundle
+    부재(410) 창과 결합해 로컬앱이 manifest 폴백 grind(시간 단위)로 추락 →
+    `_REFRESH_LOCK` 컨보이로 발주 사이클이 통째로 블록되는 사고를 유발했다
+    (2026-06-10 무발주 인시던트 RC-1/D4-1·D4-6,
+    docs/incidents/2026-06-10-autotrading-week-retrospective.md).
+    """
+    from .routers import dataset as dataset_router
+    dataset_router.build_bundle()
+
+
 def _refresh_kospi_futures() -> None:
     """KOSPI200 선물 일봉 — 번들 CSV로 깊은 과거(2010+) base 시드 + KIS 최근분 증분 append.
 
@@ -361,6 +375,7 @@ def _refresh_global_dataset() -> None:
     except Exception:
         _log.exception("us_metrics 갱신 실패 (미국 스크리너 영향)")
     _trigger_preview("dataset_global")
+    _package_bundle()
 
 
 def _refresh_us_market_caps() -> None:
@@ -422,6 +437,7 @@ def _refresh_kr_dataset() -> None:
 
     data_cache.invalidate()
     _trigger_preview("dataset_kr")
+    _package_bundle()
 
 
 def _seed_sp500_overseas() -> int:
@@ -519,19 +535,8 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_static_meta_refresh, daemon=True).start()
     _log.info("dataset 초기 갱신 thread 시작")
     threading.Thread(target=_initial_dataset_refresh, daemon=True).start()
-    # Phase 58-C — dataset 초기 갱신 후 bundle 한 번 packaging (사용자가 다음
-    # cron 도래 전에도 bundle 받을 수 있게). dataset thread가 끝난 후 호출.
-    def _initial_bundle_after_dataset():
-        # dataset 초기 fetch가 끝날 때까지 충분히 기다림 (보수적 5분).
-        # 길게 잡아도 사용자 영향 없음 — daemon thread.
-        time.sleep(300)
-        try:
-            from .routers import dataset as dataset_router
-            dataset_router.build_bundle()
-        except Exception as e:
-            _log.warning("초기 bundle packaging 실패: %s", e)
-    threading.Thread(target=_initial_bundle_after_dataset,
-                     daemon=True, name="bundle-initial").start()
+    # bundle packaging은 _refresh_global_dataset/_refresh_kr_dataset 끝에서
+    # refresh '완료' 이벤트로 수행 — _package_bundle docstring 참조.
     _log.info("미국 시가총액 초기 fetch thread 시작")
     threading.Thread(target=_initial_us_market_caps, daemon=True).start()
     _log.info("선물 grid 워머 thread 시작")
@@ -599,21 +604,8 @@ async def lifespan(app: FastAPI):
         CronTrigger(hour=18, minute=15),
         id="dataset_kr", replace_existing=True)
 
-    # Phase 58-C — Dataset bundle packaging.
-    # 글로벌 dataset(07:30) + 한국 dataset(18:15) 갱신 직후 packaging.
-    # 사용자 로컬앱은 08:00 KST sync로 글로벌 + 어제 한국 close 묶음을 받음.
-    # 한국 close(18:15) 후 packaging은 다음 날 사용자 sync에 반영.
-    def _do_package_bundle():
-        from .routers import dataset as dataset_router
-        return dataset_router.build_bundle()
-    scheduler.add_job(
-        lambda: _run_with_retry("bundle_morning", _do_package_bundle, scheduler),
-        CronTrigger(hour=7, minute=45),
-        id="bundle_morning", replace_existing=True)
-    scheduler.add_job(
-        lambda: _run_with_retry("bundle_evening", _do_package_bundle, scheduler),
-        CronTrigger(hour=18, minute=30),
-        id="bundle_evening", replace_existing=True)
+    # Dataset bundle packaging은 고정 시각 cron이 아니라 각 dataset refresh의
+    # 끝(_package_bundle)에서 이벤트로 수행 — 부분/부재 bundle 창 제거 (D4-1·D4-6).
 
     # 10분마다 — KR 펀더멘털(OpenDART) 증분 백필 청크. 짧게 자주 → 재배포 폭주에도 정체 없이
     # 전진(한 방 17:30 의존이 폭주에 죽어 24h 0건이던 근본 수정, 2026-06-10). budget 1500=~150종목.
