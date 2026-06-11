@@ -47,7 +47,7 @@ class SimBroker:
     def buy_limit(self, symbol, qty, limit_price): return self._order("buy", symbol, qty, limit_price)
     def sell_limit(self, symbol, qty, limit_price): return self._order("sell", symbol, qty, limit_price)
     def buy_resv_limit(self, symbol, qty, limit_price): return self._order("buy", symbol, qty, limit_price)
-    def sell_resv_moo(self, symbol, qty): return self._order("sell", symbol, qty)
+    def sell_resv_limit(self, symbol, qty, limit_price): return self._order("sell", symbol, qty, limit_price)
 
     def cancel(self, order_no, symbol, qty) -> dict:
         if order_no in self._statuses:

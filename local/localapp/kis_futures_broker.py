@@ -582,7 +582,7 @@ class KisFuturesBroker:
     def buy_resv_limit(self, symbol: str, qty: int, limit_price) -> dict:
         raise NotImplementedError("선물은 예약주문 미지원 — 정규장 buy_limit/buy 사용(Trader가 즉시주문 경로로 라우팅).")
 
-    def sell_resv_moo(self, symbol: str, qty: int) -> dict:
+    def sell_resv_limit(self, symbol: str, qty: int, limit_price) -> dict:
         raise NotImplementedError("선물은 예약주문 미지원 — 정규장 sell_limit/sell 사용.")
 
     # ── phase 2 (연속장 라이브 검증 후 구현) — 정정취소·체결조회 ──────────────────────

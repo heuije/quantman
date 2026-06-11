@@ -637,6 +637,24 @@ class Trader:
         return (self._reserved_us and _currency_of(symbol) == "USD"
                 and not qc.is_futures(symbol))
 
+    def _us_limit(self, symbol: str, side: str, policy: dict,
+                  fallback_ref: float) -> float:
+        """미국 지정가 = 신선한 현재가 × (1 ± tol) — 시장가 근사(market-proxy).
+
+        미국주식은 KIS가 연속장 시장가를 미지원해 지정가만 가능하다. 지정가가 개장가
+        /종가를 넉넉히 brackets하도록 *신선한* 현재가(_safe_price=HHDFS00000300 실시간/
+        프리마켓)에 tol 버퍼를 둔다 — 이게 라이브가 백테스트의 시가/종가 체결을 재현하는
+        핵심. 전일종가(fallback_ref)는 미국 애프터마켓·갭을 못 담아 미체결을 유발하므로
+        *현재가 조회 실패 시에만* 후퇴한다(외부 시스템 한계 정당 fallback).
+        side='buy'면 +tol·위로 라운드업(개장가 위), 'sell'이면 −tol·아래로 라운드다운(종가 아래).
+        tol = policy.buy/sell_tolerance_pct (미국 전용·유저 override 가능·default ±3%)."""
+        ref = self._safe_price(symbol) or fallback_ref
+        if side == "buy":
+            return _round_limit(ref * (1 + policy["buy_tolerance_pct"] / 100.0),
+                                "up", symbol)
+        return _round_limit(ref * (1 - policy["sell_tolerance_pct"] / 100.0),
+                            "down", symbol)
+
     def _submit_buy(self, sid: str, strat_name: str, strat_def: dict,
                     symbol: str, qty: int, ref_price: float, policy: dict,
                     decisions: list[dict], catchup: bool = False) -> None:
@@ -648,15 +666,12 @@ class Trader:
                       qty, ref_price)
 
         # 미국 예약매수 — 개장 전(접수창) 발주, 정규장 개시에 KIS가 자동 전송.
-        # KIS는 미국 시장가 매수가 없어 지정가만 가능 → buy_tolerance 반영 limit.
+        # KIS는 미국 시장가 매수가 없어 지정가만 가능 → 신선한 현재가×(1+tol) limit
+        # (전일종가 ref_price는 갭을 못 담아 _us_limit이 fallback으로만 씀).
         # catch-up과 배타적(_reserved_us는 정상 cycle US에서만 True).
         is_resv = self._is_reserved_us(symbol)
         if is_resv:
-            limit = _round_limit(
-                ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
-                "up", symbol)
-            limit = qc.apply_daily_price_limit(
-                limit, ref_price, "buy", _currency_of(symbol))
+            limit = self._us_limit(symbol, "buy", policy, ref_price)
             try:
                 r = self.broker.buy_resv_limit(symbol, qty, limit)
             except Exception as e:
@@ -732,22 +747,35 @@ class Trader:
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell",
                       qty, ref_price)
-        # 미국 예약매도 — MOO(장개시시장가)로 개시가 체결. 개장 전 접수.
+        # 미국 예약매도 — 지정가(00). 개장 전 접수 → 개장 단일가 체결(MOO 대신 지정가:
+        # 모의=실전 통일). limit=신선한가×(1−tol)이 개장가보다 낮아 매도 체결(_us_limit).
         is_resv = self._is_reserved_us(symbol)
         if is_resv:
-            limit = 0
+            limit = self._us_limit(symbol, "sell", policy, ref_price)
             try:
-                r = self.broker.sell_resv_moo(symbol, qty)
+                r = self.broker.sell_resv_limit(symbol, qty, limit)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell_resv_moo: {e}")
+                intents.mark_failed(today_iso, intent_id, f"sell_resv_limit: {e}")
                 log.error("미국 예약매도 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
                 return
-            log.info("[us-resv] %s 예약매도 MOO", symbol)
+            log.info("[us-resv] %s 예약매도 지정가 limit=%s", symbol, limit)
+        elif _currency_of(symbol) == "USD":
+            # 미국 즉시매도(종가 청산 cycle) — 지정가(00). KIS 연속장 시장가 미지원이라
+            # 신선한 현재가×(1−tol) 지정가로 시장가 근사. (국내는 아래 시장가 분기)
+            limit = self._us_limit(symbol, "sell", policy, ref_price)
+            try:
+                r = self.broker.sell_limit(symbol, qty, limit)
+            except Exception as e:
+                intents.mark_failed(today_iso, intent_id, f"sell_limit: {e}")
+                log.error("미국 매도 지정가 발주 실패 [%s]: %s", symbol, e)
+                decisions.append(order_log.decision(
+                    "error", sid, strat_name, symbol, f"발주 예외: {e}"))
+                return
+            log.info("[us-close] %s 즉시 매도 지정가 limit=%s", symbol, limit)
         else:
             # 국내 즉시 매도 — 시장가. 종가 동시호가 발주 → 종가 단일가 체결.
-            # 미국은 위 is_resv(MOO)로 분기.
             limit = 0
             try:
                 r = self.broker.sell(symbol, qty)
@@ -1224,8 +1252,9 @@ class Trader:
         당일매매를 건드리지 않는다 — cycle_exit_reason Stage B 분기).
 
         instrument_class ∈ {"stock","futures"} — 주식/선물 종가 발주창이 다르므로(스케줄러가
-        분리 cron으로 호출) 종목 클래스로 라우팅한다. 국내는 시장가 단일(종가 단일가
-        체결). 청산 수량은 main loop와 동일하게 KIS 실보유로 클램프(L-04, snap_pre).
+        분리 cron으로 호출) 종목 클래스로 라우팅한다. 국내는 시장가 단일(종가 단일가 체결),
+        미국주식은 라이브 지정가(_submit_sell USD 분기, 신선한가×(1−tol) 시장가근사 — KIS 연속장
+        시장가 미지원). 청산 수량은 main loop와 동일하게 KIS 실보유로 클램프(L-04, snap_pre).
         파싱 실패 고아는 hold_days 불명 → skip(main loop·Monitor가 표면화).
         """
         decisions: list[dict] = []

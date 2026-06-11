@@ -29,12 +29,12 @@ from localapp.kis_futures_broker import (
 
 
 def test_reservation_orders_raise_for_futures():
-    """선물은 예약주문 미지원 — buy_resv_limit/sell_resv_moo는 명시 오류(__init__ 우회로 가드만 검증)."""
+    """선물은 예약주문 미지원 — buy_resv_limit/sell_resv_limit는 명시 오류(__init__ 우회로 가드만 검증)."""
     b = object.__new__(KisFuturesBroker)              # creds 불요 — 가드는 즉시 raise
     with pytest.raises(NotImplementedError):
         b.buy_resv_limit("A01606", 1, 350.0)
     with pytest.raises(NotImplementedError):
-        b.sell_resv_moo("A01606", 1)
+        b.sell_resv_limit("A01606", 1, 350.0)
 
 
 def test_build_order_body_buy():

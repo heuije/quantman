@@ -176,6 +176,8 @@ export default function IrBuilder() {
   // 포지션 세부·오버레이 (A6)
   const [maxPositionPct, setMaxPositionPct] = useState<number | "">("");
   const [futuresMarginPct, setFuturesMarginPct] = useState<number | "">("");
+  // 미국 주식 지정가 체결 허용범위(±%). 빈칸=시스템 기본(±3%). 진입(+)·청산(−) 공통.
+  const [usTolerancePct, setUsTolerancePct] = useState<number | "">("");
   const [volWindow, setVolWindow] = useState(20);
   const [volTarget, setVolTarget] = useState<number | "">("");
   const [turnoverDamp, setTurnoverDamp] = useState<number | "">("");
@@ -282,6 +284,8 @@ export default function IrBuilder() {
     setWeightsText(weightsToText(sz.weights));
     setAmountPct(sz.mode === "pct_cash" ? numOrEmpty(sz.amount_pct) : "");
     setAmountKrw(sz.mode === "fixed_amount" ? numOrEmpty(sz.amount_krw) : "");
+    // 미국 체결 허용범위 — 저장된 override(buy=sell 동일값)를 복원, 없으면 빈칸(기본 ±3%)
+    setUsTolerancePct(numOrEmpty(def.execution?.buy_tolerance_pct));
     const en = p.entry ?? ({} as IrStrategyDef["position"]["entry"]);
     setEntryMode(en.mode ?? "on_signal");
     setRebalance(en.rebalance ?? "monthly");
@@ -425,13 +429,20 @@ export default function IrBuilder() {
       condition: useExitCond ? exitCond : null,
     };
 
+    // 발주 방식은 시장이 결정(국내=시장가·미국=지정가) — execution 토글 없음. 단,
+    // 미국 지정가 체결 허용범위(tolerance)는 유저가 전략별로 조정 가능. 빈칸이면 미지정 →
+    // 백엔드 merged_execution이 기본(±3%)으로 채움. 값이 있으면 진입(+)·청산(−) 공통 적용.
+    const execution: Record<string, unknown> | undefined =
+      usTolerancePct === "" ? undefined
+        : { buy_tolerance_pct: usTolerancePct, sell_tolerance_pct: usTolerancePct };
+
     return {
       name: name.trim() || "새 전략",
       universe,
       signal,
       position: { direction, sizing, entry, exit, overlays },
       simulation: sim,
-      // 발주 방식은 시장이 결정(국내=시장가·미국=지정가) — execution 미지정, 백엔드 merged_execution이 채움.
+      ...(execution ? { execution } : {}),
       query,
       ...(study ? { study } : {}),
     };
@@ -1003,11 +1014,20 @@ export default function IrBuilder() {
           <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
             <li>국내 주식·선물 — <strong>시장가</strong>. 진입은 개장 동시호가(→시초가),
               청산은 종가 동시호가(→종가)에 단일가 체결.</li>
-            <li>미국 주식 — <strong>지정가</strong>. 개장 전 예약발주(실시간가 기준).
-              KIS가 미국 시장가를 지원하지 않습니다.</li>
+            <li>미국 주식 — <strong>지정가</strong>. 개장 전 예약발주(진입)·폐장 5분 전(청산),
+              모두 <strong>신선한 실시간가 ±허용범위</strong> 기준. KIS가 미국 시장가를 지원하지 않습니다.</li>
             <li>해외선물 — 실전 전용(모의투자 미지원).</li>
           </ul>
         </div>
+        <label className="lab-field" style={{ marginTop: 8 }}>미국 주식 체결 허용범위 (±%)
+          <input type="number" step={0.5} min={0} value={usTolerancePct} placeholder="기본 ±3"
+                 onChange={(e) => setUsTolerancePct(e.target.value === "" ? "" : Number(e.target.value))} />
+          <span className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+            미국 주식 지정가를 실시간가 대비 얼마나 벌릴지 — 진입은 +%(위로), 청산은 −%(아래로).
+            크게 두면 미체결이 줄고(시장가에 가까움), 작게 두면 정확한 가격을 노립니다(미체결 위험↑).
+            국내(시장가)는 이 값을 쓰지 않습니다. <strong>라이브 체결 버퍼라 백테스트엔 영향 없음.</strong>
+          </span>
+        </label>
         {leverage > 1 && (
           <div className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
             레버리지(1배 초과)는 <strong>백테스트 전용</strong>입니다 — 모의·실전 적용은 차단됩니다.

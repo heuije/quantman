@@ -85,8 +85,8 @@ class BrokerRouter:
     def buy_resv_limit(self, symbol, qty, limit_price):
         return self._broker(symbol).buy_resv_limit(self._code(symbol), qty, limit_price)
 
-    def sell_resv_moo(self, symbol, qty):
-        return self._broker(symbol).sell_resv_moo(self._code(symbol), qty)
+    def sell_resv_limit(self, symbol, qty, limit_price):
+        return self._broker(symbol).sell_resv_limit(self._code(symbol), qty, limit_price)
 
     def price(self, symbol):
         # 해외선물(CME)은 overseas_price(별도 시세 엔드포인트). ⚠ scalc_desz 미전달이라 raw

@@ -660,14 +660,14 @@ class KisBroker:
         }
 
     def _submit_overseas_resv(self, symbol: str, qty: int, side: str,
-                               ord_dvsn: str, unit_price: float,
-                               market: str) -> dict:
+                               unit_price: float, market: str) -> dict:
         """미국 예약주문 — overseas-stock/v1/trading/order-resv endpoint.
 
         개장 전 접수 → KIS가 정규장 개시(22:30 서머타임)에 자동 전송.
-        매수는 지정가(ORD_DVSN=00, FT_ORD_UNPR3=지정가), 매도는 MOO 장개시
-        시장가(ORD_DVSN=31, FT_ORD_UNPR3=0). KIS는 미국 예약 *매수* 시장가를
-        지원하지 않으므로 매수는 지정가만 가능.
+        매수·매도 모두 **지정가(ORD_DVSN=00)**. KIS 예약매수는 지정가만 가능하고,
+        예약매도의 MOO(31)는 모의 지원이 미검증(KB GOTCHAS)이라 모의=실전 통일을
+        위해 양방향 00 지정가로 고정한다. limit=신선한 현재가×(1±tol)이 개장가를
+        넉넉히 brackets → 개장 단일가 체결(시장가 근사).
         """
         if market not in ("NAS", "NYS", "AMS"):
             return {"success": False, "message": f"예약주문 미지원 시장: {market}",
@@ -680,10 +680,9 @@ class KisBroker:
             "OVRS_EXCG_CD": excd,
             "PDNO": market_index.kis_ticker_of(symbol),   # 슬래시 정규화 (BRK/B)
             "FT_ORD_QTY": str(qty),
-            # 지정가는 소수 USD($0.01 틱), MOO(31)는 가격 미사용 → "0".
-            "FT_ORD_UNPR3": f"{unit_price:.2f}" if ord_dvsn == "00" else "0",
+            "FT_ORD_UNPR3": f"{unit_price:.2f}",            # 소수 USD($0.01 틱) 지정가
             "ORD_SVR_DVSN_CD": "0",
-            "ORD_DVSN": ord_dvsn,       # 00=지정가(매수), 31=MOO 장개시시장가(매도)
+            "ORD_DVSN": "00",          # 00=지정가 (예약 매수·매도 공통)
         }
         d = self._post_retry("/uapi/overseas-stock/v1/trading/order-resv", tr, body)
         return {
@@ -708,17 +707,21 @@ class KisBroker:
         return self._submit(symbol, qty, "sell", "00", float(limit_price))
 
     def buy_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
-        """미국 예약 매수 — 지정가. 개장 전 접수 → 시초가 전송."""
+        """미국 예약 매수 — 지정가(00). 개장 전 접수 → 개장 단일가 체결."""
         from . import market_index
         market = market_index.exchange_of(symbol) or "NAS"
-        return self._submit_overseas_resv(symbol, qty, "buy", "00",
+        return self._submit_overseas_resv(symbol, qty, "buy",
                                            float(limit_price), market)
 
-    def sell_resv_moo(self, symbol: str, qty: int) -> dict:
-        """미국 예약 매도 — MOO(장개시시장가). 개장 전 접수 → 시초가 시장가 체결."""
+    def sell_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
+        """미국 예약 매도 — 지정가(00). 개장 전 접수 → 개장 단일가 체결.
+
+        MOO(31) 대신 지정가 — 예약매도 MOO의 모의 지원이 미검증이라 모의=실전
+        통일 위해 지정가로 발주(limit=현재가×(1−tol)이 개장가보다 낮아 매도 체결)."""
         from . import market_index
         market = market_index.exchange_of(symbol) or "NAS"
-        return self._submit_overseas_resv(symbol, qty, "sell", "31", 0.0, market)
+        return self._submit_overseas_resv(symbol, qty, "sell",
+                                           float(limit_price), market)
 
     # ── 주문 취소 / 조회 ──────────────────────────────────────────────────────
 

@@ -90,9 +90,10 @@ export interface ExecutionPolicy {
   atr_mult?: number;                      // ATR × 이 배수 = 1주당 손절폭
   max_position_pct?: number | null;       // 단일 종목 비중 상한 (자본 %). null=한도 없음
   max_drawdown_pct?: number | null;       // 누적 손실 한도 (자본 고점 대비). null=한도 없음
-  // 발주 방식은 시장이 결정(국내=시장가·미국주식=지정가). tolerance는 미국 지정가 버퍼용.
-  buy_tolerance_pct?: number;             // 미국 매수 지정가 = 기준가 × (1 + N%) — 갭상승 허용 범위
-  sell_tolerance_pct?: number;            // 미국 매도 지정가 = 기준가 × (1 - N%) — 갭하락 허용 범위
+  // 발주 방식은 시장이 결정(국내=시장가·미국주식=지정가). tolerance는 **미국 지정가 버퍼 전용**
+  // (라이브 체결 버퍼, 백테스트 무영향). 빈값이면 기본 ±3%. 유저가 빌더에서 전략별 조정.
+  buy_tolerance_pct?: number;             // 미국 매수 지정가 = 신선한 현재가 × (1 + N%) — 갭상승 허용
+  sell_tolerance_pct?: number;            // 미국 매도 지정가 = 신선한 현재가 × (1 − N%) — 갭하락 허용
   // Phase 39 + C-01 — 백테스트 비용 가정. 실매매(모의/실전) 영향 없음.
   bt_commission_bps?: number;             // 편도 위탁수수료 (bps). 3 = 0.03% (KIS 평균)
   bt_sell_tax_bps?: number;               // 매도 단방향 거래세 (bps). 23 = 0.23% (KOSPI/KOSDAQ 평균)
