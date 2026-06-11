@@ -665,13 +665,16 @@ class SettingsApp:
             new_mode = "wizard_kis"
 
         if getattr(self, "_setup_mode", None) != new_mode:
-            # 모드 전환 — 관련 위젯 모두 pack_forget 후 새 모드 순서로 재pack
+            # 모드 전환 — 관련 위젯 모두 pack_forget 후 새 모드 순서로 재pack.
+            # acct_frame(활성 계좌·전략)도 포함 — 미포함 시 wizard 편집 화면에서 카드가
+            # 안 숨겨져 자격증명 저장 버튼을 화면 밖으로 밀어낸다(v0.9.35 회귀 수정).
             for w in (self.setup_bar, self.setup_expanded, self.kf, self.pf,
-                       self.af, self.nb, self.refresh_btn):
+                       self.af, self.acct_frame, self.nb, self.refresh_btn):
                 w.pack_forget()
             if new_mode == "normal":
                 self.setup_bar.pack(fill="x", padx=12, pady=(4, 6))
                 self.af.pack(fill="x", padx=12, pady=(4, 6))
+                self.acct_frame.pack(fill="x", padx=12, pady=(4, 6))
                 self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 4))
                 self.refresh_btn.pack(anchor="e", padx=14, pady=(0, 10))
             elif new_mode == "wizard_kis":
