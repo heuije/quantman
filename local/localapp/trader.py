@@ -1235,7 +1235,11 @@ class Trader:
         for pos in positions:
             symbol = str(pos.get("symbol") or "")
             qty = int(pos.get("qty") or 0)
-            side = pos.get("side", "long")
+            # KIS 국내선물 잔고는 side를 'buy'/'sell'로 줘서 raw 비교('short')는
+            # 'sell' 숏을 롱으로 오인 → 청산(환매) 대신 추가 매도 = 숏 2배 확대
+            # (리뷰 D5-3). norm_side가 표기 분열을 닫는 단일 출처.
+            from .analytics import norm_side
+            side = norm_side(pos.get("side"))
             if not symbol or qty <= 0:
                 continue
             ref_price = self._safe_price(symbol) or 0.0
