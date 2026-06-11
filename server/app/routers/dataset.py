@@ -29,19 +29,26 @@ router = APIRouter(prefix="/dataset", tags=["dataset"])
 # 메모리 캐시 딕셔너리: key -> {"mtime": float, "size": int, "n_rows": int, "last_date": str}
 _MANIFEST_CACHE: dict[str, dict] = {}
 
-# Phase 58-C — Dataset bundle (tar.zst).
-# Railway disk ephemeral 가정. main.py가 dataset update cron 끝에서 호출한다.
-# /srv/core/data 옆에 임시 bundle 파일 + 메타(ETag).
+# Phase 58-C — Dataset bundle (tar.zst). main.py가 dataset refresh 완료 시 호출한다.
 _BUNDLE_LOCK = threading.Lock()
 
 
 def _bundle_path() -> Path:
-    """bundle 파일 경로 — DATA_DIR과 같은 폴더에 dataset-bundle.tar.zst."""
-    return _data_dir().parent / "dataset-bundle.tar.zst"
+    """bundle 파일 경로 — DATA_DIR **안**(영속 볼륨 위)에 dataset-bundle.tar.zst.
+
+    Railway 영속 볼륨은 DATA_DIR(/srv/data)에 마운트돼 있는데, 이전 코드는
+    bundle을 `DATA_DIR.parent`(=/srv, 컨테이너 휘발 영역)에 둬 **재배포마다
+    bundle만 증발** → 410 창 → 구버전 로컬앱이 manifest 폴백 grind로 추락해
+    발주 사이클이 통째로 블록됐다(2026-06-10 무발주 인시던트 RC-1/D4-1,
+    docs/incidents/2026-06-10-autotrading-week-retrospective.md).
+    build_bundle은 *.parquet만 tar에 담으므로(.tar.zst·.meta는 비포함) DATA_DIR
+    안에 둬도 자기 자신을 포함하지 않는다.
+    """
+    return _data_dir() / "dataset-bundle.tar.zst"
 
 
 def _bundle_meta_path() -> Path:
-    return _data_dir().parent / "dataset-bundle.meta"
+    return _data_dir() / "dataset-bundle.meta"
 
 
 def build_bundle() -> dict:
