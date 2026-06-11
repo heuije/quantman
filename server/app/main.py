@@ -352,8 +352,18 @@ def _refresh_kospi_futures() -> None:
         _log.info("KOSPI200 선물 KIS 증분 skip(최근월물 코드 해석 실패) — CSV 깊은 데이터로 운영")
         data_cache.invalidate()
         return
+    # F1(2026-06-11 인시던트): 미확정 당일 봉 차단 — KR선물 정규장 마감(15:45 KST) 전엔
+    # 전일까지만 수집한다. 형성 중 봉이 canonical에 들어가면 '전일 종가' 의미가 깨지고
+    # 장중에 재생성된 preview·백테스트가 미확정 값을 본다. 마감 후(16시~)엔 당일 확정 봉 수집.
+    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+    end_day = now_kst if now_kst.hour >= 16 else now_kst - timedelta(days=1)
+    today = end_day.strftime("%Y%m%d")
     since = existing.index.max().strftime("%Y%m%d")
-    today = datetime.now().strftime("%Y%m%d")
+    if since > today:
+        # 과도기(이전 코드가 형성 중 당일 봉을 이미 저장) — 마감 후 cron이 확정 봉으로 덮어쓴다
+        _log.info("KOSPI200 선물 KIS 증분 보류(장 마감 전, 당일 봉 미확정)")
+        data_cache.invalidate()
+        return
     merged = dfm.fetch_kis_futures_daily(sym, client.request, iscd=iscd, start=since, end=today)
     rng = f"{merged.index[0].date()}~{merged.index[-1].date()}" if len(merged) else "-"
     _log.info("KOSPI200 선물 KIS 증분 append: 총 %d행 (%s, 코드 %s, since %s)",
