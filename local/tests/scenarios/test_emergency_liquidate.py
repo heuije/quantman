@@ -69,6 +69,31 @@ def test_short_position_buys_to_close(isolated_trader):
     assert any(b["symbol"] == "101W09" and b["qty"] == 2 for b in buys)   # 숏 환매
 
 
+def test_kr_futures_sell_side_buys_to_close(isolated_trader):
+    """KR선물 잔고 표기(side='sell')의 숏도 환매로 청산 — raw 비교 회귀 방지.
+
+    근본 결함(리뷰 D5-3): KIS 국내선물 잔고 파서는 side를 'buy'/'sell'로 주는데
+    liquidate_all_held가 `== "short"` raw 비교를 써서 'sell' 숏을 롱으로 취급 →
+    **청산(환매) 대신 추가 매도 = 숏 2배 확대**. 비상 안전장치가 위험을 키우는
+    방향이라 directional 롱숏 라이브 전 필수 수정. norm_side(analytics)가 정확히
+    이 표기 분열('buy/sell' vs 'long/short')을 닫기 위해 존재한다.
+    """
+    trader, broker = isolated_trader
+    broker.set_positions([
+        {"symbol": "101W09", "qty": 2, "side": "sell", "avg_price": 300},   # KR선물 숏
+        {"symbol": "101W09X", "qty": 1, "side": "buy", "avg_price": 300},   # KR선물 롱
+    ])
+    broker._prices.update({"101W09": 310.0, "101W09X": 310.0})
+    trader.liquidate_all_held()
+    buys = [s for s in broker.submitted if s["side"] == "buy"]
+    sells = [s for s in broker.submitted if s["side"] == "sell"]
+    assert any(b["symbol"] == "101W09" and b["qty"] == 2 for b in buys), \
+        "side='sell' 숏은 환매(매수)여야 한다 — 매도면 숏 2배 확대"
+    assert not any(s["symbol"] == "101W09" for s in sells), \
+        "숏 보유에 추가 매도가 나가면 안 된다"
+    assert any(s["symbol"] == "101W09X" and s["qty"] == 1 for s in sells)   # 롱은 매도
+
+
 def test_skips_zero_qty_and_empty_holdings(isolated_trader):
     """보유 0/빈 계좌면 주문 0건 — 예외 없이 정상 종료."""
     trader, broker = isolated_trader
