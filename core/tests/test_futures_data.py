@@ -102,6 +102,26 @@ def test_fetch_kis_futures_daily_builds_params_and_appends(tmp_path, monkeypatch
     assert (tmp_path / "코스피200선물.parquet").exists()   # 실제 저장됨
 
 
+def test_fetch_kis_futures_daily_drops_bars_beyond_end(tmp_path, monkeypatch):
+    """PIT 불변식 — end(확정 세션) 너머의 형성 중 당일 봉은 canonical에 넣지 않는다.
+
+    2026-06-11 만기일 인시던트(F1): 장중 boot refresh가 형성 중 당일 봉을 dataset에
+    넣어 '전일 종가'(iloc[-1])가 미확정 장중값으로 오염 — preview 기준가·백테스트가
+    장중 값을 보게 됨. KIS가 요청 범위 밖 봉을 돌려줘도 필터링되어야 한다.
+    """
+    monkeypatch.setattr(df_mod, "DATA_DIR", tmp_path)
+
+    def fake_request(tr_id, params):
+        return {"output2": _KIS_OUTPUT2 + [
+            {"stck_bsop_date": "20260606", "futs_prpr": "999.99", "futs_oprc": "999.0",
+             "futs_hgpr": "999.99", "futs_lwpr": "999.0", "acml_vol": "1"},  # end 너머(형성 중)
+        ]}
+
+    out = fetch_kis_futures_daily("코스피200선물", fake_request, iscd="101S06",
+                                  start="20260601", end="20260605")
+    assert str(out.index.max().date()) == "2026-06-05",         f"end 너머 봉이 canonical에 들어감: {out.index.max()}"
+
+
 def test_seed_kis_futures_full_paginates_and_overwrites(tmp_path, monkeypatch):
     monkeypatch.setattr(df_mod, "DATA_DIR", tmp_path)
     # 기존 ETF orphan(2020, ~₩2.8만) — 덮어써져야 함(스케일 혼합 방지)

@@ -362,6 +362,11 @@ def fetch_kis_futures_daily(symbol: str, request_fn, *, iscd: str,
         "FID_PERIOD_DIV_CODE": "D",         # D:일봉
     })
     df = kis_futures_daily_to_ohlcv((resp or {}).get("output2") or [])
+    # PIT 불변식 — 호출자가 정한 end(확정 세션)까지만. KIS가 범위 밖(형성 중 당일 봉)을
+    # 돌려줘도 canonical dataset에 넣지 않는다 — 미확정 봉이 들어가면 '전일 종가'(iloc[-1])
+    # 의미가 깨져 preview 기준가·백테스트가 장중 값을 본다(2026-06-11 만기일 인시던트 F1).
+    if not df.empty:
+        df = df[df.index <= pd.Timestamp(end)]
     if df.empty:
         return _load_existing(symbol)
     return append_daily_bars(symbol, df)
