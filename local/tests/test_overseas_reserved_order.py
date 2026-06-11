@@ -130,6 +130,7 @@ def _trader_with_stub(monkeypatch, currency: str):
     monkeypatch.setattr(tr, "_currency_of", lambda s: currency)
 
     broker = MagicMock()
+    broker.quote_band.return_value = {"price": 100.0, "upper": None, "lower": None}  # 가격 평면 정책
     broker.buy_resv_limit.return_value = {"success": True, "order_no": "R1"}
     broker.sell_resv_moo.return_value = {"success": True, "order_no": "R2"}
     broker.buy_limit.return_value = {"success": True, "order_no": "L1"}

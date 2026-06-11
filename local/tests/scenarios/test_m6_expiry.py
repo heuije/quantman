@@ -79,6 +79,7 @@ class _ExpiryBroker(SimBroker):
 def test_entry_records_contract_and_expiry(isolated_trader):
     trader, _ = isolated_trader
     trader.broker = _ExpiryBroker()
+    trader.broker._prices["코스피200선물"] = 350.0   # 가격 평면 정책 — 발주는 broker 시세 필요
     trader._submit_buy("k1", "t", _strat_def_no_exit("long"),
                        "코스피200선물", 1, 350.0, merged_execution(None), [])
     on = trader.broker.submitted[-1]["order_no"]
@@ -92,6 +93,7 @@ def test_entry_records_contract_and_expiry(isolated_trader):
 def test_entry_equity_has_no_contract_keys(isolated_trader):
     # 주식 진입은 계약/만기 키 무부착 → ledger byte-identical (SimBroker엔 contract_expiry도 없음)
     trader, broker = isolated_trader
+    broker._prices["005930"] = 70_000.0           # 가격 평면 정책 — 발주는 broker 시세 필요
     trader._submit_buy("e1", "t", {}, "005930", 10, 70_000.0, merged_execution(None), [])
     on = broker.submitted[-1]["order_no"]
     broker.mark_filled(on, 10, 70_000.0)
@@ -107,6 +109,7 @@ def _dataset():
 
 def test_cycle_backstop_closes_near_expiry_long(isolated_trader):
     trader, broker = isolated_trader
+    broker._prices["코스피200선물"] = 350.0       # 가격 평면 정책 — 청산 발주도 broker 시세 필요
     trader.ledger["k1"] = _fut_pos("2026-06-04")            # 만기 임박 롱
     broker.set_positions([{"symbol": "코스피200선물", "qty": 1, "side": "long"}])
     trader.cycle([], _dataset(), today=date(2026, 6, 1), buy_candidates=[], market="KRX")
@@ -127,6 +130,7 @@ def test_cycle_no_close_when_far_expiry(isolated_trader):
 
 def test_cycle_backstop_closes_near_expiry_short(isolated_trader):
     trader, broker = isolated_trader
+    broker._prices["코스피200선물"] = 350.0       # 가격 평면 정책 — 청산 발주도 broker 시세 필요
     trader.ledger["s1"] = _fut_pos("2026-06-04", side="short")   # 만기 임박 숏
     broker.set_positions([{"symbol": "코스피200선물", "qty": 1, "side": "short"}])
     trader.cycle([], _dataset(), today=date(2026, 6, 1), buy_candidates=[], market="KRX")

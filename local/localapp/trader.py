@@ -623,6 +623,35 @@ class Trader:
 
     # ── 주문 발주 helpers ────────────────────────────────────────────────────
 
+    def _live_limit(self, symbol: str, side: str, policy: dict) -> float | None:
+        """즉시 지정가 산출 — 거래 평면(발주 직전 KIS 시세) 단일 출처.
+
+        가격 평면 정책(2026-06-11 선물 만기일 인시던트의 부류 수정): 연구용
+        dataset 값(연속물·전일 종가)은 신호·사이징 근거일 뿐, **주문 가격은
+        실제 주문 나가는 종목/계약의 실시간 시세**에서 만든다. anchor=현재가
+        ×(1±tolerance), 거래소 제공 상·하한가로 클램프(자체 ±% 재계산 제거).
+
+        시세 조회 실패/0이면 None — dataset 값으로 폴백하지 않는다(평면 혼용이
+        사고 원인). 호출자가 발주를 보류하고 사유를 decisions로 표면화한다.
+        """
+        try:
+            band = self.broker.quote_band(symbol)
+        except Exception as e:
+            log.error("발주용 시세 조회 실패 [%s]: %s", symbol, e)
+            return None
+        anchor = float(band.get("price") or 0)
+        if anchor <= 0:
+            return None
+        if side == "buy":
+            limit = _round_limit(
+                anchor * (1 + policy["buy_tolerance_pct"] / 100.0), "up", symbol)
+            upper = band.get("upper")
+            return min(limit, upper) if upper else limit
+        limit = _round_limit(
+            anchor * (1 - policy["sell_tolerance_pct"] / 100.0), "down", symbol)
+        lower = band.get("lower")
+        return max(limit, lower) if lower else limit
+
     def _is_reserved_us(self, symbol: str) -> bool:
         """미국 예약주문 라우팅 여부 — 정상 cycle US 진입(_reserved_us)이고 USD 종목.
 
@@ -702,12 +731,14 @@ class Trader:
             log.info("[catch-up] %s 시장가→시초가 limit: open=%s limit=%s",
                       symbol, open_price, limit)
         elif use_limit:
-            limit = _round_limit(
-                ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
-                "up", symbol)
-            # 한국 ±30% 가격제한폭 사전 클램프 — KIS 서버 거부 누적 방지
-            limit = qc.apply_daily_price_limit(
-                limit, ref_price, "buy", _currency_of(symbol))
+            # 즉시 지정가 — 거래 평면(_live_limit: 실시간 현재가 + 거래소 밴드 클램프)
+            limit = self._live_limit(symbol, "buy", policy)
+            if limit is None:
+                intents.mark_failed(today_iso, intent_id, "발주용 시세 조회 실패")
+                decisions.append(order_log.decision(
+                    "skip_quote", sid, strat_name, symbol,
+                    "실시간 시세 조회 실패 — 발주 보류 (다음 사이클 재시도)"))
+                return
             try:
                 r = self.broker.buy_limit(symbol, qty, limit)
             except Exception as e:
@@ -729,7 +760,8 @@ class Trader:
         # KIS 응답 수신 — submitted 마감(order_no가 빈 문자면 거부 처리는 _after_submit이 함)
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, strat_def, symbol, "buy", qty,
-                            ref_price, limit, policy, decisions, reason="매수신호")
+                            ref_price, limit, policy, decisions, reason="매수신호",
+                            today_iso=today_iso, intent_id=intent_id)
 
     def _submit_sell(self, sid: str, strat_name: str, symbol: str, qty: int,
                      ref_price: float, policy: dict, reason: str,
@@ -762,10 +794,14 @@ class Trader:
                 return
             log.info("[us-resv] %s 예약매도 MOO", symbol)
         elif use_limit:
-            limit = _round_limit(ref_price * (1 - tol / 100.0), "down", symbol)
-            # 한국 ±30% 가격제한폭 사전 클램프 — 하한가 cap
-            limit = qc.apply_daily_price_limit(
-                limit, ref_price, "sell", _currency_of(symbol))
+            # 즉시 지정가 — 거래 평면(_live_limit: 실시간 현재가 + 거래소 밴드 클램프)
+            limit = self._live_limit(symbol, "sell", policy)
+            if limit is None:
+                intents.mark_failed(today_iso, intent_id, "발주용 시세 조회 실패")
+                decisions.append(order_log.decision(
+                    "skip_quote", sid, strat_name, symbol,
+                    "실시간 시세 조회 실패 — 매도 보류 (다음 사이클 재시도)"))
+                return
             try:
                 r = self.broker.sell_limit(symbol, qty, limit)
             except Exception as e:
@@ -786,7 +822,8 @@ class Trader:
                 return
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, None, symbol, "sell", qty,
-                            ref_price, limit, policy, decisions, reason=reason)
+                            ref_price, limit, policy, decisions, reason=reason,
+                            today_iso=today_iso, intent_id=intent_id)
 
     def _submit_close_short(self, sid: str, strat_name: str, symbol: str, qty: int,
                             ref_price: float, policy: dict, reason: str,
@@ -804,9 +841,14 @@ class Trader:
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "buy", qty, ref_price)
         if bool(policy["use_limit"]):
-            limit = _round_limit(ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
-                                 "up", symbol)
-            limit = qc.apply_daily_price_limit(limit, ref_price, "buy", _currency_of(symbol))
+            # 즉시 지정가 — 거래 평면(_live_limit) 단일 출처
+            limit = self._live_limit(symbol, "buy", policy)
+            if limit is None:
+                intents.mark_failed(today_iso, intent_id, "발주용 시세 조회 실패")
+                decisions.append(order_log.decision(
+                    "skip_quote", sid, strat_name, symbol,
+                    "실시간 시세 조회 실패 — 환매 보류 (다음 사이클 재시도)"))
+                return
             try:
                 r = self.broker.buy_limit(symbol, qty, limit)
             except Exception as e:
@@ -827,7 +869,8 @@ class Trader:
                 return
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, None, symbol, "buy", qty,
-                            ref_price, limit, policy, decisions, reason=reason)
+                            ref_price, limit, policy, decisions, reason=reason,
+                            today_iso=today_iso, intent_id=intent_id)
 
     def _submit_open_short(self, sid: str, strat_name: str, strat_def: dict,
                            symbol: str, qty: int, ref_price: float, policy: dict,
@@ -842,9 +885,14 @@ class Trader:
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell", qty, ref_price)
         if bool(policy["use_limit"]):
-            limit = _round_limit(ref_price * (1 - policy["sell_tolerance_pct"] / 100.0),
-                                 "down", symbol)
-            limit = qc.apply_daily_price_limit(limit, ref_price, "sell", _currency_of(symbol))
+            # 즉시 지정가 — 거래 평면(_live_limit) 단일 출처
+            limit = self._live_limit(symbol, "sell", policy)
+            if limit is None:
+                intents.mark_failed(today_iso, intent_id, "발주용 시세 조회 실패")
+                decisions.append(order_log.decision(
+                    "skip_quote", sid, strat_name, symbol,
+                    "실시간 시세 조회 실패 — 숏진입 보류 (다음 사이클 재시도)"))
+                return
             try:
                 r = self.broker.sell_limit(symbol, qty, limit)
             except Exception as e:
@@ -865,12 +913,14 @@ class Trader:
                 return
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, strat_def, symbol, "sell", qty,
-                            ref_price, limit, policy, decisions, reason="숏진입")
+                            ref_price, limit, policy, decisions, reason="숏진입",
+                            today_iso=today_iso, intent_id=intent_id)
 
     def _after_submit(self, r: dict, sid: str, strat_name: str,
                       strat_def: dict | None, symbol: str, side: str, qty: int,
                       intended_price: float, limit_price: int,
-                      policy: dict, decisions: list[dict], reason: str) -> None:
+                      policy: dict, decisions: list[dict], reason: str,
+                      today_iso: str = "", intent_id: str = "") -> None:
         """submit 결과를 후처리: pending 등록 / 즉시 체결 반영 / 거부 로깅."""
         order_no = r.get("order_no", "")
         if not r.get("success"):
@@ -883,6 +933,13 @@ class Trader:
             decisions.append(order_log.decision(
                 "rejected", sid, strat_name, symbol,
                 f"{side} {qty}주 거부: {r.get('message', '')}"))
+            # KIS 호출 성공 ≠ 주문 접수 성공 — 거부는 주문 미생성이므로 intent를
+            # 실패로 마감해 멱등 게이트 점유를 해제한다(리뷰 D5-5: 'submitted'로
+            # 남으면 당일 정당 재시도가 전부 차단 — 06-09 장종료 거부 건이 그날
+            # 재시도 불가였던 메커니즘). 재시도는 사이클당 1회 평가라 무한 반복 없음.
+            if intent_id:
+                intents.mark_failed(today_iso, intent_id,
+                                    f"KIS 거부: {r.get('message', '')}")
             return
         p = {
             "order_no": order_no, "strategy_id": sid,

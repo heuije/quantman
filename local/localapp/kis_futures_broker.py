@@ -469,6 +469,28 @@ class KisFuturesBroker:
     def price(self, symbol: str) -> float:
         return float(self._quote(symbol).get("futs_prpr", 0) or 0)        # 현재가
 
+    def quote_band(self, symbol: str) -> dict:
+        """발주용 시세 — 실제 주문 나가는 계약의 현재가 + 상·하한가(있으면).
+
+        가격 평면 정책: 연속물 dataset 값이 아니라 실계약 실시간 시세로 주문가를
+        만든다 — 2026-06-11 만기일 인시던트(연속물 종가×1.01이 실계약 상한가
+        초과 → "모의투자 상/하한가 오류" 거부)의 근본 수정. FHMIF10000000 전용
+        문서 부재로 밴드 필드명(futs_mxpr/futs_llam)은 주식 명명 규칙의 선물형
+        추정 — 응답에 없으면 None(클램프 생략, KIS 서버가 최종 방어). 실측 확인
+        후 docs/kis-api GOTCHAS에 기록할 것.
+        """
+        q = self._quote(symbol)
+
+        def _f(key: str) -> float | None:
+            try:
+                v = float(q.get(key, 0) or 0)
+                return v if v > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        return {"price": _f("futs_prpr") or 0.0,
+                "upper": _f("futs_mxpr"), "lower": _f("futs_llam")}
+
     def today_open(self, symbol: str) -> float:
         return float(self._quote(symbol).get("futs_oprc", 0) or 0)        # 당일 시가
 

@@ -14,21 +14,27 @@ if str(_LOCAL) not in sys.path:
     sys.path.insert(0, str(_LOCAL))
 
 
-def test_buy_limit_clamped_to_daily_price_limit(isolated_trader):
-    """INV-PRICE-1: 과도한 tolerance여도 매수 지정가는 한국 ±30% 상한으로 사전 클램프.
+def test_buy_limit_clamped_to_daily_price_limit(isolated_trader, monkeypatch):
+    """INV-PRICE-1: 과도한 tolerance여도 매수 지정가는 상한가로 사전 클램프.
 
-    KIS 서버 거부 누적을 막는 사전 클램프(qc.apply_daily_price_limit). tolerance
-    100%면 limit이 ref의 2배로 가려 하지만 +30%(=ref*1.30) 부근으로 잘려야 한다.
+    가격 평면 정책(2026-06-11): 클램프 기준은 자체 ±30% 재계산이 아니라 **브로커
+    시세 응답의 거래소 상한가**(quote_band.upper) — 자산군별 밴드(주식 ±30%·선물
+    ±8%·신규상장 ±60%)가 자동으로 정확. tolerance 100%면 limit이 현재가의 2배로
+    가려 하지만 거래소 상한가로 잘려야 한다.
     """
     t, broker = isolated_trader
     ref = 70000.0
-    policy = {"use_limit": True, "buy_tolerance_pct": 100.0}   # 의도적 과도 tolerance
+    upper = 91000.0                                            # 거래소 상한가(=+30%)
+    monkeypatch.setattr(broker, "quote_band",
+                        lambda s: {"price": ref, "upper": upper, "lower": None})
+    policy = {"use_limit": True, "buy_tolerance_pct": 100.0,
+              "sell_tolerance_pct": 1.0}                       # 의도적 과도 tolerance
 
     t._submit_buy("s1", "T", {}, "005930", 10, ref, policy, [])
 
     limit = broker.submitted[-1]["limit"]
-    assert limit < 140000, f"INV-PRICE-1: 클램프 안 됨(tolerance 그대로 적용) limit={limit}"
-    assert ref < limit <= int(ref * 1.30) + 100, f"INV-PRICE-1: ±30% 상한 밖 limit={limit}"
+    assert limit == upper, \
+        f"INV-PRICE-1: 거래소 상한가 클램프 실패 limit={limit} (기대 {upper})"
 
 
 def test_killswitch_blocks_new_buys(isolated_trader):
