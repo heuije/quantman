@@ -332,6 +332,10 @@ def _route_directional(strat: dict) -> dict:
     hold_days = (pos.get("exit") or {}).get("hold_days")
     if not is_ranking and hold_days == 0:
         entry["mode"] = "on_signal"
+        if entry.get("threshold") is None:
+            # 부호방향의 임계를 명시(0) — None은 소비층(_select 랭킹 추락 vs
+            # _direction_for 0.0)마다 다르게 해석돼 양방향 동시 후보 사고를 냈다.
+            entry["threshold"] = 0.0
     return strat
 
 
