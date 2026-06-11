@@ -76,3 +76,36 @@ def test_route_directional_long_not_targeted():
     strat = {"position": {"direction": "long", "entry": {"mode": "scheduled"},
                           "exit": {"hold_days": 0}}}
     assert ic._route_directional(strat)["position"]["entry"]["mode"] == "scheduled"
+
+
+# ── 섹터/업종 필터 부분일치 강제(반도체→"반도체 제조업" 정확매칭 0건 근본수정) ──
+
+def _sector_screener(values, match=None):
+    params = {"values": values}
+    if match is not None:
+        params["match"] = match
+    return {"universe": {"kind": "all", "screener": {"condition": {
+                "op": "is_in", "params": params,
+                "inputs": {"signal": {"op": "attribute", "params": {"attr": "Sector"}}}}}}}
+
+
+def test_force_contains_on_attribute_filter():
+    """is_in(attribute(Sector))는 match 없이 와도 contains로 강제."""
+    out = ic._force_attribute_filter_contains(_sector_screener(["반도체"]))
+    cond = out["universe"]["screener"]["condition"]
+    assert cond["params"]["match"] == "contains"
+
+
+def test_force_contains_overrides_exact_on_attribute():
+    """LLM이 attribute 필터에 exact를 내도 contains로 교정(exact는 자유서술 분류에 무용)."""
+    out = ic._force_attribute_filter_contains(_sector_screener(["반도체"], match="exact"))
+    assert out["universe"]["screener"]["condition"]["params"]["match"] == "contains"
+
+
+def test_force_contains_leaves_non_attribute_is_in_exact():
+    """attribute가 아닌 is_in(버킷·국면 라벨)은 정확매칭 불변 — 과교정 차단."""
+    strat = {"universe": {"screener": {"condition": {
+        "op": "is_in", "params": {"values": ["1분위"]},
+        "inputs": {"signal": {"op": "bucket", "params": {"edges": [0.5]}}}}}}}
+    out = ic._force_attribute_filter_contains(strat)
+    assert "match" not in out["universe"]["screener"]["condition"]["params"]
