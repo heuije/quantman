@@ -62,8 +62,14 @@ def load() -> dict:
 
 
 def symbol_group(sym: str, group_type: str = "Industry") -> Optional[str]:
-    """심볼의 그룹명(Industry=업종 / Sector=소속부). 미수급이면 None."""
+    """심볼의 산업 분류명. 미수급이면 None.
+
+    KRX-DESC "Sector" 컬럼은 *소속부*(우량기업부·벤처기업부 등 시장구분)지 산업 섹터가
+    아니므로 분류로 쓰지 않는다 — 섹터/업종 모두 Industry(KSIC 업종)를 진실원천으로 답한다.
+    group_type은 호환을 위해 받되 현재 둘 다 Industry. 표준 섹터("반도체 제조업"→"반도체")
+    정규화는 후속(Industry→표준섹터 매핑)에서 group_type="Sector" 분기로 추가한다.
+    """
     rec = load().get(sym.split(".")[0])
     if not rec:
         return None
-    return rec.get(group_type) or rec.get("Industry") or rec.get("Sector")
+    return rec.get("Industry")
