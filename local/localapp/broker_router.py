@@ -95,14 +95,6 @@ class BrokerRouter:
             return self._futures.overseas_price(self._code(symbol))
         return self._broker(symbol).price(self._code(symbol))
 
-    def quote_band(self, symbol):
-        # 발주용 시세(가격 평면 정책) — 자산군별 브로커로 라우팅. 해외선물(CME)은
-        # 밴드 미배선(M10) — price만 제공.
-        if self._is_fut(symbol) and futures_market(symbol) == "CME":
-            return {"price": self._futures.overseas_price(self._code(symbol)),
-                    "upper": None, "lower": None}
-        return self._broker(symbol).quote_band(self._code(symbol))
-
     def today_open(self, symbol):
         return self._broker(symbol).today_open(self._code(symbol))
 

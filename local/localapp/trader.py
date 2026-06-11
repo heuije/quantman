@@ -23,7 +23,6 @@ from zoneinfo import ZoneInfo
 
 import quant_core as qc
 from quant_core.exec_defaults import instrument_spec, merged_execution
-from quant_core.futures_contract import futures_market
 from quant_core.futures_expiry import roll_lead_days
 
 from .broker import Broker
@@ -44,12 +43,6 @@ log = logging.getLogger("localapp.trader")
 # 같은 thread 재획득이 필요하다(일반 Lock이면 self-deadlock). 데드락의 다른
 # 경로(_apply_fill→ks hook→cycle)는 hook을 임계구역 밖에서 호출해 회피한다.
 _CYCLE_LOCK = threading.RLock()
-
-# KRX 파생 실시간가격제한 — 직전약정가 대비 주문 수용 밴드(%). 코스피200선물 ±1%
-# (KRX 파생상품시장 업무규정; 06-11 모의 실측 2건과 일치). 정적 상·하한(±8%)과
-# 별개의 동적 제약으로, 이를 넘는 지정가는 거래소/모의서버가 즉시 거부한다.
-# ⚠ 타 상품(코스닥150선물 등) 라이브 확장 시 상품별 밴드폭 확인 후 분기할 것.
-_KRX_FUT_RT_BAND_PCT = 1.0
 
 
 def _load_json(path: Path, default):
@@ -630,52 +623,6 @@ class Trader:
 
     # ── 주문 발주 helpers ────────────────────────────────────────────────────
 
-    def _live_limit(self, symbol: str, side: str, policy: dict) -> float | None:
-        """즉시 지정가 산출 — 거래 평면(발주 직전 KIS 시세) 단일 출처.
-
-        가격 평면 정책(2026-06-11 선물 만기일 인시던트의 부류 수정): 연구용
-        dataset 값(연속물·전일 종가)은 신호·사이징 근거일 뿐, **주문 가격은
-        실제 주문 나가는 종목/계약의 실시간 시세**에서 만든다. anchor=현재가
-        ×(1±tolerance), 거래소 제공 상·하한가로 클램프(자체 ±% 재계산 제거).
-
-        시세 조회 실패/0이면 None — dataset 값으로 폴백하지 않는다(평면 혼용이
-        사고 원인). 호출자가 발주를 보류하고 사유를 decisions로 표면화한다.
-
-        KRX 국내선물은 정적 상·하한 외에 **실시간가격제한**(직전약정가 ±1%,
-        코스피200선물)이 주문 수용의 binding 제약 — tolerance 1%를 틱 올림하면
-        밴드를 1틱 초과해 거부된다(06-11 실측 2건: 1231.30>1231.25,
-        1247.55>1247.50 — 둘 다 "모의투자 상/하한가 오류"). 밴드 *안쪽*으로
-        틱 라운딩(매수 down·매도 up)해 클램프한다. anchor와 발주 도달 사이
-        가격이 밴드폭 이상 움직이면 거부될 수 있으나, 거부는 intent failed로
-        마감돼 다음 사이클이 재시도한다(D5-5).
-        """
-        try:
-            band = self.broker.quote_band(symbol)
-        except Exception as e:
-            log.error("발주용 시세 조회 실패 [%s]: %s", symbol, e)
-            return None
-        anchor = float(band.get("price") or 0)
-        if anchor <= 0:
-            return None
-        krx_fut = qc.is_futures(symbol) and futures_market(symbol) == "KRX"
-        if side == "buy":
-            limit = _round_limit(
-                anchor * (1 + policy["buy_tolerance_pct"] / 100.0), "up", symbol)
-            upper = band.get("upper")
-            if krx_fut:
-                rt_up = _round_limit(
-                    anchor * (1 + _KRX_FUT_RT_BAND_PCT / 100.0), "down", symbol)
-                upper = min(upper, rt_up) if upper else rt_up
-            return min(limit, upper) if upper else limit
-        limit = _round_limit(
-            anchor * (1 - policy["sell_tolerance_pct"] / 100.0), "down", symbol)
-        lower = band.get("lower")
-        if krx_fut:
-            rt_dn = _round_limit(
-                anchor * (1 - _KRX_FUT_RT_BAND_PCT / 100.0), "up", symbol)
-            lower = max(lower, rt_dn) if lower else rt_dn
-        return max(limit, lower) if lower else limit
-
     def _is_reserved_us(self, symbol: str) -> bool:
         """미국 예약주문 라우팅 여부 — 정상 cycle US 진입(_reserved_us)이고 USD 종목.
 
@@ -699,7 +646,6 @@ class Trader:
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "buy",
                       qty, ref_price)
-        use_limit = bool(policy["use_limit"])
 
         # 미국 예약매수 — 개장 전(접수창) 발주, 정규장 개시에 KIS가 자동 전송.
         # KIS는 미국 시장가 매수가 없어 지정가만 가능 → buy_tolerance 반영 limit.
@@ -720,13 +666,13 @@ class Trader:
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
                 return
             log.info("[us-resv] %s 예약매수 지정가 limit=%s", symbol, limit)
-        # catch-up + 시장가 매수: 시초가 limit으로 변환.
+        # catch-up 매수: 시초가 limit으로 변환.
         # 이유: 정상 cycle의 시장가는 09:00 시초가에 체결되나 catch-up은 09:30
         # 현재가에 체결 → 백테스트 가정(시가 + slippage)과 어긋남. 시가 × (1 +
         # bt_slippage_bps) limit으로 변환하면 백테스트 모델과 alignment + selection
         # bias 없음(가격은 시가 fixed). ref_price(어제 종가)는 유지 — apply_daily_
         # price_limit이 prev_close 기준 ±30% cap 정확히 계산하도록.
-        elif catchup and not use_limit:
+        elif catchup:
             open_price = self.broker.today_open(symbol)
             if open_price <= 0:
                 # v0.9.7-beta — PR-1 정당 fallback (KIS API 진짜 한계 대비).
@@ -754,24 +700,9 @@ class Trader:
                 return
             log.info("[catch-up] %s 시장가→시초가 limit: open=%s limit=%s",
                       symbol, open_price, limit)
-        elif use_limit:
-            # 즉시 지정가 — 거래 평면(_live_limit: 실시간 현재가 + 거래소 밴드 클램프)
-            limit = self._live_limit(symbol, "buy", policy)
-            if limit is None:
-                intents.mark_failed(today_iso, intent_id, "발주용 시세 조회 실패")
-                decisions.append(order_log.decision(
-                    "skip_quote", sid, strat_name, symbol,
-                    "실시간 시세 조회 실패 — 발주 보류 (다음 사이클 재시도)"))
-                return
-            try:
-                r = self.broker.buy_limit(symbol, qty, limit)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"buy_limit: {e}")
-                log.error("매수 지정가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"발주 예외: {e}"))
-                return
         else:
+            # 국내 즉시 매수 — 시장가. 08:55 동시호가 발주 → 09:00 시초가 단일가
+            # 체결(지정가 대비 슬리피지 손해 없음). 미국은 위 is_resv(지정가)로 분기.
             limit = 0
             try:
                 r = self.broker.buy(symbol, qty)
@@ -801,9 +732,6 @@ class Trader:
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell",
                       qty, ref_price)
-        use_limit = bool(policy["use_limit"])
-        # Phase 38.9 — 매도 tolerance 단일화. 신호·청산 모두 같은 값.
-        tol = policy["sell_tolerance_pct"]
         # 미국 예약매도 — MOO(장개시시장가)로 개시가 체결. 개장 전 접수.
         is_resv = self._is_reserved_us(symbol)
         if is_resv:
@@ -817,24 +745,9 @@ class Trader:
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
                 return
             log.info("[us-resv] %s 예약매도 MOO", symbol)
-        elif use_limit:
-            # 즉시 지정가 — 거래 평면(_live_limit: 실시간 현재가 + 거래소 밴드 클램프)
-            limit = self._live_limit(symbol, "sell", policy)
-            if limit is None:
-                intents.mark_failed(today_iso, intent_id, "발주용 시세 조회 실패")
-                decisions.append(order_log.decision(
-                    "skip_quote", sid, strat_name, symbol,
-                    "실시간 시세 조회 실패 — 매도 보류 (다음 사이클 재시도)"))
-                return
-            try:
-                r = self.broker.sell_limit(symbol, qty, limit)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell_limit: {e}")
-                log.error("매도 지정가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"발주 예외: {e}"))
-                return
         else:
+            # 국내 즉시 매도 — 시장가. 종가 동시호가 발주 → 종가 단일가 체결.
+            # 미국은 위 is_resv(MOO)로 분기.
             limit = 0
             try:
                 r = self.broker.sell(symbol, qty)
@@ -864,33 +777,16 @@ class Trader:
             return
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "buy", qty, ref_price)
-        if bool(policy["use_limit"]):
-            # 즉시 지정가 — 거래 평면(_live_limit) 단일 출처
-            limit = self._live_limit(symbol, "buy", policy)
-            if limit is None:
-                intents.mark_failed(today_iso, intent_id, "발주용 시세 조회 실패")
-                decisions.append(order_log.decision(
-                    "skip_quote", sid, strat_name, symbol,
-                    "실시간 시세 조회 실패 — 환매 보류 (다음 사이클 재시도)"))
-                return
-            try:
-                r = self.broker.buy_limit(symbol, qty, limit)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"buy_limit(close): {e}")
-                log.error("숏 환매 지정가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"환매 발주 예외: {e}"))
-                return
-        else:
-            limit = 0
-            try:
-                r = self.broker.buy(symbol, qty)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"buy(close): {e}")
-                log.error("숏 환매 시장가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"환매 발주 예외: {e}"))
-                return
+        # 숏 환매 — 시장가(선물). 종가 동시호가 발주 → 단일가 체결.
+        limit = 0
+        try:
+            r = self.broker.buy(symbol, qty)
+        except Exception as e:
+            intents.mark_failed(today_iso, intent_id, f"buy(close): {e}")
+            log.error("숏 환매 시장가 발주 실패 [%s]: %s", symbol, e)
+            decisions.append(order_log.decision(
+                "error", sid, strat_name, symbol, f"환매 발주 예외: {e}"))
+            return
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, None, symbol, "buy", qty,
                             ref_price, limit, policy, decisions, reason=reason,
@@ -908,33 +804,16 @@ class Trader:
         today_iso = kst_today().isoformat()
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell", qty, ref_price)
-        if bool(policy["use_limit"]):
-            # 즉시 지정가 — 거래 평면(_live_limit) 단일 출처
-            limit = self._live_limit(symbol, "sell", policy)
-            if limit is None:
-                intents.mark_failed(today_iso, intent_id, "발주용 시세 조회 실패")
-                decisions.append(order_log.decision(
-                    "skip_quote", sid, strat_name, symbol,
-                    "실시간 시세 조회 실패 — 숏진입 보류 (다음 사이클 재시도)"))
-                return
-            try:
-                r = self.broker.sell_limit(symbol, qty, limit)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell_limit(open): {e}")
-                log.error("숏 진입 지정가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"숏진입 발주 예외: {e}"))
-                return
-        else:
-            limit = 0
-            try:
-                r = self.broker.sell(symbol, qty)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell(open): {e}")
-                log.error("숏 진입 시장가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"숏진입 발주 예외: {e}"))
-                return
+        # 숏 진입 — 시장가(선물). 동시호가 발주 → 단일가 체결.
+        limit = 0
+        try:
+            r = self.broker.sell(symbol, qty)
+        except Exception as e:
+            intents.mark_failed(today_iso, intent_id, f"sell(open): {e}")
+            log.error("숏 진입 시장가 발주 실패 [%s]: %s", symbol, e)
+            decisions.append(order_log.decision(
+                "error", sid, strat_name, symbol, f"숏진입 발주 예외: {e}"))
+            return
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, strat_def, symbol, "sell", qty,
                             ref_price, limit, policy, decisions, reason="숏진입",
@@ -1309,8 +1188,7 @@ class Trader:
                 "skip_kis_health", "", "", "", f"KIS 잔고 조회 실패: {e}"))
             return self._state_payload(decisions, today, kind="emergency_liquidation")
 
-        global_policy = merged_execution(None)
-        market_policy = {**global_policy, "use_limit": False}   # 시세 없으면 시장가
+        policy = merged_execution(None)
         positions = snap.get("positions") or []
         log.info("[비상청산] 보유 %d종 전량 청산 시작 (dataset 무의존)", len(positions))
         for pos in positions:
@@ -1324,7 +1202,6 @@ class Trader:
             if not symbol or qty <= 0:
                 continue
             ref_price = self._safe_price(symbol) or 0.0
-            policy = global_policy if ref_price > 0 else market_policy
             # 비상 청산은 보유 sid 무관 — 종목 단위 멱등 키.
             sid = f"liquidate:{symbol}"
             if side == "short":
@@ -1347,8 +1224,8 @@ class Trader:
         당일매매를 건드리지 않는다 — cycle_exit_reason Stage B 분기).
 
         instrument_class ∈ {"stock","futures"} — 주식/선물 종가 발주창이 다르므로(스케줄러가
-        분리 cron으로 호출) 종목 클래스로 라우팅한다. 유저 execution.use_limit를 존중(_policy)
-        — 시장가/지정가. 청산 수량은 main loop와 동일하게 KIS 실보유로 클램프(L-04, snap_pre).
+        분리 cron으로 호출) 종목 클래스로 라우팅한다. 국내는 시장가 단일(종가 단일가
+        체결). 청산 수량은 main loop와 동일하게 KIS 실보유로 클램프(L-04, snap_pre).
         파싱 실패 고아는 hold_days 불명 → skip(main loop·Monitor가 표면화).
         """
         decisions: list[dict] = []
@@ -1388,7 +1265,7 @@ class Trader:
             if ref_price <= 0:
                 log.warning("종가청산 ref_price 없음 [%s] — skip", pos["symbol"])
                 continue
-            policy = _policy(pos.get("definition"))   # 유저 execution.use_limit 존중 — 시장가/지정가
+            policy = _policy(pos.get("definition"))   # 국내=시장가 / 미국=is_resv
             sell_qty = int(pos["qty"])
             # L-04: 발주 직전 KIS 실보유로 클램프 — 외부 수동매도 over-sell 방지(main loop와 동일).
             pos_side = pos.get("side", "long")

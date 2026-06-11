@@ -90,11 +90,9 @@ export interface ExecutionPolicy {
   atr_mult?: number;                      // ATR × 이 배수 = 1주당 손절폭
   max_position_pct?: number | null;       // 단일 종목 비중 상한 (자본 %). null=한도 없음
   max_drawdown_pct?: number | null;       // 누적 손실 한도 (자본 고점 대비). null=한도 없음
-  /** 주문 유형 (Phase 49) — true=지정가(전일 종가 ± tolerance%), false=시장가.
-   *  시장가는 시초가 갭에 무방비라 default는 지정가. 변동성 큰 종목·일중 진입에서만 시장가 권장. */
-  use_limit?: boolean;
-  buy_tolerance_pct?: number;             // 매수 지정가 = 전일 종가 × (1 + N%) — 갭상승 허용 범위 (use_limit=true일 때만 사용)
-  sell_tolerance_pct?: number;            // 매도 지정가 = 전일 종가 × (1 - N%) — 갭하락 허용 범위 (Phase 38.9)
+  // 발주 방식은 시장이 결정(국내=시장가·미국주식=지정가). tolerance는 미국 지정가 버퍼용.
+  buy_tolerance_pct?: number;             // 미국 매수 지정가 = 기준가 × (1 + N%) — 갭상승 허용 범위
+  sell_tolerance_pct?: number;            // 미국 매도 지정가 = 기준가 × (1 - N%) — 갭하락 허용 범위
   // Phase 39 + C-01 — 백테스트 비용 가정. 실매매(모의/실전) 영향 없음.
   bt_commission_bps?: number;             // 편도 위탁수수료 (bps). 3 = 0.03% (KIS 평균)
   bt_sell_tax_bps?: number;               // 매도 단방향 거래세 (bps). 23 = 0.23% (KOSPI/KOSDAQ 평균)
@@ -283,7 +281,7 @@ export interface IrStrategyDef {
     maintenance_margin_pct?: number | null;    // 레버리지 마진콜 유지증거금률(%)
     start?: string | null; end?: string | null;
   };
-  // 자동매매 체결 정책 — 주문 유형(use_limit: 지정가/시장가) 등. 미지정 시 글로벌 default.
+  // 자동매매 체결 정책 — 미국 지정가 tolerance 등. 미지정 시 글로벌 default(국내=시장가).
   execution?: ExecutionPolicy | null;
   // 조사형 쿼리 — query(동사) × study(축 × 환원). 옛 sweep+period_split을 흡수.
   // describe=신호값 분포, relate=이벤트/IC, simulate=백테스트(+축별 펼침·기간분할),

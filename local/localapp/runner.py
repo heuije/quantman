@@ -379,7 +379,7 @@ def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dic
     run_cycle의 무거운 진입 경로를 재사용하지 않고 격리한다(Over-engineering 회피).
 
     instrument_class ∈ {"stock","futures"} — 주식/선물 종가창이 달라 스케줄러가 분리 cron으로
-    호출한다. trader.liquidate_day_trades가 종목 클래스로 라우팅·유저 execution.use_limit 존중.
+    호출한다. trader.liquidate_day_trades가 종목 클래스로 라우팅(국내=시장가 단일가 체결).
     """
     setup_logging()
     _flush_pending()
