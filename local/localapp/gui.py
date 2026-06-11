@@ -230,13 +230,22 @@ class SettingsApp:
         # 웹앱 /monitor의 timeline과 동일 데이터(서버 /sync/timeline) 표시.
         # 어제·오늘·내일 그룹 + 6 종류 event(국장/미장 × 후보결정/시작/종료).
         # scheduler 가동 중일 때만 노출(.pack), 중지 시 .pack_forget.
+        self.timeline_collapsed = False        # 헤더 클릭 접기 토글 (세션 한정)
         self.timeline_frame = tk.Frame(self.root, bg=PANEL,
                                         highlightbackground=BORDER, highlightthickness=1)
-        # 헤더: "자동매매 상태  ● 정상 · 로컬앱 12초 전"
+        # 헤더: "▾ 자동매매 상태   ● 정상 · 로컬앱 12초 전" — 헤더 클릭 시 본문 접기/펴기
         self.timeline_header = tk.Frame(self.timeline_frame, bg=PANEL)
         self.timeline_header.pack(fill="x", padx=12, pady=(8, 4))
-        tk.Label(self.timeline_header, text="자동매매 상태", bg=PANEL, fg=TEXT,
-                  font=("Segoe UI", 10, "bold")).pack(side="left")
+        _hdr_left = tk.Frame(self.timeline_header, bg=PANEL)
+        _hdr_left.pack(side="left")
+        self.timeline_chevron = tk.Label(_hdr_left, text="▾", bg=PANEL, fg=MUTED,
+                                          font=("Segoe UI", 9), cursor="hand2")
+        self.timeline_chevron.pack(side="left", padx=(0, 5))
+        _tl_title = tk.Label(_hdr_left, text="자동매매 상태", bg=PANEL, fg=TEXT,
+                             font=("Segoe UI", 10, "bold"), cursor="hand2")
+        _tl_title.pack(side="left")
+        for _w in (self.timeline_chevron, _tl_title):
+            _w.bind("<Button-1>", lambda e: self._toggle_timeline())
         self.timeline_status_label = tk.Label(self.timeline_header, text="",
                                                bg=PANEL, fg=MUTED,
                                                font=("Segoe UI", 9))
@@ -464,6 +473,20 @@ class SettingsApp:
     # 데이터 단일 출처: 서버 GET /sync/timeline.
     # 웹앱 /monitor의 TradingTimeline.tsx와 동일 events·status·detail 공유.
 
+    def _toggle_timeline(self):
+        """자동매매 상태(스케줄) 본문 접기/펴기 — 세로 공간 절약. 헤더(● 상태)는 유지."""
+        self.timeline_collapsed = not getattr(self, "timeline_collapsed", False)
+        self._apply_timeline_collapsed()
+
+    def _apply_timeline_collapsed(self):
+        """접힘 상태를 본문 표시/숨김 + chevron(▾/▸)에 반영. 본문 frame만 토글(헤더 유지)."""
+        if getattr(self, "timeline_collapsed", False):
+            self.timeline_body.pack_forget()
+            self.timeline_chevron.config(text="▸")
+        else:
+            self.timeline_body.pack(fill="x", padx=12, pady=(0, 8))
+            self.timeline_chevron.config(text="▾")
+
     KIND_LABEL = {
         "krx_preview":    "국장 매매 후보 결정",
         "krx_cycle":      "국장 자동매매 시작",
@@ -665,13 +688,16 @@ class SettingsApp:
             new_mode = "wizard_kis"
 
         if getattr(self, "_setup_mode", None) != new_mode:
-            # 모드 전환 — 관련 위젯 모두 pack_forget 후 새 모드 순서로 재pack
+            # 모드 전환 — 관련 위젯 모두 pack_forget 후 새 모드 순서로 재pack.
+            # acct_frame(활성 계좌·전략)도 포함 — 미포함 시 wizard 편집 화면에서 카드가
+            # 안 숨겨져 자격증명 저장 버튼을 화면 밖으로 밀어낸다(v0.9.35 회귀 수정).
             for w in (self.setup_bar, self.setup_expanded, self.kf, self.pf,
-                       self.af, self.nb, self.refresh_btn):
+                       self.af, self.acct_frame, self.nb, self.refresh_btn):
                 w.pack_forget()
             if new_mode == "normal":
                 self.setup_bar.pack(fill="x", padx=12, pady=(4, 6))
                 self.af.pack(fill="x", padx=12, pady=(4, 6))
+                self.acct_frame.pack(fill="x", padx=12, pady=(4, 6))
                 self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 4))
                 self.refresh_btn.pack(anchor="e", padx=14, pady=(0, 10))
             elif new_mode == "wizard_kis":
@@ -726,11 +752,13 @@ class SettingsApp:
         ks = killswitch.load()
         ks_active = bool(ks.get("active"))
 
-        # 자동매매 timeline 패널 — scheduler 가동 중일 때만 표시.
-        # 서버 /sync/timeline 호출해 어제·오늘·내일 6 종류 event 렌더.
+        # 자동매매 timeline 패널 — scheduler 가동 중 + 일반(normal) 모드에서만 표시.
+        # 자격증명·페어링 편집(setup_collapsed=False)에선 숨겨 wizard에 세로 공간을 내준다
+        # (편집 화면에서 타임라인이 저장 버튼을 화면 밖으로 밀어내던 회귀 수정).
         # after=self.hero로 hero 직후 위치 강제(repack 시 root 끝 밀림 방지).
-        if running and not ks_active:
+        if running and not ks_active and self.setup_collapsed:
             self.timeline_frame.pack(fill="x", padx=12, pady=(0, 6), after=self.hero)
+            self._apply_timeline_collapsed()      # 접힘 토글 상태 반영
             self._refresh_timeline_panel_async()
         else:
             self.timeline_frame.pack_forget()
