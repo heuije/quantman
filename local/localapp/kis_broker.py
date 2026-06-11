@@ -459,35 +459,6 @@ class KisBroker:
             return self._price_domestic(symbol)
         return self._price_overseas(symbol, market)
 
-    def quote_band(self, symbol: str) -> dict:
-        """발주용 시세 — 현재가 + 거래소 제공 상·하한가 (가격 평면 정책).
-
-        주문 지정가의 기준·밴드는 거래 평면(KIS 실시간)에서만 — 연구용 dataset
-        값 사용 금지(2026-06-11 선물 만기일 상한가 거부 인시던트 부류). 밴드는
-        자체 ±% 재계산 대신 거래소 값(stck_mxpr 상한가/stck_llam 하한가)을 쓴다 —
-        신규상장 ±60%·ETF 예외 등이 자동으로 정확. 해외(미국)는 일중 동적
-        LULD라 정적 밴드가 없어 미제공(None — 클램프 생략).
-        """
-        market = self._detect_market(symbol)
-        if market != "DOMESTIC":
-            return {"price": self._price_overseas(symbol, market),
-                    "upper": None, "lower": None}
-        body = self._get_retry(
-            "/uapi/domestic-stock/v1/quotations/inquire-price", "FHKST01010100",
-            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol},
-            base=self.quote_base)
-        out = body.get("output", {}) or {}
-
-        def _f(key: str) -> float | None:
-            try:
-                v = float(out.get(key, 0) or 0)
-                return v if v > 0 else None
-            except (TypeError, ValueError):
-                return None
-
-        return {"price": _f("stck_prpr") or 0.0,
-                "upper": _f("stck_mxpr"), "lower": _f("stck_llam")}
-
     def today_open(self, symbol: str) -> float:
         """당일 시가 조회 — 시장에 따라 다른 endpoint.
 

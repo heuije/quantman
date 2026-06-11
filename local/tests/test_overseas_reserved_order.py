@@ -130,7 +130,6 @@ def _trader_with_stub(monkeypatch, currency: str):
     monkeypatch.setattr(tr, "_currency_of", lambda s: currency)
 
     broker = MagicMock()
-    broker.quote_band.return_value = {"price": 100.0, "upper": None, "lower": None}  # 가격 평면 정책
     broker.buy_resv_limit.return_value = {"success": True, "order_no": "R1"}
     broker.sell_resv_moo.return_value = {"success": True, "order_no": "R2"}
     broker.buy_limit.return_value = {"success": True, "order_no": "L1"}
@@ -165,20 +164,20 @@ def test_submit_sell_routes_to_moo_when_us(monkeypatch):
 def test_submit_buy_no_reserve_when_flag_off(monkeypatch):
     t, broker = _trader_with_stub(monkeypatch, currency="USD")
     t._reserved_us = False
-    policy = {"use_limit": True, "buy_tolerance_pct": 1.0}
+    policy = {"buy_tolerance_pct": 1.0}
     t._submit_buy("s1", "T", {}, "AAPL", 2, 100.0, policy, [], catchup=False)
     broker.buy_resv_limit.assert_not_called()
-    broker.buy_limit.assert_called_once()
+    broker.buy.assert_called_once()        # 예약 아님 → 시장가 경로(국내·비예약)
 
 
 def test_submit_buy_no_reserve_for_krx_even_if_flag_on(monkeypatch):
     """USD가 아니면(국내) 예약 라우팅 안 함 — 같은 cycle에 섞여도 안전."""
     t, broker = _trader_with_stub(monkeypatch, currency="KRW")
     t._reserved_us = True
-    policy = {"use_limit": True, "buy_tolerance_pct": 1.0}
+    policy = {"buy_tolerance_pct": 1.0}
     t._submit_buy("s1", "T", {}, "005930", 2, 100.0, policy, [], catchup=False)
     broker.buy_resv_limit.assert_not_called()
-    broker.buy_limit.assert_called_once()
+    broker.buy.assert_called_once()        # 국내 = 시장가
 
 
 # ── M1: 거래소 코드 단일 출처(_OVERSEAS_EXCD) 회귀 ──────────────────────────────
