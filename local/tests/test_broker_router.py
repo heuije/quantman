@@ -34,8 +34,8 @@ class _Fake:
     def buy_resv_limit(self, symbol, qty, limit_price):
         self.calls.append(("buy_resv_limit", symbol, qty, limit_price)); return {"tag": self.tag}
 
-    def sell_resv_moo(self, symbol, qty):
-        self.calls.append(("sell_resv_moo", symbol, qty)); return {"tag": self.tag}
+    def sell_resv_limit(self, symbol, qty, limit_price):
+        self.calls.append(("sell_resv_limit", symbol, qty, limit_price)); return {"tag": self.tag}
 
     def price(self, symbol):
         self.calls.append(("price", symbol)); return 100.0

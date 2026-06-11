@@ -14,12 +14,13 @@ from typing import Any
 DEFAULT_EXECUTION: dict[str, Any] = {
     # 발주 방식은 시장이 결정(시스템): 국내(주식·선물)=시장가 단일(동시호가 단일가
     # 체결, 지정가 대비 슬리피지 손해 없음). 미국주식=지정가(KIS가 미국 연속장
-    # 시장가 미지원). 아래 tolerance는 미국 지정가 버퍼용(국내는 미사용).
-    # 매수: 기준가 × (1 + tol%) 까지 허용. 그 이상 갭상승 시 미체결.
-    "buy_tolerance_pct": 1.0,
-    # 매도 (Phase 38.9 — sell/exit 통합): 기준가 × (1 − tol%) 까지 허용.
-    # 위험 관리는 잡혀야 하므로 매수 tol보다 공격적인 default.
-    "sell_tolerance_pct": 2.0,
+    # 시장가 미지원). 아래 tolerance는 **미국 지정가 버퍼 전용**(국내는 시장가라 미사용).
+    # = 라이브가 백테스트의 시가/종가 체결을 재현하기 위한 시장가-근사 버퍼. 미국 갭이
+    # 커서 default ±3%(과거 1%/2%는 갭에 미체결 유발). 전략 execution으로 유저 override 가능.
+    # 매수: 신선한 현재가 × (1 + tol%) 까지 허용. 그 이상 갭상승 시 미체결.
+    "buy_tolerance_pct": 3.0,
+    # 매도: 신선한 현재가 × (1 − tol%) 까지 허용(미체결=오버나이트 carry 회피).
+    "sell_tolerance_pct": 3.0,
     # Q7: time-in-force = DAY (업계 표준). KIS가 정규장 마감(15:30) 시 미체결 주문을
     # 자동 cancel하므로 로컬에서 별도 timeout cancel 없음. 5분 timeout이 비표준적
     # 으로 짧다는 결론(2026-05-23 리뷰) — Alpaca/IB/Fidelity/KIS 모두 DAY 기본.

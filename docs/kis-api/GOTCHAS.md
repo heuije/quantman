@@ -5,6 +5,31 @@
 
 ---
 
+## 2026-06-11 — 미국주식: 신선한 현재가 지정가 + 예약매도 지정가 통일 + 종가청산 (v0.9.35)
+
+- **배경**: 미국주식은 KIS가 연속장 시장가를 미지원(지정가/LOO만)이라 국내 시장가화의
+  대상이 아니다. 대신 미국 발주를 **지정가 + 신선한 현재가 + 모의=실전 통일**로 정렬.
+- **발견 1 — 진입가가 전일종가 기반이라 갭 미체결**: `_submit_buy`가 예약매수 limit을
+  `prev_close × (1+tol)`로 잡았는데, 전일종가(≈17h 전)와 다음 개장 사이 애프터/프리마켓
+  갭이 tol을 넘으면 시초가에 미달→미체결. → `_us_limit`이 `_safe_price`(HHDFS00000300
+  실시간/프리마켓)×(1±tol)로 발주(전일종가는 조회실패 fallback). **사이징은 prev_close 유지**(패리티).
+- **발견 2 — 예약매도 MOO(31) 모의 미검증**: 예약주문접수(VTTT3016U) 매도는 00/31을
+  열어두나, MOO(31)의 모의 실접수는 미검증 게이트였다. 모의=실전 통일 위해 예약 매수·매도
+  **둘 다 00 지정가**(`buy_resv_limit`/`sell_resv_limit`)로 고정. 매도 limit=신선한가×(1−tol).
+- **발견 3 — 미국 종가청산 사이클 부재**: 미국 당일매매 보유분 청산 cron이 없어 다음 개장
+  MOO로 하루 늦게 청산됐다. → `run_close_cycle(market="US")`를 스케줄러 **폐장−5분**에 등록
+  (신규 Trader라 `_reserved_us`=False → 라이브 `sell_limit`). MOC 모의 미지원이라 연속장
+  막판 지정가가 최선의 종가 근사(백테스트 종가와 미세 발산은 불가피).
+- **tolerance**: 미국 전용 라이브 버퍼. default ±3%(종전 1%/2%는 미국 갭에 타이트).
+  전략 execution(`buy/sell_tolerance_pct`)으로 유저 override. 국내는 시장가라 미사용.
+- **우리 코드**: `trader.py` `_us_limit`·`_submit_buy/_submit_sell`(USD 분기) ·
+  `kis_broker.py` `sell_resv_limit`·`_submit_overseas_resv`(00 고정) · `scheduler.py`
+  `_plan_us_session`(us_close_cycle) · `core/quant_core/exec_defaults.py`(tol 3.0).
+- ⚠ **라이브 실측 게이트**(다음 미국 세션): 예약 모의 접수·전송·체결 / `_safe_price`가
+  프리마켓(개장−20분)에 실가를 주는지 / 폐장−5분 종가청산 라운드트립. 확인 후 여기 기록.
+
+---
+
 ## 2026-06-11 — "모의투자 상/하한가 오류"(선물) = 실시간가격제한(±1%) 위반 포함
 
 - **증상**: 코스피200선물 모의 지정가 주문이 정적 상·하한(futs_mxpr/llam, ±8%)

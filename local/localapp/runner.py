@@ -374,12 +374,14 @@ def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dic
     """종가 청산 사이클 — 당일매매(hold_days==0) 포지션만 종가 기준 청산 (Stage B).
 
     아침 메인 cycle(08:55)은 시가 진입까지만 담당하고, 당일매매 청산은 이 사이클이
-    종가 단일가 발주창에 전담한다(주식 15:20~15:30·선물 15:35~15:45). 매수·preview·
+    종가 발주창에 전담한다(국내주식 15:25·국내선물 15:40·미국주식 폐장−5분). 매수·preview·
     KIS intent reconcile은 불필요 — 청산은 ledger(보유)+dataset(ref/clamp)만 있으면 되므로
     run_cycle의 무거운 진입 경로를 재사용하지 않고 격리한다(Over-engineering 회피).
 
-    instrument_class ∈ {"stock","futures"} — 주식/선물 종가창이 달라 스케줄러가 분리 cron으로
-    호출한다. trader.liquidate_day_trades가 종목 클래스로 라우팅(국내=시장가 단일가 체결).
+    market ∈ {"KRX","US"}, instrument_class ∈ {"stock","futures"} — 시장·클래스별 종가창이
+    달라 스케줄러가 분리 잡으로 호출한다(US는 stock만; 해외선물=모의 미지원). 신규 Trader라
+    _reserved_us=False → trader.liquidate_day_trades가 클래스로 라우팅(국내=시장가 단일가,
+    미국=라이브 지정가 시장가근사).
     """
     setup_logging()
     _flush_pending()
