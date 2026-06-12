@@ -53,9 +53,18 @@ export default function Monitor() {
   useEffect(() => {
     load();
     loadPreview();
-    const t = setInterval(load, REFRESH_MS);
-    const t3 = setInterval(loadPreview, 30_000);
-    return () => { clearInterval(t); clearInterval(t3); };
+    // 핸드오프 #5 — 탭 비가시(document.hidden) 동안 폴링 정지(요청 0), 재가시화 시
+    // 즉시 1회 갱신 후 주기 재개. 백그라운드 탭이 15s/30s 폴링을 계속 쏘던 egress 누수 차단.
+    const tick = () => { if (!document.hidden) load(); };
+    const tickPreview = () => { if (!document.hidden) loadPreview(); };
+    const t = setInterval(tick, REFRESH_MS);
+    const t3 = setInterval(tickPreview, 30_000);
+    const onVisible = () => { if (!document.hidden) { load(); loadPreview(); } };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t); clearInterval(t3);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
 

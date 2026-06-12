@@ -99,8 +99,15 @@ export default function TradingTimeline() {
       }
     }
     load();
-    const t = setInterval(load, 60_000);     // 60s polling
-    return () => { cancelled = true; clearInterval(t); };
+    // 핸드오프 #5 — 탭 비가시 동안 폴링 정지, 재가시화 시 즉시 1회 후 주기 재개.
+    const tick = () => { if (!document.hidden) load(); };
+    const t = setInterval(tick, 60_000);     // 60s polling
+    const onVisible = () => { if (!document.hidden) load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true; clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   useEffect(() => {

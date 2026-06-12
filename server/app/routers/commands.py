@@ -18,9 +18,10 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import (APIRouter, Depends, HTTPException, Query, Request,
+                     Response, status)
 from fastapi.responses import StreamingResponse
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
 from ..db import get_session, engine
 from ..deps import get_current_device, get_current_user
@@ -96,20 +97,52 @@ def create_command(
     return _to_out(cmd)
 
 
+def _epoch_ms(ts: datetime | None) -> int:
+    """ETag 성분용 epoch ms. naive는 UTC 저장 관례로 정규화, 없으면 0."""
+    if ts is None:
+        return 0
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return int(ts.timestamp() * 1000)
+
+
 @router.get("", response_model=list[CommandOut])
 def list_commands(
+    request: Request,
+    response: Response,
     device_id: int | None = Query(default=None),
     only_pending: bool = Query(default=False),
     limit: int = Query(default=50, le=200),
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    stmt = select(Command).where(Command.user_id == user.id)
+    conds = [Command.user_id == user.id]
     if device_id is not None:
-        stmt = stmt.where(Command.device_id == device_id)
+        conds.append(Command.device_id == device_id)
     if only_pending:
-        stmt = stmt.where(Command.status.in_(["pending", "delivered"]))
-    stmt = stmt.order_by(Command.created_at.desc()).limit(limit)
+        conds.append(Command.status.in_(["pending", "delivered"]))
+
+    # tag-first ETag(서버 인프라 핸드오프 #5) — Monitor가 15s 폴링하는 웹 조회 GET.
+    # params/result JSON 컬럼을 읽기 *전에* scalar aggregate로 ETag를 계산해 매칭 시
+    # 304만 반환한다(JSON 미조회·본문 0). 모든 명령 변이가 세 timestamp 중 하나를
+    # "지금"으로 전진시키고(생성=created_at, SSE/poll pickup=delivered_at,
+    # ack=completed_at — result도 ack에서만 갱신) 삭제(revoke)는 count가 포착한다.
+    # 필터(device_id·only_pending)를 aggregate에도 동일 적용해 뷰별 tag 분리.
+    # ⚠ 명령 버스(POST·/poll·/stream·ack) 경로는 불변 — 웹 GET 조회만 조건부 304 추가.
+    # 패턴 출처: /sync/snapshot tag-first
+    # (docs/incidents/2026-06-10-neon-data-transfer-quota.md 재발 방지 D3).
+    n, c_max, d_max, done_max = session.exec(
+        select(func.count(Command.id), func.max(Command.created_at),
+               func.max(Command.delivered_at), func.max(Command.completed_at))
+        .where(*conds)
+    ).one()
+    etag = f'W/"{n}-{_epoch_ms(c_max)}-{_epoch_ms(d_max)}-{_epoch_ms(done_max)}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304)
+    response.headers["ETag"] = etag
+
+    stmt = (select(Command).where(*conds)
+            .order_by(Command.created_at.desc()).limit(limit))
     return [_to_out(c) for c in session.exec(stmt).all()]
 
 
