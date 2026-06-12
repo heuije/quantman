@@ -54,7 +54,8 @@ class SimBroker:
             self._statuses[order_no]["status"] = "cancelled"
         return {"success": True, "order_no": order_no}
 
-    def order_status(self, order_no, symbol=None) -> dict:
+    def order_status(self, order_no, symbol=None, hint=None) -> dict:
+        # hint — 해외 예약주문 매칭 보조(KisBroker 전용). Sim은 단일 번호공간이라 무시.
         return self._statuses.get(order_no, {"order_no": order_no, "status": "unknown",
                                               "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0})
 

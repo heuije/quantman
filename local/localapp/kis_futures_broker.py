@@ -357,6 +357,17 @@ class KisFuturesBroker:
         else:
             self._ov_key = None
 
+    # ── 컨텍스트 구성 여부 (★ε) — BrokerRouter가 "미구성 skip"과 "구성됐는데 조회
+    # 실패"를 구분해, 후자만 잔고 fetch_failed 표식을 남기도록 한다(부분 equity로
+    # 킬스위치가 거짓 발동하는 06-09 사고 부류의 차단 재료).
+    @property
+    def domestic_configured(self) -> bool:
+        return self.key is not None
+
+    @property
+    def overseas_configured(self) -> bool:
+        return self._ov_key is not None
+
     def _token(self) -> str:
         if self._tok and time.time() < self._tok_exp - 60:
             return self._tok

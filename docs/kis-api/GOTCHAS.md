@@ -5,6 +5,31 @@
 
 ---
 
+## 2026-06-12 — 해외 체결조회(inquire-ccnl): 주문일자는 미국 현지 날짜 + 예약주문 번호공간 불일치
+
+- **증상 1 (RC1)**: KST 04:55 발주한 GOOG 매도(odno 0000040620)가 체결됐는데(KIS 보유
+  263→0) `_overseas_ccnl_today`(VTTS3035R/TTTS3035R, ORD_STRT/END_DT=KST 당일)가 **0행**
+  → status 'unknown' → 체결 영구 미기록 → settlement reconcile이 보유 diff로 "외부 매도
+  추정" 제거(정산손익·전략연결 소실).
+- **원인 1**: 체결행의 주문일자가 **미국 현지 날짜**(해당 건 20260611). KST 자정~미장마감
+  (≈06:00) 구간은 KST 날짜가 하루 앞서 당일 조회가 빗나간다. 22:30~24:00 KST(미장 초반
+  1.5h)만 날짜가 일치 — 그 시간대 체결만 잡히던 것.
+- **해결 1**: 조회창 [미국 동부 D-1, KST 오늘] (`_overseas_query_window`). 오래된 pending은
+  제출일(동부) D-1로 시작일 확장. ⚠ CTX 연속조회는 여전히 미구현(첫 페이지만).
+- **증상 2 (RC2)**: 예약매수 접수 odno **448**(3자리, order-resv 응답)이 체결됐는데 체결행
+  odno(10자리 주문 번호공간)와 불일치 → odno 정확 매칭이 영원히 실패 → 'unknown'.
+- **원인 2**: 예약주문접수(TTTT3014U/3016U) 응답 ODNO는 **예약 번호공간** — 개장 시 자동
+  전송되며 새 주문번호가 발급되고, 예약↔본주문 번호를 잇는 조회 TR은 미배선(예약내역
+  조회 TTTT3039R 미사용).
+- **해결 2**: `_overseas_order_status`가 hint(side·qty·reserved·exclude_odnos)를 받아
+  예약주문은 **종목+매수매도+수량**으로 체결행 매칭. 청구한 체결행 odno를
+  `claimed_fills.json`에 영속해 동형 주문/사이클 간 이중 기장 차단.
+- **우리 코드**: `kis_broker.py` `_overseas_query_window`·`_overseas_ccnl_today`·
+  `_overseas_order_status` · `trader.py` `_resolve_pending_locked`(hint·청구 레지스트리·
+  7일 GC) · 테스트 `local/tests/test_overseas_fill_detection.py`.
+
+---
+
 ## 2026-06-11 — 미국주식: 신선한 현재가 지정가 + 예약매도 지정가 통일 + 종가청산 (v0.9.35)
 
 - **배경**: 미국주식은 KIS가 연속장 시장가를 미지원(지정가/LOO만)이라 국내 시장가화의

@@ -108,14 +108,18 @@ class BrokerRouter:
                 "(라우터 취소는 ORD_DT 미보유; M10 라이브 배선에서 주문 ORD_DT 추적 후 연결)")
         return self._broker(symbol).cancel(order_no, self._code(symbol), qty)
 
-    def order_status(self, order_no, symbol=None):
+    def order_status(self, order_no, symbol=None, hint=None):
         # 선물 order_status는 1-arg(order_no), 주식은 2-arg(order_no, symbol).
         # 해외선물(CME)은 overseas_order_status(OTFM3116R inquire-ccld)로 분기.
+        # hint(미국주식 예약주문 매칭 보조)는 주식 브로커로만 전달 — 선물은 무관.
         if symbol is not None and self._is_fut(symbol):
             if futures_market(symbol) == "CME":
                 return self._futures.overseas_order_status(order_no)
             return self._futures.order_status(order_no)
-        return self._stock.order_status(order_no, symbol)
+        if hint is None:
+            # 레거시 2-인자 호출 보존 — hint 미지원 구현(테스트 더블 등) 호환.
+            return self._stock.order_status(order_no, symbol)
+        return self._stock.order_status(order_no, symbol, hint=hint)
 
     # ── 잔고 스냅샷: stock + 선물(국내·해외) 병합 + 심볼 정규화 (M7) ──────────────────
     def account_snapshot(self, overseas=True):
@@ -130,14 +134,24 @@ class BrokerRouter:
             return snap
         out = {"balance": dict(snap.get("balance", {}) or {}),
                "positions": list(snap.get("positions", []) or [])}
-        for getter in ("account_snapshot", "overseas_account_snapshot"):
+        fetch_failed = list(out["balance"].get("fetch_failed") or [])
+        for getter, cfg_attr, marker in (
+                ("account_snapshot", "domestic_configured", "futures"),
+                ("overseas_account_snapshot", "overseas_configured", "futures_overseas")):
             fn = getattr(self._futures, getter, None)
             if fn is None:
                 continue
+            # 미구성 컨텍스트는 조용히 skip(실패 아님). 구성 여부 속성이 없는 구현
+            # (테스트 더블 등)은 종전대로 호출한다.
+            if not getattr(self._futures, cfg_attr, True):
+                continue
             try:
                 fsnap = fn() or {}
-            except Exception as e:                   # noqa: BLE001 — 미구성/통신 실패는 병합 skip
+            except Exception as e:                   # noqa: BLE001 — 통신 실패는 병합 skip + 표식
                 log.warning("선물 잔고 조회 실패(%s) — 병합 skip: %s", getter, e)
+                # ★ε: 구성된 계좌의 조회 실패 — 부분 equity 표식. 킬스위치·day_start·
+                # equity 시계열이 이 표식으로 평가를 보류한다(거짓 -98% 청산 차단).
+                fetch_failed.append(marker)
                 continue
             # 선물계좌 equity(국내 추정예탁자산, KRW)를 통합자산에 합산 → kill-switch·drawdown이
             # 선물 PnL을 인지(미배선 시 완전 무시). 해외선물 equity(USD)는 라이브검증 후(Phase 5).
@@ -161,6 +175,8 @@ class BrokerRouter:
                     np["symbol"] = ds
                 np.setdefault("asset_class", "futures")
                 out["positions"].append(np)
+        if fetch_failed:
+            out["balance"]["fetch_failed"] = fetch_failed
         return out
 
     # ── 진입 시 계약코드·만기일 (M6 만기 자동청산 — Trader가 ledger에 기록) ──────────

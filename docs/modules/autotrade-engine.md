@@ -97,3 +97,19 @@ timeline 정합) → β 정지점 제거(manifest 폴백 제거·락 timeout·�
 예약주문 매칭) → ε equity 단일 산출기+신뢰성 게이트 → η 명령 버스 at-least-once.
 결정 확정: US 예약주문은 유지+개장후 ccnl 매칭, Railway 영속 볼륨 채택(ops).
 각 PR은 결함 재현 테스트 선작성 후 구현, 골든 byte-identical 보존.
+
+**진행 (2026-06-12).** 라이브 실증(GOOG 모의 라운드트립·국장 선물 시장가 발주 PASS)으로
+잔여 결함을 구조 단위로 재편 — 증상 단위 δ·ε를 **WS-1 포지션 SSOT**(`fix/position-ssot`)
+하나로 구현: ① RC1 해외 체결조회 날짜창(미국 현지 D-1~KST 오늘, `_overseas_query_window`)
+② RC2 예약주문 번호공간 — 종목+사이드+수량 매칭 + `claimed_fills.json` 청구 dedup
+③ pending 7일 GC ④ ★킬스위치/day_start/drawdown/equity의 **부분 잔고(fetch_failed) 평가
+보류**(06-09 거짓 −98% 청산 재발 차단) ⑤ equity 시계열 통합자산화(D3-3) ⑥ **disk-SSOT
+invariant(M9)** — 장수명 loop Trader의 stale 저장이 매도 포지션을 부활시키던 부류를
+변경 즉시 영속+진입부 reload로 종결(체결 이벤트 3중 중복 기록의 뿌리). 재현 테스트 18건
+red→green, local 364 전부 green. 병행 브랜치: `fix/preview-slot-freshness`(타임라인 슬롯
+판정 — "오늘 신선분=done/갱신중/데드라인후 missed", server 197 green) ·
+`fix/legacy-ir-migration`(K — 동결 ledger의 sweep/period_split을 파싱 경계에서 query/study로
+의미보존 마이그레이션, 보유 구주식 3종 파싱 복원, core 245+루트 390+local 346 green) ·
+`fix/server-infra-pruning-indexes`(#2 인덱스→#1 pruning cron→#3 스케줄러 가드, server 198
+green) · `fix/parity-oracle-fx`(WS-2: 사이징 FX+백테스트=라이브 경제결과 오라클, 진행 중).
+**머지는 전부 무거래창 + 건별 승인 대기.**
