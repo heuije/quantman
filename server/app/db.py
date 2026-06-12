@@ -1,9 +1,10 @@
 """DB 엔진 및 세션."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, SQLModel, create_engine
-from sqlalchemy import text
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError
 
 from .config import settings
@@ -104,6 +105,25 @@ def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
         conn.exec_driver_sql(f'ALTER TABLE "{table}" ADD COLUMN {column} {type_ddl}')
 
 
+# 핫경로 폴링 쿼리용 복합 인덱스. create_all은 컬럼과 마찬가지로 기존 테이블에는
+# 인덱스를 추가하지 않으므로(신규 테이블만), 운영 DB엔 여기 명시 DDL이 필요하다.
+# 신규 인덱스는 이 list 한 곳에만 추가하면 _ensure_index가 PG/SQLite 모두 적용한다.
+#  - syncsnapshot(user_id, received_at DESC): "유저 최신 1건" 폴링
+#    (sync·trading·portfolio·preview_engine의 ORDER BY received_at DESC LIMIT 1)
+#    과 prune_old_rows의 보존기간 DELETE가 모두 이 인덱스를 탄다.
+#  - command(device_id, status): pending 명령 폴링(commands.py)의
+#    WHERE device_id=? AND status='pending' 필터.
+_NEW_INDEXES: list[tuple[str, str, str]] = [
+    ("ix_syncsnapshot_user_id_received_at", "syncsnapshot", "user_id, received_at DESC"),
+    ("ix_command_device_id_status", "command", "device_id, status"),
+]
+
+
+def _ensure_index(conn, name: str, table: str, cols: str) -> None:
+    """PG/SQLite 통합 멱등 인덱스 생성 — 둘 다 CREATE INDEX IF NOT EXISTS 지원."""
+    conn.execute(text(f'CREATE INDEX IF NOT EXISTS {name} ON "{table}" ({cols})'))
+
+
 def _migrate() -> None:
     """기존 배포 DB에 대한 멱등 스키마 보정.
 
@@ -122,6 +142,9 @@ def _migrate() -> None:
             # 통합 컬럼 보정 — _NEW_COLS 한 곳에만 추가하면 PG/SQLite 모두 적용.
             for table, column, ddl in _NEW_COLS:
                 _ensure_column(conn, table, column, ddl)
+            # 통합 인덱스 보정 — 핫경로 폴링·pruning DELETE가 인덱스를 타도록.
+            for index_name, table, cols in _NEW_INDEXES:
+                _ensure_index(conn, index_name, table, cols)
             # Phase 59 — orphan BacktestRun(strategy_id가 NULL인 row) 즉시 삭제.
             # 사용자 결정: 저장 안 한 시범 백테스트는 보관 X. backtestrun.strategy_id
             # 컬럼이 막 추가됐으면 기존 row는 모두 NULL — 일괄 삭제.
@@ -145,6 +168,74 @@ def create_db_and_tables() -> None:
 def get_session():
     with Session(engine) as session:
         yield session
+
+
+# ── 무한 성장 테이블 pruning ─────────────────────────────────────────────────
+#
+# HeartbeatEvent(5분 ping당 row 1개 = 기기당 288행/일)·SyncSnapshot(이벤트 push당
+# 수백KB JSON)이 정리 로직 없이 무한 누적 → 최신조회 정렬·egress 비용이 시간에
+# 비례 증가(2026-06-10 Neon egress 쿼터 인시던트를 서서히 재유발하는 구조).
+# main.py의 db_prune cron(04:00 KST, 일 1회)이 호출한다.
+
+HEARTBEAT_RETENTION_DAYS = 30   # timeline 소비처는 24h window만 읽음(trading.WINDOW_HOURS)
+SNAPSHOT_RETENTION_DAYS = 30
+# 첫 실행 누적분 대량 DELETE가 락을 오래 잡지 않도록 batch 단위 삭제·commit.
+_PRUNE_BATCH = 5000
+
+
+def prune_old_rows() -> dict[str, int]:
+    """무한 성장 테이블 보존정책 적용 — 테이블별 삭제 행 수 반환.
+
+    - heartbeatevent: 30일 초과 삭제. latest는 UserSettings.last_heartbeat_at가
+      따로 들고, 이력 소비처(/trading·/sync timeline)는 24h window만 읽는다.
+    - syncsnapshot: 30일 초과 삭제하되 **유저별 최신 1건은 무조건 보존** —
+      preview_engine·/sync/snapshot·/trading/timeline·/portfolio가 유저 최신 1건에
+      의존한다(휴면 유저도 마지막 상태는 보여야 함). 소비처와 같은 정렬
+      (received_at DESC) 기준의 top 1을 남긴다.
+
+    탐색은 모두 인덱스 경유(풀스캔 DELETE 금지 — Neon 부하): heartbeat는 at 인덱스,
+    snapshot은 유저별로 (user_id, received_at) 복합 인덱스(_NEW_INDEXES)를 탄다.
+    삭제는 멱등이라 중단·재시도에 안전하다.
+    """
+    from .models import HeartbeatEvent, SyncSnapshot  # 순환 회피 — create_db_and_tables와 동일
+
+    hb, ss = HeartbeatEvent.__table__, SyncSnapshot.__table__
+    now = datetime.now(timezone.utc)
+    deleted = {"heartbeatevent": 0, "syncsnapshot": 0}
+
+    cutoff = now - timedelta(days=HEARTBEAT_RETENTION_DAYS)
+    while True:
+        batch = select(hb.c.id).where(hb.c.at < cutoff).limit(_PRUNE_BATCH)
+        with engine.begin() as conn:
+            n = conn.execute(delete(hb).where(hb.c.id.in_(batch))).rowcount
+        deleted["heartbeatevent"] += n
+        if n < _PRUNE_BATCH:
+            break
+
+    cutoff = now - timedelta(days=SNAPSHOT_RETENTION_DAYS)
+    with engine.begin() as conn:
+        user_ids = conn.execute(select(ss.c.user_id).distinct()).scalars().all()
+    for uid in user_ids:
+        # 소비처 정렬과 동일한 "최신 1건". DELETE 문 안의 스칼라 서브쿼리로 같은
+        # statement에서 평가 — 별도 조회·삭제 사이의 race가 없다.
+        latest = (select(ss.c.id).where(ss.c.user_id == uid)
+                  .order_by(ss.c.received_at.desc(), ss.c.id.desc())
+                  .limit(1).scalar_subquery())
+        while True:
+            batch = (select(ss.c.id)
+                     .where(ss.c.user_id == uid, ss.c.received_at < cutoff,
+                            ss.c.id != latest)
+                     .limit(_PRUNE_BATCH))
+            with engine.begin() as conn:
+                n = conn.execute(delete(ss).where(ss.c.id.in_(batch))).rowcount
+            deleted["syncsnapshot"] += n
+            if n < _PRUNE_BATCH:
+                break
+
+    if deleted["heartbeatevent"] or deleted["syncsnapshot"]:
+        _log.info("pruning 완료: heartbeatevent %d행 · syncsnapshot %d행 삭제",
+                  deleted["heartbeatevent"], deleted["syncsnapshot"])
+    return deleted
 
 
 # Phase 60 — Neon 서버리스 연결 끊김 재시도.
