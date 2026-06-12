@@ -297,7 +297,8 @@ class Trader:
         external_extras(외부 매수)는 ledger 손대지 않음 (자동매매가 매수한 게 아니므로).
         반환: reconcile dict + applied 변경 내역 + 거래 기록 카운트.
 
-        호출 시점: 15:35 post_close_settlement (08:55 메인 사이클 직전엔 위험).
+        호출 시점: 15:50 post_close_settlement — 모든 KRX 종가창(주식 15:30·선물
+        15:45) 이후 (08:55 메인 사이클 직전엔 위험).
         """
         today = today_iso or kst_today().isoformat()
         try:
@@ -1375,9 +1376,19 @@ class Trader:
         미국주식은 라이브 지정가(_submit_sell USD 분기, 신선한가×(1−tol) 시장가근사 — KIS 연속장
         시장가 미지원). 청산 수량은 main loop와 동일하게 KIS 실보유로 클램프(L-04, snap_pre).
         파싱 실패 고아는 hold_days 불명 → skip(main loop·Monitor가 표면화).
+
+        θ(2026-06-12 선물 0000004525 미기록): 발주 후 일반 cycle과 동일하게
+        _wait_pending으로 폴링 — 단일 조회는 모의 ~27초 체결 지연도 놓쳤다.
+        N1(미장 GOOG 261주 방치): 순회 전에 _resolve_pending을 먼저 돌려 미기록
+        진입 체결(δ류)을 ledger에 복원한다(settlement와 동일한 resolve→평가 순서).
+        그래도 체결확인 불능인 당일매매 진입은 추측 발주 없이 '청산 불능'으로
+        표면화한다 — 계좌 보유가 외부 수동 매수일 수 있어(병1 불변식) 발주는 금지.
         """
         decisions: list[dict] = []
         today = kst_today()
+        # N1 — ledger 순회 전에 미체결 먼저 정합. 진입 체결이 미기록이면 여기서
+        # ledger에 복원돼(해외 체결감지 WS-1 포함) 아래 루프가 정상 청산한다.
+        self._resolve_pending(decisions)
         snap_pre = self.broker.account_snapshot()   # KIS 실보유(clamp 기준) — main loop와 동일
         for sid, pos in list(self.ledger.items()):
             if _market_group_safe(pos["symbol"]) != market:
@@ -1428,9 +1439,57 @@ class Trader:
             else:
                 self._submit_sell(sid, pos.get("strategy_name", ""), pos["symbol"],
                                   clamped, ref_price, policy, reason, decisions)
-        # 즉시 체결/거부 반영(단일가 체결·발주창 외 거부를 결과에 표면화).
+        # 즉시 체결/거부 반영(발주창 외 거부를 결과에 표면화).
         self._resolve_pending(decisions)
-        return self._state_payload(decisions, today, kind="day_trade_close")
+        # θ — 종가 단일가 체결 지연 흡수: 일반 cycle과 동일 wait(기본 60s/20s 폴링).
+        # 실전 선물 단일가(15:45) 체결처럼 wait를 넘는 건은 15:50 settlement가 정리.
+        gp = merged_execution(None)
+        self._wait_pending(gp["post_submit_wait_sec"], gp["poll_interval_sec"],
+                           decisions)
+        # N1 표면화 — 오늘 낸 당일매매 진입이 여전히 체결확인 불능인데 계좌 보유가
+        # 원장을 초과하면 '청산 불능'을 명시한다. 추측 매도는 금지: 초과 보유가
+        # 사용자의 외부 수동 매수일 수 있고(병1 불변식 — 외부 보유 불가침), 체결
+        # 진실 없이 내는 주문은 오인 매도가 된다. 복원은 resolve·settlement 몫.
+        kst = ZoneInfo("Asia/Seoul")
+        for p in list(self.pending.values()):
+            sym = p.get("symbol", "")
+            if _market_group_safe(sym) != market:
+                continue
+            if qc.is_futures(sym) != (instrument_class == "futures"):
+                continue
+            d_def = p.get("definition") or {}
+            hd = ((d_def.get("position") or {}).get("exit") or {}).get("hold_days")
+            if hd != 0:
+                continue
+            ts = float(p.get("submitted_ts") or 0)
+            if datetime.fromtimestamp(ts, kst).date() != today:
+                continue
+            side = "short" if p.get("side") == "sell" else "long"
+            held_now = held_qty_from_snapshot(snap_pre, sym, side)
+            covered = sum(int(lg.get("qty") or 0) for lg in self.ledger.values()
+                          if lg.get("symbol") == sym
+                          and lg.get("side", "long") == side)
+            if held_now is None or held_now <= covered:
+                continue
+            log.error("[종가청산] 당일청산 불능 — 진입주문 %s(%s) 체결확인 실패, "
+                      "계좌 보유 %d > 원장 %d (미기록 체결 의심)",
+                      p.get("order_no"), sym, held_now, covered)
+            decisions.append(order_log.decision(
+                "error", str(p.get("strategy_id", "")),
+                p.get("strategy_name", ""), sym,
+                f"당일청산 불능 — 진입주문 {p.get('order_no')} 체결확인 실패인데 "
+                f"계좌 보유 {held_now} > 원장 {covered}. 미기록 체결 의심 — "
+                "정산 reconcile·수동 확인 필요"))
+        # N2 — 이 시장·클래스의 미확인 잔존 건수. 서버 타임라인이 "발주-but-미확인"
+        # 사이클을 녹색 성공으로 표시하지 않도록 요약에 노출한다.
+        n_unresolved = sum(
+            1 for p in self.pending.values()
+            if _market_group_safe(p.get("symbol", "")) == market
+            and qc.is_futures(p.get("symbol", "")) == (instrument_class == "futures"))
+        return self._state_payload(
+            decisions, today, kind="day_trade_close", market=market,
+            extra_summary={"instrument_class": instrument_class,
+                           "n_pending_unresolved": n_unresolved})
 
     def state_snapshot(self) -> dict:
         """현 상태(잔고·포지션·kill_switch) 스냅샷 — 거래 없이 상태 변경(kill-switch 해제·
@@ -1442,10 +1501,17 @@ class Trader:
 
     def _state_payload(self, decisions: list[dict], today: date, *,
                        kind: str = "emergency_liquidation",
-                       record_cycle: bool = True) -> dict:
+                       record_cycle: bool = True,
+                       market: str = "ALL",
+                       extra_summary: dict | None = None) -> dict:
         """현재 잔고·포지션·결정·kill_switch를 Monitor용 스냅샷 payload로 — 정규 cycle 출력
         (_cycle_body 꼬리)은 건드리지 않는다(주식 골든 byte-identical 보존, blast radius 0).
         비상청산(kind=emergency_liquidation)·상태동기화(kind=state_sync) 공용 빌더.
+
+        market — cycle_summary.market. 비상청산·상태동기화는 전시장(ALL)이 맞지만
+        day_trade_close는 실제 시장을 식별해야 서버 타임라인이 슬롯(주식 15:25/
+        선물 15:40/미장 close−5분)별로 매칭한다(N2 — 'ALL' 하드코딩이 매칭 불가의
+        원인이었다). extra_summary — kind별 추가 요약 필드(instrument_class 등).
         """
         try:
             snap = self.broker.account_snapshot()
@@ -1464,7 +1530,7 @@ class Trader:
             broker_pending = []
         cycle_summary = {
             "today": today.isoformat(),
-            "market": "ALL",
+            "market": market,
             "kind": kind,
             "n_sold": sum(1 for d in decisions if d["action"] == "sold"),
             "n_rejected": sum(1 for d in decisions if d["action"] == "rejected"),
@@ -1472,6 +1538,8 @@ class Trader:
             "n_errors": sum(1 for d in decisions if d["action"] == "error"),
             "kill_switch": bool(killswitch.load().get("active")),
         }
+        if extra_summary:
+            cycle_summary.update(extra_summary)
         if record_cycle:
             order_log.log_cycle(decisions, cycle_summary)
         positions_rich = analytics.enrich_positions(
@@ -1802,6 +1870,12 @@ class Trader:
             "n_errors": sum(1 for d in decisions if d["action"] == "error"),
             "n_unparseable_orphan": sum(
                 1 for d in decisions if d["action"] == "unparseable_orphan"),
+            # N2 — 이 시장의 미확인 잔존(발주-but-체결미확인 + 이월 미체결).
+            # 아침 cycle은 DAY 지정가가 장중 자연 체결될 수 있어 잔존이 정상이지만
+            # (서버 타임라인도 cycle 슬롯엔 경고 안 함), 관측을 위해 항상 노출한다.
+            "n_pending_unresolved": sum(
+                1 for p in self.pending.values()
+                if _market_group_safe(p.get("symbol", "")) == market),
             "kill_switch": ks_active,
             "equity_pre": equity_now,
             "equity_post": equity_post,    # ε: 통합 자산(KRW) — equity_pre와 동일 정의

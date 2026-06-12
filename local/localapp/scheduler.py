@@ -5,8 +5,8 @@
 - 평일 08:55  메인 사이클 (KRX 매수/청산 평가 + 발주)
 - 평일 15:25  종가 매도 사이클 (주식·당일매매 hold_days=0)
 - 평일 15:30  장중 loop 종료
-- 평일 15:35  장 마감 후 settlement
 - 평일 15:40  종가 매도 사이클 (선물·당일매매 hold_days=0)
+- 평일 15:50  장 마감 후 settlement (θ: 모든 종가창 이후 — 선물 단일가 15:45 커버)
 
 미국(US) — 동적 야간 플래너:
 - 매일 12:00  오늘 밤 미국 세션을 시장 캘린더로 계산해 one-shot 잡 등록
@@ -124,7 +124,7 @@ def register_jobs(sched) -> None:
 
     등록 항목:
       · KRX 08:50 loop / 08:55 cycle / 15:25 종가매도(주식) / 15:30 loop stop /
-        15:35 settlement / 15:40 종가매도(선물)
+        15:40 종가매도(선물) / 15:50 settlement
       · US 매일 12:00 야간 플래너 + 기동 시 즉시 1회 plan
       · 캘린더 04:00 일일 sync
       · heartbeat 5분 주기 + 기동 시 1회
@@ -164,9 +164,13 @@ def register_jobs(sched) -> None:
         intraday_loop.stop,
         CronTrigger(day_of_week="mon-fri", hour=15, minute=30, timezone="Asia/Seoul"),
         id="krx_loop_stop", name="KRX 장중 loop 종료", misfire_grace_time=300)
+    # θ: 정산은 모든 KRX 종가창이 끝난 뒤 1회 — 옛 15:35는 선물 종가청산(15:40
+    # 발주 → 단일가 15:35~15:45 체결)보다 먼저 돌아, 그 체결을 그날 안에 확인할
+    # 패스가 없었다(2026-06-12 0000004525 미기록 → 수동 복구). 15:50 = 선물
+    # 장종료(15:45) + 체결조회 여유 5분. catchup.py의 정산 임계와 정합 유지.
     sched.add_job(
         run_post_close_settlement, kwargs={"market": "KRX"},
-        trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=35, timezone="Asia/Seoul"),
+        trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=50, timezone="Asia/Seoul"),
         id="krx_settlement", name="KRX 장 마감 후 settlement", misfire_grace_time=600)
 
     # 종가 매도 사이클(당일매매 hold_days=0) — 주식 종가단일가 15:20~15:30 / 선물 15:35~15:45
@@ -257,7 +261,7 @@ def start() -> None:
     print("=" * 52)
     print("  로컬앱 스케줄러 시작 (KST)")
     print("  [KRX] 08:50 loop · 08:55 사이클 · 15:25 종가매도(주식) · 15:30 loop종료 · "
-          "15:35 정산 · 15:40 종가매도(선물)")
+          "15:40 종가매도(선물) · 15:50 정산")
     print("  [US ] 매일 12:00 야간 플래너 → open−20분 예약발주 / open+5분 reconcile / "
           "close−5분 종가매도 / close+5분 정산")
     print("        (DST·휴장 자동 반영, 오늘 밤 세션은 기동 시 즉시 등록)")

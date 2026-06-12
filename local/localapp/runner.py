@@ -474,7 +474,7 @@ def _run_settlement_locked(market: str, kind: str, label: str) -> dict:
     decisions: list[dict] = []
     trader._resolve_pending(decisions)
 
-    # Phase 40 — ledger ↔ KIS 정합성 자동 정정 (매매 직전 08:55엔 위험, 15:35에 실행)
+    # Phase 40 — ledger ↔ KIS 정합성 자동 정정 (매매 직전 08:55엔 위험, 15:50에 실행)
     reconcile_result = trader.reconcile_with_kis(today_iso=today)
     if reconcile_result.get("has_drift"):
         log.warning("reconcile drift 감지 — applied=%d, external_extras=%d",
@@ -498,6 +498,9 @@ def _run_settlement_locked(market: str, kind: str, label: str) -> dict:
             "kind": kind,
             "reconcile_drift": reconcile_result.get("has_drift", False),
             "reconcile_applied": len(reconcile_result.get("applied") or []),
+            # N2 — 정산 후에도 남은 미체결(장 마감 뒤라 전부 비정상 잔존).
+            # 서버 타임라인이 0이 아니면 ⚠로 표면화한다.
+            "n_pending_unresolved": len(trader.pending),
         },
     }
     # post_close_settlement은 cycle entry처럼 cycles.jsonl에 명시적 기록.
