@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, type IrValidation, type IrExplanation } from "../api";
+import { api, type IrValidation, type IrExplanation, type CompileQuota } from "../api";
 import SentenceTree, { type Catalog } from "../components/SentenceTree";
 import EquityChart from "../components/EquityChart";
 import {
@@ -199,6 +199,9 @@ export default function IrBuilder() {
   const [compileExplanation, setCompileExplanation] = useState<IrExplanation | null>(null);
   const [compileId, setCompileId] = useState<number | null>(null);
   const compileBaseline = useRef<string>("");
+  // 일일 사용량 제한 — 카운터 표시 + admin 비번 언락(세션 동안 유지).
+  const [adminPw, setAdminPw] = useState<string>(() => sessionStorage.getItem("nl_admin_pw") || "");
+  const [quota, setQuota] = useState<CompileQuota | null>(null);
 
   // 저장/불러오기 — 이름·편집대상·저장 상태. ?edit=<id>면 기존 IR 전략을 불러와 수정.
   const navigate = useNavigate();
@@ -524,12 +527,49 @@ export default function IrBuilder() {
     return sweepWindows.split(",").map((x) => Number(x.trim())).filter((n) => !Number.isNaN(n));
   }
 
+  // 페이지 로드 시 오늘 사용량 카운터 표시(+ 저장된 비번이 있으면 언락 상태 검증).
+  useEffect(() => {
+    api.compileQuota(adminPw || undefined)
+      .then(setQuota)
+      .catch(() => {/* 카운터 표시 실패는 빌더 동작에 무관 — 조용히 무시 */});
+  }, [adminPw]);
+
+  // 🔓 제한 해제 — 비밀번호 입력 → 서버 즉시 검증. 맞으면 세션에 보관(50회), 틀리면 알림.
+  async function unlockLimit() {
+    const pw = window.prompt("관리자 비밀번호를 입력하면 일일 한도가 상향됩니다.");
+    if (pw == null) return;                       // 취소
+    if (!pw.trim()) return;
+    try {
+      const q = await api.compileQuota(pw.trim());
+      if (q.admin_unlocked) {
+        sessionStorage.setItem("nl_admin_pw", pw.trim());
+        setAdminPw(pw.trim());                    // effect가 quota 재조회
+        setQuota(q);
+      } else {
+        window.alert("비밀번호가 올바르지 않습니다.");
+      }
+    } catch {
+      window.alert("확인에 실패했습니다. 잠시 후 다시 시도하세요.");
+    }
+  }
+
+  function lockLimit() {
+    sessionStorage.removeItem("nl_admin_pw");
+    setAdminPw("");                               // effect가 일반 한도로 재조회
+  }
+
   // 자연어 설명 → IR 컴파일 → 빌더 전 폼에 hydrate. 변환 후 유저가 확인·실행.
   async function compileFromNl() {
     if (!nlText.trim() || compiling) return;
     setCompiling(true); setCompileErr(""); setCompileAssumptions([]); setCompileExplanation(null);
     try {
-      const res = await api.compileIr(nlText.trim());
+      const res = await api.compileIr(nlText.trim(), adminPw || undefined);
+      // 응답의 사용량으로 카운터 즉시 갱신(rate_limited·성공 공통).
+      if (typeof res.used === "number" && typeof res.limit === "number") {
+        setQuota({ used: res.used, limit: res.limit,
+                   remaining: res.remaining ?? Math.max(0, res.limit - res.used),
+                   admin_unlocked: res.admin_unlocked ?? false });
+      }
       setCompileAssumptions(res.assumptions ?? []);
       setCompileExplanation(res.explanation ?? null);
       if (!res.success) {
@@ -672,11 +712,29 @@ export default function IrBuilder() {
             border: "1px solid var(--input-border)", borderRadius: 8, boxSizing: "border-box",
           }}
         />
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
           <button type="button" onClick={compileFromNl} disabled={compiling || !nlText.trim()}>
             {compiling ? "변환 중…" : "변환"}
           </button>
           <span className="muted" style={{ fontSize: 12 }}>변환은 아래 폼을 덮어씁니다.</span>
+          {/* 일일 사용량 카운터 + admin 제한 해제 */}
+          <span style={{ flex: 1 }} />
+          {quota && (
+            <span style={{ fontSize: 12,
+                           color: quota.remaining <= 0 ? "var(--red)" : "var(--muted)" }}>
+              오늘 {quota.used}/{quota.limit}회
+              {quota.admin_unlocked && (
+                <span style={{ color: "var(--green)", marginLeft: 4 }}>· 관리자</span>
+              )}
+            </span>
+          )}
+          {quota?.admin_unlocked ? (
+            <button type="button" className="ghost" onClick={lockLimit}
+                    style={{ fontSize: 12 }}>제한 잠금</button>
+          ) : (
+            <button type="button" className="ghost" onClick={unlockLimit}
+                    style={{ fontSize: 12 }}>🔓 제한 해제</button>
+          )}
         </div>
         {compileErr && <div className="error" style={{ marginTop: 8 }}>{compileErr}</div>}
         {compileExplanation ? (

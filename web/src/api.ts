@@ -74,6 +74,7 @@ export type IrExplanation = {
 };
 
 // 자연어 → StrategyIR 컴파일 결과 (/ir/compile). success=false면 error 사유.
+// rate_limited=true면 일일 한도 초과(LLM 미호출). used/limit/remaining은 사용량 표시용.
 export type IrCompileResult = {
   success: boolean;
   ir: Record<string, unknown>;
@@ -81,7 +82,20 @@ export type IrCompileResult = {
   issues: IrIssue[];
   explanation?: IrExplanation | null;
   error?: string | null;
-  compile_id: number;
+  compile_id: number | null;
+  rate_limited?: boolean;
+  used?: number;
+  limit?: number;
+  remaining?: number;
+  admin_unlocked?: boolean;
+};
+
+// 일일 사용량 조회 (/ir/compile/quota). 카운터 표시 + admin 비번 즉시 검증.
+export type CompileQuota = {
+  used: number;
+  limit: number;
+  remaining: number;
+  admin_unlocked: boolean;
 };
 
 export const api = {
@@ -224,9 +238,16 @@ export const api = {
       method: "POST", body: JSON.stringify(strategy),
     }),
   // 자연어 전략 설명 → StrategyIR 컴파일. 결과 IR을 빌더가 hydrate한다.
-  compileIr: (nl: string) =>
+  compileIr: (nl: string, adminPassword?: string) =>
     req<IrCompileResult>("/ir/compile", {
-      method: "POST", body: JSON.stringify({ nl }),
+      method: "POST",
+      body: JSON.stringify(adminPassword ? { nl, admin_password: adminPassword } : { nl }),
+    }),
+  // 일일 사용량 조회 — 컴파일 소모 없음. 비번 동봉 시 언락 즉시 검증.
+  compileQuota: (adminPassword?: string) =>
+    req<CompileQuota>("/ir/compile/quota", {
+      method: "POST",
+      body: JSON.stringify(adminPassword ? { admin_password: adminPassword } : {}),
     }),
   // 컴파일 정확도 신호 — 컴파일된 IR을 (수정 없이) 실행했는지 기록.
   compileFeedback: (compile_id: number, ran: boolean, edited: boolean | null) =>

@@ -53,11 +53,19 @@ class Settings:
 
     # NL→IR 컴파일러 (자연어 전략 설명 → StrategyIR). 키 미설정 시 /ir/compile가
     # 503을 명확히 반환(다른 기능엔 영향 없음). 모델은 env로 교체 가능.
-    # 기본 Sonnet 4.6 — 복잡·모호한 전략 설명의 컴파일 품질을 우선(Haiku 대비 ~3배 비용).
-    # Haiku 4.5도 archetype 평가는 동급(12/12)이나 긴 다조건·중의적 문장에서 Sonnet이 더
-    # 견고. 비용 회귀가 필요하면 env로 롤백: QP_NL_COMPILE_MODEL=claude-haiku-4-5-20251001.
+    # 기본 Haiku 4.5 — archetype 평가 동급(12/12)이고 비용이 Sonnet의 ~1/3이라,
+    # 일일 사용량 제한이 걸린 공개 베타 빌더의 기본으로 적합. 더 견고한 컴파일이
+    # 필요하면 env로 상향: QP_NL_COMPILE_MODEL=claude-sonnet-4-6.
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-    NL_COMPILE_MODEL: str = os.getenv("QP_NL_COMPILE_MODEL", "claude-sonnet-4-6")
+    NL_COMPILE_MODEL: str = os.getenv("QP_NL_COMPILE_MODEL", "claude-haiku-4-5-20251001")
+
+    # NL 컴파일 일일 사용량 제한 (인당·KST 기준). LLM 호출 비용·악용 통제.
+    # admin 비밀번호(아래)로 상향 한도까지 해제. 둘 다 env로 조정 가능.
+    NL_COMPILE_DAILY_LIMIT: int = int(os.getenv("QP_NL_COMPILE_DAILY_LIMIT", "10"))
+    NL_COMPILE_ADMIN_LIMIT: int = int(os.getenv("QP_NL_COMPILE_ADMIN_LIMIT", "50"))
+    # admin 언락 비밀번호 — 일치 시 일일 한도가 ADMIN_LIMIT로 상향(무제한 아님).
+    # 단일 공유 시크릿(개인별 admin 계정 아님) — 베타 오버라이드용. 로그 미출력.
+    NL_COMPILE_ADMIN_PASSWORD: str = os.getenv("QP_NL_COMPILE_ADMIN_PASSWORD", "ms2605")
 
 
 settings = Settings()
