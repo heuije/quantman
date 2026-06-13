@@ -2363,13 +2363,13 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .futures-selector button {
   padding: 6px 14px; font-size: 13px; font-weight: 600;
-  border: 1px solid var(--border, #2b3340); border-radius: 999px;
-  background: var(--bg, #11161d); color: var(--muted, #9aa);
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg); color: var(--muted);
   cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.futures-selector button:hover { border-color: var(--accent, #6c9ce9); }
+.futures-selector button:hover { border-color: var(--accent); color: var(--text); }
 .futures-selector button.active {
-  background: var(--accent, #6c9ce9); color: #fff; border-color: var(--accent, #6c9ce9);
+  background: var(--accent); color: var(--ink); border-color: var(--accent);
 }
 
 .oil-toolbar {
@@ -2397,12 +2397,13 @@ thead th { color: var(--muted); font-weight: 600; }
 .oil-table th { font-weight: 600; color: var(--muted); text-align: right; }
 .oil-table th:first-child, .oil-table td:first-child { text-align: left; }
 .oil-table tbody tr { cursor: pointer; }
-.oil-table tbody tr:hover { background: rgba(255,255,255,0.04); }
-.oil-table tr.selected-row { background: rgba(108, 156, 233, 0.15); }
+.oil-table tbody tr:hover { background: rgba(0,0,0,0.03); }
+.oil-table tr.selected-row { background: rgba(217, 119, 87, 0.14); }
 .oil-table .short { color: var(--red); font-weight: 600; }
 .oil-table .long { color: var(--green); font-weight: 600; }
-.oil-table .pos { color: var(--green); }
-.oil-table .neg { color: var(--red); }
+/* 선물 분석 탭은 서구식 손익색(녹=수익/적=손실). .oil-table 밖(추세탐색기 결과·투자의견·참고문구 등)도 포함하도록 .oil-page로 확장 — 플랫폼 전역 .pos/.neg(한국식 적/청)을 이 페이지에서만 재정의 */
+.oil-page .pos { color: var(--green); }
+.oil-page .neg { color: var(--red); }
 
 .bt-metrics {
   display: grid;
@@ -2410,9 +2411,9 @@ thead th { color: var(--muted); font-weight: 600; }
   gap: 10px;
 }
 .metric-card {
-  background: rgba(255,255,255,0.03);
+  background: var(--bg);
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border);
 }
 .metric-value {
@@ -2423,10 +2424,10 @@ thead th { color: var(--muted); font-weight: 600; }
 .warn-banner {
   margin-top: 12px;
   padding: 10px 14px;
-  background: rgba(230, 194, 89, 0.12);
-  border: 1px solid rgba(230, 194, 89, 0.4);
-  border-radius: 6px;
-  color: #e6c259;
+  background: var(--amber-soft);
+  border: 1px solid rgba(180, 83, 9, 0.35);
+  border-radius: 8px;
+  color: var(--amber);
   font-size: 13px;
 }
 
@@ -2435,7 +2436,7 @@ thead th { color: var(--muted); font-weight: 600; }
 @media (max-width: 760px) { .wf-row { grid-template-columns: 1fr; } }
 .wf-block {
   padding: 12px;
-  background: rgba(255,255,255,0.03);
+  background: var(--bg);
   border-radius: 6px;
   border: 1px solid var(--border);
   font-size: 13px;
@@ -2485,7 +2486,7 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .sticky-table tbody tr.selected-row td:first-child,
 .sticky-table tbody tr.selected-row th:first-child {
-  background: rgba(108, 156, 233, 0.10);
+  background: rgba(217, 119, 87, 0.12);
 }
 .sticky-table tbody tr:hover td:first-child,
 .sticky-table tbody tr:hover th:first-child {
@@ -2497,7 +2498,7 @@ thead th { color: var(--muted); font-weight: 600; }
 
 /* 정렬 가능 헤더 */
 .oil-table th.sortable:hover { color: var(--text); }
-.oil-table th.sortable.active { color: #6c9ce9; }
+.oil-table th.sortable.active { color: var(--accent-strong); }
 .oil-table .sort-arrow {
   font-size: 10px;
   opacity: 0.5;
@@ -2548,9 +2549,9 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 @media (max-width: 760px) { .season-tables { grid-template-columns: 1fr; } }
 
-/* SL/TP toolbar */
+/* 비용·신호 설정 toolbar */
 .sltp-toolbar {
-  background: rgba(108, 156, 233, 0.05);
+  background: rgba(217, 119, 87, 0.05);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 10px 14px;
@@ -2621,8 +2622,8 @@ thead th { color: var(--muted); font-weight: 600; }
 .oil-radio-group label:last-child { border-right: none; }
 .oil-radio-group label:hover { background: rgba(0,0,0,0.04); }
 .oil-radio-group label.active {
-  background: var(--accent, #6c9ce9);
-  color: #fff;
+  background: var(--accent);
+  color: var(--ink);
   font-weight: 600;
 }
 .oil-radio-group input[type=radio] {

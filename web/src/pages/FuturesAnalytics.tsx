@@ -44,7 +44,7 @@ import {
 // 색 스케일: 음수→빨강, 양수→녹색. 진하기 = |거래당 평균수익률| / 그리드 최대.
 // 색은 수익률에만 비례 — 샘플수 채도 억제 없음(저샘플은 ⚠·툴팁으로만 경고).
 function heatColor(v: number, max: number): string {
-  if (!Number.isFinite(v) || max <= 0) return "#1f2937";
+  if (!Number.isFinite(v) || max <= 0) return "#f1efe8";
   const r = Math.max(-1, Math.min(1, v / max));
   if (r >= 0) {
     return `rgb(40, ${Math.round(80 + r * 160)}, 80)`;
@@ -319,8 +319,8 @@ export default function FuturesAnalytics() {
         <h2 className="section-title">PnL HEATMAP · 임계값 × 보유기간</h2>
         <p className="muted" style={{ marginBottom: 12 }}>
           셀: <b>거래당 평균수익률</b> / <b>승률</b> (소수점 1자리).
-          색 진하기 = <b>거래당 평균수익률</b> 크기(수익률에 비례). <span style={{ color: "#62c884" }}>녹색=수익</span>,{" "}
-          <span style={{ color: "#d96265" }}>빨강=손실</span>.{" "}
+          색 진하기 = <b>거래당 평균수익률</b> 크기(수익률에 비례). <span style={{ color: "#15803d", fontWeight: 600 }}>녹색=수익</span>,{" "}
+          <span style={{ color: "#b91c1c", fontWeight: 600 }}>빨강=손실</span>.{" "}
           low_sample(n&lt;30)은 <b>⚠</b>로만 표시(색 억제 없음 — 거래 적은 셀의 수익률은 노이즈일 수 있어 신중히). 클릭하면 아래 백테스트 상세.
         </p>
 
@@ -375,7 +375,7 @@ export default function FuturesAnalytics() {
           </button>
           <span className="muted" style={{ fontSize: 12 }}>
             {settingsDirty ? (
-              <b style={{ color: "#e6c259" }}>미적용 변경 있음 — [확인]을 눌러 반영</b>
+              <b style={{ color: "var(--amber)" }}>미적용 변경 있음 — [확인]을 눌러 반영</b>
             ) : (
               <>네 설정 모두 <b>히트맵·백테스트</b>에 적용됨 · 롤={info?.roll_note ?? "추정 가정"}.</>
             )}
@@ -421,7 +421,7 @@ export default function FuturesAnalytics() {
         )}
 
         {/* 선택 셀 백테스트 상세 (이전 ③ — 히트맵 섹션에 통합) */}
-        <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+        <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
           <h3 className="section-title" style={{ fontSize: 16 }}>
             백테스트 상세 {selected && <span className="title-tag">{selected.side.toUpperCase()} {priceSym}{selected.threshold} × {selected.horizon}D</span>}
             {selected && backtest && (
@@ -992,8 +992,8 @@ function BacktestDetail({ bt, side, cur, curCode, priceSym }: {
 
       <div style={{ marginTop: 16 }}>
         <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
-          등 자산 곡선 — <b style={{ color: "#62c884" }}>녹: realized (청산 시점)</b>{" "}
-          vs <b style={{ color: "#6c9ce9" }}>파랑: 시가평가 (매일 MTM)</b>
+          등 자산 곡선 — <b style={{ color: "#15803d" }}>녹: realized (청산 시점)</b>{" "}
+          vs <b style={{ color: "#d97757" }}>주황: 시가평가 (매일 MTM)</b>
           {" · "}
           <span style={{ color: "#3b82f6", fontWeight: 700 }}>● BUY</span>{" "}
           <span style={{ color: "#ef4444", fontWeight: 700 }}>● SELL</span>
@@ -1030,10 +1030,10 @@ function BacktestDetail({ bt, side, cur, curCode, priceSym }: {
 
         <ResponsiveContainer width="100%" height={340}>
           <ComposedChart data={filtered.portfolio}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
+            <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
             <XAxis dataKey="date" type="category" allowDuplicatedCategory={false}
-                   tick={{ fontSize: 10, fill: "#9aa" }} minTickGap={50} />
-            <YAxis tick={{ fontSize: 10, fill: "#9aa" }}
+                   tick={{ fontSize: 10, fill: "#6f6a62" }} minTickGap={50} />
+            <YAxis tick={{ fontSize: 10, fill: "#6f6a62" }}
                    tickFormatter={(v) => (v / 1000).toFixed(0) + "k"} />
             <Tooltip content={({ active, payload, label }) => (
               <EquityTooltip
@@ -1043,14 +1043,14 @@ function BacktestDetail({ bt, side, cur, curCode, priceSym }: {
                 cur={cur}
               />
             )} />
-            <ReferenceLine y={0} stroke="#666" />
+            <ReferenceLine y={0} stroke="#6f6a62" />
             {/* 시가평가 line — 부모 ComposedChart의 data 사용 */}
             <Line type="monotone" dataKey="cumulative_usd" name="시가평가(MTM)"
-                  stroke="#6c9ce9" dot={false} strokeWidth={2} />
+                  stroke="#d97757" dot={false} strokeWidth={2} />
             {/* Realized line — 별도 data prop (sparse, exit 시점만) */}
             <Line data={filtered.realized} type="stepAfter"
                   dataKey="cumulative_usd" name="Realized"
-                  stroke={s.net_pnl_usd >= 0 ? "#62c884" : "#d96265"}
+                  stroke={s.net_pnl_usd >= 0 ? "#15803d" : "#b91c1c"}
                   dot={false} strokeWidth={2} />
             <Scatter data={tradeDots.buy} dataKey="value" name="BUY"
                      fill="#3b82f6" shape={buySellShape("#3b82f6")} />
@@ -1060,8 +1060,8 @@ function BacktestDetail({ bt, side, cur, curCode, priceSym }: {
             <Brush
               dataKey="date"
               height={28}
-              stroke="#6c9ce9"
-              fill="rgba(108,156,233,0.08)"
+              stroke="#d97757"
+              fill="rgba(217,119,87,0.08)"
               travellerWidth={10}
               tickFormatter={(v) => String(v).slice(0, 7)}
             />
@@ -1181,9 +1181,9 @@ function Metric({
   highlight?: "good" | "bad" | "warn" | null;
   sub?: string | null;
 }) {
-  const color = highlight === "good" ? "#62c884"
-              : highlight === "bad" ? "#d96265"
-              : highlight === "warn" ? "#e6c259"
+  const color = highlight === "good" ? "var(--green)"
+              : highlight === "bad" ? "var(--red)"
+              : highlight === "warn" ? "var(--amber)"
               : undefined;
   return (
     <div className="metric-card">
@@ -1225,9 +1225,9 @@ function SeasonalityView({ data }: { data: OilSeasonality }) {
           </div>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={monthly}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#9aa" }} />
-              <YAxis tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v.toFixed(2)} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#6f6a62" }} />
+              <YAxis tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => v.toFixed(2)} />
               <Tooltip
                 labelStyle={{ color: "#333" }}
                 formatter={(v, _name, item) => {
@@ -1238,7 +1238,7 @@ function SeasonalityView({ data }: { data: OilSeasonality }) {
                   ];
                 }}
               />
-              <ReferenceLine y={0} stroke="#666" />
+              <ReferenceLine y={0} stroke="#6f6a62" />
               <Bar dataKey="avg_return_pct">
                 {monthly.map((m, i) => (
                   <Cell key={i} fill={barColor(m.avg_return_pct)} />
@@ -1253,9 +1253,9 @@ function SeasonalityView({ data }: { data: OilSeasonality }) {
           </div>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={weekday}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#9aa" }} />
-              <YAxis tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v.toFixed(2)} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#6f6a62" }} />
+              <YAxis tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => v.toFixed(2)} />
               <Tooltip
                 labelStyle={{ color: "#333" }}
                 formatter={(v, _name, item) => {
@@ -1266,7 +1266,7 @@ function SeasonalityView({ data }: { data: OilSeasonality }) {
                   ];
                 }}
               />
-              <ReferenceLine y={0} stroke="#666" />
+              <ReferenceLine y={0} stroke="#6f6a62" />
               <Bar dataKey="avg_return_pct">
                 {weekday.map((d, i) => (
                   <Cell key={i} fill={barColor(d.avg_return_pct)} />
@@ -1391,6 +1391,14 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           const dec = step >= 10 ? 0 : step >= 1 ? 1 : step >= 0.1 ? 2 : 3;
           setDNLo(Number(lo.toFixed(dec)));
           setDNHi(Number((lo + step).toFixed(dec)));
+          // 증감율 밴드 기본값 = 현재 추세(과거 20일 증감율)의 5%p 버킷 →
+          // 첫 확인부터 '종가범위 ∧ 증감율' 두 조건이 모두 활성(음영=두 조건 교집합).
+          if (p.length > 20) {
+            const chg = (last / p[p.length - 1 - 20].close - 1) * 100;
+            const blo = Math.floor(chg / 5) * 5;
+            setDLo(blo);
+            setDHi(blo + 5);
+          }
         }
       })
       .catch((e) => console.error("prices", e));
@@ -1539,11 +1547,12 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   return (
     <>
       <style>{`
-        .te-blank{display:inline-flex;align-items:center;gap:2px;background:rgba(255,255,255,0.06);border-radius:6px;padding:2px 8px;margin:0 3px;font-weight:600}
-        .te-blank input{width:62px;border:none;background:transparent;color:inherit;font:inherit;font-weight:600;text-align:center}
+        .te-blank{display:inline-flex;align-items:center;gap:2px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:7px;padding:2px 9px;margin:0 3px;font-weight:600;color:var(--accent-strong)}
+        .te-blank input{width:58px;border:none;background:transparent;color:var(--accent-strong);font:inherit;font-weight:600;text-align:center}
+        .te-blank input::placeholder{color:#c19a86}
         .te-hm{border-collapse:separate;border-spacing:3px}
         .te-hm td,.te-hm th{padding:6px 8px;text-align:center;font-size:12px;white-space:nowrap}
-        .te-hm th{color:#9aa;font-weight:500}
+        .te-hm th{color:var(--muted);font-weight:500}
       `}</style>
 
       <p className="muted" style={{ marginBottom: 12 }}>
@@ -1631,7 +1640,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                 {op && (
                   <div style={{ marginBottom: 16, fontSize: 15 }}>
                     <span className={op.cls === "muted" ? "muted" : op.cls}
-                      style={{ fontWeight: 600, padding: "3px 10px", borderRadius: 6, background: "rgba(255,255,255,0.06)" }}>
+                      style={{ fontWeight: 600, padding: "3px 10px", borderRadius: 6, background: "#f1efe8", border: "1px solid var(--border)" }}>
                       투자의견: {op.txt}
                     </span>{" "}
                     <span className="muted" style={{ fontSize: 12 }}>
@@ -1647,21 +1656,21 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
           {/* 전체기간 가격차트 + 매칭 구간 음영 */}
           <div className="muted" style={{ fontSize: 13, margin: "8px 0 6px" }}>
-            전체기간 가격 — <span style={{ color: "#e6c259" }}>음영</span> = 설정 종가범위{applied ? ` (${applied.nLo <= -1e8 ? "−∞" : priceSym + applied.nLo} ~ ${applied.nHi >= 1e8 ? "∞" : priceSym + applied.nHi})` : ""} 매칭 구간 [진입 −{applied?.L ?? dL}일 ~ +{applied?.H ?? dH}일]{matched.length ? ` · ${matched.length}건` : ""}.
+            전체기간 가격 — <span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 종가{applied ? ` ${applied.nLo <= -1e8 ? "−∞" : priceSym + applied.nLo}~${applied.nHi >= 1e8 ? "∞" : priceSym + applied.nHi}` : ""} <b>∧</b> 증감율{applied ? ` ${applied.lo <= -1e8 ? "−∞" : applied.lo + "%"}~${applied.hi >= 1e8 ? "∞" : applied.hi + "%"}` : ""} <b>둘 다</b> 만족하는 진입 구간 [−{applied?.L ?? dL} ~ +{applied?.H ?? dH}일]{matched.length ? ` · ${matched.length}건` : ""}.
           </div>
           <ResponsiveContainer width="100%" height={260}>
             <ComposedChart data={chart.line} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
+              <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
               <XAxis type="number" dataKey="t" domain={["dataMin", "dataMax"]}
-                tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 7)} />
-              <YAxis tick={{ fontSize: 10, fill: "#9aa" }} domain={["auto", "auto"]}
+                tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 7)} />
+              <YAxis tick={{ fontSize: 10, fill: "#6f6a62" }} domain={["auto", "auto"]}
                 tickFormatter={(v) => priceSym + (v >= 1000 ? (v / 1000).toFixed(0) + "k" : v.toFixed(0))} />
               <Tooltip labelFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 10)}
                 formatter={(v) => priceSym + Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 })} />
               {chart.shades.map((s, i) => (
-                <ReferenceArea key={i} x1={s.x1} x2={s.x2} fill="#e6c259" fillOpacity={0.18} stroke="none" />
+                <ReferenceArea key={i} x1={s.x1} x2={s.x2} fill="#d97757" fillOpacity={0.16} stroke="none" />
               ))}
-              <Line type="monotone" dataKey="close" stroke="#6c9ce9" dot={false} strokeWidth={1.5} />
+              <Line type="monotone" dataKey="close" stroke="#d97757" dot={false} strokeWidth={1.5} />
             </ComposedChart>
           </ResponsiveContainer>
 
@@ -1682,15 +1691,15 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                       const sel = rowInSel(b);
                       return (
                         <tr key={pi}>
-                          <th style={{ textAlign: "left", color: sel ? "#6c9ce9" : undefined }}>
+                          <th style={{ textAlign: "left", color: sel ? "#d97757" : undefined }}>
                             {priceSym}{b.lo.toFixed(b.dec)}–{priceSym}{b.hi.toFixed(b.dec)}{sel ? " ◀" : ""}
                           </th>
                           {heat.grid[pi].map((c, ri) => {
                             const mean = c.n ? c.sum / c.n : NaN;
                             return (
                               <td key={ri} title={c.n ? `n=${c.n}, 평균 ${(mean >= 0 ? "+" : "") + mean.toFixed(2)}%` : "표본 없음"}
-                                style={{ background: c.n ? heatColor(mean, heat.maxAbs) : "#1f2937", color: "#fff", borderRadius: 5,
-                                  opacity: c.n ? 1 : 0.25, outline: sel ? "1.5px solid rgba(255,255,255,0.55)" : "none" }}>
+                                style={{ background: c.n ? heatColor(mean, heat.maxAbs) : "#f1efe8", color: "#fff", borderRadius: 5,
+                                  opacity: c.n ? 1 : 0.25, outline: sel ? "2px solid #d97757" : "none" }}>
                                 {c.n ? (<><div style={{ fontWeight: 600 }}>{(mean >= 0 ? "+" : "") + mean.toFixed(1)}%</div>
                                   <div style={{ fontSize: 10, opacity: 0.85 }}>n={c.n}{c.n < 30 ? " ⚠" : ""}</div></>) : "·"}
                               </td>
@@ -1707,7 +1716,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
           {/* 회귀 (side-aware) */}
           {applied && !loading && reg && pastRange && (
-            <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+            <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
               <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
                 회귀분석 — 과거 <b>{applied.L}일</b> 증감율(x) → 미래 <b>{applied.H}일</b> {applied.side === "long" ? "롱" : "숏"} 수익률(y) · 전체 {reg.n.toLocaleString()}건
               </div>
@@ -1722,14 +1731,14 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
               </div>
               <ResponsiveContainer width="100%" height={280}>
                 <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
                   <XAxis type="number" dataKey="x" name="과거 증감율" domain={["dataMin", "dataMax"]}
-                    tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v + "%"} />
-                  <YAxis type="number" dataKey="y" name="미래 수익률" tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v + "%"} />
+                    tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => v + "%"} />
+                  <YAxis type="number" dataKey="y" name="미래 수익률" tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => v + "%"} />
                   <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(v) => `${Number(v).toFixed(2)}%`} />
-                  <ReferenceLine y={0} stroke="#666" />
-                  {regSeg && <ReferenceLine segment={regSeg} stroke="#e6c259" strokeWidth={2} />}
-                  <Scatter data={scatterPts} fill="#6c9ce9" fillOpacity={0.5} />
+                  <ReferenceLine y={0} stroke="#6f6a62" />
+                  {regSeg && <ReferenceLine segment={regSeg} stroke="#d97757" strokeWidth={2} />}
+                  <Scatter data={scatterPts} fill="#d97757" fillOpacity={0.5} />
                 </ScatterChart>
               </ResponsiveContainer>
             </div>
