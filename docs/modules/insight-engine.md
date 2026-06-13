@@ -11,6 +11,7 @@
 - **`_direction_for`가 방향정책의 단일 출처 = 엔진 직교화의 1번 축.** 향후 scheduled 경로도 이리로 모아 방향정책을 일원화한다(현재는 on_signal만).
 - **scheduled는 당일청산 불가** → `scheduled + long_short + hold_days=0` 조합은 backtest≠live였다. NL 컴파일러가 비랭킹·당일매매를 `on_signal`로 강제 라우팅해 닫음.
 - **NL·웹 라이브 검증은 로그인 자격 경계로 자동검증 불가**(사용자 세션 필요). 프로덕션 검증 = 로그인된 `quantman.vercel.app` 페이지에서 `localStorage.qp_token` Bearer로 `quantman-production.up.railway.app` 호출.
+- **⚠ 청산 단위 = 퍼센트, 비용 단위 = 분수.** `take_profit`/`stop_loss`/`trail_pct`는 **퍼센트**(7 = 7%) — 엔진 `cur_ret=(close-entry)/entry*100`과 직접 비교(engine `price_exit_reason`), spec M-exit가 "(%)"로, 컴파일러 few-shot이 `15`/`-7`로 못박음. 반면 `commission`/`slippage`/`sell_tax`만 **분수**(0.0003). `explain.py`가 tp/sl을 분수로 오해해 `_frac_pct`(×100)로 포맷 → "700% 익절" 프로덕션 표시 버그였다(엔진 무관 표시-only). 새 % 필드를 explain에 추가할 땐 이미-퍼센트면 `_pct`, 분수면 `_frac_pct` — 헷갈리면 엔진 비교식의 단위를 진실원천으로.
 
 ## 현재 구조 (안정)
 
