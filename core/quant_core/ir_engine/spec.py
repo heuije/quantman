@@ -715,11 +715,17 @@ def needed_symbols(s: StrategyIR) -> Optional[set[str]]:
     for nd in nodes:
         if nd is not None:
             syms |= referenced_symbols(nd)
-    # F-01 사이징 FX — 비-KRW(USD) 상품 + 정액(₩) 사이징이면 엔진 _budget·라이브
-    # event_buy_qty가 환산에 쓰는 원달러환율 시계열을 dataset 요구 집합에 포함한다
-    # (없으면 엔진이 명시 에러·라이브가 발주 보류로 멈추므로 로드가 필수).
-    if (s.position.sizing.mode == "fixed_amount" and s.position.sizing.amount_krw
-            and any(instrument_spec(x).currency != "KRW" for x in s.universe.symbols)):
+    # 사이징 FX — USD 예산 환산에 원달러환율 시계열이 필요한 두 경우를 dataset 요구
+    # 집합에 포함한다(없으면 엔진 명시 에러·라이브 발주 보류로 멈추므로 로드 필수):
+    #  ① F-01: fixed_amount(₩정액) + USD 상품(주식·선물) — ₩예산을 USD로.
+    #  ② US-F1: USD 선물 + %(futures_margin_pct) 사이징 — 라이브 선물계좌 현금(KRW)을 USD로.
+    #     (USD 주식 % 사이징은 라이브가 USD 현금을 쓰므로 환산 불요 — 선물 계좌만 KRW.)
+    _usyms = s.universe.symbols
+    _fixed_usd = (s.position.sizing.mode == "fixed_amount" and s.position.sizing.amount_krw
+                  and any(instrument_spec(x).currency != "KRW" for x in _usyms))
+    _usd_futures = any(instrument_spec(x).currency != "KRW"
+                       and instrument_spec(x).asset_class == "futures" for x in _usyms)
+    if _fixed_usd or _usd_futures:
         syms.add(FX_USDKRW_SYMBOL)
     # 전략 조합(strat:<id>) 참조가 있으면 자식 전략이 임의 데이터(전 유니버스 팩터 등)를
     # 필요로 할 수 있어 부분집합으로 좁힐 수 없다 → 전체 로드(None)로 안전하게 폴백.

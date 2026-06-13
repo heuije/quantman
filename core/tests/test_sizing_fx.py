@@ -177,6 +177,37 @@ def test_event_qty_futures_fixed_amount_fx():
     assert event_buy_qty(k200, cash=1e9, prev_close=400.0) == 10
 
 
+# ── US-F1: 선물 %(futures_margin_pct) 사이징도 USD면 환산 (라이브 전용) ──────────
+#
+# 라이브 선물계좌 현금은 KRW인데(trader가 _currency_of=KRW로 보내 KRX 사이징 분기를
+# 타고 futures_order_cash[KRW]를 넘김), USD 선물(CME)은 가격·승수가 USD다. fixed_amount
+# 경로는 F-01에서 환산을 받았으나 % 경로(futures_margin_pct)는 누락 → KRW 예산을 USD
+# 가격으로 나눠 ~1,370배 과대 계약. 백테스트 _budget은 단일통화(cash=종목통화) 가정이라
+# 무관·무변경(test_futures_engine이 고정) — 이 수정은 event_buy_qty(라이브) 전용.
+
+def test_event_qty_usd_futures_pct_converts():
+    """USD 선물 % 사이징: KRW 선물계좌 현금을 FX로 USD 환산 후 계약수."""
+    fx = {_FX: _fx_df(1370.0)}
+    oil = _strat({"futures_margin_pct": 20.0},
+                 {"kind": "single", "symbols": ["원유선물"]})
+    # budget_krw = 1.37e9 × 20% = 2.74e8 → /1370 = 200,000 USD
+    # denom = 60 × 1,000 × 0.10 = 6,000 → 200,000/6,000 = 33계약
+    assert event_buy_qty(oil, cash=1.37e9, prev_close=60.0, dataset=fx) == 33
+    # FX 미가용 → 0(보류). KRW 가정 무환산(2.74e8/6,000=45,666계약) 금지.
+    assert event_buy_qty(oil, cash=1.37e9, prev_close=60.0) == 0
+    assert event_buy_qty(oil, cash=1.37e9, prev_close=60.0, dataset={}) == 0
+
+
+def test_event_qty_krw_futures_pct_unchanged():
+    """KRW 선물(코스피200) % 사이징은 FX 유무와 무관하게 기존 그대로 (도메스틱 라이브 보존)."""
+    k200 = _strat({"futures_margin_pct": 20.0},
+                  {"kind": "single", "symbols": ["코스피200선물"]})
+    # 1e9 × 20% = 2e8 / (400×250,000×0.10=1e7) = 20계약
+    assert event_buy_qty(k200, cash=1e9, prev_close=400.0) == 20
+    assert event_buy_qty(k200, cash=1e9, prev_close=400.0,
+                         dataset={_FX: _fx_df(1370.0)}) == 20
+
+
 # ── 백테스트 엔진 (run_unified 이벤트 경로 _budget) ────────────────────────────
 
 def test_engine_usd_fixed_amount_sizing():
@@ -238,7 +269,11 @@ def test_needed_symbols_includes_fx_for_usd_fixed_amount():
     assert _FX in needed_symbols(_ir(["005930", "GOOG"], fixed))             # 혼합 리스트
     assert _FX not in needed_symbols(_ir(["005930"], fixed))                 # KRW — 불요
     assert _FX not in needed_symbols(
-        _ir(["GOOG"], {"mode": "pct_cash", "amount_pct": 10}))               # %사이징 — 불요
+        _ir(["GOOG"], {"mode": "pct_cash", "amount_pct": 10}))               # USD 주식 %사이징 — 불요(라이브 USD현금)
+    # US-F1: USD 선물 %사이징은 FX 필요(라이브 KRW 선물계좌현금→USD 환산)
+    assert _FX in needed_symbols(_ir(["원유선물"], {"futures_margin_pct": 20.0}))
+    assert _FX not in needed_symbols(
+        _ir(["코스피200선물"], {"futures_margin_pct": 20.0}))                 # KRW 선물 — 불요
 
 
 if __name__ == "__main__":

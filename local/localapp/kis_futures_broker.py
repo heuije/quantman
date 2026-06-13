@@ -436,10 +436,8 @@ class KisFuturesBroker:
         body = build_futures_order_body(cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd,
                                         symbol=symbol, qty=qty, price=price, side=side,
                                         order_type=order_type)
-        r = requests.post(f"{self.base}{_ORDER_PATH}", headers=self._headers(self._order_tr()),
-                          json=body, timeout=10)
-        r.raise_for_status()
-        return normalize_order_resp(_json(r))
+        return self._order_post(f"{self.base}{_ORDER_PATH}",
+                                self._headers(self._order_tr()), body)
 
     def _read_get(self, url: str, headers: dict, params: dict) -> dict:
         """idempotent READ GET — KIS 게이트웨이 간헐 5xx/연결오류에 한해 짧게 재시도 후 _json.
@@ -465,6 +463,39 @@ class KisFuturesBroker:
                 _t.sleep(0.6 * (i + 1))
         raise last
 
+    def _order_post(self, url: str, headers: dict, body: dict) -> dict:
+        """주문/취소 POST — EGW00201(초당거래수 초과·접수 *전* rate-limit 거부)에 한해 짧게
+        재시도 후 정규화 (US-F5, 주식 브로커 _post_retry와 동형).
+
+        ⚠ KIS는 rate-limit(EGW00201)을 **HTTP 500 + 본문 msg_cd**로 주기도 한다(주식
+        _post_retry·_get_retry가 같은 가정). 그래서 raise_for_status를 먼저 부르면 안 되고,
+        비-200이어도 본문 msg_cd를 먼저 확인해 EGW00201이면 재시도한다(접수 전 거부라 중복발주
+        아님). 그 외 거부(rt_cd:1·EGW 아닌 5xx)는 **재시도하지 않는다** — 접수됐을 수 있어
+        중복발주 위험. 비-EGW 5xx는 raise로 전파(호출자가 예외로 진입중단·L-01 멱등이
+        교차사이클 안전망)."""
+        import time as _t
+        resp: dict = {}
+        for i in range(3):
+            r = requests.post(url, headers=headers, json=body, timeout=10)
+            if r.status_code != 200:
+                # 비-200(게이트웨이 5xx 등): 본문 msg_cd가 EGW00201이면 재시도 안전,
+                # 그 외는 raise(접수 모호 → 중복발주 방지). 주식 _post_retry와 동형.
+                mc = ""
+                try:
+                    mc = _json(r).get("msg_cd", "")
+                except Exception:       # noqa: BLE001 — 본문 비-JSON(순수 게이트웨이 오류)
+                    pass
+                if mc == "EGW00201" and i < 2:
+                    _t.sleep(0.6 * (i + 1))
+                    continue
+                r.raise_for_status()    # EGW00201 아닌 5xx → 전파(중복발주 방지)
+            resp = normalize_order_resp(_json(r))
+            if resp.get("msg_cd") == "EGW00201" and i < 2:    # 200 + rt_cd:1 EGW00201
+                _t.sleep(0.6 * (i + 1))
+                continue
+            return resp
+        return resp
+
     def account_snapshot(self) -> dict:
         data = self._read_get(f"{self.base}{_BALANCE_PATH}", self._headers(self._balance_tr()),
                               build_balance_params(self.cano, self.acnt_prdt_cd))
@@ -489,52 +520,43 @@ class KisFuturesBroker:
         body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
                                          symbol=symbol, side="buy", qty=qty,
                                          price=limit_price, order_type="limit")
-        r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
-                          headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
-        r.raise_for_status()
-        return normalize_order_resp(_json(r))
+        return self._order_post(f"{self._ov_base}{_OV_ORDER_PATH}",
+                                self._ov_headers(_OV_ORDER_TR), body)
 
     def overseas_sell_limit(self, symbol: str, qty: int, limit_price) -> dict:
         body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
                                          symbol=symbol, side="sell", qty=qty,
                                          price=limit_price, order_type="limit")
-        r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
-                          headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
-        r.raise_for_status()
-        return normalize_order_resp(_json(r))
+        return self._order_post(f"{self._ov_base}{_OV_ORDER_PATH}",
+                                self._ov_headers(_OV_ORDER_TR), body)
 
     def overseas_buy(self, symbol: str, qty: int) -> dict:
         body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
                                          symbol=symbol, side="buy", qty=qty,
                                          price=0, order_type="market")
-        r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
-                          headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
-        r.raise_for_status()
-        return normalize_order_resp(_json(r))
+        return self._order_post(f"{self._ov_base}{_OV_ORDER_PATH}",
+                                self._ov_headers(_OV_ORDER_TR), body)
 
     def overseas_sell(self, symbol: str, qty: int) -> dict:
         body = build_overseas_order_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
                                          symbol=symbol, side="sell", qty=qty,
                                          price=0, order_type="market")
-        r = requests.post(f"{self._ov_base}{_OV_ORDER_PATH}",
-                          headers=self._ov_headers(_OV_ORDER_TR), json=body, timeout=10)
-        r.raise_for_status()
-        return normalize_order_resp(_json(r))
+        return self._order_post(f"{self._ov_base}{_OV_ORDER_PATH}",
+                                self._ov_headers(_OV_ORDER_TR), body)
 
     def overseas_account_snapshot(self) -> dict:
         params = {"CANO": self._ov_cano, "ACNT_PRDT_CD": self._ov_acnt_prdt_cd,
                   "FUOP_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""}
-        r = requests.get(f"{self._ov_base}{_OV_BALANCE_PATH}",
-                         headers=self._ov_headers(_OV_BALANCE_TR), params=params, timeout=10)
-        r.raise_for_status()
-        return parse_overseas_balance(_json(r))
+        # US-F5: 도메스틱과 동일하게 _read_get(간헐 5xx 재시도) — 잔고는 kill-switch·
+        # 사이징에 쓰여 간헐 게이트웨이 오류가 사이클을 깨면 안 된다(idempotent READ).
+        data = self._read_get(f"{self._ov_base}{_OV_BALANCE_PATH}",
+                              self._ov_headers(_OV_BALANCE_TR), params)
+        return parse_overseas_balance(data)
 
     def overseas_price(self, symbol: str, scalc_desz: int = 0) -> float:
-        r = requests.get(f"{self._ov_base}{_OV_QUOTE_PATH}",
-                         headers=self._ov_headers(_OV_QUOTE_TR),
-                         params={"SRS_CD": symbol}, timeout=10)
-        r.raise_for_status()
-        raw = _json(r).get("output1", {}).get("last_price", "")
+        data = self._read_get(f"{self._ov_base}{_OV_QUOTE_PATH}",
+                              self._ov_headers(_OV_QUOTE_TR), {"SRS_CD": symbol})
+        raw = data.get("output1", {}).get("last_price", "")
         return scale_overseas_price(raw, scalc_desz)
 
     # ── 해외선물 phase2 — 취소·체결조회·주문가능 (OTFM3003U/3116R/3304R, 실전 전용) ────
@@ -547,10 +569,8 @@ class KisFuturesBroker:
         qty는 KIS 취소 바디에 불요(전량취소)나 Broker 시그니처 호환 위해 받되 미사용."""
         body = build_overseas_cancel_body(cano=self._ov_cano, acnt_prdt_cd=self._ov_acnt_prdt_cd,
                                           orgn_ord_dt=str(orgn_ord_dt), orgn_odno=str(order_no))
-        r = requests.post(f"{self._ov_base}{_OV_RVSECNCL_PATH}",
-                          headers=self._ov_headers(_OV_CANCEL_TR), json=body, timeout=10)
-        r.raise_for_status()
-        return normalize_order_resp(_json(r))
+        return self._order_post(f"{self._ov_base}{_OV_RVSECNCL_PATH}",
+                                self._ov_headers(_OV_CANCEL_TR), body)
 
     def _ov_inquire_ccld(self, only_unfilled: bool = False) -> dict:
         """inquire-ccld(OTFM3116R) 당일주문내역 조회. only_unfilled=True면 미체결만(03)."""
@@ -558,10 +578,8 @@ class KisFuturesBroker:
                   "CCLD_NCCS_DVSN": "03" if only_unfilled else "01",   # 01전체/02체결/03미체결
                   "SLL_BUY_DVSN_CD": "%%", "FUOP_DVSN": "01",          # %%전체 / 01선물
                   "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""}
-        r = requests.get(f"{self._ov_base}{_OV_CCLD_PATH}",
-                         headers=self._ov_headers(_OV_CCLD_TR), params=params, timeout=10)
-        r.raise_for_status()
-        return _json(r)
+        return self._read_get(f"{self._ov_base}{_OV_CCLD_PATH}",
+                              self._ov_headers(_OV_CCLD_TR), params)
 
     def overseas_order_status(self, order_no) -> dict:
         return parse_overseas_ccld_order_status(self._ov_inquire_ccld(), order_no)
@@ -575,10 +593,9 @@ class KisFuturesBroker:
         """OTFM3304R 신규주문가능 계약수 — 해외선물 사이징 상한 클램프(라이브 배선은 M10)."""
         params = {"CANO": self._ov_cano, "ACNT_PRDT_CD": self._ov_acnt_prdt_cd,
                   "OVRS_FUTR_FX_PDNO": symbol, "FM_ORD_PRIC": str(price or "")}
-        r = requests.get(f"{self._ov_base}{_OV_PSAMOUNT_PATH}",
-                         headers=self._ov_headers(_OV_PSAMOUNT_TR), params=params, timeout=10)
-        r.raise_for_status()
-        return parse_overseas_orderable_qty(_json(r))
+        data = self._read_get(f"{self._ov_base}{_OV_PSAMOUNT_PATH}",
+                              self._ov_headers(_OV_PSAMOUNT_TR), params)
+        return parse_overseas_orderable_qty(data)
 
     def buy(self, symbol: str, qty: int) -> dict:
         return self._submit_order(symbol, qty, 0, "buy", order_type="market")
@@ -604,10 +621,7 @@ class KisFuturesBroker:
         body = build_futures_cancel_body(cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd,
                                          order_no=order_no, qty=qty)
         tr = "VTTO1103U" if self.virtual else "TTTO1103U"
-        r = requests.post(f"{self.base}{_CANCEL_PATH}", headers=self._headers(tr),
-                          json=body, timeout=10)
-        r.raise_for_status()
-        return normalize_order_resp(_json(r))
+        return self._order_post(f"{self.base}{_CANCEL_PATH}", self._headers(tr), body)
 
     def _inquire_ccnl(self, only_unfilled: bool = False) -> dict:
         """inquire-ccnl 조회(당일). only_unfilled=True면 미체결만."""

@@ -118,6 +118,16 @@ def event_buy_qty(strategy: StrategyIR, *, cash: float, prev_close: float,
     elif is_fut:
         # 선물: 예산 = 가용현금 × 증거금 사용률(기본 20%). 엔진 _budget과 동일.
         budget = cash * (sz.futures_margin_pct / 100.0)
+        # US-F1: 해외선물(USD)은 라이브 선물계좌 현금이 KRW인데 계약 가격·승수가 USD다
+        # (trader가 _currency_of=KRW로 보내 futures_order_cash[KRW]를 넘긴다). KRW 예산을
+        # USD로 환산하지 않으면 USD 가격으로 나눠 ~1,370배 과대 계약이 된다 — fixed_amount의
+        # F-01 환산을 % 경로에도 대칭 적용. 환산 불가면 0(보류, 추측 환율 금지). 백테스트
+        # _budget은 단일통화(cash=종목통화) 가정이라 무관·무변경. KRW 선물은 무환산(기존 그대로).
+        if spec.currency != "KRW":
+            fx = fx_usdkrw_rate(dataset)
+            if fx is None:
+                return 0
+            budget = budget / fx
     else:
         eff_pct = 100.0 if single else sz.amount_pct
         budget = cash * (eff_pct / 100.0)

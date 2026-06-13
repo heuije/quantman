@@ -153,14 +153,19 @@ def test_event_equity_baseline_no_leverage():
 
 
 def test_event_buy_qty_futures_uses_margin_pct():
-    """선물 event_buy_qty = floor(cash×futures_margin_pct% / (px×승수×증거금률)). 기본 20%,
-    유저 조절 가능. 엔진 _budget과 동일 식 → 라이브=백테스트. 주식은 무영향(단일=100% 정수주)."""
-    # 원유선물: 승수 1,000·증거금 0.10 → px=400에서 1계약 증거금 40,000.
+    """선물 event_buy_qty = floor(예산 / (px×승수×증거금률)). 기본 20%, 유저 조절 가능.
+    KRW 선물(코스피200)은 cash 그대로, USD 선물(원유 등)은 라이브 KRW 선물계좌현금을
+    원달러환율로 USD 환산(US-F1). 주식은 무영향(단일=100% 정수주)."""
+    # 원유선물(USD): 승수 1,000·증거금 0.10 → px=400에서 1계약 증거금 40,000(USD).
+    # 라이브 선물계좌 현금은 KRW → 환산: 1.37e10 KRW / 1370 = $1e7 → 1e7×20%/40,000 = 50계약.
+    fx = {"원달러환율": pd.DataFrame({"Close": [1370.0]},
+                                index=pd.date_range("2020-01-01", periods=1))}
     fut = _event_hold("원유선물")                                  # 기본 20%
-    assert event_buy_qty(fut, cash=1e7, prev_close=400.0) == 50     # 1e7×20%/40,000
+    assert event_buy_qty(fut, cash=1.37e10, prev_close=400.0, dataset=fx) == 50
     fut40 = _event_hold("원유선물", futures_margin_pct=40.0)
-    assert event_buy_qty(fut40, cash=1e7, prev_close=400.0) == 100  # 2배(유저 상한 조절)
-    # 코스피200선물(승수 250,000): 1계약 증거금 1e7 → 1e7×20%=2e6 부족 → 0계약(정확한 0).
+    assert event_buy_qty(fut40, cash=1.37e10, prev_close=400.0, dataset=fx) == 100  # 2배
+    assert event_buy_qty(fut, cash=1.37e10, prev_close=400.0) == 0  # FX 없으면 보류(추측 금지)
+    # 코스피200선물(KRW·승수 250,000): 환산 불요. 1계약 증거금 1e7 → 1e7×20%=2e6 부족 → 0.
     big = _event_hold("코스피200선물")
     assert event_buy_qty(big, cash=1e7, prev_close=400.0) == 0
     assert event_buy_qty(big, cash=1e8, prev_close=400.0) == 2      # 1e8×20%=2e7 / 1e7 = 2계약

@@ -41,6 +41,19 @@ def test_unified_equity_stock_only_unchanged():
     assert _unified_equity_krw(bal) == 1_000_000 + 200_000 + 100 * 1300
 
 
+# ── US-F2: 장중 kill-switch equity 사본 drift — trader와 단일 출처 ──────────────────
+def test_intraday_ks_equity_matches_trader_and_includes_futures():
+    """장중 kill-switch monitor가 쓰는 _ks_unified_equity_krw가 trader._unified_equity_krw와
+    동일(선물 합산). 사본이 futures_eval_krw를 누락해 장중 kill-switch가 선물 손익을
+    무시하던 drift(국내·해외 선물 공통)를 단일 출처로 닫는다."""
+    from localapp.intraday_stop import _ks_unified_equity_krw as ks_eq
+    bal = {"total_eval": 1_000_000, "futures_eval_krw": 500_000,
+           "foreign_eval_krw": 200_000, "cash_usd": 100.0, "fx_usdkrw": 1300.0}
+    assert ks_eq(bal) == _unified_equity_krw(bal)                          # 단일 출처(drift 없음)
+    assert ks_eq(bal) == 1_000_000 + 500_000 + 200_000 + 100 * 1300        # 선물 포함
+    assert ks_eq({"total_eval": 1_000_000}) == 1_000_000                   # 주식만 보존
+
+
 # ── ③ BrokerRouter: 선물계좌 equity를 balance에 병합 ───────────────────────────────
 class _Stock:
     def account_snapshot(self, overseas=True):

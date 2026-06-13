@@ -99,6 +99,21 @@ def _plan_us_session(sched: BlockingScheduler, now: datetime | None = None) -> N
         kwargs={"market": "US", "instrument_class": "stock"},
         id="us_close_cycle", name="미국 종가 매도 사이클 (주식·당일매매)",
         replace_existing=True, misfire_grace_time=300)
+    # US-F4: 해외선물(CME) 당일매매 종가청산 — 종전엔 주식만 청산돼 선물 day-trade가
+    # 오버나이트 방치됐다(미배선). **폐장−20분**에 둔다(주식 종가청산 폐장−5분과 15분 분리):
+    #   ① CME 일일정산이 미국주식 폐장보다 이르다(예: 원유 14:30 ET vs 주식 16:00 ET)
+    #      → 폐장−20분이 정산 시각에 더 근접한 종가청산 프록시.
+    #   ② 주식 종가청산과 **시각 분리**해 두 ephemeral close-cycle Trader의 동시 실행을 회피한다.
+    #      같은 시각이면 각자 ledger를 통째 로드·저장해 한쪽 매도 제거가 다른 쪽에 덮여 포지션이
+    #      부활하는 lost-update(reload_state docstring의 라이브 실증 부류)가 난다 — KRX가
+    #      stock 15:25·futures 15:40으로 15분 분리한 것과 동형(선물이 먼저 끝나 stock이 신선 로드).
+    # 상품별 CME 정산시각 정밀정렬은 라이브 정밀화 대상.
+    close_cycle_futures_at = close_kst - timedelta(minutes=20)
+    sched.add_job(
+        run_close_cycle, DateTrigger(run_date=close_cycle_futures_at),
+        kwargs={"market": "US", "instrument_class": "futures"},
+        id="us_close_cycle_futures", name="미국 종가 매도 사이클 (해외선물·당일매매)",
+        replace_existing=True, misfire_grace_time=300)
     sched.add_job(
         intraday_loop.stop, DateTrigger(run_date=close_kst),
         id="us_loop_stop", name="미국 장중 손절 loop 종료",

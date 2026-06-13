@@ -98,3 +98,117 @@ def test_token_cache_not_shared_across_fp(tmp_path, monkeypatch):
     monkeypatch.setattr(kfb.requests, "post", lambda *a, **k: _Resp(next(seq)))
     assert _mk("fpA")._token() == "TOKA"
     assert _mk("fpB")._token() == "TOKB"      # 다른 계정(fp) — 캐시 미적중, 각자 발급
+
+
+# ── ④ US-F5: 주문/조회 POST·GET 하드닝 (국내선물 POST + 해외선물 전 메서드) ──────────
+import json  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+class _JsonResp:
+    """_json(resp)=json.loads(content.decode)·raise_for_status 호환 가짜 응답."""
+    def __init__(self, payload: dict, status: int = 200, raise_http: bool = False):
+        self.content = json.dumps(payload).encode("utf-8")
+        self.status_code = status
+        self._raise = raise_http
+
+    def raise_for_status(self):
+        if self._raise:
+            raise kfb.requests.HTTPError(f"{self.status_code} Server Error")
+
+
+def _no_sleep(monkeypatch):
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda *a, **k: None)
+
+
+def test_order_post_retries_egw00201_then_succeeds(monkeypatch):
+    """주문 POST가 EGW00201(접수 전 rate-limit)에 한해 재시도 후 성공 — 종전엔 즉시 실패."""
+    _no_sleep(monkeypatch)
+    b = object.__new__(KisFuturesBroker)
+    payloads = [
+        {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당거래수 초과", "output": {}},
+        {"rt_cd": "0", "msg_cd": "40600000", "output": {"ODNO": "0000001234"}},
+    ]
+    seq, calls = iter(payloads), {"n": 0}
+
+    def fake_post(*a, **k):
+        calls["n"] += 1
+        return _JsonResp(next(seq))
+    monkeypatch.setattr(kfb.requests, "post", fake_post)
+
+    resp = b._order_post("https://x/order", {}, {})
+    assert calls["n"] == 2                       # EGW00201 → 재시도 → 성공
+    assert resp["success"] is True and resp["order_no"]
+
+
+def test_order_post_retries_egw00201_as_http_500(monkeypatch):
+    """KIS는 rate-limit(EGW00201)을 HTTP 500 + 본문 msg_cd로도 준다 — 비-200 본문 msg_cd를
+    먼저 확인해 재시도해야 한다(raise_for_status를 먼저 부르면 미작동). 주식 _post_retry 동형."""
+    _no_sleep(monkeypatch)
+    b = object.__new__(KisFuturesBroker)
+    seq = iter([
+        (_JsonResp({"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당거래수 초과"}, status=500), ),
+        (_JsonResp({"rt_cd": "0", "msg_cd": "40600000", "output": {"ODNO": "0000005678"}}), ),
+    ])
+    calls = {"n": 0}
+
+    def fake_post(*a, **k):
+        calls["n"] += 1
+        return next(seq)[0]
+    monkeypatch.setattr(kfb.requests, "post", fake_post)
+
+    resp = b._order_post("https://x/order", {}, {})
+    assert calls["n"] == 2                       # 500-EGW00201 → 재시도 → 성공
+    assert resp["success"] is True and resp["order_no"]
+
+
+def test_order_post_does_not_retry_5xx(monkeypatch):
+    """EGW00201 아닌 5xx는 재시도 금지(접수됐을 수 있어 중복발주 위험) — 즉시 전파."""
+    _no_sleep(monkeypatch)
+    b = object.__new__(KisFuturesBroker)
+    calls = {"n": 0}
+
+    def fake_post(*a, **k):
+        calls["n"] += 1
+        # 본문에 msg_cd 없음(순수 게이트웨이 5xx) → EGW00201 아님 → raise
+        return _JsonResp({}, status=500, raise_http=True)
+    monkeypatch.setattr(kfb.requests, "post", fake_post)
+
+    with pytest.raises(kfb.requests.HTTPError):
+        b._order_post("https://x/order", {}, {})
+    assert calls["n"] == 1, "EGW00201 아닌 5xx 재시도하면 중복발주 위험"
+
+
+def test_order_post_does_not_retry_normal_reject(monkeypatch):
+    """EGW00201 아닌 거부(상/하한가 등)는 재시도 없이 정규형 그대로 반환(접수 여부 모호)."""
+    _no_sleep(monkeypatch)
+    b = object.__new__(KisFuturesBroker)
+    calls = {"n": 0}
+
+    def fake_post(*a, **k):
+        calls["n"] += 1
+        return _JsonResp({"rt_cd": "1", "msg_cd": "40270000", "msg1": "상/하한가 오류"})
+    monkeypatch.setattr(kfb.requests, "post", fake_post)
+
+    resp = b._order_post("https://x/order", {}, {})
+    assert calls["n"] == 1
+    assert resp["success"] is False and resp["msg_cd"] == "40270000"
+
+
+def test_read_get_retries_5xx_then_succeeds(monkeypatch):
+    """읽기 GET(잔고·시세·체결조회)은 간헐 5xx에 재시도 — 해외 read도 _read_get 경유(US-F5)."""
+    _no_sleep(monkeypatch)
+    b = object.__new__(KisFuturesBroker)
+    seq = iter([_JsonResp({}, status=500), _JsonResp({"output1": {"x": 1}}, status=200)])
+    calls = {"n": 0}
+
+    def fake_get(*a, **k):
+        calls["n"] += 1
+        return next(seq)
+    monkeypatch.setattr(kfb.requests, "get", fake_get)
+
+    data = b._read_get("https://x", {}, {})
+    assert calls["n"] == 2                        # 500 → 재시도 → 200
+    assert data == {"output1": {"x": 1}}
