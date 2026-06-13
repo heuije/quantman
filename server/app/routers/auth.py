@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from sqlmodel import Session, func, select
 
 from ..config import settings
 from ..db import get_session
@@ -171,11 +171,38 @@ def device_token(body: DeviceTokenIn, session: Session = Depends(get_session)):
     return DeviceTokenOut(status="approved", device_token=raw, device_id=device.id)
 
 
+def _epoch_ms(ts: datetime | None) -> int:
+    """ETag 성분용 epoch ms. naive는 UTC 저장 관례로 정규화, 없으면 0."""
+    if ts is None:
+        return 0
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return int(ts.timestamp() * 1000)
+
+
 @router.get("/devices", response_model=list[DeviceOut])
 def list_devices(
+    request: Request,
+    response: Response,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    # tag-first ETag(서버 인프라 핸드오프 #5) — Monitor가 15s 폴링하는 endpoint.
+    # full row 조회 *전에* scalar aggregate(개수·최신 생성·최신 활동)로 ETag를 계산해
+    # If-None-Match 매칭 시 304만 반환한다(row 미조회·본문 0). 페어링/revoke는
+    # count·max(created_at)이, last_seen_at 갱신(deps S-06)은 항상 "지금"으로 전진하므로
+    # max(last_seen_at)이 빠짐없이 포착한다. 패턴 출처: /sync/snapshot tag-first
+    # (docs/incidents/2026-06-10-neon-data-transfer-quota.md 재발 방지 D3).
+    n, max_created, max_seen = session.exec(
+        select(func.count(Device.id), func.max(Device.created_at),
+               func.max(Device.last_seen_at))
+        .where(Device.user_id == user.id)
+    ).one()
+    etag = f'W/"{n}-{_epoch_ms(max_created)}-{_epoch_ms(max_seen)}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304)
+    response.headers["ETag"] = etag
+
     devices = list(session.exec(select(Device).where(Device.user_id == user.id)).all())
     # 최근 활동 기기 먼저(None은 뒤). 웹은 devices[0]을 명령 대상으로 쓰므로,
     # 같은 PC 재페어링으로 죽은 device row가 쌓여도 살아있는 기기가 선택되게 한다

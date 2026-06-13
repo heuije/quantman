@@ -1160,8 +1160,12 @@ class Trader:
         # cash×amount_pct%, 단일 유니버스=100%) + max_position_pct 캡까지 처리한다.
         from quant_core.ir_engine import StrategyIR
         from quant_core.ir_engine import live as ir_live
+        # F-01: symbol·dataset 전달 — amount_krw(₩정액)를 USD 종목에 쓸 때 dataset의
+        # 원달러환율(엔진 _budget과 같은 fx_usdkrw_rate 룩업)로 환산한다. 미전달이면
+        # USD 정액이 ₩금액을 $로 취급해 1,370배 과대 사이징(실증: GOOG 2,832주=$93만).
         qty = ir_live.event_buy_qty(StrategyIR.model_validate(strat_def),
-                                    cash=cash, prev_close=prev_close, capital=capital)
+                                    cash=cash, prev_close=prev_close, capital=capital,
+                                    symbol=symbol, dataset=dataset)
 
         # 가용 현금 한도 — 주식만. 선물은 event_buy_qty가 이미 증거금으로 클램프했고,
         # cash//prev_close(현금÷지수가)는 선물 계약수에 무의미(과대 → 비바인딩)하므로 제외.

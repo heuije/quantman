@@ -22,7 +22,7 @@
 **폴더.**
 - `core/quant_core/ir_engine/` — 엔진 본체: `run.py`(**`run_query` 디스패치** = 동사 라우팅) · `spec.py`(`StrategyIR` 스키마) · `capabilities.py`(능력 노출) · `engine.py`·`backtest.py`(실행) · `live.py`(backtest=live 일치) · `explain.py`·`metrics.py`·`sweep.py`
 - `server/app/routers/ir.py` — 질문 실행 라우터 + 360 뉴스 facet enrichment
-- `server/app/routers/ir_compile.py` — **자연어 → StrategyIR 컴파일러**(기본 Haiku 4.5, 롤백 env `QP_NL_COMPILE_MODEL`)
+- `server/app/routers/ir_compile.py` — **자연어 → StrategyIR 컴파일러**(기본 Sonnet 4.6, 비용 롤백 env `QP_NL_COMPILE_MODEL=claude-haiku-4-5-20251001`)
 - `web/src/components/ResultCharts.tsx` 외 시각화 컴포넌트 — 동사별 결과 카드/차트(랭킹·360·진단·회귀·최적해)
 - 설계 스펙: `docs/REDESIGN/question_layer_spec.md`
 

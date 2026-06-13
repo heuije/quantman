@@ -7,8 +7,10 @@ market_calendar)에서 합성.
 이벤트 status:
   done       — 정상 완료 (sync_snapshot.received_at 또는 preview.generated_at으로 추정)
   warning    — 실행은 됐으나 체결 미확인 잔존 (N2 — 발주-but-미기록을 ✓로 가장 금지)
-  scheduled  — 미래 예정
-  missed     — 예정 시각 지났는데 완료 흔적 없음 (PC 꺼짐·grace 초과)
+  scheduled  — 미래 예정. preview 슬롯은 슬롯시각 경과~데드라인 사이 미생성 시에도
+               summary="갱신중"으로 재사용(cron backoff 재시도 진행 중 — 누락 아님)
+  missed     — 예정 시각 지났는데 완료 흔적 없음 (PC 꺼짐·grace 초과.
+               preview는 하드 데드라인 경과에도 그 날 생성분 없음)
   holiday    — 시장 휴장 (캘린더 기준)
 
 heartbeat status:
@@ -49,6 +51,14 @@ WINDOW_HOURS = 24
 #                → 미장 매매 후보 (KRX 종가 기반 전략용. 같은 cron이 webhook 발송)
 KRX_PREVIEW_TIME = time(7, 30)
 US_PREVIEW_TIME = time(18, 15)
+
+# preview "누락" 확정 하드 데드라인 — cron은 실패 시 backoff([5,15,30,60,120]분)
+# 재시도하므로(main.py _run_with_retry) 슬롯시각 직후 미생성은 정상 회복 경로일 수
+# 있다("갱신중"). 시장이 열려 그 날 후보가 더는 쓰일 수 없게 되는 시각을 넘겨도
+# 그 날(KST) 생성분이 없을 때만 missed로 확정한다 (2026-06-12 FRED 장애로 07:30
+# refresh가 08:10에 완료 — 그 사이 "누락" 표시는 거짓이었다).
+KRX_PREVIEW_DEADLINE = time(9, 0)     # 국장 개장
+US_PREVIEW_DEADLINE = time(23, 30)    # 미장 개장(겨울 23:30 KST) 직후
 
 # 로컬앱 scheduler.py 와 동일 출처. cycle = 주문 발주, settlement = 미체결 정리·reconcile.
 # close = 당일매매(hold_days=0) 종가 청산 사이클(주식 15:25·선물 15:40·미장 close−5분).
@@ -491,6 +501,11 @@ def _preview_events(preview: dict | None, now: datetime,
 
     preview = 윈도우 내 최신 next_day_preview 1개(_latest_preview_in_window). D1
     egress 절감으로 전체 snaps를 받지 않고 단일 preview만 받는다.
+
+    슬롯 판정 = "슬롯 날(KST) 신선분 여부" (생성시각 vs 슬롯시각 비교 아님):
+      · 슬롯 날(또는 이후) 생성분 존재 → done
+      · 미생성 + 데드라인(KRX_PREVIEW_DEADLINE/US_PREVIEW_DEADLINE) 전 → "갱신중"
+      · 미생성 + 데드라인 경과 → missed
     """
     events: list[dict] = []
     latest_gen: Optional[datetime] = None
@@ -517,21 +532,37 @@ def _preview_events(preview: dict | None, now: datetime,
     d = window_start.date()
     end_d = window_end.date()
     while d <= end_d:
-        for sched_time, kind, market_n in [
-            (KRX_PREVIEW_TIME, "krx_preview", krx_n),
-            (US_PREVIEW_TIME, "us_preview", us_n),
+        for sched_time, deadline_time, kind, market_n in [
+            (KRX_PREVIEW_TIME, KRX_PREVIEW_DEADLINE, "krx_preview", krx_n),
+            (US_PREVIEW_TIME, US_PREVIEW_DEADLINE, "us_preview", us_n),
         ]:
             sched = datetime.combine(d, sched_time, tzinfo=KST)
             if not (window_start <= sched <= window_end):
                 continue
             if sched > now:
                 events.append(_build_event(sched, kind, "scheduled"))
-            elif latest_gen and latest_gen >= sched - timedelta(minutes=2):
+            elif latest_gen and latest_gen.date() >= d:
+                # 슬롯 날(KST) 생성분 존재 = 신선 — 슬롯시각 이전/이후 생성 무관
+                # (preview는 전일 마감 데이터 기반이라 같은 날 생성이면 같은 내용,
+                # 늦은 생성은 cron 재시도 자가회복). 이후 날 생성은 supersede로
+                # 과거 슬롯을 done 유지(최신 preview 1개만 보는 구조의 한계 수용).
                 events.append(_build_event(
                     sched, kind, "done",
                     f"{market_n}건" if market_n else "후보 0건"))
+            elif now < datetime.combine(d, deadline_time, tzinfo=KST):
+                # 슬롯시각은 지났지만 데드라인 전 — cron backoff 재시도 진행 중일 수
+                # 있다. missed(빨간 ✗)로 표시하면 거짓 경보 → 기존 status
+                # "scheduled" 재사용 + summary "갱신중" (새 status를 추가하면 배포
+                # 전 웹 번들·구버전 로컬앱 렌더가 깨진다).
+                events.append(_build_event(
+                    sched, kind, "scheduled", "갱신중",
+                    "서버가 오늘 매매 후보를 아직 갱신하지 못했습니다 — "
+                    "cron이 재시도 중일 수 있습니다. "
+                    f"{deadline_time.strftime('%H:%M')}까지 갱신되지 않으면 "
+                    "누락으로 표시됩니다."))
             else:
-                # 서버 cron 실패 — 운영 사이드 문제. 로컬앱 무관.
+                # 데드라인 경과에도 그 날 생성분 없음 — 진짜 누락(운영 사이드 문제).
+                # 로컬앱 무관.
                 impact = DOWNSTREAM_IMPACT.get(kind, "")
                 events.append(_build_event(
                     sched, kind, "missed", "",

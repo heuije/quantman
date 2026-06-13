@@ -30,7 +30,10 @@ def _ds():
         return pd.DataFrame({"Open": 100., "High": 101., "Low": 99., "Close": 100., "Volume": 1e6,
                              "momentum_12_1m": float(mom), "market_cap": mc}, index=idx)
     return {"A": mk(100 - 0.1 * t, 5), "B": mk(95 - 0.1 * t, 4),
-            "C": mk(10 + 0.3 * t, 3), "D": mk(8 + 0.3 * t, 2)}
+            "C": mk(10 + 0.3 * t, 3), "D": mk(8 + 0.3 * t, 2),
+            # F-01: A~D는 비숫자 심볼이라 통화 SSOT(instrument_spec)상 USD로 분류된다 —
+            # fixed_amount(₩정액) 사이징 테스트가 환산용 원달러환율 시계열을 요구한다.
+            "원달러환율": pd.DataFrame({"Close": 1300.0}, index=idx)}
 
 
 # ── 조건 빌더 (프리미티브 조합) ────────────────────────────────────────────────

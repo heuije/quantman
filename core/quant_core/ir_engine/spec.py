@@ -26,7 +26,7 @@ from ..blocks.integrity import DatasetMeta, integrity_issues
 from ..blocks.node import Node, referenced_columns, referenced_symbols
 from ..blocks.validate import (SEV_ERROR, SEV_INTEGRITY_WARN, Issue, has_market_source,
                                meaningfulness_issues, prioritize, validate)
-from ..exec_defaults import is_futures
+from ..exec_defaults import FX_USDKRW_SYMBOL, instrument_spec, is_futures
 
 # ── 유니버스 (대상 종목 집합) ─────────────────────────────────────────────────
 
@@ -222,19 +222,66 @@ class StrategyIR(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _reject_legacy(cls, data):
-        """레거시 sweep/period_split 키를 명시 거부 — 클린 컷오버(번역 셰임 없음).
+    def _migrate_legacy(cls, data):
+        """동결 저장된 레거시 IR(sweep/period_split)을 신 query/study로 결정적 변환.
 
-        StrategyIR은 extra="ignore"(pydantic 기본)라 제거된 sweep/period_split을 누가
-        넘기면 *조용히 무시→study 기본값*이 되어 silent 오작동(NL repair loop도 못 잡음).
-        따라서 alias 번역이 아니라 검증 에러로 loud하게 거부한다 — LLM이 레거시 산출 시
-        repair loop가 교정하게.
+        로컬앱 ledger는 매수 시점 StrategyIR 전체를 JSON으로 동결 저장한다(자기완결
+        원장). 클린 컷오버(34ea912)가 레거시 키를 거부로 바꾸자 구 스키마로 매수된
+        보유 포지션이 파싱 실패 → 청산·손절 규칙 적용 불능이 됐다(라이브 실증 결함).
+        스키마는 진화하고 동결 IR은 남는다 — 파싱 경계인 여기서 레거시 표현을 신
+        표현으로 번역해 부류를 닫는다(edc051d 셰임과 동일 규칙·결정적). 거래 의미
+        (signal/universe/position/simulation)는 그대로, 리서치 평면만 매핑된다.
+        신형태 입력은 no-op(멱등)·입력 dict 비변경(원장 dict 부수효과 금지).
+
+        레거시+신 키 동시 존재는 동결 원장에서 불가능한 모순(의도 결정 불가) →
+        종전대로 loud 거부. extra="ignore"(pydantic 기본)가 sweep을 조용히 버려
+        study 기본값으로 silent 오작동하는 것을 막고, LLM 오산출은 repair loop가 교정.
         """
-        if isinstance(data, dict):
-            sim = data.get("simulation")
-            if "sweep" in data or (isinstance(sim, dict)
-                                   and ("period_split" in sim or "split_dates" in sim)):
-                raise ValueError("레거시 'sweep'/'period_split' 제거됨 — 'query'/'study' 사용")
+        if not isinstance(data, dict):
+            return data
+        sim = data.get("simulation")
+        legacy_sim = isinstance(sim, dict) and ("period_split" in sim or "split_dates" in sim)
+        if "sweep" not in data and not legacy_sim:
+            return data                              # 신형태 — 변환 없이 통과(멱등)
+        if "study" in data or "query" in data:
+            raise ValueError("레거시 'sweep'/'period_split' 제거됨 — 'query'/'study' 사용")
+        data = dict(data)                            # 입력 비변경 — 원장 dict 보호
+        sw = data.pop("sweep", None) or {}
+        study: dict = {}
+        for k in ("label", "target_node", "relation_kind", "event", "windows", "event_basis"):
+            if k in sw:
+                study[k] = sw[k]
+        tgt, axis = sw.get("target", "return"), sw.get("axis", "none")
+        ps = sim.get("period_split", "single") if legacy_sim else "single"
+        sd = (sim.get("split_dates") or []) if legacy_sim else []
+        if tgt == "signal":
+            data["query"] = "describe"
+        elif tgt == "relation" or axis == "time":
+            data["query"] = "relate"
+            study["param_grid"] = sw.get("param_grid", [])
+        else:
+            data["query"] = "simulate"
+            if ps != "single" or sd:
+                study.update(axis="time_fold", reduction="consistency",
+                             folds=(2 if ps == "oos" else 4), split_dates=sd)
+                # 기간분할 × 펼침 동시 사용은 2D 모호성 — time_fold로 수렴하되 펼침축
+                # 잔여 필드(param_grid·assets)를 남겨 validate_strategy가 충돌을 감지·거부.
+                if axis == "parameter" and sw.get("param_grid"):
+                    study["param_grid"] = sw["param_grid"]
+                elif axis == "asset" and sw.get("assets"):
+                    study["assets"] = sw["assets"]
+            elif axis == "parameter":
+                study.update(axis="parameter", reduction="enumerate",
+                             param_grid=sw.get("param_grid", []))
+            elif axis == "asset":
+                study.update(axis="entity", reduction="enumerate",
+                             assets=sw.get("assets", []))
+            elif axis == "condition":
+                study.update(axis="label", reduction="contrast")
+        if legacy_sim:
+            data["simulation"] = {k: v for k, v in sim.items()
+                                  if k not in ("period_split", "split_dates")}
+        data["study"] = study
         return data
 
 
@@ -668,6 +715,12 @@ def needed_symbols(s: StrategyIR) -> Optional[set[str]]:
     for nd in nodes:
         if nd is not None:
             syms |= referenced_symbols(nd)
+    # F-01 사이징 FX — 비-KRW(USD) 상품 + 정액(₩) 사이징이면 엔진 _budget·라이브
+    # event_buy_qty가 환산에 쓰는 원달러환율 시계열을 dataset 요구 집합에 포함한다
+    # (없으면 엔진이 명시 에러·라이브가 발주 보류로 멈추므로 로드가 필수).
+    if (s.position.sizing.mode == "fixed_amount" and s.position.sizing.amount_krw
+            and any(instrument_spec(x).currency != "KRW" for x in s.universe.symbols)):
+        syms.add(FX_USDKRW_SYMBOL)
     # 전략 조합(strat:<id>) 참조가 있으면 자식 전략이 임의 데이터(전 유니버스 팩터 등)를
     # 필요로 할 수 있어 부분집합으로 좁힐 수 없다 → 전체 로드(None)로 안전하게 폴백.
     if any(str(x).startswith("strat:") for x in syms):
