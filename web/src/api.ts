@@ -591,6 +591,7 @@ export const futuresApi = {
     threshold: number;
     horizon_days: number;
     roll_cost_pct?: number;
+    min_gap_days?: number;
   }) => {
     const t = tokenStore.get();
     const res = await fetch(`${BASE}/futures/${sym}/export.xlsx`, {

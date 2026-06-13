@@ -372,7 +372,7 @@ export default function FuturesAnalytics() {
             <button
               className="export-btn"
               disabled={exporting}
-              title="임계·보유기간·비용·롤을 엑셀에서 바꿔가며 재계산 (앱 결과와 일치)"
+              title="임계·보유기간·비용·롤·쿨타임을 엑셀에서 바꿔가며 재계산 (앱 결과와 일치)"
               onClick={async () => {
                 setExporting(true);
                 try {
@@ -381,6 +381,7 @@ export default function FuturesAnalytics() {
                     threshold: selected.threshold,
                     horizon_days: selected.horizon,
                     roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
+                    min_gap_days: minGapDays,
                   });
                 } catch (e) {
                   alert("엑셀 내보내기 실패: " + (e as Error).message);
