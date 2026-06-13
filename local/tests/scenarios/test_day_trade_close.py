@@ -91,6 +91,43 @@ def test_day_trade_close_cycle_market(isolated_trader):
     invariants.check_all(t)
 
 
+def test_us_futures_day_trade_closed_by_futures_cycle(isolated_trader):
+    """US-F4: 해외선물(USD) 당일매매가 US 선물 종가청산 사이클(instrument_class='futures',
+    market='US')로 청산된다 — 종전엔 US 종가청산이 stock만 호출돼 선물 day-trade가 오버나이트
+    방치됐다. 청산 라우팅 메커니즘 자체는 존재(이 테스트가 회귀 가드), 스케줄러 잡 추가가 P3.
+
+    해외선물은 _market_group_safe='US'(통화 USD)·_currency_of='KRW'(US 주식마스터 부재)라
+    국내 시장가 매도 경로(broker.sell)로 청산된다(BrokerRouter가 CME로 dispatch)."""
+    t, broker = isolated_trader
+    sid, symbol = "dt_gold", "금선물"            # CME 금선물(USD·승수 100)
+    broker._prices[symbol] = 2600.0
+    ds = _dataset(symbol, [2600.0] * 8)
+    # 당일매매(hold_days=0) 선물 포지션을 원장에 직접 구성 + SimBroker 실보유(클램프 통과).
+    t.ledger[sid] = {
+        "symbol": symbol, "qty": 3, "entry_date": "2026-06-01", "entry_price": 2600.0,
+        "peak_price": 2600.0, "side": "long", "strategy_name": "해외선물 당일",
+        "definition": _ir_def(symbol, hold_days=0),
+    }
+    broker.set_positions([{"symbol": symbol, "qty": 3, "side": "buy"}])
+
+    # US 주식 종가청산(instrument_class='stock')은 선물을 건드리지 않음(반대 라우팅)
+    n0 = len(broker.submitted)
+    t.liquidate_day_trades(ds, "stock", market="US")
+    assert len(broker.submitted) == n0, "주식 종가청산이 선물 day-trade를 청산하면 안 됨"
+    assert sid in t.ledger
+
+    # US 선물 종가청산 — 청산 발주
+    payload = t.liquidate_day_trades(ds, "futures", market="US")
+    assert len(broker.submitted) == n0 + 1, broker.submitted
+    sell = broker.submitted[-1]
+    assert sell["side"] == "sell" and sell["qty"] == 3, broker.submitted
+    assert payload["cycle_summary"]["kind"] == "day_trade_close"
+
+    scenario.inject_ws_fill(t, broker, sell["order_no"], 3, 2600.0)
+    assert sid not in t.ledger, "체결 후 FLAT — 해외선물 당일매매 청산 완료"
+    invariants.check_all(t)
+
+
 def test_day_trade_close_instrument_routing(isolated_trader):
     """주식 당일매매를 instrument_class='futures'로 청산 → 무동작(반대 라우팅)."""
     t, broker = isolated_trader

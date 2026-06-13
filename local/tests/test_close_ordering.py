@@ -79,3 +79,30 @@ def test_catchup_settlement_threshold_matches_cron(monkeypatch, tmp_path):
     assert plan.krx_settlement_date == "2026-06-01", (
         "15:45 부팅 시 오늘은 아직 정산 전(cron 15:50) — 대상은 직전 영업일이어야. "
         f"plan={plan}")
+
+
+def test_us_session_schedules_futures_close(monkeypatch):
+    """US-F4: _plan_us_session이 해외선물 종가청산 잡(us_close_cycle_futures)도 등록한다.
+
+    종전엔 us_close_cycle(주식)만 등록돼 해외선물 day-trade가 종가에 청산되지 않고
+    오버나이트 방치됐다. 폐장−5분에 주식·선물 두 잡 모두 등록돼야 한다."""
+    from datetime import timedelta
+
+    from localapp import scheduler as sch
+
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=KST)
+    open_kst = now + timedelta(hours=10)            # 오늘 밤(20h 이내) → 즉시 스케줄
+    close_kst = now + timedelta(hours=16, minutes=30)
+    monkeypatch.setattr(sch.mc, "next_session_kst", lambda m, n: (open_kst, close_kst))
+
+    from apscheduler.schedulers.background import BackgroundScheduler
+    sched = BackgroundScheduler(timezone="Asia/Seoul")
+    sch._plan_us_session(sched, now=now)
+
+    ids = {j.id for j in sched.get_jobs()}
+    assert "us_close_cycle_futures" in ids, f"해외선물 종가청산 미등록: {ids}"
+    assert "us_close_cycle" in ids, "주식 종가청산도 유지돼야"
+    # 두 종가청산은 같은 폐장−5분 창
+    jobs = {j.id: j for j in sched.get_jobs()}
+    assert (jobs["us_close_cycle_futures"].trigger.run_date
+            == jobs["us_close_cycle"].trigger.run_date)

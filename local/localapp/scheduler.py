@@ -99,6 +99,16 @@ def _plan_us_session(sched: BlockingScheduler, now: datetime | None = None) -> N
         kwargs={"market": "US", "instrument_class": "stock"},
         id="us_close_cycle", name="미국 종가 매도 사이클 (주식·당일매매)",
         replace_existing=True, misfire_grace_time=300)
+    # US-F4: 해외선물(CME) 당일매매 종가청산 — 종전엔 주식만 청산돼 선물 day-trade가
+    # 오버나이트 방치됐다(미배선). CME는 거의 24h 연속장이라 '종가' 시각이 미국주식
+    # 폐장과 다르지만(상품별 일일 정산), 우리가 모델링한 US 세션 경계는 폐장−5분 하나뿐 —
+    # 같은 시각을 당일매매 청산 프록시로 쓴다(오버나이트 방치보다 안전). 상품별 정산시각
+    # 정밀 정렬은 라이브(CME 세션 데이터) 정밀화 대상. 청산 라우팅은 stock과 동일 격리 사이클.
+    sched.add_job(
+        run_close_cycle, DateTrigger(run_date=close_cycle_at),
+        kwargs={"market": "US", "instrument_class": "futures"},
+        id="us_close_cycle_futures", name="미국 종가 매도 사이클 (해외선물·당일매매)",
+        replace_existing=True, misfire_grace_time=300)
     sched.add_job(
         intraday_loop.stop, DateTrigger(run_date=close_kst),
         id="us_loop_stop", name="미국 장중 손절 loop 종료",
