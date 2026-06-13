@@ -549,6 +549,7 @@ export const futuresApi = {
     slippage_ticks?: number;
     smooth_window?: number;
     min_gap_days?: number;
+    roll_cost_pct?: number;
   } = {}) => {
     const qs = new URLSearchParams();
     if (opts.shorts?.length) qs.set("shorts", opts.shorts.join(","));
@@ -561,6 +562,8 @@ export const futuresApi = {
       qs.set("smooth_window", String(opts.smooth_window));
     if (opts.min_gap_days !== undefined && opts.min_gap_days !== 0)
       qs.set("min_gap_days", String(opts.min_gap_days));
+    if (opts.roll_cost_pct !== undefined && opts.roll_cost_pct !== 0)
+      qs.set("roll_cost_pct", String(opts.roll_cost_pct));
     const q = qs.toString();
     return req<OilGridCell[]>(`/futures/${sym}/grid` + (q ? "?" + q : ""));
   },
@@ -590,6 +593,8 @@ export const futuresApi = {
     side: OilSide;
     threshold: number;
     horizon_days: number;
+    commission?: number;
+    slippage_ticks?: number;
     roll_cost_pct?: number;
     min_gap_days?: number;
   }) => {
