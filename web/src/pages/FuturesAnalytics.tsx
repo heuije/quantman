@@ -99,13 +99,18 @@ export default function FuturesAnalytics() {
   // 🅔 Macro
   const [macro, setMacro] = useState<OilMacroContext | null>(null);
 
-  const [rollCost, setRollCost] = useState<number | "">("");  // 롤 비용 %/회 (예: 0.5)
   const [exporting, setExporting] = useState(false);          // 엑셀 내보내기 진행중
 
-  // 전략 비용·신호 설정 — 히트맵 grid + 선택 셀 백테스트 양쪽에 일괄 적용.
-  const [minGapDays, setMinGapDays] = useState(0);       // 신호 쿨타임 (영업일)
-  const [commission, setCommission] = useState(2.5);     // 수수료 ($/계약·레그)
-  const [slippageTicks, setSlippageTicks] = useState(1); // 슬리피지 (틱/체결)
+  // 전략 비용·신호 설정 — applied=그리드/백테스트가 실제 사용하는 값, draft=입력칸 값.
+  // [확인] 클릭 시 draft→applied (라이브 재계산 대신 명시적 적용).
+  const [commission, setCommission] = useState(2.5);     // 수수료 (적용값)
+  const [slippageTicks, setSlippageTicks] = useState(1); // 슬리피지 (적용값)
+  const [rollCost, setRollCost] = useState<number | "">("");  // 롤 비용 %/회 (적용값)
+  const [minGapDays, setMinGapDays] = useState(0);       // 신호 쿨타임 (적용값)
+  const [dCommission, setDCommission] = useState(2.5);   // 입력 draft
+  const [dSlippage, setDSlippage] = useState(1);
+  const [dRoll, setDRoll] = useState<number | "">("");
+  const [dMinGap, setDMinGap] = useState(0);
 
   // macro·seasonality·walk-forward·순위표는 당분간 숨김(코드 보존). 셀 선택은 히트맵 클릭.
   const showArchivedSections = false;
@@ -241,6 +246,11 @@ export default function FuturesAnalytics() {
   const curCode = info?.currency ?? "USD";                  // "USD"/"KRW" 텍스트 라벨
   const priceSym = info?.currency === "KRW" ? "" : "$";     // 가격/임계(지수포인트) 접두
 
+  // 입력(draft)이 적용값과 다르면 [확인] 활성화.
+  const settingsDirty =
+    dCommission !== commission || dSlippage !== slippageTicks ||
+    dRoll !== rollCost || dMinGap !== minGapDays;
+
   return (
     <div className="oil-page">
       <header className="oil-header">
@@ -314,22 +324,22 @@ export default function FuturesAnalytics() {
           low_sample(n&lt;30)은 <b>⚠</b>로만 표시(색 억제 없음 — 거래 적은 셀의 수익률은 노이즈일 수 있어 신중히). 클릭하면 아래 백테스트 상세.
         </p>
 
-        {/* 전략 비용·신호 설정 — 히트맵 + 선택 셀 백테스트 양쪽에 일괄 적용 */}
+        {/* 전략 비용·신호 설정 — 입력 후 [확인]을 눌러야 히트맵·백테스트에 적용 */}
         <div className="oil-toolbar sltp-toolbar">
           <span style={{ fontWeight: 600 }}>⚙ 설정:</span>
           <label title="진입+청산 양레그 계약당 수수료">
             수수료&nbsp;{cur}
             <input
-              type="number" min={0} step={0.5} value={commission}
-              onChange={(e) => setCommission(Math.max(0, Number(e.target.value) || 0))}
+              type="number" min={0} step={0.5} value={dCommission}
+              onChange={(e) => setDCommission(Math.max(0, Number(e.target.value) || 0))}
               style={{ width: 60 }}
             />
           </label>
           <label title="체결당 슬리피지(틱) — 진입/청산에 불리하게 적용">
             슬리피지&nbsp;
             <input
-              type="number" min={0} step={1} value={slippageTicks}
-              onChange={(e) => setSlippageTicks(Math.max(0, Number(e.target.value) || 0))}
+              type="number" min={0} step={1} value={dSlippage}
+              onChange={(e) => setDSlippage(Math.max(0, Number(e.target.value) || 0))}
               style={{ width: 52 }}
             />
             &nbsp;틱
@@ -337,8 +347,8 @@ export default function FuturesAnalytics() {
           <label title="만기 롤오버 비용(%/롤). 양수=콘탱고 비용, 음수=backwardation 이익. 추정 가정.">
             롤오버&nbsp;
             <input
-              type="number" min={-5} max={5} step={0.1} value={rollCost} placeholder="0"
-              onChange={(e) => setRollCost(e.target.value === "" ? "" : Number(e.target.value))}
+              type="number" min={-5} max={5} step={0.1} value={dRoll} placeholder="0"
+              onChange={(e) => setDRoll(e.target.value === "" ? "" : Number(e.target.value))}
               style={{ width: 60 }}
             />
             &nbsp;%
@@ -346,17 +356,29 @@ export default function FuturesAnalytics() {
           <label title="신호 발생 후 최소 M영업일 동안 같은 임계의 다른 신호 무시 — 반복신호 노이즈 제거">
             쿨타임&nbsp;
             <input
-              type="number" min={0} max={250} step={1} value={minGapDays}
-              onChange={(e) => setMinGapDays(Math.max(0, Number(e.target.value) || 0))}
+              type="number" min={0} max={250} step={1} value={dMinGap}
+              onChange={(e) => setDMinGap(Math.max(0, Number(e.target.value) || 0))}
               style={{ width: 52 }}
             />
             &nbsp;일
           </label>
-          <button className="ghost" onClick={() => { setCommission(2.5); setSlippageTicks(1); setRollCost(""); setMinGapDays(0); }}>
-            리셋
+          <button
+            className={settingsDirty ? "" : "ghost"}
+            disabled={!settingsDirty}
+            title="입력한 4개 설정을 히트맵·백테스트에 적용"
+            onClick={() => {
+              setCommission(dCommission); setSlippageTicks(dSlippage);
+              setRollCost(dRoll); setMinGapDays(dMinGap);
+            }}
+          >
+            확인
           </button>
           <span className="muted" style={{ fontSize: 12 }}>
-            네 설정 모두 <b>히트맵·백테스트</b>에 일괄 적용 · 롤={info?.roll_note ?? "추정 가정"}.
+            {settingsDirty ? (
+              <b style={{ color: "#e6c259" }}>미적용 변경 있음 — [확인]을 눌러 반영</b>
+            ) : (
+              <>네 설정 모두 <b>히트맵·백테스트</b>에 적용됨 · 롤={info?.roll_note ?? "추정 가정"}.</>
+            )}
           </span>
         </div>
         {/* 라디오 토글 — 한 번에 short 또는 long */}
@@ -958,74 +980,8 @@ function BacktestDetail({ bt, side, cur, curCode, priceSym }: {
         <Metric label={`Loss (${curCode})`} value={money(s.gross_loss_usd, cur)} highlight="bad" />
         <Metric label={`Net PnL (${curCode})`} value={money(s.net_pnl_usd, cur)}
                 highlight={s.net_pnl_usd >= 0 ? "good" : "bad"} />
-      </div>
-
-      {/* 🅐 MAE/MFE 분석 (장중 평가손익) */}
-      <div className="bt-subgrid">
-        <div className="subgrid-title">🅐 장중 평가손익 (MAE/MFE) — 시가평가 위험 가시화</div>
-        <div className="bt-metrics">
-          <Metric
-            label="Worst MAE (장중 최악)"
-            value={money(s.worst_mae_usd, cur)}
-            highlight="bad"
-            sub="모든 trade 중 가장 깊은 평가손실 — 시가평가 MDD에 근접"
-          />
-          <Metric
-            label="Avg MAE (평균 평가손실)"
-            value={money(s.avg_mae_usd, cur)}
-            highlight="bad"
-            sub="거래당 평균 장중 최악 평가손실"
-          />
-          <Metric
-            label="Avg MFE (평균 평가이익)"
-            value={money(s.avg_mfe_usd, cur)}
-            highlight="good"
-            sub="평균 보유 중 최고점 — 익절 룰 설계 근거"
-          />
-        </div>
-      </div>
-
-      {/* 🅑 Streak */}
-      <div className="bt-subgrid">
-        <div className="subgrid-title">🅑 연속 streak — 심리·자금관리 척도</div>
-        <div className="bt-metrics">
-          <Metric label="최장 연승" value={s.max_win_streak} highlight="good" />
-          <Metric
-            label="최장 연패"
-            value={s.max_loss_streak}
-            highlight="bad"
-            sub="이 만큼 연속으로 진 적 있음 — 자금 견딜지 검토"
-          />
-        </div>
-      </div>
-
-      {/* 🛢 선물 만기 강제 롤오버 */}
-      <div className="bt-subgrid">
-        <div className="subgrid-title">🛢 선물 만기 강제 롤오버 — 실물 인수도 회피</div>
-        <div className="bt-metrics">
-          <Metric
-            label="총 롤오버 횟수"
-            value={s.total_rollovers}
-            sub={`전체 거래 합산 (trade당 평균 ${s.n_trades ? (s.total_rollovers / s.n_trades).toFixed(1) : 0}회)`}
-          />
-          <Metric
-            label={`롤 손익 합계 (${curCode})`}
-            value={money(s.total_roll_cost_usd, cur)}
-            highlight={s.total_roll_cost_usd < 0 ? "bad" : s.total_roll_cost_usd > 0 ? "good" : null}
-            sub={
-              s.total_roll_cost_usd < 0 ? "contango 비용 — Net PnL에 차감 반영됨"
-              : s.total_roll_cost_usd > 0 ? "backwardation 이익 — Net PnL에 가산 반영됨"
-              : "롤 비용 0% (미적용 — 횟수만 표시)"
-            }
-          />
-        </div>
-        {s.total_roll_cost_usd !== 0 && (
-          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-            ⚠️ 롤 손익은 <b>추정 가정</b>입니다. 우리 데이터는 연속물 단일 시계열이라
-            실제 근월/원월 가격차(term structure)가 없어, 정확한 contango/backwardation
-            yield는 만기물별 데이터가 필요합니다.
-          </div>
-        )}
+        <Metric label="롤오버 횟수" value={s.total_rollovers}
+                sub={`선물 만기 강제 롤 합산 (trade당 평균 ${s.n_trades ? (s.total_rollovers / s.n_trades).toFixed(1) : 0}회)`} />
       </div>
 
       {s.low_sample && (
@@ -1365,12 +1321,14 @@ function SeasonTable({
 
 // ── ⑧ 진입 추세 → 미래 수익률 탐색기 ──────────────────────────────────
 // 서버가 (L,H) 이벤트 배열을 1회 내려주면, 증감율 밴드 필터·집계는 브라우저에서 실시간.
+// 진입 직전 증감율 구간 — 5%p 단위 (−10% 이하부터 +10% 초과까지).
 const TE_RET_BUCKETS = [
   { label: "≤−10%", lo: -Infinity, hi: -10 },
-  { label: "−10~−3%", lo: -10, hi: -3 },
-  { label: "−3~+3%", lo: -3, hi: 3 },
-  { label: "+3~+10%", lo: 3, hi: 10 },
-  { label: "≥+10%", lo: 10, hi: Infinity },
+  { label: "−10~−5%", lo: -10, hi: -5 },
+  { label: "−5~0%", lo: -5, hi: 0 },
+  { label: "0~+5%", lo: 0, hi: 5 },
+  { label: "+5~+10%", lo: 5, hi: 10 },
+  { label: ">+10%", lo: 10, hi: Infinity },
 ];
 
 // 가격 범위를 ~12개로 나눌 "보기 좋은" 버킷 폭 (1·2·5·10 × 10ⁿ).
@@ -1398,34 +1356,47 @@ function teOpinion(assetMean: number): { txt: string; cls: string } {
 function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string }) {
   // 입력 draft (확인 전엔 계산 안 함)
   const [dSide, setDSide] = useState<"long" | "short">("long");
-  const [dN, setDN] = useState<number | "">("");
+  const [dNLo, setDNLo] = useState<number | "">("");   // 종가 하한
+  const [dNHi, setDNHi] = useState<number | "">("");   // 종가 상한
   const [dL, setDL] = useState(20);
   const [dH, setDH] = useState(60);
-  const [dLo, setDLo] = useState<number | "">("");
-  const [dHi, setDHi] = useState<number | "">("");
+  const [dLo, setDLo] = useState<number | "">("");     // 과거 증감율 하한
+  const [dHi, setDHi] = useState<number | "">("");     // 과거 증감율 상한
 
   // 적용된 설정 (확인 클릭 시 스냅샷)
   const [applied, setApplied] = useState<
-    { side: "long" | "short"; n: number; L: number; H: number; lo: number; hi: number } | null
+    { side: "long" | "short"; nLo: number; nHi: number; L: number; H: number; lo: number; hi: number } | null
   >(null);
   const [data, setData] = useState<OilTrendEvents | null>(null);
   const [prices, setPrices] = useState<OilPricePoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // 종목 변경 → 전체 가격 시계열 로드 + draft 현재값=최신종가, 적용 리셋.
+  // 종목 변경 → 전체 가격 시계열 로드 + draft 종가범위=현재가 부근 버킷, 적용 리셋.
   useEffect(() => {
     setApplied(null);
     setData(null);
     setPrices([]);
-    setDN("");
+    setDNLo("");
+    setDNHi("");
     futuresApi.prices(symbol)
       .then((p) => {
         setPrices(p);
-        if (p.length) setDN(Number(p[p.length - 1].close.toFixed(2)));
+        if (p.length) {
+          const closes = p.map((x) => x.close);
+          const min = Math.min(...closes), max = Math.max(...closes);
+          const step = teNiceStep((max - min) / 12);
+          const last = p[p.length - 1].close;
+          const lo = Math.floor(last / step) * step;
+          const dec = step >= 10 ? 0 : step >= 1 ? 1 : step >= 0.1 ? 2 : 3;
+          setDNLo(Number(lo.toFixed(dec)));
+          setDNHi(Number((lo + step).toFixed(dec)));
+        }
       })
       .catch((e) => console.error("prices", e));
   }, [symbol]);
+
+  const latestClose = prices.length ? prices[prices.length - 1].close : null;
 
   // 현재 (과거 dL일) 증감율 — 최신 가격 기준 안내 (draft L에 live; 분석과 무관).
   const currentChange = useMemo(() => {
@@ -1438,8 +1409,14 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   function applyAndCompute() {
     const lo = dLo === "" ? -1e9 : Number(dLo);
     const hi = dHi === "" ? 1e9 : Number(dHi);
-    const n = dN === "" ? (prices.length ? prices[prices.length - 1].close : 0) : Number(dN);
-    const a = { side: dSide, n, L: dL, H: dH, lo: Math.min(lo, hi), hi: Math.max(lo, hi) };
+    const nLo = dNLo === "" ? -1e9 : Number(dNLo);
+    const nHi = dNHi === "" ? 1e9 : Number(dNHi);
+    const a = {
+      side: dSide,
+      nLo: Math.min(nLo, nHi), nHi: Math.max(nLo, nHi),
+      L: dL, H: dH,
+      lo: Math.min(lo, hi), hi: Math.max(lo, hi),
+    };
     setApplied(a);
     setLoading(true);
     setErr(null);
@@ -1468,17 +1445,18 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     if (!buckets) return -1;
     return Math.max(0, Math.min(buckets.arr.length - 1, Math.floor((close - buckets.start) / buckets.step)));
   };
-  const selBucket = applied && buckets ? bucketIndex(applied.n) : -1;
+  // 선택 종가범위와 겹치는 히트맵 행 강조.
+  const rowInSel = (b: { lo: number; hi: number }) =>
+    applied != null && b.hi > applied.nLo && b.lo < applied.nHi;
 
-  // 매칭 이벤트: 현재값 버킷 ∧ 증감율 범위.
+  // 매칭 이벤트: 설정 종가범위 ∧ 과거 증감율 범위.
   const matched = useMemo(() => {
-    if (!data || !applied || !buckets || selBucket < 0) return [];
-    const b = buckets.arr[selBucket];
+    if (!data || !applied) return [];
     return data.events.filter(
-      (e) => e.close >= b.lo && e.close < b.hi &&
+      (e) => e.close >= applied.nLo && e.close <= applied.nHi &&
         e.past_return * 100 >= applied.lo && e.past_return * 100 <= applied.hi,
     );
-  }, [data, applied, buckets, selBucket]);
+  }, [data, applied]);
 
   const result = useMemo(() => {
     const n = matched.length;
@@ -1591,19 +1569,19 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
           {/* 입력 폼 (확인 시 계산) */}
           <div style={{ fontSize: 15, lineHeight: 2.6 }}>
-            현재 값이{" "}
+            종가가{" "}
             <span className="te-blank">{priceSym}
-              <input type="number" value={dN} onChange={(e) => setDN(e.target.value === "" ? "" : Number(e.target.value))} />
+              <input type="number" value={dNLo} placeholder="하한"
+                onChange={(e) => setDNLo(e.target.value === "" ? "" : Number(e.target.value))} />
+            </span>{" "}~{" "}
+            <span className="te-blank">{priceSym}
+              <input type="number" value={dNHi} placeholder="상한"
+                onChange={(e) => setDNHi(e.target.value === "" ? "" : Number(e.target.value))} />
             </span>{" "}
-            부근일 때, 과거{" "}
+            일 때, 과거{" "}
             <span className="te-blank">
               <input type="number" min={1} max={250} value={dL} onChange={(e) => setDL(Math.max(1, Number(e.target.value) || 1))} />일
             </span>{" "}
-            {currentChange !== null && (
-              <span className="muted" style={{ fontSize: 13 }}>
-                (현재 {dL}일 증감율 <b className={currentChange >= 0 ? "pos" : "neg"}>{(currentChange >= 0 ? "+" : "") + currentChange.toFixed(1)}%</b>){" "}
-              </span>
-            )}
             동안 증감율이{" "}
             <span className="te-blank">
               <input type="number" step={1} value={dLo} placeholder="하한"
@@ -1619,6 +1597,17 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
             </span>{" "}
             후 수익률은?
           </div>
+
+          {/* 현재 종가·증감율 참고 문구 (질문 문장 뒤) */}
+          {latestClose !== null && (
+            <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>
+              (참고: 현재 종가는 <b>{priceSym}{latestClose.toFixed(2)}</b>이며, 과거 <b>{dL}일</b> 동안 증감율은{" "}
+              {currentChange !== null
+                ? <b className={currentChange >= 0 ? "pos" : "neg"}>{(currentChange >= 0 ? "+" : "") + currentChange.toFixed(1)}%</b>
+                : "—"}
+              입니다)
+            </div>
+          )}
 
           <button onClick={applyAndCompute} disabled={loading} style={{ margin: "12px 0 16px" }}>
             {loading ? "계산 중…" : "확인 (계산)"}
@@ -1658,7 +1647,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
           {/* 전체기간 가격차트 + 매칭 구간 음영 */}
           <div className="muted" style={{ fontSize: 13, margin: "8px 0 6px" }}>
-            전체기간 가격 — <span style={{ color: "#e6c259" }}>음영</span> = 위 조건 매칭 구간 [진입 −{applied?.L ?? dL}일 ~ +{applied?.H ?? dH}일]{matched.length ? ` · ${matched.length}건` : ""}.
+            전체기간 가격 — <span style={{ color: "#e6c259" }}>음영</span> = 설정 종가범위{applied ? ` (${applied.nLo <= -1e8 ? "−∞" : priceSym + applied.nLo} ~ ${applied.nHi >= 1e8 ? "∞" : priceSym + applied.nHi})` : ""} 매칭 구간 [진입 −{applied?.L ?? dL}일 ~ +{applied?.H ?? dH}일]{matched.length ? ` · ${matched.length}건` : ""}.
           </div>
           <ResponsiveContainer width="100%" height={260}>
             <ComposedChart data={chart.line} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
@@ -1680,33 +1669,36 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           {applied && !loading && heat && buckets && (
             <>
               <div className="muted" style={{ fontSize: 13, margin: "16px 0 8px" }}>
-                현재값별 {applied.side === "long" ? "롱" : "숏"} 수익률 히트맵 — 행=가격대, 열=진입 직전 증감율, 셀=향후 {applied.H}일 평균.
-                선택 현재값 행 ◀, n&lt;30은 ⚠.
+                종가대별 {applied.side === "long" ? "롱" : "숏"} 수익률 히트맵 — 행=가격대, 열=진입 직전 증감율(5%p), 셀=향후 {applied.H}일 평균.
+                선택 종가범위 행 ◀, n&lt;30은 ⚠.
               </div>
               <div className="table-scroll sticky-table" style={{ maxHeight: 440 }}>
                 <table className="te-hm">
                   <thead>
-                    <tr><th style={{ textAlign: "left" }}>현재값</th>{TE_RET_BUCKETS.map((rb) => <th key={rb.label}>{rb.label}</th>)}</tr>
+                    <tr><th style={{ textAlign: "left" }}>종가대</th>{TE_RET_BUCKETS.map((rb) => <th key={rb.label}>{rb.label}</th>)}</tr>
                   </thead>
                   <tbody>
-                    {buckets.arr.map((b, pi) => (
-                      <tr key={pi}>
-                        <th style={{ textAlign: "left", color: pi === selBucket ? "#6c9ce9" : undefined }}>
-                          {priceSym}{b.lo.toFixed(b.dec)}–{priceSym}{b.hi.toFixed(b.dec)}{pi === selBucket ? " ◀" : ""}
-                        </th>
-                        {heat.grid[pi].map((c, ri) => {
-                          const mean = c.n ? c.sum / c.n : NaN;
-                          return (
-                            <td key={ri} title={c.n ? `n=${c.n}, 평균 ${(mean >= 0 ? "+" : "") + mean.toFixed(2)}%` : "표본 없음"}
-                              style={{ background: c.n ? heatColor(mean, heat.maxAbs) : "#1f2937", color: "#fff", borderRadius: 5,
-                                opacity: c.n ? 1 : 0.25, outline: pi === selBucket ? "1.5px solid rgba(255,255,255,0.55)" : "none" }}>
-                              {c.n ? (<><div style={{ fontWeight: 600 }}>{(mean >= 0 ? "+" : "") + mean.toFixed(1)}%</div>
-                                <div style={{ fontSize: 10, opacity: 0.85 }}>n={c.n}{c.n < 30 ? " ⚠" : ""}</div></>) : "·"}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
+                    {buckets.arr.map((b, pi) => {
+                      const sel = rowInSel(b);
+                      return (
+                        <tr key={pi}>
+                          <th style={{ textAlign: "left", color: sel ? "#6c9ce9" : undefined }}>
+                            {priceSym}{b.lo.toFixed(b.dec)}–{priceSym}{b.hi.toFixed(b.dec)}{sel ? " ◀" : ""}
+                          </th>
+                          {heat.grid[pi].map((c, ri) => {
+                            const mean = c.n ? c.sum / c.n : NaN;
+                            return (
+                              <td key={ri} title={c.n ? `n=${c.n}, 평균 ${(mean >= 0 ? "+" : "") + mean.toFixed(2)}%` : "표본 없음"}
+                                style={{ background: c.n ? heatColor(mean, heat.maxAbs) : "#1f2937", color: "#fff", borderRadius: 5,
+                                  opacity: c.n ? 1 : 0.25, outline: sel ? "1.5px solid rgba(255,255,255,0.55)" : "none" }}>
+                                {c.n ? (<><div style={{ fontWeight: 600 }}>{(mean >= 0 ? "+" : "") + mean.toFixed(1)}%</div>
+                                  <div style={{ fontSize: 10, opacity: 0.85 }}>n={c.n}{c.n < 30 ? " ⚠" : ""}</div></>) : "·"}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
