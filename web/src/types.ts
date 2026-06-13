@@ -883,12 +883,14 @@ export interface CommandRow {
 
 // 자동매매 타임라인 — /trading/timeline 응답.
 // 서버 routers/trading.py 와 동기. event kind 추가 시 양쪽 같이 갱신.
-// 시작=cycle(주문 발주), 종료=settlement(미체결 정리·잔고 reconcile).
+// 시작=cycle(주문 발주), 종가청산=close(당일매매 hold_days=0 — 주식 15:25·선물 15:40·
+// 미장 close−5분), 종료=settlement(미체결 정리·잔고 reconcile, 15:50).
 // preview 시장별 분리: krx_preview(07:30 — US 종가 반영), us_preview(18:15 — KRX 종가 반영).
 export type TimelineEventKind =
-  | "krx_cycle" | "krx_settlement" | "krx_preview"
-  | "us_cycle"  | "us_settlement"  | "us_preview";
-export type TimelineEventStatus = "done" | "scheduled" | "missed" | "holiday";
+  | "krx_cycle" | "krx_close_stock" | "krx_close_futures" | "krx_settlement" | "krx_preview"
+  | "us_cycle"  | "us_close"        | "us_settlement"     | "us_preview";
+// warning(N2) — 실행은 됐으나 체결 미확인 잔존(발주-but-미기록을 ✓로 가장하지 않음).
+export type TimelineEventStatus = "done" | "warning" | "scheduled" | "missed" | "holiday";
 
 export interface TimelineEvent {
   at: string;                 // ISO datetime (KST offset 포함)

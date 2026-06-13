@@ -35,7 +35,7 @@
 - `local/localapp/` — 로컬 실행 본체:
   - `trader.py`(매매 로직: 시장가/지정가·가격필터·ATR 사이징·슬리피지 측정)
   - `runner.py`(사이클 오케스트레이터)
-  - `scheduler.py`(KST cron: 국내 08:55 메인·15:35 정산, 미국 동적 플래너)
+  - `scheduler.py`(KST cron: 국내 08:55 메인·15:25/15:40 종가청산·15:50 정산, 미국 동적 플래너)
   - `intraday_loop.py`(장중 틱 익절/손절/트레일링)
   - `killswitch.py`(일일 손실 한도 → 자동 청산+진입 차단)
   - `broker.py` + `kis_broker.py`(국내주식)
@@ -113,3 +113,19 @@ red→green, local 364 전부 green. 병행 브랜치: `fix/preview-slot-freshne
 `fix/server-infra-pruning-indexes`(#2 인덱스→#1 pruning cron→#3 스케줄러 가드, server 198
 green) · `fix/parity-oracle-fx`(WS-2: 사이징 FX+백테스트=라이브 경제결과 오라클, 진행 중).
 **머지는 전부 무거래창 + 건별 승인 대기.**
+
+**진행 (2026-06-13).** 라이브 검증(국장 선물 종가청산 실패→수동복구·미장 GOOG 261주
+방치·preview 거짓누락·equity 거짓폭락)으로 진단 모델 100% 입증, **새 미지 결함 0** →
+통합 수정계획 확정(`docs/REDESIGN/autotrade-reliability-roadmap.md` = 단일 로드맵).
+마지막 미구현 워크스트림 **θ**를 `fix/close-cycle-reliability`(#118 위 스택)로 구현:
+① θ — `liquidate_day_trades`에 `_wait_pending`(일반 cycle 동일) + 정산 cron
+15:35→**15:50** 재배치("발주창 이후 반드시 resolve 패스" 불변식, catch-up 임계 정합)
+② N1 — 종가청산 시작 시 `_resolve_pending` 선실행으로 미기록 진입 체결(δ류)을 ledger
+복원 후 순회, 체결확인 불능+계좌>원장이면 추측 발주 없이 "당일청산 불능" 표면화(병1
+불변식 — 외부 보유 오인 매도 금지) ③ N2 — 타임라인 종가청산 마일스톤 3종(주식 15:25·
+선물 15:40·미장 close−5분)+kind-aware 매칭(state_sync/정산/종가청산 push 교차 가장
+차단)+`n_pending_unresolved>0`이면 ⚠ warning(거짓 녹색 "✓ 0건" 제거). 재현 테스트
+15건 red→green, local 370·server 196·루트 골든 390·web build 전부 green. 인시던트:
+`docs/incidents/2026-06-12-futures-close-fill-unrecorded.md`. ⚠ 배포 순서: 서버
+타임라인 15:50은 로컬앱 릴리즈와 동시 웨이브로(구버전 정산 push는 same-day fallback
+호환). 잔여=머지 웨이브(Phase 2)·라이브 게이트(Phase 3)·고아 정리(Phase 4).

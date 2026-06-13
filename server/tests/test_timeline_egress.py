@@ -143,9 +143,13 @@ def test_timeline_events_parity_after_refactor(monkeypatch):
     preview_kst = datetime(2026, 6, 10, 7, 30, tzinfo=KST)
 
     def seed(s, user, device):
+        # kind 포함 — 실제 로컬앱 push(_cycle_body)는 항상 kind를 싣는다. θ/N2의
+        # kind-aware 매칭(state_sync 등 잡음 push의 슬롯 가장 차단) 도입 후
+        # kind 없는 가공 seed가 매칭되지 않는 것은 의도된 동작.
         s.add(SyncSnapshot(
             user_id=user.id, device_id=device.id,
-            payload={"cycle_summary": {"market": "KRX", "n_bought": 1, "n_sold": 0,
+            payload={"cycle_summary": {"market": "KRX", "kind": "cycle",
+                                       "n_bought": 1, "n_sold": 0,
                                        "today": "2026-06-10"}},
             received_at=_kst_to_naive_utc(cycle_kst)))
         s.add(SyncSnapshot(
@@ -188,9 +192,13 @@ def test_timeline_etag_304_and_bucket(monkeypatch):
     cycle_kst = datetime(2026, 6, 10, 8, 55, tzinfo=KST)
 
     def seed(s, user, device):
+        # kind 포함 — 실제 로컬앱 push(_cycle_body)는 항상 kind를 싣는다. θ/N2의
+        # kind-aware 매칭(state_sync 등 잡음 push의 슬롯 가장 차단) 도입 후
+        # kind 없는 가공 seed가 매칭되지 않는 것은 의도된 동작.
         s.add(SyncSnapshot(
             user_id=user.id, device_id=device.id,
-            payload={"cycle_summary": {"market": "KRX", "n_bought": 1, "n_sold": 0,
+            payload={"cycle_summary": {"market": "KRX", "kind": "cycle",
+                                       "n_bought": 1, "n_sold": 0,
                                        "today": "2026-06-10"}},
             received_at=_kst_to_naive_utc(cycle_kst)))
 

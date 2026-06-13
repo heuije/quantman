@@ -6,6 +6,7 @@ market_calendar)에서 합성.
 
 이벤트 status:
   done       — 정상 완료 (sync_snapshot.received_at 또는 preview.generated_at으로 추정)
+  warning    — 실행은 됐으나 체결 미확인 잔존 (N2 — 발주-but-미기록을 ✓로 가장 금지)
   scheduled  — 미래 예정. preview 슬롯은 슬롯시각 경과~데드라인 사이 미생성 시에도
                summary="갱신중"으로 재사용(cron backoff 재시도 진행 중 — 누락 아님)
   missed     — 예정 시각 지났는데 완료 흔적 없음 (PC 꺼짐·grace 초과.
@@ -60,9 +61,22 @@ KRX_PREVIEW_DEADLINE = time(9, 0)     # 국장 개장
 US_PREVIEW_DEADLINE = time(23, 30)    # 미장 개장(겨울 23:30 KST) 직후
 
 # 로컬앱 scheduler.py 와 동일 출처. cycle = 주문 발주, settlement = 미체결 정리·reconcile.
+# close = 당일매매(hold_days=0) 종가 청산 사이클(주식 15:25·선물 15:40·미장 close−5분).
 KRX_CYCLE_TIME = time(8, 55)
-KRX_SETTLEMENT_TIME = time(15, 35)
-# US cycle·settlement는 캘린더 기반 동적 — 함수 내에서 계산.
+KRX_CLOSE_STOCK_TIME = time(15, 25)
+KRX_CLOSE_FUTURES_TIME = time(15, 40)
+# θ: 정산은 모든 KRX 종가창(선물 단일가 ~15:45) 이후 — 로컬 cron 15:50과 정합.
+KRX_SETTLEMENT_TIME = time(15, 50)
+# US cycle·close·settlement는 캘린더 기반 동적 — 함수 내에서 계산.
+
+# 이벤트 status 'warning' 대상 — 장 마감 경계 이벤트는 미체결 잔존이 비정상이라
+# n_pending_unresolved>0이면 녹색 성공 대신 ⚠로 표면화한다(N2 — 미장 GOOG 261주가
+# 발주-but-미기록인데 "✓ 0건"으로 보이던 거짓 녹색). 아침/개장 cycle은 DAY 지정가가
+# 장중 자연 체결될 수 있어 잔존이 정상 → 경고하지 않는다.
+WARN_ON_UNRESOLVED_KINDS = frozenset({
+    "krx_close_stock", "krx_close_futures", "krx_settlement",
+    "us_close", "us_settlement",
+})
 
 
 def _now_kst() -> datetime:
@@ -173,9 +187,18 @@ DOWNSTREAM_IMPACT: dict[str, str] = {
     "krx_cycle":
         "→ 오늘 국장 신규 매수 0건, 보유 KRX 종목 청산 평가 누락. "
         "다음 cycle은 내일 08:55 KST.",
+    "krx_close_stock":
+        "→ 국장 주식 당일매매 보유가 종가에 청산되지 않음 — "
+        "다음 평가는 내일 08:55 사이클.",
+    "krx_close_futures":
+        "→ 국장 선물 당일매매 보유가 종가에 청산되지 않음(오버나이트 위험 노출) — "
+        "15:50 정산·다음 사이클에서 상태 확인 필요.",
     "krx_settlement":
         "→ 오늘 국장 미체결 정리·KIS↔ledger reconcile 누락. "
         "다음 KRX cycle 시작 시 _resolve_pending이 자동으로 처리 — 큰 지장 없음.",
+    "us_close":
+        "→ 미장 당일매매 보유가 종가 전에 청산되지 않음 — "
+        "다음 평가는 다음 미장 사이클.",
     "us_preview":
         "→ 오늘 미장 자동매매(개장 20분 전 시작)가 stale preview로 동작 — "
         "오늘 KRX 종가·NAVER·technical 반영 안 된 후보 사용.",
@@ -230,23 +253,42 @@ def _classify_missed(sched: datetime, kind: str,
 
 
 def _match_snapshot(snaps: list["SnapLite"], scheduled: datetime,
-                     market: str) -> Optional["SnapLite"]:
-    """scheduled 직후 push된 첫 스냅샷이 그 cycle의 결과로 본다.
+                     market: str, kinds: tuple[str, ...],
+                     instrument_class: Optional[str] = None) -> Optional["SnapLite"]:
+    """scheduled 직후 push된, kind가 맞는 첫 스냅샷이 그 슬롯의 결과로 본다.
 
     오차 허용: scheduled-2min ~ scheduled+30min. KRX 08:55 cycle은 보통
     08:55:00~08:56:00 사이에 push됨. US는 야간이라 마진 더 줘도 안전.
-    cycle_summary.market 필드가 있으면 동일 시장만 매칭.
 
-    v0.9.13 G-8 — 2차 fallback: 같은 거래일·같은 market의 catchup_cycle 또는
-    같은 거래일 post_close_settlement도 정시 cycle/settle의 결과로 인정. 사용자
-    PC가 08:55 cron 시점 OFF였다가 09:38 부팅 시 catch-up이 같은 trading day
-    분량을 실행했다면, UI에 "누락" 표시는 거짓 음성. 30분 윈도우 밖의 catch-up
-    실행도 정시 cycle 결과로 표시되도록 함. 자금 안전 영향 0 (UI 표시만).
+    kinds(필수) — cycle_summary.kind가 이 중 하나여야 매칭(N2). kind 무관 매칭은
+    state_sync·비상청산 push가 cycle 슬롯을 "완료"로 오표시하고, 15:35~16:05
+    윈도우가 겹치는 정산/종가청산 push를 서로 바꿔 매칭하는 거짓 녹색의 원인.
+    instrument_class — day_trade_close 슬롯의 주식(15:25)/선물(15:40) 분리.
+    구버전 로컬앱 push엔 이 필드가 없어 윈도우 시각으로만 분리(absent=수용).
+    market 'ALL'도 수용 — 구버전 day_trade_close가 'ALL' 하드코딩(롤링 업그레이드
+    호환; kind+윈도우 필터가 오매칭을 막는다).
+
+    v0.9.13 G-8 — 2차 fallback: 같은 거래일·같은 market·같은 kind의 늦은 실행
+    (catch-up·지연 정산)도 정시 슬롯의 결과로 인정. 사용자 PC가 08:55 cron 시점
+    OFF였다가 09:38 부팅 시 catch-up이 같은 trading day 분량을 실행했다면, UI에
+    "누락" 표시는 거짓 음성. 자금 안전 영향 0 (UI 표시만).
     """
+    def _accept(cs: dict) -> bool:
+        if cs.get("kind") not in kinds:
+            return False
+        snap_market = cs.get("market")
+        if snap_market and snap_market not in (market, "ALL"):
+            return False
+        if instrument_class is not None:
+            ic = cs.get("instrument_class")
+            if ic is not None and ic != instrument_class:
+                return False
+        return True
+
     sched_date = scheduled.date()
     lo = scheduled - timedelta(minutes=2)
     hi = scheduled + timedelta(minutes=30)
-    # 1차: ±30min 윈도우 — 정시 cycle의 정상 push 매칭
+    # 1차: ±30min 윈도우 — 정시 push 매칭
     for s in snaps:
         # received_at은 tz-naive로 저장될 수 있어 KST로 정규화.
         ra = s.received_at
@@ -257,11 +299,10 @@ def _match_snapshot(snaps: list["SnapLite"], scheduled: datetime,
         if not (lo <= ra <= hi):
             continue
         cs = (s.payload or {}).get("cycle_summary") or {}
-        snap_market = cs.get("market")
-        if snap_market and snap_market != market:
+        if not _accept(cs):
             continue
         return s
-    # 2차 (G-8): 같은 거래일 catchup_cycle/post_close_settlement도 정시 결과로 인정
+    # 2차 (G-8): 같은 거래일의 늦은 실행(catch-up·지연 정산)도 정시 결과로 인정
     for s in snaps:
         ra = s.received_at
         if ra.tzinfo is None:
@@ -269,7 +310,7 @@ def _match_snapshot(snaps: list["SnapLite"], scheduled: datetime,
         else:
             ra = ra.astimezone(KST)
         cs = (s.payload or {}).get("cycle_summary") or {}
-        if cs.get("market") != market:
+        if not _accept(cs):
             continue
         # cycle_summary.today가 scheduled 거래일과 일치해야 — catch-up이 어느
         # trading day 분량을 cover하는지 명시적 매칭. today 누락 entry는 무시.
@@ -298,16 +339,30 @@ def _summarize_cycle(snap: "SnapLite") -> str:
     return " · ".join(parts)
 
 
+def _unresolved_count(snap: Optional["SnapLite"]) -> int:
+    """매칭된 push의 미확인 잔존 건수(N2) — 구버전 push(필드 부재)는 0."""
+    if snap is None:
+        return 0
+    cs = (snap.payload or {}).get("cycle_summary") or {}
+    try:
+        return int(cs.get("n_pending_unresolved") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _emit_scheduled(events: list[dict], sched: datetime, kind: str,
                      now: datetime, window_start: datetime, window_end: datetime,
                      done_summary: str = "",
                      missed_detail: str = "",
-                     holiday: tuple[str, str] | None = None) -> None:
+                     holiday: tuple[str, str] | None = None,
+                     warn_count: int = 0) -> None:
     """공통 emitter — sched가 윈도우 안이면 status에 맞춰 event 1개 push.
 
     holiday=(summary, detail) 지정 시 즉시 holiday event.
     호출자가 done 판정 시(snapshot 매칭 등) done_summary를 채워 부르면 done,
     빈 done_summary면 missed로 분류 — missed_detail은 _classify_missed가 채운 결과.
+    warn_count>0이면 done 대신 warning(N2) — 발주-but-체결미확인을 ✓로 가장하지
+    않는다(장 마감 경계 이벤트 한정 — 호출자가 WARN_ON_UNRESOLVED_KINDS로 게이트).
     """
     if not (window_start <= sched <= window_end):
         return
@@ -318,23 +373,37 @@ def _emit_scheduled(events: list[dict], sched: datetime, kind: str,
         events.append(_build_event(sched, kind, "scheduled"))
         return
     if done_summary:
-        events.append(_build_event(sched, kind, "done", done_summary))
+        if warn_count > 0:
+            events.append(_build_event(
+                sched, kind, "warning",
+                f"{done_summary} · 미체결 추적 {warn_count}건",
+                "발주됐지만 체결이 확인되지 않은 주문이 남아 있습니다. "
+                "정산·다음 사이클이 자동 재확인하며, 지속되면 수동 확인이 필요합니다."))
+        else:
+            events.append(_build_event(sched, kind, "done", done_summary))
     else:
         events.append(_build_event(sched, kind, "missed", "", missed_detail))
 
 
 def _krx_events(snaps: list["SnapLite"], heartbeats: list[datetime], now: datetime,
                  window_start: datetime, window_end: datetime) -> list[dict]:
-    """KRX 사이클(08:55) + 정산(15:35) 평일 occurrences."""
+    """KRX 사이클(08:55) + 종가청산(주식 15:25·선물 15:40) + 정산(15:50) 평일 occurrences.
+
+    종가청산 슬롯(N2): 당일매매 자금이 움직이는 마일스톤인데 타임라인에 없어
+    "선물 종가청산이 됐는지"를 로그를 파야 알 수 있었다(2026-06-12). kind·
+    instrument_class 매칭으로 정산/종가청산 push의 교차 오매칭을 막는다.
+    """
     events: list[dict] = []
     d = window_start.date()
     end_d = window_end.date()
     while d <= end_d:
         is_weekend = d.weekday() >= 5
         is_holiday = not is_weekend and not _is_session_day_safe("KR", d)
-        for sched_time, kind in [
-            (KRX_CYCLE_TIME, "krx_cycle"),
-            (KRX_SETTLEMENT_TIME, "krx_settlement"),
+        for sched_time, kind, kinds, iclass in [
+            (KRX_CYCLE_TIME, "krx_cycle", ("cycle", "catchup_cycle"), None),
+            (KRX_CLOSE_STOCK_TIME, "krx_close_stock", ("day_trade_close",), "stock"),
+            (KRX_CLOSE_FUTURES_TIME, "krx_close_futures", ("day_trade_close",), "futures"),
+            (KRX_SETTLEMENT_TIME, "krx_settlement", ("post_close_settlement",), None),
         ]:
             sched = datetime.combine(d, sched_time, tzinfo=KST)
             if is_weekend:
@@ -344,22 +413,27 @@ def _krx_events(snaps: list["SnapLite"], heartbeats: list[datetime], now: dateti
                 _emit_scheduled(events, sched, kind, now, window_start, window_end,
                                  holiday=("휴장", "KRX 휴장일"))
             else:
-                snap = _match_snapshot(snaps, sched, "KRX") if sched <= now else None
+                snap = (_match_snapshot(snaps, sched, "KRX", kinds, iclass)
+                        if sched <= now else None)
                 summary = ""
                 if snap:
-                    summary = _summarize_cycle(snap) if kind == "krx_cycle" else "정산 완료"
+                    summary = ("정산 완료" if kind == "krx_settlement"
+                               else _summarize_cycle(snap))
                 missed_detail = ""
                 if not summary and sched <= now:
                     _, missed_detail = _classify_missed(sched, kind, heartbeats, snaps, "KRX")
+                warn = (_unresolved_count(snap)
+                        if kind in WARN_ON_UNRESOLVED_KINDS else 0)
                 _emit_scheduled(events, sched, kind, now, window_start, window_end,
-                                 done_summary=summary, missed_detail=missed_detail)
+                                 done_summary=summary, missed_detail=missed_detail,
+                                 warn_count=warn)
         d += timedelta(days=1)
     return events
 
 
 def _us_events(snaps: list["SnapLite"], heartbeats: list[datetime], now: datetime,
                 window_start: datetime, window_end: datetime) -> list[dict]:
-    """US 사이클(개장−20분) + 정산(close+5min) 캘린더 기반 동적 occurrences."""
+    """US 사이클(개장−20분) + 종가청산(close−5min) + 정산(close+5min) — 캘린더 기반 동적."""
     events: list[dict] = []
     cursor = window_start - timedelta(hours=2)  # 직전 세션이 윈도우 걸칠 수 있어 마진
     for _ in range(5):
@@ -378,13 +452,25 @@ def _us_events(snaps: list["SnapLite"], heartbeats: list[datetime], now: datetim
         # _match_snapshot 윈도우가 어긋나 성공 사이클을 missed로 오분류한다
         # (2026-06-10 "UI 22:25 vs 실행 22:10" 사고, 리뷰 D6-1).
         cycle_sched = open_kst - timedelta(minutes=20)
+        close_sched = close_kst - timedelta(minutes=5)   # us_close_cycle과 정합
         settle_sched = close_kst + timedelta(minutes=5)
-        cycle_snap = _match_snapshot(snaps, cycle_sched, "US") if cycle_sched <= now else None
-        settle_snap = _match_snapshot(snaps, settle_sched, "US") if settle_sched <= now else None
+        cycle_snap = (_match_snapshot(snaps, cycle_sched, "US",
+                                      ("cycle", "catchup_cycle"))
+                      if cycle_sched <= now else None)
+        close_snap = (_match_snapshot(snaps, close_sched, "US",
+                                      ("day_trade_close",), "stock")
+                      if close_sched <= now else None)
+        settle_snap = (_match_snapshot(snaps, settle_sched, "US",
+                                       ("post_close_settlement",))
+                       if settle_sched <= now else None)
 
         cycle_missed_detail = ""
         if not cycle_snap and cycle_sched <= now:
             _, cycle_missed_detail = _classify_missed(cycle_sched, "us_cycle",
+                                                       heartbeats, snaps, "US")
+        close_missed_detail = ""
+        if not close_snap and close_sched <= now:
+            _, close_missed_detail = _classify_missed(close_sched, "us_close",
                                                        heartbeats, snaps, "US")
         settle_missed_detail = ""
         if not settle_snap and settle_sched <= now:
@@ -394,9 +480,14 @@ def _us_events(snaps: list["SnapLite"], heartbeats: list[datetime], now: datetim
         _emit_scheduled(events, cycle_sched, "us_cycle", now, window_start, window_end,
                          done_summary=_summarize_cycle(cycle_snap) if cycle_snap else "",
                          missed_detail=cycle_missed_detail)
+        _emit_scheduled(events, close_sched, "us_close", now, window_start, window_end,
+                         done_summary=_summarize_cycle(close_snap) if close_snap else "",
+                         missed_detail=close_missed_detail,
+                         warn_count=_unresolved_count(close_snap))
         _emit_scheduled(events, settle_sched, "us_settlement", now, window_start, window_end,
                          done_summary="정산 완료" if settle_snap else "",
-                         missed_detail=settle_missed_detail)
+                         missed_detail=settle_missed_detail,
+                         warn_count=_unresolved_count(settle_snap))
         cursor = open_kst
     return events
 

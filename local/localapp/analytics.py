@@ -421,7 +421,7 @@ def enrich_positions(positions: list[dict], ledger: dict,
 # 정책 (사용자 승인 — "자동 정정 + 알림"):
 #   - ledger 일부 또는 전체 외부 매도 발견 → ledger 자동 차감/제거 + external_close 거래 기록
 #   - 외부 매수 (KIS 초과분 또는 신규 종목) → ledger 손대지 않음 (정보만 표시)
-# 자동 처리는 15:35 settlement 사이클에서만 — 매매 직전 08:55에서 손대면 위험.
+# 자동 처리는 15:50 settlement 사이클에서만 — 매매 직전 08:55에서 손대면 위험.
 
 def norm_side(s) -> str:
     """포지션 side 표현 정규화 → 'long'|'short'.

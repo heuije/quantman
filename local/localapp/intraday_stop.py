@@ -155,7 +155,7 @@ class IntradayStopManager:
                     continue
                 if clamped <= 0:
                     # 외부에서 이미 매도됨 → ledger orphan. 오늘은 더 시도하지 않음.
-                    # 15:35 reconcile_with_kis가 ledger 자동 정리.
+                    # 15:50 reconcile_with_kis가 ledger 자동 정리.
                     log.info("[intraday-stop] %s broker 보유 0 (외부 매도 추정) — "
                              "오늘 추가 시도 skip (사유 %s)", symbol, reason)
                     self._sold_today.add(ledger_key)
