@@ -598,7 +598,9 @@ class SettingsApp:
         # 우측 status·요약
         icon = self.STATUS_ICON.get(status, "")
         if status == "scheduled":
-            summary = self._relative_time(ev_dt, now)
+            # preview 슬롯은 슬롯시각 경과~데드라인 사이 scheduled+summary="갱신중"
+            # (서버 cron 재시도 중 — 누락 아님). summary 있으면 상대시각 대신 표시.
+            summary = ev.get("summary") or self._relative_time(ev_dt, now)
             color = MUTED
         elif status == "done":
             summary = ev.get("summary") or ""

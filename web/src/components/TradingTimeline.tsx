@@ -159,7 +159,6 @@ export default function TradingTimeline() {
             <ul className="tl-list">
               {g.events.map((ev, i) => {
                 const badge = STATUS_BADGE[ev.status];
-                const isFuture = ev.status === "scheduled";
                 const tooltip = ev.detail || ev.summary || "";
                 return (
                   <li key={i} className={`tl-item ${badge.cls}`} title={tooltip}>
@@ -168,8 +167,11 @@ export default function TradingTimeline() {
                     <span className="tl-badge">
                       <span className="tl-icon">{badge.icon}</span>
                       <span className="tl-summary">
-                        {isFuture
-                          ? relativeTime(ev.at, nowIso)
+                        {ev.status === "scheduled"
+                          // preview 슬롯은 슬롯시각 경과~데드라인 사이 scheduled
+                          // + summary="갱신중"을 보낸다(서버 cron 재시도 중) —
+                          // summary가 있으면 상대시각 대신 그대로 표시.
+                          ? (ev.summary || relativeTime(ev.at, nowIso))
                           : (ev.summary || (ev.status === "missed" ? "누락" : ""))}
                       </span>
                     </span>
