@@ -25,6 +25,9 @@ def isolated_trader(tmp_path, monkeypatch):
     for name in ("LEDGER_PATH", "EQUITY_PATH", "PENDING_ORDERS_PATH",
                  "TRADES_PATH"):
         monkeypatch.setattr(tr, name, tmp_path / f"{name}.json")
+    # WS-1(δ): 체결행 청구 레지스트리 — raising=False는 red 단계(구현 전) 호환용
+    monkeypatch.setattr(tr, "CLAIMED_FILLS_PATH",
+                        tmp_path / "claimed_fills.json", raising=False)
     monkeypatch.setattr(killswitch, "KILLSWITCH_PATH", tmp_path / "ks.json")
     monkeypatch.setattr(intents, "INTENTS_PATH", tmp_path / "intents.jsonl")
     # order_log 쓰기를 tmp로 격리 — 시나리오가 실사용자 ~/.quant-platform 로그를 오염하지 않게.

@@ -117,10 +117,14 @@ def _on_exec_event(trader: Trader, broker: Broker, evt: dict) -> None:
     # 부분반영 재가산→over-position)를 차단. RLock이라 _apply_fill 재진입 안전.
     # account_snapshot·push(네트워크)는 락 밖에서 수행.
     from .trader import _CYCLE_LOCK
-    pending = trader.pending
     decisions: list[dict] = []
     applied = False
     with _CYCLE_LOCK:
+        # M9: 디스크가 SSOT — 이 trader는 loop 시작 시점의 장수명 인스턴스라,
+        # 그 뒤 ephemeral cycle 인스턴스가 발주한 주문이 메모리 pending에 없다.
+        # 수정 전엔 그런 체결 통보가 "미매칭"으로 유실됐다(체결 영구 미기록 부류).
+        trader.reload_state()
+        pending = trader.pending
         key = _match_pending_key(pending, order_no)
         if key is None:
             log.info("[order-ws] 미매칭 체결: ODER_NO=%s (pending에 없음)", order_no)
@@ -156,6 +160,9 @@ def _on_exec_event(trader: Trader, broker: Broker, evt: dict) -> None:
             trader._apply_fill(raw_odno, p, filled_qty, fill_price, decisions,
                                 partial=True)
             p["filled_so_far"] = already + filled_qty
+        # M9: pending 변경(del/filled_so_far/_dedup_keys)까지 즉시 영속 —
+        # _apply_fill 내부 저장은 ledger 반영 시점이라 그 이후 변경분을 덮는다.
+        trader._save()
         applied = True
 
     if not applied:
@@ -469,6 +476,10 @@ def start(market: str = "KRX") -> dict:
         original_submit = trader._submit_sell
 
         def _hook_submit(*args, **kwargs):
+            # M9: 장중 매도는 장수명 인스턴스 경로 — 발주 전 디스크 최신화(SSOT).
+            # cycle 인스턴스가 바꾼 ledger/pending(매도 멱등·중복 차단의 기준)을
+            # stale 메모리로 평가하지 않는다.
+            trader.reload_state()
             original_submit(*args, **kwargs)
             _push_after_sell(broker, manager.decisions[-1:])
 
@@ -492,6 +503,9 @@ def start(market: str = "KRX") -> dict:
             패스) + 서버 push. reason_source는 'apply_fill' 또는 'monitor'."""
             log.critical("[ks-trigger] 발동 source=%s — 즉시 청산 cycle 시작",
                           reason_source)
+            # M9: 장수명 인스턴스의 청산 cycle — stale 메모리로 돌면 이미 매도된
+            # 포지션을 재평가하고, cycle 끝 저장이 다른 인스턴스의 변경을 되돌린다.
+            trader.reload_state()
             try:
                 trader.cancel_all_pending(decisions=[])
             except Exception as e:

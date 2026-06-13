@@ -26,8 +26,9 @@ from quant_core.exec_defaults import instrument_spec, merged_execution
 from quant_core.futures_expiry import roll_lead_days
 
 from .broker import Broker
-from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
-                     TRADES_PATH)
+from .config import (CLAIMED_FILLS_PATH, EQUITY_PATH, LEDGER_PATH,
+                     PENDING_ORDERS_PATH, TRADES_PATH)
+from .kis_broker import canonical_odno
 from . import analytics, intents, killswitch, order_log, state_store
 
 log = logging.getLogger("localapp.trader")
@@ -70,6 +71,32 @@ def kst_today() -> date:
     어긋난다(여행/해외 거주 사용자). 명시적으로 KST 환산.
     """
     return datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
+# ── WS-1(δ): 청구된 해외 체결행 레지스트리 ────────────────────────────────────
+# 미국 예약주문은 접수번호와 체결행 odno의 번호공간이 달라(실측 2026-06-11: 접수
+# 448 vs 체결행 10자리) 종목+사이드+수량으로 매칭한다. 같은 체결행을 두 주문/
+# 사이클이 이중 기장하지 않도록, 청구한 행의 odno를 영속 dedup한다.
+
+_CLAIMED_RETENTION_DAYS = 14    # 조회창(제출일 D-1~) + pending GC(7일)보다 넉넉히
+
+
+def _load_claimed_fills() -> dict:
+    return _load_json(CLAIMED_FILLS_PATH, {})
+
+
+def _register_claimed_fills(odnos: list[str]) -> None:
+    if not odnos:
+        return
+    reg = _load_claimed_fills()
+    today = kst_today()
+    for o in odnos:
+        key = canonical_odno(o)
+        if key:
+            reg[key] = today.isoformat()
+    cutoff = (today - timedelta(days=_CLAIMED_RETENTION_DAYS)).isoformat()
+    reg = {k: v for k, v in reg.items() if v >= cutoff}
+    _save_json(CLAIMED_FILLS_PATH, reg)
 
 
 def _policy(strat_def: dict) -> dict:
@@ -241,6 +268,24 @@ class Trader:
         _save_json(EQUITY_PATH, self.equity)
         _save_json(PENDING_ORDERS_PATH, self.pending)
 
+    def reload_state(self) -> None:
+        """디스크 상태(ledger·equity·pending)를 메모리로 재적재 — 디스크가 SSOT(M9).
+
+        같은 프로세스에 장수명 Trader(intraday loop)와 ephemeral Trader(cycle·
+        settlement·gui push)가 공존한다. 각자 생성 시점의 메모리 사본을 들고 같은
+        파일을 통째로 쓰기 때문에, stale 사본의 저장이 다른 인스턴스의 변경(매도·
+        체결)을 되돌려 — 매도된 포지션이 부활하고 reconcile이 그걸 "외부 매도 추정"
+        으로 오판(P&L 소실)하는 부류가 라이브에서 실증됐다. 장수명 인스턴스는 변경
+        세션 진입부(intraday_loop의 WS 체결·장중 매도·ks 트리거)에서 이걸 호출해
+        디스크 최신 상태 위에서만 변경한다. 모든 변경 지점은 락 안에서 즉시 _save
+        하므로(아래 _apply_fill·_after_submit·_resolve_pending) reload가 미저장
+        변경을 잃지 않는다.
+        """
+        with _CYCLE_LOCK:
+            self.ledger = _load_json(LEDGER_PATH, {})
+            self.equity = _load_json(EQUITY_PATH, [])
+            self.pending = _load_json(PENDING_ORDERS_PATH, {})
+
     def _log_trade(self, event: dict):
         # 체결·거래 기록은 민감 — state_store 위임 (R5, 최초 생성 시 owner-only ACL).
         state_store.append_jsonl(event, TRADES_PATH)
@@ -267,6 +312,9 @@ class Trader:
         # self.ledger를 읽지 않으므로 락 밖에 둔다. (settlement 경로는 이미 이
         # 락을 쥐고 들어오며 RLock이라 재진입 안전, GUI 수동 호출 경로를 닫는다.)
         with _CYCLE_LOCK:
+            # M9 참고: reconcile 호출자는 전부 ephemeral 인스턴스(settlement·gui가
+            # 매번 새 Trader 생성 = 디스크 최신 적재)라 여기서 reload하지 않는다 —
+            # 장수명 인스턴스의 stale 경로는 intraday_loop 진입부가 reload_state로 닫는다.
             result = analytics.reconcile_ledger(snap.get("positions", []), self.ledger)
             orphans = result.get("ledger_orphans", [])
             applied: list[dict] = []
@@ -336,15 +384,36 @@ class Trader:
     def _resolve_pending_locked(self, decisions: list[dict]) -> None:
         if not self.pending:
             return
+        from . import market_index
+        # δ: 예약주문 청구 dedup — 영속 레지스트리 + 다른 pending의 접수번호(그 행은
+        # 그 주문 것) + 이번 패스에서 새로 청구한 행. 동형 주문 2건이 체결행 2개를
+        # 1:1로 나눠 갖고, 같은 행의 이중 기장을 사이클을 가로질러 차단한다.
+        claimed = set(_load_claimed_fills())
+        own_odnos = {canonical_odno(k) for k in self.pending}
+        newly_claimed: list[str] = []
+        changed = False
         for order_no, p in list(self.pending.items()):
+            hint = None
+            if market_index.is_us(p.get("symbol", "")):
+                exclude = (claimed | own_odnos | set(newly_claimed)) \
+                    - {canonical_odno(order_no)}
+                hint = {"side": p.get("side"), "qty": int(p.get("qty") or 0),
+                        "reserved": bool(p.get("is_resv")),
+                        "submitted_ts": p.get("submitted_ts"),
+                        "exclude_odnos": sorted(exclude)}
             try:
-                st = self.broker.order_status(order_no, p.get("symbol"))
+                if hint is None:    # 비해외 — 레거시 2-인자 호출(구 더블 호환)
+                    st = self.broker.order_status(order_no, p.get("symbol"))
+                else:
+                    st = self.broker.order_status(order_no, p.get("symbol"),
+                                                  hint=hint)
             except Exception as e:
                 log.warning("주문상태 조회 실패 [%s]: %s", order_no, e)
                 continue
             status = st.get("status", "unknown")
             filled = int(st.get("filled_qty", 0) or 0)
             fill_px = float(st.get("fill_price", 0) or 0)
+            exec_odno = canonical_odno(st.get("exec_odno") or "")
 
             if status == "filled" and filled > 0:
                 # filled/partial 모두 KIS 누적(tot_ccld_qty) 기준 — 이미 WS/이전 폴링이
@@ -355,6 +424,9 @@ class Trader:
                 if delta > 0:
                     self._apply_fill(order_no, p, delta, fill_px, decisions)
                 del self.pending[order_no]
+                changed = True
+                if exec_odno:
+                    newly_claimed.append(exec_odno)
             elif status == "partial":
                 # 부분체결: 채운 만큼만 반영하고 잔여는 계속 추적
                 already = int(p.get("filled_so_far", 0))
@@ -363,6 +435,9 @@ class Trader:
                     self._apply_fill(order_no, p, delta, fill_px, decisions,
                                       partial=True)
                     p["filled_so_far"] = filled
+                    changed = True
+                    if exec_odno:
+                        newly_claimed.append(exec_odno)
             elif status == "cancelled":
                 order_log.log_order("cancelled", p["symbol"], p["side"], p["qty"],
                                     order_no=order_no,
@@ -374,7 +449,28 @@ class Trader:
                     p.get("strategy_name", ""), p["symbol"],
                     "미체결 cancelled (KIS 마감 자동 취소 또는 외부 취소)"))
                 del self.pending[order_no]
-            # else: 여전히 미체결 — 다음 폴링/사이클에서 재확인. 로컬 timeout 없음.
+                changed = True
+            else:
+                # 여전히 미확인 — 다음 폴링/사이클에서 재확인. 로컬 timeout 없음.
+                # δ GC: 7일 넘게 unknown이면 추적 만료 — 조회창을 벗어난 고아가
+                # pending에 영구 잔존하던 결함(실측 448·0000040620) 차단. 실 보유
+                # 정합은 settlement reconcile(보유 diff)이 담당.
+                sub_ts = p.get("submitted_ts")
+                if (status == "unknown" and sub_ts
+                        and time.time() - float(sub_ts) > 7 * 86400):
+                    log.warning("pending GC [%s] %s — 상태 미확인 7일 경과(추적 만료)",
+                                order_no, p.get("symbol"))
+                    decisions.append(order_log.decision(
+                        "unfilled", p.get("strategy_id", ""),
+                        p.get("strategy_name", ""), p.get("symbol", ""),
+                        "상태 미확인 7일 경과 — 추적 만료(GC)"))
+                    del self.pending[order_no]
+                    changed = True
+        if newly_claimed:
+            _register_claimed_fills(newly_claimed)
+        if changed:
+            # M9: 변경 즉시 영속 — 다른 인스턴스(reload_state)가 항상 최신을 본다.
+            self._save()
 
     def _record_contract_meta(self, sid: str, symbol: str) -> None:
         """신규 진입 ledger에 라이브 계약코드·만기일ISO 부착 (M6 만기 자동청산).
@@ -545,6 +641,10 @@ class Trader:
                 decisions.append(order_log.decision(
                     "sold", sid, p.get("strategy_name", ""), symbol, detail))
 
+            # M9: 체결 반영 즉시 영속(락 안) — 디스크가 SSOT. 다른 인스턴스
+            # (cycle↔intraday loop)가 reload_state로 항상 최신 체결을 본다.
+            self._save()
+
         # Q5 Tier 1 — 체결 직후 kill switch 평가. 시초가 매수가 장중에 잡혀 자본이
         # day_start 대비 -X% 도달하는 정확한 순간을 잡는다. _daily_loss_limit_pct가
         # 설정되어 있을 때만 평가(cycle 또는 intraday_loop가 설정).
@@ -578,6 +678,18 @@ class Trader:
             equity = _unified_equity_krw(snap["balance"])
         except Exception as e:
             log.warning("[ks-eval] account_snapshot 실패 — skip: %s", e)
+            return False
+        # ★ε: 부분 잔고(해외/선물 조회 실패)로는 발동 금지 — 누락 계좌가 0으로
+        # 잡혀 거짓 -98% 폭락이 되고, 06-09에 실제로 US 보유 전량을 청산했다.
+        # 전체 조회 실패(위 except)와 동일하게 보수적 무동작 + 표면화.
+        fetch_failed = (snap.get("balance") or {}).get("fetch_failed")
+        if fetch_failed:
+            log.critical("[ks-eval] 잔고 부분조회 %s — 부분 equity(%s원)로 평가 보류",
+                         fetch_failed, f"{equity:,.0f}")
+            if decisions is not None:
+                decisions.append(order_log.decision(
+                    "risk_eval_skipped", "", "", "",
+                    f"잔고 부분조회 실패 {fetch_failed} — killswitch 평가 보류"))
             return False
         reason = killswitch.check_daily_loss(equity, daily_loss_limit_pct)
         if not reason:
@@ -882,6 +994,10 @@ class Trader:
             # 더 이상 사용하지 않음. KIS DAY 정책으로 마감 시 자동 cancel.
             "definition": strat_def or {}, "reason": reason,
             "filled_so_far": 0,
+            # δ: 미국 예약주문 여부 — 접수번호와 체결행 odno의 번호공간이 달라
+            # (실측 448 vs 10자리) _resolve_pending이 종목+사이드+수량 매칭으로
+            # 전환하는 분기 키. 발주 분기(_is_reserved_us)와 같은 시점 동일 값.
+            "is_resv": self._is_reserved_us(symbol),
         }
         order_log.log_order("submitted", symbol, side, qty, order_no=order_no,
                              intended_price=intended_price,
@@ -897,6 +1013,9 @@ class Trader:
         # M3: pending 등록도 cycle·WS 체결 thread와 같은 락으로 직렬화.
         with _CYCLE_LOCK:
             self.pending[order_no] = p
+            # M9/L-01: 발주 직후 즉시 영속 — cycle 끝 저장까지의 크래시 유실창 제거
+            # (intents 저널이 중복발주는 막지만, pending 유실은 체결 추적을 끊었다).
+            self._save()
 
     def _wait_pending(self, timeout_sec: int, poll_sec: int,
                       decisions: list[dict]) -> None:
@@ -1335,7 +1454,10 @@ class Trader:
         except Exception as e:
             log.warning("[%s] 스냅샷 조회 실패: %s", kind, e)
             balance, positions = {}, []
-        self._save()
+        # M9: 여기 있던 무조건 _save() 제거 — 모든 변경 지점이 락 안에서 즉시
+        # 저장하므로(중복), 장수명 인스턴스의 stale 메모리가 다른 인스턴스의
+        # 변경(매도·체결)을 덮어쓰는 부활 사고의 마지막 경로였다. 스냅샷 빌더는
+        # 읽기 전용이어야 한다.
         try:
             broker_pending = self.broker.pending_orders()
         except Exception:
@@ -1467,7 +1589,23 @@ class Trader:
                     "cycle_summary": {"skipped_reason": "kis_health_fail",
                                        "cycle_id": cycle_id}}
 
-        killswitch.update_day_start(equity_now, today.isoformat())
+        # ★ε: 부분 잔고(해외/선물 조회 실패) — 위험 결정(day_start 앵커·손실한도·
+        # drawdown)은 보류하고 표면화한다. 누락 계좌가 0으로 잡힌 부분 equity는
+        # 거짓 -98% 폭락을 만들고, 06-09 킬스위치 거짓 발동으로 US 보유 전량이
+        # 청산됐다. 매매 자체(청산 규칙·진입)는 시장별 데이터로 계속 — 가용성은
+        # 유지하되 자금 안전 결정만 완전 측정치를 요구한다.
+        balance_fetch_failed = list(
+            (snap_pre.get("balance") or {}).get("fetch_failed") or [])
+        if balance_fetch_failed:
+            log.critical("[P1-B] 잔고 부분조회 %s — day_start/killswitch/drawdown "
+                         "평가 보류 (부분 equity %s원)",
+                         balance_fetch_failed, f"{equity_now:,.0f}")
+            decisions.append(order_log.decision(
+                "risk_eval_skipped", "", "", "",
+                f"잔고 부분조회 실패 {balance_fetch_failed} — "
+                "손실한도·drawdown 평가 보류"))
+        else:
+            killswitch.update_day_start(equity_now, today.isoformat())
         ks_state = killswitch.load()
         ks_active = bool(ks_state.get("active"))
 
@@ -1492,7 +1630,8 @@ class Trader:
         self._daily_turnover_limit_krw = int(rl.get("daily_turnover_limit_krw") or 0)
         self._daily_trade_count_limit = int(rl.get("daily_trade_count_limit") or 0)
 
-        if not ks_active and daily_loss_limit_pct is not None:
+        if (not balance_fetch_failed and not ks_active
+                and daily_loss_limit_pct is not None):
             reason = killswitch.check_daily_loss(
                 equity_now, daily_loss_limit_pct)
             if reason:
@@ -1502,13 +1641,14 @@ class Trader:
 
         # Phase 38.10 — 누적 drawdown 측정 (자본 고점 대비). kill switch와 별개.
         # peak는 equity log의 max + 현재 equity 중 큰 값.
+        # ★ε: 부분 잔고면 측정 보류(거짓 폭락으로 진입 차단 오발동 방지).
         peak_equity = equity_now
         for e in self.equity:
             v = float(e.get("value") or 0)
             if v > peak_equity:
                 peak_equity = v
         drawdown_pct = 0.0
-        if peak_equity > 0:
+        if peak_equity > 0 and not balance_fetch_failed:
             drawdown_pct = (equity_now - peak_equity) / peak_equity * 100
         # max_drawdown_limit_pct=None이면 한도 없음(OFF) — drawdown 차단 평가 skip.
         drawdown_active = (max_drawdown_limit_pct is not None
@@ -1628,8 +1768,18 @@ class Trader:
 
         # ── 5. 최종 스냅샷 ────────────────────────────────────────────────
         snap = self.broker.account_snapshot()
-        self.equity.append({"date": today.isoformat(),
-                            "value": snap["balance"]["total_eval"]})
+        post_balance = snap.get("balance") or {}
+        post_fetch_failed = list(post_balance.get("fetch_failed") or [])
+        # ε: equity 시계열 = 통합 자산(국내+해외+USD현금+선물) — 국내만(total_eval)
+        # 적재하면 분자(시계열)/분모(통합 day_start)가 섞여 웹 자산곡선이 -98%로
+        # 보였다(D3-3). 주식 전용 사용자는 해외/선물 키가 0이라 값 동일(무변경).
+        # 부분 조회면 거짓 저점을 적재하지 않는다(곡선 오염 방지).
+        equity_post = _unified_equity_krw(post_balance)
+        if post_fetch_failed:
+            log.warning("equity 기록 skip — 잔고 부분조회 %s", post_fetch_failed)
+        else:
+            self.equity.append({"date": today.isoformat(),
+                                "value": equity_post})
         self._save()
 
         try:
@@ -1654,7 +1804,7 @@ class Trader:
                 1 for d in decisions if d["action"] == "unparseable_orphan"),
             "kill_switch": ks_active,
             "equity_pre": equity_now,
-            "equity_post": float(snap["balance"]["total_eval"]),
+            "equity_post": equity_post,    # ε: 통합 자산(KRW) — equity_pre와 동일 정의
             # Phase 38.10 — drawdown 모니터
             "drawdown_pct": round(drawdown_pct, 3),
             "peak_equity": round(peak_equity, 2),
@@ -1662,6 +1812,10 @@ class Trader:
             "max_drawdown_limit_pct": (float(max_drawdown_limit_pct)
                                           if max_drawdown_limit_pct is not None else None),
         }
+        # ★ε: 부분 잔고로 위험 평가를 보류한 사이클은 명시 표면화(웹/타임라인 인지).
+        if balance_fetch_failed or post_fetch_failed:
+            cycle_summary["balance_fetch_failed"] = sorted(
+                set(balance_fetch_failed) | set(post_fetch_failed))
         order_log.log_cycle(decisions, cycle_summary)
 
         # 포지션 풍부화 + 분석 집계 (Monitor용)
