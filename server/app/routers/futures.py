@@ -322,12 +322,14 @@ _grid_lock = threading.Lock()
 
 def _ensure_grid_cached(symbol: str, s: tuple, l: tuple, h: tuple,
                         commission: float, slippage_ticks: int,
-                        smooth_window: int = 1, min_gap_days: int = 0) -> list[GridCellOut]:
+                        smooth_window: int = 1, min_gap_days: int = 0,
+                        roll_cost_pct: float = 0.0) -> list[GridCellOut]:
     """(symbol, 데이터버전, 파라미터) 결과 캐시. 워머·요청 공용. 미수집이면 _df가 503."""
     cfg = _get_cfg(symbol)
     df = _df(symbol)
     version = get_version()
-    key = (symbol, version, s, l, h, commission, slippage_ticks, smooth_window, min_gap_days)
+    key = (symbol, version, s, l, h, commission, slippage_ticks,
+           smooth_window, min_gap_days, roll_cost_pct)
     cached = _GRID_CACHE.get(key)
     if cached is not None:
         return cached
@@ -337,7 +339,8 @@ def _ensure_grid_cached(symbol: str, s: tuple, l: tuple, h: tuple,
             return cached
         cells = grid_search(df, s, l, h, CostModel(commission, slippage_ticks),
                             light=True, spec=cfg.spec,
-                            smooth_window=smooth_window, min_gap_days=min_gap_days)
+                            smooth_window=smooth_window, min_gap_days=min_gap_days,
+                            roll_cost_pct=roll_cost_pct)
         out = [
             GridCellOut(
                 side=c.side.value,
@@ -367,17 +370,17 @@ def _ensure_grid_cached(symbol: str, s: tuple, l: tuple, h: tuple,
 @router.get("/{symbol}/grid", response_model=list[GridCellOut])
 def grid(symbol: str, shorts: str = "", longs: str = "", horizons: str = "",
          commission: float = 2.5, slippage_ticks: int = 1,
-         smooth_window: int = 1, min_gap_days: int = 0):
+         smooth_window: int = 1, min_gap_days: int = 0, roll_cost_pct: float = 0.0):
     """(side, threshold, horizon) 조합 백테스트. 미지정 시 종목 기본 grid(캐시·워머).
 
-    smooth_window·min_gap_days: 신호 품질 옵션(N일 평균 임계·최소 신호 간격). 기본값=현행.
+    smooth_window·min_gap_days: 신호 품질 옵션. roll_cost_pct: 만기 롤오버 비용(%/롤). 기본값=현행.
     """
     cfg = _get_cfg(symbol)
     s = tuple(_parse_csv_floats(shorts) or cfg.shorts.values())
     l = tuple(_parse_csv_floats(longs) or cfg.longs.values())
     h = tuple(_parse_csv_ints(horizons) or DEFAULT_HORIZONS)
     return _ensure_grid_cached(symbol, s, l, h, commission, slippage_ticks,
-                               smooth_window, min_gap_days)
+                               smooth_window, min_gap_days, roll_cost_pct)
 
 
 def _warmer_loop() -> None:

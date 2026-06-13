@@ -11,7 +11,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from .backtest import ContractSpec, CostModel, WTI_SPEC, run_backtest
+from .backtest import ContractSpec, CostModel, RollModel, WTI_SPEC, run_backtest
 from .metrics import Summary, summarize
 from .signals import Side, generate_signals
 
@@ -36,6 +36,7 @@ def grid_search(
     spec: ContractSpec = WTI_SPEC,
     smooth_window: int = 1,
     min_gap_days: int = 0,
+    roll_cost_pct: float = 0.0,
 ) -> list[GridCell]:
     """모든 (side, threshold, horizon) 조합 백테스트.
 
@@ -43,22 +44,26 @@ def grid_search(
     light=True: run_backtest fast-path 사용 — summarize()가 안 읽는 per-trade
     MAE/MFE 와 portfolio MTM 계산을 건너뛴다 (grid 산출 지표는 불변).
     smooth_window·min_gap_days: 신호 품질 옵션(generate_signals로 전달). 기본값=현행.
+    roll_cost_pct: 만기 롤오버 비용(%/롤) — RollModel로 주입. 0이면 미적용(현행 byte-identical).
     """
     cells: list[GridCell] = []
     horizons = list(horizons)
+    roll = RollModel(roll_cost_pct=roll_cost_pct)
 
     for th in short_thresholds:
         sigs = generate_signals(df, short_thresholds=[th],
                                 smooth_window=smooth_window, min_gap_days=min_gap_days)
         for h in horizons:
-            bt = run_backtest(df, sigs, horizon_days=int(h), cost=cost, light=light, spec=spec)
+            bt = run_backtest(df, sigs, horizon_days=int(h), cost=cost, roll=roll,
+                              light=light, spec=spec)
             cells.append(GridCell(Side.SHORT, float(th), int(h), summarize(bt)))
 
     for th in long_thresholds:
         sigs = generate_signals(df, long_thresholds=[th],
                                 smooth_window=smooth_window, min_gap_days=min_gap_days)
         for h in horizons:
-            bt = run_backtest(df, sigs, horizon_days=int(h), cost=cost, light=light, spec=spec)
+            bt = run_backtest(df, sigs, horizon_days=int(h), cost=cost, roll=roll,
+                              light=light, spec=spec)
             cells.append(GridCell(Side.LONG, float(th), int(h), summarize(bt)))
 
     return cells

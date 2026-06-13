@@ -97,14 +97,13 @@ export default function FuturesAnalytics() {
   // 🅔 Macro
   const [macro, setMacro] = useState<OilMacroContext | null>(null);
 
-  // 🅒 SL/TP — null이면 비활성. 백테스트 재호출 트리거.
-  const [sl, setSl] = useState<number | "">("");        // 예: 10 = -10%
-  const [tp, setTp] = useState<number | "">("");        // 예: 20 = +20%
   const [rollCost, setRollCost] = useState<number | "">("");  // 롤 비용 %/회 (예: 0.5)
   const [exporting, setExporting] = useState(false);          // 엑셀 내보내기 진행중
 
-  // 신호 쿨타임 (min_gap_days) — 신호 후 N영업일 다른 신호 무시. PnL 히트맵·백테스트 적용.
-  const [minGapDays, setMinGapDays] = useState(0);
+  // 전략 비용·신호 설정 — 히트맵 grid + 선택 셀 백테스트 양쪽에 일괄 적용.
+  const [minGapDays, setMinGapDays] = useState(0);       // 신호 쿨타임 (영업일)
+  const [commission, setCommission] = useState(2.5);     // 수수료 ($/계약·레그)
+  const [slippageTicks, setSlippageTicks] = useState(1); // 슬리피지 (틱/체결)
 
   // macro·seasonality·walk-forward·순위표는 당분간 숨김(코드 보존). 셀 선택은 히트맵 클릭.
   const showArchivedSections = false;
@@ -127,13 +126,18 @@ export default function FuturesAnalytics() {
     futuresApi.latestPrice(symbol).then(setPrice).catch((e) => console.error("price", e));
   }, [symbol]);
 
-  // 그리드 — 종목 또는 신호 쿨타임 변경 시 재계산·최적 셀 자동선택.
+  // 그리드 — 종목·비용·신호 설정 변경 시 재계산·최적 셀 자동선택.
   useEffect(() => {
     setGridLoading(true);
     setGrid(null);
     setGridError(null);
     futuresApi
-      .grid(symbol, { min_gap_days: minGapDays })
+      .grid(symbol, {
+        commission,
+        slippage_ticks: slippageTicks,
+        roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
+        min_gap_days: minGapDays,
+      })
       .then((g) => {
         setGrid(g);
         const trusted = g.filter((c) => !c.low_sample && c.net_pnl_usd > 0)
@@ -142,7 +146,7 @@ export default function FuturesAnalytics() {
       })
       .catch((e) => setGridError(e.message))
       .finally(() => setGridLoading(false));
-  }, [symbol, minGapDays]);
+  }, [symbol, commission, slippageTicks, rollCost, minGapDays]);
 
   useEffect(() => {
     if (!selected) return;
@@ -153,15 +157,15 @@ export default function FuturesAnalytics() {
         side: selected.side,
         threshold: selected.threshold,
         horizon_days: selected.horizon,
-        stop_loss_pct: sl === "" ? null : sl / 100,
-        take_profit_pct: tp === "" ? null : tp / 100,
+        commission,
+        slippage_ticks: slippageTicks,
         roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
         min_gap_days: minGapDays,
       })
       .then(setBacktest)
       .catch((e) => console.error("backtest", e))
       .finally(() => setBtLoading(false));
-  }, [symbol, selected, sl, tp, rollCost, minGapDays]);
+  }, [symbol, selected, commission, slippageTicks, rollCost, minGapDays]);
 
   // 정렬·필터된 그리드
   const gridSorted = useMemo(() => {
@@ -263,23 +267,6 @@ export default function FuturesAnalytics() {
           데이터: Yahoo Finance 최근월 선물 · 일배치 갱신 · front-month 롤 점프 포함
         </p>
 
-        {/* 신호 쿨타임 (min_gap_days) — 신호 후 N영업일 다른 신호 무시 */}
-        <div className="oil-toolbar" style={{ marginTop: 10 }}>
-          <span style={{ fontWeight: 600 }}>🎚 신호 쿨타임:</span>
-          <label title="신호 발생 후 최소 M영업일 동안 같은 임계의 다른 신호 무시 — 매크로 추세 구간의 반복 신호 노이즈 제거">
-            신호 후&nbsp;
-            <input
-              type="number" min={0} max={250} step={1} value={minGapDays}
-              onChange={(e) => setMinGapDays(Math.max(0, Number(e.target.value) || 0))}
-              style={{ width: 60 }}
-            />
-            &nbsp;영업일간 무시
-          </label>
-          <button className="ghost" onClick={() => setMinGapDays(0)}>리셋 (0)</button>
-          <span className="muted" style={{ fontSize: 12 }}>
-            PnL 히트맵·백테스트에 적용. 0 = 쿨타임 없음(현행).
-          </span>
-        </div>
       </header>
 
       {/* ① 데이터 메타 */}
@@ -322,8 +309,54 @@ export default function FuturesAnalytics() {
           셀: <b>거래당 평균수익률</b> / <b>승률</b> (소수점 1자리).
           색 진하기 = <b>거래당 평균수익률</b> 크기(수익률에 비례). <span style={{ color: "#62c884" }}>녹색=수익</span>,{" "}
           <span style={{ color: "#d96265" }}>빨강=손실</span>.{" "}
-          low_sample(n&lt;30)은 <b>⚠</b>로만 표시(색 억제 없음 — 거래 적은 셀의 수익률은 노이즈일 수 있어 신중히). 클릭하면 백테스트 상세.
+          low_sample(n&lt;30)은 <b>⚠</b>로만 표시(색 억제 없음 — 거래 적은 셀의 수익률은 노이즈일 수 있어 신중히). 클릭하면 아래 백테스트 상세.
         </p>
+
+        {/* 전략 비용·신호 설정 — 히트맵 + 선택 셀 백테스트 양쪽에 일괄 적용 */}
+        <div className="oil-toolbar sltp-toolbar">
+          <span style={{ fontWeight: 600 }}>⚙ 설정:</span>
+          <label title="진입+청산 양레그 계약당 수수료">
+            수수료&nbsp;{cur}
+            <input
+              type="number" min={0} step={0.5} value={commission}
+              onChange={(e) => setCommission(Math.max(0, Number(e.target.value) || 0))}
+              style={{ width: 60 }}
+            />
+          </label>
+          <label title="체결당 슬리피지(틱) — 진입/청산에 불리하게 적용">
+            슬리피지&nbsp;
+            <input
+              type="number" min={0} step={1} value={slippageTicks}
+              onChange={(e) => setSlippageTicks(Math.max(0, Number(e.target.value) || 0))}
+              style={{ width: 52 }}
+            />
+            &nbsp;틱
+          </label>
+          <label title="만기 롤오버 비용(%/롤). 양수=콘탱고 비용, 음수=backwardation 이익. 추정 가정.">
+            롤오버&nbsp;
+            <input
+              type="number" min={-5} max={5} step={0.1} value={rollCost} placeholder="0"
+              onChange={(e) => setRollCost(e.target.value === "" ? "" : Number(e.target.value))}
+              style={{ width: 60 }}
+            />
+            &nbsp;%
+          </label>
+          <label title="신호 발생 후 최소 M영업일 동안 같은 임계의 다른 신호 무시 — 반복신호 노이즈 제거">
+            쿨타임&nbsp;
+            <input
+              type="number" min={0} max={250} step={1} value={minGapDays}
+              onChange={(e) => setMinGapDays(Math.max(0, Number(e.target.value) || 0))}
+              style={{ width: 52 }}
+            />
+            &nbsp;일
+          </label>
+          <button className="ghost" onClick={() => { setCommission(2.5); setSlippageTicks(1); setRollCost(""); setMinGapDays(0); }}>
+            리셋
+          </button>
+          <span className="muted" style={{ fontSize: 12 }}>
+            네 설정 모두 <b>히트맵·백테스트</b>에 일괄 적용 · 롤={info?.roll_note ?? "추정 가정"}.
+          </span>
+        </div>
         {/* 라디오 토글 — 한 번에 short 또는 long */}
         <div className="oil-radio-group">
           <label className={heatmapSide === "short" ? "active" : ""}>
@@ -362,105 +395,47 @@ export default function FuturesAnalytics() {
             priceSym={priceSym}
           />
         )}
-      </section>
 
-      {/* ③ 백테스트 상세 (조합 순위표보다 먼저) */}
-      <section className="panel" style={{ marginBottom: 16 }}>
-        <h2 className="section-title">
-          BACKTEST DETAIL · 백테스트 상세 {selected && <span className="title-tag">{selected.side.toUpperCase()} {priceSym}{selected.threshold} × {selected.horizon}D</span>}
-          {selected && backtest && (
-            <button
-              className="export-btn"
-              disabled={exporting}
-              title="임계·보유기간·비용·롤·쿨타임을 엑셀에서 바꿔가며 재계산 (앱 결과와 일치)"
-              onClick={async () => {
-                setExporting(true);
-                try {
-                  await futuresApi.exportExcel(symbol, {
-                    side: selected.side,
-                    threshold: selected.threshold,
-                    horizon_days: selected.horizon,
-                    roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
-                    min_gap_days: minGapDays,
-                  });
-                } catch (e) {
-                  alert("엑셀 내보내기 실패: " + (e as Error).message);
-                } finally {
-                  setExporting(false);
-                }
-              }}
-            >
-              {exporting ? "엑셀 생성 중…" : "📥 엑셀로 내보내기 (라이브 수식)"}
-            </button>
+        {/* 선택 셀 백테스트 상세 (이전 ③ — 히트맵 섹션에 통합) */}
+        <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+          <h3 className="section-title" style={{ fontSize: 16 }}>
+            백테스트 상세 {selected && <span className="title-tag">{selected.side.toUpperCase()} {priceSym}{selected.threshold} × {selected.horizon}D</span>}
+            {selected && backtest && (
+              <button
+                className="export-btn"
+                disabled={exporting}
+                title="임계·보유기간·비용·롤·쿨타임을 엑셀에서 바꿔가며 재계산 (앱 결과와 일치)"
+                onClick={async () => {
+                  setExporting(true);
+                  try {
+                    await futuresApi.exportExcel(symbol, {
+                      side: selected.side,
+                      threshold: selected.threshold,
+                      horizon_days: selected.horizon,
+                      commission,
+                      slippage_ticks: slippageTicks,
+                      roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
+                      min_gap_days: minGapDays,
+                    });
+                  } catch (e) {
+                    alert("엑셀 내보내기 실패: " + (e as Error).message);
+                  } finally {
+                    setExporting(false);
+                  }
+                }}
+              >
+                {exporting ? "엑셀 생성 중…" : "📥 엑셀로 내보내기 (라이브 수식)"}
+              </button>
+            )}
+          </h3>
+          {!selected ? (
+            <div className="muted">위 히트맵에서 한 셀을 클릭하면 상세가 표시됩니다.</div>
+          ) : btLoading || !backtest ? (
+            <div className="muted">백테스트 실행 중…</div>
+          ) : (
+            <BacktestDetail bt={backtest} side={selected.side} cur={cur} curCode={curCode} priceSym={priceSym} />
           )}
-        </h2>
-
-        {/* 🅒 SL/TP 시뮬레이터 */}
-        <div className="oil-toolbar sltp-toolbar">
-          <span style={{ fontWeight: 600 }}>SL/TP 시뮬레이터:</span>
-          <label>
-            Stop-Loss&nbsp;
-            <input
-              type="number" min={0} max={100} step={1}
-              value={sl}
-              placeholder="off"
-              onChange={(e) => setSl(e.target.value === "" ? "" : Number(e.target.value))}
-              style={{ width: 64 }}
-            />
-            &nbsp;%
-          </label>
-          <label>
-            Take-Profit&nbsp;
-            <input
-              type="number" min={0} max={200} step={1}
-              value={tp}
-              placeholder="off"
-              onChange={(e) => setTp(e.target.value === "" ? "" : Number(e.target.value))}
-              style={{ width: 64 }}
-            />
-            &nbsp;%
-          </label>
-          <button onClick={() => { setSl(""); setTp(""); }} className="ghost">
-            리셋 (horizon 만기 보유)
-          </button>
-          <span className="muted">
-            진입가 대비 % — 장중 high/low 기준 hit 즉시 청산. 둘 다 비우면 기존 horizon 보유.
-          </span>
         </div>
-
-        {/* 선물 만기 강제 롤오버 비용 시뮬레이터 */}
-        <div className="oil-toolbar sltp-toolbar roll-toolbar">
-          <span style={{ fontWeight: 600 }}>🛢 만기 롤오버 비용:</span>
-          <label>
-            롤 비용&nbsp;
-            <input
-              type="number" min={-5} max={5} step={0.1}
-              value={rollCost}
-              placeholder="0"
-              onChange={(e) => setRollCost(e.target.value === "" ? "" : Number(e.target.value))}
-              style={{ width: 72 }}
-            />
-            &nbsp;% / 롤
-          </label>
-          <span className="roll-quick">
-            <button className="ghost" onClick={() => setRollCost(0.5)}>콘탱고 +0.5%</button>
-            <button className="ghost" onClick={() => setRollCost(-2)}>backwardation −2%</button>
-            <button className="ghost" onClick={() => setRollCost("")}>리셋(0%)</button>
-          </span>
-          <div className="muted roll-help">
-            선물은 만기마다 롤오버되며 롤 비용/이익이 발생한다 ({info?.roll_note ?? "—"}).
-            <b> 양수 = contango 비용(차감), 음수 = backwardation 이익(가산).</b>
-            <span style={{ color: "#c9a227" }}> ⚠️ 추정 가정 — 정확한 롤 yield는 만기물별 데이터 필요.</span>
-          </div>
-        </div>
-
-        {!selected ? (
-          <div className="muted">위 히트맵/아래 순위표에서 한 셀을 클릭하면 상세가 표시됩니다.</div>
-        ) : btLoading || !backtest ? (
-          <div className="muted">백테스트 실행 중…</div>
-        ) : (
-          <BacktestDetail bt={backtest} side={selected.side} cur={cur} curCode={curCode} priceSym={priceSym} />
-        )}
       </section>
 
       {showArchivedSections && (
