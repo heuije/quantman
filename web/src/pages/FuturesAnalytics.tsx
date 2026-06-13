@@ -21,6 +21,7 @@ import {
   ReferenceLine,
   ResponsiveContainer,
   Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
@@ -102,9 +103,11 @@ export default function FuturesAnalytics() {
   const [rollCost, setRollCost] = useState<number | "">("");  // 롤 비용 %/회 (예: 0.5)
   const [exporting, setExporting] = useState(false);          // 엑셀 내보내기 진행중
 
-  // 신호 품질 옵션 (방법 1+3) — grid·backtest·추세탐색기에 공통 적용. 기본값=현행.
-  const [smoothWindow, setSmoothWindow] = useState(1);
+  // 신호 쿨타임 (min_gap_days) — 신호 후 N영업일 다른 신호 무시. PnL 히트맵·백테스트 적용.
   const [minGapDays, setMinGapDays] = useState(0);
+
+  // macro·seasonality·walk-forward·순위표는 당분간 숨김(코드 보존). 셀 선택은 히트맵 클릭.
+  const showArchivedSections = false;
 
   // 종목 목록 1회 로드
   useEffect(() => {
@@ -124,13 +127,13 @@ export default function FuturesAnalytics() {
     futuresApi.latestPrice(symbol).then(setPrice).catch((e) => console.error("price", e));
   }, [symbol]);
 
-  // 그리드 — 종목 또는 신호 설정(평활·간격) 변경 시 재계산·최적 셀 자동선택.
+  // 그리드 — 종목 또는 신호 쿨타임 변경 시 재계산·최적 셀 자동선택.
   useEffect(() => {
     setGridLoading(true);
     setGrid(null);
     setGridError(null);
     futuresApi
-      .grid(symbol, { smooth_window: smoothWindow, min_gap_days: minGapDays })
+      .grid(symbol, { min_gap_days: minGapDays })
       .then((g) => {
         setGrid(g);
         const trusted = g.filter((c) => !c.low_sample && c.net_pnl_usd > 0)
@@ -139,7 +142,7 @@ export default function FuturesAnalytics() {
       })
       .catch((e) => setGridError(e.message))
       .finally(() => setGridLoading(false));
-  }, [symbol, smoothWindow, minGapDays]);
+  }, [symbol, minGapDays]);
 
   useEffect(() => {
     if (!selected) return;
@@ -153,13 +156,12 @@ export default function FuturesAnalytics() {
         stop_loss_pct: sl === "" ? null : sl / 100,
         take_profit_pct: tp === "" ? null : tp / 100,
         roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
-        smooth_window: smoothWindow,
         min_gap_days: minGapDays,
       })
       .then(setBacktest)
       .catch((e) => console.error("backtest", e))
       .finally(() => setBtLoading(false));
-  }, [symbol, selected, sl, tp, rollCost, smoothWindow, minGapDays]);
+  }, [symbol, selected, sl, tp, rollCost, minGapDays]);
 
   // 정렬·필터된 그리드
   const gridSorted = useMemo(() => {
@@ -261,31 +263,21 @@ export default function FuturesAnalytics() {
           데이터: Yahoo Finance 최근월 선물 · 일배치 갱신 · front-month 롤 점프 포함
         </p>
 
-        {/* 신호 품질 옵션 (방법 1+3) — 히트맵·백테스트·탐색기 공통 */}
+        {/* 신호 쿨타임 (min_gap_days) — 신호 후 N영업일 다른 신호 무시 */}
         <div className="oil-toolbar" style={{ marginTop: 10 }}>
-          <span style={{ fontWeight: 600 }}>🎚 신호 설정:</span>
-          <label title="당일 고/저 대신 최근 N일 평균으로 임계 교차 판정 — 1일 스파이크 대신 지속 추세만 발화">
-            N일 평균 임계&nbsp;
-            <input
-              type="number" min={1} max={120} step={1} value={smoothWindow}
-              onChange={(e) => setSmoothWindow(Math.max(1, Number(e.target.value) || 1))}
-              style={{ width: 60 }}
-            />
-          </label>
-          <label title="같은 임계 신호 발화 후 최소 M영업일 재발화 억제 — 진동 노이즈 디바운스">
-            최소 신호 간격&nbsp;
+          <span style={{ fontWeight: 600 }}>🎚 신호 쿨타임:</span>
+          <label title="신호 발생 후 최소 M영업일 동안 같은 임계의 다른 신호 무시 — 매크로 추세 구간의 반복 신호 노이즈 제거">
+            신호 후&nbsp;
             <input
               type="number" min={0} max={250} step={1} value={minGapDays}
               onChange={(e) => setMinGapDays(Math.max(0, Number(e.target.value) || 0))}
               style={{ width: 60 }}
             />
-            &nbsp;일
+            &nbsp;영업일간 무시
           </label>
-          <button className="ghost" onClick={() => { setSmoothWindow(1); setMinGapDays(0); }}>
-            리셋 (현행)
-          </button>
+          <button className="ghost" onClick={() => setMinGapDays(0)}>리셋 (0)</button>
           <span className="muted" style={{ fontSize: 12 }}>
-            히트맵·순위표·백테스트·추세탐색기에 공통 적용. 기본값(1 · 0)=현행 동작.
+            PnL 히트맵·백테스트에 적용. 0 = 쿨타임 없음(현행).
           </span>
         </div>
       </header>
@@ -470,6 +462,8 @@ export default function FuturesAnalytics() {
         )}
       </section>
 
+      {showArchivedSections && (
+      <>
       {/* ④ 조합 순위표 — 헤더 클릭 정렬 + sticky + Profit/Loss 추가 */}
       <section className="panel" style={{ marginBottom: 16 }}>
         <h2 className="section-title">RANKING TABLE · 조합 순위표 <span className="title-tag">{gridSorted.length}</span></h2>
@@ -579,6 +573,8 @@ export default function FuturesAnalytics() {
           <MacroView m={macro} />
         )}
       </section>
+      </>
+      )}
 
       {/* ⑧ 진입 추세 → 미래 수익률 탐색기 */}
       <section className="panel">
@@ -1509,6 +1505,27 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
   const span = pastRange ? Math.max(1, pastRange.max - pastRange.min) : 1;
 
+  // 회귀분석(과거 L일 × 미래 H일) — 백엔드 trend_regression(forward~past OLS+HAC) 사용.
+  const reg = data?.regression ?? null;
+  const scatterPts = useMemo(() => {
+    if (!data) return [];
+    const evs = data.events;
+    const stride = Math.max(1, Math.ceil(evs.length / 600));
+    const pts: { x: number; y: number }[] = [];
+    for (let i = 0; i < evs.length; i += stride) {
+      pts.push({ x: evs[i].past_return * 100, y: evs[i].forward_return * 100 });
+    }
+    return pts;
+  }, [data]);
+  const regSeg = useMemo<[{ x: number; y: number }, { x: number; y: number }] | null>(() => {
+    if (!reg || !pastRange) return null;
+    const yAt = (xp: number) => reg.slope * xp + reg.intercept * 100;
+    return [
+      { x: pastRange.min, y: yAt(pastRange.min) },
+      { x: pastRange.max, y: yAt(pastRange.max) },
+    ];
+  }, [reg, pastRange]);
+
   return (
     <>
       <style>{`
@@ -1641,6 +1658,40 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {reg && (
+            <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+              <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
+                회귀분석 — 과거 <b>{lookback}일</b> 증감율(x) → 미래 <b>{horizon}일</b> 수익률(y) · 전체 영업일 {reg.n.toLocaleString()}건
+              </div>
+              <div className="bt-metrics" style={{ marginBottom: 10 }}>
+                <Metric label="기울기 β" value={(reg.slope >= 0 ? "+" : "") + reg.slope.toFixed(2)}
+                  highlight={reg.slope >= 0 ? "good" : "bad"}
+                  sub={reg.slope >= 0 ? "모멘텀(추세↑→미래수익↑)" : "반전(추세↑→미래수익↓)"} />
+                <Metric label="R²" value={reg.r_squared.toFixed(3)} sub="설명력(0~1)" />
+                <Metric label="p-value (HAC)" value={reg.hac_p_value.toFixed(3)}
+                  highlight={reg.hac_p_value < 0.05 ? "good" : "warn"} sub="겹침보정 후 유의성" />
+                <Metric label="표본 n" value={reg.n} highlight={reg.n < 30 ? "warn" : null} />
+              </div>
+              <ResponsiveContainer width="100%" height={300}>
+                <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                  <XAxis type="number" dataKey="x" name="과거 증감율" domain={["dataMin", "dataMax"]}
+                    tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v + "%"} />
+                  <YAxis type="number" dataKey="y" name="미래 수익률"
+                    tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v + "%"} />
+                  <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(v) => `${Number(v).toFixed(2)}%`} />
+                  <ReferenceLine y={0} stroke="#666" />
+                  {regSeg && <ReferenceLine segment={regSeg} stroke="#e6c259" strokeWidth={2} />}
+                  <Scatter data={scatterPts} fill="#6c9ce9" fillOpacity={0.5} />
+                </ScatterChart>
+              </ResponsiveContainer>
+              <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+                ⚠️ forward 윈도우가 겹쳐 자기상관 → p값은 <b>Newey-West(HAC, maxlags=H)</b>로 보정.
+                회귀선(노란색)은 전체 영업일 기준 추세→수익 관계입니다.
+              </div>
             </div>
           )}
 
