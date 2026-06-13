@@ -282,12 +282,11 @@ class IntradayStopManager:
 
 
 def _ks_unified_equity_krw(bal: dict) -> float:
-    """trader._unified_equity_krw와 동일 로직 (순환 import 회피용 사본).
+    """trader._unified_equity_krw 위임 — 통합자산(KRW) 단일 출처 (US-F2).
 
-    국내 평가 + 해외 평가(KRW) + USD 현금(KRW 환산).
-    """
-    dom = float(bal.get("total_eval", 0) or 0)
-    foreign = float(bal.get("foreign_eval_krw", 0) or 0)
-    usd_cash = float(bal.get("cash_usd", 0) or 0)
-    fx = float(bal.get("fx_usdkrw", 0) or 0)
-    return dom + foreign + usd_cash * fx
+    과거엔 '동일 로직 사본'이었으나 trader 쪽이 선물 평가(futures_eval_krw)를 합산하도록
+    갱신될 때 이 사본이 따라가지 못해, 장중 kill-switch monitor가 선물 손익을 무시하던
+    drift가 생겼다(국내·해외 선물 공통). 중복 제거가 근본 해결 — 함수 내 lazy import로
+    순환을 피한다(이 모듈의 held_qty_from_snapshot/clamp_sell_qty와 동일 패턴)."""
+    from .trader import _unified_equity_krw
+    return _unified_equity_krw(bal)
