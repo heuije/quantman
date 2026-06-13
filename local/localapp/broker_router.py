@@ -100,6 +100,11 @@ class BrokerRouter:
         return self._broker(symbol).price(self._code(symbol))
 
     def today_open(self, symbol):
+        # G2: price()와 동형 — 해외선물(CME) 시세는 미스케일·유료(EGW00553)이고, futures 브로커의
+        # today_open은 국내 시세 TR(FHMIF10000000)이라 CME 코드로 호출하면 오라우팅된다. 0 반환 →
+        # catch-up 매수가 호출자(trader open_price<=0 가드)가 prev_close(dataset) ref로 fallback.
+        if self._is_fut(symbol) and futures_market(symbol) == "CME":
+            return 0.0
         return self._broker(symbol).today_open(self._code(symbol))
 
     def cancel(self, order_no, symbol, qty):
@@ -168,6 +173,10 @@ class BrokerRouter:
                     float(out["balance"].get("futures_eval_krw", 0) or 0) + float(fut_eq))
             # 선물 주문가능 증거금현금 — 선물 사이징 예산 base(trader). 주식 현금(balance["cash"])과
             # 분리: 선물 주문은 선물계좌 증거금으로 체결되므로 주식 현금으로 사이징하면 안 된다.
+            # ⚠ 한계: 국내선물·해외선물 계좌(별도 CANO)를 둘 다 구성한 사용자는 futures_order_cash가
+            # 두 계좌 합산 → 단일 시장 주문 1건에 합산 예산을 써 과대사이징 가능. 현재 게이트가
+            # 코스피200만 개방(해외 차단)이라 양쪽 동시 라이브가 불가능해 미발생 — per-market 예산
+            # 분리는 다계좌 라이브 활성화 단계 과제(equity 합산은 보수적=발동 지연이라 영향 작음).
             fut_cash = fut_acct.get("order_cash")
             if fut_cash:
                 out["balance"]["futures_order_cash"] = (

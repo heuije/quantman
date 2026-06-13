@@ -195,6 +195,14 @@ def test_overseas_futures_price_returns_zero_not_unscaled(monkeypatch):
     assert ("price", "GCM26") not in fut.calls                # 국내 시세도 아님
 
 
+def test_overseas_futures_today_open_returns_zero(monkeypatch):
+    """G2: today_open(CME)도 price와 동형 0 반환 — futures 브로커 today_open은 국내 시세 TR이라
+    CME 코드로 호출하면 오라우팅. catch-up 매수가 호출자가 prev_close(dataset) fallback하도록."""
+    r, stock, fut = _router()
+    assert r.today_open("금선물") == 0.0
+    assert ("today_open", "GCM26") not in fut.calls          # 오라우팅 차단
+
+
 def test_domestic_futures_price_unchanged():
     r, stock, fut = _router()
     r.price("코스피200선물")
