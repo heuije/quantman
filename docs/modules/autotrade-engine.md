@@ -129,3 +129,34 @@ green) · `fix/parity-oracle-fx`(WS-2: 사이징 FX+백테스트=라이브 경�
 `docs/incidents/2026-06-12-futures-close-fill-unrecorded.md`. ⚠ 배포 순서: 서버
 타임라인 15:50은 로컬앱 릴리즈와 동시 웨이브로(구버전 정산 push는 same-day fallback
 호환). 잔여=머지 웨이브(Phase 2)·라이브 게이트(Phase 3)·고아 정리(Phase 4).
+
+### [진행중] 해외(미국) 선물 자동매매 하자보수 — 4계층 진단 + P1~P4 (2026-06-13)
+
+**의도.** 해외선물(CME 6종: 원유·천연가스·금·은·나스닥·비트코인)이 국내주식/국내선물 대비
+미성숙한 부분을 진단·수정한다. 근본원인=**KIS 모의 미지원→라이브 검증 불가→가정기반 단위
+테스트만→통화축·하드닝·청산·equity가 국내 대비 미배선/버그**. 4계층 병렬 감사 + 고위험 주장
+현재코드 직접 대조(에이전트의 "CME 백테스트 데이터 전무"는 오류 정정 — `data_fetcher.YFINANCE_SYMBOLS`에
+6종 전부 CL=F 등 존재, 백테스트 계층 완전).
+
+**P1~P4 (자율 검증가능, TDD, `fix/overseas-futures-autotrading` 브랜치):**
+- **US-F1 통화 사이징**(core): 해외선물은 라이브 선물계좌 현금이 KRW인데 가격·승수가 USD
+  (`_currency_of`가 US주식마스터 부재로 KRW 분류→KRX 사이징 분기). `fixed_amount`는 F-01에서
+  FX 환산받았으나 `%`(futures_margin_pct) 경로 누락→~1,370배 과대 잠재. `event_buy_qty` %
+  경로에 `spec.currency!=KRW`면 fx 환산 추가(미가용=0 보류)·`needed_symbols`에 USD선물% FX
+  포함. **백테스트 `_budget`은 단일통화(cash=종목통화) 가정이라 무변경**(골든·선물엔진 보존,
+  ⚠에이전트 "백테스트+라이브 둘다 수정" 프레이밍대로 했으면 골든 깨졌을 것 — 그라운딩이 결정적).
+- **US-F2 equity 사본 drift**(local): `intraday_stop._ks_unified_equity_krw`가 "trader와 동일"
+  주석인데 `futures_eval_krw` 누락→장중 kill-switch가 선물 손익 무시(**국내선물도 영향**).
+  사본을 trader._unified_equity_krw 위임으로(lazy import). 중복 제거가 근본.
+- **US-F4 종가청산 배선**(local): US 종가청산이 stock만 스케줄→해외선물 day-trade 오버나이트
+  방치. 라우팅 메커니즘(liquidate_day_trades futures/US)은 이미 존재, 스케줄러 잡
+  `us_close_cycle_futures`(폐장−5분) 추가. CME 정산시각 정밀정렬은 라이브 정밀화(문서화).
+- **US-F5 브로커 하드닝**(local): 해외 전 메서드·국내 POST가 벌거숭이 requests. `_order_post`
+  (EGW00201만 재시도·5xx 비재시도=중복발주 방지) 신설+POST 라우팅, 해외 read→기존 `_read_get`
+  (5xx 재시도) 경유.
+
+**검증.** TDD 재현 테스트 신규(P1 3·P2 1·P3 2·P4 5)+기존 갱신, **core 259·local 381·루트골든 390·
+server 233 green**(골든 byte-identical 보존). 라이브 게이트는 코스피200만 개방(해외 차단 유지)이라
+**전부 휴면**(프로덕션 무영향). **잔여(라이브 의존, 모의 미지원)**: 해외 잔고 populated 필드·취소
+ORD_DT 추적·시세 sCalcDesz·해외 equity USD환산·라이브 게이트 개방 — 첫 실거래 캡처로 확정.
+**미배포**(머지·로컬앱 릴리즈는 사용자 승인 대기).
