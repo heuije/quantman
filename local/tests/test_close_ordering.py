@@ -82,10 +82,11 @@ def test_catchup_settlement_threshold_matches_cron(monkeypatch, tmp_path):
 
 
 def test_us_session_schedules_futures_close(monkeypatch):
-    """US-F4: _plan_us_session이 해외선물 종가청산 잡(us_close_cycle_futures)도 등록한다.
+    """US-F4: _plan_us_session이 해외선물 종가청산 잡(us_close_cycle_futures)도 등록하되
+    주식 종가청산과 **시각을 분리**한다(동시 두 ephemeral Trader의 ledger lost-update 회피).
 
-    종전엔 us_close_cycle(주식)만 등록돼 해외선물 day-trade가 종가에 청산되지 않고
-    오버나이트 방치됐다. 폐장−5분에 주식·선물 두 잡 모두 등록돼야 한다."""
+    종전엔 us_close_cycle(주식)만 등록돼 해외선물 day-trade가 오버나이트 방치됐다. 선물은
+    폐장−20분(CME 정산 근접·주식 폐장−5분보다 먼저 끝나 stock이 신선 로드)으로 둔다."""
     from datetime import timedelta
 
     from localapp import scheduler as sch
@@ -99,10 +100,12 @@ def test_us_session_schedules_futures_close(monkeypatch):
     sched = BackgroundScheduler(timezone="Asia/Seoul")
     sch._plan_us_session(sched, now=now)
 
-    ids = {j.id for j in sched.get_jobs()}
-    assert "us_close_cycle_futures" in ids, f"해외선물 종가청산 미등록: {ids}"
-    assert "us_close_cycle" in ids, "주식 종가청산도 유지돼야"
-    # 두 종가청산은 같은 폐장−5분 창
     jobs = {j.id: j for j in sched.get_jobs()}
-    assert (jobs["us_close_cycle_futures"].trigger.run_date
-            == jobs["us_close_cycle"].trigger.run_date)
+    assert "us_close_cycle_futures" in jobs, f"해외선물 종가청산 미등록: {set(jobs)}"
+    assert "us_close_cycle" in jobs, "주식 종가청산도 유지돼야"
+    fut_at = jobs["us_close_cycle_futures"].trigger.run_date
+    stock_at = jobs["us_close_cycle"].trigger.run_date
+    # 시각 분리 — 선물이 주식보다 먼저(동시 실행 금지). 폐장−20분 vs 폐장−5분 = 15분 간격.
+    assert fut_at < stock_at, f"선물·주식 종가청산이 동시 실행되면 안 됨: fut={fut_at} stock={stock_at}"
+    assert (stock_at - fut_at) >= timedelta(minutes=10), \
+        f"간격이 너무 좁아 동시 실행 위험: {stock_at - fut_at}"

@@ -467,17 +467,30 @@ class KisFuturesBroker:
         """주문/취소 POST — EGW00201(초당거래수 초과·접수 *전* rate-limit 거부)에 한해 짧게
         재시도 후 정규화 (US-F5, 주식 브로커 _post_retry와 동형).
 
-        EGW00201은 KIS가 주문을 접수하기 전 거부하므로 재시도가 안전(중복발주 아님). 그 외
-        거부(rt_cd:1)·5xx는 **재시도하지 않는다** — 접수됐을 수 있어 중복발주 위험. 5xx는
-        raise_for_status로 전파(호출자가 예외로 진입중단·L-01 멱등이 교차사이클 안전망). 선물
-        브로커는 그간 주문 POST에 이 방어가 없어 첫 rate-limit에 즉시 실패했다(국내·해외 공통)."""
+        ⚠ KIS는 rate-limit(EGW00201)을 **HTTP 500 + 본문 msg_cd**로 주기도 한다(주식
+        _post_retry·_get_retry가 같은 가정). 그래서 raise_for_status를 먼저 부르면 안 되고,
+        비-200이어도 본문 msg_cd를 먼저 확인해 EGW00201이면 재시도한다(접수 전 거부라 중복발주
+        아님). 그 외 거부(rt_cd:1·EGW 아닌 5xx)는 **재시도하지 않는다** — 접수됐을 수 있어
+        중복발주 위험. 비-EGW 5xx는 raise로 전파(호출자가 예외로 진입중단·L-01 멱등이
+        교차사이클 안전망)."""
         import time as _t
         resp: dict = {}
         for i in range(3):
             r = requests.post(url, headers=headers, json=body, timeout=10)
-            r.raise_for_status()
+            if r.status_code != 200:
+                # 비-200(게이트웨이 5xx 등): 본문 msg_cd가 EGW00201이면 재시도 안전,
+                # 그 외는 raise(접수 모호 → 중복발주 방지). 주식 _post_retry와 동형.
+                mc = ""
+                try:
+                    mc = _json(r).get("msg_cd", "")
+                except Exception:       # noqa: BLE001 — 본문 비-JSON(순수 게이트웨이 오류)
+                    pass
+                if mc == "EGW00201" and i < 2:
+                    _t.sleep(0.6 * (i + 1))
+                    continue
+                r.raise_for_status()    # EGW00201 아닌 5xx → 전파(중복발주 방지)
             resp = normalize_order_resp(_json(r))
-            if resp.get("msg_cd") == "EGW00201" and i < 2:
+            if resp.get("msg_cd") == "EGW00201" and i < 2:    # 200 + rt_cd:1 EGW00201
                 _t.sleep(0.6 * (i + 1))
                 continue
             return resp

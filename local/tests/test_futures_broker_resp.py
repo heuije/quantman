@@ -61,7 +61,8 @@ def test_normalize_never_leaks_raw_keys():
 
 # ── 전 주문/취소 메서드가 정규형을 반환하는지 (부류 닫기 — 전수) ──────────────────
 class _Resp:
-    def __init__(self, payload):
+    def __init__(self, payload, status: int = 200):
+        self.status_code = status          # 정상 주문응답은 HTTP 200 (_order_post가 확인)
         self.content = json.dumps(payload).encode("utf-8")
 
     def raise_for_status(self):

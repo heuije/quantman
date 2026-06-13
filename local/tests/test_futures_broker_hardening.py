@@ -143,20 +143,42 @@ def test_order_post_retries_egw00201_then_succeeds(monkeypatch):
     assert resp["success"] is True and resp["order_no"]
 
 
+def test_order_post_retries_egw00201_as_http_500(monkeypatch):
+    """KIS는 rate-limit(EGW00201)을 HTTP 500 + 본문 msg_cd로도 준다 — 비-200 본문 msg_cd를
+    먼저 확인해 재시도해야 한다(raise_for_status를 먼저 부르면 미작동). 주식 _post_retry 동형."""
+    _no_sleep(monkeypatch)
+    b = object.__new__(KisFuturesBroker)
+    seq = iter([
+        (_JsonResp({"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당거래수 초과"}, status=500), ),
+        (_JsonResp({"rt_cd": "0", "msg_cd": "40600000", "output": {"ODNO": "0000005678"}}), ),
+    ])
+    calls = {"n": 0}
+
+    def fake_post(*a, **k):
+        calls["n"] += 1
+        return next(seq)[0]
+    monkeypatch.setattr(kfb.requests, "post", fake_post)
+
+    resp = b._order_post("https://x/order", {}, {})
+    assert calls["n"] == 2                       # 500-EGW00201 → 재시도 → 성공
+    assert resp["success"] is True and resp["order_no"]
+
+
 def test_order_post_does_not_retry_5xx(monkeypatch):
-    """5xx는 재시도 금지(접수됐을 수 있어 중복발주 위험) — 즉시 전파."""
+    """EGW00201 아닌 5xx는 재시도 금지(접수됐을 수 있어 중복발주 위험) — 즉시 전파."""
     _no_sleep(monkeypatch)
     b = object.__new__(KisFuturesBroker)
     calls = {"n": 0}
 
     def fake_post(*a, **k):
         calls["n"] += 1
+        # 본문에 msg_cd 없음(순수 게이트웨이 5xx) → EGW00201 아님 → raise
         return _JsonResp({}, status=500, raise_http=True)
     monkeypatch.setattr(kfb.requests, "post", fake_post)
 
     with pytest.raises(kfb.requests.HTTPError):
         b._order_post("https://x/order", {}, {})
-    assert calls["n"] == 1, "5xx 재시도하면 중복발주 위험"
+    assert calls["n"] == 1, "EGW00201 아닌 5xx 재시도하면 중복발주 위험"
 
 
 def test_order_post_does_not_retry_normal_reject(monkeypatch):
