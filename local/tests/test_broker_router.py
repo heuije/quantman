@@ -185,11 +185,14 @@ def test_overseas_cancel_blocked_needs_orgn_ord_dt():
         r.cancel("ORD2", "금선물", 1)
 
 
-def test_overseas_price_routes_to_overseas():
+def test_overseas_futures_price_returns_zero_not_unscaled(monkeypatch):
+    """G2: 해외선물(CME)은 0 반환 — KIS 시세가 유료구독+미스케일이라 손절에 거짓 트리거.
+    호출자가 dataset fallback/skip(cur<=0)하도록. overseas_price(미스케일·유료)는 호출 안 함."""
     r, stock, fut = _router()
     px = r.price("금선물")
-    assert ("overseas_price", "GCM26") in fut.calls and px == 1950.0
-    assert ("price", "GCM26") not in fut.calls               # 국내 시세 아님
+    assert px == 0.0                                          # 미스케일값 미반환 → 호출자 dataset/skip
+    assert ("overseas_price", "GCM26") not in fut.calls       # 유료·미스케일 시세 호출 안 함
+    assert ("price", "GCM26") not in fut.calls                # 국내 시세도 아님
 
 
 def test_domestic_futures_price_unchanged():

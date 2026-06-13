@@ -145,6 +145,39 @@ def parse_overseas_balance(resp: dict) -> dict:
     return {"positions": positions}
 
 
+def parse_overseas_deposit(resp: dict) -> dict:
+    """OTFM1411R(예수금현황 inquire-deposit) output → {order_cash, equity, margin_total, eval_pnl}.
+
+    CRCY_CD=TKR(TOT_KRW)로 요청해 KIS가 KRW 환산한 계좌 요약을 받는다(G1/G3 — 해외선물 주문
+    사이징·kill-switch가 *해외선물 계좌* 기준이 되도록). 필드는 공식 스펙(해외선물옵션 주문_계좌.xlsx
+    '예수금현황' OTFM1411R):
+      · fm_ord_psbl_amt      주문가능금액 → order_cash(사이징 예산 base; trader가 KRW로 받아 event_buy_qty
+                              가 USD 선물이면 fx 환산[US-F1]). 종전 미노출이라 국내선물/주식 현금으로 잘못
+                              사이징하던 G1 결함을 닫는다.
+      · fm_tot_asst_evlu_amt 총자산평가금액 → equity(통합 equity 합산; kill-switch가 해외선물 손익 인지[G3]).
+      · fm_brkg_mgn_amt      위탁증거금  → margin_total(표시).
+      · fm_fuop_evlu_pfls_amt 선물옵션평가손익 → eval_pnl(표시).
+    output은 단일 object(국내 output2와 동형). ⚠ 모의 미지원 — 필드 *값* 라이브 대조는 첫 실거래(스펙 기반 구현)."""
+    out = resp.get("output")
+    if isinstance(out, list):
+        out = out[0] if out else {}
+    if not isinstance(out, dict):
+        out = {}
+
+    def _num(key: str) -> float:
+        try:
+            return float(out.get(key, 0) or 0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    return {
+        "order_cash": _num("fm_ord_psbl_amt"),        # 주문가능금액(KRW, TKR 요청 시)
+        "equity": _num("fm_tot_asst_evlu_amt"),        # 총자산평가금액(KRW) — kill-switch
+        "margin_total": _num("fm_brkg_mgn_amt"),       # 위탁증거금
+        "eval_pnl": _num("fm_fuop_evlu_pfls_amt"),     # 선물옵션평가손익
+    }
+
+
 def scale_overseas_price(raw, scalc_desz: int) -> float:
     """해외 시세 raw 값을 sCalcDesz(계산소수점)로 스케일. raw×10^scalc_desz.
 

@@ -28,16 +28,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 
 import requests
 
 from .config import APP_DIR
+
+log = logging.getLogger("localapp.kis_futures_broker")
 from .kis_overseas_futures import (
     build_overseas_cancel_body,
     build_overseas_order_body,
     parse_overseas_balance,
     parse_overseas_ccld_order_status,
+    parse_overseas_deposit,
     parse_overseas_orderable_qty,
     scale_overseas_price,
 )
@@ -65,12 +69,14 @@ _OV_QUOTE_PATH     = "/uapi/overseas-futureoption/v1/quotations/inquire-price"
 _OV_RVSECNCL_PATH  = "/uapi/overseas-futureoption/v1/trading/order-rvsecncl"
 _OV_CCLD_PATH      = "/uapi/overseas-futureoption/v1/trading/inquire-ccld"
 _OV_PSAMOUNT_PATH  = "/uapi/overseas-futureoption/v1/trading/inquire-psamount"
+_OV_DEPOSIT_PATH   = "/uapi/overseas-futureoption/v1/trading/inquire-deposit"
 _OV_ORDER_TR     = "OTFM3001U"
 _OV_BALANCE_TR   = "OTFM1412R"
 _OV_QUOTE_TR     = "HHDFC55010000"
 _OV_CANCEL_TR    = "OTFM3003U"   # 취소(정정 OTFM3002U는 Trader 미사용)
 _OV_CCLD_TR      = "OTFM3116R"   # 당일주문내역(체결조회)
 _OV_PSAMOUNT_TR  = "OTFM3304R"   # 주문가능조회(신규주문가능 계약수)
+_OV_DEPOSIT_TR   = "OTFM1411R"   # 예수금현황(계좌 가용증거금·총자산평가 — G1/G3 사이징·equity)
 
 # ── 토큰 디스크 캐시 ─────────────────────────────────────────────────────────────
 # 주식 KisBroker처럼 토큰을 디스크에 캐싱한다. 없으면 프로세스/인스턴스마다 재발급해
@@ -551,7 +557,28 @@ class KisFuturesBroker:
         # 사이징에 쓰여 간헐 게이트웨이 오류가 사이클을 깨면 안 된다(idempotent READ).
         data = self._read_get(f"{self._ov_base}{_OV_BALANCE_PATH}",
                               self._ov_headers(_OV_BALANCE_TR), params)
-        return parse_overseas_balance(data)
+        snap = parse_overseas_balance(data)            # {positions: [...]}
+        # G1/G3: 미결제내역(OTFM1412R)은 positions뿐 — 계좌 가용증거금·총자산은 별도
+        # 예수금현황(OTFM1411R)에서. 도메스틱 account_snapshot의 {positions, account}와 동형
+        # 만들어, broker_router 병합이 futures_order_cash(사이징)·futures_eval_krw(kill-switch)를
+        # 해외선물 계좌 기준으로 채우게 한다. 조회 실패 시 account 생략(positions만, graceful).
+        try:
+            snap["account"] = self.overseas_deposit()
+        except Exception as e:                          # noqa: BLE001 — 예수금 조회 실패는 positions 보존
+            log.warning("해외선물 예수금현황 조회 실패 — account 생략: %s", e)
+        return snap
+
+    def overseas_deposit(self, crcy: str = "TKR") -> dict:
+        """해외선물옵션 예수금현황(OTFM1411R) → {order_cash, equity, margin_total, eval_pnl}.
+
+        CRCY_CD=TKR(TOT_KRW)로 KIS가 KRW 환산한 계좌 요약을 받는다 — 통합 equity(KRW)·KRW 예산
+        base로 바로 쓸 수 있어 FX 추측이 없다. INQR_DT는 KST 오늘(계좌 스냅샷 기준일)."""
+        from .trader import kst_today
+        params = {"CANO": self._ov_cano, "ACNT_PRDT_CD": self._ov_acnt_prdt_cd,
+                  "CRCY_CD": crcy, "INQR_DT": kst_today().strftime("%Y%m%d")}
+        data = self._read_get(f"{self._ov_base}{_OV_DEPOSIT_PATH}",
+                              self._ov_headers(_OV_DEPOSIT_TR), params)
+        return parse_overseas_deposit(data)
 
     def overseas_price(self, symbol: str, scalc_desz: int = 0) -> float:
         data = self._read_get(f"{self._ov_base}{_OV_QUOTE_PATH}",

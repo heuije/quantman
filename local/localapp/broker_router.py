@@ -89,10 +89,14 @@ class BrokerRouter:
         return self._broker(symbol).sell_resv_limit(self._code(symbol), qty, limit_price)
 
     def price(self, symbol):
-        # 해외선물(CME)은 overseas_price(별도 시세 엔드포인트). ⚠ scalc_desz 미전달이라 raw
-        # 스케일 미적용(자동매매는 dataset yfinance 가격 사용, 이 경로는 드문 fallback) — 라이브 완성 M10.
+        # G2: 해외선물(CME) 실시간 시세는 **사용하지 않고 0 반환** → 호출자가 dataset(yfinance,
+        # 정확 스케일)로 fallback하거나(close-cycle _safe_price) skip(catch-up 손절 cur<=0 가드).
+        # KIS overseas_price(HHDFC55010000)는 ① CME 실시간시세 *유료구독* 필수(미구독 시 EGW00553
+        # 거부) ② sCalcDesz 미적용 raw(GC 192250 vs 실제 1922.5)라, 그 값을 손절 평가에 넣으면
+        # 거짓 take-profit/stop 트리거(catch-up on_tick)가 난다. 유료 실시간피드 + scalc_desz
+        # 스케일 배선은 해외선물 라이브 활성화 단계(M10)에서 함께. 자동매매 권위 시세=dataset.
         if self._is_fut(symbol) and futures_market(symbol) == "CME":
-            return self._futures.overseas_price(self._code(symbol))
+            return 0.0
         return self._broker(symbol).price(self._code(symbol))
 
     def today_open(self, symbol):
@@ -153,8 +157,10 @@ class BrokerRouter:
                 # equity 시계열이 이 표식으로 평가를 보류한다(거짓 -98% 청산 차단).
                 fetch_failed.append(marker)
                 continue
-            # 선물계좌 equity(국내 추정예탁자산, KRW)를 통합자산에 합산 → kill-switch·drawdown이
-            # 선물 PnL을 인지(미배선 시 완전 무시). 해외선물 equity(USD)는 라이브검증 후(Phase 5).
+            # 선물계좌 equity를 통합자산에 합산 → kill-switch·drawdown이 선물 PnL 인지(미배선 시
+            # 완전 무시). 국내=추정예탁자산(prsm_dpast_amt, KRW)·해외=총자산평가(OTFM1411R
+            # fm_tot_asst_evlu_amt, CRCY_CD=TKR로 KRW환산) — **둘 다 KRW라 FX 추측 없이 직접 합산**
+            # (G3: 종전 해외 account 미노출로 kill-switch가 해외선물 손익 무시하던 결함 닫음).
             fut_acct = fsnap.get("account") or {}
             fut_eq = fut_acct.get("equity")
             if fut_eq:
