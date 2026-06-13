@@ -34,24 +34,29 @@ def grid_search(
     cost: CostModel = CostModel(),
     light: bool = False,
     spec: ContractSpec = WTI_SPEC,
+    smooth_window: int = 1,
+    min_gap_days: int = 0,
 ) -> list[GridCell]:
     """모든 (side, threshold, horizon) 조합 백테스트.
 
     같은 threshold 의 신호 리스트는 horizon별로 재사용 (성능).
     light=True: run_backtest fast-path 사용 — summarize()가 안 읽는 per-trade
     MAE/MFE 와 portfolio MTM 계산을 건너뛴다 (grid 산출 지표는 불변).
+    smooth_window·min_gap_days: 신호 품질 옵션(generate_signals로 전달). 기본값=현행.
     """
     cells: list[GridCell] = []
     horizons = list(horizons)
 
     for th in short_thresholds:
-        sigs = generate_signals(df, short_thresholds=[th])
+        sigs = generate_signals(df, short_thresholds=[th],
+                                smooth_window=smooth_window, min_gap_days=min_gap_days)
         for h in horizons:
             bt = run_backtest(df, sigs, horizon_days=int(h), cost=cost, light=light, spec=spec)
             cells.append(GridCell(Side.SHORT, float(th), int(h), summarize(bt)))
 
     for th in long_thresholds:
-        sigs = generate_signals(df, long_thresholds=[th])
+        sigs = generate_signals(df, long_thresholds=[th],
+                                smooth_window=smooth_window, min_gap_days=min_gap_days)
         for h in horizons:
             bt = run_backtest(df, sigs, horizon_days=int(h), cost=cost, light=light, spec=spec)
             cells.append(GridCell(Side.LONG, float(th), int(h), summarize(bt)))
@@ -106,11 +111,14 @@ def walk_forward(
     cost: CostModel = CostModel(),
     require_min_trades: int = 5,
     spec: ContractSpec = WTI_SPEC,
+    smooth_window: int = 1,
+    min_gap_days: int = 0,
 ) -> WalkForwardResult:
     """split_date 기준 train/test 분할 walk-forward.
 
     train(split_date 이전)에서 grid_search → 거래 수 require_min_trades 이상 조합 중
     total_net_pnl_usd 최대 셀 선택 → 동일 파라미터로 test(split_date 이후) 평가.
+    smooth_window·min_gap_days: 신호 품질 옵션 — train·test 동일 적용(일관성).
     """
     df_train = df[df["date"] < split_date].reset_index(drop=True)
     df_test = df[df["date"] >= split_date].reset_index(drop=True)
@@ -120,7 +128,8 @@ def walk_forward(
             f"(train={len(df_train)}, test={len(df_test)})"
         )
 
-    cells = grid_search(df_train, short_thresholds, long_thresholds, horizons, cost, spec=spec)
+    cells = grid_search(df_train, short_thresholds, long_thresholds, horizons, cost,
+                        spec=spec, smooth_window=smooth_window, min_gap_days=min_gap_days)
     eligible = [c for c in cells if c.summary.n_trades >= require_min_trades]
     if not eligible:
         raise ValueError(
@@ -134,7 +143,8 @@ def walk_forward(
     short_th = [best.threshold] if best.side == Side.SHORT else []
     long_th = [best.threshold] if best.side == Side.LONG else []
     sigs_test = generate_signals(
-        df_test, short_thresholds=short_th, long_thresholds=long_th
+        df_test, short_thresholds=short_th, long_thresholds=long_th,
+        smooth_window=smooth_window, min_gap_days=min_gap_days,
     )
     bt_test = run_backtest(df_test, sigs_test, best.horizon_days, cost, spec=spec)
     oos = summarize(bt_test)

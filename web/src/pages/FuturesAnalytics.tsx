@@ -21,6 +21,7 @@ import {
   ReferenceLine,
   ResponsiveContainer,
   Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
@@ -34,6 +35,8 @@ import {
   type OilLatestPrice,
   type OilMacroContext,
   type OilSeasonality,
+  type OilSide,
+  type OilTrendEvents,
   type OilWalkForward,
 } from "../api";
 
@@ -101,12 +104,16 @@ export default function FuturesAnalytics() {
   const [rollCost, setRollCost] = useState<number | "">("");  // 롤 비용 %/회 (예: 0.5)
   const [exporting, setExporting] = useState(false);          // 엑셀 내보내기 진행중
 
+  // 신호 품질 옵션 (방법 1+3) — grid·backtest·추세탐색기에 공통 적용. 기본값=현행.
+  const [smoothWindow, setSmoothWindow] = useState(1);
+  const [minGapDays, setMinGapDays] = useState(0);
+
   // 종목 목록 1회 로드
   useEffect(() => {
     futuresApi.instruments().then(setInstruments).catch((e) => console.error("instruments", e));
   }, []);
 
-  // 종목 변경 시 전체 재로드
+  // 종목 변경 시 메타·계절성·매크로·가격 재로드
   useEffect(() => {
     setInfo(null);
     setPrice(null);
@@ -116,12 +123,16 @@ export default function FuturesAnalytics() {
     futuresApi.dataInfo(symbol).then(setInfo).catch((e) => console.error("data-info", e));
     futuresApi.seasonality(symbol).then(setSeason).catch((e) => console.error("seasonality", e));
     futuresApi.macroContext(symbol).then(setMacro).catch((e) => console.error("macro", e));
+    futuresApi.latestPrice(symbol).then(setPrice).catch((e) => console.error("price", e));
+  }, [symbol]);
 
+  // 그리드 — 종목 또는 신호 설정(평활·간격) 변경 시 재계산·최적 셀 자동선택.
+  useEffect(() => {
     setGridLoading(true);
     setGrid(null);
     setGridError(null);
     futuresApi
-      .grid(symbol)
+      .grid(symbol, { smooth_window: smoothWindow, min_gap_days: minGapDays })
       .then((g) => {
         setGrid(g);
         const trusted = g.filter((c) => !c.low_sample && c.net_pnl_usd > 0)
@@ -130,9 +141,7 @@ export default function FuturesAnalytics() {
       })
       .catch((e) => setGridError(e.message))
       .finally(() => setGridLoading(false));
-
-    futuresApi.latestPrice(symbol).then(setPrice).catch((e) => console.error("price", e));
-  }, [symbol]);
+  }, [symbol, smoothWindow, minGapDays]);
 
   useEffect(() => {
     if (!selected) return;
@@ -146,11 +155,13 @@ export default function FuturesAnalytics() {
         stop_loss_pct: sl === "" ? null : sl / 100,
         take_profit_pct: tp === "" ? null : tp / 100,
         roll_cost_pct: rollCost === "" ? 0 : rollCost / 100,
+        smooth_window: smoothWindow,
+        min_gap_days: minGapDays,
       })
       .then(setBacktest)
       .catch((e) => console.error("backtest", e))
       .finally(() => setBtLoading(false));
-  }, [symbol, selected, sl, tp, rollCost]);
+  }, [symbol, selected, sl, tp, rollCost, smoothWindow, minGapDays]);
 
   // 정렬·필터된 그리드
   const gridSorted = useMemo(() => {
@@ -251,6 +262,34 @@ export default function FuturesAnalytics() {
         <p className="oil-source-note">
           데이터: Yahoo Finance 최근월 선물 · 일배치 갱신 · front-month 롤 점프 포함
         </p>
+
+        {/* 신호 품질 옵션 (방법 1+3) — 히트맵·백테스트·탐색기 공통 */}
+        <div className="oil-toolbar" style={{ marginTop: 10 }}>
+          <span style={{ fontWeight: 600 }}>🎚 신호 설정:</span>
+          <label title="당일 고/저 대신 최근 N일 평균으로 임계 교차 판정 — 1일 스파이크 대신 지속 추세만 발화">
+            N일 평균 임계&nbsp;
+            <input
+              type="number" min={1} max={120} step={1} value={smoothWindow}
+              onChange={(e) => setSmoothWindow(Math.max(1, Number(e.target.value) || 1))}
+              style={{ width: 60 }}
+            />
+          </label>
+          <label title="같은 임계 신호 발화 후 최소 M영업일 재발화 억제 — 진동 노이즈 디바운스">
+            최소 신호 간격&nbsp;
+            <input
+              type="number" min={0} max={250} step={1} value={minGapDays}
+              onChange={(e) => setMinGapDays(Math.max(0, Number(e.target.value) || 0))}
+              style={{ width: 60 }}
+            />
+            &nbsp;일
+          </label>
+          <button className="ghost" onClick={() => { setSmoothWindow(1); setMinGapDays(0); }}>
+            리셋 (현행)
+          </button>
+          <span className="muted" style={{ fontSize: 12 }}>
+            히트맵·순위표·백테스트·추세탐색기에 공통 적용. 기본값(1 · 0)=현행 동작.
+          </span>
+        </div>
       </header>
 
       {/* ① 데이터 메타 */}
@@ -532,7 +571,7 @@ export default function FuturesAnalytics() {
       </section>
 
       {/* ⑦ Macro context (VIX·DXY) */}
-      <section className="panel">
+      <section className="panel" style={{ marginBottom: 16 }}>
         <h2 className="section-title">MACRO CONTEXT · 외생 변수 (VIX · DXY)</h2>
         {!macro ? (
           <div className="muted">로딩 중…</div>
@@ -541,6 +580,17 @@ export default function FuturesAnalytics() {
         ) : (
           <MacroView m={macro} />
         )}
+      </section>
+
+      {/* ⑧ 진입 추세 → 미래 수익률 탐색기 */}
+      <section className="panel">
+        <h2 className="section-title">TREND → FORWARD · 진입 추세 → 미래 수익률 탐색기</h2>
+        <TrendExplorer
+          symbol={symbol}
+          priceSym={priceSym}
+          smoothWindow={smoothWindow}
+          minGapDays={minGapDays}
+        />
       </section>
     </div>
   );
@@ -1343,5 +1393,284 @@ function SeasonTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+// ── ⑧ 진입 추세 → 미래 수익률 탐색기 ──────────────────────────────────
+// 서버가 (L,H) 이벤트 배열을 1회 내려주면, 증감율 밴드 필터·집계는 브라우저에서 실시간.
+function TrendExplorer({
+  symbol, priceSym, smoothWindow, minGapDays,
+}: {
+  symbol: string;
+  priceSym: string;
+  smoothWindow: number;
+  minGapDays: number;
+}) {
+  const [mode, setMode] = useState<"all" | "signal">("all");
+  const [side, setSide] = useState<OilSide>("short");
+  const [threshold, setThreshold] = useState<number | "">("");
+  const [lookback, setLookback] = useState(20);
+  const [horizon, setHorizon] = useState(60);
+  const [data, setData] = useState<OilTrendEvents | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [band, setBand] = useState<{ lo: number; hi: number } | null>(null);
+
+  // fetch — 모드·side·임계·L·H·신호설정 변경 시 (밴드는 클라 필터라 fetch 안 함).
+  useEffect(() => {
+    if (mode === "signal" && threshold === "") {
+      setData(null);
+      return;
+    }
+    setLoading(true);
+    setErr(null);
+    futuresApi
+      .trendEvents(symbol, {
+        lookback, horizon,
+        side: mode === "signal" ? side : undefined,
+        threshold: mode === "signal" ? Number(threshold) : undefined,
+        smooth_window: smoothWindow,
+        min_gap_days: minGapDays,
+      })
+      .then(setData)
+      .catch((e) => setErr(e.message))
+      .finally(() => setLoading(false));
+  }, [symbol, mode, side, threshold, lookback, horizon, smoothWindow, minGapDays]);
+
+  // 과거 증감율(%) 범위 — 밴드 슬라이더 경계 + 회귀선 끝점.
+  const pastRange = useMemo(() => {
+    if (!data || data.events.length === 0) return null;
+    const ps = data.events.map((e) => e.past_return * 100);
+    return { min: Math.floor(Math.min(...ps)), max: Math.ceil(Math.max(...ps)) };
+  }, [data]);
+
+  // 데이터 로드 시 밴드를 전체 범위로 리셋.
+  useEffect(() => {
+    setBand(pastRange ? { lo: pastRange.min, hi: pastRange.max } : null);
+  }, [pastRange]);
+
+  const filtered = useMemo(() => {
+    if (!data || !band) return [];
+    return data.events.filter(
+      (e) => e.past_return * 100 >= band.lo && e.past_return * 100 <= band.hi,
+    );
+  }, [data, band]);
+
+  const stats = useMemo(() => {
+    const n = filtered.length;
+    if (n === 0) return null;
+    const fwd = filtered.map((e) => e.forward_return * 100).sort((a, b) => a - b);
+    const mean = fwd.reduce((s, v) => s + v, 0) / n;
+    const median = fwd[Math.floor(n / 2)];
+    const win = (filtered.filter((e) => e.forward_return > 0).length / n) * 100;
+    return { n, mean, median, win };
+  }, [filtered]);
+
+  // 히스토그램 — 고정 5% 빈, 전체 이벤트 범위 기준(밴드 바뀌어도 빈 고정).
+  const histo = useMemo(() => {
+    if (!data || data.events.length === 0) return [];
+    const all = data.events.map((e) => e.forward_return * 100);
+    const lo = Math.floor(Math.min(...all) / 5) * 5;
+    const hi = Math.ceil(Math.max(...all) / 5) * 5;
+    const bins: { name: string; count: number; mid: number }[] = [];
+    for (let e = lo; e < Math.max(hi, lo + 5); e += 5) bins.push({ name: `${e}`, count: 0, mid: e + 2.5 });
+    for (const e of filtered) {
+      const v = e.forward_return * 100;
+      const idx = Math.max(0, Math.min(bins.length - 1, Math.floor((v - lo) / 5)));
+      bins[idx].count++;
+    }
+    return bins;
+  }, [data, filtered]);
+
+  // 산점도 — 과거%×미래%, 밴드 안/밖 구분, 과대 시 ~600점 다운샘플.
+  const scatter = useMemo(() => {
+    const inBand: { x: number; y: number }[] = [];
+    const outBand: { x: number; y: number }[] = [];
+    if (!data || !band) return { inBand, outBand };
+    const evs = data.events;
+    const stride = Math.max(1, Math.ceil(evs.length / 600));
+    for (let i = 0; i < evs.length; i += stride) {
+      const x = evs[i].past_return * 100;
+      const y = evs[i].forward_return * 100;
+      (x >= band.lo && x <= band.hi ? inBand : outBand).push({ x, y });
+    }
+    return { inBand, outBand };
+  }, [data, band]);
+
+  const reg = data?.regression ?? null;
+  // 회귀선 세그먼트(%-공간): slope 동일, intercept×100.
+  const regSeg = useMemo<[{ x: number; y: number }, { x: number; y: number }] | null>(() => {
+    if (!reg || !pastRange) return null;
+    const yAt = (xp: number) => reg.slope * xp + reg.intercept * 100;
+    return [
+      { x: pastRange.min, y: yAt(pastRange.min) },
+      { x: pastRange.max, y: yAt(pastRange.max) },
+    ];
+  }, [reg, pastRange]);
+
+  return (
+    <>
+      <p className="muted" style={{ marginBottom: 12 }}>
+        진입 직전 <b>과거 L일</b> 증감율과 <b>이후 H일</b> 수익률의 관계. 증감율 밴드를 좁히면 그 조건의
+        통계·분포가 <b>실시간</b>으로 갱신됩니다 (예: "과거 20일 +3~+12% → 이후 60일 수익률").
+      </p>
+
+      <div className="oil-toolbar">
+        <div className="oil-radio-group">
+          <label className={mode === "all" ? "active" : ""}>
+            <input type="radio" name="te-mode" checked={mode === "all"} onChange={() => setMode("all")} />
+            전체 영업일 (베이스라인)
+          </label>
+          <label className={mode === "signal" ? "active" : ""}>
+            <input type="radio" name="te-mode" checked={mode === "signal"} onChange={() => setMode("signal")} />
+            신호 앵커 (임계별)
+          </label>
+        </div>
+        {mode === "signal" && (
+          <>
+            <label>
+              방향&nbsp;
+              <select value={side} onChange={(e) => setSide(e.target.value as OilSide)}>
+                <option value="short">Short (위 터치)</option>
+                <option value="long">Long (아래 터치)</option>
+              </select>
+            </label>
+            <label>
+              임계값&nbsp;{priceSym}
+              <input
+                type="number" step="any" value={threshold} placeholder="예: 90"
+                onChange={(e) => setThreshold(e.target.value === "" ? "" : Number(e.target.value))}
+                style={{ width: 80 }}
+              />
+            </label>
+          </>
+        )}
+        <label>
+          과거 L일&nbsp;
+          <input type="number" min={1} max={250} value={lookback}
+            onChange={(e) => setLookback(Math.max(1, Number(e.target.value) || 1))} style={{ width: 64 }} />
+        </label>
+        <label>
+          미래 H일&nbsp;
+          <input type="number" min={1} max={500} value={horizon}
+            onChange={(e) => setHorizon(Math.max(1, Number(e.target.value) || 1))} style={{ width: 64 }} />
+        </label>
+      </div>
+
+      {mode === "signal" && threshold === "" ? (
+        <div className="muted">임계값을 입력하면 그 신호일 기준 분석이 표시됩니다.</div>
+      ) : loading ? (
+        <div className="muted">계산 중…</div>
+      ) : err ? (
+        <div className="error">{err}</div>
+      ) : !data || data.events.length === 0 ? (
+        <div className="muted">해당 조건의 이벤트가 없습니다 — L/H/임계를 조정하세요.</div>
+      ) : (
+        <>
+          {band && pastRange && (
+            <div className="oil-toolbar" style={{ marginTop: 4 }}>
+              <span style={{ fontWeight: 600 }}>증감율 밴드:</span>
+              <label>
+                하한 {band.lo}%
+                <input
+                  type="range" min={pastRange.min} max={pastRange.max} step={1} value={band.lo}
+                  onChange={(e) => setBand((b) => (b ? { ...b, lo: Math.min(Number(e.target.value), b.hi) } : b))}
+                  style={{ width: 150, marginLeft: 6 }}
+                />
+              </label>
+              <label>
+                상한 {band.hi}%
+                <input
+                  type="range" min={pastRange.min} max={pastRange.max} step={1} value={band.hi}
+                  onChange={(e) => setBand((b) => (b ? { ...b, hi: Math.max(Number(e.target.value), b.lo) } : b))}
+                  style={{ width: 150, marginLeft: 6 }}
+                />
+              </label>
+              <button className="ghost" onClick={() => setBand({ lo: pastRange.min, hi: pastRange.max })}>
+                전체
+              </button>
+            </div>
+          )}
+
+          {stats && (
+            <div className="muted" style={{ margin: "10px 0", fontSize: 14 }}>
+              과거 <b>{lookback}일</b> 증감율 <b>{band?.lo}% ~ {band?.hi}%</b>였던 <b>{stats.n}건</b> → 이후{" "}
+              <b>{horizon}일</b> 평균{" "}
+              <b className={stats.mean >= 0 ? "pos" : "neg"}>{(stats.mean >= 0 ? "+" : "") + stats.mean.toFixed(2)}%</b>,
+              승률 {stats.win.toFixed(0)}%
+              {data.low_sample && (
+                <span style={{ color: "#e6c259" }}> · ⚠ 전체 표본 {data.events.length}건(&lt;30) 저신뢰</span>
+              )}
+            </div>
+          )}
+
+          {stats && (
+            <div className="bt-metrics">
+              <Metric label="매칭 이벤트" value={stats.n} highlight={stats.n < 30 ? "warn" : null} />
+              <Metric label="평균 수익률" value={(stats.mean >= 0 ? "+" : "") + stats.mean.toFixed(2) + "%"}
+                highlight={stats.mean >= 0 ? "good" : "bad"} />
+              <Metric label="중앙값" value={(stats.median >= 0 ? "+" : "") + stats.median.toFixed(2) + "%"} />
+              <Metric label="승률" value={stats.win.toFixed(0) + "%"} />
+              {reg && (
+                <Metric
+                  label="회귀 β (추세→수익)" value={reg.slope.toFixed(2)}
+                  sub={`전역 R²=${reg.r_squared.toFixed(2)} · HAC p=${reg.hac_p_value.toFixed(3)} · n=${reg.n}`}
+                />
+              )}
+            </div>
+          )}
+
+          <div className="muted" style={{ fontSize: 13, margin: "12px 0 6px" }}>
+            이후 {horizon}일 수익률 분포 (밴드 내 {stats?.n ?? 0}건)
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={histo}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+              <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v + "%"} />
+              <YAxis tick={{ fontSize: 10, fill: "#9aa" }} allowDecimals={false} />
+              <Tooltip
+                labelStyle={{ color: "#333" }}
+                formatter={(v) => [`${v}건`, "이벤트"]}
+                labelFormatter={(l) => `수익률 ${l}% ~ ${Number(l) + 5}%`}
+              />
+              <Bar dataKey="count">
+                {histo.map((b, i) => (
+                  <Cell key={i} fill={b.mid >= 0 ? "#62c884" : "#d96265"} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+
+          <div className="muted" style={{ fontSize: 13, margin: "16px 0 6px" }}>
+            진입 직전 추세(x) × 이후 수익률(y) — <span style={{ color: "#378ADD" }}>● 밴드 내</span>{" "}
+            <span style={{ color: "#9aa" }}>● 밴드 밖</span>
+            {reg && <span> · 회귀선 β={reg.slope.toFixed(2)}</span>}
+          </div>
+          <ResponsiveContainer width="100%" height={300}>
+            <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+              <XAxis type="number" dataKey="x" name="과거 증감율"
+                tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v + "%"}
+                domain={["dataMin", "dataMax"]} />
+              <YAxis type="number" dataKey="y" name="이후 수익률"
+                tick={{ fontSize: 10, fill: "#9aa" }} tickFormatter={(v) => v + "%"} />
+              <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(v) => `${Number(v).toFixed(2)}%`} />
+              <ReferenceLine y={0} stroke="#666" />
+              {band && <ReferenceLine x={band.lo} stroke="#378ADD" strokeDasharray="4 3" />}
+              {band && <ReferenceLine x={band.hi} stroke="#378ADD" strokeDasharray="4 3" />}
+              {regSeg && <ReferenceLine segment={regSeg} stroke="#e6c259" strokeWidth={2} />}
+              <Scatter data={scatter.outBand} fill="#9aa" fillOpacity={0.35} />
+              <Scatter data={scatter.inBand} fill="#378ADD" fillOpacity={0.75} />
+            </ScatterChart>
+          </ResponsiveContainer>
+
+          <div className="muted" style={{ fontSize: 11, marginTop: 10 }}>
+            ⚠️ forward 수익률은 <b>종가-종가 서술용</b>(실제 백테스트의 익일 시가 진입·비용·SL/TP와 다름 — 관계
+            측정용). forward 윈도우가 겹쳐 자기상관이 있어 회귀 p값은 <b>Newey-West(HAC)</b>로 겹침 보정했습니다.
+            밴드를 좁히면 표본이 줄어 통계가 불안정해질 수 있습니다.
+          </div>
+        </>
+      )}
+    </>
   );
 }

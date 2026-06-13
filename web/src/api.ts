@@ -501,6 +501,35 @@ export interface OilWalkForward {
   out_of_sample: OilSummary;
 }
 
+// ─── Trend → Forward (진입 추세 → 미래 수익률) ──────────────────────
+export interface OilTrendEvent {
+  date: string;
+  close: number;
+  past_return: number;      // close[t]/close[t-lookback]-1
+  forward_return: number;   // close[t+horizon]/close[t]-1
+}
+
+export interface OilTrendRegression {
+  slope: number;
+  intercept: number;
+  r_squared: number;
+  n: number;
+  hac_se: number;
+  hac_t_stat: number;
+  hac_p_value: number;      // 정규근사 양측 p
+}
+
+export interface OilTrendEvents {
+  lookback: number;
+  horizon: number;
+  mode: "all" | "signal";
+  side: OilSide | null;
+  threshold: number | null;
+  events: OilTrendEvent[];
+  regression: OilTrendRegression | null;
+  low_sample: boolean;
+}
+
 export const futuresApi = {
   instruments: () => req<OilInstrument[]>("/futures/instruments"),
   dataInfo: (sym: string) => req<OilDataInfo>(`/futures/${sym}/data-info`),
@@ -518,6 +547,8 @@ export const futuresApi = {
     horizons?: number[];
     commission?: number;
     slippage_ticks?: number;
+    smooth_window?: number;
+    min_gap_days?: number;
   } = {}) => {
     const qs = new URLSearchParams();
     if (opts.shorts?.length) qs.set("shorts", opts.shorts.join(","));
@@ -526,6 +557,10 @@ export const futuresApi = {
     if (opts.commission !== undefined) qs.set("commission", String(opts.commission));
     if (opts.slippage_ticks !== undefined)
       qs.set("slippage_ticks", String(opts.slippage_ticks));
+    if (opts.smooth_window !== undefined && opts.smooth_window !== 1)
+      qs.set("smooth_window", String(opts.smooth_window));
+    if (opts.min_gap_days !== undefined && opts.min_gap_days !== 0)
+      qs.set("min_gap_days", String(opts.min_gap_days));
     const q = qs.toString();
     return req<OilGridCell[]>(`/futures/${sym}/grid` + (q ? "?" + q : ""));
   },
@@ -543,6 +578,8 @@ export const futuresApi = {
     stop_loss_pct?: number | null;
     take_profit_pct?: number | null;
     roll_cost_pct?: number;
+    smooth_window?: number;
+    min_gap_days?: number;
   }) =>
     req<OilBacktest>(`/futures/${sym}/backtest`, {
       method: "POST",
@@ -585,6 +622,8 @@ export const futuresApi = {
     split_date: string;
     commission?: number;
     slippage_ticks?: number;
+    smooth_window?: number;
+    min_gap_days?: number;
   }) =>
     req<OilWalkForward>(`/futures/${sym}/walkforward`, {
       method: "POST",
@@ -592,4 +631,24 @@ export const futuresApi = {
     }),
   seasonality: (sym: string) => req<OilSeasonality>(`/futures/${sym}/seasonality`),
   macroContext: (sym: string) => req<OilMacroContext>(`/futures/${sym}/macro-context`),
+  trendEvents: (sym: string, opts: {
+    lookback: number;
+    horizon: number;
+    side?: OilSide;
+    threshold?: number;
+    smooth_window?: number;
+    min_gap_days?: number;
+  }) => {
+    const qs = new URLSearchParams({
+      lookback: String(opts.lookback),
+      horizon: String(opts.horizon),
+    });
+    if (opts.side) qs.set("side", opts.side);
+    if (opts.threshold !== undefined) qs.set("threshold", String(opts.threshold));
+    if (opts.smooth_window !== undefined && opts.smooth_window !== 1)
+      qs.set("smooth_window", String(opts.smooth_window));
+    if (opts.min_gap_days !== undefined && opts.min_gap_days !== 0)
+      qs.set("min_gap_days", String(opts.min_gap_days));
+    return req<OilTrendEvents>(`/futures/${sym}/trend-events?` + qs.toString());
+  },
 };
