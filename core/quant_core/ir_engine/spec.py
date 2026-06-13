@@ -26,7 +26,7 @@ from ..blocks.integrity import DatasetMeta, integrity_issues
 from ..blocks.node import Node, referenced_columns, referenced_symbols
 from ..blocks.validate import (SEV_ERROR, SEV_INTEGRITY_WARN, Issue, has_market_source,
                                meaningfulness_issues, prioritize, validate)
-from ..exec_defaults import is_futures
+from ..exec_defaults import FX_USDKRW_SYMBOL, instrument_spec, is_futures
 
 # ── 유니버스 (대상 종목 집합) ─────────────────────────────────────────────────
 
@@ -715,6 +715,12 @@ def needed_symbols(s: StrategyIR) -> Optional[set[str]]:
     for nd in nodes:
         if nd is not None:
             syms |= referenced_symbols(nd)
+    # F-01 사이징 FX — 비-KRW(USD) 상품 + 정액(₩) 사이징이면 엔진 _budget·라이브
+    # event_buy_qty가 환산에 쓰는 원달러환율 시계열을 dataset 요구 집합에 포함한다
+    # (없으면 엔진이 명시 에러·라이브가 발주 보류로 멈추므로 로드가 필수).
+    if (s.position.sizing.mode == "fixed_amount" and s.position.sizing.amount_krw
+            and any(instrument_spec(x).currency != "KRW" for x in s.universe.symbols)):
+        syms.add(FX_USDKRW_SYMBOL)
     # 전략 조합(strat:<id>) 참조가 있으면 자식 전략이 임의 데이터(전 유니버스 팩터 등)를
     # 필요로 할 수 있어 부분집합으로 좁힐 수 없다 → 전체 로드(None)로 안전하게 폴백.
     if any(str(x).startswith("strat:") for x in syms):

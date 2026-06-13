@@ -100,6 +100,13 @@ def merged_execution(strategy_exec: dict | None) -> dict:
 #   있다(레거시 oil_futures 경로). core는 server를 import 못 하므로 여기를 단일 출처로 삼고,
 #   추후 futures_config가 이 카탈로그를 읽도록 통합한다(중복 드리프트 제거).
 
+# 원/달러 환율 dataset 키 — data_fetcher.MACRO_FRED_SYMBOLS["원달러환율"](FRED DEXKOUS)과
+# 같은 리터럴(core/tests/test_sizing_fx.py가 동일성 고정). fixed_amount(₩정액)를 USD 상품
+# 예산으로 환산할 때 백테스트(_budget)·라이브(event_buy_qty)가 이 시계열 하나만 본다
+# (데이터포인트당 소스 1개 — 브로커 환율 등 다른 소스 fallback 금지).
+FX_USDKRW_SYMBOL = "원달러환율"
+
+
 @dataclass(frozen=True)
 class InstrumentSpec:
     """상품 계약명세. equity면 multiplier=1·margin=1·만기없음.
