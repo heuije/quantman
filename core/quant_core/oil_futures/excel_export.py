@@ -63,6 +63,7 @@ def build_oil_excel(
     commission_per_contract: float = 2.5,
     slippage_ticks: int = 1,
     roll_cost_pct: float = 0.0,
+    min_gap_days: int = 0,
     name: str = "선물",
     currency: str = "USD",
     unit: str = "",
@@ -136,6 +137,15 @@ def build_oil_excel(
         cell.border = border
         cell.alignment = center
 
+    # ── 쿨타임 입력 (노란 칸 $H$5) — 신호 후 N영업일 같은 임계 신호 무시 ──
+    ws["G5"] = "쿨타임 (영업일, 0=없음)"
+    ws["G5"].font = bold
+    cd = ws["H5"]
+    cd.value = min_gap_days
+    cd.fill = input_fill
+    cd.border = border
+    cd.alignment = center
+
     # ── 요약 (D2~E6) ─────────────────────────────────────────────────
     n = len(df)
     last = 8 + n            # 데이터는 9행부터 → 마지막 데이터 행
@@ -180,12 +190,15 @@ def build_oil_excel(
         ws.cell(row=r, column=4, value=float(row["low"]))
         ws.cell(row=r, column=5, value=float(row["close"]))
 
-        # F 신호: short=고가 위로 첫터치, long=저가 아래로 첫터치 (전일 비교 히스테리시스)
-        ws.cell(row=r, column=6, value=(
-            f'=IF($B$2="short",'
-            f'IF(AND(C{r}>=$B$3,C{r-1}<$B$3),1,""),'
-            f'IF(AND(D{r}<=$B$3,D{r-1}>$B$3),1,""))'
-        ))
+        # F 신호: 첫터치(전일 비교 히스테리시스) ∧ 쿨타임($H$5) — 직전 (쿨타임−1)영업일 내
+        #   유효신호 있으면 무시. F가 곧 '유효신호'라 G~J(진입/청산)는 그대로 F 참조.
+        #   윈도우=쿨−1 (generate_signals 'i−last>=min_gap'와 일치, off-by-one 주의).
+        #   OFFSET 높이는 MIN(쿨−1, r−1)로 클램프(row1 위 #REF 방지; 헤더행은 신호 0이라 무해).
+        raw = (f'IF($B$2="short",AND(C{r}>=$B$3,C{r-1}<$B$3),'
+               f'AND(D{r}<=$B$3,D{r-1}>$B$3))')
+        win = f'MIN($H$5-1,{r - 1})'
+        cool = (f'IF($H$5<=1,1,IF(COUNTIF(OFFSET(F{r},-{win},0,{win},1),1)=0,1,""))')
+        ws.cell(row=r, column=6, value=f'=IF({raw},{cool},"")')
         # G 진입일 = 신호 다음 영업일 날짜
         ws.cell(row=r, column=7,
                 value=f'=IF(F{r}=1,IFERROR(OFFSET(A{r},1,0),""),"")')
@@ -259,6 +272,7 @@ def build_oil_excel(
         df,
         short_thresholds=[threshold] if side == "short" else [],
         long_thresholds=[threshold] if side == "long" else [],
+        min_gap_days=min_gap_days,
     )
     bt = run_backtest(
         df, sigs, horizon_days,

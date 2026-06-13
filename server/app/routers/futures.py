@@ -540,6 +540,7 @@ def export_excel(symbol: str, req: BacktestRequest):
         commission_per_contract=req.commission,
         slippage_ticks=req.slippage_ticks,
         roll_cost_pct=req.roll_cost_pct,
+        min_gap_days=req.min_gap_days,
         name=cfg.name,
         currency=cfg.currency,
         unit=cfg.unit,
