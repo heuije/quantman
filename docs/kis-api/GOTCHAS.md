@@ -5,6 +5,28 @@
 
 ---
 
+## 2026-06-13 — 해외선물 계좌 가용증거금·총자산: OTFM1411R 예수금현황 (사이징 예산·kill-switch equity)
+
+- **배경**: 해외선물 사이징 예산·kill-switch equity가 해외선물 *계좌*가 아니라 국내선물/주식
+  현금으로 잘못 계산되던 결함(G1/G3). 근본=잔고 조회 OTFM1412R(inquire-unpd)이 **미결제내역
+  (positions)만** 주고 계좌 가용증거금·평가금액을 안 줌.
+- **해결 엔드포인트(스펙)**: **OTFM1411R** `GET /uapi/overseas-futureoption/v1/trading/inquire-deposit`
+  (해외선물옵션 예수금현황, 실전 전용·모의 미지원). Query: `CANO·ACNT_PRDT_CD·CRCY_CD·INQR_DT`.
+  - **`CRCY_CD=TKR`**(TOT_KRW)로 요청하면 KIS가 **KRW 환산** 계좌 요약을 준다(TUS=TOT_USD·KRW·USD…).
+    → futures_order_cash(예산)·futures_eval_krw(equity)에 **FX 추측 없이 직접** 합산.
+  - output(단일 object) 핵심 필드: **`fm_ord_psbl_amt`**(주문가능금액→사이징 예산)·
+    **`fm_tot_asst_evlu_amt`**(총자산평가금액→kill-switch equity)·`fm_brkg_mgn_amt`(위탁증거금)·
+    `fm_dnca_rmnd`(예수금잔액)·`fm_fuop_evlu_pfls_amt`(선물옵션평가손익)·`fm_mntn_mgn_amt`(유지증거금).
+- **우리 코드**: `kis_overseas_futures.py` `parse_overseas_deposit` · `kis_futures_broker.py`
+  `overseas_deposit`(CRCY_CD=TKR)·`overseas_account_snapshot`이 positions+account 결합 ·
+  `broker_router` 병합이 futures_order_cash/futures_eval_krw 채움.
+- ⚠ **모의 미지원** — 필드 *값* 라이브 대조는 첫 실거래(스펙 기반 구현·단위검증만). spec=`docs/kis-api/raw/해외선물옵션_주문_계좌.xlsx`("예수금현황" 시트).
+- **G2(시세)**: CME 실시간시세(HHDFC55010000)는 **유료구독 필수**(미구독 EGW00553) + sCalcDesz 미적용
+  raw. broker_router.price(CME)가 그 미스케일값을 손절에 넣어 거짓 트리거하던 것 → **0 반환**(호출자
+  dataset fallback/skip). 유료피드+스케일 배선은 라이브 활성화 단계. 자동매매 권위 시세=dataset(yfinance).
+
+---
+
 ## 2026-06-12 — 체결 확인은 발주 직후 단일 조회로 안 잡힌다 (모의 ~27초 지연·종가 단일가)
 
 - **증상**: 선물 종가청산(15:40 발주, 0000004525)이 종가 단일가(~15:45)에 정상

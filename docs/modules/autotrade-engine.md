@@ -157,6 +157,20 @@ green) · `fix/parity-oracle-fx`(WS-2: 사이징 FX+백테스트=라이브 경�
 
 **검증.** TDD 재현 테스트 신규(P1 3·P2 1·P3 2·P4 5)+기존 갱신, **core 259·local 381·루트골든 390·
 server 233 green**(골든 byte-identical 보존). 라이브 게이트는 코스피200만 개방(해외 차단 유지)이라
-**전부 휴면**(프로덕션 무영향). **잔여(라이브 의존, 모의 미지원)**: 해외 잔고 populated 필드·취소
-ORD_DT 추적·시세 sCalcDesz·해외 equity USD환산·라이브 게이트 개방 — 첫 실거래 캡처로 확정.
-**미배포**(머지·로컬앱 릴리즈는 사용자 승인 대기).
+**전부 휴면**(프로덕션 무영향). **✅ P1~P4 머지·릴리즈**(독립리뷰 F-1 종가청산 동시성·F-2 EGW00201
+HTTP500 반영, PR#129·v0.9.38-beta).
+
+### [진행중] 해외선물 게이트 개방 블로커 G1~G3 닫기 (2026-06-13, 검토 후속)
+end-to-end 준비도 독립 검토에서 게이트 개방 블로커 3건 식별 후 자율 수정:
+- **G1 사이징 예산 base + G3 kill-switch equity**(같은 뿌리): 해외선물 주문 예산·equity가 해외선물
+  *계좌*가 아니라 국내선물/주식 KRW 현금 기준이던 결함. 근본=잔고 OTFM1412R이 positions만 줌.
+  **KIS 공식 스펙 OTFM1411R(예수금현황 inquire-deposit, CRCY_CD=TKR로 KRW환산)** 신규 배선 —
+  `fm_ord_psbl_amt`(주문가능→예산)·`fm_tot_asst_evlu_amt`(총자산→equity). `parse_overseas_deposit`+
+  `overseas_deposit`+`overseas_account_snapshot`이 positions+account 결합 → broker_router 병합이
+  futures_order_cash/futures_eval_krw 채움(둘 다 KRW=FX 추측 없음). **추측 아닌 스펙 필드**(모의
+  미지원이라 값 대조는 첫 실거래).
+- **G2 시세**: CME 실시간시세 유료구독(EGW00553)+미스케일 raw라 broker_router.price(CME)가 손절에
+  거짓 트리거하던 것 → **0 반환**(호출자 dataset/skip). 유료피드+scalc_desz는 라이브 단계.
+- 검증: 신규 테스트(parse_deposit·account 결합·router 병합·graceful·price 0) **local 387·루트골든 390
+  green**. KB: `docs/kis-api/GOTCHAS.md`(OTFM1411R). ⚠ **잔여 라이브 의존**: G4 체결조회 필드·G6 ODNO·
+  종가청산 라운드트립·게이트 개방 = 첫 실거래. 미배포(머지·릴리즈 승인 대기).

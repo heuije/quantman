@@ -89,13 +89,22 @@ class BrokerRouter:
         return self._broker(symbol).sell_resv_limit(self._code(symbol), qty, limit_price)
 
     def price(self, symbol):
-        # 해외선물(CME)은 overseas_price(별도 시세 엔드포인트). ⚠ scalc_desz 미전달이라 raw
-        # 스케일 미적용(자동매매는 dataset yfinance 가격 사용, 이 경로는 드문 fallback) — 라이브 완성 M10.
+        # G2: 해외선물(CME) 실시간 시세는 **사용하지 않고 0 반환** → 호출자가 dataset(yfinance,
+        # 정확 스케일)로 fallback하거나(close-cycle _safe_price) skip(catch-up 손절 cur<=0 가드).
+        # KIS overseas_price(HHDFC55010000)는 ① CME 실시간시세 *유료구독* 필수(미구독 시 EGW00553
+        # 거부) ② sCalcDesz 미적용 raw(GC 192250 vs 실제 1922.5)라, 그 값을 손절 평가에 넣으면
+        # 거짓 take-profit/stop 트리거(catch-up on_tick)가 난다. 유료 실시간피드 + scalc_desz
+        # 스케일 배선은 해외선물 라이브 활성화 단계(M10)에서 함께. 자동매매 권위 시세=dataset.
         if self._is_fut(symbol) and futures_market(symbol) == "CME":
-            return self._futures.overseas_price(self._code(symbol))
+            return 0.0
         return self._broker(symbol).price(self._code(symbol))
 
     def today_open(self, symbol):
+        # G2: price()와 동형 — 해외선물(CME) 시세는 미스케일·유료(EGW00553)이고, futures 브로커의
+        # today_open은 국내 시세 TR(FHMIF10000000)이라 CME 코드로 호출하면 오라우팅된다. 0 반환 →
+        # catch-up 매수가 호출자(trader open_price<=0 가드)가 prev_close(dataset) ref로 fallback.
+        if self._is_fut(symbol) and futures_market(symbol) == "CME":
+            return 0.0
         return self._broker(symbol).today_open(self._code(symbol))
 
     def cancel(self, order_no, symbol, qty):
@@ -153,8 +162,10 @@ class BrokerRouter:
                 # equity 시계열이 이 표식으로 평가를 보류한다(거짓 -98% 청산 차단).
                 fetch_failed.append(marker)
                 continue
-            # 선물계좌 equity(국내 추정예탁자산, KRW)를 통합자산에 합산 → kill-switch·drawdown이
-            # 선물 PnL을 인지(미배선 시 완전 무시). 해외선물 equity(USD)는 라이브검증 후(Phase 5).
+            # 선물계좌 equity를 통합자산에 합산 → kill-switch·drawdown이 선물 PnL 인지(미배선 시
+            # 완전 무시). 국내=추정예탁자산(prsm_dpast_amt, KRW)·해외=총자산평가(OTFM1411R
+            # fm_tot_asst_evlu_amt, CRCY_CD=TKR로 KRW환산) — **둘 다 KRW라 FX 추측 없이 직접 합산**
+            # (G3: 종전 해외 account 미노출로 kill-switch가 해외선물 손익 무시하던 결함 닫음).
             fut_acct = fsnap.get("account") or {}
             fut_eq = fut_acct.get("equity")
             if fut_eq:
@@ -162,6 +173,10 @@ class BrokerRouter:
                     float(out["balance"].get("futures_eval_krw", 0) or 0) + float(fut_eq))
             # 선물 주문가능 증거금현금 — 선물 사이징 예산 base(trader). 주식 현금(balance["cash"])과
             # 분리: 선물 주문은 선물계좌 증거금으로 체결되므로 주식 현금으로 사이징하면 안 된다.
+            # ⚠ 한계: 국내선물·해외선물 계좌(별도 CANO)를 둘 다 구성한 사용자는 futures_order_cash가
+            # 두 계좌 합산 → 단일 시장 주문 1건에 합산 예산을 써 과대사이징 가능. 현재 게이트가
+            # 코스피200만 개방(해외 차단)이라 양쪽 동시 라이브가 불가능해 미발생 — per-market 예산
+            # 분리는 다계좌 라이브 활성화 단계 과제(equity 합산은 보수적=발동 지연이라 영향 작음).
             fut_cash = fut_acct.get("order_cash")
             if fut_cash:
                 out["balance"]["futures_order_cash"] = (
