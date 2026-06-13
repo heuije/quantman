@@ -89,7 +89,12 @@ class PairingRequest(SQLModel, table=True):
 
 
 class SyncSnapshot(SQLModel, table=True):
-    """로컬앱이 푸시한 안전정보 스냅샷 (잔고·포지션·자산곡선·체결로그)."""
+    """로컬앱이 푸시한 안전정보 스냅샷 (잔고·포지션·자산곡선·체결로그).
+
+    30일 초과 row는 일일 pruning cron(main.py db_prune 04:00 KST → db.prune_old_rows)
+    이 정리하되, 유저별 최신 1건은 보존한다(최신 1건 의존 소비처:
+    preview_engine·/sync/snapshot·/trading/timeline·/portfolio).
+    """
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(index=True, foreign_key="user.id")
     device_id: int = Field(foreign_key="device.id")
@@ -102,7 +107,8 @@ class HeartbeatEvent(SQLModel, table=True):
 
     "missed" cycle의 진짜 원인 판정에 쓴다(A=앱 OFF vs B=앱 ON·cycle 미발동).
     UserSettings.last_heartbeat_at는 latest만 — 과거 임의 시점 alive 판정엔
-    부족하므로 별도 이력 테이블로 보관. 30일 이상 row는 cleanup cron이 정리.
+    부족하므로 별도 이력 테이블로 보관. 30일 초과 row는 일일 pruning cron
+    (main.py db_prune 04:00 KST → db.prune_old_rows)이 정리.
     """
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(index=True, foreign_key="user.id")
