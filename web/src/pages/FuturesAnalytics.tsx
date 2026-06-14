@@ -578,7 +578,7 @@ export default function FuturesAnalytics() {
 
       {/* ⑧ 진입 추세 → 미래 수익률 탐색기 */}
       <section className="panel">
-        <h2 className="section-title">TREND → FORWARD · 진입 추세 → 미래 수익률 탐색기</h2>
+        <h2 className="section-title">TREND → FORWARD · 진입 추세 → 향후 종가 증감율 탐색기</h2>
         <TrendExplorer symbol={symbol} priceSym={priceSym} />
       </section>
     </div>
@@ -1340,22 +1340,21 @@ function teNiceStep(raw: number): number {
   return nice * mag;
 }
 
-// 매칭 조건의 평균 자산수익에 따른 한줄 투자의견 (표시 토글과 독립).
-function teOpinion(assetMean: number): { txt: string; cls: string } {
-  if (assetMean >= 4) return { txt: "📈 강한 롱 우위", cls: "pos" };
-  if (assetMean >= 1) return { txt: "📈 롱 우위", cls: "pos" };
-  if (assetMean <= -4) return { txt: "📉 강한 숏 우위", cls: "neg" };
-  if (assetMean <= -1) return { txt: "📉 숏 우위", cls: "neg" };
+// 매칭 조건의 평균 향후 종가 증감율에 따른 한줄 전망.
+function teOpinion(mean: number): { txt: string; cls: string } {
+  if (mean >= 4) return { txt: "📈 강한 상승 경향", cls: "pos" };
+  if (mean >= 1) return { txt: "📈 상승 경향", cls: "pos" };
+  if (mean <= -4) return { txt: "📉 강한 하락 경향", cls: "neg" };
+  if (mean <= -1) return { txt: "📉 하락 경향", cls: "neg" };
   return { txt: "⚖ 중립 (뚜렷한 방향성 없음)", cls: "muted" };
 }
 
-// ⑧ 진입 추세 → 미래 수익률 탐색기.
-// 폼(전략유형·현재값·과거L·증감율범위·미래H)을 채우고 [확인]을 누르면 계산: 문장 결과+투자의견 /
-// 전체기간 가격차트(매칭 구간 음영) / 현재값×증감율 히트맵 / 회귀(과거×미래). 롱/숏 토글로 수익 부호 전환.
+// ⑧ 진입 추세 → 향후 종가 증감율 탐색기.
+// 폼(종가범위·과거L·증감율범위·미래H)을 채우고 [확인]을 누르면 계산: 문장 결과+전망 /
+// 전체기간 가격차트(매칭 구간 음영) / 종가대×증감율 히트맵 / 회귀(과거×미래).
 // /trend-events(이벤트) + /prices(전체 가격 시계열)을 브라우저에서 집계.
 function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string }) {
   // 입력 draft (확인 전엔 계산 안 함)
-  const [dSide, setDSide] = useState<"long" | "short">("long");
   const [dNLo, setDNLo] = useState<number | "">("");   // 종가 하한
   const [dNHi, setDNHi] = useState<number | "">("");   // 종가 상한
   const [dL, setDL] = useState(20);
@@ -1365,7 +1364,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
   // 적용된 설정 (확인 클릭 시 스냅샷)
   const [applied, setApplied] = useState<
-    { side: "long" | "short"; nLo: number; nHi: number; L: number; H: number; lo: number; hi: number } | null
+    { nLo: number; nHi: number; L: number; H: number; lo: number; hi: number } | null
   >(null);
   const [data, setData] = useState<OilTrendEvents | null>(null);
   const [prices, setPrices] = useState<OilPricePoint[]>([]);
@@ -1420,7 +1419,6 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     const nLo = dNLo === "" ? -1e9 : Number(dNLo);
     const nHi = dNHi === "" ? 1e9 : Number(dNHi);
     const a = {
-      side: dSide,
       nLo: Math.min(nLo, nHi), nHi: Math.max(nLo, nHi),
       L: dL, H: dH,
       lo: Math.min(lo, hi), hi: Math.max(lo, hi),
@@ -1433,8 +1431,6 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
       .catch((e) => setErr(e.message))
       .finally(() => setLoading(false));
   }
-
-  const sign = applied?.side === "short" ? -1 : 1;   // 숏 = −자산수익
 
   // 가격 버킷(히트맵 행) — 전체 가격 기준.
   const buckets = useMemo(() => {
@@ -1469,11 +1465,10 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   const result = useMemo(() => {
     const n = matched.length;
     if (!n) return null;
-    const mean = matched.reduce((s, e) => s + e.forward_return * 100 * sign, 0) / n;
-    const win = (matched.filter((e) => e.forward_return * sign > 0).length / n) * 100;
-    const assetMean = matched.reduce((s, e) => s + e.forward_return * 100, 0) / n;
-    return { n, mean, win, assetMean };
-  }, [matched, sign]);
+    const mean = matched.reduce((s, e) => s + e.forward_return * 100, 0) / n;
+    const up = (matched.filter((e) => e.forward_return > 0).length / n) * 100;
+    return { n, mean, up };
+  }, [matched]);
 
   // 히트맵 (side-aware): 가격버킷 × 증감율구간 → 평균 수익률(부호 적용).
   const heat = useMemo(() => {
@@ -1484,14 +1479,14 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
       const pastPct = e.past_return * 100;
       const ri = TE_RET_BUCKETS.findIndex((rb) => pastPct >= rb.lo && pastPct < rb.hi);
       if (pi < 0 || ri < 0) continue;
-      grid[pi][ri].sum += e.forward_return * 100 * sign;
+      grid[pi][ri].sum += e.forward_return * 100;
       grid[pi][ri].n++;
     }
     let maxAbs = 1e-9;
     for (const row of grid) for (const c of row) if (c.n) maxAbs = Math.max(maxAbs, Math.abs(c.sum / c.n));
     return { grid, maxAbs };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, buckets, sign]);
+  }, [data, buckets]);
 
   // 회귀 (side-aware): 백엔드 forward~past, 숏이면 부호 반전.
   const reg = data?.regression ?? null;
@@ -1505,14 +1500,14 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     const evs = data.events;
     const stride = Math.max(1, Math.ceil(evs.length / 600));
     const pts: { x: number; y: number }[] = [];
-    for (let i = 0; i < evs.length; i += stride) pts.push({ x: evs[i].past_return * 100, y: evs[i].forward_return * 100 * sign });
+    for (let i = 0; i < evs.length; i += stride) pts.push({ x: evs[i].past_return * 100, y: evs[i].forward_return * 100 });
     return pts;
-  }, [data, sign]);
+  }, [data]);
   const regSeg = useMemo<[{ x: number; y: number }, { x: number; y: number }] | null>(() => {
     if (!reg || !pastRange) return null;
-    const yAt = (xp: number) => (reg.slope * xp + reg.intercept * 100) * sign;
+    const yAt = (xp: number) => reg.slope * xp + reg.intercept * 100;
     return [{ x: pastRange.min, y: yAt(pastRange.min) }, { x: pastRange.max, y: yAt(pastRange.max) }];
-  }, [reg, pastRange, sign]);
+  }, [reg, pastRange]);
 
   // 전체기간 가격 차트 + 매칭 구간 음영(각 이벤트 [진입−L, 진입+H] 윈도우 병합).
   const chart = useMemo(() => {
@@ -1542,7 +1537,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     return { line, shades };
   }, [prices, matched, applied]);
 
-  const op = result ? teOpinion(result.assetMean) : null;
+  const op = result ? teOpinion(result.mean) : null;
 
   return (
     <>
@@ -1556,7 +1551,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
       `}</style>
 
       <p className="muted" style={{ marginBottom: 12 }}>
-        전략 유형·현재 가격대·진입 직전 추세·기간을 채우고 <b>확인</b>을 누르면, 그 조건의 미래 수익률·투자의견과
+        종가 범위·진입 직전 추세·기간을 채우고 <b>확인</b>을 누르면, 과거 비슷했던 구간들의 향후 종가 증감율·전망과
         해당 구간들의 가격 차트를 보여줍니다.
       </p>
 
@@ -1564,18 +1559,6 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
         <div className="muted">가격 데이터 로딩 중…</div>
       ) : (
         <>
-          {/* 전략 유형 */}
-          <div className="oil-radio-group" style={{ marginBottom: 10 }}>
-            <label className={dSide === "long" ? "active" : ""}>
-              <input type="radio" name="te-side" checked={dSide === "long"} onChange={() => setDSide("long")} />
-              롱 전략 (매수 — 가격↑이 수익)
-            </label>
-            <label className={dSide === "short" ? "active" : ""}>
-              <input type="radio" name="te-side" checked={dSide === "short"} onChange={() => setDSide("short")} />
-              숏 전략 (매도 — 가격↓이 수익)
-            </label>
-          </div>
-
           {/* 입력 폼 (확인 시 계산) */}
           <div style={{ fontSize: 15, lineHeight: 2.6 }}>
             종가가{" "}
@@ -1604,7 +1587,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
             <span className="te-blank">
               <input type="number" min={1} max={500} value={dH} onChange={(e) => setDH(Math.max(1, Number(e.target.value) || 1))} />일
             </span>{" "}
-            후 수익률은?
+            후 종가 증감율은?
           </div>
 
           {/* 현재 종가·증감율 참고 문구 (질문 문장 뒤) */}
@@ -1624,27 +1607,27 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
           {err && <div className="error">{err}</div>}
 
-          {/* 결과 + 투자의견 */}
+          {/* 결과 + 전망 */}
           {applied && !loading && (
             result ? (
               <>
                 <div style={{ fontSize: 15, marginBottom: 6 }}>
-                  → {applied.side === "long" ? "롱" : "숏"} 전략 평균 수익률{" "}
+                  → 향후 {applied.H}일 평균 종가 증감율{" "}
                   <b className={result.mean >= 0 ? "pos" : "neg"} style={{ fontSize: 19 }}>
                     {(result.mean >= 0 ? "+" : "") + result.mean.toFixed(2)}%
                   </b>{" "}
                   <span className="muted" style={{ fontSize: 13 }}>
-                    (n={result.n}, 승률 {result.win.toFixed(0)}%{result.n < 30 ? " ⚠ 저신뢰" : ""})
+                    (n={result.n}, 상승 비율 {result.up.toFixed(0)}%{result.n < 30 ? " ⚠ 저신뢰" : ""})
                   </span>
                 </div>
                 {op && (
                   <div style={{ marginBottom: 16, fontSize: 15 }}>
                     <span className={op.cls === "muted" ? "muted" : op.cls}
                       style={{ fontWeight: 600, padding: "3px 10px", borderRadius: 6, background: "#f1efe8", border: "1px solid var(--border)" }}>
-                      투자의견: {op.txt}
+                      전망: {op.txt}
                     </span>{" "}
                     <span className="muted" style={{ fontSize: 12 }}>
-                      (이 조건의 자산 평균 {(result.assetMean >= 0 ? "+" : "") + result.assetMean.toFixed(2)}% 기준)
+                      (이 조건의 향후 평균 종가 증감율 {(result.mean >= 0 ? "+" : "") + result.mean.toFixed(2)}% 기준)
                     </span>
                   </div>
                 )}
@@ -1678,7 +1661,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           {applied && !loading && heat && buckets && (
             <>
               <div className="muted" style={{ fontSize: 13, margin: "16px 0 8px" }}>
-                종가대별 {applied.side === "long" ? "롱" : "숏"} 수익률 히트맵 — 행=가격대, 열=진입 직전 증감율(5%p), 셀=향후 {applied.H}일 평균.
+                종가대별 향후 종가 증감율 히트맵 — 행=가격대, 열=진입 직전 증감율(5%p), 셀=향후 {applied.H}일 평균 종가 증감율.
                 선택 종가범위 행 ◀, n&lt;30은 ⚠.
               </div>
               <div className="table-scroll sticky-table" style={{ maxHeight: 440 }}>
@@ -1718,12 +1701,12 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           {applied && !loading && reg && pastRange && (
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
               <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
-                회귀분석 — 과거 <b>{applied.L}일</b> 증감율(x) → 미래 <b>{applied.H}일</b> {applied.side === "long" ? "롱" : "숏"} 수익률(y) · 전체 {reg.n.toLocaleString()}건
+                회귀분석 — 과거 <b>{applied.L}일</b> 증감율(x) → 미래 <b>{applied.H}일</b> 종가 증감율(y) · 전체 {reg.n.toLocaleString()}건
               </div>
               <div className="bt-metrics" style={{ marginBottom: 10 }}>
-                <Metric label="기울기 β" value={(reg.slope * sign >= 0 ? "+" : "") + (reg.slope * sign).toFixed(2)}
-                  highlight={reg.slope * sign >= 0 ? "good" : "bad"}
-                  sub={reg.slope * sign >= 0 ? "추세↑→수익↑" : "추세↑→수익↓"} />
+                <Metric label="기울기 β" value={(reg.slope >= 0 ? "+" : "") + reg.slope.toFixed(2)}
+                  highlight={reg.slope >= 0 ? "good" : "bad"}
+                  sub={reg.slope >= 0 ? "추세↑→이후 상승↑" : "추세↑→이후 하락↑"} />
                 <Metric label="R²" value={reg.r_squared.toFixed(3)} sub="설명력(0~1)" />
                 <Metric label="p-value (HAC)" value={reg.hac_p_value.toFixed(3)}
                   highlight={reg.hac_p_value < 0.05 ? "good" : "warn"} sub="겹침보정 후" />
@@ -1745,7 +1728,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           )}
 
           <div className="muted" style={{ fontSize: 11, marginTop: 12 }}>
-            ⚠️ 수익률은 <b>종가-종가 서술용</b>(실 백테스트의 익일 시가·비용·청산룰과 다름 — 관계 측정용). forward 윈도우 겹침→HAC 보정.
+            ⚠️ <b>종가 증감율</b>은 종가-종가 기준 서술용(실 백테스트의 익일 시가·비용·청산룰과 다름 — 관계 측정용). forward 윈도우 겹침→HAC 보정.
             범위를 좁힐수록 표본↓·통계 불안정(n&lt;30 ⚠).
           </div>
         </>
