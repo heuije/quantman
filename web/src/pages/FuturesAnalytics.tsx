@@ -1400,7 +1400,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   const [dH, setDH] = useState(60);
   const [dLo, setDLo] = useState<number | "">("");     // 과거 증감율 하한
   const [dHi, setDHi] = useState<number | "">("");     // 과거 증감율 상한
-  const [dGap, setDGap] = useState(60);                // 이벤트 최소 간격(영업일) — 클러스터/겹침 디클러스터
+  const [dGap, setDGap] = useState(20);                // 이벤트 최소 간격(영업일) — 클러스터/겹침 디클러스터. 기본 20: 좁은 종가범위에서도 (L,H) 지도가 칸당 min_n(30)을 넘기도록(60은 과대 디클러스터로 전 칸 표본부족→공란)
 
   // 적용된 설정 (확인 클릭 시 스냅샷)
   const [applied, setApplied] = useState<
@@ -1572,7 +1572,9 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     if (!scan) return null;
     const byKey = new Map(scan.cells.map((c) => [`${c.lookback}|${c.horizon}`, c] as const));
     const maxR2 = Math.max(1e-9, ...scan.cells.map((c) => c.r_squared ?? 0));
-    return { byKey, maxR2 };
+    // 전 칸 표본부족(모두 min_n 미만 → r_squared null): 격자 대신 사유·해법 안내.
+    const allNull = scan.cells.length > 0 && scan.cells.every((c) => c.r_squared == null);
+    return { byKey, maxR2, allNull };
   }, [scan]);
 
   const op = result ? teOpinion(result.mean) : null;
@@ -1646,7 +1648,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
               <input type="number" min={0} max={250} value={dGap}
                 onChange={(e) => setDGap(Math.max(0, Number(e.target.value) || 0))} style={{ width: 44 }} />
             </span>
-            영업일 — 연속·겹치는 매칭을 1건으로 묶어 표본 독립성 확보(0=원시, 권장 ≈ 향후 {dH}일).
+            영업일 — 연속·겹치는 매칭을 1건으로 묶어 표본 독립성 확보. 0=원시(겹침 많음), 클수록 독립적이나 표본 급감 — (L,H) 지도가 비면 줄이세요.
           </div>
 
           <button onClick={() => applyAndCompute()} disabled={loading} style={{ margin: "12px 0 16px" }}>
@@ -1768,9 +1770,19 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                 forward~past <b>R²</b>(색 진하기) · β부호(+/−) · 부호안정 <b>✓</b>(train·test 동부호) · HAC p&lt;.05 <b>*</b>.
                 {" "}<b style={{ color: "var(--accent-strong)" }}>칸 클릭 → 그 (L,H)로 위 결과·회귀 재계산.</b>
               </div>
-              <div className="muted" style={{ fontSize: 11, marginBottom: 8, color: "var(--amber)" }}>
-                ⚠ 다중비교 주의: {scan.n_cells}개 칸 중 R² 최댓값만 믿으면 과최적화. 고-R²가 <b>연속 영역</b>이고 <b>✓(OOS 부호안정)</b>·낮은 p가 받쳐줄 때만 신뢰.
-              </div>
+              {!scanView.allNull && (
+                <div className="muted" style={{ fontSize: 11, marginBottom: 8, color: "var(--amber)" }}>
+                  ⚠ 다중비교 주의: {scan.n_cells}개 칸 중 R² 최댓값만 믿으면 과최적화. 고-R²가 <b>연속 영역</b>이고 <b>✓(OOS 부호안정)</b>·낮은 p가 받쳐줄 때만 신뢰.
+                </div>
+              )}
+              {scanView.allNull && !scanLoading && (
+                <div style={{ fontSize: 13, padding: "14px 14px", background: "#f1efe8", borderRadius: 8, lineHeight: 1.65, color: "var(--text)" }}>
+                  <b>표본 부족 — 지도를 그릴 수 없습니다.</b><br />
+                  {scan.n_cells}개 칸이 <b>전부</b> 독립 표본 {scan.min_n}건 미만입니다. 현재 종가 범위{applied.nLo <= -1e8 ? "" : ` ${priceSym}${applied.nLo}~${priceSym}${applied.nHi}`}와 이벤트 최소 간격 <b>{applied.gap}일</b> 조합이 너무 성깁니다.<br />
+                  → <b style={{ color: "var(--accent-strong)" }}>이벤트 최소 간격을 줄이거나</b>(현재 {applied.gap}일) <b style={{ color: "var(--accent-strong)" }}>종가 범위를 넓혀</b> 다시 확인하세요.
+                </div>
+              )}
+              {!scanView.allNull && (
               <div className="table-scroll sticky-table" style={{ maxHeight: 380 }}>
                 <table className="te-hm">
                   <thead>
@@ -1813,6 +1825,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                   </tbody>
                 </table>
               </div>
+              )}
               {scanLoading && <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>지도 계산 중…</div>}
             </div>
           )}
