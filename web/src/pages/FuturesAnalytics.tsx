@@ -1319,19 +1319,10 @@ function SeasonTable({
   );
 }
 
-// ── ⑧ 진입 추세 → 미래 수익률 탐색기 ──────────────────────────────────
+// ── ⑧ 진입 추세 → 향후 종가 증감율 탐색기 ──────────────────────────────
 // 서버가 (L,H) 이벤트 배열을 1회 내려주면, 증감율 밴드 필터·집계는 브라우저에서 실시간.
-// 진입 직전 증감율 구간 — 5%p 단위 (−10% 이하부터 +10% 초과까지).
-const TE_RET_BUCKETS = [
-  { label: "≤−10%", lo: -Infinity, hi: -10 },
-  { label: "−10~−5%", lo: -10, hi: -5 },
-  { label: "−5~0%", lo: -5, hi: 0 },
-  { label: "0~+5%", lo: 0, hi: 5 },
-  { label: "+5~+10%", lo: 5, hi: 10 },
-  { label: ">+10%", lo: 10, hi: Infinity },
-];
 
-// 가격 범위를 ~12개로 나눌 "보기 좋은" 버킷 폭 (1·2·5·10 × 10ⁿ).
+// 가격 범위를 ~12개로 나눌 "보기 좋은" 버킷 폭 (1·2·5·10 × 10ⁿ) — 종가범위 기본값 산정용.
 function teNiceStep(raw: number): number {
   if (raw <= 0) return 1;
   const mag = Math.pow(10, Math.floor(Math.log10(raw)));
@@ -1434,27 +1425,6 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
       .finally(() => setLoading(false));
   }
 
-  // 가격 버킷(히트맵 행) — 전체 가격 기준.
-  const buckets = useMemo(() => {
-    const closes = prices.length ? prices.map((p) => p.close) : (data?.events.map((e) => e.close) ?? []);
-    if (!closes.length) return null;
-    const min = Math.min(...closes), max = Math.max(...closes);
-    const step = teNiceStep((max - min) / 12);
-    const start = Math.floor(min / step) * step;
-    const count = Math.max(1, Math.round((Math.ceil(max / step) * step - start) / step));
-    const dec = step >= 10 ? 0 : step >= 1 ? 1 : step >= 0.1 ? 2 : 3;
-    const arr = Array.from({ length: count }, (_, i) => ({ lo: start + i * step, hi: start + (i + 1) * step, dec }));
-    return { arr, step, start };
-  }, [prices, data]);
-
-  const bucketIndex = (close: number) => {
-    if (!buckets) return -1;
-    return Math.max(0, Math.min(buckets.arr.length - 1, Math.floor((close - buckets.start) / buckets.step)));
-  };
-  // 선택 종가범위와 겹치는 히트맵 행 강조.
-  const rowInSel = (b: { lo: number; hi: number }) =>
-    applied != null && b.hi > applied.nLo && b.lo < applied.nHi;
-
   // 매칭 이벤트: 설정 종가범위 ∧ 과거 증감율 범위.
   const matched = useMemo(() => {
     if (!data || !applied) return [];
@@ -1490,29 +1460,6 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     return { n, mean, up };
   }, [declustered]);
 
-  // 히트맵: 가격버킷 × 증감율구간 → 평균 향후 종가 증감율. 셀마다 G영업일 디클러스터(셀별 독립 표본).
-  const heat = useMemo(() => {
-    if (!data || !buckets) return null;
-    const gap = applied?.gap ?? 0;
-    const grid = buckets.arr.map(() => TE_RET_BUCKETS.map(() => ({ sum: 0, n: 0 })));
-    const lastIdx = buckets.arr.map(() => TE_RET_BUCKETS.map(() => -Infinity));
-    for (const e of data.events) {
-      const pi = bucketIndex(e.close);
-      const pastPct = e.past_return * 100;
-      const ri = TE_RET_BUCKETS.findIndex((rb) => pastPct >= rb.lo && pastPct < rb.hi);
-      if (pi < 0 || ri < 0) continue;
-      const i = dateIdx.get(e.date);
-      if (gap > 0 && i !== undefined && i - lastIdx[pi][ri] < gap) continue;
-      if (i !== undefined) lastIdx[pi][ri] = i;
-      grid[pi][ri].sum += e.forward_return * 100;
-      grid[pi][ri].n++;
-    }
-    let maxAbs = 1e-9;
-    for (const row of grid) for (const c of row) if (c.n) maxAbs = Math.max(maxAbs, Math.abs(c.sum / c.n));
-    return { grid, maxAbs };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, buckets, applied, dateIdx]);
-
   // 회귀 (side-aware): 백엔드 forward~past, 숏이면 부호 반전.
   const reg = data?.regression ?? null;
   const pastRange = useMemo(() => {
@@ -1534,7 +1481,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     return [{ x: pastRange.min, y: yAt(pastRange.min) }, { x: pastRange.max, y: yAt(pastRange.max) }];
   }, [reg, pastRange]);
 
-  // 전체기간 가격 차트 + 매칭 구간 음영(각 이벤트 [진입−L, 진입+H] 윈도우 병합).
+  // 전체기간 가격 차트 + 매칭 구간 음영(각 이벤트 [신호발생일, 청산예정일=+H] 윈도우 병합).
   const chart = useMemo(() => {
     const empty = { line: [] as { t: number; close: number }[], shades: [] as { x1: number; x2: number }[] };
     if (!prices.length) return empty;
@@ -1548,7 +1495,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     for (const e of declustered) {
       const i = dateIdx.get(e.date);
       if (i === undefined) continue;
-      wins.push([Math.max(0, i - applied.L), Math.min(prices.length - 1, i + applied.H)]);
+      wins.push([i, Math.min(prices.length - 1, i + applied.H)]);
     }
     wins.sort((a, b) => a[0] - b[0]);
     const merged: [number, number][] = [];
@@ -1673,7 +1620,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
           {/* 전체기간 가격차트 + 매칭 구간 음영 */}
           <div className="muted" style={{ fontSize: 13, margin: "8px 0 6px" }}>
-            전체기간 가격 — <span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 종가{applied ? ` ${applied.nLo <= -1e8 ? "−∞" : priceSym + applied.nLo}~${applied.nHi >= 1e8 ? "∞" : priceSym + applied.nHi}` : ""} <b>∧</b> 증감율{applied ? ` ${applied.lo <= -1e8 ? "−∞" : applied.lo + "%"}~${applied.hi >= 1e8 ? "∞" : applied.hi + "%"}` : ""} <b>둘 다</b> 만족하는 진입 구간 [−{applied?.L ?? dL} ~ +{applied?.H ?? dH}일]{declustered.length ? ` · ${declustered.length}건${matched.length > declustered.length ? ` (원시 ${matched.length})` : ""}` : ""}.
+            전체기간 가격 — <span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 종가{applied ? ` ${applied.nLo <= -1e8 ? "−∞" : priceSym + applied.nLo}~${applied.nHi >= 1e8 ? "∞" : priceSym + applied.nHi}` : ""} <b>∧</b> 증감율{applied ? ` ${applied.lo <= -1e8 ? "−∞" : applied.lo + "%"}~${applied.hi >= 1e8 ? "∞" : applied.hi + "%"}` : ""} <b>둘 다</b> 만족하는 신호발생일~청산예정일(+{applied?.H ?? dH}일) 구간{declustered.length ? ` · ${declustered.length}건${matched.length > declustered.length ? ` (원시 ${matched.length})` : ""}` : ""}.
           </div>
           <ResponsiveContainer width="100%" height={260}>
             <ComposedChart data={chart.line} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
@@ -1690,46 +1637,6 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
               <Line type="monotone" dataKey="close" stroke="#d97757" dot={false} strokeWidth={1.5} />
             </ComposedChart>
           </ResponsiveContainer>
-
-          {/* 히트맵 (side-aware) */}
-          {applied && !loading && heat && buckets && (
-            <>
-              <div className="muted" style={{ fontSize: 13, margin: "16px 0 8px" }}>
-                종가대별 향후 종가 증감율 히트맵 — 행=가격대, 열=진입 직전 증감율(5%p), 셀=향후 {applied.H}일 평균 종가 증감율.
-                선택 종가범위 행 ◀, n&lt;30은 ⚠.
-              </div>
-              <div className="table-scroll sticky-table" style={{ maxHeight: 440 }}>
-                <table className="te-hm">
-                  <thead>
-                    <tr><th style={{ textAlign: "left" }}>종가대</th>{TE_RET_BUCKETS.map((rb) => <th key={rb.label}>{rb.label}</th>)}</tr>
-                  </thead>
-                  <tbody>
-                    {buckets.arr.map((b, pi) => {
-                      const sel = rowInSel(b);
-                      return (
-                        <tr key={pi}>
-                          <th style={{ textAlign: "left", color: sel ? "#d97757" : undefined }}>
-                            {priceSym}{b.lo.toFixed(b.dec)}–{priceSym}{b.hi.toFixed(b.dec)}{sel ? " ◀" : ""}
-                          </th>
-                          {heat.grid[pi].map((c, ri) => {
-                            const mean = c.n ? c.sum / c.n : NaN;
-                            return (
-                              <td key={ri} title={c.n ? `n=${c.n}, 평균 ${(mean >= 0 ? "+" : "") + mean.toFixed(2)}%` : "표본 없음"}
-                                style={{ background: c.n ? heatColor(mean, heat.maxAbs) : "#f1efe8", color: "#fff", borderRadius: 5,
-                                  opacity: c.n ? 1 : 0.25, outline: sel ? "2px solid #d97757" : "none" }}>
-                                {c.n ? (<><div style={{ fontWeight: 600 }}>{(mean >= 0 ? "+" : "") + mean.toFixed(1)}%</div>
-                                  <div style={{ fontSize: 10, opacity: 0.85 }}>n={c.n}{c.n < 30 ? " ⚠" : ""}</div></>) : "·"}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
 
           {/* 회귀 (side-aware) */}
           {applied && !loading && reg && pastRange && (
