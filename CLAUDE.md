@@ -31,6 +31,12 @@
 - **웹앱:** Vercel (production + preview) — `origin/main` push → 자동 deploy
 - **서버:** Railway (Neon Postgres) — `origin/main` push → 자동 deploy
 - **로컬앱:** PyInstaller zip → `MercKR/quantman-releases` (public repo) GitHub Release
+- **⚠ Vercel 웹 배포는 main 커밋의 *author* 기준.** author가 Vercel 팀(FLOO's projects) 미소속이면 거부됨 →
+  **희제 PR을 squash 머지하면 커밋 author=희제(팀 미소속)라 웹 배포가 거부된다**(Railway 서버는 author 무관·정상).
+  대응: 희제 PR은 **merge-commit**으로 머지(§4 규칙). 막혔을 때 수동 재배포(merckr 권한, **반드시 레포 루트에서**):
+  `VERCEL_ORG_ID=team_3rW5zrcgysV62xsllpfmKKtE VERCEL_PROJECT_ID=prj_oaSfa9IftnZzKtk6j0xbJPlZQOPs vercel --prod --yes`
+  (quantman 프로젝트 rootDirectory=web — web/ 안에서 실행하면 web/web 에러). **Vercel 프로젝트는 공개 웹 `quantman`만 사용** —
+  옛 `platform` 프로젝트(루트 링크·커스텀 도메인 없음·401 잠금)는 미사용이라 삭제 권장.
 
 > ⚠ 열려 있는 브라우저 탭은 reload 전까지 **이전 JS 번들**을 서빙한다. 배포 후 확인은 `location.reload()` 먼저.
 
@@ -91,6 +97,9 @@
     clone·worktree마다 1회: `git config core.hooksPath .githooks`.
   - **짧게·자주 머지:** 브랜치는 오래 두면 발산한다(과거 −212커밋 drift 사례). 매일 main 머지, merge 후 알림,
     다음 작업은 **최신 main에서 pull 후** 시작.
+  - **희제 PR은 merge-commit으로 머지(squash 금지).** squash는 커밋 author를 PR 저자(희제)로 찍어 Vercel
+    웹 자동배포가 거부된다(이유·수동대안 §2.5). GitHub "Create a merge commit" 또는 `gh pr merge <n> --merge`.
+    (조대표 본인 PR은 author=조대표라 squash 무방.)
   - 협업 환경 전체 안내: [docs/COLLABORATION.md](docs/COLLABORATION.md).
 - **규모 있는 작업: 설계안 제시 → 질문 → 승인 → 구현.** 곧장 코드부터 쓰지 않는다.
 - **공백·인코딩.** Windows cp949 환경. UTF-8 명시 필요 시 `-Encoding utf8`(PowerShell)·`reconfigure(encoding="utf-8")`(Python).
