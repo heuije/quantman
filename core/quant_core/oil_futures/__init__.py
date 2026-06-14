@@ -37,13 +37,14 @@ from .optimizer import (
     grid_to_dataframe,
     walk_forward,
 )
-from .excel_export import build_oil_excel
+from .excel_export import build_oil_excel, build_oil_trend_excel
 from .trend_analysis import (
     ScanCell,
     TrendEvent,
     TrendRegression,
     trend_events,
     trend_explanatory_scan,
+    trend_matched,
     trend_regression,
 )
 
@@ -54,7 +55,7 @@ __all__ = [
     "ContractSpec", "WTI_SPEC", "run_backtest", "wti_expiry_dates",
     "Summary", "LOW_SAMPLE_THRESHOLD", "summarize",
     "GridCell", "WalkForwardResult", "grid_search", "grid_to_dataframe", "walk_forward",
-    "build_oil_excel",
+    "build_oil_excel", "build_oil_trend_excel",
     "TrendEvent", "TrendRegression", "trend_events", "trend_regression",
-    "ScanCell", "trend_explanatory_scan",
+    "ScanCell", "trend_explanatory_scan", "trend_matched",
 ]

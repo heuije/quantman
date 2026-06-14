@@ -905,6 +905,8 @@ function BacktestDetail({ bt, side, cur, curCode, priceSym }: {
   priceSym: string;
 }) {
   const s = bt.summary;
+  // 자산곡선·개별거래는 현재 불필요 → 숨김(코드 보존, 필요시 true). 사용자 요청 2026-06-14.
+  const showBtChartAndTrades = false;
   // Long: entry=BUY, exit=SELL.  Short: entry=SELL(공매), exit=BUY(환매).
   const entryLabel = side === "long" ? "BUY" : "SELL";
   const exitLabel = side === "long" ? "SELL" : "BUY";
@@ -991,6 +993,8 @@ function BacktestDetail({ bt, side, cur, curCode, priceSym }: {
         </div>
       )}
 
+      {showBtChartAndTrades && (
+      <>
       <div style={{ marginTop: 16 }}>
         <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
           등 자산 곡선 — <b style={{ color: "#15803d" }}>녹: realized (청산 시점)</b>{" "}
@@ -1120,6 +1124,8 @@ function BacktestDetail({ bt, side, cur, curCode, priceSym }: {
           </table>
         </div>
       </details>
+      </>
+      )}
     </>
   );
 }
@@ -1365,6 +1371,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   const [err, setErr] = useState<string | null>(null);
   const [scan, setScan] = useState<OilTrendScan | null>(null);   // (L,H) 설명력 격자
   const [scanLoading, setScanLoading] = useState(false);
+  const [teExporting, setTeExporting] = useState(false);   // 엑셀 내보내기 진행중
 
   // 종목 변경 → 전체 가격 시계열 로드 + draft 종가범위=현재가 부근 버킷, 적용 리셋.
   useEffect(() => {
@@ -1643,6 +1650,28 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
             )
           )}
 
+          {/* 엑셀 내보내기 — 조건·이벤트·요약 (.xlsx) */}
+          {applied && !loading && result && (
+            <button className="export-btn" disabled={teExporting} style={{ marginBottom: 14 }}
+              title="현재 조건의 향후 종가 증감율 결과(조건·매칭 이벤트·요약)를 엑셀로"
+              onClick={async () => {
+                setTeExporting(true);
+                try {
+                  await futuresApi.trendExport(symbol, {
+                    lookback: applied.L, horizon: applied.H,
+                    price_lo: applied.nLo, price_hi: applied.nHi,
+                    change_lo: applied.lo, change_hi: applied.hi, gap: applied.gap,
+                  });
+                } catch (e) {
+                  alert("엑셀 내보내기 실패: " + (e as Error).message);
+                } finally {
+                  setTeExporting(false);
+                }
+              }}>
+              {teExporting ? "엑셀 생성 중…" : "📥 엑셀로 내보내기 (조건·이벤트·요약)"}
+            </button>
+          )}
+
           {/* 전체기간 가격차트 + 매칭 구간 음영 */}
           <div className="muted" style={{ fontSize: 13, margin: "8px 0 6px" }}>
             전체기간 가격 — <span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 종가{applied ? ` ${applied.nLo <= -1e8 ? "−∞" : priceSym + applied.nLo}~${applied.nHi >= 1e8 ? "∞" : priceSym + applied.nHi}` : ""} <b>∧</b> 증감율{applied ? ` ${applied.lo <= -1e8 ? "−∞" : applied.lo + "%"}~${applied.hi >= 1e8 ? "∞" : applied.hi + "%"}` : ""} <b>둘 다</b> 만족하는 신호발생일~청산예정일(+{applied?.H ?? dH}일) 구간{declustered.length ? ` · ${declustered.length}건${matched.length > declustered.length ? ` (원시 ${matched.length})` : ""}` : ""}.
@@ -1679,11 +1708,14 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                 <Metric label="표본 n" value={reg.n} highlight={reg.n < 30 ? "warn" : null} />
               </div>
               <ResponsiveContainer width="100%" height={280}>
-                <ScatterChart margin={{ top: 8, right: 16, bottom: 16, left: 0 }}>
+                <ScatterChart margin={{ top: 8, right: 20, bottom: 30, left: 16 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
-                  <XAxis type="number" dataKey="x" name="과거 증감율" domain={["dataMin", "dataMax"]}
-                    tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => v + "%"} />
-                  <YAxis type="number" dataKey="y" name="미래 수익률" tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => v + "%"} />
+                  <XAxis type="number" dataKey="x" name="과거 증감율" domain={["auto", "auto"]}
+                    tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => Math.round(Number(v)) + "%"}
+                    label={{ value: `과거 ${applied.L}일 증감율 (%)`, position: "insideBottom", offset: -6, style: { fontSize: 11, fill: "#6f6a62" } }} />
+                  <YAxis type="number" dataKey="y" name="향후 종가 증감율" domain={["auto", "auto"]}
+                    tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => Math.round(Number(v)) + "%"}
+                    label={{ value: `향후 ${applied.H}일 종가 증감율 (%)`, angle: -90, position: "insideLeft", style: { fontSize: 11, fill: "#6f6a62", textAnchor: "middle" } }} />
                   <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(v) => `${Number(v).toFixed(2)}%`} />
                   <ReferenceLine y={0} stroke="#6f6a62" />
                   {regSeg && <ReferenceLine segment={regSeg} stroke="#d97757" strokeWidth={2} />}

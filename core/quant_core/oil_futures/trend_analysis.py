@@ -241,3 +241,41 @@ def trend_explanatory_scan(
                 sign_stable=sign_stable,
             ))
     return cells
+
+
+def trend_matched(
+    df: pd.DataFrame,
+    lookback: int,
+    horizon: int,
+    price_lo: float,
+    price_hi: float,
+    change_lo: float,
+    change_hi: float,
+    gap: int = 0,
+) -> tuple[list[TrendEvent], int]:
+    """종가범위 ∧ 과거증감율범위(%) 매칭 이벤트를 G영업일 디클러스터(웹 탐색기와 동일 정의).
+
+    trend_events(전체 영업일) → close∈[price_lo,price_hi] ∧ past_return*100∈[change_lo,change_hi]
+    필터 → G영업일 이내 연속/겹친 매칭은 1건만(독립 표본). 반환: (declustered, raw_n).
+    엑셀 내보내기·서버 집계가 화면 결과와 일치하도록 쓰는 공유 헬퍼.
+    """
+    evs = trend_events(df, int(lookback), int(horizon))
+    matched = [
+        e for e in evs
+        if price_lo <= e.close <= price_hi
+        and change_lo <= e.past_return * 100.0 <= change_hi
+    ]
+    raw_n = len(matched)
+    if gap <= 0:
+        return matched, raw_n
+    pos = {pd.Timestamp(d): i for i, d in enumerate(df["date"].to_numpy())}
+    kept: list[TrendEvent] = []
+    last = -(10 ** 9)
+    for e in matched:                      # trend_events 오름차순 보장
+        i = pos.get(pd.Timestamp(e.date))
+        if i is None:
+            continue
+        if i - last >= gap:
+            kept.append(e)
+            last = i
+    return kept, raw_n

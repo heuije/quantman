@@ -382,3 +382,100 @@ def build_oil_excel(
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def build_oil_trend_excel(
+    events: list,          # list[TrendEvent] (duck-typed: .date/.close/.past_return/.forward_return)
+    raw_n: int,
+    *,
+    lookback: int,
+    horizon: int,
+    price_lo: float,
+    price_hi: float,
+    change_lo: float,
+    change_hi: float,
+    gap: int,
+    name: str,
+    price_sym: str,
+) -> bytes:
+    """추세 탐색기 '향후 종가 증감율' 결과를 .xlsx 로 — 조건/요약/이벤트 3시트.
+
+    events 는 trend_matched 의 디클러스터 결과(화면과 동일). 백테스트 수식 엑셀과 달리
+    서술용 데이터 덤프(조건·이벤트·요약) — 라이브 수식 없음.
+    """
+    bold = Font(bold=True)
+    title_font = Font(bold=True, size=14)
+
+    def _rng(lo: float, hi: float, sym: str, suf: str) -> str:
+        l = "−∞" if lo <= -1e8 else f"{sym}{lo:g}{suf}"
+        h = "∞" if hi >= 1e8 else f"{sym}{hi:g}{suf}"
+        return f"{l} ~ {h}"
+
+    n = len(events)
+    mean = sum(e.forward_return * 100.0 for e in events) / n if n else 0.0
+    up = 100.0 * sum(1 for e in events if e.forward_return > 0) / n if n else 0.0
+    if mean >= 4:
+        opinion = "강한 상승 경향"
+    elif mean >= 1:
+        opinion = "상승 경향"
+    elif mean <= -4:
+        opinion = "강한 하락 경향"
+    elif mean <= -1:
+        opinion = "하락 경향"
+    else:
+        opinion = "중립 (뚜렷한 방향성 없음)"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "조건"
+    ws["A1"] = f"{name} — 향후 종가 증감율 분석"
+    ws["A1"].font = title_font
+    cond_rows = [
+        ("종가 범위", _rng(price_lo, price_hi, price_sym, "")),
+        ("과거 기간 (L)", f"{lookback} 영업일"),
+        ("과거 증감율 범위", _rng(change_lo, change_hi, "", "%")),
+        ("향후 기간 (H)", f"{horizon} 영업일"),
+        ("이벤트 최소 간격", f"{gap} 영업일 (0=원시)"),
+    ]
+    for i, (k, v) in enumerate(cond_rows, start=3):
+        ws[f"A{i}"] = k
+        ws[f"A{i}"].font = bold
+        ws[f"B{i}"] = v
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 30
+
+    sm = wb.create_sheet("요약")
+    sm["A1"] = "요약"
+    sm["A1"].font = title_font
+    sum_rows: list[tuple[str, object]] = [
+        ("독립 표본 n", n),
+        ("원시 매칭 수", raw_n),
+        (f"평균 향후 {horizon}일 종가 증감율 (%)", round(mean, 2)),
+        ("상승 비율 (%)", round(up, 1)),
+        ("전망", opinion),
+    ]
+    for i, (k, v) in enumerate(sum_rows, start=3):
+        sm[f"A{i}"] = k
+        sm[f"A{i}"].font = bold
+        sm[f"B{i}"] = v
+    sm.column_dimensions["A"].width = 30
+    sm.column_dimensions["B"].width = 18
+
+    ev = wb.create_sheet("이벤트")
+    hdr = ["신호일", "종가", f"과거 {lookback}일 증감율(%)", f"향후 {horizon}일 종가증감율(%)"]
+    ev.append(hdr)
+    for c in range(1, len(hdr) + 1):
+        ev.cell(row=1, column=c).font = bold
+    for e in events:
+        ev.append([
+            str(e.date.date()),
+            round(float(e.close), 2),
+            round(e.past_return * 100.0, 2),
+            round(e.forward_return * 100.0, 2),
+        ])
+    for col, w in zip("ABCD", (12, 12, 22, 24)):
+        ev.column_dimensions[col].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

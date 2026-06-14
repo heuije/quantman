@@ -111,3 +111,28 @@ def test_trend_scan_validation(monkeypatch):
     assert client.get(
         "/futures/oil/trend-scan?price_lo=110&price_hi=120&oos_split=0.95"
     ).status_code == 422
+
+
+# ───── /trend-export.xlsx ───────────────────────────────────────────────
+
+def test_trend_export_requires_auth():
+    app = FastAPI()
+    app.include_router(futures.router)
+    r = TestClient(app).get("/futures/oil/trend-export.xlsx?lookback=3&horizon=5&price_lo=110&price_hi=120")
+    assert r.status_code == 401
+
+
+def test_trend_export_xlsx(monkeypatch):
+    client = _client(monkeypatch)
+    r = client.get("/futures/oil/trend-export.xlsx?lookback=3&horizon=5&price_lo=110&price_hi=120&change_lo=0&change_hi=100&gap=0")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/vnd.openxmlformats")
+    assert r.content[:2] == b"PK"                       # xlsx = zip 시그니처
+    assert "attachment" in r.headers.get("content-disposition", "")
+
+
+def test_trend_export_validation(monkeypatch):
+    client = _client(monkeypatch)
+    assert client.get(
+        "/futures/oil/trend-export.xlsx?lookback=0&horizon=5&price_lo=110&price_hi=120"
+    ).status_code == 422

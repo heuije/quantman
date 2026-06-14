@@ -38,6 +38,7 @@ from quant_core.oil_futures import (
     RollModel,
     Side,
     build_oil_excel,
+    build_oil_trend_excel,
     generate_signals,
     grid_search,
     prepare_wti,
@@ -45,6 +46,7 @@ from quant_core.oil_futures import (
     summarize,
     trend_events,
     trend_explanatory_scan,
+    trend_matched,
     trend_regression,
     walk_forward,
 )
@@ -990,4 +992,40 @@ def trend_scan_endpoint(
         ],
         n_cells=len(cells),
         oos_split=oos_split, min_n=min_n,
+    )
+
+
+@router.get("/{symbol}/trend-export.xlsx")
+def trend_export_endpoint(
+    symbol: str,
+    lookback: int,
+    horizon: int,
+    price_lo: float,
+    price_hi: float,
+    change_lo: float = -1e9,
+    change_hi: float = 1e9,
+    gap: int = 0,
+):
+    """추세 탐색기 '향후 종가 증감율' 결과(조건·요약·이벤트)를 .xlsx 로 반환.
+
+    종가범위 ∧ 과거증감율범위 매칭 → G영업일 디클러스터(화면과 동일, trend_matched).
+    백테스트 export 와 달리 서술용 데이터 덤프(라이브 수식 없음).
+    """
+    if lookback < 1 or not (1 <= horizon <= 500):
+        raise HTTPException(422, "lookback≥1, 1≤horizon≤500 이어야 함")
+    cfg = _get_cfg(symbol)
+    df = _df(symbol)
+    lo, hi = (price_lo, price_hi) if price_lo <= price_hi else (price_hi, price_lo)
+    clo, chi = (change_lo, change_hi) if change_lo <= change_hi else (change_hi, change_lo)
+    events, raw_n = trend_matched(df, lookback, horizon, lo, hi, clo, chi, max(0, gap))
+    data = build_oil_trend_excel(
+        events, raw_n,
+        lookback=lookback, horizon=horizon,
+        price_lo=lo, price_hi=hi, change_lo=clo, change_hi=chi, gap=max(0, gap),
+        name=cfg.name, price_sym=("" if cfg.currency == "KRW" else "$"),
+    )
+    return Response(
+        content=data,
+        media_type=_XLSX_MEDIA,
+        headers={"Content-Disposition": f'attachment; filename="trend_{cfg.symbol}.xlsx"'},
     )

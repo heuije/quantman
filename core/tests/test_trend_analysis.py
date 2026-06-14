@@ -25,9 +25,11 @@ from quant_core.oil_futures import (  # noqa: E402
     Side,
     TrendEvent,
     TrendRegression,
+    build_oil_trend_excel,
     generate_signals,
     trend_events,
     trend_explanatory_scan,
+    trend_matched,
     trend_regression,
 )
 
@@ -228,3 +230,32 @@ def test_explanatory_scan_deterministic():
     b = trend_explanatory_scan(df, **kw)
     key = lambda cs: [(c.lookback, c.horizon, c.n, c.r_squared, c.slope, c.sign_stable) for c in cs]
     assert key(a) == key(b)
+
+
+# ───── trend_matched + 엑셀 내보내기 ─────────────────────────────────────
+
+def test_trend_matched_band_filter_and_decluster():
+    closes = list(range(100, 150))               # 100..149 (+1/일)
+    df = _mk(closes)
+    # gap=0: 종가 ∈ [110,120] = close[t]=100+t → t∈10..20 = 11건. 단조라 past_return 항상 양수
+    # → 과거 증감율 범위 [0,100]%면 전부 통과.
+    ev, raw = trend_matched(df, 2, 2, 110, 120, 0, 100, gap=0)
+    assert raw == 11 and len(ev) == 11
+    # gap=5: 11건이 연속일이라 5영업일 간격으로 솎이면 ⌈11/5⌉=3건(t=10,15,20).
+    ev5, raw5 = trend_matched(df, 2, 2, 110, 120, 0, 100, gap=5)
+    assert raw5 == 11 and len(ev5) == 3
+    # 과거 증감율 범위로 추가 필터(단조상승이라 음수 구간은 0건).
+    none_neg, _ = trend_matched(df, 2, 2, 110, 120, -100, -1, gap=0)
+    assert none_neg == []
+
+
+def test_build_oil_trend_excel_bytes():
+    closes = list(range(100, 150))
+    df = _mk(closes)
+    ev, raw = trend_matched(df, 2, 2, 110, 120, 0, 100, gap=0)
+    data = build_oil_trend_excel(
+        ev, raw, lookback=2, horizon=2, price_lo=110, price_hi=120,
+        change_lo=0, change_hi=100, gap=0, name="원유", price_sym="$",
+    )
+    assert isinstance(data, bytes) and len(data) > 0
+    assert data[:2] == b"PK"                      # xlsx = zip 시그니처
