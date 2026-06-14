@@ -1350,7 +1350,7 @@ function teOpinion(mean: number): { txt: string; cls: string } {
 }
 
 // ⑧ 진입 추세 → 향후 종가 증감율 탐색기.
-// 폼(종가범위·과거L·증감율범위·미래H)을 채우고 [확인]을 누르면 계산: 문장 결과+전망 /
+// 폼(종가범위·과거L·증감율범위·미래H·이벤트최소간격)을 채우고 [확인]을 누르면 계산: 문장 결과+전망 /
 // 전체기간 가격차트(매칭 구간 음영) / 종가대×증감율 히트맵 / 회귀(과거×미래).
 // /trend-events(이벤트) + /prices(전체 가격 시계열)을 브라우저에서 집계.
 function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string }) {
@@ -1361,10 +1361,11 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   const [dH, setDH] = useState(60);
   const [dLo, setDLo] = useState<number | "">("");     // 과거 증감율 하한
   const [dHi, setDHi] = useState<number | "">("");     // 과거 증감율 상한
+  const [dGap, setDGap] = useState(60);                // 이벤트 최소 간격(영업일) — 클러스터/겹침 디클러스터
 
   // 적용된 설정 (확인 클릭 시 스냅샷)
   const [applied, setApplied] = useState<
-    { nLo: number; nHi: number; L: number; H: number; lo: number; hi: number } | null
+    { nLo: number; nHi: number; L: number; H: number; lo: number; hi: number; gap: number } | null
   >(null);
   const [data, setData] = useState<OilTrendEvents | null>(null);
   const [prices, setPrices] = useState<OilPricePoint[]>([]);
@@ -1422,6 +1423,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
       nLo: Math.min(nLo, nHi), nHi: Math.max(nLo, nHi),
       L: dL, H: dH,
       lo: Math.min(lo, hi), hi: Math.max(lo, hi),
+      gap: Math.max(0, dGap),
     };
     setApplied(a);
     setLoading(true);
@@ -1462,23 +1464,46 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     );
   }, [data, applied]);
 
-  const result = useMemo(() => {
-    const n = matched.length;
-    if (!n) return null;
-    const mean = matched.reduce((s, e) => s + e.forward_return * 100, 0) / n;
-    const up = (matched.filter((e) => e.forward_return > 0).length / n) * 100;
-    return { n, mean, up };
-  }, [matched]);
+  // 날짜→가격 인덱스(영업일 간격 계산용).
+  const dateIdx = useMemo(() => new Map(prices.map((p, i) => [p.date, i] as const)), [prices]);
 
-  // 히트맵 (side-aware): 가격버킷 × 증감율구간 → 평균 수익률(부호 적용).
+  // 디클러스터: 같은 조건이 G영업일 내 연속/겹쳐 발생하면 1건만 채택 — 겹치는 forward
+  // 윈도우·레짐 집중으로 인한 표본 과대평가 방지(독립 표본 근접). gap=0이면 원시 그대로.
+  const declustered = useMemo(() => {
+    const gap = applied?.gap ?? 0;
+    if (gap <= 0) return matched;
+    const kept: typeof matched = [];
+    let lastIdx = -Infinity;
+    for (const e of matched) {
+      const i = dateIdx.get(e.date);
+      if (i === undefined) continue;
+      if (i - lastIdx >= gap) { kept.push(e); lastIdx = i; }
+    }
+    return kept;
+  }, [matched, applied, dateIdx]);
+
+  const result = useMemo(() => {
+    const n = declustered.length;
+    if (!n) return null;
+    const mean = declustered.reduce((s, e) => s + e.forward_return * 100, 0) / n;
+    const up = (declustered.filter((e) => e.forward_return > 0).length / n) * 100;
+    return { n, mean, up };
+  }, [declustered]);
+
+  // 히트맵: 가격버킷 × 증감율구간 → 평균 향후 종가 증감율. 셀마다 G영업일 디클러스터(셀별 독립 표본).
   const heat = useMemo(() => {
     if (!data || !buckets) return null;
+    const gap = applied?.gap ?? 0;
     const grid = buckets.arr.map(() => TE_RET_BUCKETS.map(() => ({ sum: 0, n: 0 })));
+    const lastIdx = buckets.arr.map(() => TE_RET_BUCKETS.map(() => -Infinity));
     for (const e of data.events) {
       const pi = bucketIndex(e.close);
       const pastPct = e.past_return * 100;
       const ri = TE_RET_BUCKETS.findIndex((rb) => pastPct >= rb.lo && pastPct < rb.hi);
       if (pi < 0 || ri < 0) continue;
+      const i = dateIdx.get(e.date);
+      if (gap > 0 && i !== undefined && i - lastIdx[pi][ri] < gap) continue;
+      if (i !== undefined) lastIdx[pi][ri] = i;
       grid[pi][ri].sum += e.forward_return * 100;
       grid[pi][ri].n++;
     }
@@ -1486,7 +1511,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     for (const row of grid) for (const c of row) if (c.n) maxAbs = Math.max(maxAbs, Math.abs(c.sum / c.n));
     return { grid, maxAbs };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, buckets]);
+  }, [data, buckets, applied, dateIdx]);
 
   // 회귀 (side-aware): 백엔드 forward~past, 숏이면 부호 반전.
   const reg = data?.regression ?? null;
@@ -1518,11 +1543,10 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     const line = prices
       .filter((_, i) => i % stride === 0 || i === prices.length - 1)
       .map((p) => ({ t: ms(p.date), close: p.close }));
-    if (!applied || !matched.length) return { line, shades: [] };
-    const idxOf = new Map(prices.map((p, i) => [p.date, i] as const));
+    if (!applied || !declustered.length) return { line, shades: [] };
     const wins: [number, number][] = [];
-    for (const e of matched) {
-      const i = idxOf.get(e.date);
+    for (const e of declustered) {
+      const i = dateIdx.get(e.date);
       if (i === undefined) continue;
       wins.push([Math.max(0, i - applied.L), Math.min(prices.length - 1, i + applied.H)]);
     }
@@ -1535,7 +1559,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     }
     const shades = merged.map(([a, b]) => ({ x1: ms(prices[a].date), x2: ms(prices[b].date) }));
     return { line, shades };
-  }, [prices, matched, applied]);
+  }, [prices, declustered, applied, dateIdx]);
 
   const op = result ? teOpinion(result.mean) : null;
 
@@ -1601,6 +1625,16 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
             </div>
           )}
 
+          {/* 샘플링 통제 — 이벤트 최소 간격(디클러스터) */}
+          <div className="muted" style={{ fontSize: 13, marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            이벤트 최소 간격
+            <span className="te-blank" style={{ fontSize: 13 }}>
+              <input type="number" min={0} max={250} value={dGap}
+                onChange={(e) => setDGap(Math.max(0, Number(e.target.value) || 0))} style={{ width: 44 }} />
+            </span>
+            영업일 — 연속·겹치는 매칭을 1건으로 묶어 표본 독립성 확보(0=원시, 권장 ≈ 향후 {dH}일).
+          </div>
+
           <button onClick={applyAndCompute} disabled={loading} style={{ margin: "12px 0 16px" }}>
             {loading ? "계산 중…" : "확인 (계산)"}
           </button>
@@ -1617,7 +1651,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                     {(result.mean >= 0 ? "+" : "") + result.mean.toFixed(2)}%
                   </b>{" "}
                   <span className="muted" style={{ fontSize: 13 }}>
-                    (n={result.n}, 상승 비율 {result.up.toFixed(0)}%{result.n < 30 ? " ⚠ 저신뢰" : ""})
+                    (독립 표본 n={result.n}{matched.length > result.n ? ` / 원시 ${matched.length}건` : ""}, 상승 비율 {result.up.toFixed(0)}%{result.n < 30 ? " ⚠ 저신뢰" : ""})
                   </span>
                 </div>
                 {op && (
@@ -1633,13 +1667,13 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                 )}
               </>
             ) : (
-              <div className="muted" style={{ marginBottom: 16 }}>해당 조건에 맞는 이벤트가 없습니다 — 범위를 넓혀 보세요.</div>
+              <div className="muted" style={{ marginBottom: 16 }}>해당 조건에 맞는 독립 이벤트가 없습니다 — 범위를 넓히거나 이벤트 최소 간격을 줄여 보세요.</div>
             )
           )}
 
           {/* 전체기간 가격차트 + 매칭 구간 음영 */}
           <div className="muted" style={{ fontSize: 13, margin: "8px 0 6px" }}>
-            전체기간 가격 — <span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 종가{applied ? ` ${applied.nLo <= -1e8 ? "−∞" : priceSym + applied.nLo}~${applied.nHi >= 1e8 ? "∞" : priceSym + applied.nHi}` : ""} <b>∧</b> 증감율{applied ? ` ${applied.lo <= -1e8 ? "−∞" : applied.lo + "%"}~${applied.hi >= 1e8 ? "∞" : applied.hi + "%"}` : ""} <b>둘 다</b> 만족하는 진입 구간 [−{applied?.L ?? dL} ~ +{applied?.H ?? dH}일]{matched.length ? ` · ${matched.length}건` : ""}.
+            전체기간 가격 — <span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 종가{applied ? ` ${applied.nLo <= -1e8 ? "−∞" : priceSym + applied.nLo}~${applied.nHi >= 1e8 ? "∞" : priceSym + applied.nHi}` : ""} <b>∧</b> 증감율{applied ? ` ${applied.lo <= -1e8 ? "−∞" : applied.lo + "%"}~${applied.hi >= 1e8 ? "∞" : applied.hi + "%"}` : ""} <b>둘 다</b> 만족하는 진입 구간 [−{applied?.L ?? dL} ~ +{applied?.H ?? dH}일]{declustered.length ? ` · ${declustered.length}건${matched.length > declustered.length ? ` (원시 ${matched.length})` : ""}` : ""}.
           </div>
           <ResponsiveContainer width="100%" height={260}>
             <ComposedChart data={chart.line} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
