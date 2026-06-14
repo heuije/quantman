@@ -1339,6 +1339,47 @@ function teNiceStep(raw: number): number {
 }
 
 // 매칭 조건의 평균 향후 종가 증감율에 따른 한줄 전망.
+// G영업일 이내 연속/겹친 이벤트는 1건만(그리디). events 는 날짜 오름차순 가정.
+function teDeclusterByGap<T extends { date: string }>(events: T[], gap: number, dateIdx: Map<string, number>): T[] {
+  if (gap <= 0) return events;
+  const kept: T[] = [];
+  let last = -Infinity;
+  for (const e of events) {
+    const i = dateIdx.get(e.date);
+    if (i === undefined) continue;
+    if (i - last >= gap) { kept.push(e); last = i; }
+  }
+  return kept;
+}
+
+// 정규근사 누적분포용 erf (Abramowitz-Stegun 7.1.26) — 백엔드 _normal_cdf(math.erf)과 동일 정의.
+function teErf(x: number): number {
+  const s = x < 0 ? -1 : 1, ax = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * ax);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-ax * ax);
+  return s * y;
+}
+
+// 단순 OLS(forward~past) — 디클러스터(독립 표본) 위라 HAC 불필요. 정규근사 양측 p.
+function teOls(pts: { x: number; y: number }[]): { slope: number; intercept: number; r2: number; n: number; p: number } | null {
+  const n = pts.length;
+  if (n < 3) return null;
+  let sx = 0, sy = 0;
+  for (const p of pts) { sx += p.x; sy += p.y; }
+  const mx = sx / n, my = sy / n;
+  let sxx = 0, sxy = 0, syy = 0;
+  for (const p of pts) { const dx = p.x - mx, dy = p.y - my; sxx += dx * dx; sxy += dx * dy; syy += dy * dy; }
+  if (sxx <= 0) return null;
+  const slope = sxy / sxx, intercept = my - slope * mx;
+  let sse = 0;
+  for (const p of pts) { const e = p.y - (intercept + slope * p.x); sse += e * e; }
+  const r2 = syy > 0 ? 1 - sse / syy : 0;
+  const se = Math.sqrt((sse / (n - 2)) / sxx);
+  const t = se > 0 ? slope / se : 0;
+  const p = 2 * (1 - 0.5 * (1 + teErf(Math.abs(t) / Math.SQRT2)));
+  return { slope, intercept, r2, n, p };
+}
+
 function teOpinion(mean: number): { txt: string; cls: string } {
   if (mean >= 4) return { txt: "📈 강한 상승 경향", cls: "pos" };
   if (mean >= 1) return { txt: "📈 상승 경향", cls: "pos" };
@@ -1442,7 +1483,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     // 설명력 지도는 종가범위만 의존(폼 L,H 무관) → 본 확인 시에만 갱신, 칸 클릭 땐 유지.
     if (lOverride === undefined) {
       setScanLoading(true);
-      futuresApi.trendScan(symbol, { price_lo: a.nLo, price_hi: a.nHi })
+      futuresApi.trendScan(symbol, { price_lo: a.nLo, price_hi: a.nHi, gap: a.gap })
         .then(setScan)
         .catch(() => setScan(null))
         .finally(() => setScanLoading(false));
@@ -1463,18 +1504,10 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
   // 디클러스터: 같은 조건이 G영업일 내 연속/겹쳐 발생하면 1건만 채택 — 겹치는 forward
   // 윈도우·레짐 집중으로 인한 표본 과대평가 방지(독립 표본 근접). gap=0이면 원시 그대로.
-  const declustered = useMemo(() => {
-    const gap = applied?.gap ?? 0;
-    if (gap <= 0) return matched;
-    const kept: typeof matched = [];
-    let lastIdx = -Infinity;
-    for (const e of matched) {
-      const i = dateIdx.get(e.date);
-      if (i === undefined) continue;
-      if (i - lastIdx >= gap) { kept.push(e); lastIdx = i; }
-    }
-    return kept;
-  }, [matched, applied, dateIdx]);
+  const declustered = useMemo(
+    () => teDeclusterByGap(matched, applied?.gap ?? 0, dateIdx),
+    [matched, applied, dateIdx],
+  );
 
   const result = useMemo(() => {
     const n = declustered.length;
@@ -1484,24 +1517,26 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     return { n, mean, up };
   }, [declustered]);
 
-  // 회귀 (side-aware): 백엔드 forward~past, 숏이면 부호 반전.
-  const reg = data?.regression ?? null;
+  // 회귀/산점도: 종가범위만(증감율 밴드 제외 — x축 절단 회피) → gap 디클러스터.
+  // = (L,H) 지도 셀과 동일 조건이고 결과·음영과 일관. 독립 표본이라 단순 OLS로 충분(HAC 불필요).
+  const scatterDecl = useMemo(() => {
+    if (!data || !applied) return [];
+    const band = data.events.filter((e) => e.close >= applied.nLo && e.close <= applied.nHi);
+    return teDeclusterByGap(band, applied.gap, dateIdx);
+  }, [data, applied, dateIdx]);
+  const scatterPts = useMemo(
+    () => scatterDecl.map((e) => ({ x: e.past_return * 100, y: e.forward_return * 100 })),
+    [scatterDecl],
+  );
+  const reg = useMemo(() => teOls(scatterPts), [scatterPts]);
   const pastRange = useMemo(() => {
-    if (!data || data.events.length === 0) return null;
-    const ps = data.events.map((e) => e.past_return * 100);
-    return { min: Math.floor(Math.min(...ps)), max: Math.ceil(Math.max(...ps)) };
-  }, [data]);
-  const scatterPts = useMemo(() => {
-    if (!data) return [];
-    const evs = data.events;
-    const stride = Math.max(1, Math.ceil(evs.length / 600));
-    const pts: { x: number; y: number }[] = [];
-    for (let i = 0; i < evs.length; i += stride) pts.push({ x: evs[i].past_return * 100, y: evs[i].forward_return * 100 });
-    return pts;
-  }, [data]);
+    if (!scatterPts.length) return null;
+    const xs = scatterPts.map((p) => p.x);
+    return { min: Math.floor(Math.min(...xs)), max: Math.ceil(Math.max(...xs)) };
+  }, [scatterPts]);
   const regSeg = useMemo<[{ x: number; y: number }, { x: number; y: number }] | null>(() => {
     if (!reg || !pastRange) return null;
-    const yAt = (xp: number) => reg.slope * xp + reg.intercept * 100;
+    const yAt = (xp: number) => reg.slope * xp + reg.intercept;
     return [{ x: pastRange.min, y: yAt(pastRange.min) }, { x: pastRange.max, y: yAt(pastRange.max) }];
   }, [reg, pastRange]);
 
@@ -1696,15 +1731,15 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           {applied && !loading && reg && pastRange && (
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
               <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
-                회귀분석 — 과거 <b>{applied.L}일</b> 증감율(x) → 미래 <b>{applied.H}일</b> 종가 증감율(y) · 전체 {reg.n.toLocaleString()}건
+                회귀분석 — 과거 <b>{applied.L}일</b> 증감율(x) → 미래 <b>{applied.H}일</b> 종가 증감율(y) · 종가범위+간격 <b>독립 {reg.n.toLocaleString()}건</b>
               </div>
               <div className="bt-metrics" style={{ marginBottom: 10 }}>
                 <Metric label="기울기 β" value={(reg.slope >= 0 ? "+" : "") + reg.slope.toFixed(2)}
                   highlight={reg.slope >= 0 ? "good" : "bad"}
                   sub={reg.slope >= 0 ? "추세↑→이후 상승↑" : "추세↑→이후 하락↑"} />
-                <Metric label="R²" value={reg.r_squared.toFixed(3)} sub="설명력(0~1)" />
-                <Metric label="p-value (HAC)" value={reg.hac_p_value.toFixed(3)}
-                  highlight={reg.hac_p_value < 0.05 ? "good" : "warn"} sub="겹침보정 후" />
+                <Metric label="R²" value={reg.r2.toFixed(3)} sub="설명력(0~1)" />
+                <Metric label="p-value" value={reg.p.toFixed(3)}
+                  highlight={reg.p < 0.05 ? "good" : "warn"} sub="독립표본 단순 OLS(정규근사)" />
                 <Metric label="표본 n" value={reg.n} highlight={reg.n < 30 ? "warn" : null} />
               </div>
               <ResponsiveContainer width="100%" height={280}>
@@ -1783,7 +1818,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           )}
 
           <div className="muted" style={{ fontSize: 11, marginTop: 12 }}>
-            ⚠️ <b>종가 증감율</b>은 종가-종가 기준 서술용(실 백테스트의 익일 시가·비용·청산룰과 다름 — 관계 측정용). forward 윈도우 겹침→HAC 보정.
+            ⚠️ <b>종가 증감율</b>은 종가-종가 기준 서술용(실 백테스트의 익일 시가·비용·청산룰과 다름 — 관계 측정용). forward 윈도우 겹침·레짐 집중은 <b>이벤트 최소 간격(디클러스터)</b>으로 독립표본화 — 결과·회귀·(L,H) 지도에 동일 적용.
             범위를 좁힐수록 표본↓·통계 불안정(n&lt;30 ⚠). (L,H) 지도는 종가범위 조건, 위 회귀는 전체기간 — 조건이 달라 R²가 다를 수 있음.
           </div>
         </>

@@ -959,6 +959,7 @@ def trend_scan_endpoint(
     horizons: Optional[str] = None,
     oos_split: float = 0.5,
     min_n: int = 30,
+    gap: int = 0,
 ):
     """종가범위 조건 하 (L,H) 격자별 forward~past 설명력(R²·HAC p·기울기) + OOS 안정성.
 
@@ -977,7 +978,7 @@ def trend_scan_endpoint(
         raise HTTPException(422, "min_n 은 3 이상")
 
     df = _df(symbol)
-    cells = trend_explanatory_scan(df, ls, hs, lo, hi, oos_split=oos_split, min_n=min_n)
+    cells = trend_explanatory_scan(df, ls, hs, lo, hi, oos_split=oos_split, min_n=min_n, gap=max(0, gap))
     return TrendScanResponse(
         price_lo=lo, price_hi=hi, lookbacks=ls, horizons=hs,
         cells=[
