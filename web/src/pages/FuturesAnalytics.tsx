@@ -38,6 +38,7 @@ import {
   type OilPricePoint,
   type OilSeasonality,
   type OilTrendEvents,
+  type OilTrendScan,
   type OilWalkForward,
 } from "../api";
 
@@ -1362,12 +1363,15 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   const [prices, setPrices] = useState<OilPricePoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [scan, setScan] = useState<OilTrendScan | null>(null);   // (L,H) 설명력 격자
+  const [scanLoading, setScanLoading] = useState(false);
 
   // 종목 변경 → 전체 가격 시계열 로드 + draft 종가범위=현재가 부근 버킷, 적용 리셋.
   useEffect(() => {
     setApplied(null);
     setData(null);
     setPrices([]);
+    setScan(null);
     setDNLo("");
     setDNHi("");
     futuresApi.prices(symbol)
@@ -1405,14 +1409,19 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     return prev ? (last / prev - 1) * 100 : null;
   }, [prices, dL]);
 
-  function applyAndCompute() {
+  // lOverride/hOverride: (L,H) 설명력 지도 칸 클릭 시 그 윈도우로 즉시 재계산(드래프트도 갱신).
+  function applyAndCompute(lOverride?: number, hOverride?: number) {
+    const L = lOverride ?? dL;
+    const H = hOverride ?? dH;
+    if (lOverride !== undefined) setDL(lOverride);
+    if (hOverride !== undefined) setDH(hOverride);
     const lo = dLo === "" ? -1e9 : Number(dLo);
     const hi = dHi === "" ? 1e9 : Number(dHi);
     const nLo = dNLo === "" ? -1e9 : Number(dNLo);
     const nHi = dNHi === "" ? 1e9 : Number(dNHi);
     const a = {
       nLo: Math.min(nLo, nHi), nHi: Math.max(nLo, nHi),
-      L: dL, H: dH,
+      L, H,
       lo: Math.min(lo, hi), hi: Math.max(lo, hi),
       gap: Math.max(0, dGap),
     };
@@ -1423,6 +1432,14 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
       .then(setData)
       .catch((e) => setErr(e.message))
       .finally(() => setLoading(false));
+    // 설명력 지도는 종가범위만 의존(폼 L,H 무관) → 본 확인 시에만 갱신, 칸 클릭 땐 유지.
+    if (lOverride === undefined) {
+      setScanLoading(true);
+      futuresApi.trendScan(symbol, { price_lo: a.nLo, price_hi: a.nHi })
+        .then(setScan)
+        .catch(() => setScan(null))
+        .finally(() => setScanLoading(false));
+    }
   }
 
   // 매칭 이벤트: 설정 종가범위 ∧ 과거 증감율 범위.
@@ -1508,6 +1525,14 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     return { line, shades };
   }, [prices, declustered, applied, dateIdx]);
 
+  // (L,H) 설명력 지도용 — 칸 조회 Map + R² 최댓값(틴트 정규화).
+  const scanView = useMemo(() => {
+    if (!scan) return null;
+    const byKey = new Map(scan.cells.map((c) => [`${c.lookback}|${c.horizon}`, c] as const));
+    const maxR2 = Math.max(1e-9, ...scan.cells.map((c) => c.r_squared ?? 0));
+    return { byKey, maxR2 };
+  }, [scan]);
+
   const op = result ? teOpinion(result.mean) : null;
 
   return (
@@ -1582,7 +1607,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
             영업일 — 연속·겹치는 매칭을 1건으로 묶어 표본 독립성 확보(0=원시, 권장 ≈ 향후 {dH}일).
           </div>
 
-          <button onClick={applyAndCompute} disabled={loading} style={{ margin: "12px 0 16px" }}>
+          <button onClick={() => applyAndCompute()} disabled={loading} style={{ margin: "12px 0 16px" }}>
             {loading ? "계산 중…" : "확인 (계산)"}
           </button>
 
@@ -1668,9 +1693,66 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
             </div>
           )}
 
+          {/* (L,H) 설명력 지도 — 어느 과거·미래 기간이 종가범위 내에서 가장 설명력 높은가 */}
+          {applied && scanView && scan && (
+            <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+              <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
+                <b>(과거 L, 미래 H) 설명력 지도</b> — 행=과거 L일, 열=미래 H일. 종가범위{applied.nLo <= -1e8 ? "" : ` ${priceSym}${applied.nLo}~${priceSym}${applied.nHi}`} 내
+                forward~past <b>R²</b>(색 진하기) · β부호(+/−) · 부호안정 <b>✓</b>(train·test 동부호) · HAC p&lt;.05 <b>*</b>.
+                {" "}<b style={{ color: "var(--accent-strong)" }}>칸 클릭 → 그 (L,H)로 위 결과·회귀 재계산.</b>
+              </div>
+              <div className="muted" style={{ fontSize: 11, marginBottom: 8, color: "var(--amber)" }}>
+                ⚠ 다중비교 주의: {scan.n_cells}개 칸 중 R² 최댓값만 믿으면 과최적화. 고-R²가 <b>연속 영역</b>이고 <b>✓(OOS 부호안정)</b>·낮은 p가 받쳐줄 때만 신뢰.
+              </div>
+              <div className="table-scroll sticky-table" style={{ maxHeight: 380 }}>
+                <table className="te-hm">
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left" }}>L＼H</th>
+                      {scan.horizons.map((h) => <th key={h}>{h}일</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scan.lookbacks.map((L) => (
+                      <tr key={L}>
+                        <th style={{ textAlign: "left" }}>{L}일</th>
+                        {scan.horizons.map((H) => {
+                          const c = scanView.byKey.get(`${L}|${H}`);
+                          const isCur = applied.L === L && applied.H === H;
+                          if (!c || c.r_squared == null) {
+                            return (
+                              <td key={H} title={c ? `n=${c.n} (표본 부족)` : ""}
+                                style={{ background: "#f1efe8", color: "var(--muted)", opacity: 0.5, borderRadius: 5,
+                                  cursor: "default", outline: isCur ? "2px solid #d97757" : "none" }}>·</td>
+                            );
+                          }
+                          const alpha = Math.min(0.85, (c.r_squared / scanView.maxR2) * 0.85);
+                          const sig = c.hac_p_value != null && c.hac_p_value < 0.05;
+                          return (
+                            <td key={H}
+                              title={`L=${L}, H=${H} · n=${c.n} · R²=${c.r_squared.toFixed(3)} · β=${(c.slope ?? 0).toFixed(2)} · HAC p=${(c.hac_p_value ?? 1).toFixed(3)} · OOS R²=${c.oos_r_squared != null ? c.oos_r_squared.toFixed(3) : "—"} · 부호안정 ${c.sign_stable ? "예" : "아니오"}`}
+                              onClick={() => applyAndCompute(L, H)}
+                              style={{ background: `rgba(217,119,87,${alpha})`, color: alpha > 0.5 ? "#fff" : "var(--text)",
+                                borderRadius: 5, cursor: "pointer", outline: isCur ? "2px solid #d97757" : "none" }}>
+                              <div style={{ fontWeight: 600 }}>{c.r_squared.toFixed(2)}</div>
+                              <div style={{ fontSize: 10, opacity: 0.9 }}>
+                                {(c.slope ?? 0) >= 0 ? "β+" : "β−"}{c.sign_stable ? " ✓" : ""}{sig ? " *" : ""}
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {scanLoading && <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>지도 계산 중…</div>}
+            </div>
+          )}
+
           <div className="muted" style={{ fontSize: 11, marginTop: 12 }}>
             ⚠️ <b>종가 증감율</b>은 종가-종가 기준 서술용(실 백테스트의 익일 시가·비용·청산룰과 다름 — 관계 측정용). forward 윈도우 겹침→HAC 보정.
-            범위를 좁힐수록 표본↓·통계 불안정(n&lt;30 ⚠).
+            범위를 좁힐수록 표본↓·통계 불안정(n&lt;30 ⚠). (L,H) 지도는 종가범위 조건, 위 회귀는 전체기간 — 조건이 달라 R²가 다를 수 있음.
           </div>
         </>
       )}

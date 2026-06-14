@@ -74,3 +74,40 @@ def test_trend_events_validation(monkeypatch):
     assert client.get("/futures/oil/trend-events?horizon=0").status_code == 422
     # side만 주고 threshold 누락 → 422
     assert client.get("/futures/oil/trend-events?side=short").status_code == 422
+
+
+# ───── /trend-scan ((L,H) 설명력 격자) ──────────────────────────────────
+
+def test_trend_scan_requires_auth():
+    app = FastAPI()
+    app.include_router(futures.router)
+    r = TestClient(app).get("/futures/oil/trend-scan?price_lo=110&price_hi=120")
+    assert r.status_code == 401
+
+
+def test_trend_scan_grid(monkeypatch):
+    client = _client(monkeypatch)
+    r = client.get("/futures/oil/trend-scan?price_lo=110&price_hi=120&lookbacks=3,5&horizons=5,10&min_n=3")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["lookbacks"] == [3, 5] and body["horizons"] == [5, 10]
+    assert body["n_cells"] == 4 and len(body["cells"]) == 4
+    cell = next(c for c in body["cells"] if c["lookback"] == 3 and c["horizon"] == 5)
+    # 종가 ∈ [110,120] = close[t]=100+t → t∈10..20 = 11건.
+    assert cell["n"] == 11
+    assert cell["r_squared"] is not None              # n≥min_n → 회귀 실행
+    assert set(cell) == {
+        "lookback", "horizon", "n", "r_squared", "slope", "intercept",
+        "hac_p_value", "oos_r_squared", "oos_slope", "sign_stable",
+    }
+
+
+def test_trend_scan_validation(monkeypatch):
+    client = _client(monkeypatch)
+    big = ",".join(str(i) for i in range(1, 14))       # 13×13=169 > 144
+    assert client.get(
+        f"/futures/oil/trend-scan?price_lo=110&price_hi=120&lookbacks={big}&horizons={big}"
+    ).status_code == 422
+    assert client.get(
+        "/futures/oil/trend-scan?price_lo=110&price_hi=120&oos_split=0.95"
+    ).status_code == 422

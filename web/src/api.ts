@@ -530,6 +530,31 @@ export interface OilTrendEvents {
   low_sample: boolean;
 }
 
+// (L,H) 설명력 격자 — 종가범위 조건 하 forward~past 회귀 + OOS 안정성.
+export interface OilTrendScanCell {
+  lookback: number;
+  horizon: number;
+  n: number;
+  r_squared: number | null;    // 표본 부족(min_n 미만) 시 null
+  slope: number | null;
+  intercept: number | null;
+  hac_p_value: number | null;
+  oos_r_squared: number | null;
+  oos_slope: number | null;
+  sign_stable: boolean;        // train·test 기울기 동부호
+}
+
+export interface OilTrendScan {
+  price_lo: number;
+  price_hi: number;
+  lookbacks: number[];
+  horizons: number[];
+  cells: OilTrendScanCell[];
+  n_cells: number;             // 격자 칸 수 = 다중비교 규모
+  oos_split: number;
+  min_n: number;
+}
+
 export const futuresApi = {
   instruments: () => req<OilInstrument[]>("/futures/instruments"),
   dataInfo: (sym: string) => req<OilDataInfo>(`/futures/${sym}/data-info`),
@@ -656,5 +681,21 @@ export const futuresApi = {
     if (opts.min_gap_days !== undefined && opts.min_gap_days !== 0)
       qs.set("min_gap_days", String(opts.min_gap_days));
     return req<OilTrendEvents>(`/futures/${sym}/trend-events?` + qs.toString());
+  },
+  trendScan: (sym: string, opts: {
+    price_lo: number;
+    price_hi: number;
+    lookbacks?: number[];
+    horizons?: number[];
+    min_n?: number;
+  }) => {
+    const qs = new URLSearchParams({
+      price_lo: String(opts.price_lo),
+      price_hi: String(opts.price_hi),
+    });
+    if (opts.lookbacks?.length) qs.set("lookbacks", opts.lookbacks.join(","));
+    if (opts.horizons?.length) qs.set("horizons", opts.horizons.join(","));
+    if (opts.min_n !== undefined) qs.set("min_n", String(opts.min_n));
+    return req<OilTrendScan>(`/futures/${sym}/trend-scan?` + qs.toString());
   },
 };

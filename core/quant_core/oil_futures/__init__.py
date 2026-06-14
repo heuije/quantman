@@ -39,9 +39,11 @@ from .optimizer import (
 )
 from .excel_export import build_oil_excel
 from .trend_analysis import (
+    ScanCell,
     TrendEvent,
     TrendRegression,
     trend_events,
+    trend_explanatory_scan,
     trend_regression,
 )
 
@@ -54,4 +56,5 @@ __all__ = [
     "GridCell", "WalkForwardResult", "grid_search", "grid_to_dataframe", "walk_forward",
     "build_oil_excel",
     "TrendEvent", "TrendRegression", "trend_events", "trend_regression",
+    "ScanCell", "trend_explanatory_scan",
 ]
