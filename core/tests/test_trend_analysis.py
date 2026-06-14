@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -20,11 +21,13 @@ if str(_CORE_DIR) not in sys.path:
     sys.path.insert(0, str(_CORE_DIR))
 
 from quant_core.oil_futures import (  # noqa: E402
+    ScanCell,
     Side,
     TrendEvent,
     TrendRegression,
     generate_signals,
     trend_events,
+    trend_explanatory_scan,
     trend_regression,
 )
 
@@ -182,3 +185,46 @@ def test_smooth_window_invalid_raises():
     df = _mk(list(range(100, 110)))
     with pytest.raises(ValueError):
         generate_signals(df, short_thresholds=[105], smooth_window=0)
+
+
+# ───── trend_explanatory_scan: (L,H) 격자 설명력 ─────────────────────────
+
+def test_explanatory_scan_grid_price_band_and_structure():
+    closes = list(range(100, 150))               # 100..149, 50 pts (+1/일)
+    df = _mk(closes)
+    cells = trend_explanatory_scan(
+        df, lookbacks=[2, 3], horizons=[2, 3],
+        price_lo=110, price_hi=120, oos_split=0.5, min_n=5,
+    )
+    assert len(cells) == 4                        # 2×2 격자
+    assert all(isinstance(c, ScanCell) for c in cells)
+    by_key = {(c.lookback, c.horizon): c for c in cells}
+    assert set(by_key) == {(2, 2), (2, 3), (3, 2), (3, 3)}
+    # 종가 ∈ [110,120] = close[t]=100+t → t∈10..20 = 11건 (모든 L,H 동일, t범위 안).
+    c = by_key[(2, 2)]
+    assert c.n == 11
+    assert not math.isnan(c.r_squared) and 0.0 <= c.r_squared <= 1.0
+    assert not math.isnan(c.slope) and not math.isnan(c.intercept)
+    # n=11 → train=6/test=5 (≥3) → OOS·부호안정성 계산됨.
+    assert c.oos_r_squared is not None and c.oos_slope is not None
+    assert isinstance(c.sign_stable, bool)
+
+
+def test_explanatory_scan_min_n_gates_low_sample():
+    closes = list(range(100, 150))
+    df = _mk(closes)
+    # 같은 밴드 n=11인데 min_n=12 → 비활성(nan·None).
+    gated = trend_explanatory_scan(df, [2], [2], 110, 120, min_n=12)
+    assert len(gated) == 1 and gated[0].n == 11
+    assert math.isnan(gated[0].r_squared) and math.isnan(gated[0].slope)
+    assert gated[0].oos_r_squared is None and gated[0].sign_stable is False
+
+
+def test_explanatory_scan_deterministic():
+    closes = list(range(100, 150))
+    df = _mk(closes)
+    kw = dict(lookbacks=[2, 3, 4], horizons=[2, 5], price_lo=105, price_hi=140, min_n=5)
+    a = trend_explanatory_scan(df, **kw)
+    b = trend_explanatory_scan(df, **kw)
+    key = lambda cs: [(c.lookback, c.horizon, c.n, c.r_squared, c.slope, c.sign_stable) for c in cs]
+    assert key(a) == key(b)

@@ -164,3 +164,80 @@ def trend_regression(events: list[TrendEvent], horizon: int) -> TrendRegression 
         hac_t_stat=float(t_stat),
         hac_p_value=float(p_value),
     )
+
+
+@dataclass(frozen=True)
+class ScanCell:
+    """한 (lookback, horizon) 칸의 설명력 + 표본 밖(OOS) 안정성."""
+
+    lookback: int
+    horizon: int
+    n: int                        # 종가범위 조건 후 표본수
+    r_squared: float              # in-sample R² (forward~past, 종가범위 조건). 부족 시 nan
+    slope: float                  # in-sample 기울기 β. 부족 시 nan
+    intercept: float
+    hac_p_value: float            # HAC p (겹침 자기상관 보정)
+    oos_r_squared: float | None   # test 반쪽 R² (표본 부족 시 None)
+    oos_slope: float | None       # test 반쪽 기울기
+    sign_stable: bool             # train·test 기울기 동부호 (둘 다 회귀 가능)
+
+
+def trend_explanatory_scan(
+    df: pd.DataFrame,
+    lookbacks: list[int],
+    horizons: list[int],
+    price_lo: float,
+    price_hi: float,
+    oos_split: float = 0.5,
+    min_n: int = 30,
+) -> list[ScanCell]:
+    """(L,H) 격자 × 종가범위 조건 → 칸마다 forward~past 설명력 + OOS 안정성.
+
+    각 칸:
+      - events = trend_events(df, L, H) 중 종가 ∈ [price_lo, price_hi] 인 것만.
+      - in-sample 회귀: trend_regression → r2/slope/intercept/hac_p.
+      - OOS: events 를 날짜순(오름차순 보장) 앞 oos_split / 뒤로 나눠 각각 회귀 →
+        test 의 r2·slope, train·test 기울기 동부호면 sign_stable.
+
+    설명력은 **종가범위만** 조건으로 한다 — 증감율 밴드를 넣으면 x축이 절단돼
+    R²·기울기 추정이 불안정해진다(범위 절단 편향). 증감율 밴드는 호출측에서
+    '질문 지점'으로만 쓴다.
+
+    ⚠ 데이터 스누핑: 여러 칸을 스캔해 R² 최댓값(또는 p 최솟값) 한 칸을 고르면
+    과최적화(다중비교)다. 호출측은 (1) 전체 격자를 보여 고-R²가 연속영역인지,
+    (2) sign_stable·OOS 로 견고성을 판단하게 하고, 다중비교 경고를 노출해야 한다.
+    """
+    cells: list[ScanCell] = []
+    floor_n = max(3, int(min_n))
+    for L in lookbacks:
+        for H in horizons:
+            if L < 1 or H < 1:
+                continue
+            evs = [e for e in trend_events(df, int(L), int(H))
+                   if price_lo <= e.close <= price_hi]
+            n = len(evs)
+            if n < floor_n:
+                cells.append(ScanCell(
+                    lookback=int(L), horizon=int(H), n=n,
+                    r_squared=float("nan"), slope=float("nan"),
+                    intercept=float("nan"), hac_p_value=float("nan"),
+                    oos_r_squared=None, oos_slope=None, sign_stable=False,
+                ))
+                continue
+            reg = trend_regression(evs, int(H))
+            # OOS: 날짜순 앞쪽 train / 뒤쪽 test (evs 는 trend_events 가 오름차순 생성).
+            k = int(round(n * oos_split))
+            reg_tr = trend_regression(evs[:k], int(H))
+            reg_te = trend_regression(evs[k:], int(H))
+            sign_stable = bool(reg_tr and reg_te and reg_tr.slope * reg_te.slope > 0)
+            cells.append(ScanCell(
+                lookback=int(L), horizon=int(H), n=n,
+                r_squared=(reg.r_squared if reg else float("nan")),
+                slope=(reg.slope if reg else float("nan")),
+                intercept=(reg.intercept if reg else float("nan")),
+                hac_p_value=(reg.hac_p_value if reg else float("nan")),
+                oos_r_squared=(reg_te.r_squared if reg_te else None),
+                oos_slope=(reg_te.slope if reg_te else None),
+                sign_stable=sign_stable,
+            ))
+    return cells

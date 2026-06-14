@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -43,6 +44,7 @@ from quant_core.oil_futures import (
     run_backtest,
     summarize,
     trend_events,
+    trend_explanatory_scan,
     trend_regression,
     walk_forward,
 )
@@ -889,4 +891,103 @@ def trend_events_endpoint(
             ) if reg else None
         ),
         low_sample=len(evs) < LOW_SAMPLE_THRESHOLD,
+    )
+
+
+# ───── 🅖 Trend explanatory scan — (L,H) 설명력 격자 ──────────────────
+
+_SCAN_LOOKBACKS = [5, 10, 20, 40, 60, 90, 120]
+_SCAN_HORIZONS = [5, 10, 20, 40, 60, 90, 120]
+
+
+class ScanCellOut(BaseModel):
+    lookback: int
+    horizon: int
+    n: int
+    r_squared: Optional[float]    # 표본 부족(min_n 미만) 시 None
+    slope: Optional[float]
+    intercept: Optional[float]
+    hac_p_value: Optional[float]
+    oos_r_squared: Optional[float]
+    oos_slope: Optional[float]
+    sign_stable: bool
+
+
+class TrendScanResponse(BaseModel):
+    price_lo: float
+    price_hi: float
+    lookbacks: list[int]
+    horizons: list[int]
+    cells: list[ScanCellOut]
+    n_cells: int                  # 격자 칸 수 = 다중비교 규모(데이터 스누핑 경고용)
+    oos_split: float
+    min_n: int
+
+
+def _parse_int_list(raw: Optional[str], default: list[int]) -> list[int]:
+    if not raw:
+        return list(default)
+    out: list[int] = []
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            v = int(tok)
+        except ValueError:
+            raise HTTPException(422, f"정수 목록 파싱 실패: {raw!r}")
+        if v >= 1:
+            out.append(v)
+    if not out:
+        raise HTTPException(422, "lookbacks/horizons 는 1 이상 정수 1개 이상")
+    return sorted(set(out))
+
+
+def _nn(v: Optional[float]) -> Optional[float]:
+    """nan/None → None (JSON 호환)."""
+    return None if (v is None or math.isnan(v)) else float(v)
+
+
+@router.get("/{symbol}/trend-scan", response_model=TrendScanResponse)
+def trend_scan_endpoint(
+    symbol: str,
+    price_lo: float,
+    price_hi: float,
+    lookbacks: Optional[str] = None,
+    horizons: Optional[str] = None,
+    oos_split: float = 0.5,
+    min_n: int = 30,
+):
+    """종가범위 조건 하 (L,H) 격자별 forward~past 설명력(R²·HAC p·기울기) + OOS 안정성.
+
+    설명력은 종가범위만 조건(증감율 밴드는 회귀에 미포함 — x축 절단 회피).
+    ⚠ 여러 칸 중 R² 최댓값을 고르면 다중비교 과최적화 — n_cells 가 검정 규모이고,
+    sign_stable·OOS·연속영역으로 견고성을 판단해야 한다(웹이 경고 노출).
+    """
+    lo, hi = (price_lo, price_hi) if price_lo <= price_hi else (price_hi, price_lo)
+    ls = _parse_int_list(lookbacks, _SCAN_LOOKBACKS)
+    hs = _parse_int_list(horizons, _SCAN_HORIZONS)
+    if len(ls) * len(hs) > 144:
+        raise HTTPException(422, "격자 칸 수는 144 이하 (lookbacks×horizons)")
+    if not (0.2 <= oos_split <= 0.8):
+        raise HTTPException(422, "oos_split 은 0.2~0.8")
+    if min_n < 3:
+        raise HTTPException(422, "min_n 은 3 이상")
+
+    df = _df(symbol)
+    cells = trend_explanatory_scan(df, ls, hs, lo, hi, oos_split=oos_split, min_n=min_n)
+    return TrendScanResponse(
+        price_lo=lo, price_hi=hi, lookbacks=ls, horizons=hs,
+        cells=[
+            ScanCellOut(
+                lookback=c.lookback, horizon=c.horizon, n=c.n,
+                r_squared=_nn(c.r_squared), slope=_nn(c.slope),
+                intercept=_nn(c.intercept), hac_p_value=_nn(c.hac_p_value),
+                oos_r_squared=_nn(c.oos_r_squared), oos_slope=_nn(c.oos_slope),
+                sign_stable=c.sign_stable,
+            )
+            for c in cells
+        ],
+        n_cells=len(cells),
+        oos_split=oos_split, min_n=min_n,
     )
