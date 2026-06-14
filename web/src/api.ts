@@ -698,4 +698,41 @@ export const futuresApi = {
     if (opts.min_n !== undefined) qs.set("min_n", String(opts.min_n));
     return req<OilTrendScan>(`/futures/${sym}/trend-scan?` + qs.toString());
   },
+  // 향후 종가 증감율 결과(조건·이벤트·요약) .xlsx 다운로드. blob 직접 처리.
+  trendExport: async (sym: string, opts: {
+    lookback: number;
+    horizon: number;
+    price_lo: number;
+    price_hi: number;
+    change_lo?: number;
+    change_hi?: number;
+    gap?: number;
+  }) => {
+    const t = tokenStore.get();
+    const qs = new URLSearchParams({
+      lookback: String(opts.lookback),
+      horizon: String(opts.horizon),
+      price_lo: String(opts.price_lo),
+      price_hi: String(opts.price_hi),
+    });
+    if (opts.change_lo !== undefined) qs.set("change_lo", String(opts.change_lo));
+    if (opts.change_hi !== undefined) qs.set("change_hi", String(opts.change_hi));
+    if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
+    const res = await fetch(`${BASE}/futures/${sym}/trend-export.xlsx?` + qs.toString(), {
+      headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      throw new Error(b.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `trend_${sym}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
 };
