@@ -1236,7 +1236,7 @@ function SeasonalityView({ data }: { data: OilSeasonality }) {
               <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#6f6a62" }} />
               <YAxis tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => v.toFixed(2)} />
               <Tooltip
-                labelStyle={{ color: "#333" }}
+                labelStyle={{ color: "#646464" }}
                 formatter={(v, _name, item) => {
                   const p = item.payload as { win_rate_pct: number; n_days: number };
                   return [
@@ -1264,7 +1264,7 @@ function SeasonalityView({ data }: { data: OilSeasonality }) {
               <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#6f6a62" }} />
               <YAxis tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => v.toFixed(2)} />
               <Tooltip
-                labelStyle={{ color: "#333" }}
+                labelStyle={{ color: "#646464" }}
                 formatter={(v, _name, item) => {
                   const p = item.payload as { win_rate_pct: number; n_days: number };
                   return [

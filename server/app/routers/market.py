@@ -402,6 +402,45 @@ def market_compare(symbols: str, range: str = "1y",
     return {"items": items, "range": range}
 
 
+@router.get("/kr/{symbol}")
+def kr_extras(symbol: str, user: User = Depends(get_current_user)):
+    """한국 종목 부가 데이터 — 투자자별 순매매·애널리스트 리포트·컨센서스·추정
+    실적·최근 공시. 무료 공개 소스(네이버/FnGuide/DART) 크롤링, 6자리 국내 종목만.
+
+    5개 소스를 병렬 fetch(첫 호출 지연 최소화). 각 소스는 krdata 내부에서
+    독립적으로 실패를 흡수(빈 결과)하므로 한 소스가 죽어도 나머지는 제공된다.
+    종목·소스별 lru_cache(일자 키)로 같은 날 재요청은 즉시 응답.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .. import krdata
+
+    code = symbol.strip()
+    if not krdata.is_kr(code):
+        raise HTTPException(status_code=400, detail="한국 종목(6자리 코드)만 지원합니다.")
+    sources = {
+        "investor": krdata.investor, "reports": krdata.reports,
+        "consensus": krdata.consensus, "earnings": krdata.earnings,
+        "disclosures": krdata.disclosures, "shorting": krdata.shorting,
+    }
+    with ThreadPoolExecutor(max_workers=len(sources)) as ex:
+        futures = {k: ex.submit(fn, code) for k, fn in sources.items()}
+        return {k: f.result() for k, f in futures.items()}
+
+
+@router.get("/industry/{name}")
+def industry_detail(name: str, user: User = Depends(get_current_user)):
+    """산업(섹터) 밸류체인 분석 — 기업 목록 + 라이브 시총·등락률·M/s·재무.
+    포트폴리오 대시보드의 산업 분석을 이식. 트리맵·기업표는 프론트에서 구성."""
+    from .. import industry as industry_mod
+
+    rows = industry_mod.industry(name)
+    if rows is None:
+        raise HTTPException(status_code=404, detail=f"'{name}' 산업 데이터를 찾을 수 없습니다.")
+    return {"industry": name, "companies": rows,
+            "available": list(industry_mod.INDUSTRIES.keys())}
+
+
 def _session_now() -> dict:
     """한국 정규장 기준 현재 세션 표시. 서버 tz와 무관하게 KST로 계산."""
     kst = datetime.now(ZoneInfo("Asia/Seoul"))

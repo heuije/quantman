@@ -16,7 +16,7 @@ interface Props {
 /* recharts SVG는 CSS var를 못 받아 토큰값(DESIGN.md)을 직접 인라인한다.
    변경 시 web/src/index.css :root와 동기화. up=매수/상승(빨강), down=매도/하락(파랑). */
 const C = {
-  accent: "#d97757", muted: "#6f6a62", grid: "#e8e3db",
+  accent: "#c4982b", muted: "#64748b", grid: "#e3e8ef",
   up: "#de3033", down: "#1668c4", ink: "#20201d",
 };
 

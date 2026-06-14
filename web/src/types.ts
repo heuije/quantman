@@ -906,3 +906,75 @@ export interface TradingTimeline {
   heartbeat_status: "normal" | "warning" | "error";
   events: TimelineEvent[];
 }
+
+// ── 한국 종목 부가 데이터 (Company Analysis) — /market/kr/{symbol} ──
+export interface KrInvestorPoint {
+  date: string;
+  inst: number;        // 기관 순매매 (주)
+  foreign: number;     // 외국인 순매매 (주)
+  indiv: number;       // 개인 순매매 (주, ≈ −(기관+외국인))
+}
+export interface KrReport {
+  date: string;        // 작성일 (YY.MM.DD)
+  title: string;       // 리포트 제목
+  broker: string;      // 증권사
+  url: string;         // 원문 (PDF 또는 네이버 리포트 상세)
+}
+export interface KrConsensus {
+  broker: string;              // 제공 증권사
+  date: string;                // 최종일자
+  target: number | null;       // 목표주가 (원)
+  prev_target: number | null;  // 직전 목표주가
+  change_pct: number | null;   // 직전목표가 대비 변동률(%)
+  opinion: string;             // 투자의견 (BUY/매수 등)
+}
+export interface KrEarnings {
+  years: string[];                          // 연도 헤더 ['2024/12','2025/12','2026/12(E)',…]
+  rows: Record<string, (number | null)[]>;  // 항목별 값 (매출액/영업이익/당기순이익/지배주주, 억원)
+}
+export interface KrDisclosure {
+  date: string;        // 접수일 (YYYYMMDD)
+  title: string;       // 보고서명
+  submitter: string;   // 제출인
+  url: string;         // DART 원문 링크
+}
+export interface KrShortPoint {
+  date: string;                  // 일자
+  bal_qty: number | null;        // 공매도 잔고수량 (주)
+  bal_amt: number | null;        // 공매도 잔고금액 (원)
+  bal_ratio: number | null;      // 잔고비중 (%)
+}
+export interface KrExtras {
+  investor: KrInvestorPoint[];
+  reports: KrReport[];
+  consensus: KrConsensus[];
+  earnings: KrEarnings;
+  disclosures: KrDisclosure[];
+  shorting: KrShortPoint[];
+}
+
+// ── 산업(섹터) 밸류체인 분석 — /market/industry/{name} ──
+export interface IndustryCompany {
+  gu: string;          // 밸류체인 구분 (Upstream/Midstream/Downstream)
+  stage: string;       // 단계 (원자재/소재/셀/부품/장비/리사이클/애플리케이션)
+  detail: string;      // 세부분류 (양극재/음극재/분리막/셀 …)
+  name: string;        // 기업명
+  ticker: string;      // 종목코드
+  market: string;      // 시장 (KOSPI/KOSDAQ)
+  product: string;     // 주요제품
+  cap: number | null;        // 시가총액 (원)
+  chg: number | null;        // 전일대비 등락률 (%)
+  revenue: number | null;    // 매출액 (원)
+  op: number | null;         // 영업이익 (원)
+  op_margin: number | null;  // 영업이익률 (%)
+  ms: number | null;         // 세부분류 내 시총 점유율 (%)
+  ret: {                     // 기간 주가 수익률(%) — 5일/1개월/3개월/6개월/1년
+    d5: number | null; d20: number | null; d60: number | null;
+    d120: number | null; d240: number | null;
+  } | null;
+}
+export interface IndustryData {
+  industry: string;
+  companies: IndustryCompany[];
+  available: string[];
+}

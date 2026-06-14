@@ -14,7 +14,7 @@ import { fmt2, wonReadable } from "../format";
 
 // 파이 슬라이스 컬러 — DESIGN.md 따뜻한 톤. accent → 변주.
 const PIE_COLORS = [
-  "#d97757", "#7a6a55", "#b3a692", "#ad5019", "#6f6a62",
+  "#c4982b", "#64748b", "#94a3b8", "#8a6a14", "#64748b",
   "#e8a87c", "#c38a5a", "#8b6f4e", "#a89077", "#d4b896",
 ];
 

@@ -4,7 +4,7 @@ import type {
   IrStrategyDef, IrStrategyResult,
   MarketContext, NextDayPreview, PortfolioRisk,
   PortfolioAnalyzeIn, PortfolioAnalysis, PortfolioHoldings, SymbolDetail, SymbolListing,
-  CompareResult,
+  CompareResult, KrExtras, IndustryData,
   ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO, ScreenerUserPreset,
   StrategyDef, StrategyRow, StrategyStats, StrategyVersionRow,
   SymbolInfo, SyncSnapshot, TradingTimeline, UserSettingsIO,
@@ -182,6 +182,10 @@ export const api = {
     req<CompareResult>(
       `/market/compare?symbols=${encodeURIComponent(symbols.join(","))}&range=${range}`),
   marketListings: () => req<{ listings: SymbolListing[] }>("/market/listings"),
+  krExtras: (symbol: string) =>
+    req<KrExtras>(`/market/kr/${encodeURIComponent(symbol)}`),
+  industryDetail: (name: string) =>
+    req<IndustryData>(`/market/industry/${encodeURIComponent(name)}`),
   analyzePortfolio: (body: PortfolioAnalyzeIn) =>
     req<PortfolioAnalysis>("/portfolio/analyze", {
       method: "POST", body: JSON.stringify(body),
