@@ -259,3 +259,13 @@ def test_build_oil_trend_excel_bytes():
     )
     assert isinstance(data, bytes) and len(data) > 0
     assert data[:2] == b"PK"                      # xlsx = zip 시그니처
+
+
+def test_explanatory_scan_gap_declusters():
+    closes = list(range(100, 150))
+    df = _mk(closes)
+    # 종가 ∈ [110,120] = 11 연속일. gap=0 → 11건, gap=5 → t=10,15,20 = 3건.
+    no_gap = trend_explanatory_scan(df, [2], [2], 110, 120, min_n=3, gap=0)
+    gapped = trend_explanatory_scan(df, [2], [2], 110, 120, min_n=3, gap=5)
+    assert no_gap[0].n == 11
+    assert gapped[0].n == 3

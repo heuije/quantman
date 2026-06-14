@@ -688,6 +688,7 @@ export const futuresApi = {
     lookbacks?: number[];
     horizons?: number[];
     min_n?: number;
+    gap?: number;
   }) => {
     const qs = new URLSearchParams({
       price_lo: String(opts.price_lo),
@@ -696,6 +697,7 @@ export const futuresApi = {
     if (opts.lookbacks?.length) qs.set("lookbacks", opts.lookbacks.join(","));
     if (opts.horizons?.length) qs.set("horizons", opts.horizons.join(","));
     if (opts.min_n !== undefined) qs.set("min_n", String(opts.min_n));
+    if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
     return req<OilTrendScan>(`/futures/${sym}/trend-scan?` + qs.toString());
   },
   // 향후 종가 증감율 결과(조건·이벤트·요약) .xlsx 다운로드. blob 직접 처리.

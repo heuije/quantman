@@ -136,3 +136,12 @@ def test_trend_export_validation(monkeypatch):
     assert client.get(
         "/futures/oil/trend-export.xlsx?lookback=0&horizon=5&price_lo=110&price_hi=120"
     ).status_code == 422
+
+
+def test_trend_scan_gap_declusters(monkeypatch):
+    client = _client(monkeypatch)
+    base = client.get("/futures/oil/trend-scan?price_lo=110&price_hi=120&lookbacks=3&horizons=5&min_n=3").json()
+    gapped = client.get("/futures/oil/trend-scan?price_lo=110&price_hi=120&lookbacks=3&horizons=5&min_n=3&gap=5").json()
+    # 종가 ∈ [110,120] = 11 연속일 → gap=0 11건, gap=5 디클러스터 3건.
+    assert base["cells"][0]["n"] == 11
+    assert gapped["cells"][0]["n"] == 3

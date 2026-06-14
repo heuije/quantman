@@ -182,6 +182,23 @@ class ScanCell:
     sign_stable: bool             # train·test 기울기 동부호 (둘 다 회귀 가능)
 
 
+def _decluster_by_gap(events: list[TrendEvent], gap: int, pos: dict) -> list[TrendEvent]:
+    """G영업일 이내 연속/겹친 이벤트는 1건만(그리디). events 는 날짜 오름차순 가정.
+    pos = {Timestamp: 영업일 인덱스} (영업일 간격 계산용)."""
+    if gap <= 0:
+        return events
+    kept: list[TrendEvent] = []
+    last = -(10 ** 9)
+    for e in events:
+        i = pos.get(pd.Timestamp(e.date))
+        if i is None:
+            continue
+        if i - last >= gap:
+            kept.append(e)
+            last = i
+    return kept
+
+
 def trend_explanatory_scan(
     df: pd.DataFrame,
     lookbacks: list[int],
@@ -190,11 +207,13 @@ def trend_explanatory_scan(
     price_hi: float,
     oos_split: float = 0.5,
     min_n: int = 30,
+    gap: int = 0,
 ) -> list[ScanCell]:
     """(L,H) 격자 × 종가범위 조건 → 칸마다 forward~past 설명력 + OOS 안정성.
 
     각 칸:
-      - events = trend_events(df, L, H) 중 종가 ∈ [price_lo, price_hi] 인 것만.
+      - events = trend_events(df, L, H) 중 종가 ∈ [price_lo, price_hi] 인 것만
+        (gap>0이면 G영업일 디클러스터 — 겹침·레짐집중 표본 과대평가 방지, 결과/음영과 일관).
       - in-sample 회귀: trend_regression → r2/slope/intercept/hac_p.
       - OOS: events 를 날짜순(오름차순 보장) 앞 oos_split / 뒤로 나눠 각각 회귀 →
         test 의 r2·slope, train·test 기울기 동부호면 sign_stable.
@@ -209,12 +228,14 @@ def trend_explanatory_scan(
     """
     cells: list[ScanCell] = []
     floor_n = max(3, int(min_n))
+    pos = {pd.Timestamp(d): i for i, d in enumerate(df["date"].to_numpy())} if gap > 0 else {}
     for L in lookbacks:
         for H in horizons:
             if L < 1 or H < 1:
                 continue
             evs = [e for e in trend_events(df, int(L), int(H))
                    if price_lo <= e.close <= price_hi]
+            evs = _decluster_by_gap(evs, int(gap), pos)
             n = len(evs)
             if n < floor_n:
                 cells.append(ScanCell(
@@ -269,13 +290,4 @@ def trend_matched(
     if gap <= 0:
         return matched, raw_n
     pos = {pd.Timestamp(d): i for i, d in enumerate(df["date"].to_numpy())}
-    kept: list[TrendEvent] = []
-    last = -(10 ** 9)
-    for e in matched:                      # trend_events 오름차순 보장
-        i = pos.get(pd.Timestamp(e.date))
-        if i is None:
-            continue
-        if i - last >= gap:
-            kept.append(e)
-            last = i
-    return kept, raw_n
+    return _decluster_by_gap(matched, int(gap), pos), raw_n
