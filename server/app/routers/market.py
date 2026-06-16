@@ -429,15 +429,19 @@ def kr_extras(symbol: str, user: User = Depends(get_current_user)):
 
 
 @router.get("/industry/{name}")
-def industry_detail(name: str, user: User = Depends(get_current_user)):
+def industry_detail(name: str, as_of: str = "", refresh: bool = False,
+                    user: User = Depends(get_current_user)):
     """산업(섹터) 밸류체인 분석 — 기업 목록 + 라이브 시총·등락률·M/s·재무.
-    포트폴리오 대시보드의 산업 분석을 이식. 트리맵·기업표는 프론트에서 구성."""
+    as_of(yyyy-mm-dd) 지정 시 그 시점 기준(과거 트리맵). refresh=true 시 주가 캐시 비워 실시간 재조회."""
     from .. import industry as industry_mod
 
-    rows = industry_mod.industry(name)
+    if refresh:
+        industry_mod.refresh_prices()
+    rows = industry_mod.industry(name, as_of or None)
     if rows is None:
         raise HTTPException(status_code=404, detail=f"'{name}' 산업 데이터를 찾을 수 없습니다.")
     return {"industry": name, "companies": rows,
+            "as_of": industry_mod.as_of(as_of or None),
             "available": list(industry_mod.INDUSTRIES.keys())}
 
 

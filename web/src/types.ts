@@ -919,6 +919,7 @@ export interface KrReport {
   title: string;       // 리포트 제목
   broker: string;      // 증권사
   url: string;         // 원문 (PDF 또는 네이버 리포트 상세)
+  target: number | null;  // 해당 리포트 첫 페이지 목표주가 (원) — 없으면 null
 }
 export interface KrConsensus {
   broker: string;              // 제공 증권사
@@ -967,6 +968,9 @@ export interface IndustryCompany {
   revenue: number | null;    // 매출액 (원)
   op: number | null;         // 영업이익 (원)
   op_margin: number | null;  // 영업이익률 (%)
+  da: number | null;            // 현금흐름표 D&A(감가상각비+무형자산상각비, 원) — 서버 DART키 필요
+  ebitda: number | null;        // EBITDA = 영업이익 + D&A (원)
+  ebitda_margin: number | null; // EBITDA 이익률 (%)
   ms: number | null;         // 세부분류 내 시총 점유율 (%)
   ret: {                     // 기간 주가 수익률(%) — 5일/1개월/3개월/6개월/1년
     d5: number | null; d20: number | null; d60: number | null;
@@ -976,5 +980,22 @@ export interface IndustryCompany {
 export interface IndustryData {
   industry: string;
   companies: IndustryCompany[];
+  as_of: string | null;     // 시총 데이터 기준 거래일(yyyy-mm-dd)
   available: string[];
 }
+
+// ── 개별 기업 투자의견 게시판 — /opinions ──
+export type OpinionStance = "buy" | "neutral" | "sell";
+export interface OpinionComment {
+  id: number; author: string; body: string;
+  is_mine: boolean; created_at: string | null;
+}
+export interface StockOpinion {
+  id: number; ticker: string; author: string;
+  stance: OpinionStance; body: string;
+  likes: number; dislikes: number;
+  my_vote: number;          // 1=좋아요 / -1=싫어요 / 0=없음
+  is_mine: boolean; created_at: string | null;
+  comments: OpinionComment[];
+}
+export interface OpinionList { ticker: string; opinions: StockOpinion[]; }

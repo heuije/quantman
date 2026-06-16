@@ -25,7 +25,7 @@ from .db import call_with_disconnect_retry, create_db_and_tables, prune_old_rows
 from .routers import (admin as admin_router, auth, backtest,
                        calendars as calendars_router, commands,
                        dataset, ir as ir_router, ir_compile as ir_compile_router,
-                       market, futures, portfolio,
+                       market, futures, opinions as opinions_router, portfolio,
                        preview as preview_router,
                        screener as screener_router,
                        settings as settings_router, strategies, sync,
@@ -751,6 +751,7 @@ app.include_router(backtest.router)
 app.include_router(sync.router)
 app.include_router(commands.router)
 app.include_router(market.router)
+app.include_router(opinions_router.router)
 app.include_router(portfolio.router)
 app.include_router(screener_router.router)
 app.include_router(settings_router.router)

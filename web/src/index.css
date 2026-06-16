@@ -7,36 +7,37 @@
   --navy-700: #1d3a63;   /* 보더·활성 강조 */
   --navy-300: #93a4c0;   /* 네이비 배경 위 뮤트 텍스트 */
 
-  --bg: #f4f6fb;          /* 거의 흰색 + 푸른 기 아주 미세 */
-  --panel: #ffffff;
-  --border: #e3e8ef;      /* 차가운 보더 */
-  --input-border: #aab6c8;  /* 입력 전용 — 흰 카드 위 충분한 대비 */
-  --text: #646464;        /* 본문 글자 — RGB(100,100,100) (사용자 지정) */
-  --muted: #64748b;       /* 슬레이트 뮤트 */
+  /* ── 다크 테마 (Finviz 풍 차콜) ───────────────────────────────────────
+     페이지=어두운 차콜, 카드=약간 밝은 차콜, 본문=라이트 그레이. */
+  --bg: #13161c;          /* 핀비즈풍 차콜 페이지 배경 */
+  --panel: #1c212b;       /* 카드 — 약간 밝은 차콜 */
+  --border: #2b323e;      /* 다크 보더 */
+  --input-border: #3a4250;  /* 입력 테두리 — 다크 카드 위 대비 */
+  --text: #d2d8e0;        /* 본문 글자 — 라이트 그레이 */
+  --muted: #8b94a3;       /* 슬레이트 뮤트 */
 
-  /* 액센트 — 골드(프리미엄 금융). 시장 빨강/파랑과 구분돼 혼동 없음.
-     활성 nav·링크·포커스·강조에 사용. 잉크(주요 버튼)는 네이비. */
-  --accent: #c4982b;
-  --accent-soft: #f8f1de;
-  --accent-strong: #8a6a14;  /* 링크·소형 텍스트 — 흰 위 AA */
-  --accent-hover: #a8821f;
-  --ink: #15233b;            /* 주요 버튼 = 네이비 잉크 */
-  --ink-hover: #1d3a63;
+  /* 액센트 — 골드(프리미엄 금융). 다크 위 가독을 위해 밝게 조정. */
+  --accent: #d4a738;
+  --accent-soft: rgba(196,152,43,0.16);
+  --accent-strong: #e0b958;  /* 링크·소형 텍스트 — 다크 위 가독 */
+  --accent-hover: #c4982b;
+  --ink: #2f5390;            /* 주요 버튼 = 다크 위 보이는 네이비 */
+  --ink-hover: #3a629f;
 
-  /* 시장 방향 (한국식: 상승·수익=빨강, 하락·손실=파랑) — 유지 */
+  /* 시장 방향 (한국식: 상승·수익=빨강, 하락·손실=파랑) — 색상 유지, soft만 반투명 */
   --up: #de3033;
-  --up-soft: #fdeceb;
+  --up-soft: rgba(222,48,51,0.18);
   --down: #1668c4;
-  --down-soft: #e7f0fa;
+  --down-soft: rgba(22,104,196,0.22);
 
-  /* 상태/품질/위험 — 위험은 만국공통 빨강, 정상은 그린 (시장 방향과 별개) */
-  --green: #15803d;
-  --red: #b91c1c;
-  --danger: #b91c1c;
-  --amber: #b45309;
-  --green-soft: #ecfdf3;
-  --red-soft: #fef2f2;
-  --amber-soft: #fffbeb;
+  /* 상태/품질/위험 — 다크 위 가독 위해 밝게, soft는 반투명 */
+  --green: #2ea65a;
+  --red: #e0504f;
+  --danger: #e0504f;
+  --amber: #d08a2c;
+  --green-soft: rgba(46,166,90,0.16);
+  --red-soft: rgba(224,80,79,0.16);
+  --amber-soft: rgba(208,138,44,0.16);
 
   --radius: 10px;
   /* 폰트 — 영문·숫자 Arial / 한글 맑은 고딕 (사용자 지정).
@@ -62,16 +63,60 @@ a:hover { text-decoration: underline; }
   .tm-zoom { transition: none; }
 }
 
-.shell { display: flex; min-height: 100vh; }
+.shell { display: flex; flex-direction: column; min-height: 100vh; }
+
+/* ── 상단 가로 네비게이션 바 (사이드바 → 최상단) ─────────────────────────────── */
+.topnav {
+  display: flex; align-items: center; gap: 16px;
+  background: var(--navy-950); padding: 0 22px; height: 68px;
+  position: sticky; top: 0; z-index: 50;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+.topnav .brand { padding: 0; font-size: 42px; flex: none; line-height: 1; }
+.topnav-hamburger { display: none; }
+.topnav-links {
+  display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto;
+}
+.topnav-links::-webkit-scrollbar { height: 0; }
+.topnav .navlink { padding: 8px 12px; gap: 7px; font-size: 14px; white-space: nowrap; }
+.topnav .nav-ic { display: none; }                       /* 데스크탑 상단바: 텍스트만(깔끔) */
+.topnav .navlink.active { box-shadow: inset 0 -3px 0 #4f8ff5; }   /* 가로바: 하단 인디케이터 */
+/* 우측 계정(로그인) 버튼 + 드롭다운 */
+.topnav-right { position: relative; flex: none; }
+.account-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(255,255,255,0.18);
+  padding: 7px 13px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: background 0.12s ease;
+}
+.account-btn:hover { background: rgba(255,255,255,0.18); }
+.account-email { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); min-width: 212px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.45); padding: 6px; z-index: 60;
+}
+.account-menu-head {
+  padding: 8px 12px 10px; font-size: 12px; color: var(--muted);
+  border-bottom: 1px solid var(--border); margin-bottom: 4px; word-break: break-all;
+}
+.account-menu button {
+  display: flex; align-items: center; width: 100%; gap: 10px;
+  padding: 9px 12px; border-radius: 7px; font-size: 13px; font-weight: 500;
+  color: var(--text); background: transparent; border: 0; text-align: left; cursor: pointer;
+}
+.account-menu button:hover { background: var(--accent-soft); color: var(--accent-strong); }
+.account-menu hr { border: 0; border-top: 1px solid var(--border); margin: 5px 4px; }
+
 .sidebar {
-  width: 224px; background: var(--navy-950); border-right: none;
+  width: var(--sidebar-w, 224px); background: var(--navy-950); border-right: none;
   padding: 18px 12px; display: flex; flex-direction: column; gap: 2px;
   /* 스크롤해도 좌측 메뉴가 화면에 고정 — 길면 사이드바 내부에서만 스크롤 */
   position: sticky; top: 0; align-self: flex-start;
   height: 100vh; overflow-y: auto;
 }
 .brand {
-  font-weight: 700; font-size: 18px; padding: 6px 10px 20px; color: #fff;
+  font-weight: 700; font-size: 24px; padding: 6px 10px 22px; color: #fff;
   letter-spacing: -0.01em;
 }
 .brand span { color: var(--accent); }
@@ -94,8 +139,14 @@ a:hover { text-decoration: underline; }
 .navlink:hover .nav-ic { opacity: 1; color: #79a9f7; }   /* hover 시 파란 아이콘 */
 .navlink.active .nav-ic { opacity: 1; color: #79a9f7; }  /* 활성 시 파란 아이콘 */
 .sidebar-foot { margin-top: auto; font-size: 12px; color: var(--navy-300); padding: 10px; }
+/* 사이드바 가로폭 드래그 핸들 — 우측 가장자리 (데스크탑 전용) */
+.sidebar-resize {
+  position: absolute; top: 0; right: 0; width: 6px; height: 100%;
+  cursor: col-resize; z-index: 6;
+}
+.sidebar-resize:hover, .sidebar-resize.dragging { background: rgba(79,143,245,0.45); }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.main-inner { padding: 28px 32px; max-width: 1100px; width: 100%; flex: 1; }
+.main-inner { padding: 28px 32px; max-width: 1100px; width: 100%; flex: 1; margin: 0 auto; }
 
 /* 개별 종목 분석(Company Analysis) — 전체폭(우측 여백 제거) + 차트 그리드.
    :has()로 이 페이지에서만 1100px 캡 해제(다른 페이지 영향 없음). */
@@ -311,8 +362,10 @@ a:hover { text-decoration: underline; }
 label { font-size: 13px; font-weight: 600; color: var(--muted); display: block; margin-bottom: 6px; }
 input, select {
   font: inherit; padding: 8px 10px; border: 1px solid var(--input-border);
-  border-radius: 8px; background: #fff; color: var(--text);
+  border-radius: 8px; background: var(--panel); color: var(--text);
 }
+/* 날짜/네이티브 위젯 아이콘을 다크에서 보이게 */
+input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); }
 input:focus, select:focus {
   outline: 2px solid var(--accent); outline-offset: 1px;
   border-color: var(--accent);
@@ -1668,6 +1721,7 @@ thead th { color: var(--muted); font-weight: 600; }
   from { transform: translateX(100%); }
   to { transform: translateX(0); }
 }
+@keyframes spin { to { transform: rotate(360deg); } }
 .detail-head {
   padding: 18px 22px; border-bottom: 1px solid var(--border);
   display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;
@@ -1944,6 +1998,29 @@ thead th { color: var(--muted); font-weight: 600; }
 /* ── 모바일/태블릿 — 사이드바를 hamburger drawer로 (Phase 51) ─────────────── */
 @media (max-width: 760px) {
   .shell { flex-direction: column; }
+
+  /* 상단바 — 모바일: 로고 + 햄버거 + 계정, 메뉴는 드롭다운 */
+  .topnav { gap: 10px; padding: 0 14px; }
+  .topnav .brand { font-size: 32px; }
+  .topnav-hamburger {
+    display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; color: #fff; border: 0; font-size: 22px;
+    width: 40px; height: 40px; padding: 0; cursor: pointer; flex: none;
+  }
+  .topnav-hamburger:hover { background: rgba(255,255,255,0.1); }
+  .topnav-links {
+    position: absolute; top: 100%; left: 0; right: 0; flex: none;
+    flex-direction: column; align-items: stretch; gap: 2px; overflow: visible;
+    background: var(--navy-950); padding: 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.08); display: none; z-index: 55;
+  }
+  .topnav-links.open { display: flex; }
+  .topnav .nav-ic { display: inline-flex; }   /* 모바일 드롭다운: 아이콘 표시 */
+  .topnav .navlink { width: 100%; padding: 12px 14px; font-size: 15px; }
+  .topnav .navlink.active { box-shadow: inset 3px 0 0 #4f8ff5; }
+  .account-email { display: none; }           /* 모바일: 아이콘만 */
+  .account-btn { padding: 7px 10px; }
+
   /* 상단 sticky 모바일 헤더: brand + hamburger */
   .mobile-header {
     display: flex; justify-content: space-between; align-items: center;
@@ -1972,6 +2049,7 @@ thead th { color: var(--muted); font-weight: 600; }
     overflow-y: auto;
   }
   .sidebar.drawer-open { transform: translateX(0); }
+  .sidebar-resize { display: none; }   /* 모바일 drawer에선 리사이즈 비활성 */
   .sidebar-brand { padding: 4px 6px 12px; font-size: 17px; }
   .sidebar .navlink {
     padding: 12px 14px; font-size: 15px; min-height: 44px;
@@ -2595,7 +2673,7 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .sltp-toolbar input[type=number] {
   padding: 4px 8px;
-  background: #fff;
+  background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -2699,3 +2777,28 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .export-btn:hover:not(:disabled) { background: #126c34; border-color: #126c34; }
 .export-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* ════════════════════════════════════════════════════════════════════════
+   다크 테마 보정 — 인라인/하드코딩 라이트 색을 변수로 일괄 오버라이드.
+   (!important 는 비-중요 인라인 스타일을 이김 → 컴포넌트별 인라인 색 수정 없이 처리)
+   ════════════════════════════════════════════════════════════════════════ */
+/* 표 보더(인라인 #e3e8ef·#f0ece6) → 다크 보더 */
+.panel table th, .panel table td { border-color: var(--border) !important; }
+.panel table tr { border-color: var(--border) !important; }
+
+/* recharts — 격자선·축 글자·범례·툴팁을 다크로 (SVG 속성/인라인 모두 오버라이드) */
+.recharts-cartesian-grid line { stroke: var(--border) !important; }
+.recharts-cartesian-axis-line, .recharts-cartesian-axis-tick-line { stroke: var(--border) !important; }
+.recharts-cartesian-axis-tick-value tspan { fill: var(--muted) !important; }
+.recharts-legend-item-text { color: var(--muted) !important; }
+.recharts-default-tooltip {
+  background: var(--panel) !important; border-color: var(--border) !important;
+  color: var(--text) !important; border-radius: 8px;
+}
+.recharts-tooltip-item, .recharts-tooltip-label { color: var(--text) !important; }
+
+/* var(--text)를 배경으로 쓰던 다크 툴팁 — 본문색이 밝아졌으니 고정 다크 배경으로 */
+.metric-hint::after { background: #0f141c !important; color: #fff !important; }
+
+/* 잔여 흰 배경(전략 파라미터 hover·시즌 박스 등) */
+.st-param:hover { background: var(--border) !important; }

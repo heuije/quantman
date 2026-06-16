@@ -127,10 +127,29 @@ def _reports(code: str, _day: str) -> list[dict]:
             continue
         # 원문: PDF 직접 링크 우선, 없으면 네이버 리포트 상세 페이지
         pdf = tr.find("a", href=lambda h: h and ".pdf" in h.lower())
-        url = pdf["href"] if pdf else "https://finance.naver.com/research/" + a["href"]
-        out.append({"date": d, "title": title, "broker": broker, "url": url})
+        detail = "https://finance.naver.com/research/" + a["href"]
+        url = pdf["href"] if pdf else detail
+        out.append({"date": d, "title": title, "broker": broker, "url": url, "_detail": detail})
         if len(out) >= 15:
             break
+    # 각 리포트 '첫 페이지' 목표주가 — 상세 페이지에서 병렬 파싱(브로커 컨센서스 조인이 아니라
+    # 그 리포트 고유 목표가). 없는 리포트(산업·전략 노트 등)는 None.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _tgt(detail_url: str):
+        try:
+            dd = requests.get(detail_url, headers=_H, verify=_C, timeout=10)
+            dd.encoding = "euc-kr"
+            t = re.search(r"목표주?가[^\d]{0,12}([\d,]+)",   # '목표가'·'목표주가' 모두
+                          BeautifulSoup(dd.text, "html.parser").get_text(" ", strip=True))
+            return _int(t.group(1).replace(",", "")) if t else None
+        except Exception:
+            return None
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        targets = list(ex.map(_tgt, [o["_detail"] for o in out]))
+    for o, tg in zip(out, targets):
+        o["target"] = tg
+        o.pop("_detail", None)
     return out
 
 
@@ -182,7 +201,8 @@ def consensus(code: str) -> list[dict]:
 
 
 # ── 추정 실적 (FnGuide 연간 Financial Highlight) ─────────────────────────────
-_EARNINGS_ITEMS = ("매출액", "영업이익", "당기순이익", "지배주주", "EBITDA")
+# 손익 항목(억원) + 멀티플(배: PER·PBR). FnGuide 연간 Financial Highlight의 행 라벨 부분일치.
+_EARNINGS_ITEMS = ("매출액", "영업이익", "당기순이익", "지배주주", "EBITDA", "PER", "PBR")
 
 
 _YEAR_RE = re.compile(r"(\d{4}/\d{2}(?:\(E\))?)$")  # '2025/12' 또는 '2026/12(E)'

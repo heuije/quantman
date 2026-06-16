@@ -16,8 +16,8 @@ interface Props {
 /* recharts SVG는 CSS var를 못 받아 토큰값(DESIGN.md)을 직접 인라인한다.
    변경 시 web/src/index.css :root와 동기화. up=매수/상승(빨강), down=매도/하락(파랑). */
 const C = {
-  accent: "#c4982b", muted: "#64748b", grid: "#e3e8ef",
-  up: "#de3033", down: "#1668c4", ink: "#20201d",
+  accent: "#d4a738", muted: "#8b94a3", grid: "#2b323e",
+  up: "#de3033", down: "#1668c4", ink: "#d2d8e0", panel: "#1c212b",
 };
 
 // 전체기간 백테스트는 equity가 수천 포인트(15년 ≈ 3,700 거래일)·trades가 수천 건까지 커지고,
@@ -61,7 +61,7 @@ function ChartTooltip({ active, payload, label }:
   const row = payload[0].payload;
   return (
     <div style={{
-      background: "#fff", border: `1px solid ${C.grid}`, borderRadius: 8,
+      background: C.panel, border: `1px solid ${C.grid}`, borderRadius: 8,
       padding: "8px 10px", fontSize: 12, color: C.muted,
     }}>
       <div style={{ fontWeight: 600, color: C.ink, marginBottom: 4 }}>{label}</div>

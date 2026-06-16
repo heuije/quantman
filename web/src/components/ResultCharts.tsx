@@ -11,8 +11,9 @@ import type {
 /* recharts SVG는 CSS var를 못 받아 토큰값(DESIGN.md)을 직접 인라인한다(EquityChart와 동일 규약).
    변경 시 web/src/index.css :root와 동기화. up=상승/이익(빨강) · down=하락/손실(파랑, 한국 관례). */
 const C = {
-  accent: "#c4982b", strong: "#8a6a14", muted: "#64748b", grid: "#e3e8ef",
-  text: "#20201d", up: "#de3033", down: "#1668c4", upSoft: "#fdeceb", downSoft: "#e7f0fa",
+  accent: "#d4a738", strong: "#e0b958", muted: "#8b94a3", grid: "#2b323e",
+  text: "#d2d8e0", up: "#de3033", down: "#1668c4", upSoft: "rgba(222,48,51,0.18)", downSoft: "rgba(22,104,196,0.22)",
+  panel: "#1c212b",   // 다크 카드 배경
 };
 
 const num = (v: unknown): number => Number(String(v).split("=").pop());
@@ -58,7 +59,7 @@ function tip(rows: [string, string][], fmt: (v: number | null | undefined) => st
     { active?: boolean; payload?: { payload: Record<string, unknown> }[]; label?: unknown }) => {
     if (!active || !payload?.length) return null;
     return (
-      <div style={{ background: "#fff", border: `1px solid ${C.grid}`, borderRadius: 8,
+      <div style={{ background: C.panel, border: `1px solid ${C.grid}`, borderRadius: 8,
         padding: "8px 10px", fontSize: 12, color: C.muted }}>
         <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>{String(label)}</div>
         {rows.map(([k, key]) => (
@@ -113,7 +114,7 @@ export function SweepChart({ axis, buckets, axes }: {
             style={{
               fontSize: 12, padding: "3px 9px", borderRadius: 999, cursor: "pointer",
               border: `1px solid ${i === mi ? C.accent : C.grid}`,
-              background: i === mi ? C.accent : "#fff", color: i === mi ? "#fff" : C.muted,
+              background: i === mi ? C.accent : C.panel, color: i === mi ? "#fff" : C.muted,
             }}>{mm.label}</button>
         ))}
       </div>
@@ -289,11 +290,11 @@ export function EventStudyChart({ windows, overall }: {
 function Badge({ children, tone = "muted" }:
   { children: React.ReactNode; tone?: "muted" | "up" | "down" | "accent" | "warn" }) {
   const map = {
-    muted: { bg: "#f4f2ee", fg: C.muted, bd: C.grid },
+    muted: { bg: "rgba(139,148,163,0.14)", fg: C.muted, bd: C.grid },
     up: { bg: C.upSoft, fg: C.up, bd: C.up },
     down: { bg: C.downSoft, fg: C.down, bd: C.down },
-    accent: { bg: "#f8f1de", fg: C.strong, bd: C.accent },
-    warn: { bg: "#fff4e5", fg: "#b45309", bd: "#f59e0b" },
+    accent: { bg: "rgba(196,152,43,0.16)", fg: C.strong, bd: C.accent },
+    warn: { bg: "rgba(245,158,11,0.16)", fg: "#e0a948", bd: "#f59e0b" },
   }[tone];
   return (
     <span style={{
@@ -322,7 +323,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   return (
     <div style={{
       border: `1px solid ${C.grid}`, borderRadius: 10, padding: "10px 12px",
-      background: "#fff", minWidth: 0,
+      background: C.panel, minWidth: 0,
     }}>
       <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, marginBottom: 6 }}>{title}</div>
       {children}
@@ -332,7 +333,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 
 // 신규 동사용 커스텀 툴팁(모듈 스코프 — 렌더마다 재생성 방지). 다필드라 tip()로는 표현 불가.
 const tipBox: React.CSSProperties = {
-  background: "#fff", border: `1px solid ${C.grid}`, borderRadius: 8,
+  background: C.panel, border: `1px solid ${C.grid}`, borderRadius: 8,
   padding: "8px 10px", fontSize: 12, color: C.muted,
 };
 function RankedTip({ active, payload }: {
@@ -677,7 +678,7 @@ export function RegressionChart({ r }: { r: IrRegressionResult }) {
               style={{
                 fontSize: 12, padding: "3px 9px", borderRadius: 999, cursor: "pointer",
                 border: `1px solid ${i === wi ? C.accent : C.grid}`,
-                background: i === wi ? C.accent : "#fff", color: i === wi ? "#fff" : C.muted,
+                background: i === wi ? C.accent : C.panel, color: i === wi ? "#fff" : C.muted,
               }}>{ww}일</button>
           ))}
         </div>
