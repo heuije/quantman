@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   ComposedChart, Line, Bar, Scatter, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine, ReferenceArea, CartesianGrid, Legend, Cell,
@@ -213,7 +213,42 @@ function useDragZoom<T extends { date: string }>(data: T[]) {
     },
   };
   const area: DragArea = refL != null && refR != null && refL !== refR ? { x1: refL, x2: refR } : null;
-  return { view, dragProps, area, reset: () => setRange(null), zoomed: range != null };
+
+  // 휠(스크롤) 줌 — 차트 위 휠 ↑=확대 / ↓=축소(커서 위치 기준). 드래그 줌과 같은 range 상태 공유.
+  // recharts는 휠 줌 미지원 → 컨테이너 div에 네이티브 wheel 리스너(passive:false)로 직접 구현.
+  const dataRef = useRef(data); dataRef.current = data;
+  const wheelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = wheelRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const d = dataRef.current;
+      if (d.length < 4) return;
+      e.preventDefault();                       // 페이지 스크롤 대신 차트 줌
+      const rect = el.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      setRange((cur) => {
+        let i0 = 0, i1 = d.length - 1;
+        if (cur) {
+          const f = d.findIndex((x) => x.date >= cur[0]);
+          i0 = f < 0 ? 0 : f;
+          for (let j = d.length - 1; j >= 0; j--) { if (d[j].date <= cur[1]) { i1 = j; break; } }
+        }
+        const w = i1 - i0;
+        const anchor = i0 + frac * w;            // 커서가 가리키는 데이터 위치 고정
+        const nw = Math.min(d.length - 1, Math.max(8, Math.round(w * (e.deltaY < 0 ? 0.8 : 1.25))));
+        let ns = Math.round(anchor - frac * nw);
+        ns = Math.min(d.length - 1 - nw, Math.max(0, ns));
+        const ne = ns + nw;
+        if (ns <= 0 && ne >= d.length - 1) return null;   // 전체 범위 → 줌 해제
+        return [d[ns].date, d[ne].date];
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  return { view, dragProps, area, wheelRef, reset: () => setRange(null), zoomed: range != null };
 }
 
 export default function StockDashboard() {
@@ -489,6 +524,7 @@ export default function StockDashboard() {
                   : "그래프를 드래그하면 확대"}
               </span>
             </h3>
+            <div ref={pz.wheelRef}>
             <ResponsiveContainer width="100%" height={420}>
               <ComposedChart data={pz.view} margin={{ top: 5, right: 16, bottom: 5, left: 8 }} {...pz.dragProps}>
                 <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
@@ -525,6 +561,7 @@ export default function StockDashboard() {
                 {pz.area && <ReferenceArea x1={pz.area.x1} x2={pz.area.x2} fill="#4f8ff5" fillOpacity={0.15} strokeOpacity={0.3} />}
               </ComposedChart>
             </ResponsiveContainer>
+            </div>
             <ExplToggle ikey="price" series={data.series} isKR={isKR} dol={dol} won={won} benchName={last.benchmark} />
           </div>
 
@@ -866,6 +903,7 @@ function CompareCell({ item }: { item: CompareItem }) {
         {cz.zoomed && <button type="button" className="ghost sm" onClick={cz.reset}
           style={{ fontSize: 11, padding: "2px 8px", fontWeight: 400 }}>↺ 줌 초기화</button>}
       </h3>
+      <div ref={cz.wheelRef}>
       <ResponsiveContainer width="100%" height={260}>
         <ComposedChart data={cz.view} margin={{ top: 5, right: 12, bottom: 5, left: 8 }} {...cz.dragProps}>
           <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
@@ -880,6 +918,7 @@ function CompareCell({ item }: { item: CompareItem }) {
           {cz.area && <ReferenceArea x1={cz.area.x1} x2={cz.area.x2} fill="#4f8ff5" fillOpacity={0.15} strokeOpacity={0.3} />}
         </ComposedChart>
       </ResponsiveContainer>
+      </div>
     </div>
   );
 }
