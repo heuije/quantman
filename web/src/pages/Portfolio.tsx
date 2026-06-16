@@ -193,7 +193,7 @@ function Results({ result }: { result: PortfolioAnalysis }) {
           </thead>
           <tbody>
             {METRICS.map(([key, label, kind]) => (
-              <tr key={key} style={{ borderBottom: "1px solid #f0ece6" }}>
+              <tr key={key} style={{ borderBottom: "1px solid var(--border)" }}>
                 <td style={{ padding: "7px 6px", fontWeight: 600 }}>{label}</td>
                 <td style={{ padding: "7px 6px", textAlign: "right" }}>{current ? fmt(current.metrics[key], kind) : "—"}</td>
                 <td style={{ padding: "7px 6px", textAlign: "right" }}>{proposed ? fmt(proposed.metrics[key], kind) : "—"}</td>

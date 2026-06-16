@@ -238,3 +238,33 @@ class Command(SQLModel, table=True):
     delivered_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     result: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+# ── 개별 기업 투자의견 게시판 (종목별 매수/중립/매도 의견 + 댓글 + 좋아요/싫어요) ──────
+class StockOpinion(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ticker: str = Field(index=True)            # 대상 종목 — 기업별 게시판 구분
+    user_id: int = Field(index=True, foreign_key="user.id")
+    author: str                                # 작성자 표시명(이메일 앞부분)
+    stance: str                                # buy | neutral | sell
+    body: str                                  # 분석 글
+    likes: int = Field(default=0)
+    dislikes: int = Field(default=0)
+    created_at: datetime = Field(default_factory=_now)
+
+
+class OpinionComment(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    opinion_id: int = Field(index=True, foreign_key="stockopinion.id")
+    user_id: int = Field(index=True, foreign_key="user.id")
+    author: str
+    body: str
+    created_at: datetime = Field(default_factory=_now)
+
+
+class OpinionVote(SQLModel, table=True):
+    """의견별 사용자 1표(좋아요 +1 / 싫어요 -1). (opinion_id, user_id) 유일."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    opinion_id: int = Field(index=True, foreign_key="stockopinion.id")
+    user_id: int = Field(index=True, foreign_key="user.id")
+    value: int                                 # +1 like / -1 dislike

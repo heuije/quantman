@@ -314,7 +314,7 @@ export default function StockDashboard() {
       style={{ padding: "7px 12px", cursor: "pointer", fontSize: 13,
         display: "flex", justifyContent: "space-between", gap: 8 }}
       onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(79,143,245,0.12)")}
-      onMouseLeave={(e) => (e.currentTarget.style.background = "#fff")}>
+      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
       <span>{l.name}</span>
       <span style={{ color: "var(--muted)" }}>{l.symbol} · {l.market}</span>
     </li>
@@ -382,8 +382,8 @@ export default function StockDashboard() {
             <ul style={{
               position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20,
               margin: 0, padding: 0, listStyle: "none", maxHeight: 320, overflowY: "auto",
-              background: "#fff", border: "1px solid var(--border,#e3e8ef)", borderRadius: 8,
-              boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
+              background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 8,
+              boxShadow: "0 6px 20px rgba(0,0,0,0.35)",
             }}>
               {!q && recentItems.length > 0 && (
                 <>
@@ -707,7 +707,7 @@ function KrSections({ kr, close }: { kr: KrExtras; close: number | null }) {
               {consensus.map((c, i) => {
                 const up = close && c.target ? (c.target - close) / close * 100 : null;
                 return (
-                  <tr key={i} style={{ borderBottom: "1px solid #f0ece6" }}>
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
                     <td style={{ padding: "6px", fontWeight: 600 }}>{c.broker}</td>
                     <td style={{ padding: "6px", textAlign: "right" }}>{c.opinion || "—"}</td>
                     <td style={{ padding: "6px", textAlign: "right" }}>
@@ -745,7 +745,7 @@ function KrSections({ kr, close }: { kr: KrExtras; close: number | null }) {
             </thead>
             <tbody>
               {EARN_ROWS.filter((r) => earnings.rows[r]).map((r) => (
-                <tr key={r} style={{ borderBottom: "1px solid #f0ece6" }}>
+                <tr key={r} style={{ borderBottom: "1px solid var(--border)" }}>
                   <td style={{ padding: "6px", fontWeight: 600 }}>{r}</td>
                   {earnings.rows[r].map((v, j) => (
                     <td key={j} style={{ padding: "6px", textAlign: "right",
@@ -774,9 +774,9 @@ function KrSections({ kr, close }: { kr: KrExtras; close: number | null }) {
           {repOpen && (reports.length > 0 ? (<>
             <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0" }}>
               {reports.map((r, i) => {
-                const tgt = targetByBroker.get(r.broker);
+                const tgt = r.target ?? targetByBroker.get(r.broker);   // 리포트 고유 목표가 우선
                 return (
-                  <li key={i} style={{ padding: "7px 0", borderBottom: "1px solid #f0ece6",
+                  <li key={i} style={{ padding: "7px 0", borderBottom: "1px solid var(--border)",
                     fontSize: 13, display: "flex", justifyContent: "space-between", gap: 10 }}>
                     <div style={{ minWidth: 0 }}>
                       <a href={r.url} target="_blank" rel="noreferrer"
@@ -811,7 +811,7 @@ function KrSections({ kr, close }: { kr: KrExtras; close: number | null }) {
           {discOpen && (disclosures.length > 0 ? (
             <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0" }}>
               {disclosures.map((d, i) => (
-                <li key={i} style={{ padding: "7px 0", borderBottom: "1px solid #f0ece6", fontSize: 13 }}>
+                <li key={i} style={{ padding: "7px 0", borderBottom: "1px solid var(--border)", fontSize: 13 }}>
                   <a href={d.url} target="_blank" rel="noreferrer"
                     style={{ fontWeight: 600, color: DOWN, textDecoration: "none" }}>{d.title}</a>
                   <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 2 }}>
@@ -1155,8 +1155,8 @@ function PriceTooltip(props: {
     </div>
   );
   return (
-    <div style={{ background: "#fff", border: "1px solid var(--border,#e3e8ef)", borderRadius: 8,
-      padding: "8px 11px", fontSize: 12, boxShadow: "0 4px 14px rgba(0,0,0,0.12)", minWidth: 160 }}>
+    <div style={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 8,
+      padding: "8px 11px", fontSize: 12, boxShadow: "0 4px 14px rgba(0,0,0,0.35)", minWidth: 160 }}>
       <div style={{ fontWeight: 700, marginBottom: 5 }}>{p.date}</div>
       {row("시가", p.open)}{row("고가", p.high)}{row("저가", p.low)}
       {row("종가", p.close, p.close != null && p.open != null ? (p.close >= p.open ? UP : DOWN) : undefined)}

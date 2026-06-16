@@ -5,6 +5,7 @@ import type {
   MarketContext, NextDayPreview, PortfolioRisk,
   PortfolioAnalyzeIn, PortfolioAnalysis, PortfolioHoldings, SymbolDetail, SymbolListing,
   CompareResult, KrExtras, IndustryData,
+  OpinionList, StockOpinion, OpinionComment,
   ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO, ScreenerUserPreset,
   StrategyDef, StrategyRow, StrategyStats, StrategyVersionRow,
   SymbolInfo, SyncSnapshot, TradingTimeline, UserSettingsIO,
@@ -184,8 +185,27 @@ export const api = {
   marketListings: () => req<{ listings: SymbolListing[] }>("/market/listings"),
   krExtras: (symbol: string) =>
     req<KrExtras>(`/market/kr/${encodeURIComponent(symbol)}`),
-  industryDetail: (name: string) =>
-    req<IndustryData>(`/market/industry/${encodeURIComponent(name)}`),
+  industryDetail: (name: string, asOf?: string, refresh?: boolean) => {
+    const qs = new URLSearchParams();
+    if (asOf) qs.set("as_of", asOf);
+    if (refresh) qs.set("refresh", "1");
+    const q = qs.toString();
+    return req<IndustryData>(`/market/industry/${encodeURIComponent(name)}${q ? `?${q}` : ""}`);
+  },
+  // 개별 기업 투자의견 게시판
+  opinions: (ticker: string) =>
+    req<OpinionList>(`/opinions/${encodeURIComponent(ticker)}`),
+  createOpinion: (ticker: string, stance: string, body: string) =>
+    req<StockOpinion>("/opinions", { method: "POST", body: JSON.stringify({ ticker, stance, body }) }),
+  deleteOpinion: (id: number) =>
+    req<null>(`/opinions/${id}`, { method: "DELETE" }),
+  addOpinionComment: (id: number, body: string) =>
+    req<OpinionComment>(`/opinions/${id}/comments`, { method: "POST", body: JSON.stringify({ body }) }),
+  deleteOpinionComment: (id: number, commentId: number) =>
+    req<null>(`/opinions/${id}/comments/${commentId}`, { method: "DELETE" }),
+  voteOpinion: (id: number, value: number) =>
+    req<{ likes: number; dislikes: number; my_vote: number }>(
+      `/opinions/${id}/vote`, { method: "POST", body: JSON.stringify({ value }) }),
   analyzePortfolio: (body: PortfolioAnalyzeIn) =>
     req<PortfolioAnalysis>("/portfolio/analyze", {
       method: "POST", body: JSON.stringify(body),
