@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import {
   ComposedChart, Line, Bar, Scatter, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine, CartesianGrid, Legend, Brush, Cell,
@@ -188,6 +188,39 @@ function Candle(props: {
   );
 }
 
+// 휠(스크롤) 줌 — recharts엔 휠 줌이 없어 컨트롤드 Brush로 직접 구현.
+// 차트 위에서 휠 ↑=확대 / ↓=축소, 커서 위치 기준. Brush 드래그와 양방향 동기.
+function useWheelZoom(len: number) {
+  const [rng, setRng] = useState<[number, number] | null>(null);  // null=전체
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { setRng(null); }, [len]);   // 데이터(종목·기간) 바뀌면 전체로 리셋
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || len < 2) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();                       // 차트 위 휠은 페이지 스크롤 대신 줌
+      const rect = el.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      setRng((cur) => {
+        const [s, en] = cur ?? [0, len - 1];
+        const w = en - s;
+        const anchor = s + frac * w;            // 커서가 가리키는 데이터 위치 고정
+        const nw = Math.min(len - 1, Math.max(8, Math.round(w * (e.deltaY < 0 ? 0.8 : 1.25))));
+        let ns = Math.round(anchor - frac * nw);
+        ns = Math.min(len - 1 - nw, Math.max(0, ns));
+        return [ns, ns + nw];
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [len]);
+  const onBrushChange = (r: { startIndex?: number; endIndex?: number }) => {
+    if (r && r.startIndex != null && r.endIndex != null) setRng([r.startIndex, r.endIndex]);
+  };
+  const [start, end] = rng ?? [0, Math.max(0, len - 1)];
+  return { ref, start, end, onBrushChange };
+}
+
 export default function StockDashboard() {
   const [symbols, setSymbols] = useState<string[]>(["005930"]);
   const [input, setInput] = useState("");
@@ -285,6 +318,7 @@ export default function StockDashboard() {
   });
   const priceDomain: [number, number] = pmin <= pmax
     ? [Math.floor(pmin * 0.985), Math.ceil(pmax * 1.015)] : [0, 1];
+  const zPrice = useWheelZoom(chartData.length);   // 주가차트 휠 줌
 
   return (
     <div className="dashboard-fullwidth">
@@ -411,6 +445,7 @@ export default function StockDashboard() {
             <h3 style={{ marginTop: 0 }}>
               주가 추이 (캔들) · 이동평균 · 벤치마크({last.benchmark}) · 급등락(±10%)
             </h3>
+            <div ref={zPrice.ref}>
             <ResponsiveContainer width="100%" height={420}>
               <ComposedChart data={chartData} margin={{ top: 5, right: 16, bottom: 5, left: 8 }}>
                 <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
@@ -438,9 +473,11 @@ export default function StockDashboard() {
                   strokeDasharray="6 4" dot={false} name={`${last.benchmark}(벤치마크)`} connectNulls hide={!!hidden["bench"]} />
                 <Scatter dataKey="up_spike" shape={<TriUp />} name="급등 +10%" legendType="triangle" fill={UP} hide={!!hidden["up_spike"]} />
                 <Scatter dataKey="down_spike" shape={<TriDown />} name="급락 −10%" legendType="triangle" fill={DOWN} hide={!!hidden["down_spike"]} />
-                <Brush dataKey="date" height={24} stroke={ACCENT} travellerWidth={8} />
+                <Brush dataKey="date" height={24} stroke={ACCENT} travellerWidth={8}
+                  startIndex={zPrice.start} endIndex={zPrice.end} onChange={zPrice.onBrushChange} />
               </ComposedChart>
             </ResponsiveContainer>
+            </div>
             <ExplToggle ikey="price" series={data.series} isKR={isKR} dol={dol} won={won} benchName={last.benchmark} />
           </div>
 
@@ -495,11 +532,13 @@ function CompareCell({ item }: { item: CompareItem }) {
   });
   const domain: [number, number] = pmin <= pmax
     ? [Math.floor(pmin * 0.985), Math.ceil(pmax * 1.015)] : [0, 1];
+  const z = useWheelZoom(data.length);
   return (
     <div className="panel" style={{ marginBottom: 0 }}>
       <h3 style={{ marginTop: 0, fontSize: 14 }}>
         {item.name} <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>{item.symbol}</span>
       </h3>
+      <div ref={z.ref}>
       <ResponsiveContainer width="100%" height={260}>
         <ComposedChart data={data} margin={{ top: 5, right: 12, bottom: 5, left: 8 }}>
           <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
@@ -511,9 +550,11 @@ function CompareCell({ item }: { item: CompareItem }) {
           <Line type="monotone" dataKey="ma5" stroke="#9aa0a6" strokeWidth={1} dot={false} name="MA5" connectNulls />
           <Line type="monotone" dataKey="ma20" stroke="#d97757" strokeWidth={1} dot={false} name="MA20" connectNulls />
           <Line type="monotone" dataKey="ma60" stroke="#1668c4" strokeWidth={1} dot={false} name="MA60" connectNulls />
-          <Brush dataKey="date" height={16} stroke={ACCENT} travellerWidth={6} />
+          <Brush dataKey="date" height={16} stroke={ACCENT} travellerWidth={6}
+            startIndex={z.start} endIndex={z.end} onChange={z.onBrushChange} />
         </ComposedChart>
       </ResponsiveContainer>
+      </div>
     </div>
   );
 }
@@ -523,7 +564,9 @@ function SubChart({ ikey, label, data, isKR }:
   { ikey: string; label: string; data: Record<string, unknown>[]; isKR: boolean }) {
   const rc: RC = RENDER[ikey] || { series: [{ k: ikey, name: label, color: ACCENT }] };
   const M = { top: 5, right: 12, bottom: 5, left: 8 };
-  const brush = <Brush dataKey="date" height={14} stroke={ACCENT} travellerWidth={6} />;
+  const z = useWheelZoom(data.length);
+  const brush = <Brush dataKey="date" height={14} stroke={ACCENT} travellerWidth={6}
+    startIndex={z.start} endIndex={z.end} onChange={z.onBrushChange} />;
   const kfmt = (v: number) => isKR ? `${Math.round(v / 1000)}k` : String(v);
 
   // 거래량 — 전일비 색 막대 + 거래량 이동평균
@@ -536,6 +579,7 @@ function SubChart({ ikey, label, data, isKR }:
             {"  "}· 전일比 ▲+5% 빨강 / ▼−5% 파랑 · MA 5종
           </span>
         </h3>
+        <div ref={z.ref}>
         <ResponsiveContainer width="100%" height={210}>
           <ComposedChart data={data} margin={M}>
             <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
@@ -556,6 +600,7 @@ function SubChart({ ikey, label, data, isKR }:
             {brush}
           </ComposedChart>
         </ResponsiveContainer>
+        </div>
       </>
     );
   }
@@ -565,6 +610,7 @@ function SubChart({ ikey, label, data, isKR }:
   return (
     <>
       <h3 style={{ marginTop: 0 }}>{label}</h3>
+      <div ref={z.ref}>
       <ResponsiveContainer width="100%" height={210}>
         <ComposedChart data={data} margin={M}>
           <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
@@ -594,6 +640,7 @@ function SubChart({ ikey, label, data, isKR }:
           {brush}
         </ComposedChart>
       </ResponsiveContainer>
+      </div>
     </>
   );
 }
