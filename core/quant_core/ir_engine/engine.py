@@ -29,7 +29,8 @@ from ..backtest import (
 )
 from ..blocks import EvalContext, Node, evaluate, referenced_symbols, select_symbol
 from ..blocks.catalog import get, has
-from ..exec_defaults import instrument_spec, is_futures, margin_rate, round_to_tick
+from ..exec_defaults import (FX_USDKRW_SYMBOL, instrument_spec, is_futures,
+                             margin_rate, round_to_tick)
 from .metrics import finalize_metrics
 from .spec import StrategyIR
 
@@ -119,6 +120,35 @@ def _direction_for(buy_bool, score_vals, *, base_sign: float,
         return np.where(buy_bool, base_sign, 0.0)
     return np.where(score_vals > threshold, 1.0,
                     np.where(score_vals < threshold, -1.0, 0.0))
+
+
+# ── 사이징 FX (F-01) — ₩정액(fixed_amount)→USD 예산 환산의 단일 룩업 ──────────
+
+def fx_usdkrw_rate(dataset: dict | None, asof=None) -> float | None:
+    """원/달러 환율의 as-of 종가 — dataset["원달러환율"].Close에서 조회.
+
+    2026-06-12 라이브 실증 결함(F-01): fixed_amount의 amount_krw(₩)를 환산 없이 USD
+    가격으로 나눠 GOOG($353)에 ₩100만이 2,832주(≈$93만)로 사이징됐다. 백테스트
+    `_budget`과 라이브 `event_buy_qty`가 이 함수 하나로 같은 시계열·같은 as-of
+    (의사결정 시점 마지막 가용 종가) 값을 쓴다 → backtest=live 패리티가 정의상 성립.
+
+    asof: 그 시점 이전(≤) 마지막 가용 종가. None이면 시계열 마지막 값 — 라이브
+    번들은 의사결정 시점(전일)까지의 데이터라 그 자체가 as-of다.
+    미가용(시계열 없음·asof 이전 값 없음·비양수)이면 None — 호출자가 사이징을
+    보류한다(추측 환율·타 소스 fallback 금지).
+    """
+    if not dataset:
+        return None
+    df = dataset.get(FX_USDKRW_SYMBOL)
+    if df is None or getattr(df, "empty", True) or "Close" not in df.columns:
+        return None
+    s = df["Close"].dropna()
+    if asof is not None:
+        s = s[s.index <= pd.Timestamp(asof)]
+    if not len(s):
+        return None
+    v = float(s.iloc[-1])
+    return v if v > 0 else None
 
 
 # ── 청산 사유 판정 (backtest.py 캐스케이드와 동일 우선순위) ────────────────────
@@ -311,6 +341,14 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     sz = pos_spec.sizing
     amount_pct = 100.0 if single else sz.amount_pct
     amount_krw = sz.amount_krw if sz.mode == "fixed_amount" else None
+    # F-01 사이징 FX — amount_krw(₩정액)를 비-KRW(USD) 상품 예산으로 쓸 땐 원달러환율로
+    # 환산한다(무환산 시 1,370배 과대 — 라이브 GOOG 2,832주 실증 결함). 시계열이 아예
+    # 없으면 조용한 무환산 대신 명시 에러(atr_14·High/Low 부재와 동일한 사전 요구 패턴).
+    # KRW 상품만이면 fx 미요구 — 기존 경로 byte-identical.
+    fx_needed = bool(amount_krw) and any(aligned[s]["currency"] != "KRW" for s in syms)
+    if fx_needed and fx_usdkrw_rate(dataset) is None:
+        return _empty(f"'{FX_USDKRW_SYMBOL}' 시계열이 없어 USD 종목 정액(₩) 사이징을 "
+                      "환산할 수 없습니다 (dataset에 원달러환율 필요).")
     rfr_daily = 0.0  # 현금 무위험수익(연율) hook — Stage 1 기본 0(패리티). 후속: sim 필드.
 
     defer = (fill == "next_open")
@@ -322,9 +360,15 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     equity = np.empty(n, dtype=float)
     last_valid_close: dict[str, float] = {sym: 0.0 for sym in syms}
 
-    def _budget(cash_snapshot: float, sym: str) -> float:
+    def _budget(cash_snapshot: float, sym: str, i: int) -> float:
         if amount_krw:
-            return float(amount_krw)
+            if aligned[sym]["currency"] == "KRW":
+                return float(amount_krw)               # KRW 상품 — 기존 그대로(무환산)
+            # F-01: USD 상품 — ₩정액을 의사결정 시점(체결 바 직전) 마지막 가용 원달러환율
+            # 종가로 환산. 라이브 번들(전일까지 데이터)의 event_buy_qty와 같은 as-of 의미.
+            # 해당 바 이전 값이 없으면(시계열 시작 전·i=0) 예산 0 → 진입 보류(추측 환율 금지).
+            fx = fx_usdkrw_rate(dataset, asof=master_idx[i - 1]) if i >= 1 else None
+            return float(amount_krw) / fx if fx else 0.0
         # 선물: 증거금 사용률(futures_margin_pct, 기본 20%) — full-margin 레버리지 상한을 유저가
         # 조절. 주식: 단일=100%·다종목=amount_pct(기존 보존). live.event_buy_qty와 동일 식.
         pct = sz.futures_margin_pct if aligned[sym]["is_fut"] else amount_pct
@@ -426,7 +470,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             for sym, sgn in pending_buys.items():
                 if len(positions) >= _MAX_POSITIONS_GLOBAL or sym in positions:
                     continue
-                _open(sym, i, aligned[sym]["open"][i], min(_budget(cash_snapshot, sym), cash), sgn)
+                _open(sym, i, aligned[sym]["open"][i], min(_budget(cash_snapshot, sym, i), cash), sgn)
             pending_buys.clear()
 
         # 청산 검사
@@ -480,7 +524,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                         or (elig_arrs is not None and not elig_arrs[sym][i])
                         or np.isnan(aligned[sym]["close"][i])):
                     continue
-                _open(sym, i, aligned[sym]["exec"][i], min(_budget(cash_snapshot, sym), cash), d)
+                _open(sym, i, aligned[sym]["exec"][i], min(_budget(cash_snapshot, sym, i), cash), d)
 
         nav = cash
         for sym, pos in positions.items():
@@ -667,6 +711,13 @@ def _select(alpha_row: pd.Series, pos, is_condition: bool):
         sel = list(a[a > 0].index)
         return ([], sel) if direction == "short" else (sel, [])
     thr = pos.entry.threshold
+    if (thr is None and direction == "long_short"
+            and pos.entry.top_n is None and pos.entry.top_pct is None):
+        # 부호방향 long_short(랭킹 파라미터 없음)의 기본 임계 = 0 — run_unified의
+        # _direction_for(threshold None→0.0)와 단일 의미. 이전엔 None이 아래 랭킹
+        # 분기(n//5)로 추락해 단일 종목이 nlargest/nsmallest 양쪽에 들어가 preview가
+        # 같은 종목을 롱·숏 동시 후보로 생성(양방향 동시 발주 위험, 2026-06-11 발견).
+        thr = 0.0
     if thr is not None:                  # 임계 선택 — 부호·수준 기준(횡단 랭킹과 직교; TSMOM 등)
         longs, shorts = list(a[a > thr].index), list(a[a < thr].index)
         if direction == "long":

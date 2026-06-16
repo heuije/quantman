@@ -16,16 +16,20 @@ import { api } from "../api";
 import type { TimelineEvent, TradingTimeline } from "../types";
 
 const KIND_LABEL: Record<TimelineEvent["kind"], string> = {
-  krx_preview:    "국장 매매 후보 결정",
-  krx_cycle:      "국장 자동매매 시작",
-  krx_settlement: "국장 자동매매 종료",
-  us_preview:     "미장 매매 후보 결정",
-  us_cycle:       "미장 자동매매 시작",
-  us_settlement:  "미장 자동매매 종료",
+  krx_preview:       "국장 매매 후보 결정",
+  krx_cycle:         "국장 자동매매 시작",
+  krx_close_stock:   "국장 종가 청산 (주식)",
+  krx_close_futures: "국장 종가 청산 (선물)",
+  krx_settlement:    "국장 자동매매 종료",
+  us_preview:        "미장 매매 후보 결정",
+  us_cycle:          "미장 자동매매 시작",
+  us_close:          "미장 종가 청산",
+  us_settlement:     "미장 자동매매 종료",
 };
 
 const STATUS_BADGE: Record<TimelineEvent["status"], { icon: string; cls: string }> = {
   done:       { icon: "✓", cls: "tl-done"      },
+  warning:    { icon: "⚠", cls: "tl-warning"   },   // 체결 미확인 잔존(N2)
   scheduled:  { icon: "⏳", cls: "tl-scheduled" },
   missed:     { icon: "✗", cls: "tl-missed"    },
   holiday:    { icon: "—", cls: "tl-holiday"   },
@@ -99,8 +103,15 @@ export default function TradingTimeline() {
       }
     }
     load();
-    const t = setInterval(load, 60_000);     // 60s polling
-    return () => { cancelled = true; clearInterval(t); };
+    // 핸드오프 #5 — 탭 비가시 동안 폴링 정지, 재가시화 시 즉시 1회 후 주기 재개.
+    const tick = () => { if (!document.hidden) load(); };
+    const t = setInterval(tick, 60_000);     // 60s polling
+    const onVisible = () => { if (!document.hidden) load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true; clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   useEffect(() => {
@@ -159,7 +170,6 @@ export default function TradingTimeline() {
             <ul className="tl-list">
               {g.events.map((ev, i) => {
                 const badge = STATUS_BADGE[ev.status];
-                const isFuture = ev.status === "scheduled";
                 const tooltip = ev.detail || ev.summary || "";
                 return (
                   <li key={i} className={`tl-item ${badge.cls}`} title={tooltip}>
@@ -168,8 +178,11 @@ export default function TradingTimeline() {
                     <span className="tl-badge">
                       <span className="tl-icon">{badge.icon}</span>
                       <span className="tl-summary">
-                        {isFuture
-                          ? relativeTime(ev.at, nowIso)
+                        {ev.status === "scheduled"
+                          // preview 슬롯은 슬롯시각 경과~데드라인 사이 scheduled
+                          // + summary="갱신중"을 보낸다(서버 cron 재시도 중) —
+                          // summary가 있으면 상대시각 대신 그대로 표시.
+                          ? (ev.summary || relativeTime(ev.at, nowIso))
                           : (ev.summary || (ev.status === "missed" ? "누락" : ""))}
                       </span>
                     </span>

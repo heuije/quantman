@@ -12,8 +12,9 @@
   (LLM이 유추한 가정 "[추론]"은 컴파일러의 assumptions 리스트로 별도 표시 — 여기 포함 안 함.)
 
 의미 텍스트는 capability_spec()을 단일 출처로 재사용한다(중복 작성·드리프트 방지).
-단위는 엔진(engine.py) 실제 적용과 일치: take_profit/stop_loss/비용=분수,
-trail_pct/amount_pct/vol_target/낙폭/그룹캡=퍼센트(엔진이 /100).
+단위는 엔진(engine.py) 실제 적용과 일치: 비용(수수료·슬리피지·매도세)=분수(bps→소수),
+take_profit/stop_loss/trail_pct/amount_pct/vol_target/낙폭/그룹캡=퍼센트
+(엔진 cur_ret=(close-entry)/entry*100 과 직접 비교 — spec M-exit가 "(%)"로 못박음).
 """
 from __future__ import annotations
 
@@ -56,12 +57,12 @@ def _does(spec_key: str, value) -> str:
 
 
 def _frac_pct(x: float) -> str:
-    """분수 → 퍼센트 문자열. 0.1 → '10%', -0.05 → '-5%' (take_profit·비용 등)."""
+    """분수 → 퍼센트 문자열. 0.001 → '0.1%', 0.0003 → '0.03%' (수수료·슬리피지 등 분수 비용)."""
     return f"{x * 100:g}%"
 
 
 def _pct(x: float) -> str:
-    """이미 퍼센트 단위인 값 → 문자열. 10 → '10%' (trail_pct·vol_target·낙폭 등)."""
+    """이미 퍼센트 단위인 값 → 문자열. 10 → '10%' (take_profit·stop_loss·trail_pct·vol_target·낙폭 등)."""
     return f"{x:g}%"
 
 
@@ -205,9 +206,9 @@ def _exit(pos: PositionSpec) -> dict:
                             _CAP.get("exit", {}).get("does", ""))])
     items = []
     if x.take_profit is not None:
-        items.append(_it("익절", _frac_pct(x.take_profit), _SET))
+        items.append(_it("익절", _pct(x.take_profit), _SET))
     if x.stop_loss is not None:
-        items.append(_it("손절", _frac_pct(x.stop_loss), _SET))
+        items.append(_it("손절", _pct(x.stop_loss), _SET))
     if x.hold_days is not None:
         _hd = "당일 종가 청산" if x.hold_days == 0 else f"{x.hold_days}거래일 후 청산"
         items.append(_it("보유 기간", _hd, _SET))
@@ -456,9 +457,9 @@ def _narrative(ir: StrategyIR) -> str:
     if e.mode != "always":
         bits = []
         if x.take_profit is not None:
-            bits.append(f"{_frac_pct(x.take_profit)} 익절")
+            bits.append(f"{_pct(x.take_profit)} 익절")
         if x.stop_loss is not None:
-            bits.append(f"{_frac_pct(x.stop_loss)} 손절")
+            bits.append(f"{_pct(x.stop_loss)} 손절")
         if x.hold_days is not None:
             bits.append("당일 종가 청산" if x.hold_days == 0
                         else f"{x.hold_days}거래일 보유 후 청산")

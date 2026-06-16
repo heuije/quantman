@@ -26,8 +26,9 @@ from quant_core.exec_defaults import instrument_spec, merged_execution
 from quant_core.futures_expiry import roll_lead_days
 
 from .broker import Broker
-from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
-                     TRADES_PATH)
+from .config import (CLAIMED_FILLS_PATH, EQUITY_PATH, LEDGER_PATH,
+                     PENDING_ORDERS_PATH, TRADES_PATH)
+from .kis_broker import canonical_odno
 from . import analytics, intents, killswitch, order_log, state_store
 
 log = logging.getLogger("localapp.trader")
@@ -70,6 +71,32 @@ def kst_today() -> date:
     어긋난다(여행/해외 거주 사용자). 명시적으로 KST 환산.
     """
     return datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
+# ── WS-1(δ): 청구된 해외 체결행 레지스트리 ────────────────────────────────────
+# 미국 예약주문은 접수번호와 체결행 odno의 번호공간이 달라(실측 2026-06-11: 접수
+# 448 vs 체결행 10자리) 종목+사이드+수량으로 매칭한다. 같은 체결행을 두 주문/
+# 사이클이 이중 기장하지 않도록, 청구한 행의 odno를 영속 dedup한다.
+
+_CLAIMED_RETENTION_DAYS = 14    # 조회창(제출일 D-1~) + pending GC(7일)보다 넉넉히
+
+
+def _load_claimed_fills() -> dict:
+    return _load_json(CLAIMED_FILLS_PATH, {})
+
+
+def _register_claimed_fills(odnos: list[str]) -> None:
+    if not odnos:
+        return
+    reg = _load_claimed_fills()
+    today = kst_today()
+    for o in odnos:
+        key = canonical_odno(o)
+        if key:
+            reg[key] = today.isoformat()
+    cutoff = (today - timedelta(days=_CLAIMED_RETENTION_DAYS)).isoformat()
+    reg = {k: v for k, v in reg.items() if v >= cutoff}
+    _save_json(CLAIMED_FILLS_PATH, reg)
 
 
 def _policy(strat_def: dict) -> dict:
@@ -241,6 +268,24 @@ class Trader:
         _save_json(EQUITY_PATH, self.equity)
         _save_json(PENDING_ORDERS_PATH, self.pending)
 
+    def reload_state(self) -> None:
+        """디스크 상태(ledger·equity·pending)를 메모리로 재적재 — 디스크가 SSOT(M9).
+
+        같은 프로세스에 장수명 Trader(intraday loop)와 ephemeral Trader(cycle·
+        settlement·gui push)가 공존한다. 각자 생성 시점의 메모리 사본을 들고 같은
+        파일을 통째로 쓰기 때문에, stale 사본의 저장이 다른 인스턴스의 변경(매도·
+        체결)을 되돌려 — 매도된 포지션이 부활하고 reconcile이 그걸 "외부 매도 추정"
+        으로 오판(P&L 소실)하는 부류가 라이브에서 실증됐다. 장수명 인스턴스는 변경
+        세션 진입부(intraday_loop의 WS 체결·장중 매도·ks 트리거)에서 이걸 호출해
+        디스크 최신 상태 위에서만 변경한다. 모든 변경 지점은 락 안에서 즉시 _save
+        하므로(아래 _apply_fill·_after_submit·_resolve_pending) reload가 미저장
+        변경을 잃지 않는다.
+        """
+        with _CYCLE_LOCK:
+            self.ledger = _load_json(LEDGER_PATH, {})
+            self.equity = _load_json(EQUITY_PATH, [])
+            self.pending = _load_json(PENDING_ORDERS_PATH, {})
+
     def _log_trade(self, event: dict):
         # 체결·거래 기록은 민감 — state_store 위임 (R5, 최초 생성 시 owner-only ACL).
         state_store.append_jsonl(event, TRADES_PATH)
@@ -252,7 +297,8 @@ class Trader:
         external_extras(외부 매수)는 ledger 손대지 않음 (자동매매가 매수한 게 아니므로).
         반환: reconcile dict + applied 변경 내역 + 거래 기록 카운트.
 
-        호출 시점: 15:35 post_close_settlement (08:55 메인 사이클 직전엔 위험).
+        호출 시점: 15:50 post_close_settlement — 모든 KRX 종가창(주식 15:30·선물
+        15:45) 이후 (08:55 메인 사이클 직전엔 위험).
         """
         today = today_iso or kst_today().isoformat()
         try:
@@ -267,6 +313,9 @@ class Trader:
         # self.ledger를 읽지 않으므로 락 밖에 둔다. (settlement 경로는 이미 이
         # 락을 쥐고 들어오며 RLock이라 재진입 안전, GUI 수동 호출 경로를 닫는다.)
         with _CYCLE_LOCK:
+            # M9 참고: reconcile 호출자는 전부 ephemeral 인스턴스(settlement·gui가
+            # 매번 새 Trader 생성 = 디스크 최신 적재)라 여기서 reload하지 않는다 —
+            # 장수명 인스턴스의 stale 경로는 intraday_loop 진입부가 reload_state로 닫는다.
             result = analytics.reconcile_ledger(snap.get("positions", []), self.ledger)
             orphans = result.get("ledger_orphans", [])
             applied: list[dict] = []
@@ -336,15 +385,36 @@ class Trader:
     def _resolve_pending_locked(self, decisions: list[dict]) -> None:
         if not self.pending:
             return
+        from . import market_index
+        # δ: 예약주문 청구 dedup — 영속 레지스트리 + 다른 pending의 접수번호(그 행은
+        # 그 주문 것) + 이번 패스에서 새로 청구한 행. 동형 주문 2건이 체결행 2개를
+        # 1:1로 나눠 갖고, 같은 행의 이중 기장을 사이클을 가로질러 차단한다.
+        claimed = set(_load_claimed_fills())
+        own_odnos = {canonical_odno(k) for k in self.pending}
+        newly_claimed: list[str] = []
+        changed = False
         for order_no, p in list(self.pending.items()):
+            hint = None
+            if market_index.is_us(p.get("symbol", "")):
+                exclude = (claimed | own_odnos | set(newly_claimed)) \
+                    - {canonical_odno(order_no)}
+                hint = {"side": p.get("side"), "qty": int(p.get("qty") or 0),
+                        "reserved": bool(p.get("is_resv")),
+                        "submitted_ts": p.get("submitted_ts"),
+                        "exclude_odnos": sorted(exclude)}
             try:
-                st = self.broker.order_status(order_no, p.get("symbol"))
+                if hint is None:    # 비해외 — 레거시 2-인자 호출(구 더블 호환)
+                    st = self.broker.order_status(order_no, p.get("symbol"))
+                else:
+                    st = self.broker.order_status(order_no, p.get("symbol"),
+                                                  hint=hint)
             except Exception as e:
                 log.warning("주문상태 조회 실패 [%s]: %s", order_no, e)
                 continue
             status = st.get("status", "unknown")
             filled = int(st.get("filled_qty", 0) or 0)
             fill_px = float(st.get("fill_price", 0) or 0)
+            exec_odno = canonical_odno(st.get("exec_odno") or "")
 
             if status == "filled" and filled > 0:
                 # filled/partial 모두 KIS 누적(tot_ccld_qty) 기준 — 이미 WS/이전 폴링이
@@ -355,6 +425,9 @@ class Trader:
                 if delta > 0:
                     self._apply_fill(order_no, p, delta, fill_px, decisions)
                 del self.pending[order_no]
+                changed = True
+                if exec_odno:
+                    newly_claimed.append(exec_odno)
             elif status == "partial":
                 # 부분체결: 채운 만큼만 반영하고 잔여는 계속 추적
                 already = int(p.get("filled_so_far", 0))
@@ -363,6 +436,9 @@ class Trader:
                     self._apply_fill(order_no, p, delta, fill_px, decisions,
                                       partial=True)
                     p["filled_so_far"] = filled
+                    changed = True
+                    if exec_odno:
+                        newly_claimed.append(exec_odno)
             elif status == "cancelled":
                 order_log.log_order("cancelled", p["symbol"], p["side"], p["qty"],
                                     order_no=order_no,
@@ -374,7 +450,28 @@ class Trader:
                     p.get("strategy_name", ""), p["symbol"],
                     "미체결 cancelled (KIS 마감 자동 취소 또는 외부 취소)"))
                 del self.pending[order_no]
-            # else: 여전히 미체결 — 다음 폴링/사이클에서 재확인. 로컬 timeout 없음.
+                changed = True
+            else:
+                # 여전히 미확인 — 다음 폴링/사이클에서 재확인. 로컬 timeout 없음.
+                # δ GC: 7일 넘게 unknown이면 추적 만료 — 조회창을 벗어난 고아가
+                # pending에 영구 잔존하던 결함(실측 448·0000040620) 차단. 실 보유
+                # 정합은 settlement reconcile(보유 diff)이 담당.
+                sub_ts = p.get("submitted_ts")
+                if (status == "unknown" and sub_ts
+                        and time.time() - float(sub_ts) > 7 * 86400):
+                    log.warning("pending GC [%s] %s — 상태 미확인 7일 경과(추적 만료)",
+                                order_no, p.get("symbol"))
+                    decisions.append(order_log.decision(
+                        "unfilled", p.get("strategy_id", ""),
+                        p.get("strategy_name", ""), p.get("symbol", ""),
+                        "상태 미확인 7일 경과 — 추적 만료(GC)"))
+                    del self.pending[order_no]
+                    changed = True
+        if newly_claimed:
+            _register_claimed_fills(newly_claimed)
+        if changed:
+            # M9: 변경 즉시 영속 — 다른 인스턴스(reload_state)가 항상 최신을 본다.
+            self._save()
 
     def _record_contract_meta(self, sid: str, symbol: str) -> None:
         """신규 진입 ledger에 라이브 계약코드·만기일ISO 부착 (M6 만기 자동청산).
@@ -545,6 +642,10 @@ class Trader:
                 decisions.append(order_log.decision(
                     "sold", sid, p.get("strategy_name", ""), symbol, detail))
 
+            # M9: 체결 반영 즉시 영속(락 안) — 디스크가 SSOT. 다른 인스턴스
+            # (cycle↔intraday loop)가 reload_state로 항상 최신 체결을 본다.
+            self._save()
+
         # Q5 Tier 1 — 체결 직후 kill switch 평가. 시초가 매수가 장중에 잡혀 자본이
         # day_start 대비 -X% 도달하는 정확한 순간을 잡는다. _daily_loss_limit_pct가
         # 설정되어 있을 때만 평가(cycle 또는 intraday_loop가 설정).
@@ -578,6 +679,18 @@ class Trader:
             equity = _unified_equity_krw(snap["balance"])
         except Exception as e:
             log.warning("[ks-eval] account_snapshot 실패 — skip: %s", e)
+            return False
+        # ★ε: 부분 잔고(해외/선물 조회 실패)로는 발동 금지 — 누락 계좌가 0으로
+        # 잡혀 거짓 -98% 폭락이 되고, 06-09에 실제로 US 보유 전량을 청산했다.
+        # 전체 조회 실패(위 except)와 동일하게 보수적 무동작 + 표면화.
+        fetch_failed = (snap.get("balance") or {}).get("fetch_failed")
+        if fetch_failed:
+            log.critical("[ks-eval] 잔고 부분조회 %s — 부분 equity(%s원)로 평가 보류",
+                         fetch_failed, f"{equity:,.0f}")
+            if decisions is not None:
+                decisions.append(order_log.decision(
+                    "risk_eval_skipped", "", "", "",
+                    f"잔고 부분조회 실패 {fetch_failed} — killswitch 평가 보류"))
             return False
         reason = killswitch.check_daily_loss(equity, daily_loss_limit_pct)
         if not reason:
@@ -637,6 +750,24 @@ class Trader:
         return (self._reserved_us and _currency_of(symbol) == "USD"
                 and not qc.is_futures(symbol))
 
+    def _us_limit(self, symbol: str, side: str, policy: dict,
+                  fallback_ref: float) -> float:
+        """미국 지정가 = 신선한 현재가 × (1 ± tol) — 시장가 근사(market-proxy).
+
+        미국주식은 KIS가 연속장 시장가를 미지원해 지정가만 가능하다. 지정가가 개장가
+        /종가를 넉넉히 brackets하도록 *신선한* 현재가(_safe_price=HHDFS00000300 실시간/
+        프리마켓)에 tol 버퍼를 둔다 — 이게 라이브가 백테스트의 시가/종가 체결을 재현하는
+        핵심. 전일종가(fallback_ref)는 미국 애프터마켓·갭을 못 담아 미체결을 유발하므로
+        *현재가 조회 실패 시에만* 후퇴한다(외부 시스템 한계 정당 fallback).
+        side='buy'면 +tol·위로 라운드업(개장가 위), 'sell'이면 −tol·아래로 라운드다운(종가 아래).
+        tol = policy.buy/sell_tolerance_pct (미국 전용·유저 override 가능·default ±3%)."""
+        ref = self._safe_price(symbol) or fallback_ref
+        if side == "buy":
+            return _round_limit(ref * (1 + policy["buy_tolerance_pct"] / 100.0),
+                                "up", symbol)
+        return _round_limit(ref * (1 - policy["sell_tolerance_pct"] / 100.0),
+                            "down", symbol)
+
     def _submit_buy(self, sid: str, strat_name: str, strat_def: dict,
                     symbol: str, qty: int, ref_price: float, policy: dict,
                     decisions: list[dict], catchup: bool = False) -> None:
@@ -646,18 +777,14 @@ class Trader:
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "buy",
                       qty, ref_price)
-        use_limit = bool(policy["use_limit"])
 
         # 미국 예약매수 — 개장 전(접수창) 발주, 정규장 개시에 KIS가 자동 전송.
-        # KIS는 미국 시장가 매수가 없어 지정가만 가능 → buy_tolerance 반영 limit.
+        # KIS는 미국 시장가 매수가 없어 지정가만 가능 → 신선한 현재가×(1+tol) limit
+        # (전일종가 ref_price는 갭을 못 담아 _us_limit이 fallback으로만 씀).
         # catch-up과 배타적(_reserved_us는 정상 cycle US에서만 True).
         is_resv = self._is_reserved_us(symbol)
         if is_resv:
-            limit = _round_limit(
-                ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
-                "up", symbol)
-            limit = qc.apply_daily_price_limit(
-                limit, ref_price, "buy", _currency_of(symbol))
+            limit = self._us_limit(symbol, "buy", policy, ref_price)
             try:
                 r = self.broker.buy_resv_limit(symbol, qty, limit)
             except Exception as e:
@@ -667,13 +794,13 @@ class Trader:
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
                 return
             log.info("[us-resv] %s 예약매수 지정가 limit=%s", symbol, limit)
-        # catch-up + 시장가 매수: 시초가 limit으로 변환.
+        # catch-up 매수: 시초가 limit으로 변환.
         # 이유: 정상 cycle의 시장가는 09:00 시초가에 체결되나 catch-up은 09:30
         # 현재가에 체결 → 백테스트 가정(시가 + slippage)과 어긋남. 시가 × (1 +
         # bt_slippage_bps) limit으로 변환하면 백테스트 모델과 alignment + selection
         # bias 없음(가격은 시가 fixed). ref_price(어제 종가)는 유지 — apply_daily_
         # price_limit이 prev_close 기준 ±30% cap 정확히 계산하도록.
-        elif catchup and not use_limit:
+        elif catchup:
             open_price = self.broker.today_open(symbol)
             if open_price <= 0:
                 # v0.9.7-beta — PR-1 정당 fallback (KIS API 진짜 한계 대비).
@@ -701,22 +828,9 @@ class Trader:
                 return
             log.info("[catch-up] %s 시장가→시초가 limit: open=%s limit=%s",
                       symbol, open_price, limit)
-        elif use_limit:
-            limit = _round_limit(
-                ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
-                "up", symbol)
-            # 한국 ±30% 가격제한폭 사전 클램프 — KIS 서버 거부 누적 방지
-            limit = qc.apply_daily_price_limit(
-                limit, ref_price, "buy", _currency_of(symbol))
-            try:
-                r = self.broker.buy_limit(symbol, qty, limit)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"buy_limit: {e}")
-                log.error("매수 지정가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"발주 예외: {e}"))
-                return
         else:
+            # 국내 즉시 매수 — 시장가. 08:55 동시호가 발주 → 09:00 시초가 단일가
+            # 체결(지정가 대비 슬리피지 손해 없음). 미국은 위 is_resv(지정가)로 분기.
             limit = 0
             try:
                 r = self.broker.buy(symbol, qty)
@@ -729,7 +843,8 @@ class Trader:
         # KIS 응답 수신 — submitted 마감(order_no가 빈 문자면 거부 처리는 _after_submit이 함)
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, strat_def, symbol, "buy", qty,
-                            ref_price, limit, policy, decisions, reason="매수신호")
+                            ref_price, limit, policy, decisions, reason="매수신호",
+                            today_iso=today_iso, intent_id=intent_id)
 
     def _submit_sell(self, sid: str, strat_name: str, symbol: str, qty: int,
                      ref_price: float, policy: dict, reason: str,
@@ -745,36 +860,35 @@ class Trader:
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell",
                       qty, ref_price)
-        use_limit = bool(policy["use_limit"])
-        # Phase 38.9 — 매도 tolerance 단일화. 신호·청산 모두 같은 값.
-        tol = policy["sell_tolerance_pct"]
-        # 미국 예약매도 — MOO(장개시시장가)로 개시가 체결. 개장 전 접수.
+        # 미국 예약매도 — 지정가(00). 개장 전 접수 → 개장 단일가 체결(MOO 대신 지정가:
+        # 모의=실전 통일). limit=신선한가×(1−tol)이 개장가보다 낮아 매도 체결(_us_limit).
         is_resv = self._is_reserved_us(symbol)
         if is_resv:
-            limit = 0
+            limit = self._us_limit(symbol, "sell", policy, ref_price)
             try:
-                r = self.broker.sell_resv_moo(symbol, qty)
+                r = self.broker.sell_resv_limit(symbol, qty, limit)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell_resv_moo: {e}")
+                intents.mark_failed(today_iso, intent_id, f"sell_resv_limit: {e}")
                 log.error("미국 예약매도 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
                 return
-            log.info("[us-resv] %s 예약매도 MOO", symbol)
-        elif use_limit:
-            limit = _round_limit(ref_price * (1 - tol / 100.0), "down", symbol)
-            # 한국 ±30% 가격제한폭 사전 클램프 — 하한가 cap
-            limit = qc.apply_daily_price_limit(
-                limit, ref_price, "sell", _currency_of(symbol))
+            log.info("[us-resv] %s 예약매도 지정가 limit=%s", symbol, limit)
+        elif _currency_of(symbol) == "USD":
+            # 미국 즉시매도(종가 청산 cycle) — 지정가(00). KIS 연속장 시장가 미지원이라
+            # 신선한 현재가×(1−tol) 지정가로 시장가 근사. (국내는 아래 시장가 분기)
+            limit = self._us_limit(symbol, "sell", policy, ref_price)
             try:
                 r = self.broker.sell_limit(symbol, qty, limit)
             except Exception as e:
                 intents.mark_failed(today_iso, intent_id, f"sell_limit: {e}")
-                log.error("매도 지정가 발주 실패 [%s]: %s", symbol, e)
+                log.error("미국 매도 지정가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
                 return
+            log.info("[us-close] %s 즉시 매도 지정가 limit=%s", symbol, limit)
         else:
+            # 국내 즉시 매도 — 시장가. 종가 동시호가 발주 → 종가 단일가 체결.
             limit = 0
             try:
                 r = self.broker.sell(symbol, qty)
@@ -786,7 +900,8 @@ class Trader:
                 return
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, None, symbol, "sell", qty,
-                            ref_price, limit, policy, decisions, reason=reason)
+                            ref_price, limit, policy, decisions, reason=reason,
+                            today_iso=today_iso, intent_id=intent_id)
 
     def _submit_close_short(self, sid: str, strat_name: str, symbol: str, qty: int,
                             ref_price: float, policy: dict, reason: str,
@@ -803,31 +918,20 @@ class Trader:
             return
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "buy", qty, ref_price)
-        if bool(policy["use_limit"]):
-            limit = _round_limit(ref_price * (1 + policy["buy_tolerance_pct"] / 100.0),
-                                 "up", symbol)
-            limit = qc.apply_daily_price_limit(limit, ref_price, "buy", _currency_of(symbol))
-            try:
-                r = self.broker.buy_limit(symbol, qty, limit)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"buy_limit(close): {e}")
-                log.error("숏 환매 지정가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"환매 발주 예외: {e}"))
-                return
-        else:
-            limit = 0
-            try:
-                r = self.broker.buy(symbol, qty)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"buy(close): {e}")
-                log.error("숏 환매 시장가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"환매 발주 예외: {e}"))
-                return
+        # 숏 환매 — 시장가(선물). 종가 동시호가 발주 → 단일가 체결.
+        limit = 0
+        try:
+            r = self.broker.buy(symbol, qty)
+        except Exception as e:
+            intents.mark_failed(today_iso, intent_id, f"buy(close): {e}")
+            log.error("숏 환매 시장가 발주 실패 [%s]: %s", symbol, e)
+            decisions.append(order_log.decision(
+                "error", sid, strat_name, symbol, f"환매 발주 예외: {e}"))
+            return
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, None, symbol, "buy", qty,
-                            ref_price, limit, policy, decisions, reason=reason)
+                            ref_price, limit, policy, decisions, reason=reason,
+                            today_iso=today_iso, intent_id=intent_id)
 
     def _submit_open_short(self, sid: str, strat_name: str, strat_def: dict,
                            symbol: str, qty: int, ref_price: float, policy: dict,
@@ -841,36 +945,26 @@ class Trader:
         today_iso = kst_today().isoformat()
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell", qty, ref_price)
-        if bool(policy["use_limit"]):
-            limit = _round_limit(ref_price * (1 - policy["sell_tolerance_pct"] / 100.0),
-                                 "down", symbol)
-            limit = qc.apply_daily_price_limit(limit, ref_price, "sell", _currency_of(symbol))
-            try:
-                r = self.broker.sell_limit(symbol, qty, limit)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell_limit(open): {e}")
-                log.error("숏 진입 지정가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"숏진입 발주 예외: {e}"))
-                return
-        else:
-            limit = 0
-            try:
-                r = self.broker.sell(symbol, qty)
-            except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell(open): {e}")
-                log.error("숏 진입 시장가 발주 실패 [%s]: %s", symbol, e)
-                decisions.append(order_log.decision(
-                    "error", sid, strat_name, symbol, f"숏진입 발주 예외: {e}"))
-                return
+        # 숏 진입 — 시장가(선물). 동시호가 발주 → 단일가 체결.
+        limit = 0
+        try:
+            r = self.broker.sell(symbol, qty)
+        except Exception as e:
+            intents.mark_failed(today_iso, intent_id, f"sell(open): {e}")
+            log.error("숏 진입 시장가 발주 실패 [%s]: %s", symbol, e)
+            decisions.append(order_log.decision(
+                "error", sid, strat_name, symbol, f"숏진입 발주 예외: {e}"))
+            return
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, strat_def, symbol, "sell", qty,
-                            ref_price, limit, policy, decisions, reason="숏진입")
+                            ref_price, limit, policy, decisions, reason="숏진입",
+                            today_iso=today_iso, intent_id=intent_id)
 
     def _after_submit(self, r: dict, sid: str, strat_name: str,
                       strat_def: dict | None, symbol: str, side: str, qty: int,
                       intended_price: float, limit_price: int,
-                      policy: dict, decisions: list[dict], reason: str) -> None:
+                      policy: dict, decisions: list[dict], reason: str,
+                      today_iso: str = "", intent_id: str = "") -> None:
         """submit 결과를 후처리: pending 등록 / 즉시 체결 반영 / 거부 로깅."""
         order_no = r.get("order_no", "")
         if not r.get("success"):
@@ -883,6 +977,13 @@ class Trader:
             decisions.append(order_log.decision(
                 "rejected", sid, strat_name, symbol,
                 f"{side} {qty}주 거부: {r.get('message', '')}"))
+            # KIS 호출 성공 ≠ 주문 접수 성공 — 거부는 주문 미생성이므로 intent를
+            # 실패로 마감해 멱등 게이트 점유를 해제한다(리뷰 D5-5: 'submitted'로
+            # 남으면 당일 정당 재시도가 전부 차단 — 06-09 장종료 거부 건이 그날
+            # 재시도 불가였던 메커니즘). 재시도는 사이클당 1회 평가라 무한 반복 없음.
+            if intent_id:
+                intents.mark_failed(today_iso, intent_id,
+                                    f"KIS 거부: {r.get('message', '')}")
             return
         p = {
             "order_no": order_no, "strategy_id": sid,
@@ -894,6 +995,10 @@ class Trader:
             # 더 이상 사용하지 않음. KIS DAY 정책으로 마감 시 자동 cancel.
             "definition": strat_def or {}, "reason": reason,
             "filled_so_far": 0,
+            # δ: 미국 예약주문 여부 — 접수번호와 체결행 odno의 번호공간이 달라
+            # (실측 448 vs 10자리) _resolve_pending이 종목+사이드+수량 매칭으로
+            # 전환하는 분기 키. 발주 분기(_is_reserved_us)와 같은 시점 동일 값.
+            "is_resv": self._is_reserved_us(symbol),
         }
         order_log.log_order("submitted", symbol, side, qty, order_no=order_no,
                              intended_price=intended_price,
@@ -909,6 +1014,9 @@ class Trader:
         # M3: pending 등록도 cycle·WS 체결 thread와 같은 락으로 직렬화.
         with _CYCLE_LOCK:
             self.pending[order_no] = p
+            # M9/L-01: 발주 직후 즉시 영속 — cycle 끝 저장까지의 크래시 유실창 제거
+            # (intents 저널이 중복발주는 막지만, pending 유실은 체결 추적을 끊었다).
+            self._save()
 
     def _wait_pending(self, timeout_sec: int, poll_sec: int,
                       decisions: list[dict]) -> None:
@@ -1052,8 +1160,12 @@ class Trader:
         # cash×amount_pct%, 단일 유니버스=100%) + max_position_pct 캡까지 처리한다.
         from quant_core.ir_engine import StrategyIR
         from quant_core.ir_engine import live as ir_live
+        # F-01: symbol·dataset 전달 — amount_krw(₩정액)를 USD 종목에 쓸 때 dataset의
+        # 원달러환율(엔진 _budget과 같은 fx_usdkrw_rate 룩업)로 환산한다. 미전달이면
+        # USD 정액이 ₩금액을 $로 취급해 1,370배 과대 사이징(실증: GOOG 2,832주=$93만).
         qty = ir_live.event_buy_qty(StrategyIR.model_validate(strat_def),
-                                    cash=cash, prev_close=prev_close, capital=capital)
+                                    cash=cash, prev_close=prev_close, capital=capital,
+                                    symbol=symbol, dataset=dataset)
 
         # 가용 현금 한도 — 주식만. 선물은 event_buy_qty가 이미 증거금으로 클램프했고,
         # cash//prev_close(현금÷지수가)는 선물 계약수에 무의미(과대 → 비바인딩)하므로 제외.
@@ -1228,8 +1340,7 @@ class Trader:
                 "skip_kis_health", "", "", "", f"KIS 잔고 조회 실패: {e}"))
             return self._state_payload(decisions, today, kind="emergency_liquidation")
 
-        global_policy = merged_execution(None)
-        market_policy = {**global_policy, "use_limit": False}   # 시세 없으면 시장가
+        policy = merged_execution(None)
         positions = snap.get("positions") or []
         log.info("[비상청산] 보유 %d종 전량 청산 시작 (dataset 무의존)", len(positions))
         for pos in positions:
@@ -1243,7 +1354,6 @@ class Trader:
             if not symbol or qty <= 0:
                 continue
             ref_price = self._safe_price(symbol) or 0.0
-            policy = global_policy if ref_price > 0 else market_policy
             # 비상 청산은 보유 sid 무관 — 종목 단위 멱등 키.
             sid = f"liquidate:{symbol}"
             if side == "short":
@@ -1266,12 +1376,23 @@ class Trader:
         당일매매를 건드리지 않는다 — cycle_exit_reason Stage B 분기).
 
         instrument_class ∈ {"stock","futures"} — 주식/선물 종가 발주창이 다르므로(스케줄러가
-        분리 cron으로 호출) 종목 클래스로 라우팅한다. 유저 execution.use_limit를 존중(_policy)
-        — 시장가/지정가. 청산 수량은 main loop와 동일하게 KIS 실보유로 클램프(L-04, snap_pre).
+        분리 cron으로 호출) 종목 클래스로 라우팅한다. 국내는 시장가 단일(종가 단일가 체결),
+        미국주식은 라이브 지정가(_submit_sell USD 분기, 신선한가×(1−tol) 시장가근사 — KIS 연속장
+        시장가 미지원). 청산 수량은 main loop와 동일하게 KIS 실보유로 클램프(L-04, snap_pre).
         파싱 실패 고아는 hold_days 불명 → skip(main loop·Monitor가 표면화).
+
+        θ(2026-06-12 선물 0000004525 미기록): 발주 후 일반 cycle과 동일하게
+        _wait_pending으로 폴링 — 단일 조회는 모의 ~27초 체결 지연도 놓쳤다.
+        N1(미장 GOOG 261주 방치): 순회 전에 _resolve_pending을 먼저 돌려 미기록
+        진입 체결(δ류)을 ledger에 복원한다(settlement와 동일한 resolve→평가 순서).
+        그래도 체결확인 불능인 당일매매 진입은 추측 발주 없이 '청산 불능'으로
+        표면화한다 — 계좌 보유가 외부 수동 매수일 수 있어(병1 불변식) 발주는 금지.
         """
         decisions: list[dict] = []
         today = kst_today()
+        # N1 — ledger 순회 전에 미체결 먼저 정합. 진입 체결이 미기록이면 여기서
+        # ledger에 복원돼(해외 체결감지 WS-1 포함) 아래 루프가 정상 청산한다.
+        self._resolve_pending(decisions)
         snap_pre = self.broker.account_snapshot()   # KIS 실보유(clamp 기준) — main loop와 동일
         for sid, pos in list(self.ledger.items()):
             if _market_group_safe(pos["symbol"]) != market:
@@ -1307,7 +1428,7 @@ class Trader:
             if ref_price <= 0:
                 log.warning("종가청산 ref_price 없음 [%s] — skip", pos["symbol"])
                 continue
-            policy = _policy(pos.get("definition"))   # 유저 execution.use_limit 존중 — 시장가/지정가
+            policy = _policy(pos.get("definition"))   # 국내=시장가 / 미국=is_resv
             sell_qty = int(pos["qty"])
             # L-04: 발주 직전 KIS 실보유로 클램프 — 외부 수동매도 over-sell 방지(main loop와 동일).
             pos_side = pos.get("side", "long")
@@ -1322,9 +1443,57 @@ class Trader:
             else:
                 self._submit_sell(sid, pos.get("strategy_name", ""), pos["symbol"],
                                   clamped, ref_price, policy, reason, decisions)
-        # 즉시 체결/거부 반영(단일가 체결·발주창 외 거부를 결과에 표면화).
+        # 즉시 체결/거부 반영(발주창 외 거부를 결과에 표면화).
         self._resolve_pending(decisions)
-        return self._state_payload(decisions, today, kind="day_trade_close")
+        # θ — 종가 단일가 체결 지연 흡수: 일반 cycle과 동일 wait(기본 60s/20s 폴링).
+        # 실전 선물 단일가(15:45) 체결처럼 wait를 넘는 건은 15:50 settlement가 정리.
+        gp = merged_execution(None)
+        self._wait_pending(gp["post_submit_wait_sec"], gp["poll_interval_sec"],
+                           decisions)
+        # N1 표면화 — 오늘 낸 당일매매 진입이 여전히 체결확인 불능인데 계좌 보유가
+        # 원장을 초과하면 '청산 불능'을 명시한다. 추측 매도는 금지: 초과 보유가
+        # 사용자의 외부 수동 매수일 수 있고(병1 불변식 — 외부 보유 불가침), 체결
+        # 진실 없이 내는 주문은 오인 매도가 된다. 복원은 resolve·settlement 몫.
+        kst = ZoneInfo("Asia/Seoul")
+        for p in list(self.pending.values()):
+            sym = p.get("symbol", "")
+            if _market_group_safe(sym) != market:
+                continue
+            if qc.is_futures(sym) != (instrument_class == "futures"):
+                continue
+            d_def = p.get("definition") or {}
+            hd = ((d_def.get("position") or {}).get("exit") or {}).get("hold_days")
+            if hd != 0:
+                continue
+            ts = float(p.get("submitted_ts") or 0)
+            if datetime.fromtimestamp(ts, kst).date() != today:
+                continue
+            side = "short" if p.get("side") == "sell" else "long"
+            held_now = held_qty_from_snapshot(snap_pre, sym, side)
+            covered = sum(int(lg.get("qty") or 0) for lg in self.ledger.values()
+                          if lg.get("symbol") == sym
+                          and lg.get("side", "long") == side)
+            if held_now is None or held_now <= covered:
+                continue
+            log.error("[종가청산] 당일청산 불능 — 진입주문 %s(%s) 체결확인 실패, "
+                      "계좌 보유 %d > 원장 %d (미기록 체결 의심)",
+                      p.get("order_no"), sym, held_now, covered)
+            decisions.append(order_log.decision(
+                "error", str(p.get("strategy_id", "")),
+                p.get("strategy_name", ""), sym,
+                f"당일청산 불능 — 진입주문 {p.get('order_no')} 체결확인 실패인데 "
+                f"계좌 보유 {held_now} > 원장 {covered}. 미기록 체결 의심 — "
+                "정산 reconcile·수동 확인 필요"))
+        # N2 — 이 시장·클래스의 미확인 잔존 건수. 서버 타임라인이 "발주-but-미확인"
+        # 사이클을 녹색 성공으로 표시하지 않도록 요약에 노출한다.
+        n_unresolved = sum(
+            1 for p in self.pending.values()
+            if _market_group_safe(p.get("symbol", "")) == market
+            and qc.is_futures(p.get("symbol", "")) == (instrument_class == "futures"))
+        return self._state_payload(
+            decisions, today, kind="day_trade_close", market=market,
+            extra_summary={"instrument_class": instrument_class,
+                           "n_pending_unresolved": n_unresolved})
 
     def state_snapshot(self) -> dict:
         """현 상태(잔고·포지션·kill_switch) 스냅샷 — 거래 없이 상태 변경(kill-switch 해제·
@@ -1336,10 +1505,17 @@ class Trader:
 
     def _state_payload(self, decisions: list[dict], today: date, *,
                        kind: str = "emergency_liquidation",
-                       record_cycle: bool = True) -> dict:
+                       record_cycle: bool = True,
+                       market: str = "ALL",
+                       extra_summary: dict | None = None) -> dict:
         """현재 잔고·포지션·결정·kill_switch를 Monitor용 스냅샷 payload로 — 정규 cycle 출력
         (_cycle_body 꼬리)은 건드리지 않는다(주식 골든 byte-identical 보존, blast radius 0).
         비상청산(kind=emergency_liquidation)·상태동기화(kind=state_sync) 공용 빌더.
+
+        market — cycle_summary.market. 비상청산·상태동기화는 전시장(ALL)이 맞지만
+        day_trade_close는 실제 시장을 식별해야 서버 타임라인이 슬롯(주식 15:25/
+        선물 15:40/미장 close−5분)별로 매칭한다(N2 — 'ALL' 하드코딩이 매칭 불가의
+        원인이었다). extra_summary — kind별 추가 요약 필드(instrument_class 등).
         """
         try:
             snap = self.broker.account_snapshot()
@@ -1348,14 +1524,17 @@ class Trader:
         except Exception as e:
             log.warning("[%s] 스냅샷 조회 실패: %s", kind, e)
             balance, positions = {}, []
-        self._save()
+        # M9: 여기 있던 무조건 _save() 제거 — 모든 변경 지점이 락 안에서 즉시
+        # 저장하므로(중복), 장수명 인스턴스의 stale 메모리가 다른 인스턴스의
+        # 변경(매도·체결)을 덮어쓰는 부활 사고의 마지막 경로였다. 스냅샷 빌더는
+        # 읽기 전용이어야 한다.
         try:
             broker_pending = self.broker.pending_orders()
         except Exception:
             broker_pending = []
         cycle_summary = {
             "today": today.isoformat(),
-            "market": "ALL",
+            "market": market,
             "kind": kind,
             "n_sold": sum(1 for d in decisions if d["action"] == "sold"),
             "n_rejected": sum(1 for d in decisions if d["action"] == "rejected"),
@@ -1363,6 +1542,8 @@ class Trader:
             "n_errors": sum(1 for d in decisions if d["action"] == "error"),
             "kill_switch": bool(killswitch.load().get("active")),
         }
+        if extra_summary:
+            cycle_summary.update(extra_summary)
         if record_cycle:
             order_log.log_cycle(decisions, cycle_summary)
         positions_rich = analytics.enrich_positions(
@@ -1480,7 +1661,23 @@ class Trader:
                     "cycle_summary": {"skipped_reason": "kis_health_fail",
                                        "cycle_id": cycle_id}}
 
-        killswitch.update_day_start(equity_now, today.isoformat())
+        # ★ε: 부분 잔고(해외/선물 조회 실패) — 위험 결정(day_start 앵커·손실한도·
+        # drawdown)은 보류하고 표면화한다. 누락 계좌가 0으로 잡힌 부분 equity는
+        # 거짓 -98% 폭락을 만들고, 06-09 킬스위치 거짓 발동으로 US 보유 전량이
+        # 청산됐다. 매매 자체(청산 규칙·진입)는 시장별 데이터로 계속 — 가용성은
+        # 유지하되 자금 안전 결정만 완전 측정치를 요구한다.
+        balance_fetch_failed = list(
+            (snap_pre.get("balance") or {}).get("fetch_failed") or [])
+        if balance_fetch_failed:
+            log.critical("[P1-B] 잔고 부분조회 %s — day_start/killswitch/drawdown "
+                         "평가 보류 (부분 equity %s원)",
+                         balance_fetch_failed, f"{equity_now:,.0f}")
+            decisions.append(order_log.decision(
+                "risk_eval_skipped", "", "", "",
+                f"잔고 부분조회 실패 {balance_fetch_failed} — "
+                "손실한도·drawdown 평가 보류"))
+        else:
+            killswitch.update_day_start(equity_now, today.isoformat())
         ks_state = killswitch.load()
         ks_active = bool(ks_state.get("active"))
 
@@ -1505,7 +1702,8 @@ class Trader:
         self._daily_turnover_limit_krw = int(rl.get("daily_turnover_limit_krw") or 0)
         self._daily_trade_count_limit = int(rl.get("daily_trade_count_limit") or 0)
 
-        if not ks_active and daily_loss_limit_pct is not None:
+        if (not balance_fetch_failed and not ks_active
+                and daily_loss_limit_pct is not None):
             reason = killswitch.check_daily_loss(
                 equity_now, daily_loss_limit_pct)
             if reason:
@@ -1515,13 +1713,14 @@ class Trader:
 
         # Phase 38.10 — 누적 drawdown 측정 (자본 고점 대비). kill switch와 별개.
         # peak는 equity log의 max + 현재 equity 중 큰 값.
+        # ★ε: 부분 잔고면 측정 보류(거짓 폭락으로 진입 차단 오발동 방지).
         peak_equity = equity_now
         for e in self.equity:
             v = float(e.get("value") or 0)
             if v > peak_equity:
                 peak_equity = v
         drawdown_pct = 0.0
-        if peak_equity > 0:
+        if peak_equity > 0 and not balance_fetch_failed:
             drawdown_pct = (equity_now - peak_equity) / peak_equity * 100
         # max_drawdown_limit_pct=None이면 한도 없음(OFF) — drawdown 차단 평가 skip.
         drawdown_active = (max_drawdown_limit_pct is not None
@@ -1641,8 +1840,18 @@ class Trader:
 
         # ── 5. 최종 스냅샷 ────────────────────────────────────────────────
         snap = self.broker.account_snapshot()
-        self.equity.append({"date": today.isoformat(),
-                            "value": snap["balance"]["total_eval"]})
+        post_balance = snap.get("balance") or {}
+        post_fetch_failed = list(post_balance.get("fetch_failed") or [])
+        # ε: equity 시계열 = 통합 자산(국내+해외+USD현금+선물) — 국내만(total_eval)
+        # 적재하면 분자(시계열)/분모(통합 day_start)가 섞여 웹 자산곡선이 -98%로
+        # 보였다(D3-3). 주식 전용 사용자는 해외/선물 키가 0이라 값 동일(무변경).
+        # 부분 조회면 거짓 저점을 적재하지 않는다(곡선 오염 방지).
+        equity_post = _unified_equity_krw(post_balance)
+        if post_fetch_failed:
+            log.warning("equity 기록 skip — 잔고 부분조회 %s", post_fetch_failed)
+        else:
+            self.equity.append({"date": today.isoformat(),
+                                "value": equity_post})
         self._save()
 
         try:
@@ -1665,9 +1874,15 @@ class Trader:
             "n_errors": sum(1 for d in decisions if d["action"] == "error"),
             "n_unparseable_orphan": sum(
                 1 for d in decisions if d["action"] == "unparseable_orphan"),
+            # N2 — 이 시장의 미확인 잔존(발주-but-체결미확인 + 이월 미체결).
+            # 아침 cycle은 DAY 지정가가 장중 자연 체결될 수 있어 잔존이 정상이지만
+            # (서버 타임라인도 cycle 슬롯엔 경고 안 함), 관측을 위해 항상 노출한다.
+            "n_pending_unresolved": sum(
+                1 for p in self.pending.values()
+                if _market_group_safe(p.get("symbol", "")) == market),
             "kill_switch": ks_active,
             "equity_pre": equity_now,
-            "equity_post": float(snap["balance"]["total_eval"]),
+            "equity_post": equity_post,    # ε: 통합 자산(KRW) — equity_pre와 동일 정의
             # Phase 38.10 — drawdown 모니터
             "drawdown_pct": round(drawdown_pct, 3),
             "peak_equity": round(peak_equity, 2),
@@ -1675,6 +1890,10 @@ class Trader:
             "max_drawdown_limit_pct": (float(max_drawdown_limit_pct)
                                           if max_drawdown_limit_pct is not None else None),
         }
+        # ★ε: 부분 잔고로 위험 평가를 보류한 사이클은 명시 표면화(웹/타임라인 인지).
+        if balance_fetch_failed or post_fetch_failed:
+            cycle_summary["balance_fetch_failed"] = sorted(
+                set(balance_fetch_failed) | set(post_fetch_failed))
         order_log.log_cycle(decisions, cycle_summary)
 
         # 포지션 풍부화 + 분석 집계 (Monitor용)

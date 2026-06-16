@@ -1,10 +1,12 @@
-import { useState, useEffect, useRef, type ReactNode } from "react";
+import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   ComposedChart, Line, Bar, Scatter, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, ReferenceLine, CartesianGrid, Legend, Brush, Cell,
+  ResponsiveContainer, ReferenceLine, ReferenceArea, CartesianGrid, Legend, Cell,
 } from "recharts";
 import { api } from "../api";
-import type { SymbolDetail, SymbolListing, SymbolPoint, CompareItem } from "../types";
+import type {
+  SymbolDetail, SymbolListing, SymbolPoint, CompareItem, KrExtras,
+} from "../types";
 
 const RANGES: [string, string][] = [
   ["1m", "1개월"], ["3m", "3개월"], ["6m", "6개월"], ["12m", "12개월"], ["1y", "1년"],
@@ -13,22 +15,22 @@ const RANGES: [string, string][] = [
 ];
 
 // 한국식 시장 색 (상승=빨강 / 하락=파랑). 벤치마크=초록.
-const UP = "#de3033", DOWN = "#1668c4", BENCH = "#15803d", ACCENT = "#d97757";
+const UP = "#de3033", DOWN = "#1668c4", BENCH = "#15803d", ACCENT = "#c4982b";
 
 // 이동평균 5종 — 모든(가격·거래량) 차트에 상시 표시.
 const PRICE_MA: [keyof SymbolPoint, string, string][] = [
-  ["ma5", "MA5", "#9aa0a6"], ["ma20", "MA20", "#d97757"], ["ma60", "MA60", "#1668c4"],
+  ["ma5", "MA5", "#9aa0a6"], ["ma20", "MA20", "#c4982b"], ["ma60", "MA60", "#1668c4"],
   ["ma120", "MA120", "#7c3aed"], ["ma240", "MA240", "#b45309"],
 ];
 const VOL_MA: [keyof SymbolPoint, string, string][] = [
-  ["vma5", "MA5", "#9aa0a6"], ["vma20", "MA20", "#d97757"], ["vma60", "MA60", "#1668c4"],
+  ["vma5", "MA5", "#9aa0a6"], ["vma20", "MA20", "#c4982b"], ["vma60", "MA60", "#1668c4"],
   ["vma120", "MA120", "#7c3aed"], ["vma240", "MA240", "#b45309"],
 ];
 
 const DEFAULT_SEL = ["rsi_14", "macd", "volume", "stoch"];   // 최대 4개
 
 // 다종목 비교 팔레트 (최대 10)
-const CMP_COLORS = ["#de3033", "#1668c4", "#15803d", "#d97757", "#7c3aed",
+const CMP_COLORS = ["#de3033", "#1668c4", "#15803d", "#c4982b", "#7c3aed",
   "#b45309", "#0891b2", "#be185d", "#4d7c0f", "#9333ea"];
 
 // 요약박스 — 현재가·베타는 고정, 나머지 2개는 아래 후보에서 선택.
@@ -38,7 +40,12 @@ const METRIC_OPTS: [string, string][] = [
 ];
 
 // 서브차트 라인 색
-const L1 = "#ad5019", L2 = "#1668c4", L3 = "#7c3aed", L4 = "#22a06b", L5 = "#d97757", GRAY = "#9aa0a6";
+const L1 = "#8a6a14", L2 = "#1668c4", L3 = "#7c3aed", L4 = "#22a06b", L5 = "#c4982b", GRAY = "#9aa0a6";
+
+// 툴팁 글씨 크기 — 주가 차트(PriceTooltip)와 동일하게 12px로 통일.
+const TIP_STYLE = { fontSize: 12, padding: "8px 11px", borderRadius: 8, lineHeight: 1.5 };
+const TIP_LABEL = { fontSize: 12, fontWeight: 700, marginBottom: 5 };
+const TIP_ITEM = { fontSize: 12, padding: "1px 0" };
 
 // 지표 1개 = 렌더 설정. SubChart가 이 설정대로 일괄 렌더(라인/밴드/히스토 + 줌).
 type RCSeries = { k: string; name: string; color: string; width?: number; dash?: string };
@@ -188,37 +195,60 @@ function Candle(props: {
   );
 }
 
-// 휠(스크롤) 줌 — recharts엔 휠 줌이 없어 컨트롤드 Brush로 직접 구현.
-// 차트 위에서 휠 ↑=확대 / ↓=축소, 커서 위치 기준. Brush 드래그와 양방향 동기.
-function useWheelZoom(len: number) {
-  const [rng, setRng] = useState<[number, number] | null>(null);  // null=전체
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { setRng(null); }, [len]);   // 데이터(종목·기간) 바뀌면 전체로 리셋
+// 커서 드래그로 구간 확대 — 카테고리(날짜) X축을 가진 차트에 재사용.
+// 마우스 다운→무브로 두 날짜를 잡고, 업 시 그 구간으로 데이터를 필터(ISO 날짜라 문자열 비교=시간순).
+type DragArea = { x1: string; x2: string } | null;
+type ChartEvt = { activeLabel?: string | number } | null;
+function useDragZoom<T extends { date: string }>(data: T[]) {
+  const [range, setRange] = useState<[string, string] | null>(null);
+  const [refL, setRefL] = useState<string | null>(null);
+  const [refR, setRefR] = useState<string | null>(null);
+  const view = range ? data.filter((d) => d.date >= range[0] && d.date <= range[1]) : data;
+  const dragProps = {
+    onMouseDown: (e: ChartEvt) => { if (e?.activeLabel != null) { const l = String(e.activeLabel); setRefL(l); setRefR(l); } },
+    onMouseMove: (e: ChartEvt) => { if (refL != null && e?.activeLabel != null) setRefR(String(e.activeLabel)); },
+    onMouseUp: () => {
+      if (refL != null && refR != null && refL !== refR) setRange(refL < refR ? [refL, refR] : [refR, refL]);
+      setRefL(null); setRefR(null);
+    },
+  };
+  const area: DragArea = refL != null && refR != null && refL !== refR ? { x1: refL, x2: refR } : null;
+
+  // 휠(스크롤) 줌 — 차트 위 휠 ↑=확대 / ↓=축소(커서 위치 기준). 드래그 줌과 같은 range 상태 공유.
+  // recharts는 휠 줌 미지원 → 컨테이너 div에 네이티브 wheel 리스너(passive:false)로 직접 구현.
+  const dataRef = useRef(data); dataRef.current = data;
+  const wheelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const el = ref.current;
-    if (!el || len < 2) return;
+    const el = wheelRef.current;
+    if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      e.preventDefault();                       // 차트 위 휠은 페이지 스크롤 대신 줌
+      const d = dataRef.current;
+      if (d.length < 4) return;
+      e.preventDefault();                       // 페이지 스크롤 대신 차트 줌
       const rect = el.getBoundingClientRect();
       const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-      setRng((cur) => {
-        const [s, en] = cur ?? [0, len - 1];
-        const w = en - s;
-        const anchor = s + frac * w;            // 커서가 가리키는 데이터 위치 고정
-        const nw = Math.min(len - 1, Math.max(8, Math.round(w * (e.deltaY < 0 ? 0.8 : 1.25))));
+      setRange((cur) => {
+        let i0 = 0, i1 = d.length - 1;
+        if (cur) {
+          const f = d.findIndex((x) => x.date >= cur[0]);
+          i0 = f < 0 ? 0 : f;
+          for (let j = d.length - 1; j >= 0; j--) { if (d[j].date <= cur[1]) { i1 = j; break; } }
+        }
+        const w = i1 - i0;
+        const anchor = i0 + frac * w;            // 커서가 가리키는 데이터 위치 고정
+        const nw = Math.min(d.length - 1, Math.max(8, Math.round(w * (e.deltaY < 0 ? 0.8 : 1.25))));
         let ns = Math.round(anchor - frac * nw);
-        ns = Math.min(len - 1 - nw, Math.max(0, ns));
-        return [ns, ns + nw];
+        ns = Math.min(d.length - 1 - nw, Math.max(0, ns));
+        const ne = ns + nw;
+        if (ns <= 0 && ne >= d.length - 1) return null;   // 전체 범위 → 줌 해제
+        return [d[ns].date, d[ne].date];
       });
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [len]);
-  const onBrushChange = (r: { startIndex?: number; endIndex?: number }) => {
-    if (r && r.startIndex != null && r.endIndex != null) setRng([r.startIndex, r.endIndex]);
-  };
-  const [start, end] = rng ?? [0, Math.max(0, len - 1)];
-  return { ref, start, end, onBrushChange };
+  }, []);
+
+  return { view, dragProps, area, wheelRef, reset: () => setRange(null), zoomed: range != null };
 }
 
 export default function StockDashboard() {
@@ -232,9 +262,14 @@ export default function StockDashboard() {
   const [listings, setListings] = useState<SymbolListing[]>([]);
   const [selected, setSelected] = useState<string[]>(DEFAULT_SEL);
   const [focused, setFocused] = useState(false);
+  const [recent, setRecent] = useState<string[]>(() => {   // 과거 검색 기록(localStorage)
+    try { return JSON.parse(localStorage.getItem("ca_recent") || "[]"); } catch { return []; }
+  });
   const [box3, setBox3] = useState("rsi");
   const [box4, setBox4] = useState("range52");
   const [hidden, setHidden] = useState<Record<string, boolean>>({});  // 범례 클릭 토글
+  const [kr, setKr] = useState<KrExtras | null>(null);   // 한국 종목 부가 데이터
+  const [subchartsOpen, setSubchartsOpen] = useState(true);  // 보조지표 4분할 전체 접기
 
   const nameMap = new Map(listings.map((l) => [l.symbol, l.name]));
   const nameOf = (s: string) => nameMap.get(s) || s;
@@ -262,11 +297,29 @@ export default function StockDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 한국 종목(6자리) 단일 선택 시 부가 데이터 — 기간과 무관하므로 종목만 의존.
+  // 실패해도 차트엔 영향 없음(부가 패널만 비표시). 서버가 일자별 캐시.
+  const singleSym = symbols.length === 1 ? symbols[0] : null;
+  useEffect(() => {
+    setKr(null);
+    if (!singleSym || !/^\d{6}$/.test(singleSym)) return;
+    let alive = true;
+    api.krExtras(singleSym)
+      .then((x) => { if (alive) setKr(x); })
+      .catch(() => { if (alive) setKr(null); });
+    return () => { alive = false; };
+  }, [singleSym]);
+
   // 종목 추가/제거 (최대 10) — 부수효과는 updater 밖에서(StrictMode 이중호출 방지)
   function addSymbol(sym: string) {
     const s = sym.trim().toUpperCase();
     if (!s || symbols.includes(s) || symbols.length >= 10) { setInput(""); return; }
     setInput(""); setFocused(false);
+    setRecent((r) => {                       // 검색 기록 갱신(최신순, 최대 8, 영속)
+      const nxt = [s, ...r.filter((x) => x !== s)].slice(0, 8);
+      try { localStorage.setItem("ca_recent", JSON.stringify(nxt)); } catch { /* noop */ }
+      return nxt;
+    });
     const next = [...symbols, s];
     setSymbols(next);
     loadFor(next, range);
@@ -278,12 +331,29 @@ export default function StockDashboard() {
     loadFor(next, range);
   }
 
-  // 검색 드롭다운 — 입력 있으면 코드/이름 필터, 없으면 상위 목록
+  // 검색 드롭다운 — 입력 있으면 코드/이름 필터, 없으면 가나다순 전체 목록
+  const sortedListings = useMemo(
+    () => [...listings].sort((a, b) => a.name.localeCompare(b.name, "ko")),
+    [listings]);
   const q = input.trim().toUpperCase();
   const matches = (q
-    ? listings.filter((l) => l.symbol.includes(q) || l.name.toUpperCase().includes(q))
-    : listings
+    ? sortedListings.filter((l) => l.symbol.includes(q) || l.name.toUpperCase().includes(q))
+    : sortedListings
   ).slice(0, 60);
+  // 과거 검색 기록 → 목록 항목 (입력 없을 때 상단 노출)
+  const recentItems = recent
+    .map((sym) => listings.find((l) => l.symbol === sym))
+    .filter((l): l is SymbolListing => !!l);
+  const searchRow = (l: SymbolListing, kp = "") => (
+    <li key={kp + l.symbol} onMouseDown={() => addSymbol(l.symbol)}
+      style={{ padding: "7px 12px", cursor: "pointer", fontSize: 13,
+        display: "flex", justifyContent: "space-between", gap: 8 }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(79,143,245,0.12)")}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "#fff")}>
+      <span>{l.name}</span>
+      <span style={{ color: "var(--muted)" }}>{l.symbol} · {l.market}</span>
+    </li>
+  );
 
   const indicators = data?.indicators || [];
   function toggle(key: string) {
@@ -309,21 +379,23 @@ export default function StockDashboard() {
       ? (p.volume - (arr[i - 1].volume as number)) / (arr[i - 1].volume as number) * 100 : null,
   }));
 
-  // 가격축 도메인 — 캔들·MA·벤치마크 전부 포함하도록 타이트하게(0 강제 방지).
+  // 커서 드래그 줌 — 주가차트·보조지표가 같은 X축(날짜)을 공유하므로 하나의 줌 상태로 묶는다.
+  const pz = useDragZoom(chartData);
+
+  // 가격축 도메인 — 줌된 구간(pz.view) 기준으로 타이트하게(0 강제 방지).
   // 긴 구간(수천 일)에서 spread 인자 한계를 피하려고 reduce로 min/max 계산.
   let pmin = Infinity, pmax = -Infinity;
-  chartData.forEach((d) => {
+  pz.view.forEach((d) => {
     ([d.low, d.high, d.bench, d.ma5, d.ma20, d.ma60, d.ma120, d.ma240] as (number | null)[])
       .forEach((v) => { if (v != null) { if (v < pmin) pmin = v; if (v > pmax) pmax = v; } });
   });
   const priceDomain: [number, number] = pmin <= pmax
     ? [Math.floor(pmin * 0.985), Math.ceil(pmax * 1.015)] : [0, 1];
-  const zPrice = useWheelZoom(chartData.length);   // 주가차트 휠 줌
 
   return (
     <div className="dashboard-fullwidth">
       <h1 style={{ marginBottom: 4 }}>Company Analysis</h1>
-      <p style={{ color: "var(--muted)", marginTop: 0 }}>
+      <p style={{ color: "var(--muted)", marginTop: 0, fontSize: 13 }}>
         한국·미국 개별 종목·ETF·ETN을 캔들·지표로 분석합니다. <b>종목명 또는 코드</b>로 검색하고,
         벤치마크(코스피/코스닥/나스닥) 초록 점선과 비교하거나 <b>최대 10종목까지 수익률 비교</b>가 가능합니다.
       </p>
@@ -341,24 +413,24 @@ export default function StockDashboard() {
             aria-label="종목 검색"
             style={{ width: "100%" }}
           />
-          {focused && matches.length > 0 && (
+          {focused && (matches.length > 0 || (!q && recentItems.length > 0)) && (
             <ul style={{
               position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20,
               margin: 0, padding: 0, listStyle: "none", maxHeight: 320, overflowY: "auto",
-              background: "#fff", border: "1px solid var(--border,#e8e3db)", borderRadius: 8,
+              background: "#fff", border: "1px solid var(--border,#e3e8ef)", borderRadius: 8,
               boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
             }}>
-              {matches.map((l) => (
-                <li key={l.symbol}
-                  onMouseDown={() => addSymbol(l.symbol)}
-                  style={{ padding: "7px 12px", cursor: "pointer", fontSize: 13,
-                    display: "flex", justifyContent: "space-between", gap: 8 }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--accent-soft,#f7ece5)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "#fff")}>
-                  <span>{l.name}</span>
-                  <span style={{ color: "var(--muted)" }}>{l.symbol} · {l.market}</span>
-                </li>
-              ))}
+              {!q && recentItems.length > 0 && (
+                <>
+                  <li style={{ padding: "6px 12px", fontSize: 11, fontWeight: 700,
+                    color: "var(--muted)", letterSpacing: "0.02em" }}>최근 검색</li>
+                  {recentItems.map((l) => searchRow(l, "r-"))}
+                  <li style={{ borderTop: "1px solid var(--border,#e3e8ef)" }} />
+                  <li style={{ padding: "6px 12px", fontSize: 11, fontWeight: 700,
+                    color: "var(--muted)", letterSpacing: "0.02em" }}>전체 종목 (가나다순)</li>
+                </>
+              )}
+              {matches.map((l) => searchRow(l))}
             </ul>
           )}
         </div>
@@ -373,7 +445,7 @@ export default function StockDashboard() {
           {symbols.map((s, i) => (
             <span key={s} className="ca-symchip">
               <span style={{ width: 9, height: 9, borderRadius: 2, flexShrink: 0,
-                background: compareMode ? CMP_COLORS[i % CMP_COLORS.length] : ACCENT }} />
+                background: compareMode ? CMP_COLORS[i % CMP_COLORS.length] : "#4f8ff5" }} />
               {nameOf(s)} <span style={{ color: "var(--muted)" }}>{s}</span>
               {symbols.length > 1 && (
                 <button className="x-btn" aria-label={`${nameOf(s)} 제거`}
@@ -423,7 +495,7 @@ export default function StockDashboard() {
           <div className="panel" style={{ marginTop: 16 }}>
             <details>
               <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-                지표 선택 — {selected.length}/4 (4분할 그리드에 표시 · 이동평균 5종은 모든 차트 상시)
+                지표 선택
               </summary>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 6, marginTop: 10 }}>
                 {indicators.map((i) => {
@@ -440,15 +512,22 @@ export default function StockDashboard() {
             </details>
           </div>
 
-          {/* 주가 캔들차트 (전체폭) — 캔들 + MA5종 + 벤치마크 점선 + 급등락 */}
+          {/* 주가 캔들차트 (전체폭) — 캔들 + MA5종 + 벤치마크 점선 + 급등락 · 커서 드래그 줌 */}
           <div className="panel" style={{ marginTop: 16 }}>
-            <h3 style={{ marginTop: 0 }}>
-              주가 추이 (캔들) · 이동평균 · 벤치마크({last.benchmark}) · 급등락(±10%)
+            <h3 style={{ marginTop: 0, display: "flex", justifyContent: "space-between",
+              alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span>주가 추이 (캔들) · 이동평균 · 벤치마크({last.benchmark}) · 급등락(±10%)</span>
+              <span style={{ fontSize: 11, fontWeight: 400, color: "var(--muted)", whiteSpace: "nowrap" }}>
+                {pz.zoomed
+                  ? <button type="button" className="ghost sm" onClick={pz.reset}
+                      style={{ fontSize: 11, padding: "2px 8px" }}>↺ 줌 초기화</button>
+                  : "그래프를 드래그하면 확대"}
+              </span>
             </h3>
-            <div ref={zPrice.ref}>
+            <div ref={pz.wheelRef}>
             <ResponsiveContainer width="100%" height={420}>
-              <ComposedChart data={chartData} margin={{ top: 5, right: 16, bottom: 5, left: 8 }}>
-                <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
+              <ComposedChart data={pz.view} margin={{ top: 5, right: 16, bottom: 5, left: 8 }} {...pz.dragProps}>
+                <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
                 <YAxis domain={priceDomain} tick={{ fontSize: 11 }} width={56}
                   tickFormatter={(v) => isKR ? `${Math.round(v / 1000)}k` : String(v)} />
@@ -458,6 +537,8 @@ export default function StockDashboard() {
                     isKR={isKR} dol={dol} won={won} benchName={last.benchmark} />
                 )} />
                 <Legend
+                  verticalAlign="bottom"
+                  wrapperStyle={{ fontSize: 11, paddingTop: 10 }}
                   onClick={(e) => { const k = (e as { dataKey?: string }).dataKey; if (k) setHidden((h) => ({ ...h, [k]: !h[k] })); }}
                   formatter={(value, entry) => {
                     const k = (entry as { dataKey?: string })?.dataKey;
@@ -469,36 +550,318 @@ export default function StockDashboard() {
                 {PRICE_MA.map(([k, lbl, col]) => (
                   <Line key={k} type="monotone" dataKey={k} stroke={col} strokeWidth={1} dot={false} name={lbl} hide={!!hidden[k]} />
                 ))}
+                {/* 볼린저밴드 — 주가에 오버레이. Legend에서 클릭으로 켜고 끔 */}
+                <Line type="monotone" dataKey="bb_upper" stroke="#22a06b" strokeWidth={1} dot={false} name="볼린저 상단" hide={!!hidden["bb_upper"]} connectNulls />
+                <Line type="monotone" dataKey="bb_mid" stroke="#9aa0a6" strokeWidth={1} strokeDasharray="3 3" dot={false} name="볼린저 중심" hide={!!hidden["bb_mid"]} connectNulls />
+                <Line type="monotone" dataKey="bb_lower" stroke="#22a06b" strokeWidth={1} dot={false} name="볼린저 하단" hide={!!hidden["bb_lower"]} connectNulls />
                 <Line type="monotone" dataKey="bench" stroke={BENCH} strokeWidth={1.4}
                   strokeDasharray="6 4" dot={false} name={`${last.benchmark}(벤치마크)`} connectNulls hide={!!hidden["bench"]} />
                 <Scatter dataKey="up_spike" shape={<TriUp />} name="급등 +10%" legendType="triangle" fill={UP} hide={!!hidden["up_spike"]} />
                 <Scatter dataKey="down_spike" shape={<TriDown />} name="급락 −10%" legendType="triangle" fill={DOWN} hide={!!hidden["down_spike"]} />
-                <Brush dataKey="date" height={24} stroke={ACCENT} travellerWidth={8}
-                  startIndex={zPrice.start} endIndex={zPrice.end} onChange={zPrice.onBrushChange} />
+                {pz.area && <ReferenceArea x1={pz.area.x1} x2={pz.area.x2} fill="#4f8ff5" fillOpacity={0.15} strokeOpacity={0.3} />}
               </ComposedChart>
             </ResponsiveContainer>
             </div>
             <ExplToggle ikey="price" series={data.series} isKR={isKR} dol={dol} won={won} benchName={last.benchmark} />
           </div>
 
-          {/* 4분할 — 선택 지표 2×2 */}
+          {/* 보조지표 4분할 — 최상단 버튼 하나로 전체 접기/펼치기 */}
           {selected.length > 0 ? (
-            <div className="ca-grid" style={{ marginTop: 16 }}>
-              {selected.map((k) => (
-                <div key={k} className="panel" style={{ marginBottom: 0 }}>
-                  <SubChart ikey={k} label={indicators.find((i) => i.key === k)?.label || k} data={chartData} isKR={isKR} />
-                  <ExplToggle ikey={k} series={data.series} isKR={isKR} dol={dol} won={won} benchName={last.benchmark} />
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                marginBottom: subchartsOpen ? 12 : 0 }}>
+                <h3 style={{ margin: 0 }}>보조지표 ({selected.length})</h3>
+                <button type="button" className="ghost sm"
+                  onClick={() => setSubchartsOpen((o) => !o)} aria-expanded={subchartsOpen}
+                  style={{ fontSize: 12, padding: "3px 12px" }}>
+                  {subchartsOpen ? "▾ 지표 접기" : "▸ 지표 펼치기"}
+                </button>
+              </div>
+              {subchartsOpen && (
+                <div className="ca-grid">
+                  {selected.map((k) => (
+                    <div key={k} className="panel" style={{ marginBottom: 0 }}>
+                      <SubChart ikey={k} label={indicators.find((i) => i.key === k)?.label || k}
+                        data={pz.view} isKR={isKR} dragProps={pz.dragProps} area={pz.area} />
+                      <ExplToggle ikey={k} series={data.series} isKR={isKR} dol={dol} won={won} benchName={last.benchmark} />
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
           ) : (
             <p style={{ color: "var(--muted)", marginTop: 12, fontSize: 13 }}>
               위 “지표 선택”에서 RSI·MACD·거래량 등을 고르면 여기에 4분할로 표시됩니다.
             </p>
           )}
+
+          {/* ── 한국 종목 부가 데이터 (네이버·FnGuide·DART) ── */}
+          {isKR && kr && <KrSections kr={kr} close={last.close} />}
         </>
       )}
     </div>
+  );
+}
+
+// ── 한국 종목 부가 데이터 5종 — 투자자별·컨센서스·추정실적·리포트·공시 ──────────
+function KrSections({ kr, close }: { kr: KrExtras; close: number | null }) {
+  const { investor, consensus, earnings, reports, disclosures, shorting } = kr;
+  const [invWin, setInvWin] = useState(20);   // 투자자별 집계 창 (1/5/20/60/120일)
+  const [repOpen, setRepOpen] = useState(true);    // 리포트 패널 접기
+  const [discOpen, setDiscOpen] = useState(true);  // 공시 패널 접기
+  // 리포트 우측 목표주가 — 증권사명으로 컨센서스(증권사별 목표가) 조인
+  const targetByBroker = new Map(consensus.map((c) => [c.broker, c.target] as const));
+  // 투자자별 — 차트는 오래된→최근(좌→우)이라 역순. investor 원본은 최신우선.
+  const invData = [...investor].reverse().map((p) => ({
+    date: p.date.slice(5), 기관: p.inst, 외국인: p.foreign, 개인: p.indiv,
+  }));
+  // 조 단위 포맷(억원 → 조). 음수·null 처리.
+  const jo = (v: number | null) =>
+    v == null ? "—" : `${(v / 10000).toLocaleString(undefined, { maximumFractionDigits: 1 })}조`;
+  const EARN_ROWS = ["매출액", "영업이익", "당기순이익", "지배주주"];
+  const hasEarnings = earnings.years.length > 0 && EARN_ROWS.some((r) => earnings.rows[r]);
+
+  return (
+    <>
+      {/* 투자자별 순매매 — 1/5/20/60/120일 창 전환 */}
+      {investor.length > 0 && (() => {
+        const wins = [1, 5, 20, 60, 120].filter((w) => w <= investor.length);
+        const win = Math.min(invWin, investor.length);
+        const recent = investor.slice(0, win);   // 최신우선 → 최근 win일
+        const sums = {
+          기관: recent.reduce((s, p) => s + p.inst, 0),
+          외국인: recent.reduce((s, p) => s + p.foreign, 0),
+          개인: recent.reduce((s, p) => s + p.indiv, 0),
+        };
+        return (
+          <div className="panel" style={{ marginTop: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <h3 style={{ margin: 0 }}>투자자별 순매매 (단위 주)</h3>
+              <div style={{ display: "flex", gap: 4 }}>
+                {wins.map((w) => (
+                  <button key={w} type="button" className="ghost sm" onClick={() => setInvWin(w)}
+                    style={{ fontSize: 12, padding: "3px 10px",
+                      background: invWin === w ? "rgba(79,143,245,0.16)" : undefined,
+                      fontWeight: invWin === w ? 700 : 400,
+                      color: invWin === w ? "#1668c4" : undefined }}>
+                    {w}일
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 20, margin: "12px 0 4px", flexWrap: "wrap" }}>
+              {(["기관", "외국인", "개인"] as const).map((lbl) => {
+                const v = sums[lbl];
+                return (
+                  <div key={lbl}>
+                    <div style={{ fontSize: 12, color: "var(--muted)" }}>{lbl} · 최근 {win}일 누적</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: v >= 0 ? UP : DOWN }}>
+                      {v >= 0 ? "+" : ""}{v.toLocaleString()}주
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <ResponsiveContainer width="100%" height={260}>
+              <ComposedChart data={invData.slice(-win)} margin={{ top: 5, right: 16, bottom: 5, left: 8 }}>
+                <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={win > 60 ? 24 : 12} />
+                <YAxis tick={{ fontSize: 11 }} width={56}
+                  tickFormatter={(v) => `${Math.round(Number(v) / 10000)}만`} />
+                <Tooltip formatter={(v) => Number(v).toLocaleString() + "주"}
+                  contentStyle={TIP_STYLE} labelStyle={TIP_LABEL} itemStyle={TIP_ITEM} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <ReferenceLine y={0} stroke="#94a3b8" />
+                <Bar dataKey="기관" fill={ACCENT} />
+                <Bar dataKey="외국인" fill={DOWN} />
+                <Bar dataKey="개인" fill={GRAY} />
+              </ComposedChart>
+            </ResponsiveContainer>
+            <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 2px 0" }}>
+              양(+)은 순매수, 음(−)은 순매도. 위 버튼으로 1·5·20·60·120일 누적을 전환합니다.
+              개인은 기관·외국인 합의 반대값으로 근사. 출처: 네이버 금융
+            </p>
+          </div>
+        );
+      })()}
+
+      {/* 공매도 잔고 (KRX) — 배포 환경에서 활성 */}
+      {shorting.length > 0 && (() => {
+        const sData = [...shorting].reverse().map((p) => ({
+          date: p.date.slice(5), 잔고비중: p.bal_ratio,
+        }));
+        const latest = shorting[0];
+        return (
+          <div className="panel" style={{ marginTop: 16 }}>
+            <h3 style={{ marginTop: 0 }}>공매도 잔고</h3>
+            <div style={{ display: "flex", gap: 20, margin: "4px 0 8px", flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 12, color: "var(--muted)" }}>최근 잔고수량</div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>
+                  {latest.bal_qty != null ? latest.bal_qty.toLocaleString() + "주" : "—"}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: "var(--muted)" }}>잔고비중</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: DOWN }}>
+                  {latest.bal_ratio != null ? latest.bal_ratio.toFixed(2) + "%" : "—"}
+                </div>
+              </div>
+            </div>
+            <ResponsiveContainer width="100%" height={240}>
+              <ComposedChart data={sData} margin={{ top: 5, right: 16, bottom: 5, left: 8 }}>
+                <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={24} />
+                <YAxis tick={{ fontSize: 11 }} width={44} tickFormatter={(v) => `${v}%`} />
+                <Tooltip formatter={(v) => `${Number(v).toFixed(2)}%`}
+                  contentStyle={TIP_STYLE} labelStyle={TIP_LABEL} itemStyle={TIP_ITEM} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Line type="monotone" dataKey="잔고비중" stroke={DOWN} strokeWidth={1.6} dot={false} name="잔고비중(%)" connectNulls />
+              </ComposedChart>
+            </ResponsiveContainer>
+            <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 2px 0" }}>
+              잔고비중 = 공매도 잔고수량 / 상장주식수. 출처: KRX
+            </p>
+          </div>
+        );
+      })()}
+
+      {/* 컨센서스 — 증권사별 목표주가·투자의견 */}
+      {consensus.length > 0 && (
+        <div className="panel" style={{ marginTop: 16, overflowX: "auto" }}>
+          <h3 style={{ marginTop: 0 }}>애널리스트 컨센서스 (목표주가·투자의견)</h3>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: "2px solid #e3e8ef", textAlign: "right" }}>
+                <th style={{ textAlign: "left", padding: "7px 6px" }}>증권사</th>
+                <th style={{ padding: "7px 6px" }}>투자의견</th>
+                <th style={{ padding: "7px 6px" }}>목표주가</th>
+                <th style={{ padding: "7px 6px" }}>현재가 대비</th>
+                <th style={{ padding: "7px 6px" }}>최종일</th>
+              </tr>
+            </thead>
+            <tbody>
+              {consensus.map((c, i) => {
+                const up = close && c.target ? (c.target - close) / close * 100 : null;
+                return (
+                  <tr key={i} style={{ borderBottom: "1px solid #f0ece6" }}>
+                    <td style={{ padding: "6px", fontWeight: 600 }}>{c.broker}</td>
+                    <td style={{ padding: "6px", textAlign: "right" }}>{c.opinion || "—"}</td>
+                    <td style={{ padding: "6px", textAlign: "right" }}>
+                      {c.target != null ? c.target.toLocaleString() + "원" : "—"}
+                    </td>
+                    <td style={{ padding: "6px", textAlign: "right",
+                      color: up == null ? "var(--muted)" : up >= 0 ? UP : DOWN }}>
+                      {up == null ? "—" : `${up >= 0 ? "+" : ""}${up.toFixed(1)}%`}
+                    </td>
+                    <td style={{ padding: "6px", textAlign: "right", color: "var(--muted)" }}>{c.date}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 2px 0" }}>
+            “현재가 대비”는 (목표주가 − 현재가)/현재가. 출처: 네이버 금융 컨센서스
+          </p>
+        </div>
+      )}
+
+      {/* 추정 실적 — 연도별 (직전연도 + 당해/차년 추정 E) */}
+      {hasEarnings && (
+        <div className="panel" style={{ marginTop: 16, overflowX: "auto" }}>
+          <h3 style={{ marginTop: 0 }}>추정 실적 (연결 · 단위 조원)</h3>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: "2px solid #e3e8ef" }}>
+                <th style={{ textAlign: "left", padding: "7px 6px" }}>항목</th>
+                {earnings.years.map((y) => (
+                  <th key={y} style={{ padding: "7px 6px", textAlign: "right",
+                    color: y.includes("(E)") ? ACCENT : "inherit" }}>{y}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {EARN_ROWS.filter((r) => earnings.rows[r]).map((r) => (
+                <tr key={r} style={{ borderBottom: "1px solid #f0ece6" }}>
+                  <td style={{ padding: "6px", fontWeight: 600 }}>{r}</td>
+                  {earnings.rows[r].map((v, j) => (
+                    <td key={j} style={{ padding: "6px", textAlign: "right",
+                      color: earnings.years[j]?.includes("(E)") ? ACCENT : "inherit" }}>{jo(v)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 2px 0" }}>
+            (E)는 애널리스트 컨센서스 추정치. 출처: FnGuide Financial Highlight
+          </p>
+        </div>
+      )}
+
+      {/* 애널리스트 리포트 + 최근 공시 — 2열 (각 패널 접기/펼치기) */}
+      <div className="ca-grid" style={{ marginTop: 16, gridTemplateColumns: "1fr 1fr" }}>
+        <div className="panel" style={{ marginBottom: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>애널리스트 리포트</h3>
+            <button type="button" className="ghost sm" onClick={() => setRepOpen((o) => !o)}
+              aria-expanded={repOpen} style={{ fontSize: 12, padding: "3px 10px" }}>
+              {repOpen ? "▾ 접기" : "▸ 펼치기"}
+            </button>
+          </div>
+          {repOpen && (reports.length > 0 ? (<>
+            <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0" }}>
+              {reports.map((r, i) => {
+                const tgt = targetByBroker.get(r.broker);
+                return (
+                  <li key={i} style={{ padding: "7px 0", borderBottom: "1px solid #f0ece6",
+                    fontSize: 13, display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <a href={r.url} target="_blank" rel="noreferrer"
+                        style={{ fontWeight: 600, color: DOWN, textDecoration: "none" }}>{r.title}</a>
+                      <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 2 }}>
+                        {r.broker} · {r.date}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ color: "var(--muted)", fontSize: 11 }}>목표주가</div>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>
+                        {tgt != null ? tgt.toLocaleString() + "원" : "—"}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 2px 0" }}>
+              목표주가는 해당 증권사의 최신 컨센서스 기준(리포트별 수치와 다를 수 있음).
+            </p>
+          </>) : <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 0 }}>최근 리포트가 없습니다.</p>)}
+        </div>
+        <div className="panel" style={{ marginBottom: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>최근 공시 (DART)</h3>
+            <button type="button" className="ghost sm" onClick={() => setDiscOpen((o) => !o)}
+              aria-expanded={discOpen} style={{ fontSize: 12, padding: "3px 10px" }}>
+              {discOpen ? "▾ 접기" : "▸ 펼치기"}
+            </button>
+          </div>
+          {discOpen && (disclosures.length > 0 ? (
+            <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0" }}>
+              {disclosures.map((d, i) => (
+                <li key={i} style={{ padding: "7px 0", borderBottom: "1px solid #f0ece6", fontSize: 13 }}>
+                  <a href={d.url} target="_blank" rel="noreferrer"
+                    style={{ fontWeight: 600, color: DOWN, textDecoration: "none" }}>{d.title}</a>
+                  <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 2 }}>
+                    {d.submitter} · {d.date.length === 8
+                      ? `${d.date.slice(0, 4)}.${d.date.slice(4, 6)}.${d.date.slice(6)}` : d.date}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 0 }}>최근 공시가 없습니다.</p>)}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -524,34 +887,35 @@ function CompareCell({ item }: { item: CompareItem }) {
   const data = item.series.map((p) => ({
     ...p, hl: p.low != null && p.high != null ? [p.low, p.high] : null,
   }));
+  const cz = useDragZoom(data);
   let pmin = Infinity, pmax = -Infinity;
-  data.forEach((d) => {
+  cz.view.forEach((d) => {
     ([d.low, d.high, d.ma20, d.ma60] as (number | null)[]).forEach((v) => {
       if (v != null) { if (v < pmin) pmin = v; if (v > pmax) pmax = v; }
     });
   });
   const domain: [number, number] = pmin <= pmax
     ? [Math.floor(pmin * 0.985), Math.ceil(pmax * 1.015)] : [0, 1];
-  const z = useWheelZoom(data.length);
   return (
     <div className="panel" style={{ marginBottom: 0 }}>
-      <h3 style={{ marginTop: 0, fontSize: 14 }}>
-        {item.name} <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>{item.symbol}</span>
+      <h3 style={{ marginTop: 0, fontSize: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+        <span>{item.name} <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>{item.symbol}</span></span>
+        {cz.zoomed && <button type="button" className="ghost sm" onClick={cz.reset}
+          style={{ fontSize: 11, padding: "2px 8px", fontWeight: 400 }}>↺ 줌 초기화</button>}
       </h3>
-      <div ref={z.ref}>
+      <div ref={cz.wheelRef}>
       <ResponsiveContainer width="100%" height={260}>
-        <ComposedChart data={data} margin={{ top: 5, right: 12, bottom: 5, left: 8 }}>
-          <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
+        <ComposedChart data={cz.view} margin={{ top: 5, right: 12, bottom: 5, left: 8 }} {...cz.dragProps}>
+          <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
           <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
           <YAxis domain={domain} tick={{ fontSize: 10 }} width={52}
             tickFormatter={(v) => isKR ? `${Math.round(v / 1000)}k` : String(v)} />
-          <Tooltip /><Legend />
+          <Tooltip contentStyle={TIP_STYLE} labelStyle={TIP_LABEL} itemStyle={TIP_ITEM} /><Legend />
           <Bar dataKey="hl" isAnimationActive={false} legendType="none" shape={Candle} />
           <Line type="monotone" dataKey="ma5" stroke="#9aa0a6" strokeWidth={1} dot={false} name="MA5" connectNulls />
-          <Line type="monotone" dataKey="ma20" stroke="#d97757" strokeWidth={1} dot={false} name="MA20" connectNulls />
+          <Line type="monotone" dataKey="ma20" stroke="#c4982b" strokeWidth={1} dot={false} name="MA20" connectNulls />
           <Line type="monotone" dataKey="ma60" stroke="#1668c4" strokeWidth={1} dot={false} name="MA60" connectNulls />
-          <Brush dataKey="date" height={16} stroke={ACCENT} travellerWidth={6}
-            startIndex={z.start} endIndex={z.end} onChange={z.onBrushChange} />
+          {cz.area && <ReferenceArea x1={cz.area.x1} x2={cz.area.x2} fill="#4f8ff5" fillOpacity={0.15} strokeOpacity={0.3} />}
         </ComposedChart>
       </ResponsiveContainer>
       </div>
@@ -560,13 +924,12 @@ function CompareCell({ item }: { item: CompareItem }) {
 }
 
 // ── 서브 지표 차트 (4분할 그리드 1칸) ──────────────────────────────────────────
-function SubChart({ ikey, label, data, isKR }:
-  { ikey: string; label: string; data: Record<string, unknown>[]; isKR: boolean }) {
+function SubChart({ ikey, label, data, isKR, dragProps, area }:
+  { ikey: string; label: string; data: Record<string, unknown>[]; isKR: boolean;
+    dragProps?: object; area?: DragArea }) {
   const rc: RC = RENDER[ikey] || { series: [{ k: ikey, name: label, color: ACCENT }] };
-  const M = { top: 5, right: 12, bottom: 5, left: 8 };
-  const z = useWheelZoom(data.length);
-  const brush = <Brush dataKey="date" height={14} stroke={ACCENT} travellerWidth={6}
-    startIndex={z.start} endIndex={z.end} onChange={z.onBrushChange} />;
+  const M = { top: 5, right: 16, bottom: 5, left: 8 };  // 주가 차트와 동일 margin → X축 정렬
+  const zoomArea = area ? <ReferenceArea x1={area.x1} x2={area.x2} fill="#4f8ff5" fillOpacity={0.15} strokeOpacity={0.3} /> : null;
   const kfmt = (v: number) => isKR ? `${Math.round(v / 1000)}k` : String(v);
 
   // 거래량 — 전일비 색 막대 + 거래량 이동평균
@@ -579,14 +942,14 @@ function SubChart({ ikey, label, data, isKR }:
             {"  "}· 전일比 ▲+5% 빨강 / ▼−5% 파랑 · MA 5종
           </span>
         </h3>
-        <div ref={z.ref}>
         <ResponsiveContainer width="100%" height={210}>
-          <ComposedChart data={data} margin={M}>
-            <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
-            <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
-            <YAxis tick={{ fontSize: 10 }} width={44}
+          <ComposedChart data={data} margin={M} {...dragProps}>
+            <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
+            <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={48} />
+            <YAxis tick={{ fontSize: 10 }} width={56}
               tickFormatter={(v) => v >= 1e6 ? `${(v / 1e6).toFixed(0)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(0)}k` : String(v)} />
-            <Tooltip formatter={(v) => Number(v).toLocaleString()} />
+            <Tooltip formatter={(v) => Number(v).toLocaleString()}
+              contentStyle={TIP_STYLE} labelStyle={TIP_LABEL} itemStyle={TIP_ITEM} />
             <Bar dataKey="volume" name="거래량" isAnimationActive={false}>
               {data.map((d, i) => {
                 const vc = d.vol_chg as number | null;
@@ -597,10 +960,9 @@ function SubChart({ ikey, label, data, isKR }:
             {VOL_MA.map(([k, lbl, col]) => (
               <Line key={k} type="monotone" dataKey={k} stroke={col} strokeWidth={1} dot={false} name={lbl} />
             ))}
-            {brush}
+            {zoomArea}
           </ComposedChart>
         </ResponsiveContainer>
-        </div>
       </>
     );
   }
@@ -610,14 +972,14 @@ function SubChart({ ikey, label, data, isKR }:
   return (
     <>
       <h3 style={{ marginTop: 0 }}>{label}</h3>
-      <div ref={z.ref}>
       <ResponsiveContainer width="100%" height={210}>
-        <ComposedChart data={data} margin={M}>
-          <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
-          <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
+        <ComposedChart data={data} margin={M} {...dragProps}>
+          <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
+          <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={48} />
           <YAxis domain={rc.domain || ["auto", "auto"]} ticks={rc.ticks} tick={{ fontSize: 10 }}
-            width={priceY ? 50 : 42} tickFormatter={priceY ? kfmt : undefined} />
-          <Tooltip /><Legend />
+            width={56} tickFormatter={priceY ? kfmt : undefined} />
+          <Tooltip contentStyle={TIP_STYLE} labelStyle={TIP_LABEL} itemStyle={TIP_ITEM} />
+          <Legend wrapperStyle={{ fontSize: 11 }} />
           {(rc.refs || []).map((r, i) => (
             <ReferenceLine key={i} y={r.y} stroke={r.color} strokeDasharray="4 4" />
           ))}
@@ -637,10 +999,9 @@ function SubChart({ ikey, label, data, isKR }:
             <Line key={s.k} type="monotone" dataKey={s.k} stroke={s.color}
               strokeWidth={s.width || 1.4} strokeDasharray={s.dash} dot={false} name={s.name} connectNulls />
           ))}
-          {brush}
+          {zoomArea}
         </ComposedChart>
       </ResponsiveContainer>
-      </div>
     </>
   );
 }
@@ -833,12 +1194,12 @@ function PriceTooltip(props: {
     </div>
   );
   return (
-    <div style={{ background: "#fff", border: "1px solid var(--border,#e8e3db)", borderRadius: 8,
+    <div style={{ background: "#fff", border: "1px solid var(--border,#e3e8ef)", borderRadius: 8,
       padding: "8px 11px", fontSize: 12, boxShadow: "0 4px 14px rgba(0,0,0,0.12)", minWidth: 160 }}>
       <div style={{ fontWeight: 700, marginBottom: 5 }}>{p.date}</div>
       {row("시가", p.open)}{row("고가", p.high)}{row("저가", p.low)}
       {row("종가", p.close, p.close != null && p.open != null ? (p.close >= p.open ? UP : DOWN) : undefined)}
-      <div style={{ borderTop: "1px solid var(--border,#e8e3db)", margin: "5px 0" }} />
+      <div style={{ borderTop: "1px solid var(--border,#e3e8ef)", margin: "5px 0" }} />
       {row("MA20", p.ma20)}{row("MA60", p.ma60)}{row("MA240", p.ma240)}
       {row(props.benchName, p.bench, BENCH)}
     </div>

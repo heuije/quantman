@@ -16,7 +16,8 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -29,6 +30,22 @@ log = logging.getLogger("localapp.kis_broker")
 _VTS = "https://openapivts.koreainvestment.com:29443"
 _REAL = "https://openapi.koreainvestment.com:9443"
 _TOKEN_CACHE = APP_DIR / ".kis_token.json"
+
+
+def _overseas_query_window(now: datetime | None = None) -> tuple[str, str]:
+    """해외 체결조회 날짜창 [미국 현지 D-1, KST 오늘] (yyyymmdd, yyyymmdd).
+
+    KIS inquire-ccnl 체결행의 주문일자는 **미국 현지 날짜**다 — KST 자정~미장마감
+    (≈06:00) 구간에서 KST 당일만 조회하면 진행 중 세션의 체결이 0행이 된다(실측
+    2026-06-12: KST 04:55 발주 GOOG 매도의 체결행 주문일자=20260611 → 20260612
+    단일일 조회 0행 → 'unknown' → 체결 영구 미기록). 미국 현지 D-1부터 KST 오늘
+    까지 조회해 시차·날짜 convention 차이를 모두 덮는다.
+    """
+    now = now or datetime.now(timezone.utc)
+    start = (now.astimezone(ZoneInfo("America/New_York")).date()
+             - timedelta(days=1)).strftime("%Y%m%d")
+    end = now.astimezone(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+    return start, end
 
 
 def canonical_odno(s) -> str:
@@ -271,6 +288,12 @@ class KisBroker:
                 positions.extend(ov["positions"])
             except Exception as e:
                 log.warning("해외 잔고 조회 실패 — 국내만 반영: %s", e)
+                # ★ε: "조회 실패"와 "진짜 0"을 소비자가 구분하도록 표식. 표시용
+                # 소비자는 국내만으로 견고하게 동작하되, 위험 결정(킬스위치·
+                # day_start·equity 시계열)은 이 표식을 보고 평가를 보류한다 —
+                # 06-09 부분 equity(-98%)가 킬스위치를 거짓 발동해 US 보유 전량을
+                # 청산한 사고의 근본 수정.
+                balance["fetch_failed"] = ["overseas"]
 
         return {"balance": balance, "positions": positions}
 
@@ -660,14 +683,14 @@ class KisBroker:
         }
 
     def _submit_overseas_resv(self, symbol: str, qty: int, side: str,
-                               ord_dvsn: str, unit_price: float,
-                               market: str) -> dict:
+                               unit_price: float, market: str) -> dict:
         """미국 예약주문 — overseas-stock/v1/trading/order-resv endpoint.
 
         개장 전 접수 → KIS가 정규장 개시(22:30 서머타임)에 자동 전송.
-        매수는 지정가(ORD_DVSN=00, FT_ORD_UNPR3=지정가), 매도는 MOO 장개시
-        시장가(ORD_DVSN=31, FT_ORD_UNPR3=0). KIS는 미국 예약 *매수* 시장가를
-        지원하지 않으므로 매수는 지정가만 가능.
+        매수·매도 모두 **지정가(ORD_DVSN=00)**. KIS 예약매수는 지정가만 가능하고,
+        예약매도의 MOO(31)는 모의 지원이 미검증(KB GOTCHAS)이라 모의=실전 통일을
+        위해 양방향 00 지정가로 고정한다. limit=신선한 현재가×(1±tol)이 개장가를
+        넉넉히 brackets → 개장 단일가 체결(시장가 근사).
         """
         if market not in ("NAS", "NYS", "AMS"):
             return {"success": False, "message": f"예약주문 미지원 시장: {market}",
@@ -680,10 +703,9 @@ class KisBroker:
             "OVRS_EXCG_CD": excd,
             "PDNO": market_index.kis_ticker_of(symbol),   # 슬래시 정규화 (BRK/B)
             "FT_ORD_QTY": str(qty),
-            # 지정가는 소수 USD($0.01 틱), MOO(31)는 가격 미사용 → "0".
-            "FT_ORD_UNPR3": f"{unit_price:.2f}" if ord_dvsn == "00" else "0",
+            "FT_ORD_UNPR3": f"{unit_price:.2f}",            # 소수 USD($0.01 틱) 지정가
             "ORD_SVR_DVSN_CD": "0",
-            "ORD_DVSN": ord_dvsn,       # 00=지정가(매수), 31=MOO 장개시시장가(매도)
+            "ORD_DVSN": "00",          # 00=지정가 (예약 매수·매도 공통)
         }
         d = self._post_retry("/uapi/overseas-stock/v1/trading/order-resv", tr, body)
         return {
@@ -708,17 +730,21 @@ class KisBroker:
         return self._submit(symbol, qty, "sell", "00", float(limit_price))
 
     def buy_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
-        """미국 예약 매수 — 지정가. 개장 전 접수 → 시초가 전송."""
+        """미국 예약 매수 — 지정가(00). 개장 전 접수 → 개장 단일가 체결."""
         from . import market_index
         market = market_index.exchange_of(symbol) or "NAS"
-        return self._submit_overseas_resv(symbol, qty, "buy", "00",
+        return self._submit_overseas_resv(symbol, qty, "buy",
                                            float(limit_price), market)
 
-    def sell_resv_moo(self, symbol: str, qty: int) -> dict:
-        """미국 예약 매도 — MOO(장개시시장가). 개장 전 접수 → 시초가 시장가 체결."""
+    def sell_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
+        """미국 예약 매도 — 지정가(00). 개장 전 접수 → 개장 단일가 체결.
+
+        MOO(31) 대신 지정가 — 예약매도 MOO의 모의 지원이 미검증이라 모의=실전
+        통일 위해 지정가로 발주(limit=현재가×(1−tol)이 개장가보다 낮아 매도 체결)."""
         from . import market_index
         market = market_index.exchange_of(symbol) or "NAS"
-        return self._submit_overseas_resv(symbol, qty, "sell", "31", 0.0, market)
+        return self._submit_overseas_resv(symbol, qty, "sell",
+                                           float(limit_price), market)
 
     # ── 주문 취소 / 조회 ──────────────────────────────────────────────────────
 
@@ -787,15 +813,18 @@ class KisBroker:
                 "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
             })
 
-    def order_status(self, order_no: str, symbol: str | None = None) -> dict:
+    def order_status(self, order_no: str, symbol: str | None = None, *,
+                     hint: dict | None = None) -> dict:
         """특정 주문번호의 현재 상태 — 국내/해외 시장에 따라 분기.
 
         symbol이 미국 종목이면 해외 체결조회(inquire-ccnl), 아니면 국내
         일별체결조회(inquire-daily-ccld). symbol 없으면 국내(레거시 호환).
+        hint: 해외 전용 매칭 보조({side,qty,reserved,submitted_ts,exclude_odnos}) —
+        예약주문 번호공간 불일치 해소(_overseas_order_status). 국내는 무시.
         """
         from . import market_index
         if symbol and market_index.is_us(symbol):
-            return self._overseas_order_status(order_no, symbol)
+            return self._overseas_order_status(order_no, symbol, hint=hint)
         try:
             body = self._daily_ccld()
         except Exception as e:
@@ -826,50 +855,102 @@ class KisBroker:
 
     # ── 해외 체결/미체결 조회 (inquire-ccnl / inquire-nccs) ───────────────────
 
-    def _overseas_ccnl_today(self, symbol: str) -> list[dict]:
-        """해외 당일 주문체결 내역 (inquire-ccnl, VTTS3035R/TTTS3035R)."""
+    def _overseas_ccnl_today(self, symbol: str,
+                             start_yyyymmdd: str | None = None) -> list[dict]:
+        """해외 주문체결 내역 (inquire-ccnl, VTTS3035R/TTTS3035R) — [미국 현지 D-1, KST 오늘] 창.
+
+        start_yyyymmdd: 더 이른 시작일 요청(오래된 pending 추적용). 창 시작일과
+        비교해 더 이른 쪽을 쓴다. ⚠ CTX 연속조회 미구현 — 창이 길고 주문이 많으면
+        첫 페이지만 본다(소매 주문 빈도에선 실질 무영향, 기존 한계 동일).
+        """
         tr = "VTTS3035R" if self.virtual else "TTTS3035R"
-        today = datetime.now().strftime("%Y%m%d")
+        w_start, w_end = _overseas_query_window()
+        start = min(start_yyyymmdd, w_start) if start_yyyymmdd else w_start
         d = self._get_retry(
             "/uapi/overseas-stock/v1/trading/inquire-ccnl", tr, {
                 "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_cd,
-                "PDNO": "", "ORD_STRT_DT": today, "ORD_END_DT": today,
+                "PDNO": "", "ORD_STRT_DT": start, "ORD_END_DT": w_end,
                 "SLL_BUY_DVSN": "00", "CCLD_NCCS_DVSN": "00",
                 "OVRS_EXCG_CD": self._us_excd(symbol), "SORT_SQN": "DS",
                 "ORD_DT": "", "ORD_GNO_BRNO": "", "ODNO": "",
                 "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""})
         return d.get("output", []) or d.get("output1", []) or []
 
-    def _overseas_order_status(self, order_no: str, symbol: str) -> dict:
-        """해외 주문 상태 — inquire-ccnl에서 odno 매칭. 국내와 동일 status 어휘."""
+    @staticmethod
+    def _status_from_ccnl_row(row: dict, order_no: str) -> dict:
+        """inquire-ccnl 행 → 표준 status dict (국내와 동일 어휘 + exec_odno)."""
+        ord_qty = int(float(row.get("ft_ord_qty", 0) or 0))
+        ccld_qty = int(float(row.get("ft_ccld_qty", 0) or 0))
+        fill_px = float(row.get("ft_ccld_unpr3", 0) or 0)
+        prcs = row.get("prcs_stat_name", "") or ""
+        rjct = (row.get("rjct_rson_name", "") or "").strip()
+        if rjct or "거부" in prcs:
+            status = "cancelled"        # 거부 — pending에서 제거
+        elif "취소" in prcs:
+            status = "cancelled"
+        elif ccld_qty >= ord_qty and ord_qty > 0:
+            status = "filled"
+        elif ccld_qty > 0:
+            status = "partial"
+        else:
+            status = "submitted"
+        return {"order_no": order_no, "status": status,
+                "filled_qty": ccld_qty,
+                "remain_qty": max(0, ord_qty - ccld_qty),
+                "fill_price": fill_px, "ord_branch": "",
+                # 체결행의 odno — 예약주문 청구 dedup 키(호출자가 레지스트리에 영속)
+                "exec_odno": (row.get("odno") or "")}
+
+    def _overseas_order_status(self, order_no: str, symbol: str, *,
+                               hint: dict | None = None) -> dict:
+        """해외 주문 상태 — inquire-ccnl 매칭. 국내와 동일 status 어휘.
+
+        1차: odno 정확 매칭(일반 주문 — 접수=체결 번호공간 일치).
+        2차(hint["reserved"]): 예약주문은 접수번호(예약 번호공간, 실측 3자리 "448")와
+        체결행 odno(주문 번호공간 10자리)가 **불일치**해 1차가 영원히 실패한다(실측
+        2026-06-11). 종목+매수매도+수량으로 매칭하되, 이미 다른 주문이 청구한 행
+        (hint["exclude_odnos"])은 제외 — 동형 주문 2건이 같은 체결행을 이중 기장하는
+        것을 차단한다. 동형 후보가 여럿이면 odno 오름차순 첫 행(호출자가 exclude를
+        누적하며 1:1 배정).
+        """
+        hint = hint or {}
+        start = None
+        sub_ts = hint.get("submitted_ts")
+        if sub_ts:
+            # 제출일(미국 현지) D-1부터 — 오래된 pending도 체결행을 찾도록.
+            sub_et = datetime.fromtimestamp(float(sub_ts),
+                                            tz=ZoneInfo("America/New_York"))
+            start = (sub_et.date() - timedelta(days=1)).strftime("%Y%m%d")
         try:
-            rows = self._overseas_ccnl_today(symbol)
+            rows = self._overseas_ccnl_today(symbol, start_yyyymmdd=start)
         except Exception as e:
             log.warning("해외 주문 조회 실패 [%s]: %s", order_no, e)
             return {"order_no": order_no, "status": "unknown",
                     "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
         for row in rows:
-            if canonical_odno(row.get("odno")) != canonical_odno(order_no):
-                continue
-            ord_qty = int(float(row.get("ft_ord_qty", 0) or 0))
-            ccld_qty = int(float(row.get("ft_ccld_qty", 0) or 0))
-            fill_px = float(row.get("ft_ccld_unpr3", 0) or 0)
-            prcs = row.get("prcs_stat_name", "") or ""
-            rjct = (row.get("rjct_rson_name", "") or "").strip()
-            if rjct or "거부" in prcs:
-                status = "cancelled"        # 거부 — pending에서 제거
-            elif "취소" in prcs:
-                status = "cancelled"
-            elif ccld_qty >= ord_qty and ord_qty > 0:
-                status = "filled"
-            elif ccld_qty > 0:
-                status = "partial"
-            else:
-                status = "submitted"
-            return {"order_no": order_no, "status": status,
-                    "filled_qty": ccld_qty,
-                    "remain_qty": max(0, ord_qty - ccld_qty),
-                    "fill_price": fill_px, "ord_branch": ""}
+            if canonical_odno(row.get("odno")) == canonical_odno(order_no):
+                return self._status_from_ccnl_row(row, order_no)
+        if hint.get("reserved"):
+            want_side = "02" if hint.get("side") == "buy" else "01"
+            want_qty = int(hint.get("qty") or 0)
+            excl = {canonical_odno(x)
+                    for x in (hint.get("exclude_odnos") or ())}
+            cands = []
+            for row in rows:
+                if (row.get("pdno") or "").strip() != symbol:
+                    continue
+                side_cd = (row.get("sll_buy_dvsn_cd")
+                           or row.get("sll_buy_dvsn", "") or "")
+                if side_cd not in (want_side, want_side[-1]):
+                    continue
+                if int(float(row.get("ft_ord_qty", 0) or 0)) != want_qty:
+                    continue
+                if canonical_odno(row.get("odno")) in excl:
+                    continue
+                cands.append(row)
+            if cands:
+                cands.sort(key=lambda r: canonical_odno(r.get("odno")))
+                return self._status_from_ccnl_row(cands[0], order_no)
         return {"order_no": order_no, "status": "unknown",
                 "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
 

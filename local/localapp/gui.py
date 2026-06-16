@@ -230,13 +230,22 @@ class SettingsApp:
         # 웹앱 /monitor의 timeline과 동일 데이터(서버 /sync/timeline) 표시.
         # 어제·오늘·내일 그룹 + 6 종류 event(국장/미장 × 후보결정/시작/종료).
         # scheduler 가동 중일 때만 노출(.pack), 중지 시 .pack_forget.
+        self.timeline_collapsed = False        # 헤더 클릭 접기 토글 (세션 한정)
         self.timeline_frame = tk.Frame(self.root, bg=PANEL,
                                         highlightbackground=BORDER, highlightthickness=1)
-        # 헤더: "자동매매 상태  ● 정상 · 로컬앱 12초 전"
+        # 헤더: "▾ 자동매매 상태   ● 정상 · 로컬앱 12초 전" — 헤더 클릭 시 본문 접기/펴기
         self.timeline_header = tk.Frame(self.timeline_frame, bg=PANEL)
         self.timeline_header.pack(fill="x", padx=12, pady=(8, 4))
-        tk.Label(self.timeline_header, text="자동매매 상태", bg=PANEL, fg=TEXT,
-                  font=("Segoe UI", 10, "bold")).pack(side="left")
+        _hdr_left = tk.Frame(self.timeline_header, bg=PANEL)
+        _hdr_left.pack(side="left")
+        self.timeline_chevron = tk.Label(_hdr_left, text="▾", bg=PANEL, fg=MUTED,
+                                          font=("Segoe UI", 9), cursor="hand2")
+        self.timeline_chevron.pack(side="left", padx=(0, 5))
+        _tl_title = tk.Label(_hdr_left, text="자동매매 상태", bg=PANEL, fg=TEXT,
+                             font=("Segoe UI", 10, "bold"), cursor="hand2")
+        _tl_title.pack(side="left")
+        for _w in (self.timeline_chevron, _tl_title):
+            _w.bind("<Button-1>", lambda e: self._toggle_timeline())
         self.timeline_status_label = tk.Label(self.timeline_header, text="",
                                                bg=PANEL, fg=MUTED,
                                                font=("Segoe UI", 9))
@@ -320,15 +329,26 @@ class SettingsApp:
         self.cycle_msg = ttk.Label(self.af, style="Muted.TLabel", text="")
         self.cycle_msg.pack(anchor="w", padx=12, pady=(2, 8))
 
-        # 거래 모니터링 — Notebook: 주문 현황 / 주문 내역 / 사이클 로그 / 슬리피지 / 활동 로그
+        # 활성 계좌·전략 — 자동매매가 어느 계좌(모의/실전·주식/선물)로, 어떤 웹 전략을
+        # 돌리는지 한눈에. 계좌는 로컬 자격증명(즉시), 전략은 서버 동기화(백그라운드).
+        self.acct_frame = ttk.LabelFrame(self.root, text="활성 계좌 · 전략")
+        self.acct_frame.pack(fill="x", **pad)
+        self.lbl_accounts = ttk.Label(self.acct_frame, style="Muted.TLabel",
+                                      justify="left", wraplength=820, text="계좌 확인 중…")
+        self.lbl_accounts.pack(anchor="w", padx=12, pady=(8, 2))
+        self.lbl_strategies = ttk.Label(self.acct_frame, style="Muted.TLabel",
+                                        justify="left", wraplength=820, text="활성 전략 불러오는 중…")
+        self.lbl_strategies.pack(anchor="w", padx=12, pady=(0, 8))
+
+        # 거래 모니터링 — Notebook: 주문 예정 / 미체결 / 잔고 / 주문 내역 / 개발자 정보
         self.nb = ttk.Notebook(self.root)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 4))
 
+        self._build_tab_upcoming()
         self._build_tab_pending()
+        self._build_tab_balance()
         self._build_tab_orders()
-        self._build_tab_cycles()
-        self._build_tab_slippage()
-        self._build_tab_log()
+        self._build_tab_debug()
 
         # 새로고침 버튼 — ref 보관 (wizard 변경 모드 진입 시 숨김)
         self.refresh_btn = ttk.Button(self.root, text="새로고침",
@@ -355,12 +375,24 @@ class SettingsApp:
         tree.tag_configure("sell", background=DOWN_SOFT)
         return tree
 
+    def _build_tab_upcoming(self):
+        f = ttk.Frame(self.nb)
+        self.nb.add(f, text="주문 예정")
+        ttk.Label(f, style="Muted.TLabel", wraplength=760, justify="left",
+                  text="현시점 서버 preview 기준 다음 매매 후보입니다. 실제 발주는 사이클 "
+                       "시점의 자금·현재가·거래상태에 따라 달라질 수 있습니다."
+                  ).pack(anchor="w", padx=12, pady=(8, 0))
+        self.tv_upcoming = self._make_tree(f, [
+            ("strategy", "전략", 200), ("symbol", "종목", 110),
+            ("direction", "방향", 80), ("score", "점수", 90),
+        ])
+
     def _build_tab_pending(self):
         f = ttk.Frame(self.nb)
-        self.nb.add(f, text="주문 현황")
-        ttk.Label(f, style="Muted.TLabel", wraplength=700, justify="left",
-                  text="KIS에 제출되어 아직 체결되지 않은 주문입니다. "
-                       "동시호가에 들어간 주문은 9시 시초가에 일괄 체결됩니다."
+        self.nb.add(f, text="미체결")
+        ttk.Label(f, style="Muted.TLabel", wraplength=760, justify="left",
+                  text="매매 주문을 넣었으나 아직 체결되지 않은 항목입니다. "
+                       "동시호가에 들어간 주문은 시초가/종가 단일가에 일괄 체결됩니다."
                   ).pack(anchor="w", padx=12, pady=(8, 0))
         self.tv_pending = self._make_tree(f, [
             ("time", "제출시각", 90), ("side", "방향", 60),
@@ -369,6 +401,22 @@ class SettingsApp:
             ("remain", "잔량", 60), ("limit", "지정가", 90),
             ("order_no", "주문번호", 110),
         ])
+
+    def _build_tab_balance(self):
+        f = ttk.Frame(self.nb)
+        self.nb.add(f, text="잔고")
+        self.balance_summary = ttk.Label(f, style="Muted.TLabel", justify="left",
+                                         wraplength=760, text="잔고 불러오는 중…")
+        self.balance_summary.pack(anchor="w", padx=12, pady=(8, 4))
+        self.tv_balance = self._make_tree(f, [
+            ("symbol", "종목", 90), ("name", "이름", 130),
+            ("qty", "수량", 70), ("avg", "평균가", 100),
+            ("cur", "현재가", 100), ("ret", "수익률", 90),
+            ("strategy", "전략", 160),
+        ])
+        # 수익률 색상 — 한국 관례(수익=빨강·손실=파랑)
+        self.tv_balance.tag_configure("up", foreground=UP)
+        self.tv_balance.tag_configure("down", foreground=DOWN)
 
     def _build_tab_orders(self):
         f = ttk.Frame(self.nb)
@@ -384,49 +432,29 @@ class SettingsApp:
             ("reason", "사유", 110),
         ])
 
-    def _build_tab_cycles(self):
+    def _build_tab_debug(self):
         f = ttk.Frame(self.nb)
-        self.nb.add(f, text="사이클 로그")
-        ttk.Label(f, style="Muted.TLabel",
-                  text="자동매매 사이클 단위 의사결정 요약 — 무엇을 왜 매수/매도/스킵했는지."
-                  ).pack(anchor="w", padx=12, pady=(8, 0))
-        self.tv_cycles = self._make_tree(f, [
-            ("time", "시각", 140), ("bought", "매수", 50),
-            ("sold", "매도", 50), ("rejected", "거부", 55),
-            ("ks", "killswitch", 90), ("equity", "평가금액", 120),
-        ])
-        # 선택 시 상세 표시
-        self.tv_cycles.bind("<<TreeviewSelect>>", self._show_cycle_detail)
-        self.cycle_detail = tk.Text(f, height=8, font=("Consolas", 9),
+        self.nb.add(f, text="개발자 정보")
+        top = ttk.Frame(f)
+        top.pack(fill="x", padx=12, pady=(8, 2))
+        ttk.Label(top, style="Muted.TLabel", wraplength=620, justify="left",
+                  text="문제 발생 시 개발자가 진단할 정보입니다. ‘진단 정보 복사’로 "
+                       "현재 상태·최근 로그를 복사해 전달하세요. (민감정보 미포함)"
+                  ).pack(side="left", anchor="w")
+        ttk.Button(top, text="진단 정보 복사",
+                   command=self._copy_diagnostics).pack(side="right")
+        self.debug_summary = tk.Text(f, height=7, font=("Consolas", 9),
                                      state="disabled", wrap="word", bg=PANEL,
                                      fg=TEXT, relief="solid", borderwidth=1,
                                      highlightthickness=0)
-        self.cycle_detail.pack(fill="x", padx=8, pady=(0, 8))
-
-    def _build_tab_slippage(self):
-        f = ttk.Frame(self.nb)
-        self.nb.add(f, text="슬리피지")
-        ttk.Label(f, style="Muted.TLabel", wraplength=700, justify="left",
-                  text="의도가 vs 체결가의 차이(bps). 양수 = 불리한 체결. "
-                       "20bps = 0.20%. 백테스트 가정(10bps default)과 비교 가능."
-                  ).pack(anchor="w", padx=12, pady=(8, 4))
-        self.slip_summary = ttk.Label(f, style="Muted.TLabel", text="",
-                                       font=("Segoe UI", 10, "bold"))
-        self.slip_summary.pack(anchor="w", padx=12, pady=(0, 8))
-        self.tv_slip = self._make_tree(f, [
-            ("time", "시각", 140), ("side", "방향", 60),
-            ("symbol", "종목", 80), ("intended", "의도가", 100),
-            ("fill", "체결가", 100), ("bps", "슬리피지(bps)", 110),
-        ])
-
-    def _build_tab_log(self):
-        f = ttk.Frame(self.nb)
-        self.nb.add(f, text="활동 로그")
+        self.debug_summary.pack(fill="x", padx=10, pady=(4, 4))
+        ttk.Label(f, style="Muted.TLabel", text="최근 활동 로그",
+                  ).pack(anchor="w", padx=12, pady=(2, 0))
         self.log_text = tk.Text(f, height=8, font=("Consolas", 8),
                                 state="disabled", wrap="none",
                                 bg=PANEL, fg=TEXT, relief="solid",
                                 borderwidth=1, highlightthickness=0)
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+        self.log_text.pack(fill="both", expand=True, padx=10, pady=(2, 4))
 
     def _labeled_entry(self, parent, label, show=None):
         ttk.Label(parent, text=label).pack(anchor="w", padx=12, pady=(6, 1))
@@ -444,6 +472,20 @@ class SettingsApp:
     # ── 자동매매 timeline 패널 ───────────────────────────────────────────────
     # 데이터 단일 출처: 서버 GET /sync/timeline.
     # 웹앱 /monitor의 TradingTimeline.tsx와 동일 events·status·detail 공유.
+
+    def _toggle_timeline(self):
+        """자동매매 상태(스케줄) 본문 접기/펴기 — 세로 공간 절약. 헤더(● 상태)는 유지."""
+        self.timeline_collapsed = not getattr(self, "timeline_collapsed", False)
+        self._apply_timeline_collapsed()
+
+    def _apply_timeline_collapsed(self):
+        """접힘 상태를 본문 표시/숨김 + chevron(▾/▸)에 반영. 본문 frame만 토글(헤더 유지)."""
+        if getattr(self, "timeline_collapsed", False):
+            self.timeline_body.pack_forget()
+            self.timeline_chevron.config(text="▸")
+        else:
+            self.timeline_body.pack(fill="x", padx=12, pady=(0, 8))
+            self.timeline_chevron.config(text="▾")
 
     KIND_LABEL = {
         "krx_preview":    "국장 매매 후보 결정",
@@ -556,7 +598,9 @@ class SettingsApp:
         # 우측 status·요약
         icon = self.STATUS_ICON.get(status, "")
         if status == "scheduled":
-            summary = self._relative_time(ev_dt, now)
+            # preview 슬롯은 슬롯시각 경과~데드라인 사이 scheduled+summary="갱신중"
+            # (서버 cron 재시도 중 — 누락 아님). summary 있으면 상대시각 대신 표시.
+            summary = ev.get("summary") or self._relative_time(ev_dt, now)
             color = MUTED
         elif status == "done":
             summary = ev.get("summary") or ""
@@ -646,13 +690,16 @@ class SettingsApp:
             new_mode = "wizard_kis"
 
         if getattr(self, "_setup_mode", None) != new_mode:
-            # 모드 전환 — 관련 위젯 모두 pack_forget 후 새 모드 순서로 재pack
+            # 모드 전환 — 관련 위젯 모두 pack_forget 후 새 모드 순서로 재pack.
+            # acct_frame(활성 계좌·전략)도 포함 — 미포함 시 wizard 편집 화면에서 카드가
+            # 안 숨겨져 자격증명 저장 버튼을 화면 밖으로 밀어낸다(v0.9.35 회귀 수정).
             for w in (self.setup_bar, self.setup_expanded, self.kf, self.pf,
-                       self.af, self.nb, self.refresh_btn):
+                       self.af, self.acct_frame, self.nb, self.refresh_btn):
                 w.pack_forget()
             if new_mode == "normal":
                 self.setup_bar.pack(fill="x", padx=12, pady=(4, 6))
                 self.af.pack(fill="x", padx=12, pady=(4, 6))
+                self.acct_frame.pack(fill="x", padx=12, pady=(4, 6))
                 self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 4))
                 self.refresh_btn.pack(anchor="e", padx=14, pady=(0, 10))
             elif new_mode == "wizard_kis":
@@ -707,11 +754,13 @@ class SettingsApp:
         ks = killswitch.load()
         ks_active = bool(ks.get("active"))
 
-        # 자동매매 timeline 패널 — scheduler 가동 중일 때만 표시.
-        # 서버 /sync/timeline 호출해 어제·오늘·내일 6 종류 event 렌더.
+        # 자동매매 timeline 패널 — scheduler 가동 중 + 일반(normal) 모드에서만 표시.
+        # 자격증명·페어링 편집(setup_collapsed=False)에선 숨겨 wizard에 세로 공간을 내준다
+        # (편집 화면에서 타임라인이 저장 버튼을 화면 밖으로 밀어내던 회귀 수정).
         # after=self.hero로 hero 직후 위치 강제(repack 시 root 끝 밀림 방지).
-        if running and not ks_active:
+        if running and not ks_active and self.setup_collapsed:
             self.timeline_frame.pack(fill="x", padx=12, pady=(0, 6), after=self.hero)
+            self._apply_timeline_collapsed()      # 접힘 토글 상태 반영
             self._refresh_timeline_panel_async()
         else:
             self.timeline_frame.pack_forget()
@@ -792,8 +841,14 @@ class SettingsApp:
         self._load_log_tail()
         self._refresh_pending()
         self._refresh_orders()
-        self._refresh_cycles()
-        self._refresh_slippage()
+        # 신규 섹션 — 각 메서드가 자체 try/except로 실패해도 refresh를 안 깬다.
+        self._refresh_active_accounts()   # 로컬 자격증명 (동기·즉시)
+        self._refresh_debug()             # 로컬 health/version (동기·즉시)
+        if kis:
+            self._refresh_balance()       # KIS 잔고 (백그라운드)
+        if dev:
+            self._refresh_active_strategies()  # 서버 전략 목록 (백그라운드)
+            self._refresh_upcoming()           # 서버 preview 후보 (백그라운드)
 
         # wizard sub-card variant 갱신 — init 시점 keyring race 방어 +
         # 사용자가 자격증명 저장·삭제 직후 즉시 active↔done 반영.
@@ -854,63 +909,211 @@ class SettingsApp:
                 o.get("reason", ""),
             ), tags=(side,))
 
-    def _refresh_cycles(self):
-        self.tv_cycles.delete(*self.tv_cycles.get_children())
-        for c in order_log.read_cycles(20):
-            s = c.get("summary", {})
-            if s.get("kind") == "cycle_started":
-                continue   # lifecycle 시작 마커(진단용) — 결과 테이블엔 완료분만
-            self.tv_cycles.insert("", "end", values=(
-                self._fmt_ts(c.get("ts", "")),
-                s.get("n_bought", 0), s.get("n_sold", 0),
-                s.get("n_rejected", 0),
-                "ON" if s.get("kill_switch") else "OFF",
-                f"{s.get('equity_post', 0):,.0f}",
-            ), tags=(json_dumps(c),))
-        self.cycle_detail.config(state="normal")
-        self.cycle_detail.delete("1.0", "end")
-        self.cycle_detail.insert("1.0", "사이클 행을 클릭하면 상세 의사결정이 표시됩니다.")
-        self.cycle_detail.config(state="disabled")
+    # ── 활성 계좌·전략 (신규) ───────────────────────────────────────────────────
 
-    def _show_cycle_detail(self, _event):
-        sel = self.tv_cycles.selection()
-        if not sel:
-            return
-        tags = self.tv_cycles.item(sel[0], "tags")
-        if not tags:
-            return
-        c = json_loads(tags[0])
-        lines = [f"[{self._fmt_ts(c.get('ts', ''))}] 사이클 상세"]
-        for d in c.get("decisions", []):
-            sym = d.get("symbol") or "-"
-            lines.append(f"  · {d.get('action','?')} | {sym} | "
-                         f"{d.get('strategy_name','')} | {d.get('reason','')}")
-        text = "\n".join(lines)
-        self.cycle_detail.config(state="normal")
-        self.cycle_detail.delete("1.0", "end")
-        self.cycle_detail.insert("1.0", text)
-        self.cycle_detail.config(state="disabled")
+    def _refresh_active_accounts(self):
+        """활성 계좌 유형 — 로컬 자격증명만 읽음(동기·네트워크 없음). 절대 안 던짐."""
+        try:
+            def badge(cred, label):
+                if cred is None:
+                    return f"○ {label} [미설정]"
+                mode = "모의" if cred.get("virtual", True) else "실전"
+                return f"● {label} [{mode}]"
+            parts = [
+                badge(secrets_store.load_kis(), "국내·해외주식"),
+                badge(secrets_store.load_kis_futures(), "국내선물"),
+                badge(secrets_store.load_kis_overseas_futures(), "해외선물"),
+            ]
+            self.lbl_accounts.config(text="활성 계좌:   " + "      ".join(parts))
+        except Exception as e:
+            self.lbl_accounts.config(text=f"계좌 표시 오류: {e}")
 
-    def _refresh_slippage(self):
-        s = order_log.slippage_stats()
-        if s["n"] == 0:
-            self.slip_summary.configure(text="아직 측정된 체결이 없습니다.")
-        else:
-            self.slip_summary.configure(
-                text=f"표본 {s['n']}건 · 평균 {s['avg_bps']} bps · "
-                     f"중앙값 {s['p50_bps']} bps · p95 {s['p95_bps']} bps "
-                     f"· 최대 {s['max_bps']} bps")
-        self.tv_slip.delete(*self.tv_slip.get_children())
-        for r in s.get("recent", []):
-            side = "buy" if r.get("side") == "buy" else "sell"
-            self.tv_slip.insert("", "end", values=(
-                self._fmt_ts(r.get("ts", "")),
-                "매수" if side == "buy" else "매도",
-                r.get("symbol", ""),
-                f"{r.get('intended', 0):,.0f}",
-                f"{r.get('fill', 0):,.0f}",
-                f"{r.get('bps', 0):+.1f}",
-            ), tags=(side,))
+    def _refresh_active_strategies(self):
+        """웹 연동 활성 전략 목록 — 서버 fetch(백그라운드)."""
+        def job():
+            from . import sync_client
+            return sync_client.pull_strategies()
+
+        def done(strategies, err):
+            try:
+                if err or strategies is None:
+                    self.lbl_strategies.config(text="활성 전략: 불러오기 실패 (연결 확인)")
+                    return
+                if not strategies:
+                    self.lbl_strategies.config(
+                        text="활성 전략 (0): 웹에서 전략을 모의/실전에 배정하세요")
+                    return
+                names = [str(s.get("name") or s.get("id") or "?") for s in strategies]
+                shown = "  ·  ".join(names[:12]) + (" …" if len(names) > 12 else "")
+                self.lbl_strategies.config(text=f"활성 전략 ({len(strategies)}):  {shown}")
+            except Exception as e:
+                self.lbl_strategies.config(text=f"전략 표시 오류: {e}")
+        try:
+            self._run_bg(job, done)
+        except Exception:
+            pass
+
+    def _refresh_upcoming(self):
+        """주문 예정 — 서버 preview 후보(백그라운드). strategy_id→name 매핑."""
+        def job():
+            from . import sync_client
+            preview = sync_client.pull_preview()
+            try:
+                strategies = sync_client.pull_strategies()
+            except Exception:
+                strategies = []
+            return preview, strategies
+
+        def done(res, err):
+            try:
+                self.tv_upcoming.delete(*self.tv_upcoming.get_children())
+                if err or not res:
+                    return
+                preview, strategies = res
+                name_by_id = {str(s.get("id")): (s.get("name") or "")
+                              for s in (strategies or [])}
+                n = 0
+                for entry in ((preview or {}).get("by_strategy") or []):
+                    sid = str(entry.get("strategy_id", ""))
+                    sname = name_by_id.get(sid) or sid or "?"
+                    for c in (entry.get("candidates") or []):
+                        sym = c.get("symbol", "")
+                        if not sym:
+                            continue
+                        dlabel = {"long": "매수(롱)", "short": "매도(숏)"}.get(
+                            c.get("direction"), "—")
+                        score = c.get("score")
+                        slabel = f"{score:.3f}" if isinstance(score, (int, float)) else "—"
+                        self.tv_upcoming.insert("", "end",
+                                                values=(sname, sym, dlabel, slabel))
+                        n += 1
+                if n == 0:
+                    self.tv_upcoming.insert("", "end",
+                                            values=("(다음 매매 후보 없음)", "", "", ""))
+            except Exception:
+                pass
+        try:
+            self._run_bg(job, done)
+        except Exception:
+            pass
+
+    def _refresh_balance(self):
+        """잔고 — KIS 계좌 스냅샷 + 포지션 수익률(백그라운드). 브로커·in-flight 가드."""
+        if getattr(self, "_balance_fetching", False):
+            return
+
+        def job():
+            from . import analytics
+            from .trader import kst_today      # 앱 표준 KST — PC 로컬시각 의존 회피
+            broker = self._get_balance_broker()
+            snap = broker.account_snapshot()
+            led = _read_json(LEDGER_PATH, {})
+            positions = analytics.enrich_positions(
+                snap.get("positions", []) or [], led, kst_today().isoformat())
+            return snap.get("balance", {}) or {}, positions
+
+        def done(res, err):
+            self._balance_fetching = False
+            try:
+                self.tv_balance.delete(*self.tv_balance.get_children())
+                if err or not res:
+                    self.balance_summary.config(
+                        text=f"잔고 조회 실패: {err}" if err else "잔고 없음")
+                    self._balance_broker = None     # 실패 시 다음에 재생성
+                    return
+                balance, positions = res
+                krw = balance.get("total_eval") or balance.get("cash") or 0
+                usd = balance.get("cash_usd") or 0
+                self.balance_summary.config(
+                    text=f"국내 평가 {krw:,.0f}원 · 해외 예수금 ${usd:,.2f} · "
+                         f"보유 {len(positions)}종목")
+                for p in positions:
+                    ret = p.get("cur_return_pct")
+                    if isinstance(ret, (int, float)):
+                        rtxt = f"{ret:+.2f}%"
+                        tag = "up" if ret >= 0 else "down"
+                    else:
+                        rtxt, tag = "—", ""
+                    self.tv_balance.insert("", "end", values=(
+                        p.get("symbol", ""), p.get("name", ""), p.get("qty", ""),
+                        f"{p.get('avg_price', 0) or 0:,.2f}",
+                        f"{p.get('eval_price', 0) or 0:,.2f}",
+                        rtxt, p.get("strategy_name", ""),
+                    ), tags=(tag,) if tag else ())
+            except Exception as e:
+                self.balance_summary.config(text=f"잔고 표시 오류: {e}")
+        try:
+            self._balance_fetching = True
+            self.balance_summary.config(text="잔고 불러오는 중…")
+            self._run_bg(job, done)
+        except Exception:
+            self._balance_fetching = False
+
+    def _get_balance_broker(self):
+        """잔고 조회용 브로커 — 1회 생성 후 재사용(매 조회 토큰 재발급 방지)."""
+        b = getattr(self, "_balance_broker", None)
+        if b is None:
+            from .runner import make_broker
+            b = make_broker()
+            self._balance_broker = b
+        return b
+
+    def _refresh_debug(self):
+        """개발자 정보 — 로컬 health/version/상태(동기). 절대 안 던짐."""
+        try:
+            from . import analytics
+            try:
+                health = analytics.local_health() or {}
+            except Exception as e:
+                health = {"error": str(e)}
+            ks = killswitch.load()
+            try:
+                from . import auto_state
+                status = auto_state.load()
+            except Exception:
+                status = "?"
+            running = bool(self.scheduler and self.scheduler.running)
+            ks_txt = ("ON — " + str(ks.get("reason", ""))) if ks.get("active") else "OFF"
+            lines = [
+                f"버전: v{__version__}",
+                f"자동매매: {status} · scheduler {'running' if running else 'stopped'}",
+                f"Kill Switch: {ks_txt}",
+                f"마지막 사이클: {health.get('last_cycle_ts') or '—'}",
+                f"KIS 토큰 만료: {health.get('kis_token_expires_at') or '—'}",
+                f"KIS 마스터 갱신: {health.get('kis_master_pushed_date') or '—'}",
+                f"페어링: {'완료' if secrets_store.load_device_token() else '미완료'}",
+            ]
+            for w in (health.get("warnings") or []):
+                lines.append(f"⚠ {w}")
+            if health.get("error"):
+                lines.append(f"health 오류: {health['error']}")
+            self._debug_text = "\n".join(lines)
+            self.debug_summary.config(state="normal")
+            self.debug_summary.delete("1.0", "end")
+            self.debug_summary.insert("1.0", self._debug_text)
+            self.debug_summary.config(state="disabled")
+        except Exception as e:
+            try:
+                self.debug_summary.config(state="normal")
+                self.debug_summary.delete("1.0", "end")
+                self.debug_summary.insert("1.0", f"진단 표시 오류: {e}")
+                self.debug_summary.config(state="disabled")
+            except Exception:
+                pass
+
+    def _copy_diagnostics(self):
+        try:
+            txt = getattr(self, "_debug_text", "")
+            try:
+                tail = self.log_text.get("1.0", "end").strip()
+            except Exception:
+                tail = ""
+            blob = txt + "\n\n--- 최근 활동 로그 ---\n" + tail
+            self.root.clipboard_clear()
+            self.root.clipboard_append(blob)
+            messagebox.showinfo("복사됨", "진단 정보가 클립보드에 복사되었습니다.")
+        except Exception as e:
+            messagebox.showerror("복사 실패", str(e))
 
     def _reset_killswitch(self):
         if not messagebox.askyesno(

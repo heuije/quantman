@@ -47,14 +47,15 @@ class SimBroker:
     def buy_limit(self, symbol, qty, limit_price): return self._order("buy", symbol, qty, limit_price)
     def sell_limit(self, symbol, qty, limit_price): return self._order("sell", symbol, qty, limit_price)
     def buy_resv_limit(self, symbol, qty, limit_price): return self._order("buy", symbol, qty, limit_price)
-    def sell_resv_moo(self, symbol, qty): return self._order("sell", symbol, qty)
+    def sell_resv_limit(self, symbol, qty, limit_price): return self._order("sell", symbol, qty, limit_price)
 
     def cancel(self, order_no, symbol, qty) -> dict:
         if order_no in self._statuses:
             self._statuses[order_no]["status"] = "cancelled"
         return {"success": True, "order_no": order_no}
 
-    def order_status(self, order_no, symbol=None) -> dict:
+    def order_status(self, order_no, symbol=None, hint=None) -> dict:
+        # hint — 해외 예약주문 매칭 보조(KisBroker 전용). Sim은 단일 번호공간이라 무시.
         return self._statuses.get(order_no, {"order_no": order_no, "status": "unknown",
                                               "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0})
 

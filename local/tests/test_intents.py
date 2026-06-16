@@ -303,7 +303,7 @@ def test_trader_submit_buy_writes_intent_on_success(jpath, monkeypatch):
     monkeypatch.setattr(intents, "INTENTS_PATH", jpath)
     from localapp.trader import Trader
     broker = MagicMock()
-    broker.buy_limit.return_value = {"success": True, "order_no": "ORD-OK"}
+    broker.buy.return_value = {"success": True, "order_no": "ORD-OK"}   # 국내=시장가
     # _load_json 호출은 파일이 없으면 default — 그대로 진행
     trader_dirs = [intents.INTENTS_PATH.parent]
     monkeypatch.setattr("localapp.trader.LEDGER_PATH", trader_dirs[0] / "ledger.json")
@@ -339,7 +339,7 @@ def test_trader_submit_buy_marks_failed_when_broker_raises(jpath, monkeypatch):
     monkeypatch.setattr(intents, "INTENTS_PATH", jpath)
     from localapp.trader import Trader
     broker = MagicMock()
-    broker.buy_limit.side_effect = RuntimeError("KIS timeout")
+    broker.buy.side_effect = RuntimeError("KIS timeout")   # 국내=시장가
     monkeypatch.setattr("localapp.trader.LEDGER_PATH", jpath.parent / "ledger.json")
     monkeypatch.setattr("localapp.trader.EQUITY_PATH", jpath.parent / "equity.json")
     monkeypatch.setattr("localapp.trader.PENDING_ORDERS_PATH",

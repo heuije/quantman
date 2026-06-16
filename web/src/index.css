@@ -1,21 +1,29 @@
 :root {
-  --bg: #faf9f6;
+  /* ── 네이비 금융 팔레트 (frontend-design 스킬 — 전문성·신뢰) ──────────────
+     딥 네이비 사이드바 + 차가운 화이트 본문 + 골드 액센트.
+     AI 클리셰(검정+형광)가 아닌 금융 도메인의 정직한 네이비. */
+  --navy-950: #0a1a30;   /* 사이드바 딥 네이비 */
+  --navy-900: #0f2342;   /* 헤더·강조 영역 */
+  --navy-700: #1d3a63;   /* 보더·활성 강조 */
+  --navy-300: #93a4c0;   /* 네이비 배경 위 뮤트 텍스트 */
+
+  --bg: #f4f6fb;          /* 거의 흰색 + 푸른 기 아주 미세 */
   --panel: #ffffff;
-  --border: #e8e3db;
-  --input-border: #b3a692;  /* 입력 전용 — 흰 카드 위 #e8e3db(1.3:1)는 거의 안 보임 */
-  --text: #20201d;
-  --muted: #6f6a62;
+  --border: #e3e8ef;      /* 차가운 보더 */
+  --input-border: #aab6c8;  /* 입력 전용 — 흰 카드 위 충분한 대비 */
+  --text: #646464;        /* 본문 글자 — RGB(100,100,100) (사용자 지정) */
+  --muted: #64748b;       /* 슬레이트 뮤트 */
 
-  /* 브랜드 — Claude 대표색 계열 따뜻한 테라코타 액센트(활성 nav·링크·포커스·문장빌더),
-     잉크(주요 버튼)는 따뜻한 차콜. 중성색도 살짝 따뜻하게 해 주황이 native하게 어울리도록. */
-  --accent: #d97757;
-  --accent-soft: #f7ece5;
-  --accent-strong: #ad5019;  /* 링크·소형 텍스트용 — 흰 위 5.3:1, accent-soft 위 4.6:1 (AA) */
-  --accent-hover: #c25c40;   /* 채움 accent 호버 — 흰 위 4.2:1, accent보다 진해 hover affordance */
-  --ink: #292524;
-  --ink-hover: #423c37;
+  /* 액센트 — 골드(프리미엄 금융). 시장 빨강/파랑과 구분돼 혼동 없음.
+     활성 nav·링크·포커스·강조에 사용. 잉크(주요 버튼)는 네이비. */
+  --accent: #c4982b;
+  --accent-soft: #f8f1de;
+  --accent-strong: #8a6a14;  /* 링크·소형 텍스트 — 흰 위 AA */
+  --accent-hover: #a8821f;
+  --ink: #15233b;            /* 주요 버튼 = 네이비 잉크 */
+  --ink-hover: #1d3a63;
 
-  /* 시장 방향 (한국식: 상승·수익=빨강, 하락·손실=파랑) */
+  /* 시장 방향 (한국식: 상승·수익=빨강, 하락·손실=파랑) — 유지 */
   --up: #de3033;
   --up-soft: #fdeceb;
   --down: #1668c4;
@@ -31,8 +39,9 @@
   --amber-soft: #fffbeb;
 
   --radius: 10px;
-  font-family: "Pretendard Variable", Pretendard, -apple-system, "Segoe UI",
-    "Malgun Gothic", Roboto, sans-serif;
+  /* 폰트 — 영문·숫자 Arial / 한글 맑은 고딕 (사용자 지정).
+     Arial을 앞에 둬 영문·숫자는 Arial로, 한글 글리프는 맑은 고딕으로 폴백. */
+  font-family: Arial, "맑은 고딕", "Malgun Gothic", -apple-system, sans-serif;
   color: var(--text);
   /* 숫자를 고정폭으로 — 표·KPI·수익률이 세로로 정렬됨 */
   font-variant-numeric: tabular-nums;
@@ -40,24 +49,51 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); }
+/* 페이지 제목·소제목 크기 — 과하지 않게 절제 (frontend-design: 절제) */
+h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 4px; }
+h3 { font-size: 0.98rem; }
 a { color: var(--accent-strong); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* 레이아웃 */
+/* 산업 분석 트리맵 — 줌어블 전환(클릭 박스 → 화면 전체로 확대/축소). 위치·크기·투명도 보간. */
+.tm-zoom { transition: transform 480ms cubic-bezier(.22, .61, .36, 1), opacity 260ms ease; }
+@media (prefers-reduced-motion: reduce) {
+  .tm-zoom { transition: none; }
+}
+
 .shell { display: flex; min-height: 100vh; }
 .sidebar {
-  width: 220px; background: var(--panel); border-right: 1px solid var(--border);
-  padding: 20px 14px; display: flex; flex-direction: column; gap: 4px;
+  width: 224px; background: var(--navy-950); border-right: none;
+  padding: 18px 12px; display: flex; flex-direction: column; gap: 2px;
+  /* 스크롤해도 좌측 메뉴가 화면에 고정 — 길면 사이드바 내부에서만 스크롤 */
+  position: sticky; top: 0; align-self: flex-start;
+  height: 100vh; overflow-y: auto;
 }
-.brand { font-weight: 700; font-size: 17px; padding: 6px 10px 16px; }
+.brand {
+  font-weight: 700; font-size: 18px; padding: 6px 10px 20px; color: #fff;
+  letter-spacing: -0.01em;
+}
 .brand span { color: var(--accent); }
 .navlink {
-  padding: 9px 12px; border-radius: 8px; color: var(--text);
+  padding: 10px 12px; border-radius: 8px; color: #aebacf;
   font-size: 14px; cursor: pointer;
+  display: flex; align-items: center; gap: 11px;
+  transition: background .12s ease, color .12s ease;
 }
-.navlink:hover { background: var(--accent-soft); color: var(--accent-strong); }
-.navlink.active { background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
-.sidebar-foot { margin-top: auto; font-size: 12px; color: var(--muted); padding: 10px; }
+.navlink:hover { background: rgba(79,143,245,0.16); color: #cfe0ff; }  /* 파란 hover */
+.navlink.active {
+  background: rgba(79,143,245,0.22); color: #fff; font-weight: 600;
+  box-shadow: inset 3px 0 0 #4f8ff5;   /* 파란 활성 인디케이터 바 */
+}
+.navlink .nav-ic {
+  width: 18px; height: 18px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  opacity: .85;
+}
+.navlink:hover .nav-ic { opacity: 1; color: #79a9f7; }   /* hover 시 파란 아이콘 */
+.navlink.active .nav-ic { opacity: 1; color: #79a9f7; }  /* 활성 시 파란 아이콘 */
+.sidebar-foot { margin-top: auto; font-size: 12px; color: var(--navy-300); padding: 10px; }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .main-inner { padding: 28px 32px; max-width: 1100px; width: 100%; flex: 1; }
 
@@ -68,12 +104,12 @@ a:hover { text-decoration: underline; }
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px;
 }
 @media (max-width: 760px) { .ca-summary { grid-template-columns: repeat(2, 1fr); } }
-.ca-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 900px) { .ca-grid { grid-template-columns: 1fr; } }
+/* 서브차트 — 한 줄씩(full-width 세로 스택)으로 주가 차트와 X축 정렬 */
+.ca-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
 .ca-symchip {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 6px 4px 11px; background: var(--accent-soft);
-  border: 1px solid var(--accent); border-radius: 999px; font-size: 13px;
+  padding: 4px 6px 4px 11px; background: rgba(79,143,245,0.12);
+  border: 1px solid rgba(79,143,245,0.55); border-radius: 999px; font-size: 13px;
 }
 .ca-symchip .x-btn { min-width: 22px; min-height: 22px; padding: 2px 6px; }
 .ca-expl {
@@ -301,7 +337,7 @@ button {
   border-radius: 8px; background: var(--ink); color: #fff; cursor: pointer;
   transition: background 0.12s ease;
 }
-/* 호버는 --accent-hover(흰 위 4.2:1) — 기존 --accent(#d97757)는 흰 글자 대비 ~3:1로 가독성 낮음 */
+/* 호버는 --accent-hover(흰 위 4.2:1) — 기존 --accent(#c4982b)는 흰 글자 대비 ~3:1로 가독성 낮음 */
 button:hover { background: var(--accent-hover); }
 button:active { background: var(--accent-strong); }
 /* 비활성 — 변형(apply-btn 등) 무관하게 일관된 muted 회색. opacity 대신 명시 색으로
@@ -2128,6 +2164,8 @@ thead th { color: var(--muted); font-weight: 600; }
 
 .trading-timeline .tl-done      .tl-icon { color: var(--green); }
 .trading-timeline .tl-scheduled .tl-icon { color: var(--muted); }
+.trading-timeline .tl-warning   .tl-icon { color: var(--amber); }
+.trading-timeline .tl-warning   .tl-summary { color: var(--amber); font-weight: 600; }
 .trading-timeline .tl-missed    .tl-icon { color: var(--red);   }
 .trading-timeline .tl-missed    .tl-summary { color: var(--red); font-weight: 600; }
 .trading-timeline .tl-holiday   .tl-icon,
@@ -2361,13 +2399,13 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .futures-selector button {
   padding: 6px 14px; font-size: 13px; font-weight: 600;
-  border: 1px solid var(--border, #2b3340); border-radius: 999px;
-  background: var(--bg, #11161d); color: var(--muted, #9aa);
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg); color: var(--muted);
   cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.futures-selector button:hover { border-color: var(--accent, #6c9ce9); }
+.futures-selector button:hover { border-color: var(--accent); color: var(--text); }
 .futures-selector button.active {
-  background: var(--accent, #6c9ce9); color: #fff; border-color: var(--accent, #6c9ce9);
+  background: var(--accent); color: var(--ink); border-color: var(--accent);
 }
 
 .oil-toolbar {
@@ -2395,12 +2433,13 @@ thead th { color: var(--muted); font-weight: 600; }
 .oil-table th { font-weight: 600; color: var(--muted); text-align: right; }
 .oil-table th:first-child, .oil-table td:first-child { text-align: left; }
 .oil-table tbody tr { cursor: pointer; }
-.oil-table tbody tr:hover { background: rgba(255,255,255,0.04); }
-.oil-table tr.selected-row { background: rgba(108, 156, 233, 0.15); }
+.oil-table tbody tr:hover { background: rgba(0,0,0,0.03); }
+.oil-table tr.selected-row { background: rgba(217, 119, 87, 0.14); }
 .oil-table .short { color: var(--red); font-weight: 600; }
 .oil-table .long { color: var(--green); font-weight: 600; }
-.oil-table .pos { color: var(--green); }
-.oil-table .neg { color: var(--red); }
+/* 선물 분석 탭은 서구식 손익색(녹=수익/적=손실). .oil-table 밖(추세탐색기 결과·투자의견·참고문구 등)도 포함하도록 .oil-page로 확장 — 플랫폼 전역 .pos/.neg(한국식 적/청)을 이 페이지에서만 재정의 */
+.oil-page .pos { color: var(--green); }
+.oil-page .neg { color: var(--red); }
 
 .bt-metrics {
   display: grid;
@@ -2408,9 +2447,9 @@ thead th { color: var(--muted); font-weight: 600; }
   gap: 10px;
 }
 .metric-card {
-  background: rgba(255,255,255,0.03);
+  background: var(--bg);
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border);
 }
 .metric-value {
@@ -2421,10 +2460,10 @@ thead th { color: var(--muted); font-weight: 600; }
 .warn-banner {
   margin-top: 12px;
   padding: 10px 14px;
-  background: rgba(230, 194, 89, 0.12);
-  border: 1px solid rgba(230, 194, 89, 0.4);
-  border-radius: 6px;
-  color: #e6c259;
+  background: var(--amber-soft);
+  border: 1px solid rgba(180, 83, 9, 0.35);
+  border-radius: 8px;
+  color: var(--amber);
   font-size: 13px;
 }
 
@@ -2433,7 +2472,7 @@ thead th { color: var(--muted); font-weight: 600; }
 @media (max-width: 760px) { .wf-row { grid-template-columns: 1fr; } }
 .wf-block {
   padding: 12px;
-  background: rgba(255,255,255,0.03);
+  background: var(--bg);
   border-radius: 6px;
   border: 1px solid var(--border);
   font-size: 13px;
@@ -2466,7 +2505,7 @@ thead th { color: var(--muted); font-weight: 600; }
   position: sticky;
   top: 0;
   z-index: 2;
-  background: var(--bg);             /* 프로젝트 라이트 테마와 동일 (#faf9f6) */
+  background: var(--bg);             /* 프로젝트 라이트 테마와 동일 (#f5f7fa) */
   color: var(--muted);
   box-shadow: 0 1px 0 var(--border);
 }
@@ -2483,7 +2522,7 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .sticky-table tbody tr.selected-row td:first-child,
 .sticky-table tbody tr.selected-row th:first-child {
-  background: rgba(108, 156, 233, 0.10);
+  background: rgba(217, 119, 87, 0.12);
 }
 .sticky-table tbody tr:hover td:first-child,
 .sticky-table tbody tr:hover th:first-child {
@@ -2495,7 +2534,7 @@ thead th { color: var(--muted); font-weight: 600; }
 
 /* 정렬 가능 헤더 */
 .oil-table th.sortable:hover { color: var(--text); }
-.oil-table th.sortable.active { color: #6c9ce9; }
+.oil-table th.sortable.active { color: var(--accent-strong); }
 .oil-table .sort-arrow {
   font-size: 10px;
   opacity: 0.5;
@@ -2546,9 +2585,9 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 @media (max-width: 760px) { .season-tables { grid-template-columns: 1fr; } }
 
-/* SL/TP toolbar */
+/* 비용·신호 설정 toolbar */
 .sltp-toolbar {
-  background: rgba(108, 156, 233, 0.05);
+  background: rgba(217, 119, 87, 0.05);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 10px 14px;
@@ -2619,8 +2658,8 @@ thead th { color: var(--muted); font-weight: 600; }
 .oil-radio-group label:last-child { border-right: none; }
 .oil-radio-group label:hover { background: rgba(0,0,0,0.04); }
 .oil-radio-group label.active {
-  background: var(--accent, #6c9ce9);
-  color: #fff;
+  background: var(--accent);
+  color: var(--ink);
   font-weight: 600;
 }
 .oil-radio-group input[type=radio] {

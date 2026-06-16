@@ -1,8 +1,8 @@
 """미국 예약주문(order-resv) body 구성·라우팅 단위 검증.
 
-KIS 공식 spec(해외주식 예약주문접수 TTTT3014U/TTTT3016U)대로 매수=지정가(00),
-매도=MOO 장개시시장가(31)로 발주 body를 만드는지 확인. 실계좌·네트워크 없이
-_post_retry를 가로채 body만 캡처한다.
+KIS 공식 spec(해외주식 예약주문접수 TTTT3014U/TTTT3016U)대로 발주 body를 만드는지 확인.
+매수·매도 모두 **지정가(00)** — 예약매도 MOO(31)는 모의 지원 미검증이라 모의=실전 통일
+위해 지정가로 발주한다. 실계좌·네트워크 없이 _post_retry를 가로채 body만 캡처한다.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def _identity_ticker(monkeypatch):
 def test_buy_resv_limit_body_virtual():
     b = _broker(virtual=True)
     seen = _capture(b)
-    r = b._submit_overseas_resv("AAPL", 3, "buy", "00", 150.259, "NAS")
+    r = b._submit_overseas_resv("AAPL", 3, "buy", 150.259, "NAS")
 
     assert r["success"] is True
     assert r["order_no"] == "0000123456"
@@ -70,20 +70,21 @@ def test_buy_resv_limit_body_virtual():
 def test_buy_resv_limit_tr_real():
     b = _broker(virtual=False)
     seen = _capture(b)
-    b._submit_overseas_resv("MSFT", 1, "buy", "00", 400.0, "NAS")
+    b._submit_overseas_resv("MSFT", 1, "buy", 400.0, "NAS")
     assert seen["tr"] == "TTTT3014U"            # 실전 미국 예약매수
 
 
-def test_sell_resv_moo_body():
+def test_sell_resv_limit_body():
+    """예약매도도 지정가(00) — MOO(31) 아님(모의=실전 통일). 가격을 body에 싣는다."""
     b = _broker(virtual=True)
     seen = _capture(b)
-    r = b._submit_overseas_resv("TSLA", 5, "sell", "31", 0.0, "NYS")
+    r = b._submit_overseas_resv("TSLA", 5, "sell", 250.501, "NYS")
 
     assert r["success"] is True
     assert seen["tr"] == "VTTT3016U"            # 모의 미국 예약매도
     body = seen["body"]
-    assert body["ORD_DVSN"] == "31"             # MOO 장개시시장가
-    assert body["FT_ORD_UNPR3"] == "0"          # MOO는 가격 미사용
+    assert body["ORD_DVSN"] == "00"             # 지정가 (MOO 아님)
+    assert body["FT_ORD_UNPR3"] == "250.50"     # 소수 USD($0.01) — 반올림
     assert body["FT_ORD_QTY"] == "5"
     assert body["OVRS_EXCG_CD"] == "NYSE"
 
@@ -93,13 +94,13 @@ def test_unsupported_market_no_call():
     b = _broker(virtual=True)
     called = {"n": 0}
     b._post_retry = lambda *a, **k: called.__setitem__("n", called["n"] + 1)
-    r = b._submit_overseas_resv("7203", 1, "buy", "00", 100.0, "TSE")
+    r = b._submit_overseas_resv("7203", 1, "buy", 100.0, "TSE")
     assert r["success"] is False
     assert called["n"] == 0
 
 
 def test_public_wrappers_route_by_exchange(monkeypatch):
-    """buy_resv_limit/sell_resv_moo가 exchange_of로 시장을 정해 라우팅."""
+    """buy_resv_limit/sell_resv_limit가 exchange_of로 시장을 정해 라우팅(양방향 지정가)."""
     monkeypatch.setattr(market_index, "exchange_of", lambda s: "AMS")
     b = _broker(virtual=True)
     seen = _capture(b)
@@ -110,10 +111,10 @@ def test_public_wrappers_route_by_exchange(monkeypatch):
     assert seen["body"]["FT_ORD_UNPR3"] == "12.35"
     assert seen["body"]["OVRS_EXCG_CD"] == "AMEX"
 
-    b.sell_resv_moo("FOO", 2)
+    b.sell_resv_limit("FOO", 2, 9.871)
     assert seen["tr"] == "VTTT3016U"
-    assert seen["body"]["ORD_DVSN"] == "31"
-    assert seen["body"]["FT_ORD_UNPR3"] == "0"
+    assert seen["body"]["ORD_DVSN"] == "00"      # 지정가 (MOO 아님)
+    assert seen["body"]["FT_ORD_UNPR3"] == "9.87"
 
 
 # ── Trader 라우팅: _reserved_us 플래그가 예약 broker 메서드로 분기시키는지 ──────
@@ -127,57 +128,102 @@ def _trader_with_stub(monkeypatch, currency: str):
     monkeypatch.setattr(tr.intents, "mark_submitted", lambda *a, **k: None)
     monkeypatch.setattr(tr.intents, "mark_failed", lambda *a, **k: None)
     monkeypatch.setattr(tr.Trader, "_after_submit", lambda *a, **k: None)
+    monkeypatch.setattr(tr.intents, "is_active", lambda *a, **k: False)
     monkeypatch.setattr(tr, "_currency_of", lambda s: currency)
 
     broker = MagicMock()
     broker.buy_resv_limit.return_value = {"success": True, "order_no": "R1"}
-    broker.sell_resv_moo.return_value = {"success": True, "order_no": "R2"}
+    broker.sell_resv_limit.return_value = {"success": True, "order_no": "R2"}
     broker.buy_limit.return_value = {"success": True, "order_no": "L1"}
     broker.buy.return_value = {"success": True, "order_no": "M1"}
     broker.sell_limit.return_value = {"success": True, "order_no": "L2"}
+    broker.sell.return_value = {"success": True, "order_no": "M2"}
+    broker.price.return_value = 100.0        # _safe_price(=_us_limit fresh가) — 실수 보장
+    return _new_trader(tr, broker), broker
 
+
+def _new_trader(tr, broker):
     t = tr.Trader.__new__(tr.Trader)
     t.broker = broker
-    return t, broker
+    return t
 
 
 def test_submit_buy_routes_to_reserved_when_us(monkeypatch):
     t, broker = _trader_with_stub(monkeypatch, currency="USD")
     t._reserved_us = True
-    # use_limit=False(시장가 의도)여도 예약은 지정가 강제 → buy_resv_limit.
-    policy = {"use_limit": False, "buy_tolerance_pct": 1.0}
+    policy = {"buy_tolerance_pct": 3.0}
     t._submit_buy("s1", "T", {}, "AAPL", 2, 100.0, policy, [], catchup=False)
     broker.buy_resv_limit.assert_called_once()
     broker.buy_limit.assert_not_called()
     broker.buy.assert_not_called()
+    # limit = 신선한가(price=100) × (1+3%) = 103.0 (전일종가 ref_price=100과 무관하게 fresh)
+    assert broker.buy_resv_limit.call_args[0][2] == 103.0
 
 
-def test_submit_sell_routes_to_moo_when_us(monkeypatch):
+def test_submit_buy_fresh_price_overrides_stale_ref(monkeypatch):
+    """예약매수 limit은 전일종가(ref_price)가 아니라 신선한 현재가(_safe_price)로 계산."""
     t, broker = _trader_with_stub(monkeypatch, currency="USD")
     t._reserved_us = True
-    policy = {"use_limit": True, "sell_tolerance_pct": 1.0}
+    broker.price.return_value = 120.0        # 프리마켓 갭상승 (전일종가 100 대비 +20%)
+    policy = {"buy_tolerance_pct": 3.0}
+    t._submit_buy("s1", "T", {}, "AAPL", 2, 100.0, policy, [], catchup=False)
+    # limit = 120 × 1.03 = 123.6 (전일종가 100×1.03=103이 아니라 fresh 기준) → 갭 미체결 회피
+    assert broker.buy_resv_limit.call_args[0][2] == 123.6
+
+
+def test_submit_sell_routes_to_reserved_limit_when_us(monkeypatch):
+    """미국 예약매도 = 지정가(00) reserved (MOO 아님)."""
+    t, broker = _trader_with_stub(monkeypatch, currency="USD")
+    t._reserved_us = True
+    policy = {"sell_tolerance_pct": 3.0}
     t._submit_sell("s1", "T", "AAPL", 2, 100.0, policy, "청산", [])
-    broker.sell_resv_moo.assert_called_once()
+    broker.sell_resv_limit.assert_called_once()
     broker.sell_limit.assert_not_called()
+    broker.sell.assert_not_called()
+    # limit = 신선한가(100) × (1−3%) = 97.0 (개장가보다 낮아 매도 체결)
+    assert broker.sell_resv_limit.call_args[0][2] == 97.0
+
+
+def test_submit_sell_us_live_limit_when_flag_off(monkeypatch):
+    """미국 종가청산(예약 아님) = 라이브 지정가 sell_limit — 시장가(broker.sell) 아님."""
+    t, broker = _trader_with_stub(monkeypatch, currency="USD")
+    t._reserved_us = False                   # 종가 청산 cycle은 신규 Trader라 항상 False
+    policy = {"sell_tolerance_pct": 3.0}
+    t._submit_sell("s1", "T", "AAPL", 2, 100.0, policy, "당일청산", [])
+    broker.sell_limit.assert_called_once()
+    broker.sell.assert_not_called()          # 국내 시장가 경로로 빠지지 않음
+    broker.sell_resv_limit.assert_not_called()
+    assert broker.sell_limit.call_args[0][2] == 97.0   # 100 × (1−3%)
+
+
+def test_submit_sell_krx_market_when_flag_off(monkeypatch):
+    """국내(KRW)는 예약 여부 무관 시장가(broker.sell) — US 분기로 새지 않음."""
+    t, broker = _trader_with_stub(monkeypatch, currency="KRW")
+    t._reserved_us = False
+    policy = {"sell_tolerance_pct": 3.0}
+    t._submit_sell("s1", "T", "005930", 2, 100.0, policy, "청산", [])
+    broker.sell.assert_called_once()
+    broker.sell_limit.assert_not_called()
+    broker.sell_resv_limit.assert_not_called()
 
 
 def test_submit_buy_no_reserve_when_flag_off(monkeypatch):
     t, broker = _trader_with_stub(monkeypatch, currency="USD")
     t._reserved_us = False
-    policy = {"use_limit": True, "buy_tolerance_pct": 1.0}
+    policy = {"buy_tolerance_pct": 3.0}
     t._submit_buy("s1", "T", {}, "AAPL", 2, 100.0, policy, [], catchup=False)
     broker.buy_resv_limit.assert_not_called()
-    broker.buy_limit.assert_called_once()
+    broker.buy.assert_called_once()        # 예약 아님 → 즉시 경로(국내 시장가; US는 진입 cycle에서만 발생)
 
 
 def test_submit_buy_no_reserve_for_krx_even_if_flag_on(monkeypatch):
     """USD가 아니면(국내) 예약 라우팅 안 함 — 같은 cycle에 섞여도 안전."""
     t, broker = _trader_with_stub(monkeypatch, currency="KRW")
     t._reserved_us = True
-    policy = {"use_limit": True, "buy_tolerance_pct": 1.0}
+    policy = {"buy_tolerance_pct": 1.0}
     t._submit_buy("s1", "T", {}, "005930", 2, 100.0, policy, [], catchup=False)
     broker.buy_resv_limit.assert_not_called()
-    broker.buy_limit.assert_called_once()
+    broker.buy.assert_called_once()        # 국내 = 시장가
 
 
 # ── M1: 거래소 코드 단일 출처(_OVERSEAS_EXCD) 회귀 ──────────────────────────────

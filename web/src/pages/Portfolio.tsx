@@ -10,7 +10,7 @@ import type {
 const BENCHMARKS: [string, string][] = [
   ["^KS11", "코스피"], ["^KQ11", "코스닥"], ["^GSPC", "S&P500"], ["^IXIC", "나스닥"],
 ];
-const CUR_COLOR = "#6f6a62", PROP_COLOR = "#d97757", BENCH_COLOR = "#b3a692";
+const CUR_COLOR = "#64748b", PROP_COLOR = "#c4982b", BENCH_COLOR = "#94a3b8";
 
 type Row = { symbol: string; weight: string };
 const blank = (): Row => ({ symbol: "", weight: "" });
@@ -88,7 +88,7 @@ export default function Portfolio() {
         <div className="panel">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <h3 style={{ margin: 0 }}>현재 포트폴리오</h3>
-            {linked === true && <span style={{ fontSize: 12, color: "var(--accent-strong,#ad5019)" }}>● 증권사 연동됨</span>}
+            {linked === true && <span style={{ fontSize: 12, color: "var(--accent-strong,#8a6a14)" }}>● 증권사 연동됨</span>}
             {linked === false && <span style={{ fontSize: 12, color: "var(--muted)" }}>미연동 — 직접 입력</span>}
           </div>
           <PositionEditor rows={current} setRows={setCurrent} />
@@ -152,7 +152,7 @@ function PositionEditor({ rows, setRows }: { rows: Row[]; setRows: (r: Row[]) =>
       ))}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
         <button type="button" className="ghost sm" onClick={() => setRows([...rows, blank()])}>+ 종목 추가</button>
-        <span style={{ fontSize: 12, color: total === 100 ? "var(--muted)" : "#ad5019" }}>
+        <span style={{ fontSize: 12, color: total === 100 ? "var(--muted)" : "#8a6a14" }}>
           합계 {total.toFixed(0)}% {total !== 100 && "(자동 정규화됨)"}
         </span>
       </div>
@@ -185,7 +185,7 @@ function Results({ result }: { result: PortfolioAnalysis }) {
         <h3 style={{ marginTop: 0 }}>지표 비교</h3>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead>
-            <tr style={{ borderBottom: "2px solid #e8e3db" }}>
+            <tr style={{ borderBottom: "2px solid #e3e8ef" }}>
               <th style={{ textAlign: "left", padding: "8px 6px" }}>지표</th>
               <th style={{ textAlign: "right", padding: "8px 6px", color: CUR_COLOR }}>현재</th>
               <th style={{ textAlign: "right", padding: "8px 6px", color: PROP_COLOR }}>예상</th>
@@ -207,7 +207,7 @@ function Results({ result }: { result: PortfolioAnalysis }) {
         <h3 style={{ marginTop: 0 }}>누적 수익 곡선 (벤치마크 대비)</h3>
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={merged} margin={{ top: 5, right: 12, bottom: 5, left: 8 }}>
-            <CartesianGrid stroke="#e8e3db" strokeDasharray="3 3" />
+            <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
             <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
             <YAxis tick={{ fontSize: 11 }} width={44}
               tickFormatter={(v) => `${Math.round((v - 1) * 100)}%`} />

@@ -11,7 +11,7 @@ import type {
 /* recharts SVG는 CSS var를 못 받아 토큰값(DESIGN.md)을 직접 인라인한다(EquityChart와 동일 규약).
    변경 시 web/src/index.css :root와 동기화. up=상승/이익(빨강) · down=하락/손실(파랑, 한국 관례). */
 const C = {
-  accent: "#d97757", strong: "#ad5019", muted: "#6f6a62", grid: "#e8e3db",
+  accent: "#c4982b", strong: "#8a6a14", muted: "#64748b", grid: "#e3e8ef",
   text: "#20201d", up: "#de3033", down: "#1668c4", upSoft: "#fdeceb", downSoft: "#e7f0fa",
 };
 
@@ -292,7 +292,7 @@ function Badge({ children, tone = "muted" }:
     muted: { bg: "#f4f2ee", fg: C.muted, bd: C.grid },
     up: { bg: C.upSoft, fg: C.up, bd: C.up },
     down: { bg: C.downSoft, fg: C.down, bd: C.down },
-    accent: { bg: "#f7ece5", fg: C.strong, bd: C.accent },
+    accent: { bg: "#f8f1de", fg: C.strong, bd: C.accent },
     warn: { bg: "#fff4e5", fg: "#b45309", bd: "#f59e0b" },
   }[tone];
   return (

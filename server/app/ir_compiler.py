@@ -224,8 +224,10 @@ StrategyIR = {{
 7. [스크리닝(현 시점 종목 선별)] "저평가 X 상위 N개"·"조건 맞는 종목 골라줘"처럼 *백테스트 손익이
    아니라 지금 시점 종목 리스트*가 답이면 → query="select" + signal=랭킹 score(예: 낮은 PBR이면
    data(__SELF__.pb_ratio)) + universe.kind=all + universe.screener.condition=
-   is_in(attribute("Sector"), ["반도체"]) 같은 섹터/자격 필터 + select={{top_n:N,
+   is_in(attribute("Sector"), ["반도체"], match="contains") 같은 섹터/자격 필터 + select={{top_n:N,
    descending:false(저평가=낮은값 우선)·true(높은값 우선), display:[pb_ratio, ...](근거 지표)}}.
+   ⚠ 섹터/업종 필터는 match="contains" 필수 — 분류 데이터가 KSIC 자유서술("반도체 제조업")이라
+   정확매칭(기본 exact)이면 "반도체"는 0건이 된다. 버킷·국면 등 정확 라벨 필터에는 match 생략(exact).
    (※ 레시피 3은 *정기 리밸런싱 백테스트*(simulate), 본 레시피는 *현 시점 스냅샷 선별*(select) — 둘 구분.)
 8. [단일종목 360 리포트] "삼성전자 어때"·"이 종목 분석/요약"처럼 *한 종목의 현황*이 답이면 →
    query="describe" + universe.kind="single" + symbols=[그 종목] + signal=data("__SELF__.Close")
@@ -332,7 +334,31 @@ def _route_directional(strat: dict) -> dict:
     hold_days = (pos.get("exit") or {}).get("hold_days")
     if not is_ranking and hold_days == 0:
         entry["mode"] = "on_signal"
+        if entry.get("threshold") is None:
+            # 부호방향의 임계를 명시(0) — None은 소비층(_select 랭킹 추락 vs
+            # _direction_for 0.0)마다 다르게 해석돼 양방향 동시 후보 사고를 냈다.
+            entry["threshold"] = 0.0
     return strat
+
+
+def _force_attribute_filter_contains(node):
+    """is_in(attribute(...)) 섹터/업종 필터를 부분일치(match="contains")로 결정적 강제.
+
+    분류 데이터(FDR KRX-DESC)는 섹터/업종을 KSIC 자유서술("반도체 제조업")로 저장하는데,
+    LLM은 사용자어("반도체")로 emit한다 → 정확매칭이면 0건(eligible_size=0, "저평가 반도체주"
+    빈 결과의 근본원인). attribute 라벨은 항상 자유서술이라 contains가 옳다(exact는 사실상 무용).
+    프롬프트 안내와 별개로 결정적이라 LLM 변동과 무관하게 재현(IR 트리 전체를 in-place 정규화)."""
+    if isinstance(node, dict):
+        if node.get("op") == "is_in":
+            sig = (node.get("inputs") or {}).get("signal")
+            if isinstance(sig, dict) and sig.get("op") == "attribute":
+                node.setdefault("params", {})["match"] = "contains"
+        for v in node.values():
+            _force_attribute_filter_contains(v)
+    elif isinstance(node, list):
+        for v in node:
+            _force_attribute_filter_contains(v)
+    return node
 
 
 def compile_nl(
@@ -388,6 +414,7 @@ def compile_nl(
 
         strat = _resolve_symbols(dict(inp.get("strategy") or {}), valid_keys, name_map)
         strat = _route_directional(strat)          # M5d 결정적 라우팅(부호방향 당일매매→on_signal)
+        _force_attribute_filter_contains(strat)    # 섹터/업종 필터 부분일치 강제(반도체→반도체 제조업)
         issues, ok = validate_fn(strat)
         last = {"ir": strat, "assumptions": assumptions, "issues": issues, "repair_count": attempt}
         if ok:

@@ -5,6 +5,112 @@
 
 ---
 
+## 2026-06-13 — 해외선물 계좌 가용증거금·총자산: OTFM1411R 예수금현황 (사이징 예산·kill-switch equity)
+
+- **배경**: 해외선물 사이징 예산·kill-switch equity가 해외선물 *계좌*가 아니라 국내선물/주식
+  현금으로 잘못 계산되던 결함(G1/G3). 근본=잔고 조회 OTFM1412R(inquire-unpd)이 **미결제내역
+  (positions)만** 주고 계좌 가용증거금·평가금액을 안 줌.
+- **해결 엔드포인트(스펙)**: **OTFM1411R** `GET /uapi/overseas-futureoption/v1/trading/inquire-deposit`
+  (해외선물옵션 예수금현황, 실전 전용·모의 미지원). Query: `CANO·ACNT_PRDT_CD·CRCY_CD·INQR_DT`.
+  - **`CRCY_CD=TKR`**(TOT_KRW)로 요청하면 KIS가 **KRW 환산** 계좌 요약을 준다(TUS=TOT_USD·KRW·USD…).
+    → futures_order_cash(예산)·futures_eval_krw(equity)에 **FX 추측 없이 직접** 합산.
+  - output(단일 object) 핵심 필드: **`fm_ord_psbl_amt`**(주문가능금액→사이징 예산)·
+    **`fm_tot_asst_evlu_amt`**(총자산평가금액→kill-switch equity)·`fm_brkg_mgn_amt`(위탁증거금)·
+    `fm_dnca_rmnd`(예수금잔액)·`fm_fuop_evlu_pfls_amt`(선물옵션평가손익)·`fm_mntn_mgn_amt`(유지증거금).
+- **우리 코드**: `kis_overseas_futures.py` `parse_overseas_deposit` · `kis_futures_broker.py`
+  `overseas_deposit`(CRCY_CD=TKR)·`overseas_account_snapshot`이 positions+account 결합 ·
+  `broker_router` 병합이 futures_order_cash/futures_eval_krw 채움.
+- ⚠ **모의 미지원** — 필드 *값* 라이브 대조는 첫 실거래(스펙 기반 구현·단위검증만). spec=`docs/kis-api/raw/해외선물옵션_주문_계좌.xlsx`("예수금현황" 시트).
+- **G2(시세)**: CME 실시간시세(HHDFC55010000)는 **유료구독 필수**(미구독 EGW00553) + sCalcDesz 미적용
+  raw. broker_router.price(CME)가 그 미스케일값을 손절에 넣어 거짓 트리거하던 것 → **0 반환**(호출자
+  dataset fallback/skip). 유료피드+스케일 배선은 라이브 활성화 단계. 자동매매 권위 시세=dataset(yfinance).
+
+---
+
+## 2026-06-12 — 체결 확인은 발주 직후 단일 조회로 안 잡힌다 (모의 ~27초 지연·종가 단일가)
+
+- **증상**: 선물 종가청산(15:40 발주, 0000004525)이 종가 단일가(~15:45)에 정상
+  체결됐는데 status 조회가 발주 직후 1회뿐이라 'unknown' → pending 박제·ledger
+  미정리. 18:54 수동 재실행으로야 fill 1299.85 확인(+24.9M 기록).
+- **실측**: 모의투자는 시장가 즉시 주문도 체결 반영까지 **~27초** 지연(08:55:35
+  발주 → 08:56:02 체결 확인). 동시호가 발주는 단일가 확정 시각(시초가 09:00·주식
+  종가 15:30·선물 종가 15:45)까지 체결 자체가 없다 — 발주 직후 조회는 구조적으로 0건.
+- **해결**: 모든 발주 경로는 `_wait_pending`(60s/20s 폴링)을 거치고, 발주창 **이후**
+  정산(resolve+reconcile) 패스가 반드시 오도록 cron 배치(정산 15:35→15:50, θ).
+- **우리 코드**: `trader.py` `liquidate_day_trades`(wait+선행 resolve) ·
+  `scheduler.py`(krx_settlement 15:50) · `docs/incidents/2026-06-12-futures-close-fill-unrecorded.md`.
+
+---
+
+## 2026-06-12 — 해외 체결조회(inquire-ccnl): 주문일자는 미국 현지 날짜 + 예약주문 번호공간 불일치
+
+- **증상 1 (RC1)**: KST 04:55 발주한 GOOG 매도(odno 0000040620)가 체결됐는데(KIS 보유
+  263→0) `_overseas_ccnl_today`(VTTS3035R/TTTS3035R, ORD_STRT/END_DT=KST 당일)가 **0행**
+  → status 'unknown' → 체결 영구 미기록 → settlement reconcile이 보유 diff로 "외부 매도
+  추정" 제거(정산손익·전략연결 소실).
+- **원인 1**: 체결행의 주문일자가 **미국 현지 날짜**(해당 건 20260611). KST 자정~미장마감
+  (≈06:00) 구간은 KST 날짜가 하루 앞서 당일 조회가 빗나간다. 22:30~24:00 KST(미장 초반
+  1.5h)만 날짜가 일치 — 그 시간대 체결만 잡히던 것.
+- **해결 1**: 조회창 [미국 동부 D-1, KST 오늘] (`_overseas_query_window`). 오래된 pending은
+  제출일(동부) D-1로 시작일 확장. ⚠ CTX 연속조회는 여전히 미구현(첫 페이지만).
+- **증상 2 (RC2)**: 예약매수 접수 odno **448**(3자리, order-resv 응답)이 체결됐는데 체결행
+  odno(10자리 주문 번호공간)와 불일치 → odno 정확 매칭이 영원히 실패 → 'unknown'.
+- **원인 2**: 예약주문접수(TTTT3014U/3016U) 응답 ODNO는 **예약 번호공간** — 개장 시 자동
+  전송되며 새 주문번호가 발급되고, 예약↔본주문 번호를 잇는 조회 TR은 미배선(예약내역
+  조회 TTTT3039R 미사용).
+- **해결 2**: `_overseas_order_status`가 hint(side·qty·reserved·exclude_odnos)를 받아
+  예약주문은 **종목+매수매도+수량**으로 체결행 매칭. 청구한 체결행 odno를
+  `claimed_fills.json`에 영속해 동형 주문/사이클 간 이중 기장 차단.
+- **우리 코드**: `kis_broker.py` `_overseas_query_window`·`_overseas_ccnl_today`·
+  `_overseas_order_status` · `trader.py` `_resolve_pending_locked`(hint·청구 레지스트리·
+  7일 GC) · 테스트 `local/tests/test_overseas_fill_detection.py`.
+
+---
+
+## 2026-06-11 — 미국주식: 신선한 현재가 지정가 + 예약매도 지정가 통일 + 종가청산 (v0.9.35)
+
+- **배경**: 미국주식은 KIS가 연속장 시장가를 미지원(지정가/LOO만)이라 국내 시장가화의
+  대상이 아니다. 대신 미국 발주를 **지정가 + 신선한 현재가 + 모의=실전 통일**로 정렬.
+- **발견 1 — 진입가가 전일종가 기반이라 갭 미체결**: `_submit_buy`가 예약매수 limit을
+  `prev_close × (1+tol)`로 잡았는데, 전일종가(≈17h 전)와 다음 개장 사이 애프터/프리마켓
+  갭이 tol을 넘으면 시초가에 미달→미체결. → `_us_limit`이 `_safe_price`(HHDFS00000300
+  실시간/프리마켓)×(1±tol)로 발주(전일종가는 조회실패 fallback). **사이징은 prev_close 유지**(패리티).
+- **발견 2 — 예약매도 MOO(31) 모의 미검증**: 예약주문접수(VTTT3016U) 매도는 00/31을
+  열어두나, MOO(31)의 모의 실접수는 미검증 게이트였다. 모의=실전 통일 위해 예약 매수·매도
+  **둘 다 00 지정가**(`buy_resv_limit`/`sell_resv_limit`)로 고정. 매도 limit=신선한가×(1−tol).
+- **발견 3 — 미국 종가청산 사이클 부재**: 미국 당일매매 보유분 청산 cron이 없어 다음 개장
+  MOO로 하루 늦게 청산됐다. → `run_close_cycle(market="US")`를 스케줄러 **폐장−5분**에 등록
+  (신규 Trader라 `_reserved_us`=False → 라이브 `sell_limit`). MOC 모의 미지원이라 연속장
+  막판 지정가가 최선의 종가 근사(백테스트 종가와 미세 발산은 불가피).
+- **tolerance**: 미국 전용 라이브 버퍼. default ±3%(종전 1%/2%는 미국 갭에 타이트).
+  전략 execution(`buy/sell_tolerance_pct`)으로 유저 override. 국내는 시장가라 미사용.
+- **우리 코드**: `trader.py` `_us_limit`·`_submit_buy/_submit_sell`(USD 분기) ·
+  `kis_broker.py` `sell_resv_limit`·`_submit_overseas_resv`(00 고정) · `scheduler.py`
+  `_plan_us_session`(us_close_cycle) · `core/quant_core/exec_defaults.py`(tol 3.0).
+- ⚠ **라이브 실측 게이트**(다음 미국 세션): 예약 모의 접수·전송·체결 / `_safe_price`가
+  프리마켓(개장−20분)에 실가를 주는지 / 폐장−5분 종가청산 라운드트립. 확인 후 여기 기록.
+
+---
+
+## 2026-06-11 — "모의투자 상/하한가 오류"(선물) = 실시간가격제한(±1%) 위반 포함
+
+- **증상**: 코스피200선물 모의 지정가 주문이 정적 상·하한(futs_mxpr/llam, ±8%)
+  **안쪽**인데도 "모의투자 상/하한가 오류"로 거부.
+- **원인**: KRX 파생 **실시간가격제한** — 직전약정가 ±1%(코스피200선물)를 넘는
+  호가는 거래소/모의서버가 즉시 거부. 에러 메시지가 정적 상하한과 동일해 오인 유발.
+  실측 2건: 지정가 1231.30(밴드 1231.25)·1247.55(밴드 1247.50) — 현재가×1.01을
+  틱 *올림*하면 정확히 1틱 초과.
+- **해결(최종, v0.9.34)**: 국내(주식·선물) 발주를 **시장가 단일로 전환** — 가격을
+  지정하지 않으므로 ±1% 밴드 위반 자체가 불가(시장가호가는 실시간가격제한가에 의제
+  접수). 시장가는 동시호가 단일가(시초가/종가)에 체결돼 지정가 대비 슬리피지 손해도
+  없다. (중간 시도였던 `_live_limit` ±1% 밴드 클램프는 국내 지정가 제거로 함께 삭제.)
+- **우리 코드**: `local/localapp/trader.py` `_submit_buy/_submit_sell` else 분기(시장가) ·
+  회귀 `local/tests/scenarios/test_order_price_plane.py`.
+- ⚠ **시장가 미체결 잔량 처리**(국내선물/해외선물)는 KB 미기재 — 실측 필요.
+- ⚠ 미국주식은 KIS 연속장 시장가 미지원 → 지정가(예약) 유지(별개 경로).
+
+---
+
 ## 2026-06-05 — KIS 선물옵션 API 표면 도입 (6 xlsx 추출 — 일부 미실측 ⚠)
 
 선물옵션(국내·해외) 6개 raw xlsx를 `raw/`에 보존하고 INDEX에 80 endpoint 색인.

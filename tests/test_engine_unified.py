@@ -314,6 +314,21 @@ def test_engine_select_long_short_dollar_neutral():
     assert w["A"] > 0 and w["D"] < 0                    # 최고 롱·최저 숏
 
 
+def test_engine_select_directional_none_threshold_uses_sign():
+    """부호방향 long_short(랭킹 파라미터 없음)에서 threshold 미지정(None) = 0 의미.
+
+    회귀(2026-06-11 라이브 검증 직전 발견): None이 랭킹 분기로 추락해 단일 종목이
+    nlargest/nsmallest **양쪽**에 들어가 preview가 같은 종목을 롱·숏 동시 후보로
+    생성(양방향 동시 발주 위험)했다. run_unified의 _direction_for(None→0.0)와
+    같은 의미로 일원화 — backtest=preview 단일 의미.
+    """
+    pos = PositionSpec(direction="long_short", entry=Entry(mode="on_signal"))
+    longs, shorts = _select(pd.Series({"코스피200선물": 1.0}), pos, False)
+    assert longs == ["코스피200선물"] and shorts == []
+    longs, shorts = _select(pd.Series({"코스피200선물": -1.0}), pos, False)
+    assert longs == [] and shorts == ["코스피200선물"]
+
+
 def test_engine_size_signal_proportional():
     pos = PositionSpec(direction="long", sizing=Sizing(mode="signal_proportional"),
                        entry=Entry(mode="scheduled", top_n=2))

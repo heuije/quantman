@@ -3,15 +3,32 @@ import { NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
 import ErrorBoundary from "./ErrorBoundary";
 
+// 모노톤 라인 아이콘 (Feather/Lucide 스타일, currentColor stroke)
+const Ic = ({ children }: { children: React.ReactNode }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {children}
+  </svg>
+);
 const NAV = [
-  { to: "/", label: "개요" },
-  { to: "/dashboard", label: "개별 종목 분석" },
-  { to: "/lab", label: "전략 연구소" },
-  { to: "/strategies", label: "내 전략" },
-  { to: "/portfolio", label: "포트폴리오" },
-  { to: "/monitor", label: "트레이딩" },
-  { to: "/futures", label: "선물 분석" },
-  { to: "/settings", label: "설정" },
+  // 개요 — 대시보드 그리드
+  { to: "/", label: "개요", icon: <Ic><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /></Ic> },
+  // 개별 종목 분석 — 우상향 차트
+  { to: "/dashboard", label: "개별 종목 분석", icon: <Ic><path d="M3 3v18h18" /><path d="m19 8-5 5-4-4-4 4" /></Ic> },
+  // 산업 분석 — 밸류체인 트리맵(격자)
+  { to: "/industry", label: "산업 분석", icon: <Ic><rect x="3" y="3" width="8" height="12" rx="1" /><rect x="13" y="3" width="8" height="7" rx="1" /><rect x="13" y="13" width="8" height="8" rx="1" /><rect x="3" y="18" width="8" height="3" rx="1" /></Ic> },
+  // 전략 연구소 — 플라스크
+  { to: "/lab", label: "전략 연구소", icon: <Ic><path d="M9 2h6" /><path d="M10 2v6.4L4.6 18A2 2 0 0 0 6.4 21h11.2a2 2 0 0 0 1.8-2.6L14 8.4V2" /><path d="M7.5 15h9" /></Ic> },
+  // 내 전략 — 문서 리스트
+  { to: "/strategies", label: "내 전략", icon: <Ic><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></Ic> },
+  // 포트폴리오 — 파이
+  { to: "/portfolio", label: "포트폴리오", icon: <Ic><path d="M21 12A9 9 0 1 0 12 21" /><path d="M12 3a9 9 0 0 1 9 9h-9z" /></Ic> },
+  // 트레이딩 — 활동 펄스
+  { to: "/monitor", label: "트레이딩", icon: <Ic><path d="M3 12h4l3 8 4-16 3 8h4" /></Ic> },
+  // 선물 분석 — 막대(캔들)
+  { to: "/futures", label: "선물 분석", icon: <Ic><path d="M3 3v18h18" /><rect x="7" y="11" width="3" height="6" rx="0.5" /><rect x="13" y="7" width="3" height="10" rx="0.5" /></Ic> },
+  // 설정 — 기어
+  { to: "/settings", label: "설정", icon: <Ic><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" /></Ic> },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -44,7 +61,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             end={n.to === "/"}
             className={({ isActive }) => "navlink" + (isActive ? " active" : "")}
           >
-            {n.label}
+            <span className="nav-ic" aria-hidden="true">{n.icon}</span>
+            <span>{n.label}</span>
           </NavLink>
         ))}
         <div className="sidebar-foot">

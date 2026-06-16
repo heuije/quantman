@@ -4,7 +4,7 @@ import type {
   IrStrategyDef, IrStrategyResult,
   MarketContext, NextDayPreview, PortfolioRisk,
   PortfolioAnalyzeIn, PortfolioAnalysis, PortfolioHoldings, SymbolDetail, SymbolListing,
-  CompareResult,
+  CompareResult, KrExtras, IndustryData,
   ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO, ScreenerUserPreset,
   StrategyDef, StrategyRow, StrategyStats, StrategyVersionRow,
   SymbolInfo, SyncSnapshot, TradingTimeline, UserSettingsIO,
@@ -74,6 +74,7 @@ export type IrExplanation = {
 };
 
 // 자연어 → StrategyIR 컴파일 결과 (/ir/compile). success=false면 error 사유.
+// rate_limited=true면 일일 한도 초과(LLM 미호출). used/limit/remaining은 사용량 표시용.
 export type IrCompileResult = {
   success: boolean;
   ir: Record<string, unknown>;
@@ -81,7 +82,20 @@ export type IrCompileResult = {
   issues: IrIssue[];
   explanation?: IrExplanation | null;
   error?: string | null;
-  compile_id: number;
+  compile_id: number | null;
+  rate_limited?: boolean;
+  used?: number;
+  limit?: number;
+  remaining?: number;
+  admin_unlocked?: boolean;
+};
+
+// 일일 사용량 조회 (/ir/compile/quota). 카운터 표시 + admin 비번 즉시 검증.
+export type CompileQuota = {
+  used: number;
+  limit: number;
+  remaining: number;
+  admin_unlocked: boolean;
 };
 
 export const api = {
@@ -168,6 +182,10 @@ export const api = {
     req<CompareResult>(
       `/market/compare?symbols=${encodeURIComponent(symbols.join(","))}&range=${range}`),
   marketListings: () => req<{ listings: SymbolListing[] }>("/market/listings"),
+  krExtras: (symbol: string) =>
+    req<KrExtras>(`/market/kr/${encodeURIComponent(symbol)}`),
+  industryDetail: (name: string) =>
+    req<IndustryData>(`/market/industry/${encodeURIComponent(name)}`),
   analyzePortfolio: (body: PortfolioAnalyzeIn) =>
     req<PortfolioAnalysis>("/portfolio/analyze", {
       method: "POST", body: JSON.stringify(body),
@@ -224,9 +242,16 @@ export const api = {
       method: "POST", body: JSON.stringify(strategy),
     }),
   // 자연어 전략 설명 → StrategyIR 컴파일. 결과 IR을 빌더가 hydrate한다.
-  compileIr: (nl: string) =>
+  compileIr: (nl: string, adminPassword?: string) =>
     req<IrCompileResult>("/ir/compile", {
-      method: "POST", body: JSON.stringify({ nl }),
+      method: "POST",
+      body: JSON.stringify(adminPassword ? { nl, admin_password: adminPassword } : { nl }),
+    }),
+  // 일일 사용량 조회 — 컴파일 소모 없음. 비번 동봉 시 언락 즉시 검증.
+  compileQuota: (adminPassword?: string) =>
+    req<CompileQuota>("/ir/compile/quota", {
+      method: "POST",
+      body: JSON.stringify(adminPassword ? { admin_password: adminPassword } : {}),
     }),
   // 컴파일 정확도 신호 — 컴파일된 IR을 (수정 없이) 실행했는지 기록.
   compileFeedback: (compile_id: number, ran: boolean, edited: boolean | null) =>
@@ -480,6 +505,60 @@ export interface OilWalkForward {
   out_of_sample: OilSummary;
 }
 
+// ─── Trend → Forward (진입 추세 → 미래 수익률) ──────────────────────
+export interface OilTrendEvent {
+  date: string;
+  close: number;
+  past_return: number;      // close[t]/close[t-lookback]-1
+  forward_return: number;   // close[t+horizon]/close[t]-1
+}
+
+export interface OilTrendRegression {
+  slope: number;
+  intercept: number;
+  r_squared: number;
+  n: number;
+  hac_se: number;
+  hac_t_stat: number;
+  hac_p_value: number;      // 정규근사 양측 p
+}
+
+export interface OilTrendEvents {
+  lookback: number;
+  horizon: number;
+  mode: "all" | "signal";
+  side: OilSide | null;
+  threshold: number | null;
+  events: OilTrendEvent[];
+  regression: OilTrendRegression | null;
+  low_sample: boolean;
+}
+
+// (L,H) 설명력 격자 — 종가범위 조건 하 forward~past 회귀 + OOS 안정성.
+export interface OilTrendScanCell {
+  lookback: number;
+  horizon: number;
+  n: number;
+  r_squared: number | null;    // 표본 부족(min_n 미만) 시 null
+  slope: number | null;
+  intercept: number | null;
+  hac_p_value: number | null;
+  oos_r_squared: number | null;
+  oos_slope: number | null;
+  sign_stable: boolean;        // train·test 기울기 동부호
+}
+
+export interface OilTrendScan {
+  price_lo: number;
+  price_hi: number;
+  lookbacks: number[];
+  horizons: number[];
+  cells: OilTrendScanCell[];
+  n_cells: number;             // 격자 칸 수 = 다중비교 규모
+  oos_split: number;
+  min_n: number;
+}
+
 export const futuresApi = {
   instruments: () => req<OilInstrument[]>("/futures/instruments"),
   dataInfo: (sym: string) => req<OilDataInfo>(`/futures/${sym}/data-info`),
@@ -497,6 +576,9 @@ export const futuresApi = {
     horizons?: number[];
     commission?: number;
     slippage_ticks?: number;
+    smooth_window?: number;
+    min_gap_days?: number;
+    roll_cost_pct?: number;
   } = {}) => {
     const qs = new URLSearchParams();
     if (opts.shorts?.length) qs.set("shorts", opts.shorts.join(","));
@@ -505,6 +587,12 @@ export const futuresApi = {
     if (opts.commission !== undefined) qs.set("commission", String(opts.commission));
     if (opts.slippage_ticks !== undefined)
       qs.set("slippage_ticks", String(opts.slippage_ticks));
+    if (opts.smooth_window !== undefined && opts.smooth_window !== 1)
+      qs.set("smooth_window", String(opts.smooth_window));
+    if (opts.min_gap_days !== undefined && opts.min_gap_days !== 0)
+      qs.set("min_gap_days", String(opts.min_gap_days));
+    if (opts.roll_cost_pct !== undefined && opts.roll_cost_pct !== 0)
+      qs.set("roll_cost_pct", String(opts.roll_cost_pct));
     const q = qs.toString();
     return req<OilGridCell[]>(`/futures/${sym}/grid` + (q ? "?" + q : ""));
   },
@@ -522,6 +610,8 @@ export const futuresApi = {
     stop_loss_pct?: number | null;
     take_profit_pct?: number | null;
     roll_cost_pct?: number;
+    smooth_window?: number;
+    min_gap_days?: number;
   }) =>
     req<OilBacktest>(`/futures/${sym}/backtest`, {
       method: "POST",
@@ -532,7 +622,10 @@ export const futuresApi = {
     side: OilSide;
     threshold: number;
     horizon_days: number;
+    commission?: number;
+    slippage_ticks?: number;
     roll_cost_pct?: number;
+    min_gap_days?: number;
   }) => {
     const t = tokenStore.get();
     const res = await fetch(`${BASE}/futures/${sym}/export.xlsx`, {
@@ -564,6 +657,8 @@ export const futuresApi = {
     split_date: string;
     commission?: number;
     slippage_ticks?: number;
+    smooth_window?: number;
+    min_gap_days?: number;
   }) =>
     req<OilWalkForward>(`/futures/${sym}/walkforward`, {
       method: "POST",
@@ -571,4 +666,79 @@ export const futuresApi = {
     }),
   seasonality: (sym: string) => req<OilSeasonality>(`/futures/${sym}/seasonality`),
   macroContext: (sym: string) => req<OilMacroContext>(`/futures/${sym}/macro-context`),
+  trendEvents: (sym: string, opts: {
+    lookback: number;
+    horizon: number;
+    side?: OilSide;
+    threshold?: number;
+    smooth_window?: number;
+    min_gap_days?: number;
+  }) => {
+    const qs = new URLSearchParams({
+      lookback: String(opts.lookback),
+      horizon: String(opts.horizon),
+    });
+    if (opts.side) qs.set("side", opts.side);
+    if (opts.threshold !== undefined) qs.set("threshold", String(opts.threshold));
+    if (opts.smooth_window !== undefined && opts.smooth_window !== 1)
+      qs.set("smooth_window", String(opts.smooth_window));
+    if (opts.min_gap_days !== undefined && opts.min_gap_days !== 0)
+      qs.set("min_gap_days", String(opts.min_gap_days));
+    return req<OilTrendEvents>(`/futures/${sym}/trend-events?` + qs.toString());
+  },
+  trendScan: (sym: string, opts: {
+    price_lo: number;
+    price_hi: number;
+    lookbacks?: number[];
+    horizons?: number[];
+    min_n?: number;
+    gap?: number;
+  }) => {
+    const qs = new URLSearchParams({
+      price_lo: String(opts.price_lo),
+      price_hi: String(opts.price_hi),
+    });
+    if (opts.lookbacks?.length) qs.set("lookbacks", opts.lookbacks.join(","));
+    if (opts.horizons?.length) qs.set("horizons", opts.horizons.join(","));
+    if (opts.min_n !== undefined) qs.set("min_n", String(opts.min_n));
+    if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
+    return req<OilTrendScan>(`/futures/${sym}/trend-scan?` + qs.toString());
+  },
+  // 향후 종가 증감율 결과(조건·이벤트·요약) .xlsx 다운로드. blob 직접 처리.
+  trendExport: async (sym: string, opts: {
+    lookback: number;
+    horizon: number;
+    price_lo: number;
+    price_hi: number;
+    change_lo?: number;
+    change_hi?: number;
+    gap?: number;
+  }) => {
+    const t = tokenStore.get();
+    const qs = new URLSearchParams({
+      lookback: String(opts.lookback),
+      horizon: String(opts.horizon),
+      price_lo: String(opts.price_lo),
+      price_hi: String(opts.price_hi),
+    });
+    if (opts.change_lo !== undefined) qs.set("change_lo", String(opts.change_lo));
+    if (opts.change_hi !== undefined) qs.set("change_hi", String(opts.change_hi));
+    if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
+    const res = await fetch(`${BASE}/futures/${sym}/trend-export.xlsx?` + qs.toString(), {
+      headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      throw new Error(b.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `trend_${sym}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
 };

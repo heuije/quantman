@@ -10,8 +10,8 @@
 핵심 시점 판단:
   - cycles.jsonl 최근 entry에 summary["market"]·["kind"] 명시되어 있으면 우선 사용.
   - 명시 누락(기존 entry) 시 ts 시각대로 추정 fallback — 평일 08:55~09:30 entry는
-    KRX cycle, 15:35 이후는 KRX settlement로 간주. Phase 4에서 trader가 명시
-    set하면 fallback 사용 빈도 자연 감소.
+    KRX cycle, 장 마감 후(15:50 cron) entry는 KRX settlement로 간주. Phase 4에서
+    trader가 명시 set하면 fallback 사용 빈도 자연 감소.
 
 호출 흐름:
   scheduler.register_jobs() 끝 → background thread → run_catchup_on_startup()
@@ -284,13 +284,15 @@ def _decide_catchup_plan(now: datetime | None = None) -> CatchupPlan:
     plan = CatchupPlan()
     entries = _read_recent_cycles()
 
-    # ── KRX settlement (15:35 cron) catch-up 필요 판단 ────────────────────
-    # 가장 최근 KRX 영업일이 settle 대상. 오늘이 영업일이면 15:35 지났는지 확인.
+    # ── KRX settlement (15:50 cron) catch-up 필요 판단 ────────────────────
+    # 가장 최근 KRX 영업일이 settle 대상. 오늘이 영업일이면 15:50 지났는지 확인.
+    # θ: 임계는 scheduler.py 정산 cron(15:50)과 정합 — 15:35로 두면 선물 종가청산
+    # (15:40 발주→단일가 15:45 체결) 확인 전에 catch-up reconcile이 돈다(역순 재생산).
     last_krx_biz = _recent_krx_business_day(now)
     if last_krx_biz is not None:
-        # "오늘이 영업일인데 15:35 안 됐으면" 그 날짜는 settlement 대상 아님
+        # "오늘이 영업일인데 15:50 안 됐으면" 그 날짜는 settlement 대상 아님
         # → 어제(또는 그 전 영업일)로 후퇴
-        if last_krx_biz == now.date() and now.time() < time(15, 35):
+        if last_krx_biz == now.date() and now.time() < time(15, 50):
             # 어제 또는 직전 영업일
             for delta in range(1, 7):
                 d = now.date() - timedelta(days=delta)

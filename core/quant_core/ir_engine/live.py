@@ -17,7 +17,7 @@ import pandas as pd
 
 from ..blocks import EvalContext, evaluate
 from ..exec_defaults import instrument_spec
-from .engine import _scoped, price_exit_reason
+from .engine import _scoped, fx_usdkrw_rate, price_exit_reason
 from .spec import StrategyIR
 
 
@@ -72,7 +72,8 @@ def cycle_exit_reason(strategy: StrategyIR, *, held_days: int,
 
 
 def event_buy_qty(strategy: StrategyIR, *, cash: float, prev_close: float,
-                  capital: Optional[float] = None, symbol: Optional[str] = None) -> int:
+                  capital: Optional[float] = None, symbol: Optional[str] = None,
+                  dataset: Optional[dict] = None) -> int:
     """이벤트(on_signal) IR 진입 종목당 수량 — 엔진 _open과 동일.
 
     예산: 주식 = amount_krw(fixed_amount) 또는 cash×amount_pct%(단일 종목은 100% 전액).
@@ -82,6 +83,12 @@ def event_buy_qty(strategy: StrategyIR, *, cash: float, prev_close: float,
     _open과 일치). 주식이면 정수주 = floor(예산/px). symbol 미지정 시 단일 유니버스면 그 종목으로 추론.
     횡단 사이저(equal/vol/target_vol/fixed_weight)는 스케줄·상시 전용 — 호출자가 preview 수량 사용.
     max_position_pct(<100, 주식만)면 비중 상한 클램프. capital 미지정이면 cash 사용.
+
+    **F-01 사이징 FX**: amount_krw(₩정액)를 비-KRW(USD) 상품에 쓸 땐 dataset의
+    원달러환율(마지막 가용 종가 — 엔진 _budget과 같은 fx_usdkrw_rate 룩업)로 환산한다.
+    무환산이던 결함으로 GOOG($353)에 ₩100만이 2,832주(≈$93만)로 사이징됐다(2026-06-12
+    라이브 실증). 환산 불가(시계열 없음·dataset 미전달)면 0 — 발주 보류(추측 환율 금지),
+    호출자가 '수량 부족'으로 표면화. KRW 상품·%사이징은 기존 그대로(무환산).
     """
     if prev_close <= 0:
         return 0
@@ -93,9 +100,34 @@ def event_buy_qty(strategy: StrategyIR, *, cash: float, prev_close: float,
     is_fut = spec is not None and spec.asset_class == "futures"
     if sz.mode == "fixed_amount" and sz.amount_krw:
         budget = float(sz.amount_krw)
+        if spec is not None:
+            ccy = spec.currency
+        else:
+            # symbol 미지정(레거시 콜시그) — 유니버스로 통화 판정. 전부 KRW면 KRW(기존
+            # 그대로), 비-KRW가 섞이면 환산 필요로 취급: KRW로 가정하면 USD 종목이
+            # 1,370배 과대 사이징되므로(fund-safety) 보류가 안전하다. kind=all(symbols
+            # 비음)은 국내 전체 유니버스 — 기존 KRW 동작 보존.
+            usyms = u.symbols or []
+            ccy = "KRW" if (not usyms or all(
+                instrument_spec(x).currency == "KRW" for x in usyms)) else "USD"
+        if ccy != "KRW":
+            fx = fx_usdkrw_rate(dataset)
+            if fx is None:
+                return 0       # 환산 불가 — 발주 보류(호출자 skip_funds로 사유 표면화)
+            budget = budget / fx
     elif is_fut:
         # 선물: 예산 = 가용현금 × 증거금 사용률(기본 20%). 엔진 _budget과 동일.
         budget = cash * (sz.futures_margin_pct / 100.0)
+        # US-F1: 해외선물(USD)은 라이브 선물계좌 현금이 KRW인데 계약 가격·승수가 USD다
+        # (trader가 _currency_of=KRW로 보내 futures_order_cash[KRW]를 넘긴다). KRW 예산을
+        # USD로 환산하지 않으면 USD 가격으로 나눠 ~1,370배 과대 계약이 된다 — fixed_amount의
+        # F-01 환산을 % 경로에도 대칭 적용. 환산 불가면 0(보류, 추측 환율 금지). 백테스트
+        # _budget은 단일통화(cash=종목통화) 가정이라 무관·무변경. KRW 선물은 무환산(기존 그대로).
+        if spec.currency != "KRW":
+            fx = fx_usdkrw_rate(dataset)
+            if fx is None:
+                return 0
+            budget = budget / fx
     else:
         eff_pct = 100.0 if single else sz.amount_pct
         budget = cash * (eff_pct / 100.0)

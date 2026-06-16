@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -227,10 +229,23 @@ def _ev_is_in(resolved, params, ctx):
     """라벨 멤버십 → condition. 라벨이 values 집합에 속하면 참(negate면 반전).
 
     '금융·지주 제외'(negate)·'특정 버킷만'(bucket 라벨)·슬리브 구분 등 범주 선택의 원자.
+
+    match="contains"는 정확매칭 대신 부분문자열 매칭 — 섹터/업종 분류가 KSIC 자유서술
+    ("반도체 제조업")이라 사용자어("반도체")로는 정확매칭이 0건이 되는 문제 때문에 필요하다.
+    기본은 "exact"(버킷·국면 라벨 등 정확 멤버십이 옳은 용도의 회귀 불변).
     """
     x = resolved["signal"]
     values = list(params.get("values", []))
-    mask = x.isin(values)
+    if params.get("match") == "contains":
+        if values:
+            pat = "|".join(re.escape(str(v)) for v in values)
+            contains = lambda s: s.astype(str).str.contains(pat, regex=True, na=False)
+            mask = x.apply(contains) if isinstance(x, pd.DataFrame) else contains(x)
+        else:
+            mask = (pd.DataFrame(False, index=x.index, columns=x.columns)
+                    if isinstance(x, pd.DataFrame) else pd.Series(False, index=x.index))
+    else:
+        mask = x.isin(values)
     if params.get("negate", False):
         mask = ~mask
     return as_bool_panel(mask)
@@ -278,5 +293,5 @@ register(BlockDef("attribute", ValueType.LABEL, _ev_attribute,
                   doc="종목 정적 분류 라벨(섹터·업종)"))
 register(BlockDef("is_in", ValueType.CONDITION, _ev_is_in,
                   slots={"signal": ValueType.LABEL},
-                  param_defaults={"negate": False},
-                  doc="라벨 멤버십 조건(집합 포함/제외)"))
+                  param_defaults={"negate": False, "match": "exact"},
+                  doc="라벨 멤버십 조건(집합 포함/제외, match=exact|contains)"))

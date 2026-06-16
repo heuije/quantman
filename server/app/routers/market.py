@@ -11,9 +11,10 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 import quant_core as qc
+from quant_core import data_fetcher
 
 from .. import dashboard_indicators, kis_master_cache
 from ..deps import get_current_user
@@ -44,7 +45,24 @@ def _resolve(data: dict, names: list[str]) -> str | None:
 
 
 @router.get("/context")
-def market_context(user: User = Depends(get_current_user)):
+def market_context(request: Request, response: Response,
+                   user: User = Depends(get_current_user)):
+    # tag-first ETag(서버 인프라 핸드오프 #5) — Monitor가 15s 폴링하는 endpoint.
+    # 응답 동인은 ① 데이터 세대(parquet 쓰기마다 mark_data_dirty가 bump — naver 15분
+    # cron·일일 수집 포함. 지표 값·as_of의 유일한 변경 경로)와 ② 세션 phase(동시호가/
+    # 정규장 배지)뿐이므로 둘로 tag를 만들어, 매칭 시 ~6종목 parquet 디스크 로드를
+    # 통째로 건너뛰고 304만 반환한다. phase는 한글이라 헤더(latin-1 제약)에 못 실어
+    # utf-8 hex로 인코딩. kst_now는 매 호출 변하지만 웹 미사용(MarketBar는 phase·
+    # indicators만 렌더)이라 tag 성분에서 제외 — 304 동안 frozen이어도 표시 영향 0.
+    # 패턴 출처: /trading/timeline tag-first
+    # (docs/incidents/2026-06-10-neon-data-transfer-quota.md 재발 방지 D2).
+    sess = _session_now()
+    etag = (f'W/"{data_fetcher.data_generation()}'
+            f'-{sess["phase"].encode("utf-8").hex()}"')
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304)
+    response.headers["ETag"] = etag
+
     # 지수·VIX·환율 ~6종목의 Close만 필요 — 후보 키만 부분집합 로드(전 유니버스 빌드 회피).
     # 지표 계산 불요(raw OHLCV로 충분). 없는 후보는 load_dataset_for가 조용히 skip.
     cands = [n for _, names in _MARKET_SYMBOLS for n in names]
@@ -71,7 +89,8 @@ def market_context(user: User = Depends(get_current_user)):
         })
     return {
         "indicators": indicators,
-        "session": _session_now(),
+        # ETag 계산 시점의 sess 재사용 — tag 성분(phase)과 본문이 항상 일치.
+        "session": sess,
     }
 
 
@@ -381,6 +400,45 @@ def market_compare(symbols: str, range: str = "1y",
     if not items:
         raise HTTPException(status_code=404, detail="비교할 데이터를 찾을 수 없습니다.")
     return {"items": items, "range": range}
+
+
+@router.get("/kr/{symbol}")
+def kr_extras(symbol: str, user: User = Depends(get_current_user)):
+    """한국 종목 부가 데이터 — 투자자별 순매매·애널리스트 리포트·컨센서스·추정
+    실적·최근 공시. 무료 공개 소스(네이버/FnGuide/DART) 크롤링, 6자리 국내 종목만.
+
+    5개 소스를 병렬 fetch(첫 호출 지연 최소화). 각 소스는 krdata 내부에서
+    독립적으로 실패를 흡수(빈 결과)하므로 한 소스가 죽어도 나머지는 제공된다.
+    종목·소스별 lru_cache(일자 키)로 같은 날 재요청은 즉시 응답.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .. import krdata
+
+    code = symbol.strip()
+    if not krdata.is_kr(code):
+        raise HTTPException(status_code=400, detail="한국 종목(6자리 코드)만 지원합니다.")
+    sources = {
+        "investor": krdata.investor, "reports": krdata.reports,
+        "consensus": krdata.consensus, "earnings": krdata.earnings,
+        "disclosures": krdata.disclosures, "shorting": krdata.shorting,
+    }
+    with ThreadPoolExecutor(max_workers=len(sources)) as ex:
+        futures = {k: ex.submit(fn, code) for k, fn in sources.items()}
+        return {k: f.result() for k, f in futures.items()}
+
+
+@router.get("/industry/{name}")
+def industry_detail(name: str, user: User = Depends(get_current_user)):
+    """산업(섹터) 밸류체인 분석 — 기업 목록 + 라이브 시총·등락률·M/s·재무.
+    포트폴리오 대시보드의 산업 분석을 이식. 트리맵·기업표는 프론트에서 구성."""
+    from .. import industry as industry_mod
+
+    rows = industry_mod.industry(name)
+    if rows is None:
+        raise HTTPException(status_code=404, detail=f"'{name}' 산업 데이터를 찾을 수 없습니다.")
+    return {"industry": name, "companies": rows,
+            "available": list(industry_mod.INDUSTRIES.keys())}
 
 
 def _session_now() -> dict:

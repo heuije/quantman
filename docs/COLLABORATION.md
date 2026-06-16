@@ -56,6 +56,11 @@ Claude 세션을 새로 열면 시작 시 열린 PR 목록이 뜸.
 2. **시작 시 draft PR:** `git switch -c feat/내작업` 후 바로 draft PR을 연다(유실·중복 방지).
 3. **작업 단위 브랜치 + main 직접 push 금지**(훅이 차단).
 4. **짧게·자주 머지:** 브랜치는 오래 두면 발산한다. 매일 main 머지, merge 후 알림.
+5. **희제 PR은 merge-commit으로 머지(squash 금지).** Vercel 웹 배포는 main 커밋의 *author*로 동작하는데,
+   squash 머지는 커밋 author를 PR 저자(희제)로 찍어 → 희제가 Vercel 팀 미소속이라 **웹 자동배포가 거부**된다
+   (Railway 서버는 author 무관·정상). GitHub "Create a merge commit" 또는 `gh pr merge <n> --merge`로 머지하면
+   author=머지한 사람(조대표)이라 자동배포된다. 조대표 본인 PR은 squash여도 무방. (이유·수동 재배포 대안은
+   프로젝트 `CLAUDE.md §2.5 배포 토폴로지`.)
 
 ### 경계 — CLAUDE.md §2 vs draft PR
 - **구조적 핸드오프**(새 모듈·아키텍처·담당 경계) → 프로젝트 `CLAUDE.md §2` (오래 가는 사실)

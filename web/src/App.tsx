@@ -13,6 +13,7 @@ import Legal from "./pages/Legal";
 import FuturesAnalytics from "./pages/FuturesAnalytics";
 import StockDashboard from "./pages/StockDashboard";
 import Portfolio from "./pages/Portfolio";
+import IndustryAnalysis from "./pages/IndustryAnalysis";
 
 export default function App() {
   const { email, ready } = useAuth();
@@ -36,6 +37,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/dashboard" element={<StockDashboard />} />
+        <Route path="/industry" element={<IndustryAnalysis />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/lab" element={<IrBuilder />} />
         <Route path="/strategies" element={<Strategies />} />

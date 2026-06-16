@@ -63,6 +63,7 @@ def build_oil_excel(
     commission_per_contract: float = 2.5,
     slippage_ticks: int = 1,
     roll_cost_pct: float = 0.0,
+    min_gap_days: int = 0,
     name: str = "선물",
     currency: str = "USD",
     unit: str = "",
@@ -136,6 +137,15 @@ def build_oil_excel(
         cell.border = border
         cell.alignment = center
 
+    # ── 쿨타임 입력 (노란 칸 $H$5) — 신호 후 N영업일 같은 임계 신호 무시 ──
+    ws["G5"] = "쿨타임 (영업일, 0=없음)"
+    ws["G5"].font = bold
+    cd = ws["H5"]
+    cd.value = min_gap_days
+    cd.fill = input_fill
+    cd.border = border
+    cd.alignment = center
+
     # ── 요약 (D2~E6) ─────────────────────────────────────────────────
     n = len(df)
     last = 8 + n            # 데이터는 9행부터 → 마지막 데이터 행
@@ -180,12 +190,15 @@ def build_oil_excel(
         ws.cell(row=r, column=4, value=float(row["low"]))
         ws.cell(row=r, column=5, value=float(row["close"]))
 
-        # F 신호: short=고가 위로 첫터치, long=저가 아래로 첫터치 (전일 비교 히스테리시스)
-        ws.cell(row=r, column=6, value=(
-            f'=IF($B$2="short",'
-            f'IF(AND(C{r}>=$B$3,C{r-1}<$B$3),1,""),'
-            f'IF(AND(D{r}<=$B$3,D{r-1}>$B$3),1,""))'
-        ))
+        # F 신호: 첫터치(전일 비교 히스테리시스) ∧ 쿨타임($H$5) — 직전 (쿨타임−1)영업일 내
+        #   유효신호 있으면 무시. F가 곧 '유효신호'라 G~J(진입/청산)는 그대로 F 참조.
+        #   윈도우=쿨−1 (generate_signals 'i−last>=min_gap'와 일치, off-by-one 주의).
+        #   OFFSET 높이는 MIN(쿨−1, r−1)로 클램프(row1 위 #REF 방지; 헤더행은 신호 0이라 무해).
+        raw = (f'IF($B$2="short",AND(C{r}>=$B$3,C{r-1}<$B$3),'
+               f'AND(D{r}<=$B$3,D{r-1}>$B$3))')
+        win = f'MIN($H$5-1,{r - 1})'
+        cool = (f'IF($H$5<=1,1,IF(COUNTIF(OFFSET(F{r},-{win},0,{win},1),1)=0,1,""))')
+        ws.cell(row=r, column=6, value=f'=IF({raw},{cool},"")')
         # G 진입일 = 신호 다음 영업일 날짜
         ws.cell(row=r, column=7,
                 value=f'=IF(F{r}=1,IFERROR(OFFSET(A{r},1,0),""),"")')
@@ -259,6 +272,7 @@ def build_oil_excel(
         df,
         short_thresholds=[threshold] if side == "short" else [],
         long_thresholds=[threshold] if side == "long" else [],
+        min_gap_days=min_gap_days,
     )
     bt = run_backtest(
         df, sigs, horizon_days,
@@ -364,6 +378,103 @@ def build_oil_excel(
         doc.cell(row=1 + i, column=2, value=b)
     doc.column_dimensions["A"].width = 16
     doc.column_dimensions["B"].width = 76
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def build_oil_trend_excel(
+    events: list,          # list[TrendEvent] (duck-typed: .date/.close/.past_return/.forward_return)
+    raw_n: int,
+    *,
+    lookback: int,
+    horizon: int,
+    price_lo: float,
+    price_hi: float,
+    change_lo: float,
+    change_hi: float,
+    gap: int,
+    name: str,
+    price_sym: str,
+) -> bytes:
+    """추세 탐색기 '향후 종가 증감율' 결과를 .xlsx 로 — 조건/요약/이벤트 3시트.
+
+    events 는 trend_matched 의 디클러스터 결과(화면과 동일). 백테스트 수식 엑셀과 달리
+    서술용 데이터 덤프(조건·이벤트·요약) — 라이브 수식 없음.
+    """
+    bold = Font(bold=True)
+    title_font = Font(bold=True, size=14)
+
+    def _rng(lo: float, hi: float, sym: str, suf: str) -> str:
+        l = "−∞" if lo <= -1e8 else f"{sym}{lo:g}{suf}"
+        h = "∞" if hi >= 1e8 else f"{sym}{hi:g}{suf}"
+        return f"{l} ~ {h}"
+
+    n = len(events)
+    mean = sum(e.forward_return * 100.0 for e in events) / n if n else 0.0
+    up = 100.0 * sum(1 for e in events if e.forward_return > 0) / n if n else 0.0
+    if mean >= 4:
+        opinion = "강한 상승 경향"
+    elif mean >= 1:
+        opinion = "상승 경향"
+    elif mean <= -4:
+        opinion = "강한 하락 경향"
+    elif mean <= -1:
+        opinion = "하락 경향"
+    else:
+        opinion = "중립 (뚜렷한 방향성 없음)"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "조건"
+    ws["A1"] = f"{name} — 향후 종가 증감율 분석"
+    ws["A1"].font = title_font
+    cond_rows = [
+        ("종가 범위", _rng(price_lo, price_hi, price_sym, "")),
+        ("과거 기간 (L)", f"{lookback} 영업일"),
+        ("과거 증감율 범위", _rng(change_lo, change_hi, "", "%")),
+        ("향후 기간 (H)", f"{horizon} 영업일"),
+        ("이벤트 최소 간격", f"{gap} 영업일 (0=원시)"),
+    ]
+    for i, (k, v) in enumerate(cond_rows, start=3):
+        ws[f"A{i}"] = k
+        ws[f"A{i}"].font = bold
+        ws[f"B{i}"] = v
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 30
+
+    sm = wb.create_sheet("요약")
+    sm["A1"] = "요약"
+    sm["A1"].font = title_font
+    sum_rows: list[tuple[str, object]] = [
+        ("독립 표본 n", n),
+        ("원시 매칭 수", raw_n),
+        (f"평균 향후 {horizon}일 종가 증감율 (%)", round(mean, 2)),
+        ("상승 비율 (%)", round(up, 1)),
+        ("전망", opinion),
+    ]
+    for i, (k, v) in enumerate(sum_rows, start=3):
+        sm[f"A{i}"] = k
+        sm[f"A{i}"].font = bold
+        sm[f"B{i}"] = v
+    sm.column_dimensions["A"].width = 30
+    sm.column_dimensions["B"].width = 18
+
+    ev = wb.create_sheet("이벤트")
+    hdr = ["신호일", "종가", f"과거 {lookback}일 증감율(%)", f"향후 {horizon}일 종가증감율(%)"]
+    ev.append(hdr)
+    for c in range(1, len(hdr) + 1):
+        ev.cell(row=1, column=c).font = bold
+    for e in events:
+        ev.append([
+            str(e.date.date()),
+            round(float(e.close), 2),
+            round(e.past_return * 100.0, 2),
+            round(e.forward_return * 100.0, 2),
+        ])
+    for col, w in zip("ABCD", (12, 12, 22, 24)):
+        ev.column_dimensions[col].width = w
 
     buf = io.BytesIO()
     wb.save(buf)

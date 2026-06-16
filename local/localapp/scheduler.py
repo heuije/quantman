@@ -5,14 +5,15 @@
 - 평일 08:55  메인 사이클 (KRX 매수/청산 평가 + 발주)
 - 평일 15:25  종가 매도 사이클 (주식·당일매매 hold_days=0)
 - 평일 15:30  장중 loop 종료
-- 평일 15:35  장 마감 후 settlement
-- 평일 15:43  종가 매도 사이클 (선물·당일매매 hold_days=0)
+- 평일 15:40  종가 매도 사이클 (선물·당일매매 hold_days=0)
+- 평일 15:50  장 마감 후 settlement (θ: 모든 종가창 이후 — 선물 단일가 15:45 커버)
 
 미국(US) — 동적 야간 플래너:
 - 매일 12:00  오늘 밤 미국 세션을 시장 캘린더로 계산해 one-shot 잡 등록
   · open−20분 미국 예약발주 사이클 (run_cycle market="US", reserved=True)
   · open−10분 미국 장중 손절 loop 시작
   · open+5분  개장 후 예약체결 reconcile
+  · close−5분 종가 매도 사이클 (주식·당일매매 hold_days=0, 라이브 지정가)
   · close+5분 미국 장 마감 후 settlement
 - 미국 개장은 DST로 22:30↔23:30 KST 이동 + 휴장일이 한국과 달라 고정 cron이
   불가능하므로, 매일 캘린더에 물어 그날치 잡을 등록한다(휴장이면 무동작).
@@ -69,9 +70,12 @@ def _plan_us_session(sched: BlockingScheduler, now: datetime | None = None) -> N
     cycle_at = open_kst - timedelta(minutes=20)
     loop_start_at = open_kst - timedelta(minutes=10)
     reconcile_at = open_kst + timedelta(minutes=5)
+    # 종가 청산(당일매매 hold_days=0) — 폐장 5분 전 라이브 지정가 매도(시장가 근사).
+    # 미국은 MOC가 모의 미지원이라 연속장 막판 지정가가 최선의 모의=실전 종가 근사.
+    close_cycle_at = close_kst - timedelta(minutes=5)
     settle_at = close_kst + timedelta(minutes=5)
 
-    # 예약주문 발주 사이클 — 개장 전. reserved=True로 매수=지정가 예약·매도=MOO 예약.
+    # 예약주문 발주 사이클 — 개장 전. reserved=True로 매수·매도 모두 지정가 예약(00).
     sched.add_job(
         run_cycle, DateTrigger(run_date=cycle_at),
         kwargs={"market": "US", "reserved": True}, id="us_cycle",
@@ -88,6 +92,28 @@ def _plan_us_session(sched: BlockingScheduler, now: datetime | None = None) -> N
         kwargs={"market": "US"}, id="us_post_open_reconcile",
         name="미국 개장 후 예약체결 reconcile",
         replace_existing=True, misfire_grace_time=900)
+    # 종가 청산 사이클 — 폐장 5분 전. 라이브 지정가 매도(_reserved_us=False 신규 Trader)로
+    # 당일매매 보유분을 종가 무렵 청산 → backtest 종가청산과 정렬(주식 종가창과 동일 패턴).
+    sched.add_job(
+        run_close_cycle, DateTrigger(run_date=close_cycle_at),
+        kwargs={"market": "US", "instrument_class": "stock"},
+        id="us_close_cycle", name="미국 종가 매도 사이클 (주식·당일매매)",
+        replace_existing=True, misfire_grace_time=300)
+    # US-F4: 해외선물(CME) 당일매매 종가청산 — 종전엔 주식만 청산돼 선물 day-trade가
+    # 오버나이트 방치됐다(미배선). **폐장−20분**에 둔다(주식 종가청산 폐장−5분과 15분 분리):
+    #   ① CME 일일정산이 미국주식 폐장보다 이르다(예: 원유 14:30 ET vs 주식 16:00 ET)
+    #      → 폐장−20분이 정산 시각에 더 근접한 종가청산 프록시.
+    #   ② 주식 종가청산과 **시각 분리**해 두 ephemeral close-cycle Trader의 동시 실행을 회피한다.
+    #      같은 시각이면 각자 ledger를 통째 로드·저장해 한쪽 매도 제거가 다른 쪽에 덮여 포지션이
+    #      부활하는 lost-update(reload_state docstring의 라이브 실증 부류)가 난다 — KRX가
+    #      stock 15:25·futures 15:40으로 15분 분리한 것과 동형(선물이 먼저 끝나 stock이 신선 로드).
+    # 상품별 CME 정산시각 정밀정렬은 라이브 정밀화 대상.
+    close_cycle_futures_at = close_kst - timedelta(minutes=20)
+    sched.add_job(
+        run_close_cycle, DateTrigger(run_date=close_cycle_futures_at),
+        kwargs={"market": "US", "instrument_class": "futures"},
+        id="us_close_cycle_futures", name="미국 종가 매도 사이클 (해외선물·당일매매)",
+        replace_existing=True, misfire_grace_time=300)
     sched.add_job(
         intraday_loop.stop, DateTrigger(run_date=close_kst),
         id="us_loop_stop", name="미국 장중 손절 loop 종료",
@@ -98,10 +124,10 @@ def _plan_us_session(sched: BlockingScheduler, now: datetime | None = None) -> N
         replace_existing=True, misfire_grace_time=1800)
 
     log.info("미국 세션 스케줄 — 사이클(예약) %s · loop %s · 개장후reconcile %s · "
-             "loop종료 %s · 정산 %s (KST)",
+             "종가청산 %s · loop종료 %s · 정산 %s (KST)",
              cycle_at.strftime("%H:%M"), loop_start_at.strftime("%H:%M"),
-             reconcile_at.strftime("%H:%M"), close_kst.strftime("%m-%d %H:%M"),
-             settle_at.strftime("%H:%M"))
+             reconcile_at.strftime("%H:%M"), close_cycle_at.strftime("%H:%M"),
+             close_kst.strftime("%m-%d %H:%M"), settle_at.strftime("%H:%M"))
 
 
 def register_jobs(sched) -> None:
@@ -113,7 +139,7 @@ def register_jobs(sched) -> None:
 
     등록 항목:
       · KRX 08:50 loop / 08:55 cycle / 15:25 종가매도(주식) / 15:30 loop stop /
-        15:35 settlement / 15:43 종가매도(선물)
+        15:40 종가매도(선물) / 15:50 settlement
       · US 매일 12:00 야간 플래너 + 기동 시 즉시 1회 plan
       · 캘린더 04:00 일일 sync
       · heartbeat 5분 주기 + 기동 시 1회
@@ -153,13 +179,18 @@ def register_jobs(sched) -> None:
         intraday_loop.stop,
         CronTrigger(day_of_week="mon-fri", hour=15, minute=30, timezone="Asia/Seoul"),
         id="krx_loop_stop", name="KRX 장중 loop 종료", misfire_grace_time=300)
+    # θ: 정산은 모든 KRX 종가창이 끝난 뒤 1회 — 옛 15:35는 선물 종가청산(15:40
+    # 발주 → 단일가 15:35~15:45 체결)보다 먼저 돌아, 그 체결을 그날 안에 확인할
+    # 패스가 없었다(2026-06-12 0000004525 미기록 → 수동 복구). 15:50 = 선물
+    # 장종료(15:45) + 체결조회 여유 5분. catchup.py의 정산 임계와 정합 유지.
     sched.add_job(
         run_post_close_settlement, kwargs={"market": "KRX"},
-        trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=35, timezone="Asia/Seoul"),
+        trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=50, timezone="Asia/Seoul"),
         id="krx_settlement", name="KRX 장 마감 후 settlement", misfire_grace_time=600)
 
     # 종가 매도 사이클(당일매매 hold_days=0) — 주식 종가단일가 15:20~15:30 / 선물 15:35~15:45
-    # 구간 내 발주 → 단일가 체결. 진입은 아침 메인 cycle, 청산만 종가창에서 전담.
+    # 구간 내 발주(폐장 5분 전) → 단일가 체결. 진입은 아침 메인 cycle, 청산만 종가창에서 전담.
+    # 폐장 5분 전: 사이클 지연(스냅샷·발주)을 흡수할 여유. (선물 종전 15:43 → 15:40, 여유 2분→5분.)
     sched.add_job(
         run_close_cycle, kwargs={"market": "KRX", "instrument_class": "stock"},
         trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=25, timezone="Asia/Seoul"),
@@ -167,7 +198,7 @@ def register_jobs(sched) -> None:
         misfire_grace_time=300)
     sched.add_job(
         run_close_cycle, kwargs={"market": "KRX", "instrument_class": "futures"},
-        trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=43, timezone="Asia/Seoul"),
+        trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=40, timezone="Asia/Seoul"),
         id="krx_close_cycle_futures", name="KRX 종가 매도 사이클 (선물·당일매매)",
         misfire_grace_time=300)
 
@@ -245,8 +276,9 @@ def start() -> None:
     print("=" * 52)
     print("  로컬앱 스케줄러 시작 (KST)")
     print("  [KRX] 08:50 loop · 08:55 사이클 · 15:25 종가매도(주식) · 15:30 loop종료 · "
-          "15:35 정산 · 15:43 종가매도(선물)")
-    print("  [US ] 매일 12:00 야간 플래너 → open−20분 예약발주 / open+5분 reconcile / close+5분 정산")
+          "15:40 종가매도(선물) · 15:50 정산")
+    print("  [US ] 매일 12:00 야간 플래너 → open−20분 예약발주 / open+5분 reconcile / "
+          "close−5분 종가매도 / close+5분 정산")
     print("        (DST·휴장 자동 반영, 오늘 밤 세션은 기동 시 즉시 등록)")
     print("  [캘린더] 04:00 시장 캘린더 일일 sync (임시공휴일 반영)")
     print("  브로커: KIS (실전/모의투자)")

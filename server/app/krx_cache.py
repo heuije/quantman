@@ -188,6 +188,26 @@ def get_all_metrics() -> dict[str, dict]:
         return dict(_state["metrics"])
 
 
+def merge_fields(updates: dict[str, dict]) -> int:
+    """외부 소스가 산출한 필드를 daily_metrics에 enrich(이미 존재하는 종목만). 반환=enrich 종목 수.
+
+    스냅샷 base(가격·거래량)는 refresh()가 채우고, 파생 필드(NAVER 고유필드·canonical 밸류)는
+    이 단일 진입점으로 enrich한다. 스냅샷에 없는 종목은 skip(스크리너 유니버스 밖). None 값은 기존
+    값을 덮지 않는다(부분 갱신 안전)."""
+    n = 0
+    with _lock:
+        metrics = _state["metrics"]
+        for sym, fields in updates.items():
+            row = metrics.get(sym)
+            if row is None:
+                continue
+            for k, v in fields.items():
+                if v is not None:
+                    row[k] = v
+            n += 1
+    return n
+
+
 def get_status() -> dict:
     with _lock:
         return {

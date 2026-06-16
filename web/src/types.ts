@@ -90,11 +90,10 @@ export interface ExecutionPolicy {
   atr_mult?: number;                      // ATR × 이 배수 = 1주당 손절폭
   max_position_pct?: number | null;       // 단일 종목 비중 상한 (자본 %). null=한도 없음
   max_drawdown_pct?: number | null;       // 누적 손실 한도 (자본 고점 대비). null=한도 없음
-  /** 주문 유형 (Phase 49) — true=지정가(전일 종가 ± tolerance%), false=시장가.
-   *  시장가는 시초가 갭에 무방비라 default는 지정가. 변동성 큰 종목·일중 진입에서만 시장가 권장. */
-  use_limit?: boolean;
-  buy_tolerance_pct?: number;             // 매수 지정가 = 전일 종가 × (1 + N%) — 갭상승 허용 범위 (use_limit=true일 때만 사용)
-  sell_tolerance_pct?: number;            // 매도 지정가 = 전일 종가 × (1 - N%) — 갭하락 허용 범위 (Phase 38.9)
+  // 발주 방식은 시장이 결정(국내=시장가·미국주식=지정가). tolerance는 **미국 지정가 버퍼 전용**
+  // (라이브 체결 버퍼, 백테스트 무영향). 빈값이면 기본 ±3%. 유저가 빌더에서 전략별 조정.
+  buy_tolerance_pct?: number;             // 미국 매수 지정가 = 신선한 현재가 × (1 + N%) — 갭상승 허용
+  sell_tolerance_pct?: number;            // 미국 매도 지정가 = 신선한 현재가 × (1 − N%) — 갭하락 허용
   // Phase 39 + C-01 — 백테스트 비용 가정. 실매매(모의/실전) 영향 없음.
   bt_commission_bps?: number;             // 편도 위탁수수료 (bps). 3 = 0.03% (KIS 평균)
   bt_sell_tax_bps?: number;               // 매도 단방향 거래세 (bps). 23 = 0.23% (KOSPI/KOSDAQ 평균)
@@ -283,7 +282,7 @@ export interface IrStrategyDef {
     maintenance_margin_pct?: number | null;    // 레버리지 마진콜 유지증거금률(%)
     start?: string | null; end?: string | null;
   };
-  // 자동매매 체결 정책 — 주문 유형(use_limit: 지정가/시장가) 등. 미지정 시 글로벌 default.
+  // 자동매매 체결 정책 — 미국 지정가 tolerance 등. 미지정 시 글로벌 default(국내=시장가).
   execution?: ExecutionPolicy | null;
   // 조사형 쿼리 — query(동사) × study(축 × 환원). 옛 sweep+period_split을 흡수.
   // describe=신호값 분포, relate=이벤트/IC, simulate=백테스트(+축별 펼침·기간분할),
@@ -884,12 +883,14 @@ export interface CommandRow {
 
 // 자동매매 타임라인 — /trading/timeline 응답.
 // 서버 routers/trading.py 와 동기. event kind 추가 시 양쪽 같이 갱신.
-// 시작=cycle(주문 발주), 종료=settlement(미체결 정리·잔고 reconcile).
+// 시작=cycle(주문 발주), 종가청산=close(당일매매 hold_days=0 — 주식 15:25·선물 15:40·
+// 미장 close−5분), 종료=settlement(미체결 정리·잔고 reconcile, 15:50).
 // preview 시장별 분리: krx_preview(07:30 — US 종가 반영), us_preview(18:15 — KRX 종가 반영).
 export type TimelineEventKind =
-  | "krx_cycle" | "krx_settlement" | "krx_preview"
-  | "us_cycle"  | "us_settlement"  | "us_preview";
-export type TimelineEventStatus = "done" | "scheduled" | "missed" | "holiday";
+  | "krx_cycle" | "krx_close_stock" | "krx_close_futures" | "krx_settlement" | "krx_preview"
+  | "us_cycle"  | "us_close"        | "us_settlement"     | "us_preview";
+// warning(N2) — 실행은 됐으나 체결 미확인 잔존(발주-but-미기록을 ✓로 가장하지 않음).
+export type TimelineEventStatus = "done" | "warning" | "scheduled" | "missed" | "holiday";
 
 export interface TimelineEvent {
   at: string;                 // ISO datetime (KST offset 포함)
@@ -904,4 +905,76 @@ export interface TradingTimeline {
   heartbeat_at: string | null;
   heartbeat_status: "normal" | "warning" | "error";
   events: TimelineEvent[];
+}
+
+// ── 한국 종목 부가 데이터 (Company Analysis) — /market/kr/{symbol} ──
+export interface KrInvestorPoint {
+  date: string;
+  inst: number;        // 기관 순매매 (주)
+  foreign: number;     // 외국인 순매매 (주)
+  indiv: number;       // 개인 순매매 (주, ≈ −(기관+외국인))
+}
+export interface KrReport {
+  date: string;        // 작성일 (YY.MM.DD)
+  title: string;       // 리포트 제목
+  broker: string;      // 증권사
+  url: string;         // 원문 (PDF 또는 네이버 리포트 상세)
+}
+export interface KrConsensus {
+  broker: string;              // 제공 증권사
+  date: string;                // 최종일자
+  target: number | null;       // 목표주가 (원)
+  prev_target: number | null;  // 직전 목표주가
+  change_pct: number | null;   // 직전목표가 대비 변동률(%)
+  opinion: string;             // 투자의견 (BUY/매수 등)
+}
+export interface KrEarnings {
+  years: string[];                          // 연도 헤더 ['2024/12','2025/12','2026/12(E)',…]
+  rows: Record<string, (number | null)[]>;  // 항목별 값 (매출액/영업이익/당기순이익/지배주주, 억원)
+}
+export interface KrDisclosure {
+  date: string;        // 접수일 (YYYYMMDD)
+  title: string;       // 보고서명
+  submitter: string;   // 제출인
+  url: string;         // DART 원문 링크
+}
+export interface KrShortPoint {
+  date: string;                  // 일자
+  bal_qty: number | null;        // 공매도 잔고수량 (주)
+  bal_amt: number | null;        // 공매도 잔고금액 (원)
+  bal_ratio: number | null;      // 잔고비중 (%)
+}
+export interface KrExtras {
+  investor: KrInvestorPoint[];
+  reports: KrReport[];
+  consensus: KrConsensus[];
+  earnings: KrEarnings;
+  disclosures: KrDisclosure[];
+  shorting: KrShortPoint[];
+}
+
+// ── 산업(섹터) 밸류체인 분석 — /market/industry/{name} ──
+export interface IndustryCompany {
+  gu: string;          // 밸류체인 구분 (Upstream/Midstream/Downstream)
+  stage: string;       // 단계 (원자재/소재/셀/부품/장비/리사이클/애플리케이션)
+  detail: string;      // 세부분류 (양극재/음극재/분리막/셀 …)
+  name: string;        // 기업명
+  ticker: string;      // 종목코드
+  market: string;      // 시장 (KOSPI/KOSDAQ)
+  product: string;     // 주요제품
+  cap: number | null;        // 시가총액 (원)
+  chg: number | null;        // 전일대비 등락률 (%)
+  revenue: number | null;    // 매출액 (원)
+  op: number | null;         // 영업이익 (원)
+  op_margin: number | null;  // 영업이익률 (%)
+  ms: number | null;         // 세부분류 내 시총 점유율 (%)
+  ret: {                     // 기간 주가 수익률(%) — 5일/1개월/3개월/6개월/1년
+    d5: number | null; d20: number | null; d60: number | null;
+    d120: number | null; d240: number | null;
+  } | null;
+}
+export interface IndustryData {
+  industry: string;
+  companies: IndustryCompany[];
+  available: string[];
 }

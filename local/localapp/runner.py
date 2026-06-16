@@ -374,12 +374,15 @@ def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dic
     """종가 청산 사이클 — 당일매매(hold_days==0) 포지션만 종가 기준 청산 (Stage B).
 
     아침 메인 cycle(08:55)은 시가 진입까지만 담당하고, 당일매매 청산은 이 사이클이
-    종가 단일가 발주창에 전담한다(주식 15:20~15:30·선물 15:35~15:45). 매수·preview·
-    KIS intent reconcile은 불필요 — 청산은 ledger(보유)+dataset(ref/clamp)만 있으면 되므로
-    run_cycle의 무거운 진입 경로를 재사용하지 않고 격리한다(Over-engineering 회피).
+    종가 발주창에 전담한다(국내주식 15:25·국내선물 15:40·미국주식·해외선물 폐장−5분). 매수·
+    preview·KIS intent reconcile은 불필요 — 청산은 ledger(보유)+dataset(ref/clamp)만 있으면
+    되므로 run_cycle의 무거운 진입 경로를 재사용하지 않고 격리한다(Over-engineering 회피).
 
-    instrument_class ∈ {"stock","futures"} — 주식/선물 종가창이 달라 스케줄러가 분리 cron으로
-    호출한다. trader.liquidate_day_trades가 종목 클래스로 라우팅·유저 execution.use_limit 존중.
+    market ∈ {"KRX","US"}, instrument_class ∈ {"stock","futures"} — 시장·클래스별 종가창이
+    달라 스케줄러가 분리 잡으로 호출한다(US-F4: 해외선물도 폐장−5분에 청산 — 종전 stock만이라
+    선물 day-trade가 오버나이트 방치됐다. CME 정산시각 정밀정렬은 라이브 정밀화). 신규 Trader라
+    _reserved_us=False → trader.liquidate_day_trades가 클래스로 라우팅(국내=시장가 단일가,
+    미국=라이브 지정가 시장가근사).
     """
     setup_logging()
     _flush_pending()
@@ -472,7 +475,7 @@ def _run_settlement_locked(market: str, kind: str, label: str) -> dict:
     decisions: list[dict] = []
     trader._resolve_pending(decisions)
 
-    # Phase 40 — ledger ↔ KIS 정합성 자동 정정 (매매 직전 08:55엔 위험, 15:35에 실행)
+    # Phase 40 — ledger ↔ KIS 정합성 자동 정정 (매매 직전 08:55엔 위험, 15:50에 실행)
     reconcile_result = trader.reconcile_with_kis(today_iso=today)
     if reconcile_result.get("has_drift"):
         log.warning("reconcile drift 감지 — applied=%d, external_extras=%d",
@@ -496,6 +499,9 @@ def _run_settlement_locked(market: str, kind: str, label: str) -> dict:
             "kind": kind,
             "reconcile_drift": reconcile_result.get("has_drift", False),
             "reconcile_applied": len(reconcile_result.get("applied") or []),
+            # N2 — 정산 후에도 남은 미체결(장 마감 뒤라 전부 비정상 잔존).
+            # 서버 타임라인이 0이 아니면 ⚠로 표면화한다.
+            "n_pending_unresolved": len(trader.pending),
         },
     }
     # post_close_settlement은 cycle entry처럼 cycles.jsonl에 명시적 기록.

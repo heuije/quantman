@@ -20,7 +20,7 @@ def buy_and_fill(trader, broker, sid: str, symbol: str, qty: int, price: float,
     """매수 발주(SUBMITTED→PENDING) → WS 전량 체결(PENDING→FILLED). order_no 반환."""
     r = broker.buy_limit(symbol, qty, int(price))
     trader._after_submit(r, sid, strat_name, {}, symbol, "buy", qty, price, int(price),
-                          {"use_limit": True, "buy_tolerance_pct": 1.0}, [], reason="매수신호")
+                          {"buy_tolerance_pct": 1.0}, [], reason="매수신호")
     inject_ws_fill(trader, broker, r["order_no"], qty, price)
     return r["order_no"]
 
@@ -35,6 +35,8 @@ def strategy_buy_and_fill(trader, broker, sid: str, strat_def: dict, symbol: str
     (order_no, decisions) 반환 — 발주 안 됐으면 order_no=None.
     """
     decisions: list[dict] = []
+    # 사이징은 broker.price(현재가)를 참조 — 시나리오 체결가를 시세로 등록.
+    broker._prices.setdefault(symbol, fill_price)
     n_before = len(broker.submitted)
     trader._try_buy_one_symbol(sid, sid, strat_def.get("name", ""), strat_def,
                                symbol, dataset, equity, decisions)

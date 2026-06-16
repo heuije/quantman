@@ -12,14 +12,15 @@ from typing import Any
 # ── 글로벌 default ─────────────────────────────────────────────────────────────
 
 DEFAULT_EXECUTION: dict[str, Any] = {
-    # 주문 유형: 지정가 + tolerance (시장가는 시초가 갭에 무방비)
-    "use_limit": True,
-    # 매수: 어제 종가 × (1 + tol%) 까지 허용. 그 이상 갭상승 시 미체결 → 신호 폐기.
-    "buy_tolerance_pct": 1.0,
-    # 매도 (Phase 38.9 — sell/exit 통합): 어제 종가 × (1 − tol%) 까지 허용.
-    # 신호 기반 매도(매도조건·보유기간)와 청산(익절·손절·트레일)이 같은 값을 사용.
-    # 위험 관리는 잡혀야 하므로 매수 tol보다 공격적인 default.
-    "sell_tolerance_pct": 2.0,
+    # 발주 방식은 시장이 결정(시스템): 국내(주식·선물)=시장가 단일(동시호가 단일가
+    # 체결, 지정가 대비 슬리피지 손해 없음). 미국주식=지정가(KIS가 미국 연속장
+    # 시장가 미지원). 아래 tolerance는 **미국 지정가 버퍼 전용**(국내는 시장가라 미사용).
+    # = 라이브가 백테스트의 시가/종가 체결을 재현하기 위한 시장가-근사 버퍼. 미국 갭이
+    # 커서 default ±3%(과거 1%/2%는 갭에 미체결 유발). 전략 execution으로 유저 override 가능.
+    # 매수: 신선한 현재가 × (1 + tol%) 까지 허용. 그 이상 갭상승 시 미체결.
+    "buy_tolerance_pct": 3.0,
+    # 매도: 신선한 현재가 × (1 − tol%) 까지 허용(미체결=오버나이트 carry 회피).
+    "sell_tolerance_pct": 3.0,
     # Q7: time-in-force = DAY (업계 표준). KIS가 정규장 마감(15:30) 시 미체결 주문을
     # 자동 cancel하므로 로컬에서 별도 timeout cancel 없음. 5분 timeout이 비표준적
     # 으로 짧다는 결론(2026-05-23 리뷰) — Alpaca/IB/Fidelity/KIS 모두 DAY 기본.
@@ -98,6 +99,13 @@ def merged_execution(strategy_exec: dict | None) -> dict:
 # ⚠ 통합 메모: server/app/futures_config.py(선물분석 대시보드)도 tick·multiplier를 따로 들고
 #   있다(레거시 oil_futures 경로). core는 server를 import 못 하므로 여기를 단일 출처로 삼고,
 #   추후 futures_config가 이 카탈로그를 읽도록 통합한다(중복 드리프트 제거).
+
+# 원/달러 환율 dataset 키 — data_fetcher.MACRO_FRED_SYMBOLS["원달러환율"](FRED DEXKOUS)과
+# 같은 리터럴(core/tests/test_sizing_fx.py가 동일성 고정). fixed_amount(₩정액)를 USD 상품
+# 예산으로 환산할 때 백테스트(_budget)·라이브(event_buy_qty)가 이 시계열 하나만 본다
+# (데이터포인트당 소스 1개 — 브로커 환율 등 다른 소스 fallback 금지).
+FX_USDKRW_SYMBOL = "원달러환율"
+
 
 @dataclass(frozen=True)
 class InstrumentSpec:

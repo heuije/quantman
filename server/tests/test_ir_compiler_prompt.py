@@ -55,6 +55,16 @@ def test_route_directional_ranking_stays_scheduled():
     assert out["position"]["entry"]["mode"] == "scheduled"
 
 
+def test_route_directional_sets_explicit_threshold():
+    """라우팅 시 threshold 미지정(None)을 0으로 명시 — None은 _select(랭킹 추락)와
+    _direction_for(0.0)가 다르게 해석돼 단일 종목 롱·숏 동시 후보 사고를 냈다(2026-06-11)."""
+    out = ic._route_directional(_ls("scheduled", 0))
+    assert out["position"]["entry"]["threshold"] == 0.0
+    # 랭킹은 불변 — threshold를 건드리지 않는다
+    out2 = ic._route_directional(_ls("scheduled", 0, top_n=5))
+    assert out2["position"]["entry"].get("threshold") is None
+
+
 def test_route_directional_swing_stays_scheduled():
     """비당일(hold_days>=1) long_short는 불변(기존 scheduled TSMOM/팩터 보존)."""
     out = ic._route_directional(_ls("scheduled", 5))
@@ -66,3 +76,36 @@ def test_route_directional_long_not_targeted():
     strat = {"position": {"direction": "long", "entry": {"mode": "scheduled"},
                           "exit": {"hold_days": 0}}}
     assert ic._route_directional(strat)["position"]["entry"]["mode"] == "scheduled"
+
+
+# ── 섹터/업종 필터 부분일치 강제(반도체→"반도체 제조업" 정확매칭 0건 근본수정) ──
+
+def _sector_screener(values, match=None):
+    params = {"values": values}
+    if match is not None:
+        params["match"] = match
+    return {"universe": {"kind": "all", "screener": {"condition": {
+                "op": "is_in", "params": params,
+                "inputs": {"signal": {"op": "attribute", "params": {"attr": "Sector"}}}}}}}
+
+
+def test_force_contains_on_attribute_filter():
+    """is_in(attribute(Sector))는 match 없이 와도 contains로 강제."""
+    out = ic._force_attribute_filter_contains(_sector_screener(["반도체"]))
+    cond = out["universe"]["screener"]["condition"]
+    assert cond["params"]["match"] == "contains"
+
+
+def test_force_contains_overrides_exact_on_attribute():
+    """LLM이 attribute 필터에 exact를 내도 contains로 교정(exact는 자유서술 분류에 무용)."""
+    out = ic._force_attribute_filter_contains(_sector_screener(["반도체"], match="exact"))
+    assert out["universe"]["screener"]["condition"]["params"]["match"] == "contains"
+
+
+def test_force_contains_leaves_non_attribute_is_in_exact():
+    """attribute가 아닌 is_in(버킷·국면 라벨)은 정확매칭 불변 — 과교정 차단."""
+    strat = {"universe": {"screener": {"condition": {
+        "op": "is_in", "params": {"values": ["1분위"]},
+        "inputs": {"signal": {"op": "bucket", "params": {"edges": [0.5]}}}}}}}
+    out = ic._force_attribute_filter_contains(strat)
+    assert "match" not in out["universe"]["screener"]["condition"]["params"]

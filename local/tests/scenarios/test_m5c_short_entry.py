@@ -30,6 +30,7 @@ def _dataset():
 
 def test_submit_open_short_creates_short_with_definition(isolated_trader):
     trader, broker = isolated_trader
+    broker._prices["코스피200선물"] = 350.0       # 가격 평면 정책 — 발주는 broker 시세 필요
     sd = _strat_def("short")
     trader._submit_open_short("k1", "t", sd, "코스피200선물", 1, 350.0, merged_execution(None), [])
     # sell-to-open = 매도 주문이 pending(side="sell")
@@ -45,6 +46,7 @@ def test_submit_open_short_creates_short_with_definition(isolated_trader):
 
 def test_try_buy_routes_short_to_sell_to_open(isolated_trader):
     trader, broker = isolated_trader
+    broker._prices["코스피200선물"] = 350.0       # 가격 평면 정책 — 발주는 broker 시세 필요
     ok = trader._try_buy_one_symbol("k1", "k1", "t", _strat_def("short"),
                                     "코스피200선물", _dataset(), 0.0, [])
     assert ok
@@ -54,6 +56,7 @@ def test_try_buy_routes_short_to_sell_to_open(isolated_trader):
 
 def test_try_buy_routes_long_to_buy(isolated_trader):
     trader, broker = isolated_trader
+    broker._prices["코스피200선물"] = 350.0       # 가격 평면 정책 — 발주는 broker 시세 필요
     ok = trader._try_buy_one_symbol("k1", "k1", "t", _strat_def("long"),
                                     "코스피200선물", _dataset(), 0.0, [])
     assert ok
@@ -63,6 +66,7 @@ def test_try_buy_routes_long_to_buy(isolated_trader):
 
 def test_try_buy_long_short_skipped(isolated_trader):
     trader, broker = isolated_trader
+    broker._prices["코스피200선물"] = 350.0       # 가격 평면 정책 — 발주는 broker 시세 필요
     decisions: list[dict] = []
     ok = trader._try_buy_one_symbol("k1", "k1", "t", _strat_def("long_short"),
                                     "코스피200선물", _dataset(), 0.0, decisions)

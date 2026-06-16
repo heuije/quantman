@@ -45,7 +45,7 @@ def _make_ir():
             direction="short",
             sizing=Sizing(mode="equal_weight"),
             entry=Entry(mode="scheduled", rebalance="monthly", top_n=2),
-            exit=Exit(take_profit=0.1, stop_loss=-0.05),
+            exit=Exit(take_profit=10, stop_loss=-5),   # 퍼센트 단위(엔진 cur_ret이 %)
         ),
         simulation=SimSpec(leverage=2.0),   # commission/capital 미지정 → 기본
     )
@@ -80,11 +80,13 @@ def test_user_set_fields_marked_specified():
     assert "2" in lev["value"]
 
 
-def test_exit_units_match_engine_fractions():
-    """take_profit=0.1 은 분수(=10%), stop_loss=-0.05 는 -5% 로 표시돼야(엔진 단위 일치)."""
+def test_exit_units_match_engine_percent():
+    """take_profit/stop_loss는 퍼센트 단위 — 엔진 cur_ret = (close-entry)/entry*100 과
+    직접 비교(engine.price_exit_reason). take_profit=10 → '10%', stop_loss=-5 → '-5%'.
+    분수로 오해해 ×100하면 1000%/500%가 되는 회귀를 잠근다(프로덕션 700% 표시 버그)."""
     ex = _bucket(explain_ir(_make_ir()), "exit")
-    assert "10%" in _item(ex, "익절")["value"]
-    assert "5%" in _item(ex, "손절")["value"]
+    assert _item(ex, "익절")["value"] == "10%", _item(ex, "익절")["value"]
+    assert _item(ex, "손절")["value"] == "-5%", _item(ex, "손절")["value"]
     assert _item(ex, "익절")["provenance"] == "지정"
 
 
@@ -123,6 +125,7 @@ def test_summary_is_readable_prose():
     assert "리밸런싱" in s                       # scheduled 반영
     assert "0.03%" in s                          # 비용 기본가정이 산문에도 명시
     assert "10,000,000원" in s                   # 자본 기본값
+    assert "10% 익절" in s and "1000%" not in s  # 익절/손절 퍼센트 — ×100 회귀 차단
 
 
 # ── 리서치 질의 서술 — "백테스트" 오서술 회귀 차단 (P6 시각화 정합) ──────────────

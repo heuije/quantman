@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -20,7 +21,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from . import (calendar_cache, data_cache, kis_master_cache, krx_cache,
                 naver_fundamentals, technical_cache)
 from .config import settings
-from .db import create_db_and_tables
+from .db import call_with_disconnect_retry, create_db_and_tables, prune_old_rows
 from .routers import (admin as admin_router, auth, backtest,
                        calendars as calendars_router, commands,
                        dataset, ir as ir_router, ir_compile as ir_compile_router,
@@ -51,13 +52,13 @@ def _run_with_retry(name: str, fn: Callable[[], object],
     호출될 때마다 같은 name의 기존 retry job을 cancel — 정시 cron이 트리거되면
     이전 실패의 재시도 큐를 깨끗이 비우고 다시 시작한다.
     """
-    # 기존 retry job 모두 cancel (정시 cron이 새로 시작될 때마다 큐 비움)
-    for job in scheduler.get_jobs():
-        if job.id.startswith(f"retry_{name}_"):
-            try:
-                scheduler.remove_job(job.id)
-            except Exception:
-                pass
+    # 기존 retry job cancel (정시 cron이 새로 시작될 때마다 큐 비움).
+    # retry job id는 고정(retry_{name}) — 시도마다 다른 id를 쓰면 max_instances=1
+    # (job id별 카운트)이 중복 스폰을 못 막는다.
+    try:
+        scheduler.remove_job(f"retry_{name}")
+    except JobLookupError:
+        pass  # 대기 중 retry 없음 — 정상 (대부분의 정시 트리거)
 
     state = {"attempt": 0}
 
@@ -82,7 +83,7 @@ def _run_with_retry(name: str, fn: Callable[[], object],
                          run_at.strftime("%H:%M:%S"))
             scheduler.add_job(
                 _attempt, trigger="date", run_date=run_at,
-                id=f"retry_{name}_{state['attempt']}", replace_existing=True)
+                id=f"retry_{name}", replace_existing=True)
 
     _attempt()
 
@@ -122,6 +123,17 @@ def _trigger_preview(data_source: str) -> None:
         _log.exception("preview 자동 갱신 실패 [%s]", data_source)
 
 
+def _prune_db() -> None:
+    """무한 성장 테이블(HeartbeatEvent·SyncSnapshot) 일일 pruning — db.prune_old_rows.
+
+    04:00 KST는 유휴 시간이라 Neon compute가 suspend된 상태일 확률이 높다 — 첫
+    쿼리의 stale 연결(`server conn crashed?`)을 call_with_disconnect_retry로 흡수
+    (_trigger_preview와 동일 패턴). 삭제는 멱등이라 재시도에 안전.
+    """
+    result = call_with_disconnect_retry(prune_old_rows)
+    _log.info("DB pruning 결과: %s", result)
+
+
 def _refresh_kis_master() -> None:
     result = kis_master_cache.refresh()
     _log.info("KIS 마스터 갱신 결과: %s", result)
@@ -143,6 +155,10 @@ def _refresh_krx() -> None:
 def _refresh_naver() -> None:
     result = naver_fundamentals.refresh()
     _log.info("NAVER 펀더멘털 갱신 결과: %s", result)
+    # 밸류(PBR/PER)는 NAVER가 아닌 canonical OpenDART에서 — NAVER 고유필드(EPS·BPS·DPS·배당·
+    # 외국인) merge 직후 같은 자리에 적재해야, 스냅샷 통째 재구축(15:45·부팅) 후에도 NAVER와 동일
+    # cadence로 항상 채워진다(17:30 앵커에만 두면 부팅~17:30 사이 스크리너 밸류 공백 = 회귀).
+    _materialize_kr_valuation()
     # preview trigger 없음 — 위와 동일
 
 
@@ -174,6 +190,28 @@ def _refresh_us_fundamentals() -> None:
     res = fundamental_us.fetch(tickers)
     _log.info("US 펀더멘털(SEC) %d종목: %s", len(tickers), res)
     data_cache.invalidate()                      # 다음 로드 시 펀더멘털 attach
+
+
+def _materialize_kr_valuation() -> None:
+    """canonical OpenDART 밸류(pb_ratio·trailing_pe) 최신 단면을 스크리너 스냅샷에 적재.
+
+    스크리너 PBR/PER을 360·백테스트와 동일 출처(OpenDART)로 일원화 — 같은 get_projected 계산을
+    쓰므로 값이 구조적으로 일치(NAVER 별도 소스 제거). recent_days 소량이어도 펀더멘털은 full로
+    attach되고 pb는 룩백이 없어 최신 행 값이 full 계산과 동일(get_projected 불변식). 스냅샷에 있는
+    종목만 갱신, OpenDART 미적재 종목은 None(가짜 채움 0 — 정직)."""
+    proj = data_cache.get_projected(["pb_ratio", "trailing_pe"], symbols=None, recent_days=10)
+    updates: dict[str, dict] = {}
+    for sym, df in proj.items():
+        row: dict = {}
+        for col, key in (("pb_ratio", "pbr"), ("trailing_pe", "per")):
+            if col in df.columns:
+                s = df[col].dropna()
+                if len(s):
+                    row[key] = float(s.iloc[-1])
+        if row:
+            updates[sym] = row
+    n = krx_cache.merge_fields(updates)
+    _log.info("스크리너 밸류 일원화(OpenDART) — %d종목 pbr/per 적재", n)
 
 
 def _backfill_kr_fundamentals_chunk() -> None:
@@ -326,8 +364,18 @@ def _refresh_kospi_futures() -> None:
         _log.info("KOSPI200 선물 KIS 증분 skip(최근월물 코드 해석 실패) — CSV 깊은 데이터로 운영")
         data_cache.invalidate()
         return
+    # F1(2026-06-11 인시던트): 미확정 당일 봉 차단 — KR선물 정규장 마감(15:45 KST) 전엔
+    # 전일까지만 수집한다. 형성 중 봉이 canonical에 들어가면 '전일 종가' 의미가 깨지고
+    # 장중에 재생성된 preview·백테스트가 미확정 값을 본다. 마감 후(16시~)엔 당일 확정 봉 수집.
+    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+    end_day = now_kst if now_kst.hour >= 16 else now_kst - timedelta(days=1)
+    today = end_day.strftime("%Y%m%d")
     since = existing.index.max().strftime("%Y%m%d")
-    today = datetime.now().strftime("%Y%m%d")
+    if since > today:
+        # 과도기(이전 코드가 형성 중 당일 봉을 이미 저장) — 마감 후 cron이 확정 봉으로 덮어쓴다
+        _log.info("KOSPI200 선물 KIS 증분 보류(장 마감 전, 당일 봉 미확정)")
+        data_cache.invalidate()
+        return
     merged = dfm.fetch_kis_futures_daily(sym, client.request, iscd=iscd, start=since, end=today)
     rng = f"{merged.index[0].date()}~{merged.index[-1].date()}" if len(merged) else "-"
     _log.info("KOSPI200 선물 KIS 증분 append: 총 %d행 (%s, 코드 %s, since %s)",
@@ -512,39 +560,24 @@ def _initial_calendar_refresh():
         _log.exception("캘린더 초기 빌드 예외 — 다음 03:00 cron 재시도")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    _log.info("lifespan 시작 — DB 초기화")
-    create_db_and_tables()
+def _build_scheduler() -> BackgroundScheduler:
+    """매일 정기 갱신 cron 구성 (Phase 31 — 외부 publish 시각에 맞춰 재배치).
 
-    # ── 시작 시 1회 초기 fetch (백그라운드 thread, 부팅 차단 방지) ─────────────
-    _log.info("KIS 마스터 초기 다운로드 thread 시작")
-    threading.Thread(target=_initial_master_refresh, daemon=True).start()
-    # Q2+Q8: 캘린더 빌드는 매우 빠르고(<1s) 다른 fetch와 의존성 없어 별도 지연 없이 시작
-    _log.info("캘린더 초기 빌드 thread 시작 (KR/US)")
-    threading.Thread(target=_initial_calendar_refresh, daemon=True).start()
-    _log.info("KRX 스냅샷 초기 fetch thread 시작")
-    threading.Thread(target=_initial_krx_refresh, daemon=True).start()
-    _log.info("NAVER 펀더멘털 초기 fetch thread 시작")
-    threading.Thread(target=_initial_naver_refresh, daemon=True).start()
-    _log.info("KR 펀더멘털(OpenDART) 초기 fetch thread 시작")
-    threading.Thread(target=_initial_kr_fundamentals_refresh, daemon=True).start()
-    _log.info("기술적 지표 초기 fetch thread 시작")
-    threading.Thread(target=_initial_technical_refresh, daemon=True).start()
-    _log.info("정적 메타 초기 fetch thread 시작 (섹터·상장폐지일)")
-    threading.Thread(target=_initial_static_meta_refresh, daemon=True).start()
-    _log.info("dataset 초기 갱신 thread 시작")
-    threading.Thread(target=_initial_dataset_refresh, daemon=True).start()
-    # bundle packaging은 _refresh_global_dataset/_refresh_kr_dataset 끝에서
-    # refresh '완료' 이벤트로 수행 — _package_bundle docstring 참조.
-    _log.info("미국 시가총액 초기 fetch thread 시작")
-    threading.Thread(target=_initial_us_market_caps, daemon=True).start()
-    _log.info("선물 grid 워머 thread 시작")
-    futures.start_grid_warmer()
+    구성만 — start()는 lifespan에서. 각 cron은 _run_with_retry로 감싸 실패 시
+    backoff[5,15,30,60,120]분 재시도.
 
-    # ── 매일 정기 갱신 (Phase 31 — 외부 publish 시각에 맞춰 재배치) ──────────
-    # 각 cron은 _run_with_retry로 감싸 실패 시 backoff[5,15,30,60,120]분 재시도.
-    scheduler = BackgroundScheduler(timezone="Asia/Seoul")
+    job_defaults — 스케줄러 폭주 가드:
+    - misfire_grace_time=3600: APScheduler 기본 grace(≈1s)는 GIL/IO로 1초+ 밀린
+      무거운 job(naver 15분·dataset 수십분)을 조용히 misfire-drop시킨다(preview
+      누락 잠재) → 1시간 유예.
+    - coalesce=True: 밀린 실행이 여러 번 쌓여도 1회로 합쳐 실행.
+    - max_instances=1: 같은 job(id 기준)의 동시 실행 금지 — retry job 고정 id
+      (retry_{name})와 함께 같은 외부 소스 중복 fetch를 차단.
+    """
+    scheduler = BackgroundScheduler(
+        timezone="Asia/Seoul",
+        job_defaults={"misfire_grace_time": 3600, "coalesce": True,
+                      "max_instances": 1})
 
     # 06:05 — KIS 마스터 1차 (06:00 first publish 직후)
     scheduler.add_job(
@@ -639,10 +672,53 @@ async def lifespan(app: FastAPI):
         CronTrigger(hour=3, minute=0),
         id="calendars", replace_existing=True)
 
+    # 04:00 — DB pruning: HeartbeatEvent 30일·SyncSnapshot 30일(유저별 최신 1건
+    # 보존). 무거래 새벽 시각 — 첫 실행 누적 대량분도 batch 삭제라 락이 짧다.
+    # 정책·인덱스 의존은 db.prune_old_rows docstring 참조.
+    scheduler.add_job(
+        lambda: _run_with_retry("db_prune", _prune_db, scheduler),
+        CronTrigger(hour=4, minute=0),
+        id="db_prune", replace_existing=True)
+
+    return scheduler
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _log.info("lifespan 시작 — DB 초기화")
+    create_db_and_tables()
+
+    # ── 시작 시 1회 초기 fetch (백그라운드 thread, 부팅 차단 방지) ─────────────
+    _log.info("KIS 마스터 초기 다운로드 thread 시작")
+    threading.Thread(target=_initial_master_refresh, daemon=True).start()
+    # Q2+Q8: 캘린더 빌드는 매우 빠르고(<1s) 다른 fetch와 의존성 없어 별도 지연 없이 시작
+    _log.info("캘린더 초기 빌드 thread 시작 (KR/US)")
+    threading.Thread(target=_initial_calendar_refresh, daemon=True).start()
+    _log.info("KRX 스냅샷 초기 fetch thread 시작")
+    threading.Thread(target=_initial_krx_refresh, daemon=True).start()
+    _log.info("NAVER 펀더멘털 초기 fetch thread 시작")
+    threading.Thread(target=_initial_naver_refresh, daemon=True).start()
+    _log.info("KR 펀더멘털(OpenDART) 초기 fetch thread 시작")
+    threading.Thread(target=_initial_kr_fundamentals_refresh, daemon=True).start()
+    _log.info("기술적 지표 초기 fetch thread 시작")
+    threading.Thread(target=_initial_technical_refresh, daemon=True).start()
+    _log.info("정적 메타 초기 fetch thread 시작 (섹터·상장폐지일)")
+    threading.Thread(target=_initial_static_meta_refresh, daemon=True).start()
+    _log.info("dataset 초기 갱신 thread 시작")
+    threading.Thread(target=_initial_dataset_refresh, daemon=True).start()
+    # bundle packaging은 _refresh_global_dataset/_refresh_kr_dataset 끝에서
+    # refresh '완료' 이벤트로 수행 — _package_bundle docstring 참조.
+    _log.info("미국 시가총액 초기 fetch thread 시작")
+    threading.Thread(target=_initial_us_market_caps, daemon=True).start()
+    _log.info("선물 grid 워머 thread 시작")
+    futures.start_grid_warmer()
+
+    # ── 매일 정기 갱신 — cron 구성·폭주 가드는 _build_scheduler 참조 ──────────
+    scheduler = _build_scheduler()
     scheduler.start()
     _log.info("cron 시작: "
-              "03:00 캘린더 · 06:05 KIS-1 · 07:30 dataset글로벌 · 15:45 KRX · "
-              "17:00 NAVER · 17:15 기술 · 18:15 dataset한국 · 18:58 KIS-2 KST "
+              "03:00 캘린더 · 04:00 DB pruning · 06:05 KIS-1 · 07:30 dataset글로벌 · "
+              "15:45 KRX · 17:00 NAVER · 17:15 기술 · 18:15 dataset한국 · 18:58 KIS-2 KST "
               "(실패 시 backoff[5,15,30,60,120]분 재시도)")
     app.state.scheduler = scheduler
     try:

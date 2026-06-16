@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -31,15 +32,22 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from quant_core.oil_futures import (
+    LOW_SAMPLE_THRESHOLD,
     CostModel,
     ExitRules,
     RollModel,
+    Side,
     build_oil_excel,
+    build_oil_trend_excel,
     generate_signals,
     grid_search,
     prepare_wti,
     run_backtest,
     summarize,
+    trend_events,
+    trend_explanatory_scan,
+    trend_matched,
+    trend_regression,
     walk_forward,
 )
 
@@ -317,12 +325,15 @@ _grid_lock = threading.Lock()
 
 
 def _ensure_grid_cached(symbol: str, s: tuple, l: tuple, h: tuple,
-                        commission: float, slippage_ticks: int) -> list[GridCellOut]:
+                        commission: float, slippage_ticks: int,
+                        smooth_window: int = 1, min_gap_days: int = 0,
+                        roll_cost_pct: float = 0.0) -> list[GridCellOut]:
     """(symbol, 데이터버전, 파라미터) 결과 캐시. 워머·요청 공용. 미수집이면 _df가 503."""
     cfg = _get_cfg(symbol)
     df = _df(symbol)
     version = get_version()
-    key = (symbol, version, s, l, h, commission, slippage_ticks)
+    key = (symbol, version, s, l, h, commission, slippage_ticks,
+           smooth_window, min_gap_days, roll_cost_pct)
     cached = _GRID_CACHE.get(key)
     if cached is not None:
         return cached
@@ -331,7 +342,9 @@ def _ensure_grid_cached(symbol: str, s: tuple, l: tuple, h: tuple,
         if cached is not None:
             return cached
         cells = grid_search(df, s, l, h, CostModel(commission, slippage_ticks),
-                            light=True, spec=cfg.spec)
+                            light=True, spec=cfg.spec,
+                            smooth_window=smooth_window, min_gap_days=min_gap_days,
+                            roll_cost_pct=roll_cost_pct)
         out = [
             GridCellOut(
                 side=c.side.value,
@@ -360,13 +373,18 @@ def _ensure_grid_cached(symbol: str, s: tuple, l: tuple, h: tuple,
 
 @router.get("/{symbol}/grid", response_model=list[GridCellOut])
 def grid(symbol: str, shorts: str = "", longs: str = "", horizons: str = "",
-         commission: float = 2.5, slippage_ticks: int = 1):
-    """(side, threshold, horizon) 조합 백테스트. 미지정 시 종목 기본 grid(캐시·워머)."""
+         commission: float = 2.5, slippage_ticks: int = 1,
+         smooth_window: int = 1, min_gap_days: int = 0, roll_cost_pct: float = 0.0):
+    """(side, threshold, horizon) 조합 백테스트. 미지정 시 종목 기본 grid(캐시·워머).
+
+    smooth_window·min_gap_days: 신호 품질 옵션. roll_cost_pct: 만기 롤오버 비용(%/롤). 기본값=현행.
+    """
     cfg = _get_cfg(symbol)
     s = tuple(_parse_csv_floats(shorts) or cfg.shorts.values())
     l = tuple(_parse_csv_floats(longs) or cfg.longs.values())
     h = tuple(_parse_csv_ints(horizons) or DEFAULT_HORIZONS)
-    return _ensure_grid_cached(symbol, s, l, h, commission, slippage_ticks)
+    return _ensure_grid_cached(symbol, s, l, h, commission, slippage_ticks,
+                               smooth_window, min_gap_days, roll_cost_pct)
 
 
 def _warmer_loop() -> None:
@@ -377,7 +395,7 @@ def _warmer_loop() -> None:
         for cfg in INSTRUMENTS.values():
             try:
                 _ensure_grid_cached(cfg.symbol, tuple(cfg.shorts.values()),
-                                    tuple(cfg.longs.values()), tuple(DEFAULT_HORIZONS), 2.5, 1)
+                                    tuple(cfg.longs.values()), tuple(DEFAULT_HORIZONS), 2.5, 1, 1, 0)
             except HTTPException:
                 pending = True   # 이 종목 데이터 미수집 — 다음 틱 재시도
             except Exception:
@@ -396,11 +414,14 @@ def signals(
     type: Literal["short", "long"],
     threshold: float,
     since: Optional[str] = None,
+    smooth_window: int = 1,
+    min_gap_days: int = 0,
 ):
     df = _df(symbol)
     short_th = [threshold] if type == "short" else []
     long_th = [threshold] if type == "long" else []
-    sigs = generate_signals(df, short_thresholds=short_th, long_thresholds=long_th)
+    sigs = generate_signals(df, short_thresholds=short_th, long_thresholds=long_th,
+                            smooth_window=smooth_window, min_gap_days=min_gap_days)
     if since:
         cut = pd.Timestamp(since)
         sigs = [s for s in sigs if s.date >= cut]
@@ -427,6 +448,9 @@ class BacktestRequest(BaseModel):
     # 선물 만기 롤오버 비용 (%/회, 추정 가정) — 0이면 미적용.
     # 양수=contango 비용, 음수=backwardation 이익 (현재 WTI는 backwardation).
     roll_cost_pct: float = Field(default=0.0, ge=-0.1, le=0.1)
+    # 신호 품질 옵션 (N일 평균 임계·최소 신호 간격). 기본값=현행.
+    smooth_window: int = Field(default=1, ge=1, le=120)
+    min_gap_days: int = Field(default=0, ge=0, le=250)
 
 
 @router.post("/{symbol}/backtest", response_model=BacktestResponse)
@@ -435,7 +459,8 @@ def backtest(symbol: str, req: BacktestRequest):
     df = _df(symbol)
     short_th = [req.threshold] if req.side == "short" else []
     long_th = [req.threshold] if req.side == "long" else []
-    sigs = generate_signals(df, short_thresholds=short_th, long_thresholds=long_th)
+    sigs = generate_signals(df, short_thresholds=short_th, long_thresholds=long_th,
+                            smooth_window=req.smooth_window, min_gap_days=req.min_gap_days)
     if not sigs:
         raise HTTPException(404, "신호가 발생하지 않음 — 임계값/타입 확인")
     res = run_backtest(
@@ -522,6 +547,7 @@ def export_excel(symbol: str, req: BacktestRequest):
         commission_per_contract=req.commission,
         slippage_ticks=req.slippage_ticks,
         roll_cost_pct=req.roll_cost_pct,
+        min_gap_days=req.min_gap_days,
         name=cfg.name,
         currency=cfg.currency,
         unit=cfg.unit,
@@ -540,6 +566,8 @@ class WalkForwardRequest(BaseModel):
     split_date: str
     commission: float = 2.5
     slippage_ticks: int = 1
+    smooth_window: int = Field(default=1, ge=1, le=120)
+    min_gap_days: int = Field(default=0, ge=0, le=250)
 
 
 @router.post("/{symbol}/walkforward", response_model=WalkForwardResponse)
@@ -554,6 +582,7 @@ def walkforward_endpoint(symbol: str, req: WalkForwardRequest):
             pd.Timestamp(req.split_date),
             CostModel(req.commission, req.slippage_ticks),
             spec=cfg.spec,
+            smooth_window=req.smooth_window, min_gap_days=req.min_gap_days,
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
@@ -787,4 +816,217 @@ def macro_context(symbol: str):
         correlations=correlations,
         vix_regime=vix_regime,
         dxy_regime=dxy_regime,
+    )
+
+
+# ───── 🅕 Trend → Forward (진입 추세 → 미래 수익률) ──────────────────
+
+class TrendEventOut(BaseModel):
+    date: str
+    close: float
+    past_return: float       # close[t] / close[t-lookback] - 1
+    forward_return: float    # close[t+horizon] / close[t] - 1
+
+
+class TrendRegressionOut(BaseModel):
+    slope: float             # forward~past β
+    intercept: float
+    r_squared: float
+    n: int
+    hac_se: float            # Newey-West(HAC) slope 표준오차 (겹침 보정)
+    hac_t_stat: float
+    hac_p_value: float       # 정규근사 양측 p
+
+
+class TrendEventsResponse(BaseModel):
+    lookback: int
+    horizon: int
+    mode: str                       # "all"(전체 영업일) | "signal"(신호 앵커)
+    side: Optional[str]
+    threshold: Optional[float]
+    events: list[TrendEventOut]
+    regression: Optional[TrendRegressionOut]
+    low_sample: bool                # n < 30
+
+
+@router.get("/{symbol}/trend-events", response_model=TrendEventsResponse)
+def trend_events_endpoint(
+    symbol: str,
+    lookback: int = 20,
+    horizon: int = 60,
+    side: Optional[Literal["short", "long"]] = None,
+    threshold: Optional[float] = None,
+    smooth_window: int = 1,
+    min_gap_days: int = 0,
+):
+    """진입 직전 추세(과거 lookback일 증감율) ↔ 이후 horizon일 수익률 이벤트·회귀.
+
+    side·threshold 동시 지정 = 신호 크로스일만(임계별), 둘 다 생략 = 전체 영업일(베이스라인).
+    무거운 계산 없음(단일 패스) — 웹이 증감율 밴드를 실시간 필터/집계한다.
+    """
+    if lookback < 1 or not (1 <= horizon <= 500):
+        raise HTTPException(422, "lookback≥1, 1≤horizon≤500 이어야 함")
+    if (side is None) != (threshold is None):
+        raise HTTPException(422, "side와 threshold는 함께 지정하거나 함께 생략")
+
+    df = _df(symbol)
+    side_enum = Side(side) if side else None
+    evs = trend_events(df, lookback, horizon, side=side_enum, threshold=threshold,
+                       smooth_window=smooth_window, min_gap_days=min_gap_days)
+    reg = trend_regression(evs, horizon)
+    return TrendEventsResponse(
+        lookback=lookback, horizon=horizon,
+        mode="signal" if side else "all",
+        side=side, threshold=threshold,
+        events=[
+            TrendEventOut(
+                date=str(e.date.date()), close=e.close,
+                past_return=e.past_return, forward_return=e.forward_return,
+            )
+            for e in evs
+        ],
+        regression=(
+            TrendRegressionOut(
+                slope=reg.slope, intercept=reg.intercept, r_squared=reg.r_squared,
+                n=reg.n, hac_se=reg.hac_se, hac_t_stat=reg.hac_t_stat,
+                hac_p_value=reg.hac_p_value,
+            ) if reg else None
+        ),
+        low_sample=len(evs) < LOW_SAMPLE_THRESHOLD,
+    )
+
+
+# ───── 🅖 Trend explanatory scan — (L,H) 설명력 격자 ──────────────────
+
+_SCAN_LOOKBACKS = [5, 10, 20, 40, 60, 90, 120]
+_SCAN_HORIZONS = [5, 10, 20, 40, 60, 90, 120]
+
+
+class ScanCellOut(BaseModel):
+    lookback: int
+    horizon: int
+    n: int
+    r_squared: Optional[float]    # 표본 부족(min_n 미만) 시 None
+    slope: Optional[float]
+    intercept: Optional[float]
+    hac_p_value: Optional[float]
+    oos_r_squared: Optional[float]
+    oos_slope: Optional[float]
+    sign_stable: bool
+
+
+class TrendScanResponse(BaseModel):
+    price_lo: float
+    price_hi: float
+    lookbacks: list[int]
+    horizons: list[int]
+    cells: list[ScanCellOut]
+    n_cells: int                  # 격자 칸 수 = 다중비교 규모(데이터 스누핑 경고용)
+    oos_split: float
+    min_n: int
+
+
+def _parse_int_list(raw: Optional[str], default: list[int]) -> list[int]:
+    if not raw:
+        return list(default)
+    out: list[int] = []
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            v = int(tok)
+        except ValueError:
+            raise HTTPException(422, f"정수 목록 파싱 실패: {raw!r}")
+        if v >= 1:
+            out.append(v)
+    if not out:
+        raise HTTPException(422, "lookbacks/horizons 는 1 이상 정수 1개 이상")
+    return sorted(set(out))
+
+
+def _nn(v: Optional[float]) -> Optional[float]:
+    """nan/None → None (JSON 호환)."""
+    return None if (v is None or math.isnan(v)) else float(v)
+
+
+@router.get("/{symbol}/trend-scan", response_model=TrendScanResponse)
+def trend_scan_endpoint(
+    symbol: str,
+    price_lo: float,
+    price_hi: float,
+    lookbacks: Optional[str] = None,
+    horizons: Optional[str] = None,
+    oos_split: float = 0.5,
+    min_n: int = 30,
+    gap: int = 0,
+):
+    """종가범위 조건 하 (L,H) 격자별 forward~past 설명력(R²·HAC p·기울기) + OOS 안정성.
+
+    설명력은 종가범위만 조건(증감율 밴드는 회귀에 미포함 — x축 절단 회피).
+    ⚠ 여러 칸 중 R² 최댓값을 고르면 다중비교 과최적화 — n_cells 가 검정 규모이고,
+    sign_stable·OOS·연속영역으로 견고성을 판단해야 한다(웹이 경고 노출).
+    """
+    lo, hi = (price_lo, price_hi) if price_lo <= price_hi else (price_hi, price_lo)
+    ls = _parse_int_list(lookbacks, _SCAN_LOOKBACKS)
+    hs = _parse_int_list(horizons, _SCAN_HORIZONS)
+    if len(ls) * len(hs) > 144:
+        raise HTTPException(422, "격자 칸 수는 144 이하 (lookbacks×horizons)")
+    if not (0.2 <= oos_split <= 0.8):
+        raise HTTPException(422, "oos_split 은 0.2~0.8")
+    if min_n < 3:
+        raise HTTPException(422, "min_n 은 3 이상")
+
+    df = _df(symbol)
+    cells = trend_explanatory_scan(df, ls, hs, lo, hi, oos_split=oos_split, min_n=min_n, gap=max(0, gap))
+    return TrendScanResponse(
+        price_lo=lo, price_hi=hi, lookbacks=ls, horizons=hs,
+        cells=[
+            ScanCellOut(
+                lookback=c.lookback, horizon=c.horizon, n=c.n,
+                r_squared=_nn(c.r_squared), slope=_nn(c.slope),
+                intercept=_nn(c.intercept), hac_p_value=_nn(c.hac_p_value),
+                oos_r_squared=_nn(c.oos_r_squared), oos_slope=_nn(c.oos_slope),
+                sign_stable=c.sign_stable,
+            )
+            for c in cells
+        ],
+        n_cells=len(cells),
+        oos_split=oos_split, min_n=min_n,
+    )
+
+
+@router.get("/{symbol}/trend-export.xlsx")
+def trend_export_endpoint(
+    symbol: str,
+    lookback: int,
+    horizon: int,
+    price_lo: float,
+    price_hi: float,
+    change_lo: float = -1e9,
+    change_hi: float = 1e9,
+    gap: int = 0,
+):
+    """추세 탐색기 '향후 종가 증감율' 결과(조건·요약·이벤트)를 .xlsx 로 반환.
+
+    종가범위 ∧ 과거증감율범위 매칭 → G영업일 디클러스터(화면과 동일, trend_matched).
+    백테스트 export 와 달리 서술용 데이터 덤프(라이브 수식 없음).
+    """
+    if lookback < 1 or not (1 <= horizon <= 500):
+        raise HTTPException(422, "lookback≥1, 1≤horizon≤500 이어야 함")
+    cfg = _get_cfg(symbol)
+    df = _df(symbol)
+    lo, hi = (price_lo, price_hi) if price_lo <= price_hi else (price_hi, price_lo)
+    clo, chi = (change_lo, change_hi) if change_lo <= change_hi else (change_hi, change_lo)
+    events, raw_n = trend_matched(df, lookback, horizon, lo, hi, clo, chi, max(0, gap))
+    data = build_oil_trend_excel(
+        events, raw_n,
+        lookback=lookback, horizon=horizon,
+        price_lo=lo, price_hi=hi, change_lo=clo, change_hi=chi, gap=max(0, gap),
+        name=cfg.name, price_sym=("" if cfg.currency == "KRW" else "$"),
+    )
+    return Response(
+        content=data,
+        media_type=_XLSX_MEDIA,
+        headers={"Content-Disposition": f'attachment; filename="trend_{cfg.symbol}.xlsx"'},
     )

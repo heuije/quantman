@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, type IrValidation, type IrExplanation } from "../api";
+import { api, type IrValidation, type IrExplanation, type CompileQuota } from "../api";
 import SentenceTree, { type Catalog } from "../components/SentenceTree";
 import EquityChart from "../components/EquityChart";
 import {
@@ -163,8 +163,6 @@ export default function IrBuilder() {
   const [endFocus, setEndFocus] = useState(false);
   const [delay, setDelay] = useState(1);
   const [fill, setFill] = useState("next_open");
-  // 자동매매 주문 유형 — 지정가(전일 종가 ± tolerance) 기본 / 시장가. execution.use_limit로 직렬화.
-  const [orderType, setOrderType] = useState<"limit" | "market">("limit");
   const [leverage, setLeverage] = useState(1);
   const [periodSplit, setPeriodSplit] = useState("single");
   // 비용 (연율% — borrow/funding/rfr; 거래비용은 비율)
@@ -178,6 +176,8 @@ export default function IrBuilder() {
   // 포지션 세부·오버레이 (A6)
   const [maxPositionPct, setMaxPositionPct] = useState<number | "">("");
   const [futuresMarginPct, setFuturesMarginPct] = useState<number | "">("");
+  // 미국 주식 지정가 체결 허용범위(±%). 빈칸=시스템 기본(±3%). 진입(+)·청산(−) 공통.
+  const [usTolerancePct, setUsTolerancePct] = useState<number | "">("");
   const [volWindow, setVolWindow] = useState(20);
   const [volTarget, setVolTarget] = useState<number | "">("");
   const [turnoverDamp, setTurnoverDamp] = useState<number | "">("");
@@ -199,6 +199,9 @@ export default function IrBuilder() {
   const [compileExplanation, setCompileExplanation] = useState<IrExplanation | null>(null);
   const [compileId, setCompileId] = useState<number | null>(null);
   const compileBaseline = useRef<string>("");
+  // 일일 사용량 제한 — 카운터 표시 + admin 비번 언락(세션 동안 유지).
+  const [adminPw, setAdminPw] = useState<string>(() => sessionStorage.getItem("nl_admin_pw") || "");
+  const [quota, setQuota] = useState<CompileQuota | null>(null);
 
   // 저장/불러오기 — 이름·편집대상·저장 상태. ?edit=<id>면 기존 IR 전략을 불러와 수정.
   const navigate = useNavigate();
@@ -284,6 +287,8 @@ export default function IrBuilder() {
     setWeightsText(weightsToText(sz.weights));
     setAmountPct(sz.mode === "pct_cash" ? numOrEmpty(sz.amount_pct) : "");
     setAmountKrw(sz.mode === "fixed_amount" ? numOrEmpty(sz.amount_krw) : "");
+    // 미국 체결 허용범위 — 저장된 override(buy=sell 동일값)를 복원, 없으면 빈칸(기본 ±3%)
+    setUsTolerancePct(numOrEmpty(def.execution?.buy_tolerance_pct));
     const en = p.entry ?? ({} as IrStrategyDef["position"]["entry"]);
     setEntryMode(en.mode ?? "on_signal");
     setRebalance(en.rebalance ?? "monthly");
@@ -322,8 +327,6 @@ export default function IrBuilder() {
     setFunding(numOrEmpty(sim.funding_cost_pct));
     setRfr(numOrEmpty(sim.rfr_pct));
     setMaintMargin(numOrEmpty(sim.maintenance_margin_pct));
-    // 자동매매 주문 유형 — execution.use_limit(false=시장가). 미지정/true는 기본 지정가.
-    setOrderType(def.execution?.use_limit === false ? "market" : "limit");
     // 분석 — query(동사) + study(축×환원)를 평면 analysisType로 역매핑.
     // describe→signal, relate→(relation_kind=ic ? relation : time),
     // simulate→study.axis(parameter/entity→asset/label→condition/time_fold→period/none→none).
@@ -429,14 +432,20 @@ export default function IrBuilder() {
       condition: useExitCond ? exitCond : null,
     };
 
+    // 발주 방식은 시장이 결정(국내=시장가·미국=지정가) — execution 토글 없음. 단,
+    // 미국 지정가 체결 허용범위(tolerance)는 유저가 전략별로 조정 가능. 빈칸이면 미지정 →
+    // 백엔드 merged_execution이 기본(±3%)으로 채움. 값이 있으면 진입(+)·청산(−) 공통 적용.
+    const execution: Record<string, unknown> | undefined =
+      usTolerancePct === "" ? undefined
+        : { buy_tolerance_pct: usTolerancePct, sell_tolerance_pct: usTolerancePct };
+
     return {
       name: name.trim() || "새 전략",
       universe,
       signal,
       position: { direction, sizing, entry, exit, overlays },
       simulation: sim,
-      // 자동매매 주문 유형만 명시 — 나머지 체결 정책은 백엔드 merged_execution이 채움.
-      execution: { use_limit: orderType === "limit" },
+      ...(execution ? { execution } : {}),
       query,
       ...(study ? { study } : {}),
     };
@@ -518,12 +527,49 @@ export default function IrBuilder() {
     return sweepWindows.split(",").map((x) => Number(x.trim())).filter((n) => !Number.isNaN(n));
   }
 
+  // 페이지 로드 시 오늘 사용량 카운터 표시(+ 저장된 비번이 있으면 언락 상태 검증).
+  useEffect(() => {
+    api.compileQuota(adminPw || undefined)
+      .then(setQuota)
+      .catch(() => {/* 카운터 표시 실패는 빌더 동작에 무관 — 조용히 무시 */});
+  }, [adminPw]);
+
+  // 🔓 제한 해제 — 비밀번호 입력 → 서버 즉시 검증. 맞으면 세션에 보관(50회), 틀리면 알림.
+  async function unlockLimit() {
+    const pw = window.prompt("관리자 비밀번호를 입력하면 일일 한도가 상향됩니다.");
+    if (pw == null) return;                       // 취소
+    if (!pw.trim()) return;
+    try {
+      const q = await api.compileQuota(pw.trim());
+      if (q.admin_unlocked) {
+        sessionStorage.setItem("nl_admin_pw", pw.trim());
+        setAdminPw(pw.trim());                    // effect가 quota 재조회
+        setQuota(q);
+      } else {
+        window.alert("비밀번호가 올바르지 않습니다.");
+      }
+    } catch {
+      window.alert("확인에 실패했습니다. 잠시 후 다시 시도하세요.");
+    }
+  }
+
+  function lockLimit() {
+    sessionStorage.removeItem("nl_admin_pw");
+    setAdminPw("");                               // effect가 일반 한도로 재조회
+  }
+
   // 자연어 설명 → IR 컴파일 → 빌더 전 폼에 hydrate. 변환 후 유저가 확인·실행.
   async function compileFromNl() {
     if (!nlText.trim() || compiling) return;
     setCompiling(true); setCompileErr(""); setCompileAssumptions([]); setCompileExplanation(null);
     try {
-      const res = await api.compileIr(nlText.trim());
+      const res = await api.compileIr(nlText.trim(), adminPw || undefined);
+      // 응답의 사용량으로 카운터 즉시 갱신(rate_limited·성공 공통).
+      if (typeof res.used === "number" && typeof res.limit === "number") {
+        setQuota({ used: res.used, limit: res.limit,
+                   remaining: res.remaining ?? Math.max(0, res.limit - res.used),
+                   admin_unlocked: res.admin_unlocked ?? false });
+      }
       setCompileAssumptions(res.assumptions ?? []);
       setCompileExplanation(res.explanation ?? null);
       if (!res.success) {
@@ -666,11 +712,29 @@ export default function IrBuilder() {
             border: "1px solid var(--input-border)", borderRadius: 8, boxSizing: "border-box",
           }}
         />
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
           <button type="button" onClick={compileFromNl} disabled={compiling || !nlText.trim()}>
             {compiling ? "변환 중…" : "변환"}
           </button>
           <span className="muted" style={{ fontSize: 12 }}>변환은 아래 폼을 덮어씁니다.</span>
+          {/* 일일 사용량 카운터 + admin 제한 해제 */}
+          <span style={{ flex: 1 }} />
+          {quota && (
+            <span style={{ fontSize: 12,
+                           color: quota.remaining <= 0 ? "var(--red)" : "var(--muted)" }}>
+              오늘 {quota.used}/{quota.limit}회
+              {quota.admin_unlocked && (
+                <span style={{ color: "var(--green)", marginLeft: 4 }}>· 관리자</span>
+              )}
+            </span>
+          )}
+          {quota?.admin_unlocked ? (
+            <button type="button" className="ghost" onClick={lockLimit}
+                    style={{ fontSize: 12 }}>제한 잠금</button>
+          ) : (
+            <button type="button" className="ghost" onClick={unlockLimit}
+                    style={{ fontSize: 12 }}>🔓 제한 해제</button>
+          )}
         </div>
         {compileErr && <div className="error" style={{ marginTop: 8 }}>{compileErr}</div>}
         {compileExplanation ? (
@@ -994,13 +1058,6 @@ export default function IrBuilder() {
               <option value="typical">당일 (고+저+종)/3</option>
             </select>
           </label>
-          <label className="lab-field">주문 유형
-            <select value={orderType}
-                    onChange={(e) => setOrderType(e.target.value as "limit" | "market")}>
-              <option value="limit">지정가</option>
-              <option value="market">시장가</option>
-            </select>
-          </label>
           <label className="lab-field">레버리지
             <input type="number" step={0.5} value={leverage}
                    onChange={(e) => setLeverage(Number(e.target.value))} />
@@ -1010,9 +1067,25 @@ export default function IrBuilder() {
                    onChange={(e) => setMaintMargin(e.target.value === "" ? "" : Number(e.target.value))} />
           </label>
         </div>
-        <div className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
-          당일매매(보유일수 0)는 시장가 권장 — 시가·종가 단일가 체결 보장.
+        <div className="muted" style={{ fontSize: 12, margin: "8px 0 0", lineHeight: 1.6 }}>
+          <strong>발주 방식은 거래 시장이 자동으로 정합니다</strong> (주문 유형 선택 없음):
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            <li>국내 주식·선물 — <strong>시장가</strong>. 진입은 개장 동시호가(→시초가),
+              청산은 종가 동시호가(→종가)에 단일가 체결.</li>
+            <li>미국 주식 — <strong>지정가</strong>. 개장 전 예약발주(진입)·폐장 5분 전(청산),
+              모두 <strong>신선한 실시간가 ±허용범위</strong> 기준. KIS가 미국 시장가를 지원하지 않습니다.</li>
+            <li>해외선물 — 실전 전용(모의투자 미지원).</li>
+          </ul>
         </div>
+        <label className="lab-field" style={{ marginTop: 8 }}>미국 주식 체결 허용범위 (±%)
+          <input type="number" step={0.5} min={0} value={usTolerancePct} placeholder="기본 ±3"
+                 onChange={(e) => setUsTolerancePct(e.target.value === "" ? "" : Number(e.target.value))} />
+          <span className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+            미국 주식 지정가를 실시간가 대비 얼마나 벌릴지 — 진입은 +%(위로), 청산은 −%(아래로).
+            크게 두면 미체결이 줄고(시장가에 가까움), 작게 두면 정확한 가격을 노립니다(미체결 위험↑).
+            국내(시장가)는 이 값을 쓰지 않습니다. <strong>라이브 체결 버퍼라 백테스트엔 영향 없음.</strong>
+          </span>
+        </label>
         {leverage > 1 && (
           <div className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
             레버리지(1배 초과)는 <strong>백테스트 전용</strong>입니다 — 모의·실전 적용은 차단됩니다.
