@@ -16,4 +16,9 @@
 - INDEX.md, README.md 작성
 - docs/api-index.md에 LS 행 등록
 
+### KB 갱신 (B6 구현·리뷰 반영)
+
+- GOTCHAS **G10** 추가 — `order_status`가 t0425 미체결-only라 체결/취소를 인지 못 함(정산 reconcile 백스톱). Phase C에서 chegb="0" 전환.
+- INDEX.md·endpoint `우리 코드 위치`를 실제 LsBroker 메서드명으로 갱신(`buy/sell/cancel/account_snapshot/price/pending_orders/order_status`).
+
 다음 단계: 키 발급 후 ⚠️ 필드 라이브 확정 → 🟢 전환, GOTCHAS 업데이트.

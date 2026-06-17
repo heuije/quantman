@@ -12,22 +12,22 @@
 
 | tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
 |---|---|---|---|---|
-| [`CSPAT00601`](endpoints/CSPAT00601_현물신규주문.md) | 현물신규주문 | 매수·매도 통합 단일 TR (BnsTpCode로 구분) | `LsBroker.place_order()` | 🟢 |
-| [`CSPAT00701`](endpoints/CSPAT00701_현물정정주문.md) | 현물정정주문 | 가격·수량 정정 | `LsBroker.modify_order()` | 🟢 |
-| [`CSPAT00801`](endpoints/CSPAT00801_현물취소주문.md) | 현물취소주문 | 주문 취소 | `LsBroker.cancel_order()` | 🟢 |
+| [`CSPAT00601`](endpoints/CSPAT00601_현물신규주문.md) | 현물신규주문 | 매수·매도 통합 단일 TR (BnsTpCode로 구분) | `buy()`·`sell()`·`buy_limit()`·`sell_limit()` (via `_submit`) | 🟢 |
+| [`CSPAT00701`](endpoints/CSPAT00701_현물정정주문.md) | 현물정정주문 | 가격·수량 정정 | 미배선 (Broker 프로토콜에 정정 없음 — 취소+재주문) | 🟢 |
+| [`CSPAT00801`](endpoints/CSPAT00801_현물취소주문.md) | 현물취소주문 | 주문 취소 | `cancel()` | 🟢 |
 
 ## 국내주식 — 잔고·미체결 (2 TRs)
 
 | tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
 |---|---|---|---|---|
-| [`t0424`](endpoints/t0424_주식잔고조회2.md) | 주식잔고조회2 | 보유 포지션 목록 (체결기준) | `LsBroker.account_snapshot()` | 🟢 |
-| [`t0425`](endpoints/t0425_주식미체결조회.md) | 주식미체결 | 미체결 주문 목록 | `LsBroker.open_orders()` | 🟢 |
+| [`t0424`](endpoints/t0424_주식잔고조회2.md) | 주식잔고조회2 | 보유 포지션 목록 (체결기준) | `account_snapshot()` (via `_balance_raw`) | 🟢 |
+| [`t0425`](endpoints/t0425_주식미체결조회.md) | 주식미체결 | 미체결 주문 목록 | `pending_orders()`·`order_status()` (via `_pending_raw`) | 🟢 |
 
 ## 국내주식 — 시세 (1 TR)
 
 | tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
 |---|---|---|---|---|
-| [`t1102`](endpoints/t1102_주식현재가.md) | 주식현재가 | 종목 현재가·OHLC | `LsBroker.current_price()` | 🟢 |
+| [`t1102`](endpoints/t1102_주식현재가.md) | 주식현재가 | 종목 현재가·OHLC | `price()`·`today_open()` | 🟢 |
 
 ## 기타 국내주식 (미작성, 색인만)
 
@@ -35,8 +35,8 @@
 
 | tr_cd | 이름 | 용도 | 우리 코드 위치 | 검증상태 |
 |---|---|---|---|---|
-| `CSPAQ22200` | 현물계좌예수금 | 현금 예수금·주문가능금액 | `LsBroker.cash_balance()` | ⚠️ 미검증 |
-| `CSPAQ12300` | 현물계좌잔고내역 | 대안 잔고조회 (t0424 보완) | `LsBroker.account_snapshot()` 보완 | 🟢 필드 일부 확인 |
+| `CSPAQ22200` | 현물계좌예수금 | 현금 예수금·주문가능금액 | 미배선 (account_snapshot은 t0424 사용) | ⚠️ 미검증 |
+| `CSPAQ12300` | 현물계좌잔고내역 | 대안 잔고조회 (t0424 보완) | 미배선 (t0424로 대체) | 🟢 필드 일부 확인 |
 | `t1101` | 주식현재가호가 | 10단 호가 | 미배선 | 🟢 |
 | `t1301` | 주식시간대별체결 | 시간대별 체결 내역 | 미배선 | 🟢 |
 

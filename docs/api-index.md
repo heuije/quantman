@@ -19,7 +19,7 @@ API 호출이 막히거나(에러·예상밖 응답) 새 endpoint를 쓸 때, **
 | API | 용도 · 코드 위치 | 문서 접근 (검증됨) | 핵심 gotcha |
 |---|---|---|---|
 | **KIS** | 자동매매·시세·종목마스터 / `local/kis_*`·`server/kis_*` | 🔵 `docs/kis-api/INDEX.md`→`endpoints/{TR_ID}_*.md`→`GOTCHAS.md`→`raw/*.xlsx` (로그인·xlsx라 WebFetch 불가) | 모의=`openapivts`·실전=`openapi`. 마스터=`new.real.download.dws.co.kr` |
-| **LS증권** | 자동매매(2nd broker) / `local/ls_*` (미구현, B6) | 🔵 `docs/ls-api/INDEX.md`→`endpoints/{tr_cd}_*.md`→`GOTCHAS.md` + 🟢 `openapi.ls-sec.co.kr/howto-sample`(WebFetch가능) | **모의/실전 단일 도메인** `:8080` — appkey로 구분(KIS와 다름). `rsp_cd="00000"`. BnsTpCode: 1=매도·2=매수. IsuNo=`"A"+6자리`(모의). 키 미발급 → ⚠️ 필드 다수 미검증 |
+| **LS증권** | 자동매매(2nd broker) / `local/localapp/ls_broker.py` (국내주식 draft·키검증 전) | 🔵 `docs/ls-api/INDEX.md`→`endpoints/{tr_cd}_*.md`→`GOTCHAS.md` + 🟢 `openapi.ls-sec.co.kr/howto-sample`(WebFetch가능) | **모의/실전 단일 도메인** `:8080` — appkey로 구분(KIS와 다름). `rsp_cd="00000"`. BnsTpCode: 1=매도·2=매수. IsuNo=`"A"+6자리`(모의). 키 미발급 → ⚠️ 필드 다수 미검증 |
 | **OpenDART** | KR 펀더멘털 / `core/.../feeds/fundamental_kr.py` | 🟢 `https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS00X&apiId=Y` (그룹목록=`guide/main.do?apiGrpCd=DS001`~`DS006`) | ⚠`OpenDartReader.finstate_all`이 013·020 status를 **빈 df로 숨김** → 한도/무데이터 구분하려면 `requests`로 직접 호출해 `jo["status"]` 봐야. **020=요청제한(일 20,000건)**·013=데이터없음. [[reference-opendart-api-guide]] |
 | **Binance** | 암호화폐 OHLCV / `core/.../data_fetcher.py` | 🟢 `https://developers.binance.com/docs/binance-spot-api-docs/rest-api/...` (랜딩 `binance-docs.github.io`는 redirect만 — **딥링크**라야 됨) | `GET /api/v3/klines` weight 2, limit 최대 1000 |
 | **GitHub API** | 로컬앱 자동업데이트 / `local/.../updater.py` | 🟢 `https://docs.github.com/en/rest/...` | secondary rate limit, `Authorization: Bearer` |
