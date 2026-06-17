@@ -61,6 +61,11 @@ Claude 세션을 새로 열면 시작 시 열린 PR 목록이 뜸.
    (Railway 서버는 author 무관·정상). GitHub "Create a merge commit" 또는 `gh pr merge <n> --merge`로 머지하면
    author=머지한 사람(조대표)이라 자동배포된다. 조대표 본인 PR은 squash여도 무방. (이유·수동 재배포 대안은
    프로젝트 `CLAUDE.md §2.5 배포 토폴로지`.)
+6. **머지된 브랜치 재사용 금지 (충돌 재발 근본원인).** 머지 끝난 브랜치에 새 작업을 얹지 말 것 —
+   새 작업 = 최신 main에서 **새 브랜치**: `git checkout main && git pull && git switch -c feat/<새이름>`.
+   강제 장치: **pre-push 훅**이 머지된 브랜치 재push를 차단, **SessionStart 훅**(`.claude/branch_check.py`)이
+   stale·머지된 브랜치에 경고, **GitHub**가 머지된 remote 브랜치를 자동삭제(재사용 미끼 제거).
+   ⚠ 훅은 `git config core.hooksPath .githooks`가 돼 있어야 작동 — 각 clone에서 1회 확인.
 
 ### 경계 — CLAUDE.md §2 vs draft PR
 - **구조적 핸드오프**(새 모듈·아키텍처·담당 경계) → 프로젝트 `CLAUDE.md §2` (오래 가는 사실)

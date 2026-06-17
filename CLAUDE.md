@@ -97,6 +97,9 @@
     clone·worktree마다 1회: `git config core.hooksPath .githooks`.
   - **짧게·자주 머지:** 브랜치는 오래 두면 발산한다(과거 −212커밋 drift 사례). 매일 main 머지, merge 후 알림,
     다음 작업은 **최신 main에서 pull 후** 시작.
+  - **머지된 브랜치 재사용 금지 (충돌 재발 근본원인 — 가드 적용됨).** 머지 끝난 브랜치에 새 작업을 얹지 말 것.
+    새 작업 = 최신 main에서 **새 브랜치**: `git checkout main && git pull && git switch -c feat/<새이름>`.
+    pre-push 훅이 머지된 브랜치 재push를 **차단**하고, SessionStart 훅이 stale/merged 브랜치에 **경고**한다.
   - **희제 PR은 merge-commit으로 머지(squash 금지).** squash는 커밋 author를 PR 저자(희제)로 찍어 Vercel
     웹 자동배포가 거부된다(이유·수동대안 §2.5). GitHub "Create a merge commit" 또는 `gh pr merge <n> --merge`.
     (조대표 본인 PR은 author=조대표라 squash 무방.)
