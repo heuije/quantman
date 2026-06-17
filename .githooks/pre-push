@@ -1,19 +1,57 @@
 #!/bin/sh
-# 팀 협업 규칙 강제: main 직접 push 금지 (작업은 브랜치 + PR로만)
-# 활성화: 각자 clone 후 1회 →  git config core.hooksPath .githooks
+# 팀 협업 규칙 강제. 활성화: 각자 clone 후 1회 →  git config core.hooksPath .githooks
 # 우회(비권장, 정말 필요할 때만): git push --no-verify
 protected_branch="main"
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     "refs/heads/$protected_branch")
+      # ── main 직접 push 차단 ──────────────────────────────────────────────
       echo "" >&2
-      echo "  '$protected_branch' 브랜치에 직접 push가 차단됐습니다 (팀 협업 규칙)." >&2
-      echo "  작업은 브랜치 + PR로 합치세요:" >&2
-      echo "      git switch -c feat/작업이름" >&2
-      echo "      git push -u origin feat/작업이름   → GitHub에서 PR 생성" >&2
+      echo "  ⛔ '$protected_branch'에 직접 push가 차단됐습니다 (팀 협업 규칙)." >&2
+      echo "     작업은 브랜치 + PR로 합치세요:" >&2
+      echo "         git switch -c feat/작업이름" >&2
+      echo "         git push -u origin feat/작업이름   → GitHub에서 PR 생성" >&2
       echo "" >&2
       exit 1
+      ;;
+    refs/heads/*)
+      branch="${remote_ref#refs/heads/}"
+
+      # ── (A) 이미 머지된 브랜치 재사용 차단 ───────────────────────────────
+      # 머지 끝난 브랜치에 새 작업을 얹으면 옛 base라 충돌이 재발한다(실측 2회).
+      # gh 없으면 fail-open(차단 안 함) — 외부 도구 의존이라 push를 막지 않는다.
+      if command -v gh >/dev/null 2>&1; then
+        merged=$(gh pr list --repo MercKR/quantman --head "$branch" \
+                   --state merged --json number -q 'length' 2>/dev/null)
+        case "$merged" in
+          ''|*[!0-9]*|0) : ;;   # 조회 실패·0건 → 통과
+          *)
+            echo "" >&2
+            echo "  ⛔ '$branch'는 이미 머지된 브랜치입니다 (머지된 PR $merged건)." >&2
+            echo "     머지된 브랜치 재사용 금지 — 새 작업은 최신 main에서 새 브랜치로:" >&2
+            echo "         git checkout main && git pull && git switch -c feat/<새이름>" >&2
+            echo "     (정말 의도한 경우만:  git push --no-verify)" >&2
+            echo "" >&2
+            exit 1
+            ;;
+        esac
+      fi
+
+      # ── (B) origin/main보다 뒤처지면 경고(차단 아님) ─────────────────────
+      git fetch --quiet origin main 2>/dev/null
+      if git rev-parse --verify -q origin/main >/dev/null 2>&1; then
+        behind=$(git rev-list --count "${local_sha}..origin/main" 2>/dev/null)
+        case "$behind" in
+          ''|0|*[!0-9]*) : ;;
+          *)
+            echo "" >&2
+            echo "  ⚠ '$branch'가 origin/main보다 ${behind}커밋 뒤처졌습니다 — 충돌 위험." >&2
+            echo "     머지 전 최신화 권장:  git merge origin/main" >&2
+            echo "" >&2
+            ;;
+        esac
+      fi
       ;;
   esac
 done
