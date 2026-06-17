@@ -11,7 +11,7 @@ import Pair from "./pages/Pair";
 import Settings from "./pages/Settings";
 import Legal from "./pages/Legal";
 import FuturesAnalytics from "./pages/FuturesAnalytics";
-import StockDashboard from "./pages/StockDashboard";
+import Home from "./pages/Home";
 import Portfolio from "./pages/Portfolio";
 import IndustryAnalysis from "./pages/IndustryAnalysis";
 
@@ -23,20 +23,26 @@ export default function App() {
   }
 
   if (!email) {
+    // 미로그인도 상단바(로고 + 회원가입/로그인 버튼)를 보여준다. 네비게이션은 Layout이
+    // email 없을 때 자동으로 숨긴다.
     return (
-      <Routes>
-        {/* Phase 48 — 법적 페이지는 미로그인에서도 접근 가능 */}
-        <Route path="/legal/:section" element={<Legal />} />
-        <Route path="*" element={<Login />} />
-      </Routes>
+      <Layout>
+        <Routes>
+          {/* Phase 48 — 법적 페이지는 미로그인에서도 접근 가능 */}
+          <Route path="/legal/:section" element={<Legal />} />
+          <Route path="*" element={<Login />} />
+        </Routes>
+      </Layout>
     );
   }
 
   return (
     <Layout>
       <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/dashboard" element={<StockDashboard />} />
+        {/* 기본 진입 = HOME(개별 기업 분석). 개요는 /overview로 이동 */}
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<Home />} />
+        <Route path="/overview" element={<Dashboard />} />
         <Route path="/industry" element={<IndustryAnalysis />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/lab" element={<IrBuilder />} />
@@ -47,7 +53,7 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/pair" element={<Pair />} />
         <Route path="/legal/:section" element={<Legal />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Layout>
   );

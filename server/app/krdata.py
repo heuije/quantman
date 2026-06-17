@@ -201,8 +201,9 @@ def consensus(code: str) -> list[dict]:
 
 
 # ── 추정 실적 (FnGuide 연간 Financial Highlight) ─────────────────────────────
-# 손익 항목(억원) + 멀티플(배: PER·PBR). FnGuide 연간 Financial Highlight의 행 라벨 부분일치.
-_EARNINGS_ITEMS = ("매출액", "영업이익", "당기순이익", "지배주주", "EBITDA", "PER", "PBR")
+# 손익(억원)·멀티플(PER·PBR)·수익성(ROE)·EPS(PEG 계산용). 라벨 시작 일치로 추출.
+_EARNINGS_ITEMS = ("매출액", "영업이익", "당기순이익", "지배주주", "EBITDA",
+                   "PER", "PBR", "ROE", "EPS")
 
 
 _YEAR_RE = re.compile(r"(\d{4}/\d{2}(?:\(E\))?)$")  # '2025/12' 또는 '2026/12(E)'
@@ -240,20 +241,70 @@ def _earnings(code: str, _day: str) -> dict:
         head = tr.find("th")
         if head is None:
             continue
-        item = head.get_text(strip=True)
-        key = next((k for k in _EARNINGS_ITEMS if k in item), None)
+        item = head.get_text(strip=True).replace(" ", "")
+        # 부분일치(in)는 'ROE/EPS 행 라벨에 지배주주가 들어가' 오매칭 → 라벨 시작 일치로 정확히.
+        key = next((k for k in _EARNINGS_ITEMS if item.startswith(k.replace(" ", ""))), None)
         if key and key not in rows:
             vals = [_num_cell(td.get_text(strip=True)) for td in tr.find_all("td")]
             rows[key] = vals[:len(years)]
+    # 영업이익률·당기순이익률(%) — 최초 1회 계산해 함께 저장(렌더마다 재계산 X). 매출액 대비.
+    rev = rows.get("매출액")
+    if rev:
+        def _margin(num_key: str):
+            num = rows.get(num_key)
+            if not num:
+                return None
+            return [round(n / d * 100, 1) if (n is not None and d) else None
+                    for n, d in zip(num, rev)]
+        m = _margin("영업이익")
+        if m:
+            rows["영업이익률"] = m
+        m = _margin("당기순이익")
+        if m:
+            rows["당기순이익률"] = m
     return {"years": years, "rows": rows}
 
 
+# 추정실적 디스크 캐시 — historical은 안 변하니 저장본을 즉시 서빙, 주 1회만 재조회.
+_EARN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "earnings")
+_EARN_FRESH_DAYS = 7
+
+
+def _earn_path(code: str) -> str:
+    return os.path.join(_EARN_DIR, f"{code}.json")
+
+
 def earnings(code: str) -> dict:
+    """추정실적(컨센서스). 저장본이 신선(7일 이내)하면 즉시 반환(재조회 X), 아니면 FnGuide 조회 후 저장."""
+    import json
+    path = _earn_path(code)
     try:
-        return _earnings(code, date.today().isoformat())
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                cached = json.load(f)
+            fetched = cached.get("fetched", "")
+            if fetched and (date.today() - date.fromisoformat(fetched)).days < _EARN_FRESH_DAYS:
+                return cached["data"]
+    except Exception:
+        pass
+    try:
+        data = _earnings(code, date.today().isoformat())
     except Exception as e:
         _log.warning("추정실적 fetch 실패 %s: %s", code, e)
-        return {"years": [], "rows": {}}
+        try:                                            # 만료됐어도 저장본 있으면 fallback
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)["data"]
+        except Exception:
+            return {"years": [], "rows": {}}
+    try:
+        os.makedirs(_EARN_DIR, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"fetched": date.today().isoformat(), "data": data}, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+    return data
 
 
 # ── 최근 공시 (DART OpenDart API) ────────────────────────────────────────────
@@ -369,3 +420,106 @@ def shorting(code: str) -> list[dict]:
     except Exception as e:
         _log.warning("공매도 fetch 실패 %s: %s", code, e)
         return []
+
+
+# ── 섹터 키워드 뉴스 (Google News RSS — 키 불필요, 국내 ko / 해외 en) ──────────────
+def _strip_html(s: str) -> str:
+    return re.sub(r"<[^>]+>", "", s or "").strip()
+
+
+@lru_cache(maxsize=64)
+def _news(query: str, region: str, _hour: str) -> list[dict]:
+    """Google News RSS 키워드 검색. region='kr'(한국어) / 'global'(영어). 시간당 캐시."""
+    import xml.etree.ElementTree as ET
+    hl, gl, ceid = ("ko", "KR", "KR:ko") if region == "kr" else ("en-US", "US", "US:en")
+    url = (f"https://news.google.com/rss/search?q={requests.utils.quote(query)}"
+           f"&hl={hl}&gl={gl}&ceid={ceid}")
+    r = requests.get(url, headers=_H, timeout=12)
+    root = ET.fromstring(r.content)
+    out: list[dict] = []
+    for it in root.findall(".//item")[:15]:
+        title = (it.findtext("title", "") or "").strip()
+        src_el = it.find("{*}source")
+        src = src_el.text if src_el is not None else ""
+        if src and title.endswith(" - " + src):      # 제목 끝 " - 언론사" 제거
+            title = title[: -(len(src) + 3)].strip()
+        out.append({
+            "title": title,
+            "summary": _strip_html(it.findtext("description", ""))[:160],
+            "source": src or "",
+            "url": it.findtext("link", "") or "",
+            "date": (it.findtext("pubDate", "") or "")[:16],
+        })
+    return out
+
+
+def news(kr_keywords: list[str], global_keywords: list[str]) -> dict:
+    """섹터 키워드 뉴스 — 국내(kr)·해외(global) 구분 반환. 실패 시 해당 구분 빈 리스트."""
+    from datetime import datetime
+    hour = datetime.now().strftime("%Y%m%d%H")
+    out = {"kr": [], "global": []}
+    for region, kws in (("kr", kr_keywords), ("global", global_keywords)):
+        kws = [k for k in (kws or []) if k][:8]
+        if not kws:
+            continue
+        q = " OR ".join(f'"{k}"' if " " in k else k for k in kws)[:300]
+        try:
+            out[region] = _news(q, region, hour)
+        except Exception as e:
+            _log.warning("뉴스 fetch 실패 (%s): %s", region, e)
+    return out
+
+
+# ── 기업 개요 (FnGuide Snapshot — 설립일·홈페이지·대표) ───────────────────────────
+@lru_cache(maxsize=256)
+def _profile(code: str, _day: str) -> dict:
+    """기업개요 — FnGuide 기업정보(SVD_Corp): 설립일·대표이사·홈페이지·종업원수. 전자공시 기반 핵심정보."""
+    r = requests.get("https://comp.fnguide.com/SVO2/ASP/SVD_Corp.asp",
+                     params={"pGB": "1", "gicode": f"A{code}", "cID": "", "MenuYn": "Y",
+                             "ReportGB": "", "NewMenuID": "102", "stkGb": "701"},
+                     headers=_H, verify=_C, timeout=15)
+    if not r.encoding or r.encoding.lower() in ("iso-8859-1", "ascii"):
+        r.encoding = r.apparent_encoding
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    def _by_th(*keys):
+        for th in soup.select("th, td"):
+            nm = th.get_text(" ", strip=True).replace("\xa0", " ")
+            if any(k in nm for k in keys):
+                sib = th.find_next("td")
+                if sib:
+                    return sib.get_text(" ", strip=True).replace("\xa0", " ").strip()
+        return ""
+    txt = soup.get_text(" ", strip=True).replace("\xa0", " ")
+    # 설립일 — '설립일' th의 값(YYYY/MM/DD)
+    est = ""
+    raw = _by_th("설립")
+    m = re.search(r"([0-9]{4}[./-][0-9]{1,2}[./-][0-9]{1,2})", raw)
+    if m:
+        est = m.group(1).replace("/", ".").replace("-", ".")
+    # 홈페이지
+    hp = _by_th("홈페이지")
+    if not hp:
+        m = re.search(r"goHompage\('([^']+)'\)", r.text)
+        hp = m.group(1) if m else ""
+    m = re.search(r"(https?://[^\s'\"]+)", hp)
+    hp = m.group(1) if m else hp
+    # 종업원수
+    emp = ""
+    m = re.search(r"([0-9][0-9,]{1,8})", _by_th("종업원"))
+    if m:
+        emp = m.group(1)
+    # 대표이사 — 경영진 텍스트에서 '대표이사 홍길동'
+    ceo = ""
+    m = re.search(r"대표이사\s*([가-힣]{2,4})", txt)
+    if m:
+        ceo = m.group(1)
+    return {"established": est, "homepage": hp, "ceo": ceo, "employees": emp}
+
+
+def profile(code: str) -> dict:
+    try:
+        return _profile(code, date.today().isoformat())
+    except Exception as e:
+        _log.warning("기업개요 fetch 실패 %s: %s", code, e)
+        return {"established": "", "homepage": "", "ceo": "", "employees": ""}

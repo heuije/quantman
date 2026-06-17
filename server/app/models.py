@@ -247,7 +247,12 @@ class StockOpinion(SQLModel, table=True):
     user_id: int = Field(index=True, foreign_key="user.id")
     author: str                                # 작성자 표시명(이메일 앞부분)
     stance: str                                # buy | neutral | sell
-    body: str                                  # 분석 글
+    title: str = Field(default="")             # 분석글 제목
+    target_price: Optional[float] = None       # 목표주가(원). 상승여력은 현재가 대비 프런트 계산.
+    body: str                                  # 분석 글 (리치 HTML — 서식·인라인 이미지 포함)
+    # 운영자(MyStock) 승인 상태. 신규 글은 pending → 승인돼야 타인에게 공개.
+    # 컬럼 default는 approved(레거시 row 보존); 작성 API가 명시적으로 pending 지정.
+    status: str = Field(default="approved", index=True)   # pending | approved
     likes: int = Field(default=0)
     dislikes: int = Field(default=0)
     created_at: datetime = Field(default_factory=_now)

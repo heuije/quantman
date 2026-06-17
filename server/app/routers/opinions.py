@@ -1,7 +1,11 @@
-"""개별 기업 투자의견 게시판 — 종목별 매수/중립/매도 의견 + 댓글 + 좋아요/싫어요.
+"""개별 기업 투자의견(Ratings) 게시판 — 종목별 매수/중립/매도 의견 + 댓글 + 좋아요/싫어요.
 
 의견은 ticker에 종속(기업별로 게시판이 분리됨). 로그인 회원만 작성·댓글·투표 가능
 (get_current_user). 좋아요/싫어요는 사용자당 1표이며 같은 버튼 재클릭 시 취소된다.
+
+운영자 승인(moderation): 신규 글은 status='pending'으로 저장되고, 운영자(MyStock,
+config.ADMIN_EMAILS)가 승인해야 타인에게 공개된다. 작성자 본인은 승인 전에도 자기 글을
+'승인 대기' 상태로 볼 수 있고, 운영자는 모든 pending 글을 보고 승인/삭제할 수 있다.
 """
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from ..config import settings
 from ..db import get_session
 from ..deps import get_current_user
 from ..models import OpinionComment, OpinionVote, StockOpinion, User
@@ -16,13 +21,20 @@ from ..models import OpinionComment, OpinionVote, StockOpinion, User
 router = APIRouter(prefix="/opinions", tags=["opinions"])
 
 _STANCES = {"buy", "neutral", "sell"}
-_MAX_BODY = 4000
+_MAX_TITLE = 200
+_MAX_BODY = 2_000_000   # 리치 HTML + 인라인(data URL) 이미지 허용을 위해 넉넉히
 _MAX_COMMENT = 1000
+
+
+def _is_admin(user: User) -> bool:
+    return (user.email or "").strip().lower() in settings.ADMIN_EMAILS
 
 
 class OpinionIn(BaseModel):
     ticker: str
     stance: str
+    title: str = ""
+    target_price: float | None = None
     body: str
 
 
@@ -44,13 +56,16 @@ def _comment_dict(c: OpinionComment, uid: int) -> dict:
             "created_at": c.created_at.isoformat() if c.created_at else None}
 
 
-def _opinion_dict(op: StockOpinion, comments: dict, my_votes: dict, uid: int) -> dict:
+def _opinion_dict(op: StockOpinion, comments: dict, my_votes: dict,
+                  uid: int, is_admin: bool) -> dict:
     return {
         "id": op.id, "ticker": op.ticker, "author": op.author,
-        "stance": op.stance, "body": op.body,
+        "stance": op.stance, "title": op.title or "", "body": op.body,
+        "target_price": op.target_price, "status": op.status or "approved",
         "likes": op.likes, "dislikes": op.dislikes,
         "my_vote": my_votes.get(op.id, 0),
         "is_mine": op.user_id == uid,
+        "can_moderate": is_admin,
         "created_at": op.created_at.isoformat() if op.created_at else None,
         "comments": [_comment_dict(c, uid) for c in comments.get(op.id, [])],
     }
@@ -59,11 +74,18 @@ def _opinion_dict(op: StockOpinion, comments: dict, my_votes: dict, uid: int) ->
 @router.get("/{ticker}")
 def list_opinions(ticker: str, user: User = Depends(get_current_user),
                   session: Session = Depends(get_session)):
-    """해당 종목 게시판의 의견 목록(최신순) — 댓글·좋아요/싫어요·내 투표 포함."""
+    """해당 종목 게시판의 의견 목록(최신순) — 댓글·좋아요/싫어요·내 투표 포함.
+
+    공개 범위: 승인(approved)된 글은 누구나. pending은 작성자 본인·운영자만 본다.
+    """
+    admin = _is_admin(user)
     ops = session.exec(
         select(StockOpinion).where(StockOpinion.ticker == ticker.strip())
         .order_by(StockOpinion.created_at.desc())
     ).all()
+    # 가시성 필터 — approved 전체공개 / pending은 본인·운영자만
+    ops = [o for o in ops
+           if (o.status or "approved") == "approved" or admin or o.user_id == user.id]
     ids = [o.id for o in ops]
     comments: dict = {}
     my_votes: dict = {}
@@ -78,8 +100,8 @@ def list_opinions(ticker: str, user: User = Depends(get_current_user),
                                       OpinionVote.user_id == user.id)
         ).all():
             my_votes[v.opinion_id] = v.value
-    return {"ticker": ticker,
-            "opinions": [_opinion_dict(o, comments, my_votes, user.id) for o in ops]}
+    return {"ticker": ticker, "is_admin": admin,
+            "opinions": [_opinion_dict(o, comments, my_votes, user.id, admin) for o in ops]}
 
 
 @router.post("")
@@ -88,18 +110,40 @@ def create_opinion(body: OpinionIn, user: User = Depends(get_current_user),
     stance = body.stance.strip().lower()
     if stance not in _STANCES:
         raise HTTPException(422, "의견은 매수/중립/매도 중 하나여야 합니다.")
-    text = body.body.strip()
+    text = (body.body or "").strip()
     if not text:
         raise HTTPException(422, "분석 내용을 입력하세요.")
     ticker = body.ticker.strip()
     if not ticker:
         raise HTTPException(422, "종목이 필요합니다.")
+    title = (body.title or "").strip()[:_MAX_TITLE]
+    target = body.target_price
+    if target is not None and target <= 0:
+        target = None
+    # 운영자가 직접 쓰면 즉시 승인, 일반 회원은 승인 대기
+    status = "approved" if _is_admin(user) else "pending"
     op = StockOpinion(ticker=ticker, user_id=user.id, author=_author(user),
-                      stance=stance, body=text[:_MAX_BODY])
+                      stance=stance, title=title, target_price=target,
+                      body=text[:_MAX_BODY], status=status)
     session.add(op)
     session.commit()
     session.refresh(op)
-    return _opinion_dict(op, {}, {}, user.id)
+    return _opinion_dict(op, {}, {}, user.id, _is_admin(user))
+
+
+@router.post("/{opinion_id}/approve")
+def approve_opinion(opinion_id: int, user: User = Depends(get_current_user),
+                    session: Session = Depends(get_session)):
+    """운영자(MyStock) 승인 — pending 글을 공개(approved)로 전환."""
+    if not _is_admin(user):
+        raise HTTPException(403, "운영자만 승인할 수 있습니다.")
+    op = session.get(StockOpinion, opinion_id)
+    if op is None:
+        raise HTTPException(404, "의견을 찾을 수 없습니다.")
+    op.status = "approved"
+    session.add(op)
+    session.commit()
+    return {"id": op.id, "status": op.status}
 
 
 @router.delete("/{opinion_id}", status_code=204)
@@ -108,7 +152,8 @@ def delete_opinion(opinion_id: int, user: User = Depends(get_current_user),
     op = session.get(StockOpinion, opinion_id)
     if op is None:
         raise HTTPException(404, "의견을 찾을 수 없습니다.")
-    if op.user_id != user.id:
+    # 본인 글 또는 운영자만 삭제 가능
+    if op.user_id != user.id and not _is_admin(user):
         raise HTTPException(403, "본인 의견만 삭제할 수 있습니다.")
     for c in session.exec(select(OpinionComment).where(
             OpinionComment.opinion_id == opinion_id)).all():
@@ -146,7 +191,7 @@ def delete_comment(opinion_id: int, comment_id: int,
     c = session.get(OpinionComment, comment_id)
     if c is None or c.opinion_id != opinion_id:
         raise HTTPException(404, "댓글을 찾을 수 없습니다.")
-    if c.user_id != user.id:
+    if c.user_id != user.id and not _is_admin(user):
         raise HTTPException(403, "본인 댓글만 삭제할 수 있습니다.")
     session.delete(c)
     session.commit()

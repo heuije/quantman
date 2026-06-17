@@ -67,26 +67,44 @@ a:hover { text-decoration: underline; }
 
 /* ── 상단 가로 네비게이션 바 (사이드바 → 최상단) ─────────────────────────────── */
 .topnav {
-  display: flex; align-items: center; gap: 16px;
-  background: var(--navy-950); padding: 0 22px; height: 68px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 0;
+  background: var(--navy-950); padding: 0;
   position: sticky; top: 0; z-index: 50;
   border-bottom: 1px solid rgba(255,255,255,0.07);
 }
-.topnav .brand { padding: 0; font-size: 42px; flex: none; line-height: 1; }
+/* 1행 — 로고(좌·고정) + 회원가입/로그인·계정(우) */
+.topnav-row1 {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 9px 18px;
+}
+.topnav-row1-right { display: flex; align-items: center; gap: 10px; flex: none; }
+.topnav .brand { padding: 0; font-size: 21px; flex: none; line-height: 1; }
 .topnav-hamburger { display: none; }
+/* 우측 회원가입/로그인 CTA */
+.topnav-auth { display: flex; align-items: center; gap: 8px; }
+.auth-cta {
+  font-size: 12.5px; font-weight: 700; padding: 7px 15px; border-radius: 8px;
+  cursor: pointer; white-space: nowrap; letter-spacing: 0.02em; transition: filter .12s, background .12s;
+}
+.auth-cta.login { background: transparent; color: #cfe0ff; border: 1px solid rgba(255,255,255,0.28); }
+.auth-cta.login:hover { background: rgba(255,255,255,0.1); }
+.auth-cta.signup { background: var(--accent); color: #1a1206; border: 1px solid var(--accent); }
+.auth-cta.signup:hover { filter: brightness(1.08); }
+/* 2행 — 네비게이션(로고 아래) */
 .topnav-links {
-  display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto;
+  display: flex; align-items: center; gap: 1px; min-width: 0; overflow-x: auto;
+  padding: 0 14px 2px;
 }
 .topnav-links::-webkit-scrollbar { height: 0; }
-.topnav .navlink { padding: 8px 12px; gap: 7px; font-size: 14px; white-space: nowrap; }
+.topnav .navlink { padding: 6px 9px; gap: 6px; font-size: 13px; white-space: nowrap; }
 .topnav .nav-ic { display: none; }                       /* 데스크탑 상단바: 텍스트만(깔끔) */
 .topnav .navlink.active { box-shadow: inset 0 -3px 0 #4f8ff5; }   /* 가로바: 하단 인디케이터 */
 /* 우측 계정(로그인) 버튼 + 드롭다운 */
 .topnav-right { position: relative; flex: none; }
 .account-btn {
-  display: inline-flex; align-items: center; gap: 8px;
+  display: inline-flex; align-items: center; gap: 7px;
   background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(255,255,255,0.18);
-  padding: 7px 13px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 5px 11px; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer;
   transition: background 0.12s ease;
 }
 .account-btn:hover { background: rgba(255,255,255,0.18); }
@@ -151,6 +169,31 @@ a:hover { text-decoration: underline; }
 /* 개별 종목 분석(Company Analysis) — 전체폭(우측 여백 제거) + 차트 그리드.
    :has()로 이 페이지에서만 1100px 캡 해제(다른 페이지 영향 없음). */
 .main-inner:has(.dashboard-fullwidth) { max-width: none; }
+/* 산업분석·HOME: 브라우저 67% 줌과 동일한 밀도를 100%에서 기본 표시 */
+.industry-67, .mod-std { zoom: 0.67; }
+/* 모듈 공통 글자 통일 — 대제목 22pt · 소제목 16pt · 본문(표) 12pt.
+   .panel h3(15px) 등 동일 명시도 규칙을 확실히 덮도록 !important. (산업분석=.industry-67, 그 외=.mod-std) */
+.industry-67 h1, .mod-std h1 { font-size: 22pt !important; }
+.industry-67 h3, .mod-std h3 { font-size: 16pt !important; }
+.industry-67 table, .mod-std table { font-size: 12pt !important; }
+
+/* HOME 모듈 스크롤바 — 컨센서스·Ratings 등 패널 내부 스크롤을 얇고 감각 있게.
+   Firefox(scrollbar-*) + WebKit(::-webkit-scrollbar) 양쪽 지원, 메인 액센트 컬러. */
+/* ⚠ 표준 scrollbar-width/color를 .mod-std에 두면 최신 Chrome이 ::-webkit-scrollbar(폭)를
+   무시하고 표준 'thin'(두꺼운 바)을 그린다. → WebKit엔 표준 속성을 주지 않고 webkit 규칙만 둔다. */
+.mod-std *::-webkit-scrollbar { width: 2px; height: 2px; }
+.mod-std *::-webkit-scrollbar-track { background: transparent; }
+.mod-std *::-webkit-scrollbar-thumb { background: rgba(196,152,43,0.55); border-radius: 999px; }
+.mod-std *::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+.mod-std *::-webkit-scrollbar-corner { background: transparent; }
+/* Firefox는 ::-webkit 미지원 → 표준 thin(최소). @supports로 Firefox에만 적용해 Chrome 영향 차단. */
+@supports (-moz-appearance: none) {
+  .mod-std { scrollbar-width: thin; scrollbar-color: rgba(196,152,43,0.55) transparent; }
+}
+
+/* 리치 에디터 placeholder(빈 상태) + 게시글 인라인 이미지 크기 제한 */
+.rich-ed:empty::before { content: attr(data-ph); color: var(--muted); pointer-events: none; }
+.op-body img { max-width: 100%; height: auto; border-radius: 6px; margin: 4px 0; }
 .ca-summary {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px;
 }
@@ -2000,8 +2043,10 @@ thead th { color: var(--muted); font-weight: 600; }
   .shell { flex-direction: column; }
 
   /* 상단바 — 모바일: 로고 + 햄버거 + 계정, 메뉴는 드롭다운 */
-  .topnav { gap: 10px; padding: 0 14px; }
-  .topnav .brand { font-size: 32px; }
+  .topnav { padding: 0; }
+  .topnav-row1 { padding: 8px 12px; }
+  .topnav .brand { font-size: 18px; }
+  .auth-cta { padding: 6px 10px; font-size: 11.5px; }
   .topnav-hamburger {
     display: inline-flex; align-items: center; justify-content: center;
     background: transparent; color: #fff; border: 0; font-size: 22px;

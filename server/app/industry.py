@@ -22,9 +22,44 @@ _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 # 지원 산업 — CSV 파일 추가 시 여기에 등록(동일 컬럼 구조).
 INDUSTRIES = {"2차전지": "industry_2차전지.csv"}
 
+
+@lru_cache(maxsize=1)
+def _product_map() -> dict:
+    """티커 → 주요제품(핵심 사업 한 줄 요약). 모든 산업 CSV에서 1회 로드.
+    기업개요(/profile)의 '주요 사업' 칸이 산업표와 동일 문구를 쓰도록 공유."""
+    m: dict = {}
+    for fname in INDUSTRIES.values():
+        path = os.path.join(_DIR, fname)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    tk = str(r.get("티커", "")).strip()
+                    tk = tk.zfill(6) if tk.isdigit() else tk
+                    p = (r.get("주요제품") or "").strip()
+                    if tk and p:
+                        m[tk] = p
+        except Exception:
+            pass
+    return m
+
+
+def product_of(ticker: str) -> str:
+    tk = str(ticker).strip()
+    tk = tk.zfill(6) if tk.isdigit() else tk
+    return _product_map().get(tk, "")
+
+
+def shares_of(ticker: str):
+    """상장주식수(코드별). 시총 = 현재가 × 주식수 계산용. 전 KRX 사전(_shares, 일 캐시) 재사용."""
+    tk = str(ticker).strip()
+    tk = tk.zfill(6) if tk.isdigit() else tk
+    return _shares(date.today().isoformat()).get(tk)
+
 # 밸류체인 정렬 순서 (Upstream → Midstream → Downstream → 단계)
 _GU_ORDER = {"Upstream": 0, "Midstream": 1, "Downstream": 2}
-_DAN_ORDER = {"원자재": 0, "소재": 1, "셀": 2, "부품": 3, "장비": 4,
+_DAN_ORDER = {"원자재": 0, "소재": 1, "배터리": 2, "부품": 3, "장비": 4,
               "리사이클": 5, "애플리케이션": 6}
 
 
@@ -59,10 +94,13 @@ def _shares(_day: str) -> dict:
 
 @lru_cache(maxsize=4096)
 def _closes(tk: str, _day: str):
-    """종목 종가 전체 시계열 — 일 1회 캐시. as_of(과거일자)만 바꿀 땐 재조회 없이 잘라 쓴다."""
+    """종목 종가 시계열(약 2.2년) — 일 1회 캐시. 전체 이력 대신 범위 제한으로 콜드 로딩 단축.
+    as_of(과거일자)는 이 범위 안에서만 슬라이스(더 과거는 무료소스 한계)."""
     import FinanceDataReader as fdr
+    from datetime import timedelta
+    start = (date.today() - timedelta(days=820)).isoformat()
     try:
-        return fdr.DataReader(tk)["Close"].dropna()
+        return fdr.DataReader(tk, start)["Close"].dropna()
     except Exception:
         return None
 
@@ -96,7 +134,7 @@ def _returns(tickers: tuple[str, ...], _day: str, as_of: str = "") -> dict[str, 
             return tk, None
 
     out: dict[str, dict | None] = {}
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    with ThreadPoolExecutor(max_workers=20) as ex:
         for tk, v in ex.map(_one, tickers):
             out[tk] = v
     return out
@@ -123,9 +161,15 @@ def _industry(name: str, _day: str, as_of: str = "") -> list[dict] | None:
                 "cap": None, "chg": None, "revenue": rev, "op": op,
                 "op_margin": (op / rev * 100) if (rev and op is not None and rev > 0) else None,
             })
+    # 종가·등락(DataReader)·상장주식수(StockListing)는 병렬 조회. EBITDA용 D&A(FnGuide 65페이지)는
+    # 느려서 여기서 막지 않고 별도 엔드포인트(industry_ebitda)로 지연 로딩 — 트리맵·표가 먼저 뜨게.
+    from concurrent.futures import ThreadPoolExecutor
+    tickers = tuple(x["ticker"] for x in rows)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_quotes = ex.submit(_returns, tickers, _day, as_of)
+        f_shares = ex.submit(_shares, _day)
+        quotes, shares = f_quotes.result(), f_shares.result()
     # 종가·등락 = DataReader(as_of 시점, 네이버 일치) / 시총 = 종가 × 상장주식수(StockListing Stocks)
-    quotes = _returns(tuple(x["ticker"] for x in rows), _day, as_of)
-    shares = _shares(_day)
     for x in rows:
         q = quotes.get(x["ticker"])
         close = q.get("close") if q else None
@@ -133,6 +177,7 @@ def _industry(name: str, _day: str, as_of: str = "") -> list[dict] | None:
         sh = shares.get(x["ticker"])
         x["cap"] = (close * sh) if (close and sh) else None
         x["ret"] = {k: q[k] for k in ("d5", "d20", "d60", "d120", "d240")} if q else None
+        x["da"] = x["ebitda"] = x["ebitda_margin"] = None   # EBITDA는 지연 로딩으로 채움
     # 세부분류 내 시총 점유율(M/s) — 분모=같은 세부분류 시총 합계
     det_sum: dict[str, float] = {}
     for x in rows:
@@ -141,13 +186,6 @@ def _industry(name: str, _day: str, as_of: str = "") -> list[dict] | None:
     for x in rows:
         s = det_sum.get(x["detail"], 0.0)
         x["ms"] = (x["cap"] / s * 100) if (s and x["cap"]) else None
-    # EBITDA = 영업이익 + 현금흐름표 D&A(감가상각비+무형자산상각비), 이익률 = EBITDA/매출액
-    da = _da_map(tuple(x["ticker"] for x in rows), _day)
-    for x in rows:
-        d, op, rev = da.get(x["ticker"]), x["op"], x["revenue"]
-        x["da"] = d
-        x["ebitda"] = (op + d) if (op is not None and d is not None) else None
-        x["ebitda_margin"] = (x["ebitda"] / rev * 100) if (x["ebitda"] is not None and rev and rev > 0) else None
     rows.sort(key=lambda x: (_GU_ORDER.get(x["gu"], 9), _DAN_ORDER.get(x["stage"], 9),
                              x["detail"], -(x["cap"] or 0)))
     return rows
@@ -181,42 +219,48 @@ def _da_one(code: str) -> float | None:
     최신 연간(/12) 컬럼 값 사용(단위 억원 → 원). 대손상각·사채상각 등은 계정명으로 제외.
     키가 필요 없어 로컬에서도 EBITDA가 채워진다. 데이터 없으면 None(정직)."""
     from bs4 import BeautifulSoup
-    try:
-        r = requests.get(_FNG_FIN_URL, params={
-            "pGB": "1", "gicode": f"A{code}", "cID": "", "MenuYn": "Y",
-            "ReportGB": "", "NewMenuID": "103", "stkGb": "701"},
-            headers=_FNG_H, timeout=20)
-        if not r.encoding or r.encoding.lower() in ("iso-8859-1", "ascii"):
-            r.encoding = r.apparent_encoding         # 헤더에 charset 없을 때만 보정(과오버라이드 방지)
-        soup = BeautifulSoup(r.text, "html.parser")
-        div = soup.find(id="divCashY")               # 연간 현금흐름표
-        if div is None:
-            return None
-        cols = [th.get_text(strip=True) for th in div.select("thead th")][1:]   # 첫 칸=라벨 제외
-        annual = [i for i, y in enumerate(cols) if y.endswith("/12")]
-        if not annual:
-            return None
+    import time as _t
+    last_err = None
+    for attempt in range(2):                          # FnGuide 간헐적 연결 리셋 → 1회 재시도
+        try:
+            r = requests.get(_FNG_FIN_URL, params={
+                "pGB": "1", "gicode": f"A{code}", "cID": "", "MenuYn": "Y",
+                "ReportGB": "", "NewMenuID": "103", "stkGb": "701"},
+                headers=_FNG_H, timeout=12)
+            if not r.encoding or r.encoding.lower() in ("iso-8859-1", "ascii"):
+                r.encoding = r.apparent_encoding       # 헤더에 charset 없을 때만 보정
+            soup = BeautifulSoup(r.text, "html.parser")
+            div = soup.find(id="divCashY")             # 연간 현금흐름표
+            if div is None:
+                return None
+            cols = [th.get_text(strip=True) for th in div.select("thead th")][1:]  # 첫 칸=라벨 제외
+            annual = [i for i, y in enumerate(cols) if y.endswith("/12")]
+            if not annual:
+                return None
 
-        def _row(pred):
-            for tr in div.select("tbody tr"):
-                th = tr.find("th")
-                if th is None:
-                    continue
-                nm = th.get_text(" ", strip=True).replace(" ", "")
-                if pred(nm):
-                    return [td.get_text(strip=True) for td in tr.find_all("td")]
+            def _row(pred):
+                for tr in div.select("tbody tr"):
+                    th = tr.find("th")
+                    if th is None:
+                        continue
+                    nm = th.get_text(" ", strip=True).replace(" ", "")
+                    if pred(nm):
+                        return [td.get_text(strip=True) for td in tr.find_all("td")]
+                return None
+            dep = _row(lambda s: "감가상각" in s and "대손" not in s)
+            amo = _row(lambda s: ("무형자산" in s and "상각" in s) and "대손" not in s)
+            for i in reversed(annual):                 # 최신 연간부터 값 있는 해 선택
+                d = _num(dep[i]) if (dep and i < len(dep)) else None
+                a = _num(amo[i]) if (amo and i < len(amo)) else None
+                if d is not None or a is not None:
+                    return ((d or 0.0) + (a or 0.0)) * 1e8   # 억원 → 원
             return None
-        dep = _row(lambda s: "감가상각" in s and "대손" not in s)
-        amo = _row(lambda s: ("무형자산" in s and "상각" in s) and "대손" not in s)
-        for i in reversed(annual):                   # 최신 연간부터 값 있는 해 선택
-            d = _num(dep[i]) if (dep and i < len(dep)) else None
-            a = _num(amo[i]) if (amo and i < len(amo)) else None
-            if d is not None or a is not None:
-                return ((d or 0.0) + (a or 0.0)) * 1e8   # 억원 → 원
-        return None
-    except Exception as e:
-        _log.warning("FnGuide D&A 조회 실패 %s: %s", code, e)
-        return None
+        except Exception as e:                         # 연결 리셋 등 transient만 재시도
+            last_err = e
+            if attempt == 0:
+                _t.sleep(0.6)
+    _log.warning("FnGuide D&A 조회 실패 %s: %s", code, last_err)
+    return None
 
 
 @lru_cache(maxsize=4)
@@ -237,6 +281,34 @@ def industry(name: str, as_of: str | None = None) -> list[dict] | None:
     except Exception as e:
         _log.warning("산업 분석 fetch 실패 %s: %s", name, e)
         return None
+
+
+@lru_cache(maxsize=4)
+def _industry_ebitda(name: str, _day: str) -> dict:
+    """종목별 EBITDA/EBITDA률/D&A — FnGuide 현금흐름표(느림). 지연 로딩 엔드포인트 전용.
+    EBITDA = (CSV 영업이익) + D&A, 이익률 = EBITDA/(CSV 매출액). 시장가 무관이라 as_of 불필요."""
+    rows = _industry(name, _day, "")
+    if not rows:
+        return {}
+    da = _da_map(tuple(r["ticker"] for r in rows), _day)
+    out: dict = {}
+    for r in rows:
+        d, op, rev = da.get(r["ticker"]), r["op"], r["revenue"]
+        eb = (op + d) if (op is not None and d is not None) else None
+        out[r["ticker"]] = {
+            "da": d, "ebitda": eb,
+            "ebitda_margin": (eb / rev * 100) if (eb is not None and rev and rev > 0) else None,
+        }
+    return out
+
+
+def industry_ebitda(name: str) -> dict:
+    """지연 로딩: 종목별 EBITDA 사전. 실패 시 빈 dict."""
+    try:
+        return _industry_ebitda(name, date.today().isoformat())
+    except Exception as e:
+        _log.warning("EBITDA fetch 실패 %s: %s", name, e)
+        return {}
 
 
 def as_of(req: str | None = None) -> str | None:

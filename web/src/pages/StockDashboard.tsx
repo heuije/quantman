@@ -8,11 +8,28 @@ import type {
   SymbolDetail, SymbolListing, SymbolPoint, CompareItem, KrExtras,
 } from "../types";
 
-const RANGES: [string, string][] = [
-  ["1m", "1개월"], ["3m", "3개월"], ["6m", "6개월"], ["12m", "12개월"], ["1y", "1년"],
-  ["3y", "3년"], ["5y", "5년"], ["10y", "10년"], ["15y", "15년"],
-  ["20y", "20년"], ["25y", "25년"], ["30y", "30년"],
+// 주가차트 기간 버튼 — [라벨, 개월수]. summary 그래프와 동일(클라이언트 필터).
+const PERIODS: [string, number][] = [
+  ["1개월", 1], ["3개월", 3], ["6개월", 6], ["1년", 12], ["3년", 36], ["5년", 60], ["10년", 120],
 ];
+
+// 지표 분류 — 유사 지표끼리 그룹핑(사용자 선택 판단 보조). key→그룹.
+const IND_GROUP: Record<string, string> = {
+  bb: "추세·이동평균", ema: "추세·이동평균", wma: "추세·이동평균", vwap: "추세·이동평균",
+  envelope: "추세·이동평균", keltner: "추세·이동평균", donchian: "추세·이동평균", psar: "추세·이동평균",
+  ichimoku: "추세·이동평균", supertrend: "추세·이동평균", dmi: "추세·이동평균", aroon: "추세·이동평균",
+  vortex: "추세·이동평균", dpo: "추세·이동평균",
+  rsi_14: "모멘텀·오실레이터", macd: "모멘텀·오실레이터", stoch: "모멘텀·오실레이터", cci: "모멘텀·오실레이터",
+  williams_r: "모멘텀·오실레이터", roc: "모멘텀·오실레이터", momentum: "모멘텀·오실레이터", stochrsi: "모멘텀·오실레이터",
+  trix: "모멘텀·오실레이터", uo: "모멘텀·오실레이터", ao: "모멘텀·오실레이터", ppo: "모멘텀·오실레이터",
+  disparity: "모멘텀·오실레이터", psy: "모멘텀·오실레이터", kst: "모멘텀·오실레이터", coppock: "모멘텀·오실레이터",
+  elder: "모멘텀·오실레이터",
+  atr_14: "변동성", vol_20d: "변동성", bb_pctb: "변동성", bb_bw: "변동성", stddev: "변동성", mass_index: "변동성",
+  volume: "거래량·자금흐름", obv: "거래량·자금흐름", mfi: "거래량·자금흐름", cmf: "거래량·자금흐름",
+  chaikin_osc: "거래량·자금흐름", force_index: "거래량·자금흐름", eom: "거래량·자금흐름", vr: "거래량·자금흐름",
+  ad_line: "거래량·자금흐름",
+};
+const IND_GROUP_ORDER = ["추세·이동평균", "모멘텀·오실레이터", "변동성", "거래량·자금흐름", "기타"];
 
 // 한국식 시장 색 (상승=빨강 / 하락=파랑). 벤치마크=초록.
 const UP = "#de3033", DOWN = "#1668c4", BENCH = "#15803d", ACCENT = "#c4982b";
@@ -213,7 +230,6 @@ function useDragZoom<T extends { date: string }>(data: T[]) {
     },
   };
   const area: DragArea = refL != null && refR != null && refL !== refR ? { x1: refL, x2: refR } : null;
-
   // 휠(스크롤) 줌 — 차트 위 휠 ↑=확대 / ↓=축소(커서 위치 기준). 드래그 줌과 같은 range 상태 공유.
   // recharts는 휠 줌 미지원 → 컨테이너 div에 네이티브 wheel 리스너(passive:false)로 직접 구현.
   const dataRef = useRef(data); dataRef.current = data;
@@ -248,13 +264,24 @@ function useDragZoom<T extends { date: string }>(data: T[]) {
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
-  return { view, dragProps, area, wheelRef, reset: () => setRange(null), zoomed: range != null };
+  return { view, dragProps, area, wheelRef, range,
+    setWindow: (a: string, b: string) => setRange([a, b]),   // 기간 버튼·날짜 입력으로 구간 지정
+    reset: () => setRange(null), zoomed: range != null };
 }
 
-export default function StockDashboard() {
-  const [symbols, setSymbols] = useState<string[]>(["005930"]);
+export default function StockDashboard({ symbol, hideSearch }: { symbol?: string; hideSearch?: boolean } = {}) {
+  const [symbols, setSymbols] = useState<string[]>(symbol ? [symbol] : ["005930"]);
+  // HOME 임베드 — 외부 선택 종목을 따라감. symbol이 바뀌면 단일 종목 모드로 차트까지 재로딩.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => {
+    if (!symbol) return;
+    setSymbols([symbol]);
+    loadFor([symbol], range);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol]);
   const [input, setInput] = useState("");
-  const [range, setRange] = useState("1y");
+  const [range, setRange] = useState("10y");   // 넉넉히 받아 차트 기간/날짜는 클라이언트 필터(summary식)
+  const [chartPeriod, setChartPeriod] = useState<number | "all" | "custom">(12);  // 차트 기간 버튼 활성표시
   const [data, setData] = useState<SymbolDetail | null>(null);
   const [cmp, setCmp] = useState<CompareItem[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -292,7 +319,7 @@ export default function StockDashboard() {
   }
 
   useEffect(() => {
-    loadFor(["005930"], "1y");
+    if (!symbol) loadFor(["005930"], "10y");   // 독립 사용 시 기본 종목(임베드 시엔 symbol effect가 로딩)
     api.marketListings().then((r) => setListings(r.listings)).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -381,6 +408,17 @@ export default function StockDashboard() {
 
   // 커서 드래그 줌 — 주가차트·보조지표가 같은 X축(날짜)을 공유하므로 하나의 줌 상태로 묶는다.
   const pz = useDragZoom(chartData);
+  // 차트 기간 — summary식: 10년 받아 기간 버튼/직접 날짜로 구간 지정(클라이언트 필터).
+  const cdMin = chartData[0]?.date || "", cdMax = chartData[chartData.length - 1]?.date || "";
+  const monthsBack = (m: number) => {
+    if (!cdMax) return cdMin;
+    const d = new Date(cdMax); d.setMonth(d.getMonth() - m);
+    const s = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return s < cdMin ? cdMin : s;
+  };
+  // 데이터 로드/종목 변경 시 기본 보기 = 최근 1년
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (cdMax) { setChartPeriod(12); pz.setWindow(monthsBack(12), cdMax); } }, [cdMax]);
 
   // 가격축 도메인 — 줌된 구간(pz.view) 기준으로 타이트하게(0 강제 방지).
   // 긴 구간(수천 일)에서 spread 인자 한계를 피하려고 reduce로 min/max 계산.
@@ -394,13 +432,15 @@ export default function StockDashboard() {
 
   return (
     <div className="dashboard-fullwidth">
-      <h1 style={{ marginBottom: 4 }}>Company Analysis</h1>
+      {!hideSearch && (
       <p style={{ color: "var(--muted)", marginTop: 0, fontSize: 13 }}>
         한국·미국 개별 종목·ETF·ETN을 캔들·지표로 분석합니다. <b>종목명 또는 코드</b>로 검색하고,
         벤치마크(코스피/코스닥/나스닥) 초록 점선과 비교하거나 <b>최대 10종목까지 수익률 비교</b>가 가능합니다.
       </p>
+      )}
 
-      {/* 검색 + 선택 종목 칩 + 기간 */}
+      {/* 검색 + 선택 종목 칩 (임베드 시 숨김 — 기간 선택은 주가차트 헤더로 이동) */}
+      {!hideSearch && (
       <div className="panel" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ position: "relative", width: 320 }}>
           <input
@@ -434,12 +474,6 @@ export default function StockDashboard() {
             </ul>
           )}
         </div>
-        <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-          <span style={{ color: "var(--muted)" }}>기간</span>
-          <select value={range} onChange={(e) => loadFor(symbols, e.target.value)} aria-label="조회 기간">
-            {RANGES.map(([v, lbl]) => <option key={v} value={v}>{lbl}</option>)}
-          </select>
-        </label>
         {/* 선택 종목 칩 */}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", width: "100%" }}>
           {symbols.map((s, i) => (
@@ -459,6 +493,7 @@ export default function StockDashboard() {
           </span>
         </div>
       </div>
+      )}
 
       {err && <div className="error" style={{ marginTop: 12 }}>{err}</div>}
 
@@ -491,24 +526,34 @@ export default function StockDashboard() {
             <MetricCard sel={box4} onSel={setBox4} last={last} fmtP={fmtP} dol={dol} won={won} />
           </div>
 
-          {/* 지표 선택 (최대 4) */}
+          {/* 지표 선택 (최대 4) — 유사 지표끼리 그룹핑 + 본문 12pt */}
           <div className="panel" style={{ marginTop: 16 }}>
-            <details>
-              <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-                지표 선택
+            <details open>
+              <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: "12pt" }}>
+                지표 선택 <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}>(최대 4개 · 유사 지표끼리 분류)</span>
               </summary>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 6, marginTop: 10 }}>
-                {indicators.map((i) => {
-                  const on = selected.includes(i.key);
-                  const dis = !on && selected.length >= 4;
-                  return (
-                    <label key={i.key} style={{ fontSize: 13, opacity: dis ? 0.4 : 1, cursor: dis ? "not-allowed" : "pointer" }}>
-                      <input type="checkbox" checked={on} disabled={dis} onChange={() => toggle(i.key)} />
-                      {" "}{i.label}
-                    </label>
-                  );
-                })}
-              </div>
+              {IND_GROUP_ORDER.map((g) => {
+                const items = indicators.filter((i) => (IND_GROUP[i.key] || "기타") === g);
+                if (!items.length) return null;
+                return (
+                  <div key={g} style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: "12pt", fontWeight: 700, color: "var(--accent)", margin: "2px 0 6px" }}>{g}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))", gap: 6 }}>
+                      {items.map((i) => {
+                        const on = selected.includes(i.key);
+                        const dis = !on && selected.length >= 4;
+                        return (
+                          <label key={i.key} style={{ fontSize: "12pt", opacity: dis ? 0.4 : 1,
+                            cursor: dis ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                            <input type="checkbox" checked={on} disabled={dis} onChange={() => toggle(i.key)} />
+                            {i.label}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
             </details>
           </div>
 
@@ -524,7 +569,33 @@ export default function StockDashboard() {
                   : "그래프를 드래그하면 확대"}
               </span>
             </h3>
+            {/* 기간 버튼 + 직접 날짜 설정 — summary 그래프와 동일(클라이언트 필터) */}
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+              {PERIODS.map(([lbl, m]) => {
+                const on = chartPeriod === m;
+                return (
+                  <button key={lbl} type="button" className="ghost sm"
+                    onClick={() => { setChartPeriod(m); pz.setWindow(monthsBack(m), cdMax); }}
+                    style={{ fontSize: 12, padding: "3px 11px",
+                      background: on ? "rgba(79,143,245,0.16)" : undefined,
+                      fontWeight: on ? 700 : 400, color: on ? "#1668c4" : undefined }}>{lbl}</button>
+                );
+              })}
+              <button type="button" className="ghost sm" onClick={() => { setChartPeriod("all"); pz.reset(); }}
+                style={{ fontSize: 12, padding: "3px 11px",
+                  background: chartPeriod === "all" ? "rgba(79,143,245,0.16)" : undefined,
+                  fontWeight: chartPeriod === "all" ? 700 : 400, color: chartPeriod === "all" ? "#1668c4" : undefined }}>전체</button>
+              <span style={{ color: "var(--muted)", fontSize: 12, margin: "0 2px" }}>|</span>
+              <input type="date" value={pz.range?.[0] || cdMin} min={cdMin} max={cdMax}
+                onChange={(e) => { setChartPeriod("custom"); pz.setWindow(e.target.value, pz.range?.[1] || cdMax); }}
+                style={{ fontSize: 12, padding: "2px 6px" }} aria-label="시작일" />
+              <span style={{ color: "var(--muted)", fontSize: 12 }}>~</span>
+              <input type="date" value={pz.range?.[1] || cdMax} min={cdMin} max={cdMax}
+                onChange={(e) => { setChartPeriod("custom"); pz.setWindow(pz.range?.[0] || cdMin, e.target.value); }}
+                style={{ fontSize: 12, padding: "2px 6px" }} aria-label="종료일" />
+            </div>
             <div ref={pz.wheelRef}>
+
             <ResponsiveContainer width="100%" height={420}>
               <ComposedChart data={pz.view} margin={{ top: 5, right: 16, bottom: 5, left: 8 }} {...pz.dragProps}>
                 <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
@@ -603,23 +674,15 @@ export default function StockDashboard() {
   );
 }
 
-// ── 한국 종목 부가 데이터 5종 — 투자자별·컨센서스·추정실적·리포트·공시 ──────────
+// ── 한국 종목 부가 데이터 — 투자자별·공매도·컨센서스 ──────────
+// 추정실적·애널리스트 리포트·최근 공시(DART)는 Valuation/Consensus 등 다른 탭과 중복이라 제거.
 function KrSections({ kr, close }: { kr: KrExtras; close: number | null }) {
-  const { investor, consensus, earnings, reports, disclosures, shorting } = kr;
+  const { investor, consensus, shorting } = kr;
   const [invWin, setInvWin] = useState(20);   // 투자자별 집계 창 (1/5/20/60/120일)
-  const [repOpen, setRepOpen] = useState(true);    // 리포트 패널 접기
-  const [discOpen, setDiscOpen] = useState(true);  // 공시 패널 접기
-  // 리포트 우측 목표주가 — 증권사명으로 컨센서스(증권사별 목표가) 조인
-  const targetByBroker = new Map(consensus.map((c) => [c.broker, c.target] as const));
   // 투자자별 — 차트는 오래된→최근(좌→우)이라 역순. investor 원본은 최신우선.
   const invData = [...investor].reverse().map((p) => ({
     date: p.date.slice(5), 기관: p.inst, 외국인: p.foreign, 개인: p.indiv,
   }));
-  // 조 단위 포맷(억원 → 조). 음수·null 처리.
-  const jo = (v: number | null) =>
-    v == null ? "—" : `${(v / 10000).toLocaleString(undefined, { maximumFractionDigits: 1 })}조`;
-  const EARN_ROWS = ["매출액", "영업이익", "당기순이익", "지배주주"];
-  const hasEarnings = earnings.years.length > 0 && EARN_ROWS.some((r) => earnings.rows[r]);
 
   return (
     <>
@@ -766,101 +829,6 @@ function KrSections({ kr, close }: { kr: KrExtras; close: number | null }) {
         </div>
       )}
 
-      {/* 추정 실적 — 연도별 (직전연도 + 당해/차년 추정 E) */}
-      {hasEarnings && (
-        <div className="panel" style={{ marginTop: 16, overflowX: "auto" }}>
-          <h3 style={{ marginTop: 0 }}>추정 실적 (연결 · 단위 조원)</h3>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead>
-              <tr style={{ borderBottom: "2px solid #e3e8ef" }}>
-                <th style={{ textAlign: "left", padding: "7px 6px" }}>항목</th>
-                {earnings.years.map((y) => (
-                  <th key={y} style={{ padding: "7px 6px", textAlign: "right",
-                    color: y.includes("(E)") ? ACCENT : "inherit" }}>{y}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {EARN_ROWS.filter((r) => earnings.rows[r]).map((r) => (
-                <tr key={r} style={{ borderBottom: "1px solid var(--border)" }}>
-                  <td style={{ padding: "6px", fontWeight: 600 }}>{r}</td>
-                  {earnings.rows[r].map((v, j) => (
-                    <td key={j} style={{ padding: "6px", textAlign: "right",
-                      color: earnings.years[j]?.includes("(E)") ? ACCENT : "inherit" }}>{jo(v)}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 2px 0" }}>
-            (E)는 애널리스트 컨센서스 추정치. 출처: FnGuide Financial Highlight
-          </p>
-        </div>
-      )}
-
-      {/* 애널리스트 리포트 + 최근 공시 — 2열 (각 패널 접기/펼치기) */}
-      <div className="ca-grid" style={{ marginTop: 16, gridTemplateColumns: "1fr 1fr" }}>
-        <div className="panel" style={{ marginBottom: 0 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <h3 style={{ margin: 0 }}>애널리스트 리포트</h3>
-            <button type="button" className="ghost sm" onClick={() => setRepOpen((o) => !o)}
-              aria-expanded={repOpen} style={{ fontSize: 12, padding: "3px 10px" }}>
-              {repOpen ? "▾ 접기" : "▸ 펼치기"}
-            </button>
-          </div>
-          {repOpen && (reports.length > 0 ? (<>
-            <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0" }}>
-              {reports.map((r, i) => {
-                const tgt = r.target ?? targetByBroker.get(r.broker);   // 리포트 고유 목표가 우선
-                return (
-                  <li key={i} style={{ padding: "7px 0", borderBottom: "1px solid var(--border)",
-                    fontSize: 13, display: "flex", justifyContent: "space-between", gap: 10 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <a href={r.url} target="_blank" rel="noreferrer"
-                        style={{ fontWeight: 600, color: DOWN, textDecoration: "none" }}>{r.title}</a>
-                      <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 2 }}>
-                        {r.broker} · {r.date}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      <div style={{ color: "var(--muted)", fontSize: 11 }}>목표주가</div>
-                      <div style={{ fontWeight: 700, fontSize: 13 }}>
-                        {tgt != null ? tgt.toLocaleString() + "원" : "—"}
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-            <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 2px 0" }}>
-              목표주가는 해당 증권사의 최신 컨센서스 기준(리포트별 수치와 다를 수 있음).
-            </p>
-          </>) : <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 0 }}>최근 리포트가 없습니다.</p>)}
-        </div>
-        <div className="panel" style={{ marginBottom: 0 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <h3 style={{ margin: 0 }}>최근 공시 (DART)</h3>
-            <button type="button" className="ghost sm" onClick={() => setDiscOpen((o) => !o)}
-              aria-expanded={discOpen} style={{ fontSize: 12, padding: "3px 10px" }}>
-              {discOpen ? "▾ 접기" : "▸ 펼치기"}
-            </button>
-          </div>
-          {discOpen && (disclosures.length > 0 ? (
-            <ul style={{ listStyle: "none", padding: 0, margin: "10px 0 0" }}>
-              {disclosures.map((d, i) => (
-                <li key={i} style={{ padding: "7px 0", borderBottom: "1px solid var(--border)", fontSize: 13 }}>
-                  <a href={d.url} target="_blank" rel="noreferrer"
-                    style={{ fontWeight: 600, color: DOWN, textDecoration: "none" }}>{d.title}</a>
-                  <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 2 }}>
-                    {d.submitter} · {d.date.length === 8
-                      ? `${d.date.slice(0, 4)}.${d.date.slice(4, 6)}.${d.date.slice(6)}` : d.date}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 0 }}>최근 공시가 없습니다.</p>)}
-        </div>
-      </div>
     </>
   );
 }

@@ -992,10 +992,42 @@ export interface OpinionComment {
 }
 export interface StockOpinion {
   id: number; ticker: string; author: string;
-  stance: OpinionStance; body: string;
+  stance: OpinionStance;
+  title: string;                  // 분석글 제목
+  body: string;                   // 리치 HTML(서식·인라인 이미지)
+  target_price: number | null;    // 목표주가(원). 상승여력은 현재가 대비 계산
+  status: "pending" | "approved"; // 운영자 승인 상태
   likes: number; dislikes: number;
   my_vote: number;          // 1=좋아요 / -1=싫어요 / 0=없음
-  is_mine: boolean; created_at: string | null;
+  is_mine: boolean;
+  can_moderate: boolean;    // 요청자가 운영자(승인 권한)인지
+  created_at: string | null;
   comments: OpinionComment[];
 }
-export interface OpinionList { ticker: string; opinions: StockOpinion[]; }
+export interface OpinionList { ticker: string; is_admin: boolean; opinions: StockOpinion[]; }
+
+// ── 섹터 키워드 뉴스 / 기업 개요 ──
+export interface SectorNewsItem {
+  title: string; summary: string; source: string; url: string; date: string;
+}
+export interface SectorNews { kr: SectorNewsItem[]; global: SectorNewsItem[]; }
+export interface CompanyProfile { established: string; homepage: string; ceo: string; employees: string; business?: string; shares?: number | null; }
+
+// ── 재무제표(Financials) — /market/financials ──
+export interface FinRow {
+  account: string;
+  bold: boolean;            // 섹션 헤더(굵게)
+  parent: boolean;          // 펼침 가능한 부모 계정
+  child: boolean;           // 기본 숨김 상세(부모 펼칠 때 표시)
+  group: number | null;     // 부모↔자식 묶음 id
+  values: (number | null)[];   // 기간별 값(억원)
+  change: (number | null)[];   // 기간별 증감률(YoY/QoQ %, change[0]=null)
+  pct?: boolean;            // 비율행(영업이익률 등) — % 포맷·기울임
+  derived?: boolean;        // 파생행(이익률·EBITDA) — 들여쓰기·muted
+}
+export interface FinStatement { periods: string[]; rows: FinRow[]; }
+export interface FinancialsData {
+  fetched: string;
+  annual: { PL?: FinStatement; BS?: FinStatement; CF?: FinStatement };
+  quarterly: { PL?: FinStatement; BS?: FinStatement; CF?: FinStatement };
+}
