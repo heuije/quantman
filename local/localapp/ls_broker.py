@@ -5,6 +5,7 @@ KIS의 kis_broker.py와 대칭. 자격증명은 keyring에서만 읽고, access 
 분리와 다름 — docs/ls-api 참조).
 
 ⚠ 응답 필드명(블록명·rsp_cd 성공값·OutBlock 필드)은 키 발급 후 라이브 확정 전까지 '초안'.
+  B6 구현 전체가 '초안(draft)' — Phase C 키 발급 후 docs/ls-api 실측으로 교체 필요.
 """
 from __future__ import annotations
 
@@ -56,7 +57,10 @@ _GLOBAL_THROTTLE = _Throttle()   # 프로세스 전역 — 같은 LS 계정 부�
 
 
 class LsBroker:
-    """LS증권 모의/실전 브로커. Broker Protocol 구현(국내주식 Phase 2). 조회·주문은 B6."""
+    """LS증권 모의/실전 브로커. Broker Protocol 구현(국내주식 Phase 2).
+
+    ⚠ B6 조회·주문 메서드 전체 초안(draft) — Phase C 키 발급 후 실측 확정.
+    """
 
     def __init__(self):
         creds = load_ls()
@@ -143,3 +147,372 @@ class LsBroker:
             return r.json()
         last.raise_for_status()        # 재시도 소진 — 마지막 비정상 응답에서 raise
         raise RuntimeError("LS _post: 재시도 소진 후 도달 불가")  # unreachable 방어
+
+    # ── ⚠ B6 구현 이하 전체 초안 — Phase C 키 발급 후 실측 확정 필요 ──────────────
+
+    # ── 잔고·포지션 조회 (t0424) ─────────────────────────────────────────────────
+
+    def _balance_raw(self) -> dict:
+        """t0424 주식잔고조회2 — 보유 포지션·잔고 요약.
+
+        ⚠ PATH "/stock/accno" — A2 KB 가정. Phase C 실측 확정.
+        ⚠ InBlock 필드명(prcgb/chegb/dangb/charge) — A2 KB 가정.
+        """
+        return self._post(
+            "/stock/accno", "t0424",
+            {"t0424InBlock": {
+                "prcgb": "1",   # 평균단가 ⚠
+                "chegb": "2",   # 체결기준잔고 (결제 전이지만 체결된 것 포함) ⚠
+                "dangb": "0",   # 정규장 ⚠
+                "charge": "1",  # 제비용 포함 ⚠
+                "cts_expcode": "",
+            }},
+        )
+
+    def account_snapshot(self) -> dict:
+        """국내주식 잔고 스냅샷.
+
+        반환 balance:
+          cash         원화 예수금(KRW) — ⚠ t0424OutBlock.sunamt 추정(실측 확정 필요)
+          total_eval   평가금액(KRW) — ⚠ t0424OutBlock.mamt 추정
+          cash_usd     0.0  (LS 국내 only — USD 키 하드코딩)
+          fx_usdkrw    0.0
+          foreign_eval_krw  0.0
+
+        positions: qty>0 인 국내 종목만. market="DOMESTIC", currency="KRW".
+
+        조회 실패 시 balance["fetch_failed"]=["domestic"] 설정 — 절대 0으로 위장하지 않음.
+        이 마커가 없으면 Trader 킬스위치가 "평가금액=0=−98% 손실"로 오판해 전량 청산한다
+        (−98% 부류버그 근본 수정: kis_broker.py 동일 패턴).
+        ⚠ t0424OutBlock 필드명(mamt/sunamt 등) — A2 KB 가정, Phase C 실측 확정.
+        ⚠ t0424OutBlock1 필드명(expcode/hname/janqty/pamt/price) — A2 KB 가정.
+        """
+        try:
+            body = self._balance_raw()
+        except Exception as e:
+            log.warning("LS 잔고 조회 실패 — fetch_failed 마커 설정: %s", e)
+            return {
+                "balance": {
+                    "cash": 0, "total_eval": 0,
+                    "cash_usd": 0.0, "fx_usdkrw": 0.0, "foreign_eval_krw": 0.0,
+                    # ★ε: "조회 실패"와 "진짜 0"을 소비자가 구분하도록 표식.
+                    # Trader 킬스위치·equity 시계열은 이 마커가 있으면 평가를 보류해야 한다.
+                    "fetch_failed": ["domestic"],
+                },
+                "positions": [],
+            }
+
+        summary = body.get("t0424OutBlock") or {}
+        # ⚠ cash/total_eval 소스 필드: sunamt(평가금액)?/mamt(시가총액)? — 실측 확정 필요.
+        # 현재는 sunamt→cash, mamt→total_eval 가정.
+        cash = int(float(summary.get("sunamt") or 0))
+        total_eval = int(float(summary.get("mamt") or 0))
+
+        positions = []
+        for it in body.get("t0424OutBlock1") or []:
+            qty = int(float(it.get("janqty") or 0))
+            if qty <= 0:
+                continue
+            positions.append({
+                "symbol": str(it.get("expcode", "")).strip(),  # 🟢 6자리
+                "name": str(it.get("hname", "")).strip(),      # 🟢
+                "qty": qty,                                     # 🟢
+                "avg_price": float(it.get("pamt") or 0),       # 🟢 평균단가
+                "eval_price": float(it.get("price") or 0),     # 🟢 현재가
+                "market": "DOMESTIC",
+                "currency": "KRW",
+            })
+
+        return {
+            "balance": {
+                "cash": cash,
+                "total_eval": total_eval,
+                "cash_usd": 0.0,
+                "fx_usdkrw": 0.0,
+                "foreign_eval_krw": 0.0,
+            },
+            "positions": positions,
+        }
+
+    # ── 시세 조회 (t1102) ─────────────────────────────────────────────────────
+
+    def _price_raw(self, symbol: str) -> dict:
+        """t1102 주식현재가 — 현재가·OHLC.
+
+        ⚠ PATH "/stock/market-data" — A2 KB 가정. Phase C 실측 확정.
+        ⚠ InBlock 키 "t1102InBlock", 필드 "shcode" — A2 KB 🟢.
+        ⚠ OutBlock 키 "t1102OutBlock" — A2 KB 🟢.
+        """
+        return self._post(
+            "/stock/market-data", "t1102",
+            {"t1102InBlock": {"shcode": symbol}},  # shcode = 6자리 코드, A-접두사 불필요 🟢
+        )
+
+    def price(self, symbol: str) -> float:
+        """현재가(KRW) 반환. ⚠ t1102OutBlock.price 필드 — A2 KB 🟢."""
+        body = self._price_raw(symbol)
+        out = body.get("t1102OutBlock") or {}
+        return float(out.get("price") or 0)
+
+    def today_open(self, symbol: str) -> float:
+        """당일 시가 반환. catch-up cycle에서 시장가→시초가 limit 변환 시 사용.
+
+        시가 없으면(개장 전·장 종료 후·오류) 0.0 반환 → caller가 catch-up skip 결정.
+        ⚠ t1102OutBlock.open 필드 — A2 KB 🟢.
+        """
+        try:
+            body = self._price_raw(symbol)
+            out = body.get("t1102OutBlock") or {}
+            v = out.get("open")
+            if v is None or v == "" or v == 0:
+                return 0.0
+            return float(v)
+        except Exception:
+            return 0.0
+
+    # ── 주문 (CSPAT00601) ─────────────────────────────────────────────────────
+
+    def _submit(self, symbol: str, qty: int, side: str,
+                ord_prc_ptn_code: str, unit_price: float) -> dict:
+        """국내주식 신규주문 — CSPAT00601 단일 TR(매수·매도 BnsTpCode로 구분).
+
+        ⚠ PATH "/stock/order" — A2 KB 가정. Phase C 실측 확정.
+        ⚠ InBlock 키 "CSPAT00601InBlock1" — A2 KB 🟢.
+        ⚠ BnsTpCode: "2"=매수/"1"=매도 — A2 KB G7 🟢.
+        ⚠ OrdprcPtnCode: "00"=지정가/"03"=시장가 — A2 KB G8 🟢.
+        ⚠ IsuNo = "A" + 6자리 — A2 KB G9 🟢 (모의). 실전 포함 Phase C 확인.
+        ⚠ AcntNo/InptPwd 필요 여부 — A2 KB 미검증. 현재 AcntNo 포함, InptPwd 빈 문자열.
+        ⚠ MgntrnCode="000"(일반), LoanDt="", OrdCndiTpCode="0" — A2 KB 가정.
+        """
+        bns_tp = "2" if side == "buy" else "1"
+        # KRX 정수호가(원 단위 — 소수 틱 없음) → 지정가는 int, 시장가는 0.
+        ord_prc = int(unit_price) if ord_prc_ptn_code == "00" else 0
+        resp = self._post(
+            "/stock/order", "CSPAT00601",
+            {"CSPAT00601InBlock1": {
+                "AcntNo": self.account_no,   # ⚠ 형식 G6 검증 대상
+                "InptPwd": "",               # ⚠ 필요 여부 미검증
+                "IsuNo": f"A{symbol}",       # 🟢 "A" + 6자리 (G9)
+                "OrdQty": qty,
+                "OrdPrc": ord_prc,
+                "BnsTpCode": bns_tp,         # 🟢 G7
+                "OrdprcPtnCode": ord_prc_ptn_code,  # 🟢 G8
+                "MgntrnCode": "000",         # 일반 ⚠
+                "LoanDt": "",
+                "OrdCndiTpCode": "0",        # 없음 ⚠
+            }},
+            is_order=True,
+        )
+        return normalize_ls_order_resp(resp, ordno_field="OrdNo")
+
+    def buy(self, symbol: str, qty: int) -> dict:
+        """시장가 매수. ⚠ OrdprcPtnCode="03" — A2 KB G8 🟢."""
+        return self._submit(symbol, qty, "buy", "03", 0.0)
+
+    def sell(self, symbol: str, qty: int) -> dict:
+        """시장가 매도. ⚠ OrdprcPtnCode="03" — A2 KB G8 🟢."""
+        return self._submit(symbol, qty, "sell", "03", 0.0)
+
+    def buy_limit(self, symbol: str, qty: int, limit_price: int) -> dict:
+        """지정가 매수. ⚠ OrdprcPtnCode="00" — A2 KB G8 🟢."""
+        return self._submit(symbol, qty, "buy", "00", float(limit_price))
+
+    def sell_limit(self, symbol: str, qty: int, limit_price: int) -> dict:
+        """지정가 매도. ⚠ OrdprcPtnCode="00" — A2 KB G8 🟢."""
+        return self._submit(symbol, qty, "sell", "00", float(limit_price))
+
+    def buy_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
+        """국내주식 예약주문 미구현 — 명시적 에러(조용한 no-op 금지).
+
+        LS 국내주식에 예약주문 TR이 없음(해외주식 후속 plan에서 검토 예정).
+        Broker 인터페이스 계약 이행: 미지원을 침묵으로 가장하면 Trader가
+        주문이 접수된 것으로 오판한다.
+        """
+        raise NotImplementedError("LS 예약주문은 해외주식 단계(후속 plan)")
+
+    def sell_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
+        """국내주식 예약주문 미구현 — 명시적 에러."""
+        raise NotImplementedError("LS 예약주문은 해외주식 단계(후속 plan)")
+
+    # ── 취소 (CSPAT00801) ─────────────────────────────────────────────────────
+
+    def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
+        """미체결 주문 취소 — CSPAT00801.
+
+        ⚠ PATH "/stock/order-cancel" — A2 KB 가정. Phase C 실측 확정.
+        ⚠ InBlock 키 "CSPAT00801InBlock1" — A2 KB 🟢.
+        ⚠ OrgOrdNo long, IsuNo="A"+6자리, OrdQty — A2 KB 🟢.
+        ⚠ AcntNo/InptPwd 필요 여부 — 미검증. 현재 AcntNo 포함.
+        """
+        resp = self._post(
+            "/stock/order-cancel", "CSPAT00801",
+            {"CSPAT00801InBlock1": {
+                "AcntNo": self.account_no,   # ⚠ 형식 G6
+                "InptPwd": "",               # ⚠ 필요 여부 미검증
+                "OrgOrdNo": int(order_no) if str(order_no).isdigit() else order_no,  # 🟢 long
+                "IsuNo": f"A{symbol}",       # 🟢 G9
+                "OrdQty": qty,               # 🟢 미체결잔량 기준
+            }},
+            is_order=True,
+        )
+        r = normalize_ls_order_resp(resp, ordno_field="OrdNo")
+        # cancel 반환 계약: {success, message, msg_cd} — order_no 포함해도 무방
+        return {"success": r["success"], "message": r["message"], "msg_cd": r["msg_cd"]}
+
+    # ── 미체결 조회 (t0425) ───────────────────────────────────────────────────
+
+    def _pending_raw(self) -> dict:
+        """t0425 주식미체결조회 — 전 종목 미체결 주문.
+
+        ⚠ PATH "/stock/accno" — A2 KB 가정(t0424와 동일 경로, tr_cd로 구분).
+        ⚠ InBlock 필드(expcode/chegb/medosu/sortgb/cts_ordno) — A2 KB 🟢.
+        chegb="2" → 미체결만 조회.
+        """
+        return self._post(
+            "/stock/accno", "t0425",
+            {"t0425InBlock": {
+                "expcode": "",      # 전 종목 🟢
+                "chegb": "2",       # 미체결 🟢
+                "medosu": "0",      # 전체(매수+매도) 🟢
+                "sortgb": "1",      # 최신 역순 🟢
+                "cts_ordno": "",
+            }},
+        )
+
+    def order_status(self, order_no: str, symbol: str | None = None,
+                     hint: dict | None = None) -> dict:
+        """특정 주문번호의 현재 상태 — t0425 미체결 조회.
+
+        hint: Broker 인터페이스 계약 파라미터. 국내주식은 무시(해외 예약주문 전용).
+
+        반환 어휘: filled | partial | submitted | cancelled | unknown
+        ⚠ t0425OutBlock1 필드(ordno/qty/ordrem/medosu/price) — A2 KB 🟢.
+        ⚠ **한계(docs/ls-api GOTCHAS G10)**: t0425를 chegb="2"(미체결만)로 조회하므로
+          전량 체결·취소된 주문은 목록에서 사라져 status="unknown"으로 떨어진다 —
+          즉 폴링으로는 filled/cancelled를 인지하지 못하고, 체결은 15:50 정산
+          reconcile_with_kis(실보유 diff)가 백스톱으로 잡는다. Phase C에서 chegb="0"(전체)
+          또는 일별체결 TR로 전환(filled/cancelled 구분 필드 실측 후). 자금/방향 위험 없음.
+        """
+        try:
+            body = self._pending_raw()
+        except Exception as e:
+            log.warning("LS order_status 조회 실패 [%s]: %s", order_no, e)
+            return {"order_no": order_no, "status": "unknown",
+                    "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
+
+        for row in body.get("t0425OutBlock1") or []:
+            if canonical_odno(row.get("ordno")) == canonical_odno(order_no):
+                orig_qty = int(float(row.get("qty") or 0))
+                remain_qty = int(float(row.get("ordrem") or 0))
+                filled_qty = max(0, orig_qty - remain_qty)
+                # ⚠ t0425는 체결/취소 구분 필드 미확인 — 현재 qty/ordrem으로만 판정.
+                if remain_qty == 0 and orig_qty > 0:
+                    status = "filled"
+                elif 0 < remain_qty < orig_qty:
+                    status = "partial"
+                else:
+                    status = "submitted"
+                return {
+                    "order_no": order_no,
+                    "status": status,
+                    "filled_qty": filled_qty,
+                    "remain_qty": remain_qty,
+                    "fill_price": float(row.get("price") or 0),  # ⚠ 체결가 아닌 주문가 가능성
+                }
+
+        # 목록에 없으면 unknown (이미 체결 전체 → chegb="2" 에서 사라짐 가능)
+        return {"order_no": order_no, "status": "unknown",
+                "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
+
+    def pending_orders(self) -> list[dict]:
+        """미체결 주문 목록 — t0425 기반.
+
+        실패는 비치명적 — 로그 후 [] 반환.
+        ⚠ t0425OutBlock1 medosu 필드: "매수"/"매도" 문자열 반환 — A2 KB 🟢.
+        ⚠ hname(종목명) 필드: t0425OutBlock1에 포함 여부 미확인 — 없으면 "".
+        ⚠ submitted_at: ordtime 형식(HHMMSSMMM) — A2 KB 🟢.
+        """
+        try:
+            body = self._pending_raw()
+        except Exception as e:
+            log.warning("LS pending_orders 조회 실패: %s", e)
+            return []
+
+        out = []
+        for row in body.get("t0425OutBlock1") or []:
+            remain = int(float(row.get("ordrem") or 0))
+            if remain <= 0:
+                continue
+            orig_qty = int(float(row.get("qty") or 0))
+            out.append({
+                "order_no": str(row.get("ordno") or ""),
+                "symbol": str(row.get("expcode") or "").strip(),   # 🟢 6자리
+                "name": str(row.get("hname") or ""),               # ⚠ 필드 존재 여부 미확인
+                "side": "buy" if str(row.get("medosu") or "") == "매수" else "sell",  # 🟢
+                "qty": orig_qty,
+                "filled_qty": max(0, orig_qty - remain),
+                "remain_qty": remain,
+                "limit_price": float(row.get("price") or 0),       # 🟢 주문가격
+                "ord_branch": "",   # LS t0425에 해당 필드 없음(KIS ord_gno_brno 대응 없음)
+                "submitted_at": str(row.get("ordtime") or ""),      # 🟢 HHMMSSMMM
+                "market": "DOMESTIC",
+                "currency": "KRW",
+            })
+        return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠ 이하 B6 구현 전체 초안(draft) — 필드명/경로/코드값은 docs/ls-api A2 KB 기반.
+#   Phase C(키 발급) 후 docs/ls-api 실측 확정 필요.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def canonical_odno(s) -> str:
+    """LS 주문번호 비교용 정규화 — 선행 0 제거 (KIS canonical_odno와 동일 패턴).
+
+    t0425 ordno 필드가 leading-zero int/str으로 오는 경우(실측: KIS "0001569157")에
+    대비해 strip+lstrip("0")로 통일. 비교 시점에만 호출 — raw 보존.
+    """
+    return str(s).strip().lstrip("0") if s is not None else ""
+
+
+def normalize_ls_order_resp(raw: dict, *, ordno_field: str) -> dict:
+    """LS 주문/취소 응답 → Broker 정규형 {success, order_no, message, msg_cd}.
+
+    ⚠ LS rsp_cd 성공값 "00000" — A2 KB 가정. Phase C 실측 확정.
+    ⚠ OutBlock 키 탐색 순서: OutBlock2 우선 → OutBlock1 fallback (실측 전).
+
+    Trader가 의존하는 키:
+      success  bool  — rsp_cd == _RSP_OK
+      order_no str   — OutBlock 내 ordno_field 값 (없으면 "")
+      message  str   — rsp_msg
+      msg_cd   str   — rsp_cd
+
+    raw LS 키(rsp_cd, OutBlock*)는 반환 dict에 포함하지 않는다(정규형 계약).
+    """
+    success = raw.get("rsp_cd") == _RSP_OK
+    message = raw.get("rsp_msg", "")
+    msg_cd = raw.get("rsp_cd", "")
+
+    order_no = ""
+    if success:
+        # OutBlock2 우선, OutBlock1 fallback
+        # ⚠ LS OutBlock 키 명명은 TR코드+OutBlock2/OutBlock1 패턴 (A2 KB 가정).
+        for key, val in raw.items():
+            if not isinstance(val, dict):
+                continue
+            if "OutBlock" not in key:
+                continue
+            v = val.get(ordno_field)
+            if v is not None:
+                order_no = str(v)
+                # OutBlock2가 있으면 우선 — 키 이름에 "2"가 있는 블록 먼저 시도
+                if "OutBlock2" in key:
+                    break
+
+    return {
+        "success": success,
+        "order_no": order_no,
+        "message": message,
+        "msg_cd": msg_cd,
+    }
