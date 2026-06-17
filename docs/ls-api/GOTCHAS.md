@@ -104,6 +104,16 @@
 
 ---
 
+### G10 — order_status 체결/취소 인식: t0425 chegb="2"는 미체결만 (B6 발견) ⚠️ 한계
+
+- **증상**: `LsBroker.order_status`가 t0425를 `chegb="2"`(미체결만)로 조회한다. 주문이 **전량 체결**되거나 **취소**되면 그 행은 t0425 미체결 목록에서 **사라진다**(KB t0425 "이미 체결된 건은 안 나옴"). → 매칭 실패 → `status="unknown"` 반환.
+- **영향**: 폴링 경로로는 LS **체결을 인지하지 못한다**(`remain_qty==0 → filled` 분기가 라이브에선 도달 불가, 합성 테스트에서만 발화). 체결 반영은 15:50 정산 `reconcile_with_kis`(브로커 실보유 ↔ ledger diff)가 **백스톱**으로 잡는다 — 자금/방향 위험은 없으나 폴링 기반 즉시 인지가 안 됨. 취소(`cancelled`)도 같은 이유로 인지 불가 → Trader의 cancelled 분기(미체결 종가 자동취소 처리) 미발화.
+- **원인**: KIS는 `inquire-daily-ccld`(체결+미체결+취소 통합)로 해결. LS는 미체결-only TR을 재사용.
+- **해결 방향 (Phase C, 키 발급 후)**: `order_status`의 체결 판정을 t0425 `chegb="0"`(전체) 또는 일별체결 TR로 전환해 체결/취소 행이 보이게 한다(`pending_orders`는 `chegb="2"` 유지). **단 `chegb="0"`에서 filled(remain=0)와 cancelled(remain=0)를 구분하는 상태 필드가 무엇인지 실측 필요** — 이 구분 없이 추측하면 취소를 체결로 오인할 수 있어, 키 없이는 변경하지 않고 현 graceful degradation(unknown→정산 백스톱) 유지.
+- **확정 방법**: 모의 키 발급 후 체결·취소 1건씩 발생시켜 t0425 chegb="0" 응답에서 filled/cancelled 구분 필드 확인.
+
+---
+
 ## 향후 발견 시 여기에 추가
 
 새 발견 시 이 섹션 **위**에 날짜·증상·원인·해결을 추가한다.

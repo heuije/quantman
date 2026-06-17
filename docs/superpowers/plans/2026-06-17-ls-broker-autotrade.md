@@ -661,6 +661,7 @@ git commit -m "feat(local): setup wizard 브로커 선택(KIS/LS) + LS 자격증
 
 - [ ] **미확인 5건 실측**: ①해외옵션 지원 ②정확 rate limit(TPS) ③모의 유효기간·대상자산군 ④토큰 1일 발급제한 ⑤IP 등록 요구. → `docs/ls-api/GOTCHAS.md` 확정.
 - [ ] **응답 필드 라이브 확정**: B6의 모든 `⚠` 표식(rsp_cd 성공값·OutBlock 블록명·OrdNo/잔고/체결 필드명·계좌포맷·매매구분 코드)을 실측으로 확정 → fixture·상수 교체. throttle TPS 조정.
+- [ ] **order_status 체결/취소 인식 수정 (GOTCHAS G10)**: B6 `order_status`는 t0425 `chegb="2"`(미체결만)라 전량체결·취소를 인지 못 하고 `unknown` 반환(체결은 정산 reconcile 백스톱). 모의 키로 체결·취소 1건씩 발생 → t0425 `chegb="0"`(전체) 응답에서 filled vs cancelled 구분 필드 확인 → `order_status`를 전체조회/일별체결 TR로 전환(`pending_orders`는 chegb="2" 유지). **구분 필드 확인 전엔 변경 금지**(취소→체결 오인 방지).
 - [ ] **모의 E2E 라운드트립**: 모의 키로 매수→체결조회→잔고반영→매도→종가청산 1회. SimBroker 골든 회귀 byte-identical 보존.
 - [ ] **라이브 게이트**: 국내주식 마이크로 실거래 1건으로 확정(KIS 패턴) → 점진 개방.
 - [ ] **완료 선언**: 모의 E2E 통과 후에만 "국내주식 LS 지원 완료". 그 전까지 "초안".
