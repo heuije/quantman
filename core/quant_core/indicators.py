@@ -369,6 +369,15 @@ FUND_INDICATOR_COLS = [
     "fcf_yield", "altman_z", "market_cap",
 ]
 
+# 기관·외국인 수급 (flow.kr_investor 피드) — 일별 순매수(거래대금), reindex-ffill 병합
+FLOW_INDICATOR_COLS = ["inst_net_buy", "foreign_net_buy"]
+
+# 애널 컨센서스 (estimate.consensus 피드) — 7 패널 컬럼 + target_upside(종가 결합 파생)
+CONSENSUS_FEED_COLS = ["consensus_target", "consensus_target_median", "analyst_count",
+                       "consensus_opinion", "target_dispersion", "target_revision_pct",
+                       "days_since_report"]
+CONSENSUS_INDICATOR_COLS = CONSENSUS_FEED_COLS + ["target_upside"]
+
 # 지표 소분류 — 조건 빌더 UI에서 드롭다운을 그룹화하기 위한 분류
 INDICATOR_GROUPS: dict[str, list[str]] = {
     "가격·수익률": ["price_level", "pct_change_1d", "pct_change_5d",
@@ -381,6 +390,8 @@ INDICATOR_GROUPS: dict[str, list[str]] = {
     "통계":        ["zscore_20d", "zscore_60d"],
     "거래량":      ["volume_ratio", "adv_20d"],
     "펀더멘털":     list(FUND_INDICATOR_COLS),
+    "수급":         list(FLOW_INDICATOR_COLS),
+    "컨센서스":     list(CONSENSUS_INDICATOR_COLS),
 }
 
 _COL_TO_GROUP = {col: grp for grp, cols in INDICATOR_GROUPS.items() for col in cols}
@@ -391,7 +402,38 @@ def get_indicator_group(col: str) -> str:
     return _COL_TO_GROUP.get(col, "기타")
 
 
-def compute_all(df: pd.DataFrame, fund_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+def add_flow(df: pd.DataFrame, flow_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """기관·외국인 순매수(일별)를 가격 인덱스에 reindex-ffill 병합. as_of=거래일 → look-ahead 0."""
+    if flow_df is None or flow_df.empty:
+        return df
+    df = df.copy()
+    f = flow_df.reindex(df.index, method="ffill")
+    for col in FLOW_INDICATOR_COLS:
+        if col in f.columns:
+            df[col] = f[col]
+    return df
+
+
+def add_consensus(df: pd.DataFrame, consensus_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """애널 컨센서스(변경점 패널) reindex-ffill 병합 + target_upside(종가 괴리율) 파생.
+
+    target_upside = consensus_target / Close − 1 (양수=상승여력) — pb_ratio류 Close 결합과 동형.
+    """
+    if consensus_df is None or consensus_df.empty:
+        return df
+    df = df.copy()
+    c = consensus_df.reindex(df.index, method="ffill")
+    for col in CONSENSUS_FEED_COLS:
+        if col in c.columns:
+            df[col] = c[col]
+    if "consensus_target" in c.columns:
+        df["target_upside"] = c["consensus_target"] / df["Close"].replace(0, np.nan) - 1
+    return df
+
+
+def compute_all(df: pd.DataFrame, fund_df: Optional[pd.DataFrame] = None,
+                consensus_df: Optional[pd.DataFrame] = None,
+                flow_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     df = add_returns(df)
     df = add_ma_deviation(df)
     df = add_ma_cross(df)
@@ -408,6 +450,10 @@ def compute_all(df: pd.DataFrame, fund_df: Optional[pd.DataFrame] = None) -> pd.
     df = add_momentum_12_1m(df)
     if fund_df is not None and not fund_df.empty:
         df = add_fundamentals(df, fund_df)
+    if consensus_df is not None and not consensus_df.empty:
+        df = add_consensus(df, consensus_df)
+    if flow_df is not None and not flow_df.empty:
+        df = add_flow(df, flow_df)
     return df
 
 
@@ -442,7 +488,9 @@ _COL_TO_PRODUCER_IDX: dict[str, int] = {
 
 
 def compute_columns(df: pd.DataFrame, columns,
-                    fund_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                    fund_df: Optional[pd.DataFrame] = None,
+                    consensus_df: Optional[pd.DataFrame] = None,
+                    flow_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """요청한 지표 컬럼만 계산해 부착(컬럼 프로젝션). OHLCV는 항상 보존.
 
     compute_all(45컬럼 전부)의 부분집합 버전. 반환 DataFrame의 **요청 컬럼 값은
@@ -473,6 +521,10 @@ def compute_columns(df: pd.DataFrame, columns,
     # 펀더멘털 컬럼이 하나라도 요청되면 add_fundamentals 1회(Close+fund_df의 순수 함수)
     if (wanted & set(FUND_INDICATOR_COLS)) and fund_df is not None and not fund_df.empty:
         out = add_fundamentals(out, fund_df)
+    if (wanted & set(CONSENSUS_INDICATOR_COLS)) and consensus_df is not None and not consensus_df.empty:
+        out = add_consensus(out, consensus_df)
+    if (wanted & set(FLOW_INDICATOR_COLS)) and flow_df is not None and not flow_df.empty:
+        out = add_flow(out, flow_df)
     return out
 
 

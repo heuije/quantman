@@ -11,7 +11,9 @@ from collections.abc import Iterable
 
 import pandas as pd
 
-from .data_fetcher import _parquet_path, load_all, load_fund_all, load_stock_fundamentals
+from .data_fetcher import (_parquet_path, load_all, load_fund_all, load_stock_fundamentals,
+                           load_consensus_all, load_stock_consensus,
+                           load_flow_all, load_stock_flow)
 from .parquet_io import read_parquet_safe
 from .indicators import compute_all
 
@@ -26,7 +28,10 @@ def load_dataset(with_indicators: bool = True) -> dict[str, pd.DataFrame]:
     if not with_indicators:
         return raw
     funds = load_fund_all()
-    return {sym: compute_all(df, funds.get(sym)) for sym, df in raw.items()}
+    cons = load_consensus_all()
+    flow = load_flow_all()
+    return {sym: compute_all(df, funds.get(sym), cons.get(sym), flow.get(sym))
+            for sym, df in raw.items()}
 
 
 def load_dataset_for(symbols: Iterable[str],
@@ -61,5 +66,9 @@ def load_dataset_for(symbols: Iterable[str],
     out: dict[str, pd.DataFrame] = {}
     for sym, df in raw.items():
         fd = load_stock_fundamentals(sym)
-        out[sym] = compute_all(df, fd if not fd.empty else None)
+        cd = load_stock_consensus(sym)
+        fl = load_stock_flow(sym)
+        out[sym] = compute_all(df, fd if not fd.empty else None,
+                               cd if not cd.empty else None,
+                               fl if not fl.empty else None)
     return out

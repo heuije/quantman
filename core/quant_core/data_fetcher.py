@@ -29,6 +29,8 @@ warnings.filterwarnings("ignore")
 DATA_DIR = Path(os.getenv("QP_CORE_DATA_DIR")
                 or Path(__file__).parent.parent / "data")
 FUNDAMENTALS_DIR = DATA_DIR / "fundamentals"
+CONSENSUS_DIR = DATA_DIR / "consensus"      # 애널 컨센서스 패널 (consensus_kr 피드, KR 한정)
+FLOW_DIR = DATA_DIR / "flow"                # 기관·외국인 수급 (flow_kr 피드, KR 한정)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 FUNDAMENTALS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1012,6 +1014,24 @@ def load_stock_fundamentals(name: str) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
+def load_stock_consensus(name: str) -> pd.DataFrame:
+    """저장된 컨센서스 패널 parquet 로드 (consensus_kr 피드). 없으면 빈 DataFrame."""
+    p = CONSENSUS_DIR / f"{name.replace('/', '_')}.parquet"
+    if not p.exists():
+        return pd.DataFrame()
+    df = read_parquet_safe(p)
+    return df if df is not None else pd.DataFrame()
+
+
+def load_stock_flow(name: str) -> pd.DataFrame:
+    """저장된 기관·외국인 수급 parquet 로드 (flow_kr 피드). 없으면 빈 DataFrame."""
+    p = FLOW_DIR / f"{name.replace('/', '_')}.parquet"
+    if not p.exists():
+        return pd.DataFrame()
+    df = read_parquet_safe(p)
+    return df if df is not None else pd.DataFrame()
+
+
 def fetch_user_stock(name: str, ticker: str, verbose: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
     """개별종목 가격 수집. 펀더멘털은 전용 피드(SEC US·OpenDART KR) cron이 담당한다."""
     if verbose:
@@ -1121,6 +1141,37 @@ def load_fund_all() -> dict[str, pd.DataFrame]:
         df = load_stock_fundamentals(stock["code"])
         if not df.empty:
             result[stock["code"]] = df
+    return result
+
+
+def load_consensus_all() -> dict[str, pd.DataFrame]:
+    """컨센서스 패널 parquet 전체 로드 (KR 종목 한정 — 한경 소스). 키=dataset 키.
+
+    해외(US)는 한경 컨센서스 없음 → managed_kr + user_stocks만 순회(파일 없으면 자연 skip).
+    """
+    result = {}
+    for code in load_managed_kr_codes():
+        df = load_stock_consensus(code)
+        if not df.empty:
+            result[code] = df
+    for stock in load_user_stocks():
+        df = load_stock_consensus(stock["name"])
+        if not df.empty:
+            result[stock["name"]] = df
+    return result
+
+
+def load_flow_all() -> dict[str, pd.DataFrame]:
+    """기관·외국인 수급 parquet 전체 로드 (KR 종목 한정 — KRX 소스). 키=dataset 키."""
+    result = {}
+    for code in load_managed_kr_codes():
+        df = load_stock_flow(code)
+        if not df.empty:
+            result[code] = df
+    for stock in load_user_stocks():
+        df = load_stock_flow(stock["name"])
+        if not df.empty:
+            result[stock["name"]] = df
     return result
 
 
