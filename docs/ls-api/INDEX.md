@@ -1,0 +1,71 @@
+# LS API TR Index
+
+국내주식 TR 색인. **작업 전 `grep -i <키워드> INDEX.md`로 후보 찾기.**
+상세는 `endpoints/{tr_cd}_*.md` 참조.
+
+> 이 KB는 A2 단계 초안 (2026-06-17). 국내주식 핵심 6종만 포함.
+> 선물·해외주식·조건검색 등은 필요 시 추가.
+
+---
+
+## 국내주식 — 주문 (3 TRs)
+
+| tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
+|---|---|---|---|---|
+| [`CSPAT00601`](endpoints/CSPAT00601_현물신규주문.md) | 현물신규주문 | 매수·매도 통합 단일 TR (BnsTpCode로 구분) | `LsBroker.place_order()` | 🟢 |
+| [`CSPAT00701`](endpoints/CSPAT00701_현물정정주문.md) | 현물정정주문 | 가격·수량 정정 | `LsBroker.modify_order()` | 🟢 |
+| [`CSPAT00801`](endpoints/CSPAT00801_현물취소주문.md) | 현물취소주문 | 주문 취소 | `LsBroker.cancel_order()` | 🟢 |
+
+## 국내주식 — 잔고·미체결 (2 TRs)
+
+| tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
+|---|---|---|---|---|
+| [`t0424`](endpoints/t0424_주식잔고조회2.md) | 주식잔고조회2 | 보유 포지션 목록 (체결기준) | `LsBroker.account_snapshot()` | 🟢 |
+| [`t0425`](endpoints/t0425_주식미체결조회.md) | 주식미체결 | 미체결 주문 목록 | `LsBroker.open_orders()` | 🟢 |
+
+## 국내주식 — 시세 (1 TR)
+
+| tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
+|---|---|---|---|---|
+| [`t1102`](endpoints/t1102_주식현재가.md) | 주식현재가 | 종목 현재가·OHLC | `LsBroker.current_price()` | 🟢 |
+
+## 기타 국내주식 (미작성, 색인만)
+
+아래는 필요 시 endpoint .md 추가. 현재는 INDEX 항목만.
+
+| tr_cd | 이름 | 용도 | 우리 코드 위치 | 검증상태 |
+|---|---|---|---|---|
+| `CSPAQ22200` | 현물계좌예수금 | 현금 예수금·주문가능금액 | `LsBroker.cash_balance()` | ⚠️ 미검증 |
+| `CSPAQ12300` | 현물계좌잔고내역 | 대안 잔고조회 (t0424 보완) | `LsBroker.account_snapshot()` 보완 | 🟢 필드 일부 확인 |
+| `t1101` | 주식현재가호가 | 10단 호가 | 미배선 | 🟢 |
+| `t1301` | 주식시간대별체결 | 시간대별 체결 내역 | 미배선 | 🟢 |
+
+---
+
+## 인증
+
+| 엔드포인트 | 용도 | 검증상태 |
+|---|---|---|
+| `POST /oauth2/token` | Access Token 발급 (익일 07:00 만료) | 🟢 구조 확인, ⚠️ 응답 필드 상세 미검증 |
+
+---
+
+## 빠른 사용 가이드
+
+- **국내주식 매수**: `CSPAT00601` (BnsTpCode=2)
+- **국내주식 매도**: `CSPAT00601` (BnsTpCode=1)
+- **정정**: `CSPAT00701`
+- **취소**: `CSPAT00801`
+- **보유 잔고**: `t0424`
+- **미체결 조회**: `t0425`
+- **현재가**: `t1102` (shcode=6자리 종목코드)
+- **예수금·주문가능액**: `CSPAQ22200`
+
+## 도메인
+
+| 용도 | 도메인 |
+|---|---|
+| REST (모의·실전 공통) | `https://openapi.ls-sec.co.kr:8080` |
+| WebSocket (실시간) | `wss://openapi.ls-sec.co.kr:9443/websocket` |
+
+> ⚠️ KIS와 달리 모의/실전이 **같은 도메인** — appkey로 환경 결정. 별도 도메인 존재 여부 키 발급 후 확인.
