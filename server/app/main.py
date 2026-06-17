@@ -274,6 +274,105 @@ def _initial_kr_fundamentals_refresh():
         _log.exception("KR 펀더멘털 초기 청크 중 예외 — 10분 cron 재시도")
 
 
+# ── 애널 컨센서스(한경, 무로그인) ─────────────────────────────────────────────
+_CONSENSUS_BACKFILL_START = "20150101"     # 한경 컨센서스 소급 가능 최소 시점(~11년)
+_CONSENSUS_WINDOW_DAYS = 90                 # 백필 1청크 윈도우(역순)
+
+
+def _consensus_cursor_path():
+    from quant_core import data_fetcher
+    return data_fetcher.CONSENSUS_DIR / "_backfill.cursor"
+
+
+def _backfill_consensus_chunk() -> None:
+    """한경 컨센서스 과거 백필 — 90일 윈도우를 today→2015로 **역순 1청크**(10분마다).
+
+    날짜축 크롤(per-window)이라 per-symbol freshness 대신 cursor(다음 윈도우 끝 날짜)를 파일에
+    저장해 재배포에도 재개. 2015 도달 시 자연 종료(무비용). 수집 실패 시 cursor 안 옮김→재시도."""
+    from datetime import date, datetime, timedelta
+    from quant_core.data.feeds import consensus_kr
+    cur = _consensus_cursor_path()
+    cur.parent.mkdir(parents=True, exist_ok=True)
+    end = (datetime.strptime(cur.read_text().strip(), "%Y%m%d").date()
+           if cur.exists() else date.today())
+    floor = datetime.strptime(_CONSENSUS_BACKFILL_START, "%Y%m%d").date()
+    if end <= floor:
+        return                                       # 백필 완료 — 무비용
+    start = max(floor, end - timedelta(days=_CONSENSUS_WINDOW_DAYS))
+    reports, ok = consensus_kr.collect_range(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+    if not ok:
+        _log.warning("[altdata] 컨센서스 백필 수집 실패(%s~%s) — cursor 유지·재시도", start, end)
+        return
+    res = consensus_kr.ingest(reports)
+    cur.write_text(start.strftime("%Y%m%d"))         # cursor 역순 전진
+    _log.info("[altdata] 컨센서스 백필 청크(한경) %s~%s: %s", start, end, res)
+
+
+def _refresh_consensus() -> None:
+    """일일 컨센서스 증분 — 최근 7일 신규 리포트 수집·ingest·캐시 attach(19:00 KST)."""
+    from datetime import date, timedelta
+    from quant_core.data.feeds import consensus_kr
+    end = date.today()
+    start = end - timedelta(days=7)
+    reports, ok = consensus_kr.collect_range(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+    if ok and reports:
+        res = consensus_kr.ingest(reports)
+        data_cache.invalidate()
+        _log.info("[altdata] 컨센서스 증분(한경) %s~%s: %s", start, end, res)
+
+
+def _initial_consensus_refresh():
+    import time
+    try:
+        time.sleep(90)
+        _log.info("컨센서스(한경) 초기 백필 청크 시작")
+        _backfill_consensus_chunk()
+    except Exception:
+        _log.exception("컨센서스 초기 청크 예외 — 10분 cron 재시도")
+
+
+# ── 기관·외국인 수급(KRX, pykrx 로그인) ───────────────────────────────────────
+
+def _backfill_flow_chunk() -> None:
+    """KR 기관·외국인 수급 과거 백필 청크(10분) — 미수집 종목의 전체이력(pykrx).
+
+    KRX_ID/PW 미설정 시 flow_kr.fetch가 no-op(비활성·로그 침묵). fresh_days 크게 → 한번 받은
+    종목은 백필서 재호출 안 함(증분은 _refresh_flow). budget_symbols로 청크 분할·재개."""
+    from datetime import date
+    from quant_core import data_fetcher
+    from quant_core.data.feeds import flow_kr
+    codes = data_fetcher.load_managed_kr_codes()
+    res = flow_kr.fetch(codes, "20140101", date.today().strftime("%Y%m%d"),
+                        budget_symbols=120, fresh_days=999999)
+    if not res.get("inactive") and (res.get("ok") or res.get("fail")):
+        _log.info("[altdata] KR 수급 백필 청크(pykrx): %s", res)
+
+
+def _refresh_flow() -> None:
+    """일일 수급 증분 — 최근 30일 윈도우 merge(16:30 KST, KRX 마감 후). fresh_days=1로 stalest부터."""
+    from datetime import date, timedelta
+    from quant_core import data_fetcher
+    from quant_core.data.feeds import flow_kr
+    codes = data_fetcher.load_managed_kr_codes()
+    end = date.today()
+    start = end - timedelta(days=30)
+    res = flow_kr.fetch(codes, start.strftime("%Y%m%d"), end.strftime("%Y%m%d"),
+                        budget_symbols=600, fresh_days=1)
+    if not res.get("inactive"):
+        data_cache.invalidate()
+        _log.info("[altdata] KR 수급 증분(pykrx) %s~%s: %s", start, end, res)
+
+
+def _initial_flow_refresh():
+    import time
+    try:
+        time.sleep(75)
+        _log.info("KR 수급(pykrx) 초기 백필 청크 시작")
+        _backfill_flow_chunk()
+    except Exception:
+        _log.exception("KR 수급 초기 청크 예외 — 10분 cron 재시도")
+
+
 def _initial_technical_refresh():
     import time
     try:
@@ -723,6 +822,25 @@ def _build_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=17, minute=30),
         id="kr_fundamentals", replace_existing=True)
 
+    # 한경 컨센서스(무로그인) — 10분 백필 청크(역순 90일窓→2015) + 19:00 일일 증분.
+    scheduler.add_job(
+        lambda: _run_with_retry("consensus_chunk", _backfill_consensus_chunk, scheduler),
+        CronTrigger(minute="2-59/10"),           # :02,:12… — 펀더멘털(*/10)과 스태거
+        id="consensus_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("consensus_daily", _refresh_consensus, scheduler),
+        CronTrigger(hour=19, minute=0),
+        id="consensus_daily", replace_existing=True)
+    # KR 기관·외국인 수급(pykrx, KRX_ID/PW 필요) — 10분 백필 청크 + 16:30 일일 증분(KRX 마감 후).
+    scheduler.add_job(
+        lambda: _run_with_retry("flow_chunk", _backfill_flow_chunk, scheduler),
+        CronTrigger(minute="5-59/10"),           # :05,:15… — 다른 10분 cron과 스태거
+        id="flow_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("flow_daily", _refresh_flow, scheduler),
+        CronTrigger(hour=16, minute=30),
+        id="flow_daily", replace_existing=True)
+
     # 일요일 08:00 — 미국 S&P500 시가총액 (fast_info). 분기 변동 낮아 주1회.
     scheduler.add_job(
         lambda: _run_with_retry("us_market_caps", _refresh_us_market_caps, scheduler),
@@ -771,6 +889,10 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_naver_refresh, daemon=True).start()
     _log.info("KR 펀더멘털(OpenDART) 초기 fetch thread 시작")
     threading.Thread(target=_initial_kr_fundamentals_refresh, daemon=True).start()
+    _log.info("컨센서스(한경) 초기 백필 thread 시작")
+    threading.Thread(target=_initial_consensus_refresh, daemon=True).start()
+    _log.info("KR 수급(pykrx) 초기 백필 thread 시작")
+    threading.Thread(target=_initial_flow_refresh, daemon=True).start()
     _log.info("기술적 지표 초기 fetch thread 시작")
     threading.Thread(target=_initial_technical_refresh, daemon=True).start()
     _log.info("정적 메타 초기 fetch thread 시작 (섹터·상장폐지일)")

@@ -18,7 +18,8 @@ import time
 import pandas as pd
 import quant_core as qc
 from quant_core import data_fetcher
-from quant_core.indicators import FUND_INDICATOR_COLS, compute_columns
+from quant_core.indicators import (FUND_INDICATOR_COLS, CONSENSUS_INDICATOR_COLS,
+                                    FLOW_INDICATOR_COLS, compute_columns)
 
 _lock = threading.Lock()
 _dataset: dict[str, pd.DataFrame] | None = None
@@ -113,7 +114,11 @@ def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataF
     raw = get_raw_dataset()
     cols = set(columns)
     want_fund = bool(cols & set(FUND_INDICATOR_COLS))
+    want_cons = bool(cols & set(CONSENSUS_INDICATOR_COLS))
+    want_flow = bool(cols & set(FLOW_INDICATOR_COLS))
     funds = data_fetcher.load_fund_all() if want_fund else {}
+    cons = data_fetcher.load_consensus_all() if want_cons else {}
+    flow = data_fetcher.load_flow_all() if want_flow else {}
     keys = list(raw.keys()) if symbols is None else [s for s in symbols if s in raw]
     out: dict[str, pd.DataFrame] = {}
     for s in keys:
@@ -123,7 +128,12 @@ def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataF
         if recent_days is not None and len(df) > recent_days:
             df = df.tail(int(recent_days))
         fd = funds.get(s) if want_fund else None
-        out[s] = compute_columns(df, cols, fd if (fd is not None and not fd.empty) else None)
+        cd = cons.get(s) if want_cons else None
+        fl = flow.get(s) if want_flow else None
+        out[s] = compute_columns(df, cols,
+                                 fd if (fd is not None and not fd.empty) else None,
+                                 cd if (cd is not None and not cd.empty) else None,
+                                 fl if (fl is not None and not fl.empty) else None)
     return out
 
 

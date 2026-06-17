@@ -28,9 +28,15 @@
 
 **현황.**
 - **partial(되지만 위험):** 한국 시세 분할조정 표기 미검증 / 시총·종목마스터가 백테스트 store 미부착(스크리너 메모리에만) / 소스별 조정정책 혼재.
-- **absent(못 가져옴):** 애널 추정치(무료 불가)·수급(외국인/기관, 공식 무료 API 없음·네이버 일별 순매매는 스크랩 가능하나 엔진 소비경로 미배선)·공매도·KR 지수 멤버십 이력.
+- **absent→배선중(2026-06-17):** 애널 컨센서스·목표가(한경, 무로그인 11년)·수급(외국인/기관, KRX `pykrx` 로그인 — 2025-12-27 KRX 로그인의무화로 공식 무료API엔 없음)을 feeds·indicators에 정식 편입(P0/P1/P3 완료, 백필 전이라 데이터 absent). 공매도·KR 지수 멤버십 이력은 여전히 absent.
 
 ## 작업계획 로그 (누적·최신 우선)
+
+### [2026-06-17] 애널 컨센서스·기관수급을 IR 데이터로 정식 편입 [진행중]
+- 의도: 애널 컨센서스/목표가(한경컨센서스)와 기관·외국인 수급(KRX, pykrx 로그인)을 OHLCV·펀더멘털과 **동일한 core IR 데이터로 편입**한다. 기존 server `krdata.py`는 개별종목분석 전용 메모리 on-demand 스냅샷(~120일)이라 백테스트·시계열 불가 — PIT parquet 적재 + `spec.py` 등록 + 수집 cron으로 끌어와 인사이트 엔진이 `__SELF__.<col>` 신호 ref로 백테스트/스크리닝/describe에서 소비하게 한다. 범위는 core 데이터 엔진(feeds·spec·indicators·cron)만 — `krdata.py`·개별종목분석은 additive(미변경, 후속 조율로 core store 재사용).
+- 계획: P0 spec 계약 → P1 feed 2종(`consensus_kr` 한경HTML·`flow_kr` pykrx) → P3 indicators 배선(`add_consensus`/`add_flow`·`target_upside`·INDICATOR_GROUPS 수급/컨센서스) → P2 cron(백필+증분) → P4 end-to-end. 설계=`docs/REDESIGN/altdata_consensus_flow_spec.md`.
+- 진행: **P0·P1·P3 구현·검증 완료**(core 299·root 390 green·골든 byte-identical). 컨센서스=한경 실데이터 라이브검증(증권사별 standing 집계·no-overwrite·180일 만료·리비전). 수급=pykrx key-safe 검증, 실데이터는 KRX creds(Railway)로 P2 cron에서. 남은 건 **P2(cron)·P4**. draft PR=`feat/ir-altdata-feeds`.
+- ⚠ 발견: **KRX가 2025-12-27 전체 로그인 의무화**(안티봇) — 공식 무료 OpenAPI엔 투자자 데이터 없음, `data.krx.co.kr` 조회는 무료지만 KRX 계정 로그인 필수 → **pykrx(`KRX_ID`/`KRX_PW`)가 유일 무료 10년 경로**. 한경컨센서스는 무로그인·11년. (조사 상세: 메모리 reference-free-data-sourcing)
 
 ### [2026-06-08~11] 스크리너 PBR/PER을 OpenDART로 통일 (A1) [완료]
 - 의도: 스크리너(Store B)의 PBR/PER을 360 리포트·백테스트(Store A)와 같은 OpenDART 출처로 통일해 두 화면의 밸류 불일치를 없앤다. 서빙 분리는 유지(출처만 일원화).
