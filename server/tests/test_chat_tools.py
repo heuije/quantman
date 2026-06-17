@@ -10,7 +10,7 @@ from app.chat.tools import assemble_ir, TOOL_SCHEMAS
 
 def test_tool_schemas_present():
     names = {t["name"] for t in TOOL_SCHEMAS}
-    assert names == {"screen", "simulate", "save_strategy"}
+    assert names == {"screen", "simulate", "save_strategy", "describe", "inspect"}
 
 
 def test_assemble_screen_makes_valid_select_ir():
@@ -152,3 +152,57 @@ def test_compact_save_strategy():
     out = compact_summary("save_strategy",
                           {"success": True, "strategy_id": 7, "name": "내 전략", "run_mode": "draft"})
     assert "내 전략" in out and "7" in out
+
+
+# ── P3: describe(단일 360) + inspect(원시 시계열) 도구 ────────────────────────
+import pandas as pd
+
+
+def test_describe_inspect_in_tool_schemas():
+    names = {t["name"] for t in TOOL_SCHEMAS}
+    assert {"describe", "inspect"} <= names
+
+
+def test_assemble_describe_single():
+    ir = assemble_ir("describe", {"symbol": "005930"})
+    s = StrategyIR.model_validate(ir)                       # 유효한 describe IR이어야
+    assert s.query == "describe"
+    assert s.universe.kind == "single" and s.universe.symbols == ["005930"]
+
+
+def test_run_inspect_returns_series(monkeypatch):
+    # inspect는 엔진 집계가 아니라 데이터셋 직접 retrieval — load_dataset_for를 가짜 DF로 격리.
+    idx = pd.to_datetime(["2026-06-15", "2026-06-16", "2026-06-17"])
+    df = pd.DataFrame({"consensus_target": [80000.0, 81000.0, 82000.0],
+                       "Close": [70000.0, 71000.0, 72000.0]}, index=idx)
+    monkeypatch.setattr(chat_tools.qc, "load_dataset_for", lambda syms: {"005930": df})
+    out = chat_tools.run_tool("inspect", {"symbol": "005930",
+                                          "columns": ["consensus_target"], "window": 2})
+    assert out["success"] is True and out["query"] == "inspect"
+    assert out["symbol"] == "005930" and out["columns"] == ["consensus_target"]
+    assert out["dates"] == ["2026-06-16", "2026-06-17"]                 # tail(window=2)
+    assert out["series"]["consensus_target"] == [81000.0, 82000.0]
+
+
+def test_run_inspect_missing_column_returns_error(monkeypatch):
+    df = pd.DataFrame({"Close": [1.0, 2.0]},
+                      index=pd.to_datetime(["2026-06-16", "2026-06-17"]))
+    monkeypatch.setattr(chat_tools.qc, "load_dataset_for", lambda syms: {"005930": df})
+    out = chat_tools.run_tool("inspect", {"symbol": "005930", "columns": ["consensus_target"]})
+    assert out["success"] is False and "error" in out
+
+
+def test_compact_describe():
+    out = compact_summary("describe",
+                          {"success": True, "symbol": "005930", "sector": "반도체",
+                           "price": {"last": 72000}, "fundamentals": {"pb_ratio": 1.2,
+                                                                      "trailing_pe": 10.0}})
+    assert "005930" in out
+
+
+def test_compact_inspect():
+    out = compact_summary("inspect",
+                          {"success": True, "symbol": "005930", "columns": ["consensus_target"],
+                           "dates": ["2026-06-16", "2026-06-17"],
+                           "series": {"consensus_target": [81000.0, 82000.0]}})
+    assert "005930" in out and "82000" in out                  # 최근값 표면화

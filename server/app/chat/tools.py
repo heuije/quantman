@@ -65,7 +65,38 @@ SAVE_STRATEGY_TOOL = {
     },
 }
 
-TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL]
+DESCRIBE_TOOL = {
+    "name": "describe",
+    "description": ("단일 종목의 종합 리포트(360) — 가격·52주 레인지·기간수익(1·3·6·12개월)·변동성·"
+                    "최대낙폭·밸류에이션(PBR/PER/EV-EBITDA)·뉴스 헤드라인. '○○ 어때?' 같은 "
+                    "단일종목 요약 질문에 사용. symbol(코드)만 필요."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "종목 코드(예: 005930=삼성전자)."},
+        },
+        "required": ["symbol"],
+    },
+}
+
+INSPECT_TOOL = {
+    "name": "inspect",
+    "description": ("단일 종목의 특정 지표 원시 시계열을 최근 N일 조회(집계가 아니라 raw 값). "
+                    "예: 목표주가 흐름·종가 추이·괴리율. 차트/표로 그대로 보여준다. symbol·columns 필요 "
+                    "(목표주가=consensus_target, 종가=Close, 상승여력=target_upside, RSI=rsi_14 등)."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string", "description": "종목 코드(예: 005930)."},
+            "columns": {"type": "array", "items": {"type": "string"},
+                        "description": "조회할 컬럼명(예: ['consensus_target','Close'])."},
+            "window": {"type": "integer", "description": "최근 거래일 수(기본 120)."},
+        },
+        "required": ["symbol", "columns"],
+    },
+}
+
+TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL]
 
 
 # ── IR 조립 ──────────────────────────────────────────────────────────────────
@@ -85,6 +116,13 @@ def assemble_ir(tool_name: str, tool_input: dict) -> dict:
         }
     if tool_name == "simulate":
         return dict(tool_input.get("strategy") or {})
+    if tool_name == "describe":
+        # 단일종목 360 리포트. signal은 리포트가 미사용하나 StrategyIR 스키마 충족용 placeholder.
+        return {
+            "universe": {"kind": "single", "symbols": [str(tool_input["symbol"])]},
+            "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}},
+            "query": "describe",
+        }
     raise ValueError(f"알 수 없는 도구: {tool_name}")
 
 
@@ -118,11 +156,39 @@ def _load_dataset(ir: dict) -> dict:
 
 # ── 도구 실행 ─────────────────────────────────────────────────────────────────
 
+def run_inspect(tool_input: dict) -> dict:
+    """단일 종목의 원시 컬럼 시계열을 직접 조회(retrieval). 집계 동사(describe/select)로는 못 주는
+    단일종목 raw 시계열을 위해 데이터셋을 직접 슬라이스 — 엔진 query 동사가 아닌 데이터 dump."""
+    import pandas as pd
+    symbol = str(tool_input.get("symbol") or "").strip()
+    columns = [str(c) for c in (tool_input.get("columns") or [])]
+    window = int(tool_input.get("window") or 120)
+    if not symbol or not columns:
+        return {"success": False, "error": "inspect: symbol·columns가 필요합니다."}
+    df = qc.load_dataset_for([symbol]).get(symbol)
+    if df is None or len(df) == 0:
+        return {"success": False, "error": f"데이터가 없습니다: {symbol}"}
+    have = [c for c in columns if c in df.columns]
+    if not have:
+        return {"success": False, "error": f"해당 컬럼이 없습니다: {', '.join(columns)}"}
+    sub = df[have].tail(window)
+    dates = [d.strftime("%Y-%m-%d") for d in sub.index]
+    series = {}
+    for c in have:
+        col = pd.to_numeric(sub[c], errors="coerce")     # 비수치 컬럼은 None으로(라인차트 안전)
+        series[c] = [None if pd.isna(v) else float(v) for v in col]
+    return {"success": True, "query": "inspect", "symbol": symbol,
+            "columns": have, "dates": dates, "series": series}
+
+
 def run_tool(tool_name: str, tool_input: dict) -> dict:
     """도구 호출 → IR 조립 → 데이터셋 로드 → 엔진 실행. full 결과 dict 반환.
 
-    조립 실패는 예외 대신 {success:False,error}로 — agent 루프가 tool_result로 모델에 피드백.
+    inspect는 엔진 동사가 아니라 데이터 retrieval이라 별도 경로. 조립 실패는 예외 대신
+    {success:False,error}로 — agent 루프가 tool_result로 모델에 피드백.
     """
+    if tool_name == "inspect":
+        return run_inspect(tool_input)
     try:
         ir = assemble_ir(tool_name, tool_input)
     except (ValueError, KeyError, TypeError) as e:
@@ -161,6 +227,24 @@ def compact_summary(tool_name: str, result: dict) -> str:
     if tool_name == "save_strategy":
         return (f"[save_strategy] '{result.get('name')}' 전략을 draft로 저장(id={result.get('strategy_id')}). "
                 "모의/실전은 웹 자동매매 메뉴에서.")
+    if tool_name == "describe":
+        pr = result.get("price") or {}
+        f = result.get("fundamentals") or {}
+        return (f"[describe] {result.get('symbol')}({result.get('sector')}) "
+                f"종가={pr.get('last')}, PBR={f.get('pb_ratio')}, PER={f.get('trailing_pe')}, "
+                f"EV/EBITDA={f.get('ev_ebitda')}")
+    if tool_name == "inspect":
+        cols = result.get("columns") or []
+        dates = result.get("dates") or []
+        series = result.get("series") or {}
+        last = []
+        for c in cols:
+            vals = [v for v in (series.get(c) or []) if v is not None]
+            if vals:
+                last.append(f"{c}={vals[-1]:.6g}")
+        rng = f"{dates[0]}~{dates[-1]}" if dates else "?"
+        return (f"[inspect] {result.get('symbol')} {rng} ({len(dates)}일). "
+                f"최근값: {', '.join(last) if last else '없음'}")
     if tool_name == "screen":
         rows = result.get("results") or []
 
