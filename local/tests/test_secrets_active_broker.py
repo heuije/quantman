@@ -41,7 +41,6 @@ def test_save_load_ls_credentials(monkeypatch):
     assert creds["virtual"] is True
 
 
-@pytest.mark.skip(reason="ls_broker 모듈은 A5에서 생성 — A5 완료 후 이 skip 해제")
 def test_make_broker_routes_to_ls(monkeypatch):
     """active_broker=ls면 LsBroker, 기본이면 KisBroker 경로."""
     from localapp import runner, secrets_store
