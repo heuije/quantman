@@ -16,6 +16,8 @@ _KIS = "kis_credentials"
 _KIS_FUT = "kis_futures_credentials"   # 선물옵션 계좌(상품코드 03) — 주식 계좌와 별개
 _KIS_OVF = "kis_overseas_futures_credentials"   # 해외선물옵션 계좌(상품코드 08) — 국내선물·주식과 별개
 _DEVICE = "device_token"
+_LS = "ls_credentials"
+_BROKER_CHOICE = "active_broker"   # "kis" | "ls" — 단일 브로커 모델 SSOT
 
 
 def save_kis(app_key: str, app_secret: str, account_no: str,
@@ -97,10 +99,50 @@ def load_device_token() -> str | None:
     return _cached_device_token
 
 
+def save_ls(app_key: str, app_secret: str, account_no: str,
+            virtual: bool = True) -> None:
+    """LS증권 자격증명 저장. 국내주식 기준 — 시세도 동일 키로 조회(KIS와 달리 별도
+    실전 앱키 불필요, 미검증 가정). 모의(virtual)는 별도 키로 LS 서버가 자동 라우팅.
+    이 정보는 사용자 PC를 떠나지 않는다(서버·리포 전송 금지)."""
+    keyring.set_password(KEYRING_SERVICE, _LS, json.dumps({
+        "app_key": app_key, "app_secret": app_secret,
+        "account_no": account_no, "virtual": virtual,
+    }))
+
+
+def load_ls() -> dict | None:
+    raw = keyring.get_password(KEYRING_SERVICE, _LS)
+    return json.loads(raw) if raw else None
+
+
+def set_active_broker(name: str) -> None:
+    if name not in ("kis", "ls"):
+        raise ValueError(f"지원하지 않는 브로커: {name}")
+    keyring.set_password(KEYRING_SERVICE, _BROKER_CHOICE, name)
+
+
+def get_active_broker() -> str:
+    """현재 활성 브로커. 미설정이면 'kis'(기존 사용자 무변경)."""
+    return keyring.get_password(KEYRING_SERVICE, _BROKER_CHOICE) or "kis"
+
+
+def active_cred_ok() -> bool:
+    """현재 활성 브로커의 자격증명이 등록돼 있는지. 단일 브로커 모델의 'broker ready' SSOT.
+
+    active_broker=="kis"면 bool(load_kis())로 환원돼 기존 KIS 동작과 동일(불변식).
+    active_broker=="ls"면 bool(load_ls())로 확인한다."""
+    return bool(load_ls()) if get_active_broker() == "ls" else bool(load_kis())
+
+
+def active_cred_label() -> str:
+    """활성 브로커 자격증명의 UI 표시 라벨 — KIS/LS 문구 단일 출처(SSOT)."""
+    return "LS증권 자격증명" if get_active_broker() == "ls" else "KIS 자격증명"
+
+
 def clear() -> None:
     global _cached_device_token
     _cached_device_token = None
-    for key in (_KIS, _KIS_FUT, _KIS_OVF, _DEVICE):
+    for key in (_KIS, _KIS_FUT, _KIS_OVF, _LS, _BROKER_CHOICE, _DEVICE):
         try:
             keyring.delete_password(KEYRING_SERVICE, key)
         except keyring.errors.PasswordDeleteError:

@@ -23,7 +23,7 @@ from .broker import Broker
 from .config import PENDING_PATH
 from .state_store import save_json
 from .logging_setup import setup_logging
-from .secrets_store import load_kis
+from .secrets_store import load_kis, get_active_broker
 from .sync_client import (pull_krx_status, pull_preview, pull_risk_limits,
                             pull_strategies, push_snapshot)
 from .trader import Trader
@@ -35,15 +35,25 @@ _ORDER_WS_RETRIES = 2
 
 
 def make_broker() -> Broker:
-    """주식 브로커(KisBroker). 선물 자격증명이 있으면 선물 라우팅 어댑터로 감싼다 (M3).
+    """활성 브로커를 생성한다. 기본은 KIS(기존 사용자 무변경); LS로 전환하면 LsBroker 반환.
 
-    KIS 자격증명이 없으면 명시적 RuntimeError (Phase 38.3) — 이전엔 자격증명 없으면 조용히
-    MockBroker로 fallback해 사용자가 "모의투자 중"이라고 착각할 신뢰 위험이 있었음.
+    브로커 선택은 secrets_store.get_active_broker()가 SSOT("kis"|"ls"). 미설정이면 "kis".
 
-    선물(국내/해외) 자격증명이 등록돼 있을 때만 BrokerRouter로 감싼다(심볼이 선물이면
-    KisFuturesBroker로 라우팅·계약코드 해석). **선물 자격증명이 없으면 KisBroker를 그대로
-    반환 — 주식 전용 환경은 완전 무변경.** (선물 전략 라이브 승격 게이트는 M1에서 개방.)
+    KIS 경로: 자격증명 없으면 명시적 RuntimeError. 선물 자격증명이 있으면 BrokerRouter로
+    감싼다(심볼이 선물이면 KisFuturesBroker로 라우팅·계약코드 해석). 선물 미등록이면
+    KisBroker를 그대로 반환 — 주식 전용 환경은 완전 무변경.
+
+    LS 경로: 국내주식 단일. 선물 라우터는 후속 plan.
     """
+    from .secrets_store import get_active_broker, load_ls
+    if get_active_broker() == "ls":
+        if load_ls() is None:
+            raise RuntimeError(
+                "LS 자격증명이 등록되지 않았습니다. setup에서 LS appkey/secret/계좌를 "
+                "등록하세요. (LS 모의투자는 별도 키로 발급됩니다.)")
+        from .ls_broker import LsBroker   # 국내주식 단일. 선물 라우터는 후속 plan.
+        return LsBroker()
+    # ── 기존 KIS 경로 (완전 무변경) ──────────────────────────────────────────
     if load_kis() is None:
         raise RuntimeError(
             "KIS 자격증명이 등록되지 않았습니다. setup을 실행해 페어링·KIS 키를 "
@@ -130,7 +140,14 @@ def _wait_for_order_ws() -> None:
     남기고 진행 — REST 폴링으로 fallback (데이터 누락 없음, push 지연만).
 
     HTS ID 미설정 사용자는 체결통보 WebSocket 자체가 disabled이므로 무동작.
+
+    LS 브로커 활성 시: KIS 체결통보 WS가 없으므로 즉시 반환(LS WS는 Phase 3 후속 계획).
+    REST 폴링이 체결 인지 fallback이므로 데이터 누락 없음.
     """
+    # (b) KIS 전용: LS 활성 시 KIS WS 경로는 완전 무관 — 즉시 반환.
+    if get_active_broker() != "kis":
+        return
+
     kis = load_kis() or {}
     if not kis.get("hts_id"):
         return  # 체결통보 WebSocket disabled — 확인 불필요

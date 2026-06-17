@@ -27,6 +27,8 @@
   하루 늦게 청산됐다. tolerance는 **미국 전용 라이브 버퍼**(국내 시장가는 무시)·default ±3%·유저 override.
   ⚠ MOC는 모의 미지원이라 폐장−5분 연속장 지정가가 최선의 종가 근사(백테스트 종가와 미세 발산은 불가피). 〔작성: 조대표〕
 
+- **2번째 브로커 = Broker Protocol 구현체 1개 + `make_broker` 분기로 끝 — 전략/백테스트/데이터 무변경.** LS증권을 KIS에 이어 추가(`ls_broker.py`). 선택=`secrets_store.active_broker` SSOT("kis"|"ls", 기본 kis→KIS byte-identical). **신규 브로커는 KIS 라이브 레슨을 day-1 이식**(주문응답 정규화·부분조회 실패 `fetch_failed` 마커·토큰 계정지문 캐시). **미검증 외부필드는 ⚠ 초안 + 테스트는 우리 계약(출력형)만 잠그고 입력 fixture는 가정** → 키 도착 시 fixture 교체(완료선언은 모의 E2E 후). ⚠ **`load_kis()`/`if kis:`로 브로커 동작을 게이트하는 사이트는 부류** — 신규 브로커 추가 시 `active_cred_ok()`류로 전수 치환(cycle·web명령·잔고·wizard·하드와이어 `KisBroker()`). 〔작성: 조대표〕
+
 ## 현재 구조 (안정)
 
 **기능.** 웹에서 만든 전략을 **사용자 PC의 로컬앱**이 KIS API로 모의/실전 자동 실행. 국내주식·국내선물·해외선물 지원. 백테스트와 **동일 IR**로 돌아 backtest=live 일치 보장.
@@ -81,6 +83,16 @@ tolerance는 **미국 전용 라이브 버퍼**(국내 무시)·default ±3%·�
 종가청산 라운드트립)은 다음 미국 세션 게이트.
 
 ## 작업계획 로그 (누적·최신 우선)
+
+### [완료-draft] LS증권 2번째 REST 브로커 — 국내주식 토대 (2026-06-17)
+
+**의도.** KIS에 이어 LS증권(구 이베스트)을 자동매매 실행계층 2번째 REST 브로커로 추가. 국내주식 범위, 계좌·키 발급 전이라 draft(필드 미검증). 전략IR·백테스트·데이터 무변경(실행계층 국소 추가).
+
+**구현(`feat/ls-broker`).** ① 시암 일반화: `secrets_store.active_broker` SSOT + `save_ls/load_ls`, `runner.make_broker` KIS|LS 분기(기본 kis 무변경). ② `ls_broker.py` LsBroker: OAuth `/oauth2/token`(expires_in 존중·계정지문 캐시)·throttle·`_post`(read재시도·order신중)·Broker 11메서드 국내주식(`normalize_ls_order_resp`·`account_snapshot` fetch_failed·`order_status` 표준어휘·resv는 명시적 NotImplementedError). ③ GUI 브로커 선택 라디오+LS 폼(KIS wizard byte-identical). ④ `docs/ls-api/` KB(공개소스 TR 매핑·⚠ 미검증). **subagent-driven**(구현→spec리뷰→품질리뷰) 5태스크.
+
+**결과.** 머지 대기(draft 토대). local **438 green**·LS 신규 50테스트·KIS/골든 무변경. **B7 완료**=`load_kis()`/`if kis:` 게이팅 **부류**를 `active_cred_ok()`+`active_cred_label()` 헬퍼로 전수 닫음(gui web명령·`CANCEL_ORDER` make_broker·runner/intraday WS 게이트·잔고; **KIS byte-identical**·git grep 부류 0). **남은 것(키 필요):** **Phase C**(키 후)=응답필드 실측·**G10**(`order_status` t0425 chegb=2 미체결-only라 체결/취소 unknown→chegb=0 전환)·모의 E2E·라이브게이트·미확인5. **Phase 3 WS**=LsBroker `get_approval_key`/`ws_url` 미구현→LS 시세·체결 WS 둘 다 폴링-only. 상세=`docs/superpowers/plans/2026-06-17-ls-broker-autotrade.md`.
+
+**교훈.** 위 §교훈 distill. 추가: order_status가 미체결-only TR이면 체결/취소를 못 봐 unknown→정산 reconcile 백스톱 의존(GOTCHAS G10) — 신규 브로커 체결인지는 전체-state 조회 TR 필요.
 
 ### [진행중] 자동매매 신뢰성 ultra 캠페인 — 다중일 무발주 근본 바로잡기 (2026-06-11 착수)
 

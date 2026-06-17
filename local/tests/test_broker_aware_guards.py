@@ -1,0 +1,180 @@
+"""브로커-aware 게이팅 회귀 — LS 활성 시 웹명령 거부 안 됨 + KIS 동작 불변.
+
+B7 구현 검증:
+1. active_cred_ok() — KIS 활성 시 load_kis()로 환원(불변식), LS 활성 시 load_ls() 사용
+2. gui._handle_command 게이트: active_cred_ok() 호출 여부 소스 레벨 검증
+3. runner._wait_for_order_ws: LS 활성 시 KIS WS 건드리지 않고 즉시 반환
+"""
+from __future__ import annotations
+import sys
+from pathlib import Path
+
+_LOCAL = Path(__file__).resolve().parent.parent
+if str(_LOCAL) not in sys.path:
+    sys.path.insert(0, str(_LOCAL))
+
+
+# ── 1. active_cred_ok 단위 테스트 ─────────────────────────────────────────────
+
+
+def test_active_cred_ok_kis_reduces_to_load_kis(monkeypatch):
+    """KIS 활성 시 active_cred_ok()는 bool(load_kis())와 동일 — 불변식."""
+    from localapp import secrets_store as s
+    monkeypatch.setattr(s, "get_active_broker", lambda: "kis")
+    monkeypatch.setattr(s, "load_kis", lambda: {"app_key": "x"})
+    monkeypatch.setattr(s, "load_ls", lambda: None)
+    assert s.active_cred_ok() is True
+
+    monkeypatch.setattr(s, "load_kis", lambda: None)
+    assert s.active_cred_ok() is False   # KIS 자격증명 없으면 False
+
+
+def test_active_cred_ok_ls_uses_load_ls(monkeypatch):
+    """LS 활성 시 KIS 자격증명 없어도 LS 자격증명 있으면 True."""
+    from localapp import secrets_store as s
+    monkeypatch.setattr(s, "get_active_broker", lambda: "ls")
+    monkeypatch.setattr(s, "load_kis", lambda: None)        # KIS 없어도
+    monkeypatch.setattr(s, "load_ls", lambda: {"app_key": "x"})
+    assert s.active_cred_ok() is True                        # LS면 OK
+
+
+def test_active_cred_ok_ls_no_ls_cred(monkeypatch):
+    """LS 활성 시 LS 자격증명 없으면 False."""
+    from localapp import secrets_store as s
+    monkeypatch.setattr(s, "get_active_broker", lambda: "ls")
+    monkeypatch.setattr(s, "load_ls", lambda: None)
+    assert s.active_cred_ok() is False
+
+
+# ── 2. gui 소스 레벨: _handle_command가 active_cred_ok 사용 확인 ───────────────
+
+
+def test_gui_handle_command_uses_active_cred_ok():
+    """gui.py _handle_command에서 load_kis() is None 패턴이 사라지고
+    active_cred_ok()가 사용되는지 소스 텍스트 검증."""
+    gui_path = _LOCAL / "localapp" / "gui.py"
+    source = gui_path.read_text(encoding="utf-8")
+
+    # _handle_command 함수 내부만 잘라서 검사
+    start = source.find("def _handle_command(")
+    end = source.find("\n    def ", start + 1)
+    if end == -1:
+        end = len(source)
+    handler_src = source[start:end]
+
+    # broker-gate 목적으로 load_kis() is None을 쓰는 패턴이 없어야 함
+    assert "load_kis() is None" not in handler_src, (
+        "_handle_command에 아직 load_kis() is None 가드가 남아 있습니다. "
+        "active_cred_ok()로 교체하세요."
+    )
+    # active_cred_ok 또는 active_cred_ok()가 있어야 함
+    assert "active_cred_ok" in handler_src, (
+        "_handle_command에 active_cred_ok() 호출이 없습니다."
+    )
+
+
+def test_gui_cancel_order_uses_make_broker():
+    """CANCEL_ORDER가 KisBroker()를 하드와이어하지 않고 make_broker()를 사용하는지 검증."""
+    gui_path = _LOCAL / "localapp" / "gui.py"
+    source = gui_path.read_text(encoding="utf-8")
+
+    start = source.find("def _handle_command(")
+    end = source.find("\n    def ", start + 1)
+    if end == -1:
+        end = len(source)
+    handler_src = source[start:end]
+
+    # CANCEL_ORDER 블록에서 KisBroker() 직접 인스턴스화 금지
+    cancel_start = handler_src.find('"CANCEL_ORDER"')
+    if cancel_start == -1:
+        cancel_start = handler_src.find("'CANCEL_ORDER'")
+    assert cancel_start != -1, "CANCEL_ORDER 블록을 찾을 수 없습니다"
+    # 다음 if t == 블록까지 잘라서 검사
+    next_block = handler_src.find('\n        if t ==', cancel_start + 1)
+    cancel_block = handler_src[cancel_start: next_block if next_block != -1 else len(handler_src)]
+    assert "KisBroker()" not in cancel_block, (
+        "CANCEL_ORDER에 KisBroker() 하드와이어가 남아 있습니다. make_broker()로 교체하세요."
+    )
+
+
+def test_run_once_uses_active_cred_ok():
+    """_run_once가 active_cred_ok()를 사용하는지 소스 텍스트 검증."""
+    gui_path = _LOCAL / "localapp" / "gui.py"
+    source = gui_path.read_text(encoding="utf-8")
+
+    start = source.find("def _run_once(")
+    end = source.find("\n    def ", start + 1)
+    if end == -1:
+        end = len(source)
+    fn_src = source[start:end]
+
+    assert "load_kis() is None" not in fn_src, (
+        "_run_once에 아직 load_kis() is None 가드가 남아 있습니다."
+    )
+    assert "active_cred_ok" in fn_src, (
+        "_run_once에 active_cred_ok() 호출이 없습니다."
+    )
+
+
+# ── 3. runner._wait_for_order_ws: LS 활성 시 즉시 반환 ────────────────────────
+
+
+def test_wait_for_order_ws_skips_for_ls(monkeypatch):
+    """LS 활성 시 _wait_for_order_ws는 KIS WS를 건드리지 않고 즉시 반환한다."""
+    from localapp import secrets_store as s, runner
+
+    # LS 활성 + LS 자격증명 있음
+    monkeypatch.setattr(s, "get_active_broker", lambda: "ls")
+
+    # intraday_loop.status()가 호출되면 테스트 실패
+    class FakeIntradayLoop:
+        @staticmethod
+        def status():
+            raise AssertionError("LS 활성 시 intraday_loop.status()는 호출되면 안 됩니다")
+
+    import types
+    fake_loop = types.ModuleType("localapp.intraday_loop")
+    fake_loop.status = FakeIntradayLoop.status
+    monkeypatch.setitem(sys.modules, "localapp.intraday_loop", fake_loop)
+
+    # 예외 없이 반환되어야 함
+    runner._wait_for_order_ws()
+
+
+def test_wait_for_order_ws_kis_no_hts_returns_early(monkeypatch):
+    """KIS 활성이지만 hts_id 미설정 시 즉시 반환(기존 동작 불변)."""
+    from localapp import secrets_store as s, runner
+
+    monkeypatch.setattr(s, "get_active_broker", lambda: "kis")
+    monkeypatch.setattr(s, "load_kis", lambda: {"app_key": "x", "hts_id": ""})
+
+    # intraday_loop 호출 없이 반환
+    import types
+    fake_loop = types.ModuleType("localapp.intraday_loop")
+    fake_loop.status = lambda: (_ for _ in ()).throw(
+        AssertionError("hts_id 없으면 intraday_loop 호출 불필요"))
+    monkeypatch.setitem(sys.modules, "localapp.intraday_loop", fake_loop)
+
+    runner._wait_for_order_ws()   # 예외 없이 반환해야 함
+
+
+def test_wait_for_order_ws_kis_with_hts_checks_ws(monkeypatch):
+    """KIS 활성 + hts_id 설정 시 intraday_loop.status() 호출(기존 동작 불변).
+
+    _wait_for_order_ws가 get_active_broker()=="kis"이고 hts_id가 있으면
+    intraday_loop 경로에 진입함을 소스로 검증 (헤드리스 환경에서 intraday_loop
+    자체의 WSS 연결 시도를 피하기 위해 소스-레벨 어설션 사용).
+    """
+    runner_path = _LOCAL / "localapp" / "runner.py"
+    source = runner_path.read_text(encoding="utf-8")
+
+    fn_start = source.find("def _wait_for_order_ws(")
+    fn_end = source.find("\ndef ", fn_start + 1)
+    fn_src = source[fn_start: fn_end if fn_end != -1 else len(source)]
+
+    # KIS 게이트 이후에 intraday_loop 진입 경로가 있어야 함
+    assert "intraday_loop" in fn_src, "_wait_for_order_ws에 intraday_loop 진입이 없습니다"
+    # LS 게이트가 맨 앞에 있어야 함 (get_active_broker() != "kis" 이면 return)
+    assert 'get_active_broker() != "kis"' in fn_src, (
+        "_wait_for_order_ws에 LS 브로커 게이트(get_active_broker()!=\"kis\")가 없습니다"
+    )
