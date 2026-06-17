@@ -643,12 +643,18 @@ git commit -m "feat(local): setup wizard 브로커 선택(KIS/LS) + LS 자격증
 
 > A1 코드리뷰에서 발견된 **부류(class) 결함**. `run_cycle`/settlement은 KIS 전용 헬퍼를 **활성 브로커와 무관하게** 호출한다 — LS가 실제로 사이클을 돌리면(B6 이후) 이 경로들이 KIS를 가정한다. 증상 1건씩 때우지 말고 **전수 스캔→한 기준으로 부류 닫기**(active_broker 게이팅 또는 Broker Protocol로 일반화).
 
-**Files:** `local/localapp/runner.py`, `local/localapp/trader.py`, `local/localapp/intents.py` (전수 스캔으로 확정)
+**Files:** `local/localapp/runner.py`, `local/localapp/trader.py`, `local/localapp/intents.py`, **`local/localapp/gui.py`** (전수 스캔으로 확정)
 
-- [ ] **Step 1: 전수 스캔** — `local/localapp/`에서 `load_kis(`·`reconcile_with_kis`·KIS 전용 메서드·`hts_id`·체결통보 WS 호출을 사이클/정산 경로에서 grep. 각각이 (a) LS에서 안전 no-op인지 (b) Broker Protocol만 쓰는지(이름만 KIS) (c) KIS 전용이라 게이팅 필요한지 분류. 알려진 후보:
+> **부류 = `load_kis()`/`if kis:`로 브로커 동작을 게이트하는 모든 지점.** A4 코드리뷰에서 gui.py에 다수 사이트가 추가 발견됨(아래). 단건 수정 금지 — **공용 헬퍼 1개**(예: `secrets_store.active_cred_ok()` → 활성 브로커의 자격증명 존재 여부)를 만들고 전 사이트를 그것으로 치환해 부류를 한 번에 닫는다.
+
+- [ ] **Step 1: 전수 스캔** — `local/localapp/`에서 `load_kis(`·`if kis:`·`reconcile_with_kis`·KIS 전용 메서드·`hts_id`·체결통보 WS 호출을 grep. 각각이 (a) LS에서 안전 no-op인지 (b) Broker Protocol만 쓰는지(이름만 KIS) (c) KIS 전용이라 게이팅 필요한지 분류. **알려진 후보(2026-06-17 grep):**
+  - **gui.py `_handle_command` (실 기능 버그)**: `load_kis() is None` 가드가 `RUN_CYCLE_NOW`(~1223)·`LIQUIDATE_ALL`(~1251)·기타(~1271·~1286·~2108)에서 활성 브로커 무관 → **LS 활성+KIS 미등록 시 웹 명령이 "KIS 자격증명 없음"으로 거부**. 활성 브로커 자격증명(`active_cred_ok()`)으로 치환 + 라벨 동적화.
+  - **gui.py `if kis:` 렌더 가드**(~760·~853·~876·~909, 잔고·타임라인·hero): LS 활성 시 LS 잔고 갱신 경로 누락. broker-aware 가드로(LS 잔고는 B6 account_snapshot 사용).
+  - **gui.py `_toggle_setup_expanded`(~776)·`_wizard_jump_to_input`(~2025)**: `load_kis()`로 KIS wizard 진입 → 활성 브로커 게이트(LS면 LS 폼).
   - `runner.py:_wait_for_order_ws()` — `load_kis().hts_id` 의존. LS는 KIS 체결통보 WS 없음 → `get_active_broker()=="kis"`일 때만 수행하도록 게이트.
   - `_run_settlement_locked` → `trader.reconcile_with_kis()` — 이름은 KIS지만 Broker Protocol(account_snapshot/pending)만 쓰면 LS도 동작. 실제 본문 확인 후, KIS 전용 호출이 있으면 일반화 또는 게이트.
   - `run_cycle` → `intents.reconcile_submitting(broker, ...)` — broker 인자 기반이면 LS 안전. 확인.
+  - **완료 기준: `git grep -n "load_kis()" local/localapp` 결과 중 브로커-게이트 목적 사이트가 0이거나 전부 `active_cred_ok()` 류로 치환됨**(전수 닫힘 검증).
 - [ ] **Step 2: 회귀 테스트** — active_broker="ls"·LsBroker(mock)로 `_wait_for_order_ws`가 KIS WS를 건드리지 않고 즉시 반환하는지, 정산이 LsBroker로 동작하는지 테스트.
 - [ ] **Step 3: 구현** — 분류에 따라 게이트(active_broker) 또는 Protocol 일반화. **KIS 경로 동작 무변경 보존**(KIS 회귀 green).
 - [ ] **Step 4: 커밋** `fix(local): LS 활성 시 KIS 전용 사이클 경로 게이팅 (부류 닫기)`
