@@ -639,6 +639,22 @@ git commit -m "feat(local): setup wizard 브로커 선택(KIS/LS) + LS 자격증
 
 ---
 
+### Task B7: LS 사이클 경로 broker-aware 스윕 (구조적 — 부류 닫기)
+
+> A1 코드리뷰에서 발견된 **부류(class) 결함**. `run_cycle`/settlement은 KIS 전용 헬퍼를 **활성 브로커와 무관하게** 호출한다 — LS가 실제로 사이클을 돌리면(B6 이후) 이 경로들이 KIS를 가정한다. 증상 1건씩 때우지 말고 **전수 스캔→한 기준으로 부류 닫기**(active_broker 게이팅 또는 Broker Protocol로 일반화).
+
+**Files:** `local/localapp/runner.py`, `local/localapp/trader.py`, `local/localapp/intents.py` (전수 스캔으로 확정)
+
+- [ ] **Step 1: 전수 스캔** — `local/localapp/`에서 `load_kis(`·`reconcile_with_kis`·KIS 전용 메서드·`hts_id`·체결통보 WS 호출을 사이클/정산 경로에서 grep. 각각이 (a) LS에서 안전 no-op인지 (b) Broker Protocol만 쓰는지(이름만 KIS) (c) KIS 전용이라 게이팅 필요한지 분류. 알려진 후보:
+  - `runner.py:_wait_for_order_ws()` — `load_kis().hts_id` 의존. LS는 KIS 체결통보 WS 없음 → `get_active_broker()=="kis"`일 때만 수행하도록 게이트.
+  - `_run_settlement_locked` → `trader.reconcile_with_kis()` — 이름은 KIS지만 Broker Protocol(account_snapshot/pending)만 쓰면 LS도 동작. 실제 본문 확인 후, KIS 전용 호출이 있으면 일반화 또는 게이트.
+  - `run_cycle` → `intents.reconcile_submitting(broker, ...)` — broker 인자 기반이면 LS 안전. 확인.
+- [ ] **Step 2: 회귀 테스트** — active_broker="ls"·LsBroker(mock)로 `_wait_for_order_ws`가 KIS WS를 건드리지 않고 즉시 반환하는지, 정산이 LsBroker로 동작하는지 테스트.
+- [ ] **Step 3: 구현** — 분류에 따라 게이트(active_broker) 또는 Protocol 일반화. **KIS 경로 동작 무변경 보존**(KIS 회귀 green).
+- [ ] **Step 4: 커밋** `fix(local): LS 활성 시 KIS 전용 사이클 경로 게이팅 (부류 닫기)`
+
+> 위치 근거: B6(LsBroker 메서드)만으로는 LS가 사이클에서 *호출*되지만 KIS 전용 헬퍼가 남는다. B7이 그 배선 간극을 닫아야 Phase 2(국내주식 LS) end-to-end가 성립. A4(GUI) 전/후 무관하나 모의 E2E(Phase C) 전 필수.
+
 ## Phase C — 계좌·키 도착 후 (검증 체크리스트, 코드 아님)
 
 키 없이는 **검증 불가**(4원칙 #4: 추측 완료 금지). 사용자가 LS 계좌개설→OpenAPI 신청→모의 키 수령 후:
