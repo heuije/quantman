@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type IrValidation, type IrExplanation, type CompileQuota } from "../api";
 import SentenceTree, { type Catalog } from "../components/SentenceTree";
 import EquityChart from "../components/EquityChart";
@@ -680,16 +680,16 @@ export default function IrBuilder() {
   const hasErrors = validation ? !validation.ok : false;
 
   if (loadErr) {
-    return <div className="panel"><div className="page-title">전략 연구소</div>
+    return <div className="panel"><div className="page-title">전략 빌더 <span className="muted" style={{ fontSize: 14, fontWeight: 400 }}>(고급)</span></div>
       <p className="muted">카탈로그를 불러오지 못했습니다: {loadErr}</p></div>;
   }
 
   return (
     <div>
-      <div className="page-title">전략 연구소</div>
+      <div className="page-title">전략 빌더 <span className="muted" style={{ fontSize: 14, fontWeight: 400 }}>(고급)</span></div>
       <p className="page-sub">
-        블록을 조립해 룰·팩터·포트폴리오 전략을 만들고 백테스트합니다.
-        슬롯에 블록을 끼워 중첩할 수 있어요.
+        블록을 조립해 룰·팩터·포트폴리오 전략을 만들고 백테스트합니다. 슬롯에 블록을 끼워 중첩할 수 있어요.
+        새로워진 <Link to="/chat">💬 대화형 전략 연구소(베타)</Link>로도 전략을 만들 수 있어요.
       </p>
 
       {/* 자연어로 전략 만들기 (NL→IR 컴파일, 베타) */}
