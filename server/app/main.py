@@ -560,6 +560,52 @@ def _initial_calendar_refresh():
         _log.exception("캘린더 초기 빌드 예외 — 다음 03:00 cron 재시도")
 
 
+def _industry_tickers() -> list[str]:
+    """우리가 다루는 종목 = data/industry_*.csv의 전 종목 코드."""
+    import csv
+    import os as _os
+    base = _os.path.join(_os.path.dirname(__file__), "data")
+    codes: list[str] = []
+    for fn in _os.listdir(base):
+        if fn.startswith("industry_") and fn.endswith(".csv"):
+            with open(_os.path.join(base, fn), encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    tk = str(r.get("티커", "")).strip()
+                    if tk.isdigit():
+                        codes.append(tk.zfill(6))
+    return sorted(set(codes))
+
+
+def _refresh_company_profiles() -> None:
+    """기업개요(설립일·대표 등) 분기 갱신 — 매일 호출하되 90일 경과 시에만 실제 수집.
+    대상 = data/industry_*.csv의 전 종목(우리가 다루는 기업들). 출처 FnGuide(키 불필요)."""
+    from . import company_profiles
+    company_profiles.refresh_if_stale(_industry_tickers())
+
+
+def _refresh_financials() -> None:
+    """재무제표(PL·BS·CF, 연간 YoY·분기 QoQ) 일괄 갱신 — 분기/사업보고서 제출 마감일 저녁 cron.
+    Financials 탭은 이 저장본을 즉시 서빙(로딩 없음). 출처 FnGuide(전자공시 집계·키 불필요)."""
+    from . import financials
+    financials.refresh_all(_industry_tickers())
+
+
+def _refresh_industry_prices() -> None:
+    """산업분석 트리맵 가격 캐시를 장 마감·정산 후 비우고 공식 종가로 미리 데운다.
+
+    트리맵 가격(_closes/_returns/_industry)은 _day(날짜) 키로 lru_cache돼 **장중 첫 로딩 값이
+    종일 고정**된다. symbol_detail(금일 종가)은 매 요청 신선 조회라, 마감 후 트리맵 종가가
+    금일 종가와 불일치하던 문제를 이 cron이 해소한다. refresh_prices는 가격 캐시만 비우고
+    느린 D&A·상장주식수 캐시는 보존하므로(재조회 X) 가볍다."""
+    from . import industry
+    industry.refresh_prices()
+    for name in industry.INDUSTRIES:          # 공식 종가로 즉시 재구성 → 다음 조회부터 정확
+        try:
+            industry.industry(name)
+        except Exception:
+            _log.exception("산업 가격 프리워밍 실패: %s", name)
+
+
 def _build_scheduler() -> BackgroundScheduler:
     """매일 정기 갱신 cron 구성 (Phase 31 — 외부 publish 시각에 맞춰 재배치).
 
@@ -602,6 +648,15 @@ def _build_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=15, minute=45),
         id="krx_1st", replace_existing=True)
 
+    # 16:05 + 16:35 — 산업분석 트리맵 가격 캐시 무효화 + 공식 종가 프리워밍.
+    # 트리맵 가격은 _day(날짜) 키로 캐시돼 장중 첫 로딩 값이 종일 고정 → 마감 후 금일종가와
+    # 불일치하던 문제 해소. 16:05(정산 직후) + 16:35(지연 종목 보정) 2회.
+    for _hh, _mm in [(16, 5), (16, 35)]:
+        scheduler.add_job(
+            lambda: _run_with_retry("industry_prices", _refresh_industry_prices, scheduler),
+            CronTrigger(hour=_hh, minute=_mm),
+            id=f"industry_prices_{_hh}_{_mm}", replace_existing=True)
+
     # 16:00 — KOSPI200 선물 일봉 증분 (KIS, 선물 정규장 마감 직후). env(QP_KIS_DATA_APPKEY·
     # QP_KIS_KOSPI_FUT_ISCD) 미설정이면 fail-safe no-op이라 기존 갱신에 무영향.
     scheduler.add_job(
@@ -620,6 +675,22 @@ def _build_scheduler() -> BackgroundScheduler:
         lambda: _run_with_retry("technical", _refresh_technical, scheduler),
         CronTrigger(hour=17, minute=15),
         id="technical", replace_existing=True)
+
+    # 03:30 — 기업개요 분기 갱신(매일 staleness 체크 → 90일 경과 시에만 FnGuide 재수집)
+    scheduler.add_job(
+        lambda: _run_with_retry("company_profiles", _refresh_company_profiles, scheduler),
+        CronTrigger(hour=3, minute=30),
+        id="company_profiles", replace_existing=True)
+
+    # 재무제표(Financials) — 분기/사업보고서 제출 마감일 저녁 20:10에 일괄 갱신.
+    # 사업보고서 3/31 · 1Q 5/15 · 반기 8/14 · 3Q 11/14 (12월 결산 기준 법정 마감).
+    # CronTrigger는 month·day를 교차곱으로 처리하므로 마감일마다 개별 job으로 등록.
+    # 공시가 마감 무렵 FnGuide에 반영되므로 저녁에 받아 저장 → 탭은 저장본 즉시 서빙.
+    for _mo, _dy in [(3, 31), (5, 15), (8, 14), (11, 14)]:
+        scheduler.add_job(
+            lambda: _run_with_retry("financials", _refresh_financials, scheduler),
+            CronTrigger(month=_mo, day=_dy, hour=20, minute=10),
+            id=f"financials_{_mo}_{_dy}", replace_existing=True)
 
     # 18:10 — 정적 메타(섹터·상장폐지일) 사이드카. dataset_kr(18:15) invalidate 직전 →
     # 매니페스트가 새 사이드카로 재빌드, bundle(18:30)이 로컬 전파. FDR KRX-DESC/DELISTING.

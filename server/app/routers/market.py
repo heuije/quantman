@@ -445,6 +445,43 @@ def industry_detail(name: str, as_of: str = "", refresh: bool = False,
             "available": list(industry_mod.INDUSTRIES.keys())}
 
 
+@router.get("/industry/{name}/ebitda")
+def industry_ebitda(name: str, user: User = Depends(get_current_user)):
+    """지연 로딩: 종목별 EBITDA/EBITDA률/D&A(FnGuide 현금흐름표). 트리맵·표 표시 후 별도 호출."""
+    from .. import industry as industry_mod
+    return industry_mod.industry_ebitda(name)
+
+
+@router.get("/news")
+def sector_news(kr: str = "", glob: str = "", user: User = Depends(get_current_user)):
+    """섹터 키워드 뉴스 — Google News RSS(키 불필요). kr/glob = 쉼표구분 키워드. 국내·해외 구분 반환."""
+    from .. import krdata
+    return krdata.news([x.strip() for x in kr.split(",") if x.strip()],
+                       [x.strip() for x in glob.split(",") if x.strip()])
+
+
+@router.get("/profile/{ticker}")
+def company_profile(ticker: str, user: User = Depends(get_current_user)):
+    """기업 개요 — 설립일·대표이사·홈페이지·종업원수. 저장본(company_profiles.json, 분기 갱신) 우선,
+    없으면 FnGuide 라이브 폴백. 나머지(상장·주요제품·매출)는 프론트가 산업표에서 채운다."""
+    from .. import company_profiles, industry, krdata
+    p = company_profiles.get(ticker.strip())
+    if not p.get("established") and not p.get("homepage"):
+        p = krdata.profile(ticker.strip())
+    # 주요 사업(산업표 주요제품 동일) + 상장주식수(시총=현재가×주식수, 프런트 계산).
+    p = {**p, "business": industry.product_of(ticker.strip()),
+         "shares": industry.shares_of(ticker.strip())}
+    return p
+
+
+@router.get("/financials/{ticker}")
+def company_financials(ticker: str, user: User = Depends(get_current_user)):
+    """재무제표(연결 PL·BS·CF) — 연간 YoY%·분기 QoQ% 포함. 저장본 즉시 반환(없으면 1회 조회·저장).
+    분기/사업보고서 마감일 cron이 미리 채워두므로 정상 운영에선 로딩 없이 바로 뜬다."""
+    from .. import financials
+    return financials.financials(ticker.strip())
+
+
 def _session_now() -> dict:
     """한국 정규장 기준 현재 세션 표시. 서버 tz와 무관하게 KST로 계산."""
     kst = datetime.now(ZoneInfo("Asia/Seoul"))

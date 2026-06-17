@@ -48,6 +48,11 @@ core/data/_classification.json
 core/data/_listing.json
 core/data/_generation
 
+# 개별기업 분석(HOME) 생성 캐시 — 서버 read-through + cron이 재생성하므로 git 저장 불필요
+server/app/data/company_profiles.json
+server/app/data/earnings/
+server/app/data/financials/
+
 # 대용량 데이터셋 번들(로컬앱 배포용 생성물, 155MB+) · 외부 doc 캐시 — repo 미포함
 core/dataset-bundle.tar.zst
 core/dataset-bundle.meta

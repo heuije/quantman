@@ -74,6 +74,10 @@ _NEW_COLS: list[tuple[str, str, str]] = [
     ("strategy",     "live_basket",                      "JSON"),
     ("backtestrun",  "strategy_id",                      "INTEGER"),
     ("backtestrun",  "version_no",                       "INTEGER"),
+    # 투자의견(Ratings) 고도화 — 제목·목표주가·운영자 승인 상태.
+    ("stockopinion", "title",                            "VARCHAR DEFAULT ''"),
+    ("stockopinion", "target_price",                     "DOUBLE PRECISION"),
+    ("stockopinion", "status",                           "VARCHAR DEFAULT 'approved'"),
 ]
 
 

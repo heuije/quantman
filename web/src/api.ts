@@ -6,6 +6,7 @@ import type {
   PortfolioAnalyzeIn, PortfolioAnalysis, PortfolioHoldings, SymbolDetail, SymbolListing,
   CompareResult, KrExtras, IndustryData,
   OpinionList, StockOpinion, OpinionComment,
+  SectorNews, CompanyProfile, FinancialsData,
   ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO, ScreenerUserPreset,
   StrategyDef, StrategyRow, StrategyStats, StrategyVersionRow,
   SymbolInfo, SyncSnapshot, TradingTimeline, UserSettingsIO,
@@ -195,8 +196,12 @@ export const api = {
   // 개별 기업 투자의견 게시판
   opinions: (ticker: string) =>
     req<OpinionList>(`/opinions/${encodeURIComponent(ticker)}`),
-  createOpinion: (ticker: string, stance: string, body: string) =>
-    req<StockOpinion>("/opinions", { method: "POST", body: JSON.stringify({ ticker, stance, body }) }),
+  createOpinion: (ticker: string, stance: string, title: string,
+                  target_price: number | null, body: string) =>
+    req<StockOpinion>("/opinions", { method: "POST",
+      body: JSON.stringify({ ticker, stance, title, target_price, body }) }),
+  approveOpinion: (id: number) =>
+    req<{ id: number; status: string }>(`/opinions/${id}/approve`, { method: "POST" }),
   deleteOpinion: (id: number) =>
     req<null>(`/opinions/${id}`, { method: "DELETE" }),
   addOpinionComment: (id: number, body: string) =>
@@ -206,6 +211,17 @@ export const api = {
   voteOpinion: (id: number, value: number) =>
     req<{ likes: number; dislikes: number; my_vote: number }>(
       `/opinions/${id}/vote`, { method: "POST", body: JSON.stringify({ value }) }),
+  // 산업분석 EBITDA 지연 로딩(느린 FnGuide 분리) — {ticker: {da, ebitda, ebitda_margin}}
+  industryEbitda: (name: string) =>
+    req<Record<string, { da: number | null; ebitda: number | null; ebitda_margin: number | null }>>(
+      `/market/industry/${encodeURIComponent(name)}/ebitda`),
+  // 섹터 키워드 뉴스 / 기업 개요
+  sectorNews: (kr: string[], glob: string[]) =>
+    req<SectorNews>(`/market/news?kr=${encodeURIComponent(kr.join(","))}&glob=${encodeURIComponent(glob.join(","))}`),
+  companyProfile: (ticker: string) =>
+    req<CompanyProfile>(`/market/profile/${encodeURIComponent(ticker)}`),
+  financials: (ticker: string) =>
+    req<FinancialsData>(`/market/financials/${encodeURIComponent(ticker)}`),
   analyzePortfolio: (body: PortfolioAnalyzeIn) =>
     req<PortfolioAnalysis>("/portfolio/analyze", {
       method: "POST", body: JSON.stringify(body),

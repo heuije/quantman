@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth";
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as
@@ -8,7 +8,15 @@ const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as
 
 export default function Login() {
   const { login, signup, loginWithGoogle } = useAuth();
-  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [params] = useSearchParams();
+  const [mode, setMode] = useState<"login" | "signup">(
+    params.get("mode") === "signup" ? "signup" : "login");
+  // 상단바 회원가입/로그인 버튼(?mode=) 클릭 시 폼 모드 동기화
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => {
+    const m = params.get("mode");
+    if (m === "signup" || m === "login") setMode(m);
+  }, [params]);
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [err, setErr] = useState("");

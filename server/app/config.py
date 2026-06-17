@@ -67,6 +67,14 @@ class Settings:
     # 단일 공유 시크릿(개인별 admin 계정 아님) — 베타 오버라이드용. 로그 미출력.
     NL_COMPILE_ADMIN_PASSWORD: str = os.getenv("QP_NL_COMPILE_ADMIN_PASSWORD", "ms2605")
 
+    # 투자의견(Ratings) 운영자 — 이 이메일들만 게시글을 승인(pending→approved)할 수 있다.
+    # 쉼표 구분. 기본 = 서비스 운영자 + 로컬 테스트 계정.
+    ADMIN_EMAILS: set = {
+        e.strip().lower()
+        for e in os.getenv("QP_ADMIN_EMAILS", "heuije99@naver.com,test@mystock.io").split(",")
+        if e.strip()
+    }
+
 
 settings = Settings()
 
