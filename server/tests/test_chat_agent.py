@@ -14,6 +14,12 @@ def test_system_prompt_includes_capabilities_and_rules():
     assert "tool_result" in p              # 숫자 규율 명시
 
 
+def test_system_prompt_consult_offers_options():
+    # 협의(되묻기) 시 빈 질문이 아니라 선택지·기본값을 먼저 제안하도록 지시한다.
+    p = chat_system_prompt()
+    assert "선택지" in p
+
+
 # ── Task 7: persist + history compaction ────────────────────────────────────
 from sqlmodel import Session, SQLModel, create_engine, select
 from app.models import Conversation, Message
@@ -63,10 +69,23 @@ class _Resp:
         self.content, self.stop_reason = content, stop_reason
 
 
+class _FakeStream:
+    """.messages.stream() 컨텍스트매니저 모사 — text_stream(델타) + get_final_message()."""
+    def __init__(self, resp): self._resp = resp
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    @property
+    def text_stream(self):
+        for b in self._resp.content:
+            if getattr(b, "type", None) == "text":
+                yield b.text
+    def get_final_message(self): return self._resp
+
+
 class _FakeMessages:
     def __init__(self, queue): self._queue = queue
-    def create(self, **kw):  # noqa: ARG002
-        return self._queue.pop(0)
+    def stream(self, **kw):  # noqa: ARG002
+        return _FakeStream(self._queue.pop(0))
 
 
 class _FakeClient:
@@ -120,7 +139,7 @@ def test_run_chat_turn_persists_error_reply_on_failure():
     conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
 
     class _BoomMessages:
-        def create(self, **kw):  # noqa: ARG002
+        def stream(self, **kw):  # noqa: ARG002
             raise RuntimeError("LLM down")
     class _BoomClient:
         def __init__(self): self.messages = _BoomMessages()
@@ -155,3 +174,59 @@ def test_history_reconstructs_alternating_rounds():
     assert wire[2]["content"][0]["type"] == "tool_result"        # tool_result user 블록
     assert wire[3]["content"][0] == {"type": "text", "text": "AAA가 가장 저평가입니다."}  # 최종답변=tool_result 뒤 assistant
     assert "results" not in str(wire[2]["content"])              # 모델엔 compact만
+
+
+# ── P1b: 스트리밍 (stream_chat_turn) ─────────────────────────────────────────
+# 스트리밍 코어는 .messages.stream() 컨텍스트매니저를 쓴다(text_stream 델타 + get_final_message).
+# stream_chat_turn이 단일 소스이고 run_chat_turn은 이를 소진해 parts를 반환한다(_FakeClient 재사용).
+
+
+def test_stream_chat_turn_yields_ordered_events(monkeypatch):
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    monkeypatch.setattr(chat_tools, "run_tool",
+                        lambda name, inp: {"success": True, "query": "select",
+                                           "as_of": "2026-06-17", "universe_size": 5,
+                                           "results": [{"symbol": "AAA", "score": 0.8}]})
+    monkeypatch.setattr(chat_agent, "run_tool", chat_tools.run_tool, raising=False)
+    queue = [
+        _Resp([_Block(type="text", text="스크리닝할게요"),
+               _Block(type="tool_use", id="t1", name="screen",
+                      input={"score_ref": "__SELF__.pb_ratio", "top_n": 3})],
+              stop_reason="tool_use"),
+        _Resp([_Block(type="text", text="AAA가 가장 저평가입니다.")],
+              stop_reason="end_turn"),
+    ]
+    events = list(chat_agent.stream_chat_turn(s, conv.id, "저평가주 골라줘",
+                                              client=_FakeClient(queue)))
+    kinds = [k for k, _ in events]
+    assert kinds[0] == "delta"                         # 서두 텍스트가 먼저 흐른다
+    assert "tool_use" in kinds and "tool_result" in kinds
+    assert kinds[-1] == "done"
+    assert kinds.index("delta") < kinds.index("tool_use")
+    tr = next(p for k, p in events if k == "tool_result")
+    assert tr["result"]["results"][0]["symbol"] == "AAA"   # full payload 보존
+    done = next(p for k, p in events if k == "done")
+    assert any(part["type"] == "tool_result" for part in done["parts"])
+    rows = s.exec(select(Message).where(Message.conversation_id == conv.id)
+                  .order_by(Message.id)).all()
+    assert [r.role for r in rows] == ["user", "assistant"]   # 고아 없이 영속
+
+
+def test_stream_chat_turn_streams_text_deltas():
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    queue = [_Resp([_Block(type="text", text="무엇을 분석할까요?")], stop_reason="end_turn")]
+    events = list(chat_agent.stream_chat_turn(s, conv.id, "안녕", client=_FakeClient(queue)))
+    deltas = [p["text"] for k, p in events if k == "delta"]
+    assert "".join(deltas) == "무엇을 분석할까요?"
+    assert events[-1][0] == "done"
+
+
+def test_run_chat_turn_drains_stream_to_parts():
+    # run_chat_turn은 스트리밍 코어를 소진해 최종 parts를 반환한다(비스트리밍 호환).
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    queue = [_Resp([_Block(type="text", text="무엇을 분석할까요?")], stop_reason="end_turn")]
+    parts = chat_agent.run_chat_turn(s, conv.id, "안녕", client=_FakeClient(queue))
+    assert parts == [{"type": "text", "text": "무엇을 분석할까요?"}]

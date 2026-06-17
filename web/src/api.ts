@@ -101,6 +101,53 @@ export type CompileQuota = {
   admin_unlocked: boolean;
 };
 
+// 전략 연구소 챗봇 (P1b) — SSE 스트리밍 핸들러. EventSource는 GET 전용이라
+// fetch+ReadableStream으로 직접 파싱한다(POST + Authorization 필요).
+export type ChatStreamHandlers = {
+  onDelta: (text: string) => void;       // 모델 서술 토큰(점진 표시)
+  onToolUse: (p: { id: string; name: string; input: Record<string, unknown> }) => void;
+  onToolResult: (p: { tool_use_id: string; name: string; result: Record<string, unknown> }) => void;
+};
+
+async function streamChatMessage(
+  conversationId: number, message: string, h: ChatStreamHandlers,
+): Promise<void> {
+  const t = tokenStore.get();
+  const res = await fetch(`${BASE}/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(t ? { Authorization: `Bearer ${t}` } : {}),
+    },
+    body: JSON.stringify({ conversation_id: conversationId, message }),
+  });
+  if (!res.ok || !res.body) {
+    const b = await res.json().catch(() => ({}));
+    throw new Error(b.detail || `${res.status} ${res.statusText}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // SSE 프레임은 빈 줄("\n\n")로 구분 — 완성된 프레임만 처리하고 나머지는 버퍼에 남긴다.
+    let sep: number;
+    while ((sep = buf.indexOf("\n\n")) !== -1) {
+      const frame = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      const ev = /^event: (.*)$/m.exec(frame)?.[1];
+      if (!ev) continue;
+      const payload = JSON.parse(/^data: (.*)$/m.exec(frame)?.[1] ?? "{}");
+      if (ev === "delta") h.onDelta(payload.text ?? "");
+      else if (ev === "tool_use") h.onToolUse(payload);
+      else if (ev === "tool_result") h.onToolResult(payload);
+      // "done"·기타 이벤트는 무시 — 스트림 종료는 reader done으로 감지한다.
+    }
+  }
+}
+
 export const api = {
   signup: (email: string, password: string) =>
     req<{ access_token: string }>("/auth/signup", {
@@ -303,11 +350,9 @@ export const api = {
     req<{ id: number; title: string }[]>("/chat/conversations"),
   getConversation: (id: number) =>
     req<{ id: number; messages: ChatMessage[] }>(`/chat/conversations/${id}`),
-  sendChatMessage: (conversationId: number, message: string) =>
-    req<ChatMessage>("/chat/message", {
-      method: "POST",
-      body: JSON.stringify({ conversation_id: conversationId, message }),
-    }),
+  // P1b — 턴을 SSE로 스트리밍(위 streamChatMessage 재노출). 비스트리밍 /chat/message는
+  // 서버에 유지(테스트 오라클·비SSE API)하되 웹은 스트리밍만 사용한다.
+  streamChatMessage,
 };
 
 // 로컬앱 다운로드 — 플랫폼별 zip URL 조회.

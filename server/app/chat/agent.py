@@ -4,7 +4,8 @@ DB는 논리적 턴(parts: text/tool_use/tool_result, full payload)을 저장하
 포맷으로 복원할 때 tool_result는 compact 요약으로 환원한다(chat_lab_spec §5).
 
 공개 API:
-  run_chat_turn — 한 사용자 턴의 agent 루프 진입점(라우터에서 직접 호출).
+  stream_chat_turn — agent 루프를 이벤트로 흘리는 제너레이터(단일 소스, /chat/stream).
+  run_chat_turn — 위를 소진해 parts를 반환하는 비스트리밍 진입점(/chat/message).
   _persist, _history_to_wire — 헬퍼(단위 테스트·내부 직접 호출용).
 """
 from __future__ import annotations
@@ -75,10 +76,18 @@ def _block_to_wire(b) -> dict:
     return {"type": t}
 
 
-def run_chat_turn(session: Session, conversation_id: int, user_text: str,
-                  *, client=None, model: str | None = None) -> list[dict]:
-    """한 사용자 메시지에 대해 agent 루프 실행. 도구 호출·결과·서술을 DB에 영속하고
-    이번 턴 assistant parts(full payload 포함, 렌더·반환용)를 돌려준다."""
+def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
+                     *, client=None, model: str | None = None):
+    """한 사용자 메시지에 대해 agent 루프를 **스트리밍**으로 실행하는 제너레이터(단일 소스).
+
+    아래 이벤트 튜플을 발생 순서대로 yield한다:
+      ("delta", {"text": ...})              모델 서술 토큰(점진 표시)
+      ("tool_use", {"id","name","input"})   도구 호출 시작(🔧 실행 중)
+      ("tool_result", {"tool_use_id","name","result"})  도구 결과(full payload — 인라인 렌더)
+      ("done", {"parts": [...]})            턴 종료 — 영속된 assistant parts(비스트리밍 drain용)
+
+    도구 호출·결과·서술을 DB에 영속한다(run_chat_turn은 이 제너레이터를 소진해 parts를 반환).
+    """
     from ..config import settings
     if client is None:
         import anthropic
@@ -94,8 +103,15 @@ def run_chat_turn(session: Session, conversation_id: int, user_text: str,
     assistant_parts: list[dict] = []      # full payload(영속·렌더용)
     try:
         for _ in range(MAX_TOOL_ROUNDS):
-            resp = client.messages.create(model=model, max_tokens=4096, system=system,
-                                           tools=TOOL_SCHEMAS, messages=messages)
+            # .messages.stream() 컨텍스트매니저 — text_stream으로 서술 토큰을 흘리고
+            # get_final_message()로 도구블록·stop_reason이 포함된 완성 메시지를 받는다.
+            with client.messages.stream(model=model, max_tokens=4096, system=system,
+                                        tools=TOOL_SCHEMAS, messages=messages) as stream:
+                for delta in stream.text_stream:
+                    if delta:
+                        yield ("delta", {"text": delta})
+                resp = stream.get_final_message()
+
             for b in resp.content:
                 if getattr(b, "type", None) == "text":
                     assistant_parts.append({"type": "text", "text": b.text})
@@ -110,16 +126,31 @@ def run_chat_turn(session: Session, conversation_id: int, user_text: str,
                 if getattr(b, "type", None) != "tool_use":
                     continue
                 inp = dict(b.input or {})
+                yield ("tool_use", {"id": b.id, "name": b.name, "input": inp})
                 full = run_tool(b.name, inp)
                 assistant_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": inp})
                 assistant_parts.append({"type": "tool_result", "tool_use_id": b.id,
                                         "name": b.name, "result": full})
+                yield ("tool_result", {"tool_use_id": b.id, "name": b.name, "result": full})
                 tool_results.append({"type": "tool_result", "tool_use_id": b.id,
                                      "content": compact_summary(b.name, full)})
             messages.append({"role": "user", "content": tool_results})
     except Exception:   # noqa: BLE001 — 외부 LLM·도구 호출 실패(3rd-party 한계)는 대화에 오류 답변으로 표면화(고아 방지·로깅)
         _log.exception("[chat] turn failed for conversation %s", conversation_id)
-        assistant_parts.append({"type": "text",
-                                "text": "분석 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요."})
+        err = "분석 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
+        assistant_parts.append({"type": "text", "text": err})
+        yield ("delta", {"text": err})
     _persist(session, conversation_id, "assistant", assistant_parts)
-    return assistant_parts
+    yield ("done", {"parts": assistant_parts})
+
+
+def run_chat_turn(session: Session, conversation_id: int, user_text: str,
+                  *, client=None, model: str | None = None) -> list[dict]:
+    """비스트리밍 진입점 — 스트리밍 코어를 소진해 이번 턴 assistant parts(full payload)를 반환.
+    영속은 stream_chat_turn 안에서 일어난다(단일 소스)."""
+    parts: list[dict] = []
+    for kind, payload in stream_chat_turn(session, conversation_id, user_text,
+                                          client=client, model=model):
+        if kind == "done":
+            parts = payload["parts"]
+    return parts
