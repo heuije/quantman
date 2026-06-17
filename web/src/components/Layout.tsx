@@ -15,6 +15,7 @@ const NAV = [
   { to: "/industry", label: "산업 분석", icon: <Ic><rect x="3" y="3" width="8" height="12" rx="1" /><rect x="13" y="3" width="8" height="7" rx="1" /><rect x="13" y="13" width="8" height="8" rx="1" /><rect x="3" y="18" width="8" height="3" rx="1" /></Ic> },
   { to: "/overview", label: "개요", icon: <Ic><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /></Ic> },
   { to: "/lab", label: "전략 연구소", icon: <Ic><path d="M9 2h6" /><path d="M10 2v6.4L4.6 18A2 2 0 0 0 6.4 21h11.2a2 2 0 0 0 1.8-2.6L14 8.4V2" /><path d="M7.5 15h9" /></Ic> },
+  { to: "/chat", label: "전략 챗봇", icon: <Ic><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></Ic> },
   { to: "/strategies", label: "내 전략", icon: <Ic><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></Ic> },
   { to: "/portfolio", label: "포트폴리오", icon: <Ic><path d="M21 12A9 9 0 1 0 12 21" /><path d="M12 3a9 9 0 0 1 9 9h-9z" /></Ic> },
   { to: "/monitor", label: "트레이딩", icon: <Ic><path d="M3 12h4l3 8 4-16 3 8h4" /></Ic> },

@@ -14,6 +14,7 @@ import FuturesAnalytics from "./pages/FuturesAnalytics";
 import Home from "./pages/Home";
 import Portfolio from "./pages/Portfolio";
 import IndustryAnalysis from "./pages/IndustryAnalysis";
+import ChatLab from "./pages/ChatLab";
 
 export default function App() {
   const { email, ready } = useAuth();
@@ -46,6 +47,7 @@ export default function App() {
         <Route path="/industry" element={<IndustryAnalysis />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/lab" element={<IrBuilder />} />
+        <Route path="/chat" element={<ChatLab />} />
         <Route path="/strategies" element={<Strategies />} />
         <Route path="/strategies/:id" element={<StrategyDetail />} />
         <Route path="/monitor" element={<Monitor />} />

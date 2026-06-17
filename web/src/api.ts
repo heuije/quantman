@@ -1,5 +1,6 @@
 import type {
   BacktestRunSummary,
+  ChatMessage,
   CommandRow, CommandType, DeviceRow, IndicatorInfo, IrBlockSpec,
   IrStrategyDef, IrStrategyResult,
   MarketContext, NextDayPreview, PortfolioRisk,
@@ -293,6 +294,19 @@ export const api = {
   compileFeedback: (compile_id: number, ran: boolean, edited: boolean | null) =>
     req<{ ok: boolean }>("/ir/compile/feedback", {
       method: "POST", body: JSON.stringify({ compile_id, ran, edited }),
+    }),
+
+  // 전략 연구소 챗봇 (P0b) — 대화 스레드 + 메시지
+  createConversation: () =>
+    req<{ id: number; title: string }>("/chat/conversations", { method: "POST" }),
+  listConversations: () =>
+    req<{ id: number; title: string }[]>("/chat/conversations"),
+  getConversation: (id: number) =>
+    req<{ id: number; messages: ChatMessage[] }>(`/chat/conversations/${id}`),
+  sendChatMessage: (conversationId: number, message: string) =>
+    req<ChatMessage>("/chat/message", {
+      method: "POST",
+      body: JSON.stringify({ conversation_id: conversationId, message }),
     }),
 };
 

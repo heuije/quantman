@@ -23,7 +23,7 @@ from . import (calendar_cache, data_cache, kis_master_cache, krx_cache,
 from .config import settings
 from .db import call_with_disconnect_retry, create_db_and_tables, prune_old_rows
 from .routers import (admin as admin_router, auth, backtest,
-                       calendars as calendars_router, commands,
+                       calendars as calendars_router, chat as chat_router, commands,
                        dataset, ir as ir_router, ir_compile as ir_compile_router,
                        market, futures, opinions as opinions_router, portfolio,
                        preview as preview_router,
@@ -939,6 +939,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(chat_router.router)
 app.include_router(strategies.router)
 app.include_router(backtest.router)
 app.include_router(sync.router)

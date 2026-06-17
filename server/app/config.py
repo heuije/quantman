@@ -58,6 +58,9 @@ class Settings:
     # 필요하면 env로 상향: QP_NL_COMPILE_MODEL=claude-sonnet-4-6.
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     NL_COMPILE_MODEL: str = os.getenv("QP_NL_COMPILE_MODEL", "claude-haiku-4-5-20251001")
+    # 대화형 전략 연구소 챗봇 — agentic tool-use 루프(다중턴 추론·결과 논의). NL 컴파일러보다
+    # 추론 부담이 커 Sonnet 기본(env로 교체). 키는 ANTHROPIC_API_KEY 공유.
+    CHAT_MODEL: str = os.getenv("QP_CHAT_MODEL", "claude-sonnet-4-6")
 
     # NL 컴파일 일일 사용량 제한 (인당·KST 기준). LLM 호출 비용·악용 통제.
     # admin 비밀번호(아래)로 상향 한도까지 해제. 둘 다 env로 조정 가능.

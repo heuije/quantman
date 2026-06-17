@@ -2847,3 +2847,101 @@ thead th { color: var(--muted); font-weight: 600; }
 
 /* 잔여 흰 배경(전략 파라미터 hover·시즌 박스 등) */
 .st-param:hover { background: var(--border) !important; }
+
+/* ── 전략 챗봇 (P0b) ──────────────────────────────────────────────────────── */
+.chat-lab {
+  display: flex; flex-direction: column;
+  height: calc(100vh - 180px); max-width: 820px; margin: 0 auto;
+}
+.chat-title { font-size: 1.4rem; margin: 0 0 2px; }
+.chat-beta {
+  font-size: .7rem; vertical-align: middle;
+  padding: 2px 7px; border-radius: 6px;
+  background: var(--accent-soft); color: var(--accent-strong);
+  border: 1px solid var(--accent);
+}
+.chat-sub { margin: 0 0 12px; font-size: .85rem; }
+.chat-thread {
+  flex: 1; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 8px 0;
+}
+.chat-empty { text-align: center; margin: auto 0; font-size: .9rem; line-height: 1.7; }
+.chat-msg {
+  max-width: 80%; padding: 10px 14px; border-radius: 12px;
+  word-break: break-word;
+}
+.chat-msg.user {
+  align-self: flex-end;
+  background: var(--accent-soft); border: 1px solid var(--accent);
+}
+.chat-msg.assistant {
+  align-self: flex-start;
+  background: var(--panel); border: 1px solid var(--border);
+}
+.chat-text { margin: 0; white-space: pre-wrap; line-height: 1.6; font-size: 14px; }
+.chat-tool {
+  font-size: .8rem; opacity: .75; margin: 4px 0;
+  color: var(--muted);
+}
+.chat-tool.done { color: var(--accent-strong); opacity: 1; }
+.chat-error {
+  color: var(--red); font-size: .85rem;
+  padding: 6px 0; border-top: 1px solid var(--red-soft);
+}
+.chat-input-bar {
+  display: flex; gap: 8px; padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.chat-input {
+  flex: 1; resize: none;
+  font: inherit; font-size: 14px;
+  padding: 9px 12px; border: 1px solid var(--input-border);
+  border-radius: 8px; background: var(--panel); color: var(--text);
+  line-height: 1.5;
+}
+.chat-input:focus {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+  border-color: var(--accent);
+}
+.chat-input:disabled { opacity: .55; cursor: not-allowed; }
+.chat-send {
+  align-self: flex-end; flex-shrink: 0;
+  padding: 9px 18px; font-weight: 600; font-size: 14px;
+  background: var(--ink); color: #fff;
+  border: none; border-radius: 8px; cursor: pointer;
+  transition: background .12s ease;
+}
+.chat-send:hover { background: var(--accent-hover); }
+.chat-send:disabled {
+  background: var(--border); color: var(--muted); cursor: not-allowed;
+}
+
+/* ── 인라인 결과 차트 (P1a) ───────────────────────────────────────────────── */
+/* assistant 버블이 차트를 담을 때 넓이 확장 */
+.chat-msg.assistant:has(.chat-result) { max-width: 96%; }
+.chat-result { width: 100%; margin-top: 6px; }
+
+/* 백테스트 지표행 */
+.chat-result-metrics {
+  display: flex; flex-wrap: wrap; gap: 6px 16px;
+  margin-bottom: 10px;
+}
+.chat-result-stat {
+  display: flex; flex-direction: column; align-items: flex-start;
+}
+.chat-result-label {
+  font-size: .72rem; color: var(--muted); line-height: 1.2;
+}
+.chat-result-value {
+  font-size: .95rem; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.chat-result-value.pos { color: var(--up); }
+.chat-result-value.neg { color: var(--down); }
+
+/* 오류 표시 */
+.chat-result-error {
+  font-size: .82rem; color: var(--red);
+  margin-top: 4px; line-height: 1.4;
+}
+.chat-result-fallback { display: flex; flex-direction: column; gap: 2px; }

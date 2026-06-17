@@ -273,3 +273,25 @@ class OpinionVote(SQLModel, table=True):
     opinion_id: int = Field(index=True, foreign_key="stockopinion.id")
     user_id: int = Field(index=True, foreign_key="user.id")
     value: int                                 # +1 like / -1 dislike
+
+
+class Conversation(SQLModel, table=True):
+    """전략 연구소 챗봇 대화 스레드. 안전정보만(전략·분석 텍스트, 자격증명 없음)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True, foreign_key="user.id")
+    title: str = "새 대화"
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class Message(SQLModel, table=True):
+    """대화 한 턴(user|assistant). parts = text/tool_use/tool_result 블록 배열(full payload).
+
+    full 결과(차트 렌더·재현용)는 여기에 저장하고, 모델 컨텍스트로는 compact 요약만 보낸다
+    (chat_lab_spec §5 이중 표현). 단일 진실원천 = 이 parts(컴팩트는 컨텍스트 빌드시 파생).
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    conversation_id: int = Field(index=True, foreign_key="conversation.id")
+    role: str                               # "user" | "assistant"
+    parts: list = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_now)
