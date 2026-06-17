@@ -48,7 +48,24 @@ SIMULATE_TOOL = {
     },
 }
 
-TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL]
+SAVE_STRATEGY_TOOL = {
+    "name": "save_strategy",
+    "description": ("합의된 매매전략(StrategyIR)을 사용자의 전략 목록에 draft(초안)로 저장한다. "
+                    "저장만 하며 모의/실전 실행은 웹 '트레이딩(자동매매)' 메뉴에서 사용자가 직접 한다. "
+                    "사용자가 명시적으로 저장을 원하고, 앞서 simulate로 합의된 전략이 있을 때만 호출. "
+                    "ir에는 simulate에 넘긴 것과 동일한 StrategyIR 객체를 그대로 넣는다."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "전략 이름(사용자에게 보일 이름)."},
+            "ir": {"type": "object",
+                   "description": "저장할 StrategyIR — simulate에 넘긴 것과 동일 구조."},
+        },
+        "required": ["name", "ir"],
+    },
+}
+
+TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL]
 
 
 # ── IR 조립 ──────────────────────────────────────────────────────────────────
@@ -114,12 +131,36 @@ def run_tool(tool_name: str, tool_input: dict) -> dict:
     return strategy_from_spec(ir, dataset)   # valid_refs=None → 엔진이 available_refs 도출
 
 
+def save_strategy_tool(session, user_id, tool_input: dict) -> dict:
+    """합의된 IR을 draft 전략으로 저장 — side-effect 도구라 순수 run_tool과 분리(루프가 세션·소유자 주입).
+
+    name 인자를 IR.name에 주입하고 strategies.save_ir_draft로 검증·저장한다. 검증/저장 실패는
+    예외 대신 {success:False,error}로 — agent 루프가 tool_result로 모델에 피드백(고아 방지).
+    """
+    from fastapi import HTTPException
+    from ..routers.strategies import save_ir_draft
+    name = (tool_input.get("name") or "").strip()
+    ir = dict(tool_input.get("ir") or {})
+    if name:
+        ir["name"] = name      # IR.name이 전략명 — name 인자를 주입(엔진이 s.name을 씀)
+    try:
+        row = save_ir_draft(session, user_id, ir)
+    except HTTPException as e:
+        return {"success": False, "error": str(e.detail)}
+    except Exception as e:  # noqa: BLE001 — 저장 실패를 모델 피드백으로 표면화
+        return {"success": False, "error": f"전략 저장 실패: {e}"}
+    return {"success": True, "strategy_id": row.id, "name": row.name, "run_mode": "draft"}
+
+
 # ── compact 요약 ──────────────────────────────────────────────────────────────
 
 def compact_summary(tool_name: str, result: dict) -> str:
     """full 엔진 결과 → 모델 컨텍스트용 짧은 요약. 숫자는 결과에서만(지어내기 금지)."""
     if not result.get("success"):
         return f"[{tool_name} 실패] {result.get('error', '알 수 없는 오류')}"
+    if tool_name == "save_strategy":
+        return (f"[save_strategy] '{result.get('name')}' 전략을 draft로 저장(id={result.get('strategy_id')}). "
+                "모의/실전은 웹 자동매매 메뉴에서.")
     if tool_name == "screen":
         rows = result.get("results") or []
 

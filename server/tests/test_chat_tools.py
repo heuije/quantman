@@ -10,7 +10,7 @@ from app.chat.tools import assemble_ir, TOOL_SCHEMAS
 
 def test_tool_schemas_present():
     names = {t["name"] for t in TOOL_SCHEMAS}
-    assert names == {"screen", "simulate"}
+    assert names == {"screen", "simulate", "save_strategy"}
 
 
 def test_assemble_screen_makes_valid_select_ir():
@@ -101,3 +101,54 @@ def test_load_dataset_invalid_ir_returns_empty():
     # 파싱 불가 IR(필수 signal 없음) → {} 반환(엔진 검증경로로 위임), 예외 전파 안 함.
     assert chat_tools._load_dataset({}) == {}
     assert chat_tools._load_dataset({"signal": "not-a-node"}) == {}
+
+
+# ── P2: save_strategy 도구 ───────────────────────────────────────────────────
+from sqlmodel import Session, SQLModel, create_engine
+from app.models import User, Strategy
+
+# create_strategy(draft) 검증을 통과하는 유효 IR(test_strategies_ir._IR_DEF와 동형).
+_IR_DEF = {
+    "name": "연구소 모멘텀",
+    "universe": {"kind": "single", "symbols": ["005930"]},
+    "signal": {"op": "compare", "params": {"op": ">"},
+               "inputs": {"left": {"op": "data", "params": {"ref": "__SELF__.Close"}},
+                          "right": {"op": "ts_mean", "params": {"window": 20},
+                                    "inputs": {"signal": {"op": "data",
+                                                          "params": {"ref": "__SELF__.Close"}}}}}},
+    "position": {"direction": "long", "entry": {"mode": "on_signal"}},
+    "simulation": {"initial_capital": 5_000_000},
+}
+
+
+def _db():
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(eng)
+    return eng
+
+
+def test_save_strategy_in_tool_schemas():
+    assert any(t["name"] == "save_strategy" for t in TOOL_SCHEMAS)
+
+
+def test_save_strategy_tool_creates_draft():
+    with Session(_db()) as s:
+        u = User(email="x@x.com"); s.add(u); s.commit(); s.refresh(u)
+        res = chat_tools.save_strategy_tool(s, u.id, {"name": "내 전략", "ir": _IR_DEF})
+        assert res["success"] is True and res["strategy_id"]
+        row = s.get(Strategy, res["strategy_id"])
+        assert row.run_mode == "draft" and row.engine == "ir"   # 저장-only 스코프=draft
+        assert row.name == "내 전략" and row.user_id == u.id      # name 인자가 IR.name으로 주입
+
+
+def test_save_strategy_tool_invalid_ir_returns_error():
+    with Session(_db()) as s:
+        u = User(email="y@y.com"); s.add(u); s.commit(); s.refresh(u)
+        res = chat_tools.save_strategy_tool(s, u.id, {"name": "깨진", "ir": {"signal": "not-a-node"}})
+        assert res["success"] is False and "error" in res       # 예외 대신 모델 피드백용 error
+
+
+def test_compact_save_strategy():
+    out = compact_summary("save_strategy",
+                          {"success": True, "strategy_id": 7, "name": "내 전략", "run_mode": "draft"})
+    assert "내 전략" in out and "7" in out

@@ -52,6 +52,23 @@ def _validate(engine: str, definition: dict) -> tuple[str, dict]:
     return s.name, s.model_dump()
 
 
+def save_ir_draft(session: Session, user_id: int, definition: dict) -> Strategy:
+    """대화로 합의된 IR을 draft(초안) 전략으로 저장 — 챗봇 save_strategy 도구의 진입점.
+
+    create_strategy의 draft 경로와 동일한 검증(_validate: StrategyIR 스키마 + 논리 정합성)을
+    거쳐 Strategy(run_mode='draft') + 초기 버전(v1)을 만든다. 모의/실전 승격은 사용자가 웹
+    자동매매에서 직접(거기서 _assert_live_tradable 게이트) — 저장-only 스코프. 잘못된 IR은
+    _validate가 422를 던진다(호출자가 처리)."""
+    name, norm = _validate("ir", definition)
+    row = Strategy(user_id=user_id, name=name, run_mode="draft",
+                   engine="ir", definition=norm)
+    session.add(row); session.commit(); session.refresh(row)
+    session.add(StrategyVersion(strategy_id=row.id, version_no=1, name=row.name,
+                                definition=row.definition, created_reason="initial"))
+    session.commit()
+    return row
+
+
 # M1a: 선물 라이브 승격 개방 — KOSPI200만(사용자 결정). 환경변수 게이트(기본 OFF)로,
 # M8 국내 라운드트립 라이브 검증 통과 후 켠다(미검증 라이브 경로 개방 방지 — 원칙4).
 # 켜기 전엔 선물이 tradable에 없어 게이트 ②/③에서 차단 = 현재 동작 보존(휴면).

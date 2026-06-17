@@ -2,6 +2,7 @@
  * ChatResultView — tool_result 인라인 차트 렌더러 (P1a)
  *
  * 라우팅:
+ *   save_strategy (r.strategy_id)  → 저장 완료 카드 + 내 전략 링크 (P2)
  *   select  (r.query === "select") → RankedListChart
  *   simulate (r.equity?.length)    → 지표행 + EquityChart
  *   fallback                       → 칩 + 오류 메시지(있을 때)
@@ -10,6 +11,7 @@
  * 최소형으로 구현한다. ResultPanel / IrBuilder는 수정하지 않는다.
  */
 
+import { Link } from "react-router-dom";
 import EquityChart from "./EquityChart";
 import { RankedListChart } from "./ResultCharts";
 import type { IrStrategyResult } from "../types";
@@ -35,6 +37,20 @@ interface Props {
 
 export default function ChatResultView({ result }: Props) {
   const r = result as unknown as IrStrategyResult;
+
+  // ── save_strategy: 저장 완료 카드 ──────────────────────────────────────────
+  const savedId = (result as { strategy_id?: number }).strategy_id;
+  if (r.success !== false && typeof savedId === "number") {
+    const name = (result as { name?: string }).name ?? "전략";
+    return (
+      <div className="chat-result">
+        <div className="chat-tool done">✅ '{name}' 전략을 초안으로 저장했어요</div>
+        <div className="muted" style={{ marginTop: 6, fontSize: "0.85em" }}>
+          모의·실전 실행은 <Link to={`/strategies/${savedId}`}>내 전략</Link>에서 진행하세요.
+        </div>
+      </div>
+    );
+  }
 
   // ── select: 랭킹 선별 ──────────────────────────────────────────────────────
   if (r.query === "select") {

@@ -14,8 +14,8 @@ import logging
 
 from sqlmodel import Session, select
 
-from ..models import Message
-from .tools import TOOL_SCHEMAS, compact_summary, run_tool
+from ..models import Conversation, Message
+from .tools import TOOL_SCHEMAS, compact_summary, run_tool, save_strategy_tool
 from .prompt import chat_system_prompt
 
 _log = logging.getLogger("app.chat.agent")
@@ -127,7 +127,12 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                     continue
                 inp = dict(b.input or {})
                 yield ("tool_use", {"id": b.id, "name": b.name, "input": inp})
-                full = run_tool(b.name, inp)
+                if b.name == "save_strategy":
+                    # 저장은 side-effect — 대화 소유자(user_id) 명의로. Conversation에서 도출.
+                    conv = session.get(Conversation, conversation_id)
+                    full = save_strategy_tool(session, conv.user_id if conv else None, inp)
+                else:
+                    full = run_tool(b.name, inp)
                 assistant_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": inp})
                 assistant_parts.append({"type": "tool_result", "tool_use_id": b.id,
                                         "name": b.name, "result": full})

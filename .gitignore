@@ -60,6 +60,8 @@ docs_cache/
 
 # 웹
 node_modules/
+# 이 repo는 package-lock.json(npm)을 추적 — bun install이 만드는 bun.lock은 파생물이라 미추적.
+web/bun.lock
 
 # 로그
 *.log

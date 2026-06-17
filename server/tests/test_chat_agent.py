@@ -230,3 +230,57 @@ def test_run_chat_turn_drains_stream_to_parts():
     queue = [_Resp([_Block(type="text", text="무엇을 분석할까요?")], stop_reason="end_turn")]
     parts = chat_agent.run_chat_turn(s, conv.id, "안녕", client=_FakeClient(queue))
     assert parts == [{"type": "text", "text": "무엇을 분석할까요?"}]
+
+
+# ── P2: save_strategy 디스패치 + 다중도구 ────────────────────────────────────
+_IR_DEF_SAVE = {
+    "name": "연구소 모멘텀",
+    "universe": {"kind": "single", "symbols": ["005930"]},
+    "signal": {"op": "compare", "params": {"op": ">"},
+               "inputs": {"left": {"op": "data", "params": {"ref": "__SELF__.Close"}},
+                          "right": {"op": "ts_mean", "params": {"window": 20},
+                                    "inputs": {"signal": {"op": "data",
+                                                          "params": {"ref": "__SELF__.Close"}}}}}},
+    "position": {"direction": "long", "entry": {"mode": "on_signal"}},
+    "simulation": {"initial_capital": 5_000_000},
+}
+
+
+def test_stream_dispatches_save_strategy():
+    # save_strategy는 순수 도구가 아니라 side-effect(DB 저장) — 루프가 대화 소유자(user_id)로
+    # 호출해 draft 전략을 만든다. 엔진/네트워크 없이 실 검증·저장 경로를 탄다.
+    s = _mem_session()
+    from app.models import User, Strategy
+    u = User(email="z@z.com"); s.add(u); s.commit(); s.refresh(u)
+    conv = Conversation(user_id=u.id); s.add(conv); s.commit(); s.refresh(conv)
+    queue = [
+        _Resp([_Block(type="text", text="저장할게요"),
+               _Block(type="tool_use", id="t1", name="save_strategy",
+                      input={"name": "내 전략", "ir": _IR_DEF_SAVE})],
+              stop_reason="tool_use"),
+        _Resp([_Block(type="text", text="저장 완료!")], stop_reason="end_turn"),
+    ]
+    parts = chat_agent.run_chat_turn(s, conv.id, "이 전략 저장해줘", client=_FakeClient(queue))
+    tr = next(p for p in parts if p["type"] == "tool_result")
+    assert tr["result"]["success"] is True
+    row = s.get(Strategy, tr["result"]["strategy_id"])
+    assert row.run_mode == "draft" and row.user_id == u.id      # 소유자·draft 저장
+
+
+def test_stream_handles_multiple_tools_one_response(monkeypatch):
+    # 한 응답에 도구 2개(시나리오 A vs B) → 둘 다 실행되어 tool_result 2개(기 지원·회귀 잠금).
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    monkeypatch.setattr(chat_agent, "run_tool",
+                        lambda name, inp: {"success": True, "query": "simulate",
+                                           "metrics": {"cagr": 0.1}}, raising=False)
+    queue = [
+        _Resp([_Block(type="text", text="A·B 비교할게요"),
+               _Block(type="tool_use", id="a", name="simulate", input={"strategy": {"x": 1}}),
+               _Block(type="tool_use", id="b", name="simulate", input={"strategy": {"x": 2}})],
+              stop_reason="tool_use"),
+        _Resp([_Block(type="text", text="A가 낫습니다.")], stop_reason="end_turn"),
+    ]
+    parts = chat_agent.run_chat_turn(s, conv.id, "A vs B 비교", client=_FakeClient(queue))
+    assert len([p for p in parts if p["type"] == "tool_result"]) == 2
+    assert len([p for p in parts if p["type"] == "tool_use"]) == 2
