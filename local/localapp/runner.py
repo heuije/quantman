@@ -23,7 +23,7 @@ from .broker import Broker
 from .config import PENDING_PATH
 from .state_store import save_json
 from .logging_setup import setup_logging
-from .secrets_store import load_kis
+from .secrets_store import load_kis, get_active_broker
 from .sync_client import (pull_krx_status, pull_preview, pull_risk_limits,
                             pull_strategies, push_snapshot)
 from .trader import Trader
@@ -140,7 +140,14 @@ def _wait_for_order_ws() -> None:
     남기고 진행 — REST 폴링으로 fallback (데이터 누락 없음, push 지연만).
 
     HTS ID 미설정 사용자는 체결통보 WebSocket 자체가 disabled이므로 무동작.
+
+    LS 브로커 활성 시: KIS 체결통보 WS가 없으므로 즉시 반환(LS WS는 Phase 3 후속 계획).
+    REST 폴링이 체결 인지 fallback이므로 데이터 누락 없음.
     """
+    # (b) KIS 전용: LS 활성 시 KIS WS 경로는 완전 무관 — 즉시 반환.
+    if get_active_broker() != "kis":
+        return
+
     kis = load_kis() or {}
     if not kis.get("hts_id"):
         return  # 체결통보 WebSocket disabled — 확인 불필요

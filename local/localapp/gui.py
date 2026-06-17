@@ -770,7 +770,7 @@ class SettingsApp:
         """
         was_collapsed = self.setup_collapsed
         self.setup_collapsed = not self.setup_collapsed
-        if was_collapsed and secrets_store.load_kis():
+        if was_collapsed and secrets_store.active_cred_ok():
             self._wizard_jump_to_input()
         self.refresh_status()
 
@@ -794,9 +794,7 @@ class SettingsApp:
         running = bool(self.scheduler and self.scheduler.running)
         ks = killswitch.load()
         ks_active = bool(ks.get("active"))
-        # LS 브로커 선택 시 자격증명 okness 계산
-        _broker = secrets_store.get_active_broker()
-        broker_cred_ok = bool(secrets_store.load_ls()) if _broker == "ls" else bool(kis)
+        broker_cred_ok = secrets_store.active_cred_ok()
 
         # 자동매매 timeline 패널 — scheduler 가동 중 + 일반(normal) 모드에서만 표시.
         # 자격증명·페어링 편집(setup_collapsed=False)에선 숨겨 wizard에 세로 공간을 내준다
@@ -821,8 +819,7 @@ class SettingsApp:
         elif not broker_cred_ok or not dev:
             missing = []
             if not broker_cred_ok:
-                cred_label = "LS증권 자격증명" if _broker == "ls" else "KIS 자격증명"
-                missing.append(cred_label)
+                missing.append(secrets_store.active_cred_label())
             if not dev:
                 missing.append("기기 페어링")
             self._set_hero("설정 미완료",
@@ -904,8 +901,8 @@ class SettingsApp:
         # 신규 섹션 — 각 메서드가 자체 try/except로 실패해도 refresh를 안 깬다.
         self._refresh_active_accounts()   # 로컬 자격증명 (동기·즉시)
         self._refresh_debug()             # 로컬 health/version (동기·즉시)
-        if kis:
-            self._refresh_balance()       # KIS 잔고 (백그라운드)
+        if broker_cred_ok:
+            self._refresh_balance()       # 브로커 잔고 (백그라운드)
         if dev:
             self._refresh_active_strategies()  # 서버 전략 목록 (백그라운드)
             self._refresh_upcoming()           # 서버 preview 후보 (백그라운드)
@@ -1218,8 +1215,8 @@ class SettingsApp:
         log.info("명령 수신: %s %s", t, params)
 
         if t == "RUN_CYCLE_NOW":
-            if secrets_store.load_kis() is None:
-                return {"error": "KIS 자격증명 없음 — setup 후 다시 시도하세요"}
+            if not secrets_store.active_cred_ok():
+                return {"error": f"{secrets_store.active_cred_label()} 없음 — setup 후 다시 시도하세요"}
             from .runner import run_cycle
             payload = run_cycle(trigger="web")
             # GUI는 다음 자동 갱신에서 반영
@@ -1246,8 +1243,8 @@ class SettingsApp:
             return {"paused": False}
 
         if t == "LIQUIDATE_ALL":
-            if secrets_store.load_kis() is None:
-                return {"error": "KIS 자격증명 없음 — setup 후 다시 시도하세요"}
+            if not secrets_store.active_cred_ok():
+                return {"error": f"{secrets_store.active_cred_label()} 없음 — setup 후 다시 시도하세요"}
             killswitch.activate("웹 명령: LIQUIDATE_ALL")
             # 비상 청산은 dataset 다운로드·preview·전략파싱에 의존하는 run_cycle이 아니라
             # 격리된 경로로 — 브로커 실보유를 즉시 매도. (run_cycle 재사용 시 dataset
@@ -1266,10 +1263,10 @@ class SettingsApp:
             qty = int(params.get("qty", 0))
             if not order_no:
                 return {"error": "order_no 누락"}
-            if secrets_store.load_kis() is None:
-                return {"error": "KIS 자격증명 없음"}
-            from .kis_broker import KisBroker
-            r = KisBroker().cancel(order_no, symbol, qty)
+            if not secrets_store.active_cred_ok():
+                return {"error": f"{secrets_store.active_cred_label()} 없음"}
+            from .runner import make_broker
+            r = make_broker().cancel(order_no, symbol, qty)
             self._push_state_async()          # 취소 후 미체결 목록 웹 실시간 반영
             return r
 
@@ -1281,8 +1278,8 @@ class SettingsApp:
 
         if t == "RECONCILE_NOW":
             # Phase 40 — 수동 reconcile 트리거 (HTS 수동 매매 직후 등)
-            if secrets_store.load_kis() is None:
-                return {"error": "KIS 자격증명 없음 — setup 후 다시 시도하세요"}
+            if not secrets_store.active_cred_ok():
+                return {"error": f"{secrets_store.active_cred_label()} 없음 — setup 후 다시 시도하세요"}
             from .broker import Broker  # type 힌트용
             from .runner import make_broker
             from .trader import Trader
@@ -1365,6 +1362,7 @@ class SettingsApp:
         """브로커 라디오 변경 → 저장 + 화면 전환."""
         choice = self.broker_choice.get()
         secrets_store.set_active_broker(choice)
+        self._balance_broker = None    # 전환 시 잔고 브로커 캐시 무효화(stale 브로커 재사용 방지)
         # 브로커 전환 시 setup_collapsed 해제 → 자격증명 폼 노출
         self.setup_collapsed = False
         # _setup_mode 강제 무효화 — 같은 mode여도 pack 레이아웃 재구성 필요
@@ -2019,9 +2017,11 @@ class SettingsApp:
         기존 자격증명 있으면 모드(virtual)도 그대로 유지. 사용자는 키 재발급
         받았을 때 Step 3만 다시 입력하면 됨.
         """
-        kis = secrets_store.load_kis()
-        if kis:
-            self.wizard_virtual = bool(kis.get("virtual", True))
+        # 활성 브로커의 자격증명에서 virtual 모드를 읽어 wizard에 미리 채움.
+        _b = secrets_store.get_active_broker()
+        existing = secrets_store.load_ls() if _b == "ls" else secrets_store.load_kis()
+        if existing:
+            self.wizard_virtual = bool(existing.get("virtual", True))
             self._wizard_virtual_var.set("virtual" if self.wizard_virtual else "real")
             mode = "모의투자" if self.wizard_virtual else "실전투자"
             self._wizard_step3_title.configure(text=f"3 / 3   ·   자격증명 입력 ({mode})")
@@ -2103,11 +2103,11 @@ class SettingsApp:
         self.refresh_status()
 
     def _run_once(self):
-        if secrets_store.load_kis() is None:
-            messagebox.showwarning(
-                "자격증명 필요",
-                "KIS 자격증명을 먼저 등록하세요. (App Key/Secret/계좌번호)\n"
-                "KIS 모의투자 가입은 무료이며 즉시 발급됩니다.")
+        if not secrets_store.active_cred_ok():
+            msg = f"{secrets_store.active_cred_label()}을 먼저 등록하세요. (App Key/Secret/계좌번호)"
+            if secrets_store.get_active_broker() == "kis":
+                msg += "\nKIS 모의투자 가입은 무료이며 즉시 발급됩니다."
+            messagebox.showwarning("자격증명 필요", msg)
             return
         self.btn_cycle.config(state="disabled")
         self.cycle_msg.config(text="실행 중... (시세 수집에 시간이 걸릴 수 있습니다)")

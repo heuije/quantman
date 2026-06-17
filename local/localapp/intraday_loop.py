@@ -23,7 +23,7 @@ from .intraday_stop import IntradayStopManager
 from .kis_order_websocket import KisOrderWebSocket
 from .kis_websocket import KisWebSocket
 from .runner import make_broker
-from .secrets_store import load_kis
+from .secrets_store import load_kis, get_active_broker
 from .sync_client import pull_risk_limits, push_snapshot
 from .trader import Trader
 
@@ -454,23 +454,29 @@ def start(market: str = "KRX") -> dict:
         # pending_orders 갱신 안 되던 결함 fix. intraday_loop은 한 시장씩 가동 (KRX
         # 09:00~15:30 vs US 22:30~05:00 — 시간 겹치지 않음)이라 한 인스턴스로 충분.
         order_ws = None
-        kis_creds = load_kis() or {}
-        hts_id = kis_creds.get("hts_id", "")
-        if hts_id:
-            try:
-                order_ws = KisOrderWebSocket(
-                    broker, hts_id,
-                    on_exec=lambda evt: _on_exec_event(trader, broker, evt),
-                    market=market)
-                order_ws.start()
-                log.info("[%s] 체결 통보 WebSocket 시작 (tr=%s, HTS ID=%s)",
-                          market, order_ws._tr_id, hts_id)
-            except Exception as e:
-                log.warning("[%s] 체결 통보 WebSocket 시작 실패: %s", market, e)
-                order_ws = None
+        # (b) KIS 전용: 체결통보 WebSocket은 KIS만 — 비KIS(LS) 활성 시 skip. LS WS는
+        # Phase 3 후속이고 REST 폴링이 체결 인지 fallback. runner._wait_for_order_ws와 동일 게이트.
+        if get_active_broker() != "kis":
+            log.info("[%s] 비KIS 브로커 활성 — KIS 체결통보 WebSocket skip (REST 폴링 fallback)",
+                      market)
         else:
-            log.info("HTS ID 미설정 — 체결 통보 WebSocket skip "
-                      "(setup으로 hts_id 등록 시 활성)")
+            kis_creds = load_kis() or {}
+            hts_id = kis_creds.get("hts_id", "")
+            if hts_id:
+                try:
+                    order_ws = KisOrderWebSocket(
+                        broker, hts_id,
+                        on_exec=lambda evt: _on_exec_event(trader, broker, evt),
+                        market=market)
+                    order_ws.start()
+                    log.info("[%s] 체결 통보 WebSocket 시작 (tr=%s, HTS ID=%s)",
+                              market, order_ws._tr_id, hts_id)
+                except Exception as e:
+                    log.warning("[%s] 체결 통보 WebSocket 시작 실패: %s", market, e)
+                    order_ws = None
+            else:
+                log.info("HTS ID 미설정 — 체결 통보 WebSocket skip "
+                          "(setup으로 hts_id 등록 시 활성)")
 
         # 매도 발주 시 push hook
         original_submit = trader._submit_sell

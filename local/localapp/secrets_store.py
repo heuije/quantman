@@ -126,6 +126,19 @@ def get_active_broker() -> str:
     return keyring.get_password(KEYRING_SERVICE, _BROKER_CHOICE) or "kis"
 
 
+def active_cred_ok() -> bool:
+    """현재 활성 브로커의 자격증명이 등록돼 있는지. 단일 브로커 모델의 'broker ready' SSOT.
+
+    active_broker=="kis"면 bool(load_kis())로 환원돼 기존 KIS 동작과 동일(불변식).
+    active_broker=="ls"면 bool(load_ls())로 확인한다."""
+    return bool(load_ls()) if get_active_broker() == "ls" else bool(load_kis())
+
+
+def active_cred_label() -> str:
+    """활성 브로커 자격증명의 UI 표시 라벨 — KIS/LS 문구 단일 출처(SSOT)."""
+    return "LS증권 자격증명" if get_active_broker() == "ls" else "KIS 자격증명"
+
+
 def clear() -> None:
     global _cached_device_token
     _cached_device_token = None
