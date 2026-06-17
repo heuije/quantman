@@ -677,7 +677,7 @@ git commit -m "feat(local): setup wizard 브로커 선택(KIS/LS) + LS 자격증
 
 ## 후속 계획 (별도 plan — 이번 범위 밖)
 
-- **Phase 3 — LS WebSocket**: 실시간 시세 + 체결통보(멱등 ingestion). KIS `kis_websocket.py`/`kis_order_websocket.py` 대칭.
+- **Phase 3 — LS WebSocket**: 실시간 시세 + 체결통보(멱등 ingestion). KIS `kis_websocket.py`/`kis_order_websocket.py` 대칭. ⚠ **현재 LsBroker는 `get_approval_key()`·`ws_url` 미구현** → `KisWebSocket.start()`가 예외→REST 폴링 fallback(intraday_loop try/except). 즉 **LS는 Phase 3 전까지 시세 WS·체결통보 WS 둘 다 없이 폴링-only 모드로 동작**(손절/익절은 REST 폴링으로 작동하되 실시간성 저하). Phase 3은 **시세 WS + 체결통보 WS 양쪽** LsWebSocket 구현 필요(B7 게이트가 KIS WS만 skip하므로 LS WS 추가 시 게이트도 broker별로 갱신).
 - **Phase 4 — 자산군 확장**: 국내선물 → 해외주식 → 해외선물. 각자 별도 plan(TR 매핑·통화/FX·종가청산·`LsFuturesBroker`+`BrokerRouter` LS판·KIS 동일함정 점검 = LS 해외선물 모의 지원 여부). 해외주식 단계에서 `buy_resv_limit`의 NotImplementedError 해제.
 
 각 후속 plan은 해당 단계 착수 시 writing-plans로 별도 작성(이 문서는 국내주식까지).
