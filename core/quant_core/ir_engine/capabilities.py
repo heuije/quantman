@@ -192,9 +192,17 @@ def capability_spec() -> dict:
                         "일 함수면 '시장 국면별'(label=bucket(임의 신호) — 예: S&P가 20일선 위/아래)·"
                         "'요일·월별'(label=calendar)·'점수 구간별'(label=bucket). 섹터×국면 조합도 가능. "
                         "label은 기존 블록(bucket·calendar·attribute + 임의 신호 조립)으로 자유 구성. label 필수."},
-            {"value": "time_fold", "does": "1회 실행 후 수익을 시간순 폴드(folds)로 나눠 구간별 성과 일관성 확인(재학습 없음)",
+            {"value": "time_fold", "does": "1회 실행 후 수익을 시간순 폴드로 나눠 구간별 성과 일관성 확인(재학습 없음)",
              "use_for": "'시간이 지나도 성과가 일관적인가' 강건성 점검(OOS). reduction=consistency와 함께. "
-                        "folds로 분할 수(기본 4), split_dates로 명시 경계도 가능."},
+                        "**'연도별/연간/매년'은 split_period='year'**(달력 연 단위, 키=2015·2016…). "
+                        "folds는 시간순 등분 수(기본 4)·split_dates는 명시 경계."},
+        ],
+        # 달력 주기 분할 — '연도별' 등을 folds 추측 없이 엔진이 실데이터 날짜로 그룹. split_period.
+        "study_split_period": [
+            {"value": "year", "does": "수익을 달력 연 단위로 그룹(키='2015'·'2016'…)",
+             "use_for": "'연도별/연간/매년 성과'. folds 추측(예: 252)하지 말고 이걸 쓴다 — 엔진이 실데이터 연도로 분할."},
+            {"value": "quarter", "does": "달력 분기 단위 그룹(키='2015Q1'…)", "use_for": "'분기별 성과'."},
+            {"value": "month", "does": "달력 월 단위 그룹(키='2015-01'…)", "use_for": "'월별 성과'."},
         ],
         "study_reduction": [
             {"value": "enumerate", "does": "축의 모든 점을 그대로 나열(각 셀의 성과)"},

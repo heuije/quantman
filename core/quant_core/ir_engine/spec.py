@@ -190,6 +190,10 @@ class Study(BaseModel):
     label: Optional[Node] = None
     folds: int = 4
     split_dates: list[str] = Field(default_factory=list)
+    # 달력 주기 그룹(time_fold) — 엔진이 실데이터 날짜(index)로 분할. 컴파일러는 "전체기간"의 실제
+    # 연도 범위를 모르므로(데이터는 런타임 로드) folds를 추측할 수 없다 → "연도별"의 정확 해법.
+    # 설정 시 folds·split_dates보다 우선. 버킷 키=주기 라벨("2015"·"2015Q1"·"2015-01").
+    split_period: Optional[Literal["year", "quarter", "month"]] = None
     target_node: Optional[Node] = None
     relation_kind: Literal["ic", "regression"] = "ic"
     factors: list[Node] = Field(default_factory=list)   # relation_kind=regression 설명변수(다중)

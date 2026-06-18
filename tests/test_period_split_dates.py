@@ -61,6 +61,22 @@ def test_default_oos_unchanged():
     assert set(res["buckets"].keys()) == {"인샘플", "아웃샘플"}
 
 
+def test_split_period_year_groups_by_calendar_year():
+    """'연도별' = 달력 연 단위 그룹 → 버킷 키가 연도(2021·2022·2023). 엔진이 실데이터 index로 분할
+    (컴파일러가 전체기간 연도범위를 몰라 folds 추측 불가했던 라이브 결함='연도별'→folds=252의 근본해법)."""
+    res = strategy_from_spec(_spec({"split_period": "year"}), _ds())
+    assert res["success"], res
+    assert res["axis"] == "period_split"
+    assert set(res["buckets"].keys()) == {"2021", "2022", "2023"}   # 구간N 아닌 연도 라벨
+
+
+def test_split_period_overrides_folds():
+    """split_period 설정 시 folds(등분)는 무시 — 연 단위가 우선(252 폴드 오남용 방지)."""
+    res = strategy_from_spec(_spec({"split_period": "year", "folds": 252}), _ds())
+    assert res["success"], res
+    assert set(res["buckets"].keys()) == {"2021", "2022", "2023"}   # 252 등분 아님
+
+
 def test_split_with_sweep_rejected():
     """기간분할 × 펼침 동시 금지 — split_dates + label(조건 분할)은 거부."""
     spec = _spec({"split_dates": ["2022-01-01"],

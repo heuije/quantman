@@ -104,20 +104,24 @@ function SweepBuckets({ result }: { result: IrStrategyResult }) {
   const buckets = result.buckets!;
   const rows = Object.entries(buckets);
   const pairwise = result.compare?.pairwise ?? {};
-  const title = axis === "parameter" ? "파라미터"
-    : axis === "asset" ? "종목별"
-    : axis === "period_split" ? "기간분할" : "국면별";
+  // 축 종류별 라벨 — 기간분할은 키 형태로 연/분기/월 판별(엔진 split_period 결과). 표 머리·부제 공용.
+  const colLabel = axis === "parameter" ? "파라미터"
+    : axis === "asset" ? "종목"
+    : axis === "condition" ? "국면"
+    : rows.every(([k]) => /^\d{4}$/.test(k)) ? "연도"
+    : rows.every(([k]) => /^\d{4}Q\d$/.test(k)) ? "분기"
+    : rows.every(([k]) => /^\d{4}-\d{2}$/.test(k)) ? "월" : "기간";
   return (
     <div className="chat-result">
       <div className="muted" style={{ fontSize: "0.8em", marginBottom: 4 }}>
-        펼침 결과 — {title} (백테스트 손익)</div>
+        {colLabel}별 성과 (백테스트 손익)</div>
       {result.warnings?.length ? (
         <div className="warn-banner">⚠ {result.warnings.map((w) => w.message).join(" · ")}</div>
       ) : null}
       <SweepChart axis={axis} buckets={buckets} axes={result.axes} />
       <div style={{ overflowX: "auto" }}>
         <table className="sweep-table">
-          <thead><tr><th>구분</th><th>표본</th><th>누적(%)</th><th>CAGR(%)</th>
+          <thead><tr><th>{colLabel}</th><th>표본</th><th>누적(%)</th><th>CAGR(%)</th>
             <th>MDD(%)</th><th>샤프</th><th>소르티노</th><th>승률(%)</th><th>손익비</th></tr></thead>
           <tbody>
             {rows.map(([k, b]) => (

@@ -96,6 +96,15 @@ export function SweepChart({ axis, buckets, axes }: {
   const entries = Object.entries(buckets).filter(([, b]) => !b.error);
   if (!entries.length) return null;
 
+  // 가로축 의미(제목) — 축 종류별 커스터마이즈. 파라미터·종목·국면은 엔진 키가 의미를 담고,
+  // 기간분할은 키 형태(2015 / 2015Q1 / 2015-01)로 주기를 판별해 연도/분기/월로 명명.
+  const xTitle = axis === "parameter" ? "파라미터"
+    : axis === "asset" ? "종목"
+    : axis === "condition" ? "국면"
+    : entries.every(([k]) => /^\d{4}$/.test(k)) ? "연도"
+    : entries.every(([k]) => /^\d{4}Q\d$/.test(k)) ? "분기"
+    : entries.every(([k]) => /^\d{4}-\d{2}$/.test(k)) ? "월" : "기간";
+
   // 파라미터 단일축이고 키가 모두 수치면 라인(민감도 곡선), 아니면 막대(범주 비교).
   const numericX = axis === "parameter" && (axes?.length ?? 1) <= 1
     && entries.every(([k]) => !Number.isNaN(num(k)));
@@ -103,11 +112,17 @@ export function SweepChart({ axis, buckets, axes }: {
     label: k, x: numericX ? num(k) : k, value: (b[m.key] as number) ?? null, n: b.n,
   }));
   if (numericX) (data as { x: number }[]).sort((a, z) => a.x - z.x);
+  const many = data.length > 24;   // 버킷 과다 시 x라벨 자동 솎기(252개 뭉개짐 방지)
 
   const Tip = tip([[m.label, "value"], ["표본", "n"]]);
+  const yLabel = { value: m.label, angle: -90, position: "insideLeft" as const,
+    style: { fontSize: 11, fill: C.muted, textAnchor: "middle" as const } };
+  const xLabel = { value: xTitle, position: "insideBottom" as const, offset: -2,
+    fontSize: 11, fill: C.muted };
   return (
-    <Box title="시각화" sub={numericX ? "지표를 바꿔 민감도 곡선의 형태를 보세요 (평평=robust)"
-      : "지표를 바꿔 구간별로 비교하세요"}>
+    <Box title="시각화" sub={numericX
+      ? `${xTitle}별 ${m.label} 민감도 — 지표 탭 전환 (평평=robust)`
+      : `${xTitle}별 ${m.label} — 지표 탭으로 비교`}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
         {SWEEP_METRICS.map((mm, i) => (
           <button key={mm.key} type="button" onClick={() => setMi(i)}
@@ -118,25 +133,25 @@ export function SweepChart({ axis, buckets, axes }: {
             }}>{mm.label}</button>
         ))}
       </div>
-      <ResponsiveContainer width="100%" height={260}>
+      <ResponsiveContainer width="100%" height={272}>
         {numericX ? (
-          <LineChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
+          <LineChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
             <CartesianGrid stroke={C.grid} />
             <XAxis dataKey="x" type="number" domain={["dataMin", "dataMax"]}
-              tick={{ fontSize: 11 }} />
-            <YAxis tick={{ fontSize: 11 }} width={48} />
+              tick={{ fontSize: 11 }} height={40} label={xLabel} />
+            <YAxis tick={{ fontSize: 11 }} width={54} label={yLabel} />
             <Tooltip content={<Tip />} />
             <ReferenceLine y={0} stroke={C.muted} strokeDasharray="3 3" />
             <Line type="monotone" dataKey="value" stroke={C.accent} strokeWidth={2}
               dot={{ r: 2 }} isAnimationActive={false} />
           </LineChart>
         ) : (
-          <BarChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
+          <BarChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
             <CartesianGrid stroke={C.grid} vertical={false} />
-            <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={0}
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={many ? "preserveStartEnd" : 0}
               angle={data.length > 6 ? -30 : 0} textAnchor={data.length > 6 ? "end" : "middle"}
-              height={data.length > 6 ? 60 : 30} />
-            <YAxis tick={{ fontSize: 11 }} width={48} />
+              height={data.length > 6 ? 58 : 34} label={xLabel} />
+            <YAxis tick={{ fontSize: 11 }} width={54} label={yLabel} />
             <Tooltip content={<Tip />} cursor={{ fill: C.accent + "14" }} />
             <ReferenceLine y={0} stroke={C.muted} strokeDasharray="3 3" />
             <Bar dataKey="value" isAnimationActive={false}>
