@@ -16,7 +16,8 @@ import time
 from sqlmodel import Session, select
 
 from ..models import ChatTurnMetric, Conversation, Message
-from .tools import TOOL_SCHEMAS, compact_summary, run_tool, save_strategy_tool
+from .tools import (TOOL_SCHEMAS, compact_summary, run_simulate, run_tool,
+                    save_strategy_tool)
 from .prompt import chat_system_prompt
 
 _log = logging.getLogger("app.chat.agent")
@@ -168,6 +169,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
     t0 = time.perf_counter()
     acc = {"in": 0, "out": 0, "cr": 0, "cw": 0, "rounds": 0, "tools": [], "stop": None}
     ttft_ms = None
+    completed = False
     ok = True
     try:
         for _ in range(MAX_TOOL_ROUNDS):
@@ -191,6 +193,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                              "content": [_block_to_wire(b) for b in resp.content]})
 
             if resp.stop_reason != "tool_use":
+                completed = True
                 break
 
             tool_results: list[dict] = []
@@ -200,9 +203,13 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                 inp = dict(b.input or {})
                 acc["tools"].append(b.name)
                 yield ("tool_use", {"id": b.id, "name": b.name, "input": inp})
-                if b.name == "save_strategy":
+                if b.name in ("simulate", "save_strategy"):
                     conv = session.get(Conversation, conversation_id)
-                    full = save_strategy_tool(session, conv.user_id if conv else None, inp)
+                    uid = conv.user_id if conv else None
+                    if b.name == "simulate":
+                        full = run_simulate(session, uid, inp)
+                    else:
+                        full = save_strategy_tool(session, uid, conversation_id, inp)
                 else:
                     full = run_tool(b.name, inp)
                 assistant_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": inp})
@@ -218,6 +225,12 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
         err = "분석 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
         assistant_parts.append({"type": "text", "text": err})
         yield ("delta", {"text": err})
+    if ok and not completed:
+        # 라운드 상한을 도구호출로 소진 — 최종 답변 없이 끝나는 무응답 방지(graceful).
+        # 위임 후 simulate가 1라운드로 성공해 이 경로는 드묾(방어선·추가 LLM콜 0).
+        msg = "요청을 완료하지 못했어요(분석이 길어졌습니다). 조금 더 구체적으로 말씀해 주시겠어요?"
+        assistant_parts.append({"type": "text", "text": msg})
+        yield ("delta", {"text": msg})
     _persist(session, conversation_id, "assistant", assistant_parts)
     _persist_turn_metric(session, conversation_id, model, acc, ttft_ms,
                          int((time.perf_counter() - t0) * 1000), ok)

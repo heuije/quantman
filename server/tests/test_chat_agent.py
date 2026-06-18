@@ -253,15 +253,22 @@ _IR_DEF_SAVE = {
 
 def test_stream_dispatches_save_strategy():
     # save_strategy는 순수 도구가 아니라 side-effect(DB 저장) — 루프가 대화 소유자(user_id)로
-    # 호출해 draft 전략을 만든다. 엔진/네트워크 없이 실 검증·저장 경로를 탄다.
+    # 호출해 draft 전략을 만든다. 새 동작: 직전 simulate의 검증 IR을 재사용(재컴파일 0).
     s = _mem_session()
-    from app.models import User, Strategy
+    from app.models import User, Strategy, Message
     u = User(email="z@z.com"); s.add(u); s.commit(); s.refresh(u)
     conv = Conversation(user_id=u.id); s.add(conv); s.commit(); s.refresh(conv)
+    # 직전 simulate 결과(검증 IR)를 대화에 영속 — save_strategy가 이를 재사용한다.
+    # tool_use_id는 _history_to_wire가 와이어 포맷 복원에 사용하므로 실제 agent 형식과 동일하게.
+    s.add(Message(conversation_id=conv.id, role="assistant", parts=[
+        {"type": "tool_use", "id": "t0", "name": "simulate", "input": {"nl": "테스트"}},
+        {"type": "tool_result", "tool_use_id": "t0", "name": "simulate",
+         "result": {"success": True, "ir": _IR_DEF_SAVE}}]))
+    s.commit()
     queue = [
         _Resp([_Block(type="text", text="저장할게요"),
                _Block(type="tool_use", id="t1", name="save_strategy",
-                      input={"name": "내 전략", "ir": _IR_DEF_SAVE})],
+                      input={"name": "내 전략"})],
               stop_reason="tool_use"),
         _Resp([_Block(type="text", text="저장 완료!")], stop_reason="end_turn"),
     ]
@@ -276,18 +283,21 @@ def test_stream_handles_multiple_tools_one_response(monkeypatch):
     # 한 응답에 도구 2개(시나리오 A vs B) → 둘 다 실행되어 tool_result 2개(기 지원·회귀 잠금).
     s = _mem_session()
     conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
-    monkeypatch.setattr(chat_agent, "run_tool",
-                        lambda name, inp: {"success": True, "query": "simulate",
-                                           "metrics": {"cagr": 0.1}}, raising=False)
+    # simulate는 run_simulate 경로(run_tool 아님) — 실제 디스패치 경로를 패치한다.
+    monkeypatch.setattr(chat_agent, "run_simulate",
+                        lambda session, uid, inp: {"success": True, "query": "simulate",
+                                                   "metrics": {"cagr": 0.1}}, raising=False)
     queue = [
         _Resp([_Block(type="text", text="A·B 비교할게요"),
-               _Block(type="tool_use", id="a", name="simulate", input={"strategy": {"x": 1}}),
-               _Block(type="tool_use", id="b", name="simulate", input={"strategy": {"x": 2}})],
+               _Block(type="tool_use", id="a", name="simulate", input={"nl": "전략 A"}),
+               _Block(type="tool_use", id="b", name="simulate", input={"nl": "전략 B"})],
               stop_reason="tool_use"),
         _Resp([_Block(type="text", text="A가 낫습니다.")], stop_reason="end_turn"),
     ]
     parts = chat_agent.run_chat_turn(s, conv.id, "A vs B 비교", client=_FakeClient(queue))
-    assert len([p for p in parts if p["type"] == "tool_result"]) == 2
+    results = [p for p in parts if p["type"] == "tool_result"]
+    assert len(results) == 2
+    assert all(r["result"]["success"] is True for r in results)   # 둘 다 정상 실행(실패경로 아님)
     assert len([p for p in parts if p["type"] == "tool_use"]) == 2
 
 
@@ -358,3 +368,47 @@ def test_usage_log_skips_when_none(caplog):
     with caplog.at_level(logging.INFO, logger="app.chat.agent"):
         chat_agent._log_usage(7, None)             # 스트리밍 usage 부재 → 무로깅·무예외
     assert not any("usage" in r.getMessage() for r in caplog.records)
+
+
+# ── Task 3: simulate NL 위임 + 전체 라우팅 보존 ──────────────────────────────
+def test_system_prompt_guides_nl_simulate_and_routing():
+    from app.chat.prompt import chat_system_prompt
+    p = chat_system_prompt()
+    assert "자연어로" in p and "IR JSON" in p          # simulate NL 위임 안내
+    assert "inspect" in p and "describe" in p          # 라우팅 보존(비백테스트 경로)
+    assert "투자자문" in p or "일반" in p               # 일반 대화·범위 안내
+
+
+# ── Task 7 (new): 루프 소진 graceful fallback ────────────────────────────────
+def test_loop_exhaustion_yields_fallback_text(monkeypatch):
+    from app.chat import agent as ag
+    from sqlalchemy.pool import StaticPool
+    from sqlmodel import Session, SQLModel, create_engine
+    from app.models import User, Conversation
+    monkeypatch.setattr(ag, "run_tool", lambda name, inp: {"success": True})
+    monkeypatch.setattr(ag, "MAX_TOOL_ROUNDS", 2)
+    # 매 라운드 tool_use만 내는 가짜 클라이언트 → 루프 소진
+    class _U: input_tokens = 1; output_tokens = 1
+    class _B:
+        def __init__(s, **k): s.__dict__.update(k)
+    class _Msg:
+        content = [_B(type="tool_use", id="t", name="screen", input={})]
+        stop_reason = "tool_use"; usage = _U()
+    class _Stream:
+        def __enter__(s): return s
+        def __exit__(s, *a): return False
+        @property
+        def text_stream(s):
+            return iter(())
+        def get_final_message(s): return _Msg()
+    class _Msgs:
+        def stream(s, **k): return _Stream()
+    class _C:
+        messages = _Msgs()
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+    with Session(eng) as s:
+        u = User(email="t@e.com"); s.add(u); s.commit(); s.refresh(u)
+        c = Conversation(user_id=u.id); s.add(c); s.commit(); s.refresh(c)
+        parts = ag.run_chat_turn(s, c.id, "분석해줘", client=_C())
+    assert any(p["type"] == "text" and "완료하지 못" in p["text"] for p in parts)

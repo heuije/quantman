@@ -29,13 +29,11 @@ def test_assemble_screen_no_symbols_uses_all():
     assert s.universe.kind == "all"
 
 
-def test_assemble_simulate_passes_full_ir():
-    base = {"universe": {"kind": "single", "symbols": ["AAA"]},
-            "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}},
-            "position": {"entry": {"mode": "always"}}}
-    ir = assemble_ir("simulate", {"strategy": base})
-    s = StrategyIR.model_validate(ir)
-    assert s.query == "simulate" and s.study.axis == "none"
+def test_assemble_simulate_raises_not_assembled():
+    # simulate는 assemble_ir 경로를 거치지 않는다 — run_simulate가 compile_strategy로 IR을 만든다.
+    import pytest
+    with pytest.raises(ValueError):
+        assemble_ir("simulate", {"nl": "삼성전자 종가 전략"})
 
 
 def test_assemble_unknown_tool_raises():
@@ -132,19 +130,32 @@ def test_save_strategy_in_tool_schemas():
 
 
 def test_save_strategy_tool_creates_draft():
-    with Session(_db()) as s:
+    # 4-arg 시그니처: session, user_id, conversation_id, tool_input.
+    # 직전 simulate IR을 대화에서 재사용하는 경로 — 유효 IR을 simulate tool_result로 영속해 검증.
+    from app.models import Conversation, Message
+    eng = _db()
+    with Session(eng) as s:
         u = User(email="x@x.com"); s.add(u); s.commit(); s.refresh(u)
-        res = chat_tools.save_strategy_tool(s, u.id, {"name": "내 전략", "ir": _IR_DEF})
+        c = Conversation(user_id=u.id); s.add(c); s.commit(); s.refresh(c)
+        s.add(Message(conversation_id=c.id, role="assistant", parts=[
+            {"type": "tool_result", "name": "simulate",
+             "result": {"success": True, "ir": _IR_DEF}}]))
+        s.commit()
+        res = chat_tools.save_strategy_tool(s, u.id, c.id, {"name": "내 전략"})
         assert res["success"] is True and res["strategy_id"]
         row = s.get(Strategy, res["strategy_id"])
         assert row.run_mode == "draft" and row.engine == "ir"   # 저장-only 스코프=draft
         assert row.name == "내 전략" and row.user_id == u.id      # name 인자가 IR.name으로 주입
 
 
-def test_save_strategy_tool_invalid_ir_returns_error():
-    with Session(_db()) as s:
+def test_save_strategy_tool_no_prior_simulate_no_nl_returns_error():
+    # 이전 simulate 없고 nl도 없으면 오류 반환.
+    from app.models import Conversation
+    eng = _db()
+    with Session(eng) as s:
         u = User(email="y@y.com"); s.add(u); s.commit(); s.refresh(u)
-        res = chat_tools.save_strategy_tool(s, u.id, {"name": "깨진", "ir": {"signal": "not-a-node"}})
+        c = Conversation(user_id=u.id); s.add(c); s.commit(); s.refresh(c)
+        res = chat_tools.save_strategy_tool(s, u.id, c.id, {"name": "깨진"})
         assert res["success"] is False and "error" in res       # 예외 대신 모델 피드백용 error
 
 
@@ -206,3 +217,112 @@ def test_compact_inspect():
                            "dates": ["2026-06-16", "2026-06-17"],
                            "series": {"consensus_target": [81000.0, 82000.0]}})
     assert "005930" in out and "82000" in out                  # 최근값 표면화
+
+
+# ── Task 2: run_simulate NL 위임 ─────────────────────────────────────────────
+
+def test_run_simulate_delegates_to_compiler(monkeypatch):
+    from app.chat import tools
+    monkeypatch.setattr(tools, "compile_strategy", lambda s, uid, nl: {
+        "success": True,
+        "ir": {"universe": {"kind": "single", "symbols": ["005930"]},
+               "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}},
+               "query": "backtest"},
+        "assumptions": ["가정1"], "explanation": {"summary": "단일종목 백테스트"}})
+    monkeypatch.setattr(tools, "_load_dataset", lambda ir: {})
+    monkeypatch.setattr(tools, "strategy_from_spec",
+                        lambda ir, ds: {"success": True, "metrics": {"cagr": 0.1}})
+    out = tools.run_simulate(session=None, user_id=1, tool_input={"nl": "삼성전자 종가 전략"})
+    assert out["success"] is True and out["metrics"]["cagr"] == 0.1
+    assert out["ir"]["universe"]["symbols"] == ["005930"]   # 검증 IR 동봉(저장 재사용·표시)
+    assert out["explanation"]["summary"] == "단일종목 백테스트"
+
+
+def test_run_simulate_compile_failure_is_graceful(monkeypatch):
+    from app.chat import tools
+    monkeypatch.setattr(tools, "compile_strategy", lambda s, uid, nl: {
+        "success": False, "error": "검증을 통과하는 IR을 생성하지 못했습니다.", "ir": {}})
+    out = tools.run_simulate(session=None, user_id=1, tool_input={"nl": "표현 불가"})
+    assert out["success"] is False and "생성하지 못" in out["error"]
+
+
+# ── Task 4: save_strategy NL 위임 + 마지막 IR 재사용 ──────────────────────────
+
+def test_save_reuses_last_simulate_ir(monkeypatch):
+    from sqlalchemy.pool import StaticPool
+    from sqlmodel import Session, SQLModel, create_engine
+    from app.models import User, Conversation, Message
+    from app.chat import tools
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+    saved = {}
+    monkeypatch.setattr(tools, "save_ir_draft",
+                        lambda s, uid, ir: saved.update({"ir": ir}) or type("R", (), {"id": 7, "name": ir.get("name")}))
+    compiled = {"called": False}
+    monkeypatch.setattr(tools, "compile_strategy",
+                        lambda *a: compiled.update(called=True) or {"success": True, "ir": {"x": 1}})
+    with Session(eng) as s:
+        u = User(email="t@e.com"); s.add(u); s.commit(); s.refresh(u)
+        c = Conversation(user_id=u.id); s.add(c); s.commit(); s.refresh(c)
+        # 직전 simulate tool_result(검증 IR 동봉)를 영속
+        s.add(Message(conversation_id=c.id, role="assistant", parts=[
+            {"type": "tool_result", "name": "simulate",
+             "result": {"success": True, "ir": {"universe": {"kind": "single", "symbols": ["005930"]}}}}]))
+        s.commit()
+        out = tools.save_strategy_tool(s, u.id, c.id, {"name": "내전략"})
+    assert out["success"] is True and out["strategy_id"] == 7
+    assert saved["ir"]["universe"]["symbols"] == ["005930"]   # 마지막 IR 재사용
+    assert saved["ir"]["name"] == "내전략"
+    assert compiled["called"] is False                         # 재컴파일 0(토큰 절감)
+
+
+def test_save_compiles_when_no_prior_simulate(monkeypatch):
+    from sqlalchemy.pool import StaticPool
+    from sqlmodel import Session, SQLModel, create_engine
+    from app.models import User, Conversation
+    from app.chat import tools
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+    monkeypatch.setattr(tools, "compile_strategy",
+                        lambda s, uid, nl: {"success": True, "ir": {"compiled": True}})
+    monkeypatch.setattr(tools, "save_ir_draft",
+                        lambda s, uid, ir: type("R", (), {"id": 9, "name": ir.get("name")}))
+    with Session(eng) as s:
+        u = User(email="t2@e.com"); s.add(u); s.commit(); s.refresh(u)
+        c = Conversation(user_id=u.id); s.add(c); s.commit(); s.refresh(c)
+        out = tools.save_strategy_tool(s, u.id, c.id, {"name": "새전략", "nl": "삼성 전략"})
+    assert out["success"] is True and out["strategy_id"] == 9
+
+
+# ── Task 5: screen sector 필터 ────────────────────────────────────────────────
+
+def test_screen_sector_builds_screener():
+    from app.chat.tools import assemble_ir
+    ir = assemble_ir("screen", {"score_ref": "__SELF__.pb_ratio", "top_n": 3,
+                                 "descending": False, "sector": "반도체"})
+    sc = ir["universe"]["screener"]["condition"]
+    assert sc["op"] == "is_in"
+    assert sc["inputs"]["signal"]["op"] == "attribute"
+    # attr=Industry(KSIC) 고정 — Sector(소속부)는 대형주 NaN이라 contains-match가 0건이 되는
+    # 회귀 가드(실데이터 검증: 반도체주 Industry="반도체 제조업", Sector는 삼성 등 nan).
+    assert sc["inputs"]["signal"]["params"]["attr"] == "Industry"
+    assert sc["params"]["values"] == ["반도체"] and sc["params"]["match"] == "contains"
+
+
+def test_screen_without_sector_unchanged():
+    from app.chat.tools import assemble_ir
+    ir = assemble_ir("screen", {"score_ref": "__SELF__.pb_ratio", "top_n": 3, "symbols": ["005930"]})
+    assert ir["universe"] == {"kind": "list", "symbols": ["005930"]}
+    assert "screener" not in ir["universe"]
+
+
+# ── Task 6: inspect 미존재 컬럼 시 유효 컬럼 목록 피드백 ─────────────────────────
+
+def test_inspect_unknown_column_returns_valid_options(monkeypatch):
+    import pandas as pd
+    from app.chat import tools
+    df = pd.DataFrame({"Close": [1.0, 2.0], "consensus_target": [3.0, 4.0]})
+    monkeypatch.setattr(tools.qc, "load_dataset_for", lambda syms: {"005930": df})
+    out = tools.run_inspect({"symbol": "005930", "columns": ["target_price"]})
+    assert out["success"] is False
+    assert "Close" in out["error"] and "consensus_target" in out["error"]   # 유효 컬럼 제시
