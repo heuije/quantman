@@ -83,8 +83,13 @@ class _FakeStream:
 
 
 class _FakeMessages:
-    def __init__(self, queue): self._queue = queue
-    def stream(self, **kw):  # noqa: ARG002
+    def __init__(self, queue): self._queue = queue; self.received = []
+    def stream(self, **kw):
+        # messages는 루프가 이후 append하므로 호출 시점 스냅샷을 잡는다(레퍼런스 오염 방지).
+        snap = dict(kw)
+        if "messages" in snap:
+            snap["messages"] = list(snap["messages"])
+        self.received.append(snap)
         return _FakeStream(self._queue.pop(0))
 
 
@@ -284,3 +289,72 @@ def test_stream_handles_multiple_tools_one_response(monkeypatch):
     parts = chat_agent.run_chat_turn(s, conv.id, "A vs B 비교", client=_FakeClient(queue))
     assert len([p for p in parts if p["type"] == "tool_result"]) == 2
     assert len([p for p in parts if p["type"] == "tool_use"]) == 2
+
+
+# ── 토큰 최적화 ①히스토리 prompt caching + ②usage 계측 ─────────────────────────
+
+def test_mark_cache_breakpoint_string_content():
+    # 문자열 content(user 메시지)는 블록 리스트로 승격돼 cache_control이 붙는다.
+    msgs = [{"role": "user", "content": "안녕"}]
+    chat_agent._mark_cache_breakpoint(msgs)
+    blk = msgs[0]["content"]
+    assert isinstance(blk, list)
+    assert blk[-1]["text"] == "안녕"
+    assert blk[-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_mark_cache_breakpoint_list_content():
+    # 리스트 content는 마지막 블록에만 cache_control(앞 블록은 안 건드림).
+    msgs = [{"role": "assistant", "content": [
+        {"type": "text", "text": "a"},
+        {"type": "tool_use", "id": "t", "name": "screen", "input": {}}]}]
+    chat_agent._mark_cache_breakpoint(msgs)
+    assert msgs[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in msgs[0]["content"][0]
+
+
+def test_mark_cache_breakpoint_empty_noop():
+    msgs = []
+    chat_agent._mark_cache_breakpoint(msgs)        # 첫 턴(히스토리 없음) → 예외 없이 no-op
+    assert msgs == []
+
+
+def test_stream_caches_history_on_followup_turn():
+    # 후속 턴: 이전 대화(히스토리) 마지막 블록에 cache_control이 실려 전송된다(멀티턴 캐싱).
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    chat_agent._persist(s, conv.id, "user", [{"type": "text", "text": "이전 질문"}])
+    chat_agent._persist(s, conv.id, "assistant", [{"type": "text", "text": "이전 답변"}])
+    client = _FakeClient([_Resp([_Block(type="text", text="새 답변")], stop_reason="end_turn")])
+    chat_agent.run_chat_turn(s, conv.id, "새 질문", client=client)
+    sent = client.messages.received[-1]["messages"]
+    tail = sent[-2]                                 # [-1]은 새 user 턴(volatile, 캐시 제외)
+    tail_block = tail["content"][-1] if isinstance(tail["content"], list) else None
+    assert tail_block and tail_block.get("cache_control") == {"type": "ephemeral"}
+
+
+def test_first_turn_no_history_marker():
+    # 첫 턴: 히스토리 없음 → 새 user 턴엔 마커 없음(system만 캐시).
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    client = _FakeClient([_Resp([_Block(type="text", text="답변")], stop_reason="end_turn")])
+    chat_agent.run_chat_turn(s, conv.id, "첫 질문", client=client)
+    sent = client.messages.received[-1]["messages"]
+    assert sent == [{"role": "user", "content": "첫 질문"}]
+
+
+def test_usage_logged_when_present(caplog):
+    import logging
+    class _U:
+        input_tokens = 100; output_tokens = 20
+        cache_creation_input_tokens = 0; cache_read_input_tokens = 4200
+    with caplog.at_level(logging.INFO, logger="app.chat.agent"):
+        chat_agent._log_usage(7, _U())
+    assert any("cache_read=4200" in r.getMessage() for r in caplog.records)
+
+
+def test_usage_log_skips_when_none(caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="app.chat.agent"):
+        chat_agent._log_usage(7, None)             # 스트리밍 usage 부재 → 무로깅·무예외
+    assert not any("usage" in r.getMessage() for r in caplog.records)

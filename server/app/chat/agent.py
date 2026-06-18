@@ -76,6 +76,33 @@ def _block_to_wire(b) -> dict:
     return {"type": t}
 
 
+def _mark_cache_breakpoint(messages: list[dict]) -> None:
+    """히스토리 마지막 블록에 cache_control(ephemeral)을 달아 다음 턴이 이전 대화를 캐시 읽기
+    (~0.1x)로 재사용하게 한다 — 멀티턴마다 전체 히스토리를 풀가로 재전송하던 O(n²) 입력 비용을
+    제거한다(prompt caching, system 블록과 합쳐 최대 2 breakpoint). 빈 히스토리(첫 턴)는 무시.
+    문자열 content(user 메시지)는 블록 리스트로 승격해야 마커를 붙일 수 있다."""
+    if not messages:
+        return
+    last = messages[-1]
+    content = last.get("content")
+    if isinstance(content, str):
+        last["content"] = [{"type": "text", "text": content,
+                            "cache_control": {"type": "ephemeral"}}]
+    elif isinstance(content, list) and content:
+        content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+
+
+def _log_usage(conversation_id: int, usage) -> None:
+    """Anthropic usage를 로깅 — 캐시 적중(cache_read)·토큰 절감을 실측·검증하기 위함(원칙4 검증
+    인프라). 스트리밍 응답 메시지엔 usage가 있으나 테스트 fake엔 없으므로 None이면 건너뛴다."""
+    if usage is None:
+        return
+    _log.info("[chat usage] conv=%s in=%s out=%s cache_write=%s cache_read=%s", conversation_id,
+              getattr(usage, "input_tokens", "?"), getattr(usage, "output_tokens", "?"),
+              getattr(usage, "cache_creation_input_tokens", "?"),
+              getattr(usage, "cache_read_input_tokens", "?"))
+
+
 def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                      *, client=None, model: str | None = None):
     """한 사용자 메시지에 대해 agent 루프를 **스트리밍**으로 실행하는 제너레이터(단일 소스).
@@ -97,6 +124,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                "cache_control": {"type": "ephemeral"}}]
 
     messages = _history_to_wire(session, conversation_id)
+    _mark_cache_breakpoint(messages)      # ① 히스토리 prompt caching(멀티턴 입력 캐시 재사용)
     messages.append({"role": "user", "content": user_text})
     _persist(session, conversation_id, "user", [{"type": "text", "text": user_text}])
 
@@ -111,6 +139,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                     if delta:
                         yield ("delta", {"text": delta})
                 resp = stream.get_final_message()
+            _log_usage(conversation_id, getattr(resp, "usage", None))   # ② 토큰·캐시 계측
 
             for b in resp.content:
                 if getattr(b, "type", None) == "text":
