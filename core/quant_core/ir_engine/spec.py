@@ -360,6 +360,33 @@ def field_contract(loc) -> Optional[str]:
     return f"{model.__name__} = {{ " + ", ".join(fields) + " }"
 
 
+def unknown_field_issues(raw, _loc: tuple = ()) -> list[dict]:
+    """raw IR dict에서 모델에 없는(extra="ignore"로 조용히 버려질) 필드를 repair 이슈로 표면화.
+
+    field_contract의 짝 — extra="ignore" 모델(SimSpec·PositionSpec·Study 등)은 환각/오타 필드를
+    silent drop 하므로 유저 지정값이 무시된다(라이브 결함: commission_pct → 비용 적용 0). model_validate
+    *전에* raw를 걸어 미지 필드를 잡고 valid 필드(field_contract)를 알려줘 LLM이 정확한 필드명으로
+    교정하게 한다. signal의 Node 트리는 extra="forbid"라 model_validate가 잡고, 자유 params/inputs는
+    _model_at=None에서 재귀가 멈춰 오탐하지 않는다(구조적 — 케이스별 하드코딩 아님)."""
+    model = _model_at(_loc)
+    if model is None or not isinstance(raw, dict):
+        return []
+    issues: list[dict] = []
+    for key, val in raw.items():
+        loc = _loc + (key,)
+        if key not in model.model_fields:
+            issues.append({"rule": "unknown_field", "severity": 30, "is_error": True,
+                           "message": f"'{key}'는 {model.__name__}에 없는 필드라 무시됩니다 — "
+                                      f"올바른 형식: {field_contract(_loc) or ''}",
+                           "path": ".".join(str(x) for x in loc)})
+        elif isinstance(val, dict):
+            issues += unknown_field_issues(val, loc)
+        elif isinstance(val, list):
+            for i, item in enumerate(val):
+                issues += unknown_field_issues(item, loc + (i,))
+    return issues
+
+
 # ── 정합성 검증 ───────────────────────────────────────────────────────────────
 
 def signal_out_type(node: Node) -> Optional[str]:

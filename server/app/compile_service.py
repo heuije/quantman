@@ -9,7 +9,8 @@ from pydantic import ValidationError
 
 import quant_core as qc
 from quant_core.ir_engine import (StrategyIR, capability_spec, explain_ir,
-                                   field_contract, validate_strategy)
+                                   field_contract, unknown_field_issues,
+                                   validate_strategy)
 from quant_core.blocks import catalog_spec
 
 from sqlmodel import Session, select
@@ -59,13 +60,16 @@ def compile_strategy(session: Session, user_id: int | None, nl: str) -> dict:
     name_map = {r.name.strip().lower(): r.symbol for r in rows if r.name}
 
     def _validate(strat: dict) -> tuple[list[dict], bool]:
+        # extra="ignore" 모델이 환각/오타 필드를 silent drop 하기 전에 raw에서 포착 → repair 피드백.
+        # (라이브 결함: commission_pct/transaction_cost_pct 가 버려져 유저 지정 비용이 무시됐다.)
+        unknown = unknown_field_issues(strat)
         try:
             s = StrategyIR.model_validate(strat)
         except ValidationError as e:
-            return (_schema_issues(e), False)
-        out = [{"rule": i.rule, "severity": i.severity, "is_error": i.is_error,
-                "message": i.message, "path": i.path}
-               for i in validate_strategy(s, valid_refs=valid_refs)]
+            return (unknown + _schema_issues(e), False)
+        out = unknown + [{"rule": i.rule, "severity": i.severity, "is_error": i.is_error,
+                          "message": i.message, "path": i.path}
+                         for i in validate_strategy(s, valid_refs=valid_refs)]
         return (out, not any(i["is_error"] for i in out))
 
     res = compile_nl(nl, catalog=catalog_spec(), capabilities=capability_spec(),

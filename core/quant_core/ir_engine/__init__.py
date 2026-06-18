@@ -25,7 +25,7 @@ from .service import backtest_from_spec, strategy_from_spec  # noqa: F401
 from .spec import (  # noqa: F401
     Entry, Exit, Objective, Overlays, ParamAxis, PositionSpec, SelectSpec, Sizing,
     SimSpec, StrategyIR, Study, Universe, field_contract, needed_columns,
-    needed_symbols, signal_out_type, validate_strategy,
+    needed_symbols, signal_out_type, unknown_field_issues, validate_strategy,
 )
 from .sweep import (  # noqa: F401
     daily_returns, partition_by_label, run_condition_sweep, summarize_returns,
@@ -39,7 +39,7 @@ __all__ = [
     "collect_strat_refs", "has_strat_refs", "materialize_strategy_assets",
     "StrategyIR", "Universe", "PositionSpec", "Sizing", "Entry", "Exit", "SelectSpec",
     "Overlays", "SimSpec", "Study", "Objective", "ParamAxis", "validate_strategy", "signal_out_type",
-    "needed_symbols", "needed_columns", "field_contract",
+    "needed_symbols", "needed_columns", "field_contract", "unknown_field_issues",
     "run_condition_sweep", "sweep_condition", "partition_by_label",
     "summarize_returns", "daily_returns",
     "two_sample_test", "bootstrap_mean_ci", "block_bootstrap_ci", "jackknife_by_year",

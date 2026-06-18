@@ -29,6 +29,32 @@ def test_system_prompt_exposes_question_vocabulary():
         assert kw in prompt, f"프롬프트에 '{kw}' 어휘 누락 — 컴파일러가 해당 기능을 못 본다"
 
 
+# ── 단위·비용 스케일 가이드 — 라이브 결함(±0.1%→±0.001 100×축소·commission_pct 환각) 차단 ──
+
+def test_prompt_states_percent_scale_for_pct_fields():
+    """%계열 지표 임계는 퍼센트 스케일(0.1% → 0.1)임을 명시 — 분수화(−0.001) 금지를 컴파일러에 가르침."""
+    prompt = ic._system_prompt(catalog_spec(), capability_spec(),
+                               ["pct_change_1d", "rsi_14", "momentum_12_1m"])
+    assert "pct_change_1d" in prompt
+    assert "퍼센트" in prompt           # %계열은 이미 퍼센트 단위라는 규칙
+    assert "-0.001" in prompt          # 분수화 금지 반례를 명시
+
+
+def test_prompt_states_cost_field_names_and_fraction_scale():
+    """비용은 commission/slippage(분수)임을 명시 — commission_pct 환각·스케일오류 차단."""
+    prompt = ic._system_prompt(catalog_spec(), capability_spec(), ["pct_change_1d"])
+    assert "commission" in prompt and "slippage" in prompt
+    assert "0.0001" in prompt          # 편도 0.01% → 0.0001(분수) 예시
+    assert "commission_pct" in prompt  # 환각 필드명을 명시적으로 금지
+
+
+def test_fewshot_has_cross_asset_percent_intraday_example():
+    """크로스에셋(SYM.지표) + %임계 + 비용 + 당일 롱숏 few-shot이 그 부류를 앵커한다."""
+    prompt = ic._system_prompt(catalog_spec(), capability_spec(), ["pct_change_1d"])
+    assert "S&P500.pct_change_1d" in prompt   # cross-asset 신호 참조 예시
+    assert '"commission": 0.0001' in prompt   # 비용 분수 스케일 실예(commission_pct 아님)
+
+
 # ── M5d 라우팅 — 조건양방향 당일매매를 on_signal directional로(scheduled 강등 회귀 차단) ──
 
 def test_prompt_routes_conditional_bidirectional_to_on_signal():
