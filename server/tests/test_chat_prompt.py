@@ -23,3 +23,12 @@ def test_chat_prompt_requires_reading_fold_and_cost_results():
     assert "explanation" in p          # 비용·체결 가정을 인용하라는 지시
     assert "warnings" in p             # 0거래 경고를 먼저 보라
     assert "재실행" in p               # 재실행 시 ir 대조(귀인 오류 차단)
+
+
+def test_chat_prompt_surfaces_advanced_analyses():
+    """엔진에 이미 있는 고급 분석을 에이전트가 알도록 analysis_menu가 노출돼야(반복 미사용 부류 차단).
+    simulate(nl)로 도달 가능한 sweep/extremize/regime/regression/portfolio/연도별을 프롬프트가 명시."""
+    p = cp.chat_system_prompt()
+    assert "analysis_menu" in p
+    for kw in ("민감도", "최적값", "국면", "회귀", "포트폴리오 진단", "연도별"):
+        assert kw in p, f"analysis_menu에 '{kw}' 누락 — 에이전트가 해당 분석을 못 권한다"
