@@ -191,6 +191,27 @@ class CompileLog(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now)
 
 
+class ChatTurnMetric(SQLModel, table=True):
+    """챗봇 turn별 성능 지표 — 토큰·지연·라운드·도구. 내용(질문·답변)은 Message가
+    단일 진실원천이고 여기엔 숫자만 둔다(chat-perf 측정 환경, CompileLog 패턴 미러)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    conversation_id: int = Field(index=True, foreign_key="conversation.id")
+    user_id: Optional[int] = Field(default=None, index=True, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=_now)
+    latency_ms: int = 0            # 턴 전체 wall-clock
+    ttft_ms: Optional[int] = None  # 첫 델타까지(도구-only 턴은 None)
+    input_tokens: int = 0          # 턴 내 라운드 합
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    n_rounds: int = 0              # LLM 라운드 수(도구 루프 반복 — 도구 라운드 + 최종 답변 라운드)
+    n_tool_calls: int = 0
+    tool_names: list = Field(default_factory=list, sa_column=Column(JSON))
+    model: str = ""
+    stop_reason: Optional[str] = None
+    ok: bool = True               # 턴 정상 종료 여부(에러=False)
+
+
 class TradableSymbol(SQLModel, table=True):
     """KIS 종목마스터에서 sync된 거래 가능 종목 화이트리스트.
 
