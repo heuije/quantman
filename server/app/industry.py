@@ -20,7 +20,13 @@ _log = logging.getLogger("app.industry")
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 # 지원 산업 — CSV 파일 추가 시 여기에 등록(동일 컬럼 구조).
-INDUSTRIES = {"2차전지": "industry_2차전지.csv"}
+INDUSTRIES = {
+    "2차전지": "industry_2차전지.csv",
+    "반도체": "industry_반도체.csv",
+    "전자부품": "industry_전자부품.csv",
+    "건설": "industry_건설.csv",
+    "금융": "industry_금융.csv",
+}
 
 
 @lru_cache(maxsize=1)
@@ -57,10 +63,48 @@ def shares_of(ticker: str):
     tk = tk.zfill(6) if tk.isdigit() else tk
     return _shares(date.today().isoformat()).get(tk)
 
+
+@lru_cache(maxsize=1)
+def _ticker_industry() -> dict:
+    """티커 → 산업명. 모든 산업 CSV에서 1회 로드(같은 종목이 여러 산업이면 첫 등장 우선)."""
+    m: dict = {}
+    for name, fname in INDUSTRIES.items():
+        path = os.path.join(_DIR, fname)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                for r in csv.DictReader(f):
+                    tk = str(r.get("티커", "")).strip()
+                    tk = tk.zfill(6) if tk.isdigit() else tk
+                    if tk:
+                        m.setdefault(tk, name)
+        except Exception:
+            pass
+    return m
+
+
+def industry_of(ticker: str) -> str | None:
+    """해당 종목이 속한 산업명(없으면 None). HOME 경쟁사분석이 현재 종목의 산업을 자동 인식."""
+    tk = str(ticker).strip()
+    tk = tk.zfill(6) if tk.isdigit() else tk
+    return _ticker_industry().get(tk)
+
 # 밸류체인 정렬 순서 (Upstream → Midstream → Downstream → 단계)
+# 단계는 산업마다 다르나 gu가 먼저 정렬되고 각 산업은 자기 단계만 가져 값이 겹쳐도 무방.
 _GU_ORDER = {"Upstream": 0, "Midstream": 1, "Downstream": 2}
-_DAN_ORDER = {"원자재": 0, "소재": 1, "배터리": 2, "부품": 3, "장비": 4,
-              "리사이클": 5, "애플리케이션": 6}
+_DAN_ORDER = {
+    # 2차전지
+    "원자재": 0, "소재": 1, "배터리": 2, "부품": 3, "장비": 4, "리사이클": 5, "애플리케이션": 6,
+    # 반도체
+    "설계": 7, "제조": 8, "후공정": 9, "기판": 10,
+    # 전자부품
+    "기판(PCB)": 0, "수동부품": 1, "접속부품": 2, "카메라·광학": 3, "세트부품": 4,
+    # 건설
+    "건설자재": 0, "종합건설": 1, "후방·서비스": 2,
+    # 금융
+    "은행·지주": 0, "증권": 1, "보험": 2, "여신·소비자금융": 3, "금융서비스": 4,
+}
 
 
 def _num(s):
@@ -140,6 +184,29 @@ def _returns(tickers: tuple[str, ...], _day: str, as_of: str = "") -> dict[str, 
     return out
 
 
+@lru_cache(maxsize=8)
+def _snapshot(_day: str) -> dict:
+    """전 KRX 종목 스냅샷(코드 → {cap, chg}) — StockListing **1회 벌크** 조회. 트리맵 즉시 렌더용.
+
+    종목별 DataReader(820일 × N종목)는 느려 트리맵 라이브 로딩의 병목이었다. StockListing은
+    Marcap(시총)·ChagesRatio(전일대비%)를 전 종목 한 번에 준다 → 라이브여도 1콜로 즉시.
+    장중엔 지연 스냅샷일 수 있으나 마감 후엔 공식 종가·시총. 정밀 기간수익률은 별도 지연 로딩."""
+    import FinanceDataReader as fdr
+    out: dict = {}
+    try:
+        listing = fdr.StockListing("KRX")
+        cols = list(listing.columns)
+        ccol = "Code" if "Code" in cols else ("Symbol" if "Symbol" in cols else cols[0])
+        has_cap = "Marcap" in cols
+        for _, r in listing.iterrows():
+            code = str(r[ccol]).zfill(6)
+            out[code] = {"cap": _num(r["Marcap"]) if has_cap else None,
+                         "chg": _num(r.get("ChagesRatio"))}
+    except Exception as e:
+        _log.warning("StockListing 스냅샷 조회 실패: %s", e)
+    return out
+
+
 @lru_cache(maxsize=64)
 def _industry(name: str, _day: str, as_of: str = "") -> list[dict] | None:
     fname = INDUSTRIES.get(name)
@@ -161,23 +228,33 @@ def _industry(name: str, _day: str, as_of: str = "") -> list[dict] | None:
                 "cap": None, "chg": None, "revenue": rev, "op": op,
                 "op_margin": (op / rev * 100) if (rev and op is not None and rev > 0) else None,
             })
-    # 종가·등락(DataReader)·상장주식수(StockListing)는 병렬 조회. EBITDA용 D&A(FnGuide 65페이지)는
-    # 느려서 여기서 막지 않고 별도 엔드포인트(industry_ebitda)로 지연 로딩 — 트리맵·표가 먼저 뜨게.
-    from concurrent.futures import ThreadPoolExecutor
-    tickers = tuple(x["ticker"] for x in rows)
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        f_quotes = ex.submit(_returns, tickers, _day, as_of)
-        f_shares = ex.submit(_shares, _day)
-        quotes, shares = f_quotes.result(), f_shares.result()
-    # 종가·등락 = DataReader(as_of 시점, 네이버 일치) / 시총 = 종가 × 상장주식수(StockListing Stocks)
-    for x in rows:
-        q = quotes.get(x["ticker"])
-        close = q.get("close") if q else None
-        x["chg"] = q.get("chg") if q else None
-        sh = shares.get(x["ticker"])
-        x["cap"] = (close * sh) if (close and sh) else None
-        x["ret"] = {k: q[k] for k in ("d5", "d20", "d60", "d120", "d240")} if q else None
-        x["da"] = x["ebitda"] = x["ebitda_margin"] = None   # EBITDA는 지연 로딩으로 채움
+    # 시총·등락 조회 — 트리맵을 빠르게 띄우는 게 핵심.
+    # · 최신(as_of=""): StockListing **벌크 1콜**(_snapshot)으로 즉시. 종목별 DataReader 안 함.
+    # · 과거(as_of): StockListing은 today만 줘서 DataReader 경로(느리지만 정확) 사용.
+    # 기간수익률(hover용)·EBITDA(D&A)는 둘 다 느려 별도 엔드포인트로 지연 로딩 — 트리맵·표 먼저 뜨게.
+    if as_of:
+        from concurrent.futures import ThreadPoolExecutor
+        tickers = tuple(x["ticker"] for x in rows)
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_quotes = ex.submit(_returns, tickers, _day, as_of)
+            f_shares = ex.submit(_shares, _day)
+            quotes, shares = f_quotes.result(), f_shares.result()
+        for x in rows:
+            q = quotes.get(x["ticker"])
+            close = q.get("close") if q else None
+            x["chg"] = q.get("chg") if q else None
+            sh = shares.get(x["ticker"])
+            x["cap"] = (close * sh) if (close and sh) else None
+            x["ret"] = {k: q[k] for k in ("d5", "d20", "d60", "d120", "d240")} if q else None
+            x["da"] = x["ebitda"] = x["ebitda_margin"] = None
+    else:
+        snap = _snapshot(_day)
+        for x in rows:
+            s = snap.get(x["ticker"]) or {}
+            x["cap"] = s.get("cap")
+            x["chg"] = s.get("chg")
+            x["ret"] = None          # 기간수익률은 industry_returns로 지연 로딩
+            x["da"] = x["ebitda"] = x["ebitda_margin"] = None
     # 세부분류 내 시총 점유율(M/s) — 분모=같은 세부분류 시총 합계
     det_sum: dict[str, float] = {}
     for x in rows:
@@ -311,6 +388,30 @@ def industry_ebitda(name: str) -> dict:
         return {}
 
 
+@lru_cache(maxsize=8)
+def _industry_returns(name: str, _day: str) -> dict:
+    """종목별 기간수익률(5/20/60/120/240일) — DataReader(느림). 트리맵 hover용 지연 로딩 전용.
+    최신 트리맵은 벌크 스냅샷(cap·chg)으로 즉시 뜨고, 이 수익률은 그 후 별도 호출로 채운다."""
+    rows = _industry(name, _day, "")
+    if not rows:
+        return {}
+    q = _returns(tuple(r["ticker"] for r in rows), _day, "")
+    out: dict = {}
+    for r in rows:
+        v = q.get(r["ticker"])
+        out[r["ticker"]] = {k: v[k] for k in ("d5", "d20", "d60", "d120", "d240")} if v else None
+    return out
+
+
+def industry_returns(name: str) -> dict:
+    """지연 로딩: 종목별 기간수익률 사전. 실패 시 빈 dict."""
+    try:
+        return _industry_returns(name, date.today().isoformat())
+    except Exception as e:
+        _log.warning("기간수익률 fetch 실패 %s: %s", name, e)
+        return {}
+
+
 def as_of(req: str | None = None) -> str | None:
     """산업 시총 데이터의 기준 거래일(yyyy-mm-dd). req 지정 시 req 이하 마지막 거래일."""
     try:
@@ -324,5 +425,7 @@ def refresh_prices() -> None:
     재무(_da_map)·상장주식수(_shares)는 일중 불변이라 유지(불필요한 재조회 방지)."""
     _closes.cache_clear()
     _returns.cache_clear()
+    _snapshot.cache_clear()
     _industry.cache_clear()
+    _industry_returns.cache_clear()
     _as_of.cache_clear()

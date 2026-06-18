@@ -29,27 +29,48 @@ function colorByChg(chg: number | null): string {
   return `rgb(${gray.map((v, i) => Math.round(v + (tgt[i] - v) * f)).join(",")})`;
 }
 
-const STAGE_ORDER = ["원자재", "소재", "배터리", "부품", "장비", "리사이클", "애플리케이션"];
 const GU_ORDER = ["Upstream", "Midstream", "Downstream"];
 const ROOT_ID = "2차전지";
+// 트리맵 타일 표시 크기 보정 — 초대형주가 화면을 가려 다른 종목이 안 보이는 문제 방지.
+// 표시 크기만 줄이고 툴팁·시총·M/S는 실제값 유지. ref="maxOther"=보정대상 제외 최대 시총,
+// ref=티커=그 종목 시총. 보정 표시값 = 기준 × factor (시총이 변해도 데이터에서 자동 계산).
+const TM_CAP: Record<string, { ref: string; factor: number }> = {
+  "005930": { ref: "maxOther", factor: 1.2 },  // 삼성전자 = 최대 비초대형주 × 1.2
+  "000660": { ref: "maxOther", factor: 1.2 },  // SK하이닉스 = 최대 비초대형주 × 1.2
+  "009150": { ref: "011070", factor: 2.0 },    // 삼성전기 = LG이노텍 × 2
+};
 
 type PlotlyEvt = { points?: { id?: string; customdata?: (string | number)[] }[]; event?: MouseEvent };
 
 // 포트폴리오 대시보드(go.Treemap) 그대로 이식 — Plotly.js 트리맵.
 // ROOT→구분→단계→세부분류→기업, 프레임 색(#5b6b7f/#6c7a8c/#7e8a9a)·pathbar 드릴 동일.
 // 기업 박스 클릭=주가 / 그룹 클릭=확대, 같은 그룹 재클릭=원래대로. 세부분류·기업 호버=경쟁사 수익률.
-function IndustryTreemap({ companies, onPick }: { companies: IndustryCompany[]; onPick: (t: string) => void }) {
+function IndustryTreemap({ companies, onPick, rootId = ROOT_ID }:
+  { companies: IndustryCompany[]; onPick: (t: string) => void; rootId?: string }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const levelRef = useRef<string>(ROOT_ID);
+  const levelRef = useRef<string>(rootId);
   const pickRef = useRef(onPick); pickRef.current = onPick;
   const [hover, setHover] = useState<{ stage: string; detail: string; x: number; y: number } | null>(null);
 
   useEffect(() => {
     const el = ref.current;
-    // 완성차(Downstream)는 시총이 너무 커 배터리 소형주를 가려 트리맵에서 제외 —
-    // 좌측 표(companies 전체)에는 그대로 표시됨. 트리맵 폭도 Midstream 끝으로 한정됨.
-    const valid = companies.filter((c) => c.cap && c.cap > 0 && c.gu !== "Downstream");
+    // 2차전지만 완성차(Downstream) 시총이 너무 커 배터리 소형주를 가려 트리맵에서 제외.
+    // 다른 산업은 Downstream(반도체 후공정·기판, 전자부품 카메라모듈, 금융 카드·핀테크 등)도 포함.
+    const valid = companies.filter((c) => c.cap && c.cap > 0
+      && !(rootId === "2차전지" && c.gu === "Downstream"));
     if (!el || valid.length === 0) return;
+    // 타일 표시 크기 보정값(TM_CAP) 계산 — 실제 시총은 보존, 표시 크기만 제한.
+    const capTickers = new Set(Object.keys(TM_CAP));
+    const maxOther = Math.max(0, ...valid.filter((c) => !capTickers.has(c.ticker)).map((c) => c.cap || 0));
+    const capById = new Map(valid.map((c) => [c.ticker, c.cap || 0]));
+    const sizeOf = (c: IndustryCompany): number => {
+      const cap = c.cap || 0;
+      const rule = TM_CAP[c.ticker];
+      if (!rule) return cap;
+      const base = rule.ref === "maxOther" ? maxOther : (capById.get(rule.ref) || 0);
+      const s = base * rule.factor;
+      return s > 0 ? s : cap;   // 기준이 없으면(폴백) 실제 시총
+    };
 
     const ids: string[] = [], labels: string[] = [], parents: string[] = [];
     const values: number[] = [], colors: string[] = [], texts: string[] = [];
@@ -67,13 +88,15 @@ function IndustryTreemap({ companies, onPick }: { companies: IndustryCompany[]; 
       tsizes.push(fsize); tcolors.push(fcolor);
       lcolors.push(value > 0 ? "#000000" : "#3f4653");   // 개별 기업(leaf) 테두리=검정 / 프레임=진회색
     };
-    add(ROOT_ID, ROOT_ID, "", 0, FRAME, "", [sumT(valid), "", "", ""]);
+    add(rootId, rootId, "", 0, FRAME, "", [sumT(valid), "", "", ""]);
     for (const gu of GU_ORDER) {
       const inGu = valid.filter((c) => c.gu === gu);
       if (!inGu.length) continue;
-      const gid = `${ROOT_ID}/${gu}`;
-      add(gid, gu, ROOT_ID, 0, FRAME, "", [sumT(inGu), "", "", ""]);
-      for (const dan of STAGE_ORDER) {
+      const gid = `${rootId}/${gu}`;
+      add(gid, gu, rootId, 0, FRAME, "", [sumT(inGu), "", "", ""]);
+      // 단계는 산업마다 달라 하드코딩 목록 대신 **데이터에서** 추출(백엔드가 이미 단계순 정렬).
+      const stagesInGu = [...new Set(inGu.map((c) => c.stage))];
+      for (const dan of stagesInGu) {
         const inDan = inGu.filter((c) => c.stage === dan);
         if (!inDan.length) continue;
         const did = `${gid}/${dan}`;
@@ -87,16 +110,22 @@ function IndustryTreemap({ companies, onPick }: { companies: IndustryCompany[]; 
           add(dtid, det, did, 0, colorByChg(wchg), "", [sumT(inDet), "", dan, det]);
           for (const c of inDet) {
             const cap = c.cap || 0;
+            // 초대형주는 표시 크기를 TM_CAP 규칙으로 제한(툴팁·M/S는 실제값).
+            const sizeVal = sizeOf(c);
             const lsize = Math.min(22, Math.max(12, Math.round((Math.log10(cap || 1) - 11) * 5 + 12)));
-            add(`${dtid}/${c.ticker}`, `<b>${c.name}</b>`, dtid, cap, colorByChg(c.chg),
+            add(`${dtid}/${c.ticker}`, `<b>${c.name}</b>`, dtid, sizeVal, colorByChg(c.chg),
               pct(c.chg, 1),                                  // 타일엔 등락%만(Finviz식 라벨+%)
               [tril(cap), c.ticker, c.stage, c.detail], lsize, "#ffffff");
           }
         }
       }
     }
+    // 산업 전환 시 levelRef가 이전 산업의 노드를 가리키면(현재 ids에 없음) 루트로 리셋 → 빈 화면 방지
+    if (!ids.includes(levelRef.current)) levelRef.current = rootId;
     const trace = {
       type: "treemap", ids, labels, parents, values, text: texts, customdata: cdata,
+      // sort:false → 크기순 자동정렬 끔. 삽입 순서(Upstream→Midstream→Downstream, 단계·세부분류 순) 유지.
+      sort: false,
       level: levelRef.current, branchvalues: "remainder", texttemplate: "%{label}<br>%{text}",
       marker: { colors, line: { width: 0.5, color: lcolors }, pad: { t: 24, l: 2, r: 2, b: 2 } },
       textfont: { size: tsizes, color: tcolors }, textposition: "middle center", tiling: { pad: 1 },
@@ -106,15 +135,21 @@ function IndustryTreemap({ companies, onPick }: { companies: IndustryCompany[]; 
     const layout = { height: 900, margin: { t: 4, b: 4, l: 4, r: 4 }, paper_bgcolor: "#0c0f15" };
     const config = { displayModeBar: false, responsive: true };
     Plotly.react(el, [trace], layout, config).then(() => {
-      const gd = el as unknown as { _wired?: boolean; on: (e: string, cb: (d: PlotlyEvt) => boolean | void) => void };
-      if (gd._wired) return;
-      gd._wired = true;
+      // 산업 전환·재렌더마다 핸들러를 새로 배선 — 기존 핸들러를 제거하지 않으면 첫 산업(2차전지)
+      // 데이터에 고정된(stale closure) 핸들러가 남아 클릭/hover가 옛 트리맵으로 동작한다.
+      const gd = el as unknown as {
+        on: (e: string, cb: (d: PlotlyEvt) => boolean | void) => void;
+        removeAllListeners?: (e: string) => void;
+      };
+      gd.removeAllListeners?.("plotly_treemapclick");
+      gd.removeAllListeners?.("plotly_hover");
+      gd.removeAllListeners?.("plotly_unhover");
       gd.on("plotly_treemapclick", (d) => {
         const pt = d.points?.[0];
         const ticker = pt?.customdata?.[1] as string;
         if (ticker) { pickRef.current(ticker); return false; }      // 기업 → 주가(드릴 막음)
-        const id = pt?.id || ROOT_ID;                                // 그룹 → 확대 / 같은 노드 재클릭 → 원래대로
-        levelRef.current = id === levelRef.current ? ROOT_ID : id;
+        const id = pt?.id || rootId;                                // 그룹 → 확대 / 같은 노드 재클릭 → 원래대로
+        levelRef.current = id === levelRef.current ? rootId : id;
         Plotly.react(el, [{ ...trace, level: levelRef.current }], layout, config);
         return false;
       });
@@ -161,7 +196,7 @@ function IndustryTreemap({ companies, onPick }: { companies: IndustryCompany[]; 
       });
       gd.on("plotly_unhover", () => { setHover(null); highlight(null); });
     });
-  }, [companies]);
+  }, [companies, rootId]);
 
   useEffect(() => () => { const el = ref.current; if (el) Plotly.purge(el); }, []);
 
@@ -902,6 +937,7 @@ export function CompanyPriceChart({ ticker }: { ticker: string }) {
 export function PeerAnalysis({ ticker }: { ticker: string }) {
   const navigate = useNavigate();
   const [companies, setCompanies] = useState<IndustryCompany[]>([]);
+  const [indName, setIndName] = useState<string | null>(null);   // 현재 종목이 속한 산업명
   const [busy, setBusy] = useState(false);
   const [fStage, setFStage] = useState<string | null>(null);
   const [fDetail, setFDetail] = useState<string | null>(null);
@@ -912,18 +948,31 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
     else { setSortKey(k); setSortDir("desc"); }
   };
 
+  // 현재 종목이 속한 산업을 자동 인식해 그 산업의 경쟁사(밸류체인)를 로드. 종목 변경 시 재조회.
   useEffect(() => {
+    let alive = true;
     setBusy(true);
-    api.industryDetail("2차전지")
-      .then((d) => {
-        setCompanies(d.companies || []);
-        api.industryEbitda("2차전지")
-          .then((m) => setCompanies((cur) => cur.map((c) => m[c.ticker] ? { ...c, ...m[c.ticker] } : c)))
-          .catch(() => { /* 무시 */ });
+    setCompanies([]);
+    api.industryOf(ticker)
+      .then((r) => {
+        if (!alive) return;
+        const nm = r.industry;
+        setIndName(nm);
+        if (!nm) { setBusy(false); return; }   // 어느 산업에도 없음 → 빈 상태
+        api.industryDetail(nm)
+          .then((d) => {
+            if (!alive) return;
+            setCompanies(d.companies || []);
+            api.industryEbitda(nm)
+              .then((m) => { if (alive) setCompanies((cur) => cur.map((c) => m[c.ticker] ? { ...c, ...m[c.ticker] } : c)); })
+              .catch(() => { /* 무시 */ });
+          })
+          .catch(() => { /* 무시 */ })
+          .finally(() => { if (alive) setBusy(false); });
       })
-      .catch(() => { /* 무시 */ })
-      .finally(() => setBusy(false));
-  }, []);
+      .catch(() => { if (alive) setBusy(false); });
+    return () => { alive = false; };
+  }, [ticker]);
 
   // 현재 종목이 속한 단계를 기본 필터로(밸류체인에 없으면 전체)
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -940,14 +989,17 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
     background: active ? "rgba(79,143,245,0.16)" : undefined,
     fontWeight: active ? 700 : 400, color: active ? "#1668c4" : undefined,
   });
-  const stagesPresent = STAGE_ORDER.filter((st) => companies.some((c) => c.stage === st));
   const detailsOf = (st: string) => [...new Set(companies.filter((c) => c.stage === st).map((c) => c.detail))];
   const filtered = fStage === ALL
     ? companies
     : fStage
       ? companies.filter((c) => c.stage === fStage && (!fDetail || c.detail === fDetail))
       : [];
-  const COLS: { key: string; label: string; align: "left" | "right"; num: boolean;
+  // M/S(세부분류 내 시총 점유율)는 같은 세부분류 안에서만 합계 100%.
+  // 세부분류가 하나뿐인 단계(배터리·장비 등)는 단계 자체가 한 세부분류 → 표시. 여럿(소재)이면
+  // 특정 세부분류 선택 시에만 표시. '전체'에선 항상 숨김.
+  const showMs = !!fDetail || (!!fStage && fStage !== ALL && detailsOf(fStage).length === 1);
+  const ALL_COLS: { key: string; label: string; align: "left" | "right"; num: boolean;
     get: (c: IndustryCompany) => number | string | null }[] = [
     { key: "name", label: "기업 (세부분류)", align: "left", num: false, get: (c) => c.name },
     { key: "product", label: "주요제품", align: "left", num: false, get: (c) => c.product },
@@ -960,6 +1012,14 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
     { key: "ebitda", label: "EBITDA", align: "right", num: true, get: (c) => c.ebitda },
     { key: "ebitda_margin", label: "EBITDA Margin (%)", align: "right", num: true, get: (c) => c.ebitda_margin },
   ];
+  const COLS = ALL_COLS.filter((c) => c.key !== "ms" || showMs);
+  // 단계를 구분(Upstream/Midstream/Downstream)으로 묶기 — 단계는 산업마다 달라 데이터에서 추출
+  // (백엔드가 _GU_ORDER→_DAN_ORDER로 정렬해 줘서 등장 순서가 곧 올바른 단계 순서).
+  const stagesByGu: Record<string, string[]> = {};
+  for (const gu of GU_ORDER) {
+    const sts = [...new Set(companies.filter((c) => c.gu === gu).map((c) => c.stage))];
+    if (sts.length) stagesByGu[gu] = sts;
+  }
   const col = COLS.find((x) => x.key === sortKey);
   const sorted = col ? [...filtered].sort((a, b) => {
     const va = col.get(a), vb = col.get(b);
@@ -976,31 +1036,46 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
 
   if (busy && companies.length === 0)
     return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>경쟁사 데이터 불러오는 중…</p>;
+  if (!busy && !indName)
+    return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>이 종목은 등록된 산업 밸류체인 데이터에 없습니다. (현재 지원: 2차전지·반도체·전자부품·건설·금융)</p>;
 
   return (
     <>
-      <div style={{ marginBottom: 10 }}>
-        {/* 단계(대분류) 칩 */}
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+      {indName && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>
+        <b style={{ color: "var(--accent-strong)" }}>{indName}</b> 밸류체인 내 경쟁사</div>}
+      <div style={{ marginBottom: 12 }}>
+        {/* 전체 + 구분(Upstream/Midstream/Downstream)별 단계 그룹 */}
+        <div style={{ marginBottom: 6 }}>
           <button type="button" className="ghost sm"
             onClick={() => { setFStage(ALL); setFDetail(null); }}
             style={chip(fStage === ALL)}>전체</button>
-          {stagesPresent.map((st) => (
-            <button key={st} type="button" className="ghost sm"
-              onClick={() => { setFStage(st === fStage ? null : st); setFDetail(null); }}
-              style={chip(fStage === st)}>{st}</button>
-          ))}
         </div>
-        {/* 선택 단계의 세부분류 — 단계 아래에 들여쓰기 + 좌측 라인으로 '소재의 하위 항목'임을 표시 */}
+        {GU_ORDER.filter((gu) => stagesByGu[gu]).map((gu) => (
+          <div key={gu} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 5, flexWrap: "wrap" }}>
+            <span style={{ width: 86, flexShrink: 0, color: "var(--muted)", fontSize: 10.5,
+              fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>{gu}</span>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {stagesByGu[gu].map((st) => (
+                <button key={st} type="button" className="ghost sm"
+                  onClick={() => { setFStage(st === fStage ? null : st); setFDetail(null); }}
+                  style={chip(fStage === st)}>{st}</button>
+              ))}
+            </div>
+          </div>
+        ))}
+        {/* 선택 단계의 세부분류 — 별도 음영 박스로 명확히 구분 */}
         {fStage && fStage !== ALL && detailsOf(fStage).length > 1 && (
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center",
-            marginTop: 7, marginLeft: 12, paddingLeft: 12, borderLeft: "2px solid var(--accent)" }}>
-            <span style={{ color: "var(--muted)", fontSize: 11.5, fontWeight: 600 }}>↳ {fStage} 세부분류</span>
-            <button type="button" className="ghost sm" onClick={() => setFDetail(null)} style={chip(!fDetail)}>전체</button>
-            {detailsOf(fStage).map((d) => (
-              <button key={d} type="button" className="ghost sm"
-                onClick={() => setFDetail(d === fDetail ? null : d)} style={chip(fDetail === d)}>{d}</button>
-            ))}
+          <div style={{ marginTop: 8, marginLeft: 94, padding: "8px 12px",
+            background: "var(--accent-soft)", border: "1px solid var(--border)", borderRadius: 8 }}>
+            <div style={{ color: "var(--muted)", fontSize: 10.5, fontWeight: 700,
+              letterSpacing: "0.04em", marginBottom: 6 }}>{fStage} · 세부분류</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <button type="button" className="ghost sm" onClick={() => setFDetail(null)} style={chip(!fDetail)}>전체</button>
+              {detailsOf(fStage).map((d) => (
+                <button key={d} type="button" className="ghost sm"
+                  onClick={() => setFDetail(d === fDetail ? null : d)} style={chip(fDetail === d)}>{d}</button>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -1035,7 +1110,7 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
                   <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {c.ticker} · {c.detail}</span></td>
                 <td style={{ padding: "6px", color: "var(--muted)", fontSize: 12 }}>{c.product}</td>
                 <td style={{ padding: "6px", textAlign: "right" }}>{eok(c.cap)}</td>
-                <td style={{ padding: "6px", textAlign: "right", color: "var(--muted)" }}>{c.ms != null ? `${c.ms.toFixed(1)}%` : "—"}</td>
+                {showMs && <td style={{ padding: "6px", textAlign: "right", color: "var(--muted)" }}>{c.ms != null ? `${c.ms.toFixed(1)}%` : "—"}</td>}
                 <td style={{ padding: "6px", textAlign: "right", color: c.chg == null ? "var(--muted)" : c.chg >= 0 ? UP : DOWN }}>{pct(c.chg, 1)}</td>
                 <td style={{ padding: "6px", textAlign: "right" }}>{eok(c.revenue)}</td>
                 <td style={{ padding: "6px", textAlign: "right", color: c.op != null && c.op < 0 ? DOWN : "inherit" }}>{eok(c.op)}</td>
@@ -1055,34 +1130,44 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
 export default function IndustryAnalysis() {
   const navigate = useNavigate();
   const [data, setData] = useState<IndustryData | null>(null);
+  const [root, setRoot] = useState("2차전지");   // 선택된 산업(트리맵 탭)
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [asOfReq, setAsOfReq] = useState("");   // 트리맵 기준일(yyyy-mm-dd, ""=최신 거래일)
   const [refreshing, setRefreshing] = useState(false);
   const [searchQ, setSearchQ] = useState("");   // 트리맵 기업 검색어
 
-  // EBITDA 지연 로딩 — 트리맵·표가 먼저 뜬 뒤 FnGuide D&A를 받아 표에 병합.
+  // 지연 로딩 — 트리맵(벌크 시총으로 즉시)이 뜬 뒤 느린 데이터를 받아 병합.
+  // EBITDA = FnGuide D&A, 기간수익률(hover) = 종목별 DataReader. 둘 다 비차단.
   const mergeEbitda = () => {
-    api.industryEbitda("2차전지")
+    api.industryEbitda(root)
       .then((m) => setData((cur) => cur
         ? { ...cur, companies: cur.companies.map((c) => m[c.ticker] ? { ...c, ...m[c.ticker] } : c) }
+        : cur))
+      .catch(() => { /* 무시 */ });
+  };
+  const mergeReturns = () => {
+    api.industryReturns(root)
+      .then((m) => setData((cur) => cur
+        ? { ...cur, companies: cur.companies.map((c) => m[c.ticker] ? { ...c, ret: m[c.ticker] } : c) }
         : cur))
       .catch(() => { /* 무시 */ });
   };
 
   useEffect(() => {
     setBusy(true);
-    api.industryDetail("2차전지", asOfReq || undefined)
-      .then((d) => { setData(d); setErr(""); mergeEbitda(); })
+    api.industryDetail(root, asOfReq || undefined)
+      .then((d) => { setData(d); setErr(""); mergeEbitda(); mergeReturns(); })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setBusy(false));
-  }, [asOfReq]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asOfReq, root]);
 
   // 새로고침 — 서버 주가 캐시를 비우고 실시간 시세로 재조회
   const doRefresh = () => {
     setRefreshing(true);
-    api.industryDetail("2차전지", asOfReq || undefined, true)
-      .then((d) => { setData(d); setErr(""); mergeEbitda(); })
+    api.industryDetail(root, asOfReq || undefined, true)
+      .then((d) => { setData(d); setErr(""); mergeEbitda(); mergeReturns(); })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setRefreshing(false));
   };
@@ -1092,7 +1177,7 @@ export default function IndustryAnalysis() {
   const pickCompany = (ticker: string) => navigate(`/dashboard?symbol=${ticker}`);
   // 제목 표기 — 밸류체인(트리맵 표시분=Downstream 제외) 시총 합계. 기준일은 달력 입력으로.
   const tmTotal = companies
-    .filter((c) => c.gu !== "Downstream" && c.cap && c.cap > 0)
+    .filter((c) => c.cap && c.cap > 0 && !(root === "2차전지" && c.gu === "Downstream"))
     .reduce((s, c) => s + (c.cap || 0), 0);
   const totalAmt = tmTotal > 0 ? `${(tmTotal / 1e12).toFixed(1)}조` : "";   // '원' 제거
   const maxDate = new Date().toISOString().slice(0, 10);   // 미래 일자 선택 방지
@@ -1101,17 +1186,20 @@ export default function IndustryAnalysis() {
     <div className="dashboard-fullwidth industry-67">
       <h1>Industry Analysis</h1>
 
-      {/* 산업 탭 (현재 2차전지, 이후 확장) */}
-      <div style={{ display: "flex", gap: 6, margin: "4px 0 12px" }}>
-        {(data?.available || ["2차전지"]).map((nm) => (
-          <span key={nm} style={{ fontSize: 13, fontWeight: 700, padding: "5px 14px", borderRadius: 999,
-            background: "rgba(79,143,245,0.14)", border: "1px solid rgba(79,143,245,0.5)", color: "#1668c4" }}>
-            {nm}
-          </span>
-        ))}
-        <span style={{ fontSize: 12, color: "var(--muted)", alignSelf: "center" }}>
-          반도체·AI·모빌리티 등은 추후 동일 구조로 확장 예정
-        </span>
+      {/* 산업 탭 — 클릭 시 해당 산업 트리맵으로 전환 */}
+      <div style={{ display: "flex", gap: 6, margin: "4px 0 12px", flexWrap: "wrap" }}>
+        {(data?.available || ["2차전지", "반도체", "전자부품", "건설", "금융"]).map((nm) => {
+          const on = nm === root;
+          return (
+            <button key={nm} type="button" onClick={() => { if (nm !== root) { setRoot(nm); setAsOfReq(""); } }}
+              style={{ fontSize: 13, fontWeight: 700, padding: "5px 14px", borderRadius: 999, cursor: "pointer",
+                background: on ? "rgba(79,143,245,0.22)" : "transparent",
+                border: `1px solid ${on ? "rgba(79,143,245,0.7)" : "var(--border)"}`,
+                color: on ? "#1668c4" : "var(--muted)" }}>
+              {nm}
+            </button>
+          );
+        })}
       </div>
 
       {err && <div className="error">{err}</div>}
@@ -1122,7 +1210,7 @@ export default function IndustryAnalysis() {
           {/* 밸류체인 시가총액 트리맵 */}
           <div className="panel" style={{ position: "relative" }}>
             <h3 style={{ marginTop: 0, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span>EV/Battery Value-chain{totalAmt && " - "}
+              <span>{root} 밸류체인{totalAmt && " - "}
                 {totalAmt && <span style={{ color: "var(--accent)" }}>{totalAmt}</span>}</span>
               <span style={{ fontWeight: 400, fontSize: "16pt", color: "var(--muted)" }}>as of</span>
               <input type="date" value={asOfReq || (data?.as_of || "")} max={maxDate}
@@ -1179,7 +1267,7 @@ export default function IndustryAnalysis() {
                 );
               })()}
             </div>
-            <IndustryTreemap companies={companies} onPick={pickCompany} />
+            <IndustryTreemap companies={companies} onPick={pickCompany} rootId={root} />
             {/* 증감률별 셀 색상 범례 — 트리맵 우측 하단 */}
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 0, marginTop: 6 }}>
               {[-3, -2, -1, 0, 1, 2, 3].map((v) => (

@@ -687,6 +687,35 @@ def _refresh_financials() -> None:
     Financials 탭은 이 저장본을 즉시 서빙(로딩 없음). 출처 FnGuide(전자공시 집계·키 불필요)."""
     from . import financials
     financials.refresh_all(_industry_tickers())
+    financials.clear_cache()                   # 새 저장본이 즉시 반영되도록 메모리 캐시 무효화
+
+
+def _initial_financials_prewarm() -> None:
+    """기동 시 산업 종목 재무제표를 메모리·디스크에 미리 데움 — Financials 첫 진입을 즉시화."""
+    try:
+        from . import financials
+        n = financials.prewarm(_industry_tickers())
+        _log.info("재무제표 프리워밍 완료 — %d종목", n)
+    except Exception:
+        _log.exception("재무제표 프리워밍 예외")
+
+
+def _initial_industry_prewarm() -> None:
+    """기동 시 산업분석 트리맵 가격·시총을 미리 데움 — 재시작 후 첫 진입 콜드 로딩(라이브 FDR) 제거.
+
+    트리맵 시총/등락은 _industry(=_returns DataReader + _shares)로 라이브 계산돼 _day 키로
+    메모리 캐시된다. 재시작하면 캐시가 비어 첫 진입마다 수십 종목 시세를 라이브 조회(느림).
+    기동 시 전 산업을 백그라운드로 데워 둬 첫 진입부터 즉시 뜨게 한다(가격 cron과 별개·기동용)."""
+    try:
+        from . import industry
+        for name in industry.INDUSTRIES:
+            try:
+                industry.industry(name)
+            except Exception:
+                _log.exception("산업 트리맵 프리워밍 실패: %s", name)
+        _log.info("산업 트리맵 프리워밍 완료 — %d개 산업", len(industry.INDUSTRIES))
+    except Exception:
+        _log.exception("산업 트리맵 프리워밍 예외")
 
 
 def _refresh_industry_prices() -> None:
@@ -697,7 +726,9 @@ def _refresh_industry_prices() -> None:
     금일 종가와 불일치하던 문제를 이 cron이 해소한다. refresh_prices는 가격 캐시만 비우고
     느린 D&A·상장주식수 캐시는 보존하므로(재조회 X) 가볍다."""
     from . import industry
+    from .routers import market
     industry.refresh_prices()
+    market.clear_price_cache()                # symbol_detail 원시 시세 캐시도 함께 무효화(금일 종가 정합)
     for name in industry.INDUSTRIES:          # 공식 종가로 즉시 재구성 → 다음 조회부터 정확
         try:
             industry.industry(name)
@@ -903,6 +934,10 @@ async def lifespan(app: FastAPI):
     # refresh '완료' 이벤트로 수행 — _package_bundle docstring 참조.
     _log.info("미국 시가총액 초기 fetch thread 시작")
     threading.Thread(target=_initial_us_market_caps, daemon=True).start()
+    _log.info("재무제표 프리워밍 thread 시작")
+    threading.Thread(target=_initial_financials_prewarm, daemon=True).start()
+    _log.info("산업 트리맵 프리워밍 thread 시작")
+    threading.Thread(target=_initial_industry_prewarm, daemon=True).start()
     _log.info("선물 grid 워머 thread 시작")
     futures.start_grid_warmer()
 
@@ -929,6 +964,9 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
+    # 로컬 개발에서 앱이 localhost / 127.0.0.1 / [::1] 어느 쪽으로 열려도 CORS 통과(포트 무관).
+    # Windows에서 vite가 IPv6(::1)에 떠 origin이 http://[::1]:5173일 수 있어 정적 목록만으론 막힘.
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1|\[::1\]):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
