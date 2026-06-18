@@ -12,6 +12,7 @@
 - **scheduled는 당일청산 불가** → `scheduled + long_short + hold_days=0` 조합은 backtest≠live였다. NL 컴파일러가 비랭킹·당일매매를 `on_signal`로 강제 라우팅해 닫음.
 - **NL·웹 라이브 검증은 로그인 자격 경계로 자동검증 불가**(사용자 세션 필요). 프로덕션 검증 = 로그인된 `quantman.vercel.app` 페이지에서 `localStorage.qp_token` Bearer로 `quantman-production.up.railway.app` 호출.
 - **⚠ 청산 단위 = 퍼센트, 비용 단위 = 분수.** `take_profit`/`stop_loss`/`trail_pct`는 **퍼센트**(7 = 7%) — 엔진 `cur_ret=(close-entry)/entry*100`과 직접 비교(engine `price_exit_reason`), spec M-exit가 "(%)"로, 컴파일러 few-shot이 `15`/`-7`로 못박음. 반면 `commission`/`slippage`/`sell_tax`만 **분수**(0.0003). `explain.py`가 tp/sl을 분수로 오해해 `_frac_pct`(×100)로 포맷 → "700% 익절" 프로덕션 표시 버그였다(엔진 무관 표시-only). 새 % 필드를 explain에 추가할 땐 이미-퍼센트면 `_pct`, 분수면 `_frac_pct` — 헷갈리면 엔진 비교식의 단위를 진실원천으로.
+- **⚠ 선물 백테스트 0거래 = 자본 부족(증거금)일 수 있다 — 엔진 버그로 오진 말 것.** 선물 진입예산 = 초기자본 × `Sizing.futures_margin_pct`(기본 20%), 1계약 증거금 = 가격×승수×개시증거금률(코스피200선물 ≈ 300pt×250,000×0.10 = 750만). 예산<증거금이면 `_open`이 `int(예산/증거금)=0`으로 **조용히 0거래**(전 구간 0.0)를 내, 크로스에셋·캘린더·컴파일 문제로 오인하기 쉽다(실제로 그렇게 2번 오진함). **진단 = 자본 스윕**(1천만→1억→10억; 거래수가 0→증가하면 자본 문제 확정) + `is_futures`/`instrument_spec`로 승수·증거금률 확인. 엔진 증거금 사이징은 라이브(`live.event_buy_qty`)와 **동일 식·정상**. 기본자본은 1억(`SimSpec`·컴파일러 few-shot)이라 코스피200선물도 기본 진입 가능, `service._futures_capital_warning`이 그래도 부족하면 명시 경고.
 
 ## 현재 구조 (안정)
 

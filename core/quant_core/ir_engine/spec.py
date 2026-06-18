@@ -125,7 +125,9 @@ class PositionSpec(BaseModel):
 # ── 시뮬레이션 (비전 §3.5) ────────────────────────────────────────────────────
 
 class SimSpec(BaseModel):
-    initial_capital: float = 10_000_000.0
+    # 기본 1억 — 고승수 지수선물(코스피200선물 1계약 증거금 ≈7,500만=승수25만×~300pt×개시증거금률0.1)도
+    # 진입 가능하도록. 주식은 %수익이라 자본 스케일에 불변(골든은 모두 자본 명시라 무영향).
+    initial_capital: float = 100_000_000.0
     delay: int = 1                      # 신호→체결 지연(거래일). look-ahead 방지.
     # next_open=익일 시가, close=당일 종가, typical=당일 (고+저+종)/3 일봉 VWAP 근사.
     # (진짜 intraday VWAP·N분 평균은 분봉 데이터 필요 — 현재 데이터 범위 밖, 가짜 폴백 안 함.)

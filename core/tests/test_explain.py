@@ -101,7 +101,7 @@ def test_signal_bucket_shows_type_and_indicators():
 def test_default_capital_is_default():
     cap = _item(_bucket(explain_ir(_make_ir()), "environment"), "초기 자본")
     assert cap["provenance"] == "기본"
-    assert "10,000,000" in cap["value"]
+    assert "100,000,000" in cap["value"]            # 기본 1억(선물 진입 가능 자본)
 
 
 def test_always_mode_marks_exit_not_applicable():
@@ -124,7 +124,7 @@ def test_summary_is_readable_prose():
     assert "공매도" in s or "숏" in s            # direction=short 반영
     assert "리밸런싱" in s                       # scheduled 반영
     assert "0.03%" in s                          # 비용 기본가정이 산문에도 명시
-    assert "10,000,000원" in s                   # 자본 기본값
+    assert "100,000,000원" in s                  # 자본 기본값(1억)
     assert "10% 익절" in s and "1000%" not in s  # 익절/손절 퍼센트 — ×100 회귀 차단
 
 
