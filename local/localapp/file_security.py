@@ -47,14 +47,22 @@ def _restrict_windows(path: Path) -> None:
     `/inheritance:r`로 부모 디렉터리의 ACE 상속 제거,
     `/grant:r {user}:F`로 사용자 권한만 부여(기존 grant 교체).
     `/q /c`로 출력 억제·에러 계속.
+
+    CREATE_NO_WINDOW: 콘솔 없는 GUI 앱(MyStock)에서 icacls 자식이 콘솔창을 깜빡
+    띄우는 것을 막는다. `/q /c`는 icacls *출력*만 억제할 뿐 창 자체는 못 막는다.
+    save_json이 사이클·체결마다 ledger·equity·pending을 os.replace 후 다시 보안
+    적용하며 이 함수를 반복 호출하므로, 플래그가 없으면 그 시각마다 콘솔이 깜빡인다.
+    (updater.py도 같은 플래그로 detached 자식의 창을 숨긴다.)
     """
     user = os.getenv("USERNAME") or os.getenv("USER")
     if not user:
         return
+    CREATE_NO_WINDOW = 0x08000000   # Windows 전용 — 이 함수는 win32에서만 호출됨
     subprocess.run(
         ["icacls", str(path),
          "/inheritance:r",
          "/grant:r", f"{user}:F",
          "/q", "/c"],
         capture_output=True, timeout=5, check=False,
+        creationflags=CREATE_NO_WINDOW,
     )
