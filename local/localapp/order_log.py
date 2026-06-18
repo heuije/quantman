@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
-from .config import CYCLES_PATH, ORDERS_PATH, SLIPPAGE_PATH
+from .config import CYCLES_PATH, ORDERS_PATH, SLIPPAGE_PATH, TRADES_PATH
 from .state_store import append_jsonl, save_json
 
 log = logging.getLogger("localapp.orderlog")
@@ -93,6 +93,57 @@ def read_orders(limit: int = 100) -> list[dict]:
         if len(rows) >= limit:
             break
     return rows
+
+
+# ── 실현손익 조인 (주문 내역 화면용) ────────────────────────────────────────────
+# realized_pnl의 진실원천은 trades.jsonl(청산 정산)이다. orders.jsonl(주문 이벤트)에는
+# 손익이 없으므로, 주문 내역 화면이 체결행에 손익을 보이려면 둘을 조인한다. 두 파일은
+# trader._apply_fill의 같은 호출에서 같은 (날짜·side·종목·수량·체결가)로 기록돼 키가
+# 일치한다. realized_pnl은 청산(선물 정산·숏 환매)에만 존재 — 진입·주식매도엔 없어
+# 그런 행은 손익이 매핑에 없다(화면에서 '—'). 표시 전용이라 트레이딩·락 경로 무변경.
+
+def _trade_key(date: str, side: str, symbol: str, qty, price) -> tuple:
+    """orders.jsonl 체결행 ↔ trades.jsonl 거래를 잇는 조인 키.
+
+    date는 ISO(orders) 또는 'YYYY-MM-DD'(trades) 어느 쪽이든 앞 10자만 쓴다."""
+    try:
+        p = round(float(price), 4)
+    except (TypeError, ValueError):
+        p = None
+    try:
+        q = int(qty)
+    except (TypeError, ValueError):
+        q = qty
+    return ((date or "")[:10], side, symbol, q, p)
+
+
+def realized_pnl_index() -> dict:
+    """trades.jsonl을 1회 스캔해 조인키→realized_pnl 매핑을 만든다.
+
+    청산 거래에만 realized_pnl이 있어 그 외 거래는 매핑에 없다(주문 내역 손익 '—').
+    파일 부재·파싱 실패는 빈 dict/skip — 화면 갱신을 깨지 않는다(best-effort)."""
+    if not TRADES_PATH.exists():
+        return {}
+    try:
+        lines = TRADES_PATH.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return {}
+    idx: dict[tuple, float] = {}
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            t = json.loads(line)
+        except Exception:
+            continue
+        pnl = t.get("realized_pnl")
+        side = t.get("action")
+        if pnl is None or side not in ("buy", "sell"):
+            continue
+        idx[_trade_key(t.get("ts", ""), side, t.get("symbol", ""),
+                       t.get("qty", 0), t.get("price"))] = pnl
+    return idx
 
 
 # ── 사이클 의사결정 ────────────────────────────────────────────────────────────

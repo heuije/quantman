@@ -608,9 +608,10 @@ class Trader:
                                           + fill_price * filled_qty) / total
                     lg["qty"] = total
                 elif lg is not None:
-                    # 롱 청산/축소 — 선물이면 정산손익 = (청산−진입)×계약×승수.
-                    if is_fut:
-                        realized = (fill_price - lg["entry_price"]) * filled_qty * mult
+                    # 롱 청산/축소 — 실현손익 = (청산−진입)×수량×승수. 선물 승수=계약승수,
+                    # 주식 승수=1이라 같은 식으로 주식 실현손익도 계산(주문 내역 손익 표시용,
+                    # 수수료·세금 차감 전 총액 — 선물 정산손익과 동일 규약).
+                    realized = (fill_price - lg["entry_price"]) * filled_qty * mult
                     lg["qty"] -= filled_qty
                     if lg["qty"] <= 0:
                         del self.ledger[sid]
