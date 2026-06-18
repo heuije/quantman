@@ -262,11 +262,12 @@ def ir_strategy(body: dict, user: User = Depends(get_current_user),
 @router.post("/strategy/export.xlsx")
 def ir_strategy_export(body: dict, user: User = Depends(get_current_user),
                        session: Session = Depends(get_session)):
-    """StrategyIR 백테스트(simulate) → 데이터 + 라이브수식 '증빙' 엑셀(.xlsx).
+    """StrategyIR 분석 → 데이터 + (라이브)수식 '증빙' 엑셀(.xlsx).
 
     /ir/strategy 와 같은 본문·실행 경로(LLM 없음 — 토큰 0). 결과만 주지 않고 '어떤 데이터를
-    어떤 연산으로' 산출했는지 엑셀로 증빙한다(선물 export 취지). 현재는 1회 백테스트(simulate)만
-    — 펼침(스윕)·select·describe·extremize 등은 엑셀 형상이 달라 준비 중(P2)이라 400.
+    어떤 연산으로' 산출했는지 엑셀로 증빙한다(선물 export 취지). **전 분석유형 지원** —
+    build_strategy_excel이 결과 형상(simulate·sweep·period·extremize·select·describe·
+    relate·event·signal)별로 전용 시트 구성으로 직렬화한다(메타분석은 감사표).
     """
     dataset, manifest = _load_ir_dataset(body)
     res = strategy_from_spec(
@@ -274,18 +275,15 @@ def ir_strategy_export(body: dict, user: User = Depends(get_current_user),
         manifest=manifest, strict=bool(body.get("strict", False)),
         strategy_resolver=_make_strategy_resolver(session, user))
     if not res.get("success"):
-        raise HTTPException(status_code=400, detail=res.get("error") or "백테스트 실패")
-    # simulate(1회 백테스트, equity/trades 보유)만 — 분석·펼침 결과는 엑셀 템플릿이 다름(P2)
-    if (res.get("axis") or res.get("report") or res.get("reduction") == "extremize"
-            or res.get("query") in ("select", "describe") or res.get("equity") is None):
-        raise HTTPException(
-            status_code=400,
-            detail="엑셀 내보내기는 현재 백테스트(simulate) 분석만 지원합니다 (그 외 유형은 준비 중).")
+        raise HTTPException(status_code=400, detail=res.get("error") or "분석 실행 실패")
     try:
         sir = StrategyIR.model_validate(body)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=f"전략 정의 오류: {e.errors()[0]['msg']}")
-    xlsx = build_strategy_excel(sir, dataset, res)
+    try:
+        xlsx = build_strategy_excel(sir, dataset, res)   # 형상별 디스패치(P2 — 전 분석유형)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"엑셀 내보내기 미지원 형상: {e}")
     # 한글 전략명은 RFC 5987 filename*(UTF-8)로, 호환 위해 ASCII filename 폴백 병기.
     fname = quote(f"{sir.name or 'backtest'}.xlsx")
     return Response(

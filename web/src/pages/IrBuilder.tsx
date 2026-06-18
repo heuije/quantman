@@ -1307,6 +1307,16 @@ export default function IrBuilder() {
 }
 
 function ResultPanel({ result, ir }: { result: IrStrategyResult; ir: Record<string, unknown> | null }) {
+  // 결과 종류 불문(백테스트·스크리닝·진단·스윕·관계 등) 결과 아래 '엑셀로 내보내기' 1회 노출.
+  return (
+    <>
+      <ResultPanelBody result={result} />
+      {ir && <ExcelExportButton ir={ir} />}
+    </>
+  );
+}
+
+function ResultPanelBody({ result }: { result: IrStrategyResult }) {
   if (!result.success) {
     return (
       <div className="panel result-fail">
@@ -1455,7 +1465,6 @@ function ResultPanel({ result, ir }: { result: IrStrategyResult; ir: Record<stri
       {result.equity?.length ? (
         <div style={{ marginTop: 16 }}>
           <EquityChart equity={result.equity} benchmark={result.benchmark} trades={result.trades} />
-          {ir && <ExcelExportButton ir={ir} />}
         </div>
       ) : null}
     </div>

@@ -234,13 +234,17 @@ def run_tool(tool_name: str, tool_input: dict) -> dict:
     {success:False,error}로 — agent 루프가 tool_result로 모델에 피드백.
     """
     if tool_name == "inspect":
-        return run_inspect(tool_input)
+        return run_inspect(tool_input)   # 원시 시계열 dump — IR 없음(엑셀 증빙 대상 아님)
     try:
         ir = assemble_ir(tool_name, tool_input)
     except (ValueError, KeyError, TypeError) as e:
         return {"success": False, "error": f"도구 입력 오류({tool_name}): {e}"}
     dataset = _load_dataset(ir)
-    return strategy_from_spec(ir, dataset)   # valid_refs=None → 엔진이 available_refs 도출
+    res = strategy_from_spec(ir, dataset)   # valid_refs=None → 엔진이 available_refs 도출
+    # 결과에 IR 동봉 → 챗 결과뷰가 '엑셀로 내보내기'(증빙)에 그대로 재사용(simulate와 동일).
+    if isinstance(res, dict) and res.get("success"):
+        res["ir"] = ir
+    return res
 
 
 def _last_simulate_ir(session, conversation_id) -> dict | None:

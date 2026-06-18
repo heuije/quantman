@@ -105,19 +105,48 @@ def build_strategy_excel(
     *,
     name: str | None = None,
 ) -> bytes:
-    """SIMULATE(1회 백테스트) 결과 → 증빙 .xlsx 바이트.
+    """인사이트 엔진 분석 결과 → 증빙 .xlsx 바이트. **결과 형상별 디스패치.**
 
-    ir: 백테스트한 StrategyIR(또는 dict) — '전략 정의' 시트 렌더.
-    dataset: {symbol: OHLCV DataFrame} — 보유종목 종가('원자료' 시트).
-    result: run_strategy_ir/strategy_from_spec 의 *원본* dict(pandas 객체 포함) —
-        equity(Series)·trades(DataFrame)·weight(DataFrame)·metrics(dict) 필요.
+    ir: 분석한 StrategyIR(또는 dict). dataset: {symbol: OHLCV}. result: run_query/
+    strategy_from_spec 의 *원본* dict(pandas 객체 포함). 형상(SIMULATE·SELECT·DESCRIBE·
+    SWEEP·PERIOD·EXTREMIZE·RELATE·EVENT·SIGNAL)에 따라 전용 시트 구성으로 직렬화한다.
     """
+    disp = name or (_ir_dict(ir).get("name") or "전략")
+    q, axis = result.get("query"), result.get("axis")
+    report, reduction = result.get("report"), result.get("reduction")
+    # SIMULATE 1회 백테스트 — equity 보유 & 펼침/리서치 아님(axis 우선 판정: condition도 equity를
+    # 들고 다니므로 axis가 있으면 simulate로 오인하지 않는다 — #169 동일 교훈).
+    if isinstance(result.get("equity"), pd.Series) and not axis and not q:
+        return _build_simulate(ir, dataset, result, disp)
+    if q == "select":
+        return _build_select(ir, dataset, result, disp)
+    if report == "single":
+        return _build_describe_single(ir, dataset, result, disp)
+    if report == "portfolio":
+        return _build_describe_portfolio(ir, dataset, result, disp)
+    if reduction == "extremize":          # axis=parameter/asset + 최적화 — axis 분기보다 먼저
+        return _build_extremize(ir, dataset, result, disp)
+    if axis == "period_split":
+        return _build_period_split(ir, dataset, result, disp)
+    if axis in ("parameter", "asset"):
+        return _build_sweep(ir, dataset, result, disp)
+    if axis == "condition":
+        return _build_condition(ir, dataset, result, disp)
+    if axis == "signal":
+        return _build_signal_dist(ir, dataset, result, disp)
+    if axis == "relation":                # ic / regression
+        return _build_relation(ir, dataset, result, disp)
+    if axis == "time":                    # event study
+        return _build_event(ir, dataset, result, disp)
+    raise ValueError(f"build_strategy_excel: 미지원 결과 형상 (query={q}, axis={axis}, report={report})")
+
+
+def _build_simulate(ir, dataset, result, disp: str) -> bytes:
+    """SIMULATE(1회 백테스트) 결과 → 증빙 .xlsx (P1 — 데이터+라이브수식)."""
     equity = result.get("equity")
     if not isinstance(equity, pd.Series) or equity.empty:
-        raise ValueError("build_strategy_excel: result['equity'] (pd.Series) 필요 — "
-                         "SIMULATE(1회 백테스트) 결과만 지원합니다.")
+        raise ValueError("_build_simulate: result['equity'] (pd.Series) 필요.")
     metrics = result.get("metrics") or {}
-    disp = name or (_ir_dict(ir).get("name") or "전략")
 
     wb = Workbook()
     bold = Font(bold=True)
@@ -362,3 +391,488 @@ def build_strategy_excel(
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# P2 — 형상별 빌더 (select·describe·sweep·period·extremize·relate·event·signal)
+#
+# 메타분석(스윕·기간·최적화·관계·이벤트·분포)은 **'감사표'**: 엔진이 산출한 버킷/윈도
+# 통계를 그대로 직렬화하고 사용 IR·방법론을 함께 실어 '무엇을 어떤 파라미터로 계산했는지'
+# 증빙한다(라이브 수식은 한 시트로 재현 불가 — 각 버킷이 별도 시뮬/추정량). DESCRIBE 종목·
+# 포트폴리오는 데이터→통계를 셀로 재현 가능한 곳(52주 고저·연변동성, HHI·가중밸류)만 라이브.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# PERF_KEYS 표시 순서 (key, 라벨, 숫자서식) — 모든 성과 감사표 공용.
+_PERF_COLS = [
+    ("n", "표본수", "#,##0"), ("cagr", "CAGR(%)", "0.00"), ("cum_return", "누적수익(%)", "0.00"),
+    ("sharpe", "샤프", "0.00"), ("sortino", "소르티노", "0.00"), ("mdd", "MDD(%)", "0.00"),
+    ("mean", "평균일수익(%)", "0.0000"), ("std", "변동(%)", "0.0000"), ("win_rate", "승률(%)", "0.0"),
+    ("payoff_ratio", "페이오프", "0.00"), ("profit_factor", "손익비", "0.00"),
+    ("var_95", "VaR95(%)", "0.00"), ("cvar_95", "CVaR95(%)", "0.00"),
+]
+
+
+def _styles() -> dict:
+    return {
+        "bold": Font(bold=True), "title": Font(bold=True, size=14, color="20201D"),
+        "accent": Font(bold=True, color=_ACCENT), "italic": Font(italic=True, color=_NOTE),
+        "head_fill": PatternFill("solid", fgColor=_HEAD_BG), "border": _thin_border(),
+        "center": Alignment(horizontal="center"), "wrap": Alignment(wrap_text=True, vertical="top"),
+    }
+
+
+def _title(ws, text: str, S: dict) -> None:
+    ws.cell(1, 1, text).font = S["title"]
+
+
+def _header(ws, row: int, headers: list, S: dict) -> None:
+    for j, h in enumerate(headers):
+        c = ws.cell(row, 1 + j, h)
+        c.font = S["bold"]
+        c.fill = S["head_fill"]
+        c.border = S["border"]
+        c.alignment = S["center"]
+
+
+def _perf_table(ws, row0: int, label_header: str, rows: list, S: dict) -> int:
+    """rows=[(label, perf_dict)]. PERF_KEYS 열로 성과 감사표. 다음 행 반환."""
+    _header(ws, row0, [label_header] + [c[1] for c in _PERF_COLS], S)
+    r = row0 + 1
+    for label, perf in rows:
+        ws.cell(r, 1, str(label)).font = S["bold"]
+        for j, (k, _lbl, fmt) in enumerate(_PERF_COLS):
+            cell = ws.cell(r, 2 + j, _num((perf or {}).get(k)))
+            cell.number_format = fmt
+        r += 1
+    ws.column_dimensions["A"].width = 18
+    for j in range(len(_PERF_COLS)):
+        ws.column_dimensions[get_column_letter(2 + j)].width = 11
+    return r
+
+
+def _methodology(wb, ir, title: str, notes: list, S: dict):
+    """'설명' 시트 — 사용 전략 정의(IR) + 방법론·한계. 전 형상 공용 증빙 꼬리표."""
+    info = wb.create_sheet("설명")
+    info.cell(1, 1, title).font = S["title"]
+    info.cell(3, 1, "전략 정의 (IR)").font = S["accent"]
+    rr = 4
+    ird = _ir_dict(ir)
+    for key in ("name", "query", "universe", "signal", "position", "simulation", "study", "select"):
+        if key not in ird or ird[key] in (None, {}, []):
+            continue
+        info.cell(rr, 1, key).font = S["bold"]
+        v = ird[key]
+        text = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+        info.cell(rr, 2, text[:900] + (" …" if len(text) > 900 else "")).alignment = S["wrap"]
+        rr += 1
+    rr += 1
+    info.cell(rr, 1, "방법론 · 한계").font = S["accent"]
+    rr += 1
+    for k, v in notes:
+        info.cell(rr, 1, k).font = S["bold"]
+        info.cell(rr, 2, v).alignment = S["wrap"]
+        rr += 1
+    info.column_dimensions["A"].width = 22
+    info.column_dimensions["B"].width = 92
+    return info
+
+
+def _save(wb) -> bytes:
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _build_select(ir, dataset, result, disp: str) -> bytes:
+    """SELECT(스크리닝 랭킹) — as-of 스냅샷 순위표(값)."""
+    S = _styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "스크리닝결과"
+    _title(ws, f"{disp} — 스크리닝 결과 (as-of {result.get('as_of', '')})", S)
+    ws.cell(2, 1, f"유니버스 {result.get('universe_size', '?')}종목 · 자격통과 "
+                  f"{result.get('eligible_size', '?')}종목 · 상위 {len(result.get('results', []))} 표시").font = S["italic"]
+    results = result.get("results", []) or []
+    disp_cols = list((results[0].get("metrics") or {}).keys()) if results else []
+    _header(ws, 4, ["순위", "종목", "점수(score)", "섹터"] + disp_cols, S)
+    r = 5
+    for i, row in enumerate(results, 1):
+        ws.cell(r, 1, i)
+        ws.cell(r, 2, str(row.get("symbol", "")))
+        ws.cell(r, 3, _num(row.get("score"))).number_format = "#,##0.0000"
+        ws.cell(r, 4, str(row.get("sector", "")))
+        for j, c in enumerate(disp_cols):
+            ws.cell(r, 5 + j, _num((row.get("metrics") or {}).get(c))).number_format = "#,##0.0000"
+        r += 1
+    for col, w in zip("ABCD", (6, 12, 14, 12)):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "A5"
+    _methodology(wb, ir, f"{disp} — 스크리닝 방법론", [
+        ("점수(score)", "신호 블록의 as-of(기준일) 횡단 값. descending=참이면 큰 순, 거짓이면 작은 순(예: 저PBR)."),
+        ("선별", f"top_n/top_pct 상위만 표시. as-of={result.get('as_of', '')} 단면 스냅샷(시계열 아님)."),
+        ("값 정직성", "점수·표시지표는 엔진이 산출한 그 시점 값. 팩터 산식 자체는 IR signal 트리(설명 시트) 참조."),
+    ], S)
+    return _save(wb)
+
+
+def _build_describe_single(ir, dataset, result, disp: str) -> bytes:
+    """DESCRIBE 단일종목(360) — 요약값 + 원자료 종가로 52주·변동성 라이브 검증."""
+    S = _styles()
+    sym = result.get("symbol", "")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "종목요약"
+    _title(ws, f"{disp} — {sym} 종목 분석 (as-of {result.get('as_of', '')})", S)
+    price = result.get("price", {}) or {}
+    rets = price.get("returns", {}) or {}
+    risk = result.get("risk", {}) or {}
+    fund = result.get("fundamentals", {}) or {}
+    rows = [
+        ("섹터", result.get("sector", ""), "@"), ("데이터 일수", result.get("data_points"), "#,##0"),
+        ("현재가", price.get("last"), "#,##0.00"), ("1개월 수익률(%)", rets.get("1m"), "0.00"),
+        ("3개월(%)", rets.get("3m"), "0.00"), ("6개월(%)", rets.get("6m"), "0.00"),
+        ("12개월(%)", rets.get("12m"), "0.00"), ("52주 고가", price.get("high_52w"), "#,##0.00"),
+        ("52주 저가", price.get("low_52w"), "#,##0.00"), ("52주 고가대비(%)", price.get("pct_from_52w_high"), "0.00"),
+        ("연변동성(%)", risk.get("vol_annualized"), "0.00"), ("최대낙폭(%)", risk.get("max_drawdown"), "0.00"),
+        ("PBR", fund.get("pb_ratio"), "#,##0.00"), ("PER", fund.get("trailing_pe"), "#,##0.00"),
+        ("EV/EBITDA", fund.get("ev_ebitda"), "#,##0.00"),
+    ]
+    r = 3
+    for k, v, fmt in rows:
+        ws.cell(r, 1, k).font = S["bold"]
+        c = ws.cell(r, 2, v if fmt == "@" else _num(v))
+        if fmt != "@":
+            c.number_format = fmt
+        r += 1
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 16
+    df = dataset.get(sym)
+    if isinstance(df, pd.DataFrame) and "Close" in df.columns:
+        raw = wb.create_sheet("원자료")
+        _title(raw, f"{sym} 일별 종가 — 52주 고저·연변동성 라이브 검증", S)
+        _header(raw, 3, ["날짜", "종가", "일수익률"], S)
+        closes = df["Close"].dropna()
+        idx, vals = list(closes.index), [float(v) for v in closes.to_numpy()]
+        for i in range(len(idx)):
+            rr = 4 + i
+            raw.cell(rr, 1, pd.Timestamp(idx[i]).to_pydatetime()).number_format = "yyyy-mm-dd"
+            raw.cell(rr, 2, vals[i]).number_format = "#,##0.00"
+            if i > 0:
+                raw.cell(rr, 3, f"=B{rr}/B{rr - 1}-1").number_format = "0.00%"
+        last = 4 + len(idx) - 1
+        w0 = max(last - 251, 4)                      # 최근 ~252영업일(52주)
+        ws.cell(r + 1, 1, "라이브 검증 (원자료 수식)").font = S["accent"]
+        live = [
+            ("52주 고가 =MAX", f"=MAX(원자료!B{w0}:B{last})", "#,##0.00"),
+            ("52주 저가 =MIN", f"=MIN(원자료!B{w0}:B{last})", "#,##0.00"),
+            ("연변동성(%) =STDEV.S×√252", f"=STDEV.S(원자료!C{w0 + 1}:C{last})*SQRT(252)*100", "0.00"),
+        ]
+        for i, (lbl, formula, fmt) in enumerate(live):
+            ws.cell(r + 2 + i, 1, lbl).font = S["bold"]
+            ws.cell(r + 2 + i, 2, formula).number_format = fmt
+        raw.column_dimensions["A"].width = 12
+        raw.freeze_panes = "A4"
+    _methodology(wb, ir, f"{disp} — 종목 분석 방법론", [
+        ("값/수식", "요약 지표는 엔진 산출값. '원자료' 종가로 52주 고저·연변동성을 라이브 수식으로 재계산해 대조(엔진값과 일치 확인용)."),
+        ("수익률", "1/3/6/12개월 = 해당 영업일수 전 종가 대비 변화(%)."),
+        ("펀더멘털", "데이터에 있으면 표기, 없으면 빈칸 — 정직(가짜 채움 없음)."),
+    ], S)
+    return _save(wb)
+
+
+def _build_describe_portfolio(ir, dataset, result, disp: str) -> bytes:
+    """DESCRIBE 포트폴리오 — 보유표 + HHI·가중밸류 라이브 수식."""
+    S = _styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "보유진단"
+    _title(ws, f"{disp} — 포트폴리오 진단 (as-of {result.get('as_of', '')}, "
+               f"{result.get('n_holdings', '?')}종목)", S)
+    holdings = result.get("holdings", []) or []
+    _header(ws, 3, ["종목", "비중", "섹터", "PBR(as-of)"], S)
+    r = 4
+    for h in holdings:
+        sym = str(h.get("symbol", ""))
+        ws.cell(r, 1, sym).font = S["bold"]
+        ws.cell(r, 2, _num(h.get("weight"))).number_format = "0.00%"
+        ws.cell(r, 3, str(h.get("sector", "")))
+        pb = None
+        df = dataset.get(sym)
+        if isinstance(df, pd.DataFrame) and "pb_ratio" in df.columns:
+            s = df["pb_ratio"].dropna()
+            pb = float(s.iloc[-1]) if len(s) else None
+        ws.cell(r, 4, _num(pb)).number_format = "#,##0.00"
+        r += 1
+    last = r - 1
+    conc = result.get("concentration", {}) or {}
+    val = result.get("valuation", {}) or {}
+    rsk = result.get("risk", {}) or {}
+    r += 1
+    _header(ws, r, ["집중도·밸류 지표", "엑셀(라이브수식)", "엔진"], S)
+    r += 1
+    live = [
+        ("HHI =SUMPRODUCT(비중²)", f"=SUMPRODUCT(B4:B{last},B4:B{last})", conc.get("hhi"), "0.0000"),
+        ("유효종목수 =1/HHI", f"=IFERROR(1/SUMPRODUCT(B4:B{last},B4:B{last}),\"\")", conc.get("effective_n"), "0.00"),
+        ("최대비중 =MAX", f"=MAX(B4:B{last})", conc.get("top_weight"), "0.00%"),
+        ("가중PBR =SUMPRODUCT", f"=IFERROR(SUMPRODUCT(B4:B{last},D4:D{last})/SUM(B4:B{last}),\"\")",
+         val.get("weighted_pb"), "#,##0.00"),
+    ]
+    for lbl, formula, eng, fmt in live:
+        ws.cell(r, 1, lbl).font = S["accent"]
+        ws.cell(r, 2, formula).number_format = fmt
+        ws.cell(r, 3, _num(eng)).number_format = fmt
+        r += 1
+    r += 1
+    ws.cell(r, 1, "포트폴리오 연변동성(%)").font = S["bold"]
+    ws.cell(r, 2, _num(rsk.get("portfolio_vol_annualized"))).number_format = "0.00"
+    r += 1
+    ws.cell(r, 1, "평균 쌍상관").font = S["bold"]
+    ws.cell(r, 2, _num(rsk.get("avg_pairwise_corr"))).number_format = "0.00"
+    sx = result.get("sector_exposure", {}) or {}
+    if sx:
+        se = wb.create_sheet("섹터노출")
+        _header(se, 1, ["섹터", "비중"], S)
+        rr = 2
+        for k, v in sx.items():
+            se.cell(rr, 1, str(k))
+            se.cell(rr, 2, _num(v)).number_format = "0.00%"
+            rr += 1
+        se.column_dimensions["A"].width = 18
+    for col, w in zip("ABCD", (24, 16, 14, 12)):
+        ws.column_dimensions[col].width = w
+    _methodology(wb, ir, f"{disp} — 포트폴리오 진단 방법론", [
+        ("라이브 수식", "HHI·유효종목수·최대비중·가중PBR을 보유 비중/PBR로 라이브 재계산(엔진값과 대조). 비중 셀 바꾸면 갱신."),
+        ("PBR(as-of)", "각 보유종목 데이터의 마지막 PBR. 없으면 빈칸."),
+        ("위험(값)", "포트 연변동성·평균 쌍상관은 일별수익 공분산 기반 엔진 산출값(셀 복제 범위 외)."),
+    ], S)
+    return _save(wb)
+
+
+def _build_sweep(ir, dataset, result, disp: str) -> bytes:
+    """SWEEP parameter/entity — 버킷별 성과 감사표(값)."""
+    S = _styles()
+    axis = result.get("axis")
+    label_h = {"parameter": "파라미터값", "asset": "종목"}.get(axis, "버킷")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "스윕결과"
+    sub = " · ".join(a.get("path", "") for a in result.get("axes", [])) if axis == "parameter" else ""
+    _title(ws, f"{disp} — {label_h}별 성과 스윕" + (f" ({sub})" if sub else ""), S)
+    ws.cell(2, 1, f"각 {label_h} = 독립 백테스트. 아래는 엔진 산출 성과(값).").font = S["italic"]
+    rows = list((result.get("buckets") or {}).items())
+    _perf_table(ws, 4, label_h, rows, S)
+    ws.freeze_panes = "A5"
+    _methodology(wb, ir, f"{disp} — 스윕 방법론", [
+        ("스윕", f"{label_h} 축을 펼쳐 각 값마다 독립 백테스트를 돌린 성과 비교."),
+        ("값 only(감사표)", "각 버킷은 별도 시뮬이라 한 시트 라이브 수식으로 재현 불가 — 엔진 산출 성과를 그대로 표기."),
+        ("성과 정의", "CAGR·샤프·MDD 등은 각 버킷 일별수익에서 산출(PERF 정규지표)."),
+    ], S)
+    return _save(wb)
+
+
+def _build_condition(ir, dataset, result, disp: str) -> bytes:
+    """SWEEP label(조건 대조) — 전체+라벨별 성과 + 쌍대 t검정 감사표."""
+    S = _styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "조건별성과"
+    _title(ws, f"{disp} — 조건(라벨)별 성과 대조", S)
+    rows = [("전체(포트폴리오)", result.get("overall"))] + list((result.get("buckets") or {}).items())
+    nxt = _perf_table(ws, 3, "조건", rows, S)
+    pw = ((result.get("compare") or {}).get("pairwise")) or {}
+    if pw:
+        ws.cell(nxt + 1, 1, "쌍대 비교 (2-표본 t검정)").font = S["accent"]
+        _header(ws, nxt + 2, ["비교쌍", "평균A(%)", "평균B(%)", "차이(%)", "t값", "p값", "nA", "nB"], S)
+        r = nxt + 3
+        for pair, t in pw.items():
+            ws.cell(r, 1, str(pair))
+            for j, k in enumerate(("mean_a", "mean_b", "mean_diff", "t_stat", "p_value", "n_a", "n_b")):
+                ws.cell(r, 2 + j, _num((t or {}).get(k))).number_format = "0.0000" if k == "p_value" else "0.00"
+            r += 1
+    ws.freeze_panes = "A4"
+    _methodology(wb, ir, f"{disp} — 조건 대조 방법론", [
+        ("조건 대조", "라벨(섹터·국면 등)로 일별 기여를 분할해 그룹별 성과를 비교. '전체'=포트폴리오 합산."),
+        ("쌍대 t검정", "각 라벨 쌍의 일별수익 평균 차이 유의성(2-표본 t)."),
+        ("값 only(감사표)", "엔진 산출 버킷 성과·검정통계를 그대로 표기."),
+    ], S)
+    return _save(wb)
+
+
+def _build_period_split(ir, dataset, result, disp: str) -> bytes:
+    """PERIOD_SPLIT — 기간(연/분기/구간)별 성과 + walk-forward 일관성 감사표."""
+    S = _styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "기간별성과"
+    _title(ws, f"{disp} — 기간별 성과 (walk-forward 일관성)", S)
+    nxt = _perf_table(ws, 3, "기간", list((result.get("buckets") or {}).items()), S)
+    cons = result.get("consistency", {}) or {}
+    ws.cell(nxt + 1, 1, "일관성").font = S["accent"]
+    for j, (k, lbl, fmt) in enumerate([("n_folds", "구간 수", "#,##0"),
+                                       ("positive_folds", "양(+)수익 구간", "#,##0"),
+                                       ("consistency", "일관성(양구간 비율)", "0.00")]):
+        ws.cell(nxt + 2 + j, 1, lbl).font = S["bold"]
+        ws.cell(nxt + 2 + j, 2, _num(cons.get(k))).number_format = fmt
+    ws.freeze_panes = "A4"
+    _methodology(wb, ir, f"{disp} — 기간분할 방법론", [
+        ("기간분할", "전체기간을 달력 주기(연/분기/월) 또는 N등분으로 쪼개 각 구간 성과를 따로 측정."),
+        ("일관성", "양(+)수익 구간 비율 — 전략이 특정 기간에만 통했는지 검증(과적합 신호)."),
+        ("값 only(감사표)", "엔진 산출 구간 성과를 그대로 표기."),
+    ], S)
+    return _save(wb)
+
+
+def _build_extremize(ir, dataset, result, disp: str) -> bytes:
+    """EXTREMIZE — 후보 랭킹 + 최적 성과 + OOS 가드 감사표."""
+    S = _styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "최적화결과"
+    obj = result.get("objective", {}) or {}
+    best = result.get("best", {}) or {}
+    _title(ws, f"{disp} — 최적화 (목적: {obj.get('metric', 'sharpe')} {obj.get('direction', 'max')})", S)
+    ws.cell(2, 1, f"최적: {best.get('label', '')} (목적값 "
+                  f"{_num(best.get('metric_value'))})").font = S["accent"]
+    _header(ws, 4, ["순위", "후보", f"목적값({obj.get('metric', '')})"], S)
+    r = 5
+    for i, row in enumerate(result.get("ranked", []) or [], 1):
+        ws.cell(r, 1, i)
+        ws.cell(r, 2, str(row.get("label", "")))
+        ws.cell(r, 3, _num(row.get("metric_value"))).number_format = "0.0000"
+        r += 1
+    r += 1
+    ws.cell(r, 1, "최적 후보 성과").font = S["accent"]
+    nxt = _perf_table(ws, r + 1, "최적", [(best.get("label", ""), best.get("perf"))], S)
+    og = result.get("oos_guard", {}) or {}
+    if og.get("buckets"):
+        ws2 = wb.create_sheet("OOS검증")
+        _title(ws2, "과최적화 가드 — 시간폴드 OOS 일관성", S)
+        _perf_table(ws2, 3, "구간", list(og["buckets"].items()), S)
+        c2 = og.get("consistency", {}) or {}
+        ws2.cell(3 + len(og["buckets"]) + 2, 1,
+                 f"일관성(양구간 비율): {_num(c2.get('consistency'))}").font = S["bold"]
+    elif og.get("error"):
+        ws.cell(nxt + 1, 1, f"OOS 가드: {og['error']}").font = S["italic"]
+    for col, w in zip("ABC", (6, 16, 16)):
+        ws.column_dimensions[col].width = w
+    _methodology(wb, ir, f"{disp} — 최적화 방법론", [
+        ("최적화", f"검색공간(axis={result.get('axis')})을 펼쳐 목적함수({obj.get('metric', '')} "
+                 f"{obj.get('direction', '')})를 최대/최소화하는 후보 선택."),
+        ("과최적화 가드", "in-sample 최적을 시간폴드 OOS 일관성으로 교차검증(oos_guard)."),
+        ("값 only(감사표)", "엔진 산출 랭킹·성과를 그대로 표기."),
+    ], S)
+    return _save(wb)
+
+
+def _build_signal_dist(ir, dataset, result, disp: str) -> bytes:
+    """DESCRIBE signal-dist — 신호값 분포(통계·분위수·히스토그램) 감사표."""
+    S = _styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "신호분포"
+    _title(ws, f"{disp} — 신호값 분포", S)
+    ov = result.get("overall", {}) or {}
+    r = 3
+    for k, lbl, fmt in [("n", "표본수", "#,##0"), ("mean", "평균", "0.0000"), ("std", "표준편차", "0.0000"),
+                        ("skew", "왜도", "0.00"), ("kurtosis", "첨도", "0.00")]:
+        ws.cell(r, 1, lbl).font = S["bold"]
+        ws.cell(r, 2, _num(ov.get(k))).number_format = fmt
+        r += 1
+    q = ov.get("quantiles", {}) or {}
+    if q:
+        ws.cell(r, 1, "분위수").font = S["accent"]
+        r += 1
+        for k in ("q05", "q10", "q25", "q50", "q75", "q90", "q95"):
+            ws.cell(r, 1, k).font = S["bold"]
+            ws.cell(r, 2, _num(q.get(k))).number_format = "0.0000"
+            r += 1
+    hc, he = ov.get("hist_counts"), ov.get("hist_edges")
+    if hc and he:
+        hs = wb.create_sheet("히스토그램")
+        _header(hs, 1, ["구간 하한", "구간 상한", "빈도"], S)
+        for i, c in enumerate(hc):
+            hs.cell(2 + i, 1, _num(he[i])).number_format = "0.0000"
+            hs.cell(2 + i, 2, _num(he[i + 1] if i + 1 < len(he) else None)).number_format = "0.0000"
+            hs.cell(2 + i, 3, _num(c)).number_format = "#,##0"
+        for col in ("A", "B", "C"):
+            hs.column_dimensions[col].width = 12
+    ws.column_dimensions["A"].width = 14
+    _methodology(wb, ir, f"{disp} — 신호 분포 방법론", [
+        ("신호 분포", "분석 노드(target_node)의 횡단·시계열 값 전체 분포 — 평균·분위수·히스토그램."),
+        ("값 only(감사표)", "엔진 산출 분포 통계를 그대로 표기."),
+    ], S)
+    return _save(wb)
+
+
+def _build_relation(ir, dataset, result, disp: str) -> bytes:
+    """RELATE ic/regression — 윈도별 IC 또는 Fama-MacBeth 회귀 감사표."""
+    S = _styles()
+    wb = Workbook()
+    ws = wb.active
+    bw = result.get("by_window", {}) or {}
+    if result.get("relation") == "ic":
+        ws.title = "IC분석"
+        _title(ws, f"{disp} — IC 분석 (신호↔미래수익 횡단 상관)", S)
+        _header(ws, 3, ["윈도(일)", "표본수", "평균IC(%)", "t값", "p값", "양(+)비율(%)", "IR(평균/표준편차)"], S)
+        r = 4
+        for w in result.get("windows", []) or []:
+            ovw = (bw.get(w) or {}).get("overall", {}) or {}
+            ws.cell(r, 1, str(w))
+            for j, (k, fmt) in enumerate([("n", "#,##0"), ("mean", "0.0000"), ("t_stat", "0.00"),
+                                          ("p_value", "0.0000"), ("prob_positive", "0.0")]):
+                ws.cell(r, 2 + j, _num(ovw.get(k))).number_format = fmt
+            ws.cell(r, 7, _num((bw.get(w) or {}).get("ir"))).number_format = "0.00"
+            r += 1
+        notes = [("IC", "각 기준일의 신호와 forward수익의 횡단 상관계수. 평균IC>0 & t유의 = 예측력."),
+                 ("IR", "평균IC/IC표준편차 — 신호 안정성."),
+                 ("값 only(감사표)", "Fama-MacBeth t검정 등 엔진 산출값을 그대로 표기.")]
+        ws.freeze_panes = "A4"
+    else:  # regression
+        ws.title = "회귀분석"
+        _title(ws, f"{disp} — 다중팩터 횡단 회귀 (Fama-MacBeth)", S)
+        ws.cell(2, 1, "설명변수: " + ", ".join(result.get("factor_names", []) or [])).font = S["italic"]
+        _header(ws, 4, ["윈도(일)", "구간수", "팩터", "계수(coef)", "표준오차(se)", "t값", "95%CI 하한", "95%CI 상한"], S)
+        r = 5
+        for w in result.get("windows", []) or []:
+            wd = bw.get(w) or {}
+            for f in (wd.get("factors") or []):
+                ws.cell(r, 1, str(w))
+                ws.cell(r, 2, _num(wd.get("n_periods"))).number_format = "#,##0"
+                ws.cell(r, 3, str(f.get("name", "")))
+                for j, k in enumerate(("coef", "se", "t_stat", "ci_low", "ci_high")):
+                    ws.cell(r, 4 + j, _num(f.get(k))).number_format = "0.0000"
+                r += 1
+        notes = [("Fama-MacBeth", "각 기준일 횡단 OLS(forward수익 ~ 팩터들) → 시계열 평균 계수·t."),
+                 ("계수 해석", "양(+)·t유의 = 그 팩터가 미래수익과 양의 관계."),
+                 ("값 only(감사표)", "엔진 산출 회귀통계를 그대로 표기.")]
+        ws.freeze_panes = "A5"
+    _methodology(wb, ir, f"{disp} — 관계분석 방법론", notes, S)
+    return _save(wb)
+
+
+def _build_event(ir, dataset, result, disp: str) -> bytes:
+    """RELATE event-study — 윈도별 이벤트 후 수익 분포(MAE/MFE 포함) 감사표."""
+    S = _styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "이벤트분석"
+    _title(ws, f"{disp} — 이벤트 스터디 (기준 {result.get('basis', 'close')}, "
+               f"{result.get('n_events', '?')}건)", S)
+    cols = [("n", "표본", "#,##0"), ("mean", "평균수익(%)", "0.00"), ("t_stat", "t값", "0.00"),
+            ("p_value", "p값", "0.0000"), ("prob_positive", "양(+)비율(%)", "0.0"),
+            ("mean_mae", "평균MAE(%)", "0.00"), ("worst_mae", "최악MAE(%)", "0.00"),
+            ("mean_mfe", "평균MFE(%)", "0.00"), ("payoff_ratio", "페이오프", "0.00")]
+    _header(ws, 3, ["윈도(일)"] + [c[1] for c in cols], S)
+    r = 4
+    for w in result.get("windows", []) or []:
+        ev = (result.get("overall") or {}).get(w, {}) or {}
+        ws.cell(r, 1, str(w))
+        for j, (k, _l, fmt) in enumerate(cols):
+            ws.cell(r, 2 + j, _num(ev.get(k))).number_format = fmt
+        r += 1
+    ws.freeze_panes = "A4"
+    _methodology(wb, ir, f"{disp} — 이벤트 스터디 방법론", [
+        ("이벤트 스터디", "이벤트(조건 충족) 발생 후 forward 윈도 수익 분포. MAE=구간내 최대손실, MFE=최대이익."),
+        ("값 only(감사표)", "엔진 산출 이벤트 통계를 그대로 표기."),
+    ], S)
+    return _save(wb)

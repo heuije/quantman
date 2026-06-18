@@ -263,6 +263,18 @@ function ICStudy({ result }: { result: IrStrategyResult }) {
 }
 
 export default function ChatResultView({ result }: Props) {
+  // 결과가 IR을 들고 오면(=엔진 분석: 백테스트·스크리닝·진단·스윕·관계 등) 종류 불문 결과 아래
+  // '엑셀로 내보내기' 버튼을 1회 노출한다. inspect(원시 dump)·저장 카드 등 IR 없는 결과엔 미노출.
+  const ir = (result as { ir?: Record<string, unknown> }).ir;
+  return (
+    <>
+      <ChatResultBody result={result} />
+      {ir && <ExcelExportButton ir={ir} />}
+    </>
+  );
+}
+
+function ChatResultBody({ result }: Props) {
   const r = result as unknown as IrStrategyResult;
 
   // ── save_strategy: 저장 완료 카드 ──────────────────────────────────────────
@@ -359,7 +371,6 @@ export default function ChatResultView({ result }: Props) {
   // ── simulate: 지표행 + 자산곡선 (axis 없는 단일 백테스트 폴백) ───────────────
   if (r.equity && r.equity.length > 0) {
     const m = r.metrics ?? {};
-    const ir = (result as { ir?: Record<string, unknown> }).ir;
     return (
       <div className="chat-result">
         <div className="chat-result-metrics">
@@ -388,7 +399,6 @@ export default function ChatResultView({ result }: Props) {
           benchmark={r.benchmark}
           trades={r.trades}
         />
-        {ir && <ExcelExportButton ir={ir} />}
       </div>
     );
   }

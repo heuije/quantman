@@ -90,12 +90,25 @@ def test_export_returns_xlsx_for_simulate(monkeypatch):
     assert "attachment" in r.headers["content-disposition"]
 
 
-def test_export_rejects_non_simulate(monkeypatch):
-    """분석·펼침 결과(select 등)는 엑셀 형상 미지원 → 400(준비 중)."""
+def test_export_returns_xlsx_for_select(monkeypatch):
+    """비-simulate 형상(select)도 엑셀 export(P2) — 200 + .xlsx (형상별 디스패치)."""
+    sel = {"success": True, "query": "select", "as_of": "2020-01-01",
+           "universe_size": 1, "eligible_size": 1,
+           "results": [{"symbol": "AAA", "score": 1.0, "sector": "X", "metrics": {"pb_ratio": 0.8}}]}
+    monkeypatch.setattr(ir_router, "_load_ir_dataset", lambda body: (_DATASET, None))
+    monkeypatch.setattr(ir_router, "strategy_from_spec", lambda *a, **k: sel)
+    client, tok = _build()
+    r = client.post("/ir/strategy/export.xlsx", headers=_auth(tok), json=_SIM_IR)
+    assert r.status_code == 200, r.text
+    assert r.content[:2] == b"PK"
+
+
+def test_export_rejects_failed_run(monkeypatch):
+    """분석 실행 실패(success=False)는 400."""
     monkeypatch.setattr(ir_router, "_load_ir_dataset", lambda body: (_DATASET, None))
     monkeypatch.setattr(ir_router, "strategy_from_spec",
-                        lambda *a, **k: {"success": True, "query": "select", "results": []})
+                        lambda *a, **k: {"success": False, "error": "데이터 없음"})
     client, tok = _build()
     r = client.post("/ir/strategy/export.xlsx", headers=_auth(tok), json=_SIM_IR)
     assert r.status_code == 400
-    assert "simulate" in r.json()["detail"]
+    assert "데이터 없음" in r.json()["detail"]

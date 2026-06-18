@@ -43,6 +43,12 @@
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [2026-06-19] 증빙 엑셀 export (P2: 전 분석유형) [완료·미배포]
+- 의도: P1(백테스트)에 이어 **모든 IR 분석유형**(스윕 param/entity/label·기간분할·최적화·select·describe single/portfolio/signal·relate ic/regression/event)을 증빙 엑셀로 export. 엑셀이 챗봇 신뢰성 증명의 핵심 수단이라 형상별 MECE 검증 필수.
+- 계획: `build_strategy_excel`을 결과형상 디스패처 + 형상별 빌더 10종. 메타분석=감사표(값+방법론), describe=라이브수식 가능분. 엔드포인트 simulate 게이트 제거. 챗·빌더 결과뷰 wrapper로 IR 보유 결과 전부에 export 버튼.
+- 시행착오·인사이트: ⚠형상 판정은 **probe로 13형상 실제 실행→result 구조 덤프**가 진실원천(추측 금지). `axis="condition"`(label 스윕)이 equity를 들고 다녀 simulate 오인 위험 → **axis 우선 디스패치**(#169 교훈 재적용). 메타분석은 각 버킷이 별도 시뮬/추정량이라 한 시트 라이브수식 불가 → 감사표(값)+사용 IR+방법론으로 증빙. DESCRIBE는 원자료 종가로 52주·연변동성, 포트는 `HHI=SUMPRODUCT`·가중PBR 라이브(엔진값과 대조). chat 도구 IR 동봉을 `run_tool`(screen/describe)까지 확장(inspect=원시 dump라 IR 없음→버튼 미노출).
+- 결과 구현: `excel_export.py` build_strategy_excel 디스패치 + `_build_{select,describe_single,describe_portfolio,sweep,condition,period_split,extremize,signal_dist,relation,event}` + 공용 헬퍼(`_perf_table`·`_methodology`). 엔드포인트 전 형상 허용(실행 실패만 400). 웹 `ChatResultBody`/`ResultPanelBody` wrapper로 IR 보유 결과 전부 버튼. **MECE 검증: `test_ir_excel_export_shapes`(12형상 파라미터화 — 시트·헤더·값·수식 직접 검수 + 포트 HHI 수식=엔진값 정확일치) + 직접 inspect(전 시트 셀/수식 덤프 확인) + 샘플 13종(`퀀트/sample_excels/`).** core 324·server 337·web build+lint(신규0). 골든 무변경. 미배포(PR#172 draft에 추가 예정).
+
 ### [2026-06-19] 증빙 엑셀 export (P1: 백테스트) [완료·미배포]
 - 의도: 챗봇/빌더가 IR 백테스트를 돌리면 *결과만* 주는 게 아니라 '어떤 데이터를 어떤 연산으로' 산출했는지 **데이터+라이브수식 엑셀**로 증빙(선물 `build_oil_excel` 취지). 온디맨드 버튼. 모든 IR 분석유형이 목표지만 P1은 SIMULATE만(나머지 형상 P2·실시간 변수조정 P3).
 - 계획: `core/ir_engine/excel_export.py`(`build_strategy_excel` 5시트)+TDD → server `POST /ir/strategy/export.xlsx`(`/ir/strategy` 본문·실행 재사용, LLM 없음=토큰0) → web 공용 `ExcelExportButton`(챗·빌더).
