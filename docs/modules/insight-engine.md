@@ -43,6 +43,12 @@
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [2026-06-19] 증빙 엑셀 export (P3: 실시간 변수조정) [완료·미배포]
+- 의도: 분석 결과의 핵심 변수를 챗에서 실시간 조정 → **토큰 없이 재계산** → 차트 갱신(엑셀 독립변수처럼). 매번 챗 재요청(토큰 낭비) 대신. 노코드 IR 빌더 노하우(파라미터 컨트롤 + `/ir/strategy` 재실행) 재사용.
+- 계획: `param_manifest(ir)` 코어(spec SSOT 노브 추출) → 챗 결과에 `adjustable` 동봉 → 웹 `ParamControls`(디바운스 재실행) + `ChatResultView` wrapper로 결과 라이브 교체.
+- 시행착오·인사이트: 핵심=재실행이 **LLM 안 거치는 `/ir/strategy`**(빌더가 이미 쓰는 경로)라 토큰0. manifest는 *현재 IR에 의미 있는* 노브만(없는 30필드 나열 금지 — over-engineering 회피)·비용/자본은 항상 노출(엑셀 노란셀 격)·None이면 엔진 기본값을 시작값으로(실효값 표기). 디바운스 400ms로 드래그 중 과다 재실행 방지. wrapper가 live 결과·IR 상태 보유 → 차트 순수 재렌더·export 버튼은 조정된 IR 사용.
+- 결과 구현: `ir_engine/params.py::param_manifest(ir)`(simulate: top_n·rebalance·threshold·amount_pct·hold_days·tp·sl·trail·commission·slippage·capital·leverage·folds / select: top_n·descending). `tools.py` run_simulate·run_tool가 `res["adjustable"]` 동봉. 웹 `ParamControls`(number/select/bool·setPath로 IR 재구성·400ms 디바운스→`api.runIrStrategy`→onRun)·`ChatResultView` wrapper(live state). **검증: test_param_manifest(4)·test_chat_tools(+2)·core 328·server 339·web build+lint(신규0).** describe/relate는 노브 없어 패널 미노출(MVP — windows 리스트 편집 후순위). 미배포(PR#172 draft).
+
 ### [2026-06-19] 증빙 엑셀 export (P2: 전 분석유형) [완료·미배포]
 - 의도: P1(백테스트)에 이어 **모든 IR 분석유형**(스윕 param/entity/label·기간분할·최적화·select·describe single/portfolio/signal·relate ic/regression/event)을 증빙 엑셀로 export. 엑셀이 챗봇 신뢰성 증명의 핵심 수단이라 형상별 MECE 검증 필수.
 - 계획: `build_strategy_excel`을 결과형상 디스패처 + 형상별 빌더 10종. 메타분석=감사표(값+방법론), describe=라이브수식 가능분. 엔드포인트 simulate 게이트 제거. 챗·빌더 결과뷰 wrapper로 IR 보유 결과 전부에 export 버튼.
