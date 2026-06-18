@@ -27,6 +27,7 @@ _SERVER_DIR = Path(__file__).resolve().parent.parent
 if str(_SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVER_DIR))
 
+import app.compile_service as compile_service_mod
 from app.config import settings
 from app.db import get_session
 from app.deps import get_current_user
@@ -55,9 +56,9 @@ def _build(monkeypatch, *, seed_today=0, seed_yesterday=0):
 
     seed_today/seed_yesterday: 미리 적재할 CompileLog 수(KST 오늘/어제).
     """
-    monkeypatch.setattr(ir_compile_router, "compile_nl", _fake_compile)
+    monkeypatch.setattr(compile_service_mod, "compile_nl", _fake_compile)
     # explain_ir은 성공 IR에 대해 호출되나 본 테스트 관심 밖 — 가벼운 stub.
-    monkeypatch.setattr(ir_compile_router, "explain_ir",
+    monkeypatch.setattr(compile_service_mod, "explain_ir",
                         lambda *a, **k: None)
 
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
@@ -124,11 +125,11 @@ def test_at_limit_blocks_without_calling_llm(monkeypatch):
     def _counting_compile(*a, **k):
         called["n"] += 1
         return _fake_compile()
-    monkeypatch.setattr(ir_compile_router, "compile_nl", _counting_compile)
+    monkeypatch.setattr(compile_service_mod, "compile_nl", _counting_compile)
 
     client, engine, uid = _build(monkeypatch, seed_today=10)
     # _build이 다시 _fake_compile로 덮으므로 카운터를 재주입
-    monkeypatch.setattr(ir_compile_router, "compile_nl", _counting_compile)
+    monkeypatch.setattr(compile_service_mod, "compile_nl", _counting_compile)
 
     r = client.post("/ir/compile", json={"nl": "또 하나"})
     assert r.status_code == 200, r.text

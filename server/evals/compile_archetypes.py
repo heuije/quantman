@@ -22,7 +22,7 @@ from quant_core.ir_engine import StrategyIR, capability_spec, validate_strategy
 
 from app.config import settings
 from app.ir_compiler import compile_nl
-from app.routers.ir_compile import _schema_issues
+from app.compile_service import _schema_issues
 
 # (label, nl, 통과 기대 속성 함수)  — 속성은 '둘 다 살았나' 같은 의미 체크
 CASES = [

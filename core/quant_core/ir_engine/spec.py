@@ -125,7 +125,9 @@ class PositionSpec(BaseModel):
 # ── 시뮬레이션 (비전 §3.5) ────────────────────────────────────────────────────
 
 class SimSpec(BaseModel):
-    initial_capital: float = 10_000_000.0
+    # 기본 1억 — 고승수 지수선물(코스피200선물 1계약 증거금 ≈7,500만=승수25만×~300pt×개시증거금률0.1)도
+    # 진입 가능하도록. 주식은 %수익이라 자본 스케일에 불변(골든은 모두 자본 명시라 무영향).
+    initial_capital: float = 100_000_000.0
     delay: int = 1                      # 신호→체결 지연(거래일). look-ahead 방지.
     # next_open=익일 시가, close=당일 종가, typical=당일 (고+저+종)/3 일봉 VWAP 근사.
     # (진짜 intraday VWAP·N분 평균은 분봉 데이터 필요 — 현재 데이터 범위 밖, 가짜 폴백 안 함.)
@@ -356,6 +358,33 @@ def field_contract(loc) -> Optional[str]:
     fields = [f"{n}: {_type_label(fi.annotation)}{'(필수)' if fi.is_required() else ''}"
               for n, fi in model.model_fields.items()]
     return f"{model.__name__} = {{ " + ", ".join(fields) + " }"
+
+
+def unknown_field_issues(raw, _loc: tuple = ()) -> list[dict]:
+    """raw IR dict에서 모델에 없는(extra="ignore"로 조용히 버려질) 필드를 repair 이슈로 표면화.
+
+    field_contract의 짝 — extra="ignore" 모델(SimSpec·PositionSpec·Study 등)은 환각/오타 필드를
+    silent drop 하므로 유저 지정값이 무시된다(라이브 결함: commission_pct → 비용 적용 0). model_validate
+    *전에* raw를 걸어 미지 필드를 잡고 valid 필드(field_contract)를 알려줘 LLM이 정확한 필드명으로
+    교정하게 한다. signal의 Node 트리는 extra="forbid"라 model_validate가 잡고, 자유 params/inputs는
+    _model_at=None에서 재귀가 멈춰 오탐하지 않는다(구조적 — 케이스별 하드코딩 아님)."""
+    model = _model_at(_loc)
+    if model is None or not isinstance(raw, dict):
+        return []
+    issues: list[dict] = []
+    for key, val in raw.items():
+        loc = _loc + (key,)
+        if key not in model.model_fields:
+            issues.append({"rule": "unknown_field", "severity": 30, "is_error": True,
+                           "message": f"'{key}'는 {model.__name__}에 없는 필드라 무시됩니다 — "
+                                      f"올바른 형식: {field_contract(_loc) or ''}",
+                           "path": ".".join(str(x) for x in loc)})
+        elif isinstance(val, dict):
+            issues += unknown_field_issues(val, loc)
+        elif isinstance(val, list):
+            for i, item in enumerate(val):
+                issues += unknown_field_issues(item, loc + (i,))
+    return issues
 
 
 # ── 정합성 검증 ───────────────────────────────────────────────────────────────

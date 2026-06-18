@@ -1,5 +1,6 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import type { CompileQuota } from "../api";
 import type { ChatMessage, ChatPart } from "../types";
 import ChatResultView from "../components/ChatResultView";
 
@@ -18,12 +19,43 @@ export default function ChatLab() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 사용량 카운터 + 운영진 언락(서버 강제 일일 한도). 비번은 sessionStorage에만 보관하고 매 요청에 동봉.
+  const [adminPw, setAdminPw] = useState<string>(() => sessionStorage.getItem("chat_admin_pw") || "");
+  const [quota, setQuota] = useState<CompileQuota | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
 
   // 새 메시지·스트리밍 갱신마다 맨 아래로 스크롤
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
   }, [messages, busy]);
+
+  // 사용량 카운터 — 마운트 + 언락 상태 변경 + 매 턴 후 갱신(읽기 전용, 메시지 소모 없음).
+  const refreshQuota = useCallback(() => {
+    api.chatQuota(adminPw || undefined).then(setQuota).catch(() => {/* 카운터 실패는 대화에 무관 */});
+  }, [adminPw]);
+  useEffect(() => { refreshQuota(); }, [refreshQuota]);
+
+  async function unlockLimit() {
+    const pw = window.prompt("운영진 비밀번호를 입력하면 일일 사용 한도가 상향됩니다.");
+    if (pw == null || !pw.trim()) return;
+    try {
+      const q = await api.chatQuota(pw.trim());
+      if (q.admin_unlocked) {
+        sessionStorage.setItem("chat_admin_pw", pw.trim());
+        setAdminPw(pw.trim());
+        setQuota(q);
+      } else {
+        window.alert("비밀번호가 올바르지 않습니다.");
+      }
+    } catch {
+      window.alert("확인에 실패했습니다. 잠시 후 다시 시도하세요.");
+    }
+  }
+
+  function lockLimit() {
+    sessionStorage.removeItem("chat_admin_pw");
+    setAdminPw("");
+  }
 
   async function send() {
     const text = input.trim();
@@ -60,14 +92,15 @@ export default function ChatLab() {
         }),
         onToolUse: (p) => patch((parts) => [...parts, { type: "tool_use", ...p }]),
         onToolResult: (p) => patch((parts) => [...parts, { type: "tool_result", ...p }]),
-      });
+      }, adminPw || undefined);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "오류가 발생했습니다.";
       setError(msg);
-      // 프론트 단계 오류로 빈 assistant 버블이 남으면 오류 문구로 채운다.
+      // 프론트 단계 오류(429 한도 초과 안내 포함)로 빈 assistant 버블이 남으면 그 문구로 채운다.
       patch((parts) => (parts.length ? parts : [{ type: "text", text: msg }]));
     } finally {
       setBusy(false);
+      refreshQuota();              // 턴 후 카운터 갱신(차단 429였어도 used 반영)
     }
   }
 
@@ -92,6 +125,23 @@ export default function ChatLab() {
         ))}
       </div>
       {error && <div className="chat-error">{error}</div>}
+      {quota && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8,
+                      justifyContent: "flex-end", margin: "2px 2px 6px" }}>
+          <span style={{ fontSize: 12,
+                         color: quota.remaining <= 0 ? "var(--red)" : "var(--muted)" }}>
+            오늘 {quota.used}/{quota.limit}회
+            {quota.admin_unlocked && (
+              <span style={{ color: "var(--green)", marginLeft: 4 }}>· 운영진</span>
+            )}
+          </span>
+          {quota.admin_unlocked
+            ? <button type="button" className="ghost" style={{ fontSize: 12 }}
+                      onClick={lockLimit}>제한 잠금</button>
+            : <button type="button" className="ghost" style={{ fontSize: 12 }}
+                      onClick={unlockLimit}>🔓 제한 해제</button>}
+        </div>
+      )}
       <div className="chat-input-bar">
         <textarea
           className="chat-input" rows={2} value={input}

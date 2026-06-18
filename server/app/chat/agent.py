@@ -11,11 +11,14 @@ DB는 논리적 턴(parts: text/tool_use/tool_result, full payload)을 저장하
 from __future__ import annotations
 
 import logging
+import time
 
 from sqlmodel import Session, select
 
-from ..models import Conversation, Message
-from .tools import TOOL_SCHEMAS, compact_summary, run_tool, save_strategy_tool
+from ..models import ChatTurnMetric, Conversation, Message
+from ..serialize import clean_json
+from .tools import (TOOL_SCHEMAS, compact_summary, run_simulate, run_tool,
+                    save_strategy_tool)
 from .prompt import chat_system_prompt
 
 _log = logging.getLogger("app.chat.agent")
@@ -76,6 +79,67 @@ def _block_to_wire(b) -> dict:
     return {"type": t}
 
 
+def _mark_cache_breakpoint(messages: list[dict]) -> None:
+    """히스토리 마지막 블록에 cache_control(ephemeral)을 달아 다음 턴이 이전 대화를 캐시 읽기
+    (~0.1x)로 재사용하게 한다 — 멀티턴마다 전체 히스토리를 풀가로 재전송하던 O(n²) 입력 비용을
+    제거한다(prompt caching, system 블록과 합쳐 최대 2 breakpoint). 빈 히스토리(첫 턴)는 무시.
+    문자열 content(user 메시지)는 블록 리스트로 승격해야 마커를 붙일 수 있다."""
+    if not messages:
+        return
+    last = messages[-1]
+    content = last.get("content")
+    if isinstance(content, str):
+        last["content"] = [{"type": "text", "text": content,
+                            "cache_control": {"type": "ephemeral"}}]
+    elif isinstance(content, list) and content:
+        content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+
+
+def _log_usage(conversation_id: int, usage) -> None:
+    """Anthropic usage를 로깅 — 캐시 적중(cache_read)·토큰 절감을 실측·검증하기 위함(원칙4 검증
+    인프라). 스트리밍 응답 메시지엔 usage가 있으나 테스트 fake엔 없으므로 None이면 건너뛴다."""
+    if usage is None:
+        return
+    _log.info("[chat usage] conv=%s in=%s out=%s cache_write=%s cache_read=%s", conversation_id,
+              getattr(usage, "input_tokens", "?"), getattr(usage, "output_tokens", "?"),
+              getattr(usage, "cache_creation_input_tokens", "?"),
+              getattr(usage, "cache_read_input_tokens", "?"))
+
+
+def _accumulate_usage(acc: dict, usage) -> None:
+    """라운드별 Anthropic usage를 턴 누적기에 더한다(usage 없으면 무동작)."""
+    if usage is None:
+        return
+    acc["in"] += getattr(usage, "input_tokens", 0) or 0
+    acc["out"] += getattr(usage, "output_tokens", 0) or 0
+    acc["cr"] += getattr(usage, "cache_read_input_tokens", 0) or 0
+    acc["cw"] += getattr(usage, "cache_creation_input_tokens", 0) or 0
+
+
+def _persist_turn_metric(session: Session, conversation_id: int, model: str,
+                         acc: dict, ttft_ms, latency_ms: int, ok: bool) -> None:
+    """턴별 ChatTurnMetric 1행 적재(chat-perf 측정 환경). user_id는 대화 소유자.
+
+    적재 실패가 대화 응답을 깨지 않도록 격리한다 — DB 일시오류 시 지표 누락은 허용하고
+    대화는 보존(외부 시스템 한계라 fallback 정당). 대화 영속(_persist)은 이미 끝난 뒤다.
+    """
+    try:
+        conv = session.get(Conversation, conversation_id)
+        session.add(ChatTurnMetric(
+            conversation_id=conversation_id,
+            user_id=conv.user_id if conv else None,
+            latency_ms=latency_ms, ttft_ms=ttft_ms,
+            input_tokens=acc["in"], output_tokens=acc["out"],
+            cache_read_tokens=acc["cr"], cache_write_tokens=acc["cw"],
+            n_rounds=acc["rounds"], n_tool_calls=len(acc["tools"]),
+            tool_names=list(acc["tools"]), model=model,
+            stop_reason=acc["stop"], ok=ok))
+        session.commit()
+    except Exception:   # noqa: BLE001 — 지표 누락 허용·대화 보존(원칙: 외부 한계 fallback)
+        _log.exception("[chat metric] 적재 실패 conv=%s", conversation_id)
+        session.rollback()
+
+
 def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                      *, client=None, model: str | None = None):
     """한 사용자 메시지에 대해 agent 루프를 **스트리밍**으로 실행하는 제너레이터(단일 소스).
@@ -97,20 +161,31 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                "cache_control": {"type": "ephemeral"}}]
 
     messages = _history_to_wire(session, conversation_id)
+    _mark_cache_breakpoint(messages)      # ① 히스토리 prompt caching(멀티턴 입력 캐시 재사용)
     messages.append({"role": "user", "content": user_text})
     _persist(session, conversation_id, "user", [{"type": "text", "text": user_text}])
 
     assistant_parts: list[dict] = []      # full payload(영속·렌더용)
+    # ── 성능 계측(chat-perf) — 턴 종료 시 ChatTurnMetric 1행 ──
+    t0 = time.perf_counter()
+    acc = {"in": 0, "out": 0, "cr": 0, "cw": 0, "rounds": 0, "tools": [], "stop": None}
+    ttft_ms = None
+    completed = False
+    ok = True
     try:
         for _ in range(MAX_TOOL_ROUNDS):
-            # .messages.stream() 컨텍스트매니저 — text_stream으로 서술 토큰을 흘리고
-            # get_final_message()로 도구블록·stop_reason이 포함된 완성 메시지를 받는다.
             with client.messages.stream(model=model, max_tokens=4096, system=system,
                                         tools=TOOL_SCHEMAS, messages=messages) as stream:
                 for delta in stream.text_stream:
                     if delta:
+                        if ttft_ms is None:
+                            ttft_ms = int((time.perf_counter() - t0) * 1000)
                         yield ("delta", {"text": delta})
                 resp = stream.get_final_message()
+            _accumulate_usage(acc, getattr(resp, "usage", None))        # 토큰 누적
+            _log_usage(conversation_id, getattr(resp, "usage", None))   # ② 라운드별 로그(유지)
+            acc["rounds"] += 1
+            acc["stop"] = resp.stop_reason
 
             for b in resp.content:
                 if getattr(b, "type", None) == "text":
@@ -119,6 +194,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                              "content": [_block_to_wire(b) for b in resp.content]})
 
             if resp.stop_reason != "tool_use":
+                completed = True
                 break
 
             tool_results: list[dict] = []
@@ -126,13 +202,20 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                 if getattr(b, "type", None) != "tool_use":
                     continue
                 inp = dict(b.input or {})
+                acc["tools"].append(b.name)
                 yield ("tool_use", {"id": b.id, "name": b.name, "input": inp})
-                if b.name == "save_strategy":
-                    # 저장은 side-effect — 대화 소유자(user_id) 명의로. Conversation에서 도출.
+                if b.name in ("simulate", "save_strategy"):
                     conv = session.get(Conversation, conversation_id)
-                    full = save_strategy_tool(session, conv.user_id if conv else None, inp)
+                    uid = conv.user_id if conv else None
+                    if b.name == "simulate":
+                        full = run_simulate(session, uid, inp)
+                    else:
+                        full = save_strategy_tool(session, uid, conversation_id, inp)
                 else:
                     full = run_tool(b.name, inp)
+                # 도구 결과의 NaN/inf→None — JSON은 NaN을 표현 못 해 브라우저 JSON.parse·
+                # Postgres JSONB가 깨진다(/ir 백테스트 경로와 동일한 clean_json 재사용).
+                full = clean_json(full)
                 assistant_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": inp})
                 assistant_parts.append({"type": "tool_result", "tool_use_id": b.id,
                                         "name": b.name, "result": full})
@@ -140,12 +223,21 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                 tool_results.append({"type": "tool_result", "tool_use_id": b.id,
                                      "content": compact_summary(b.name, full)})
             messages.append({"role": "user", "content": tool_results})
-    except Exception:   # noqa: BLE001 — 외부 LLM·도구 호출 실패(3rd-party 한계)는 대화에 오류 답변으로 표면화(고아 방지·로깅)
+    except Exception:   # noqa: BLE001 — 외부 LLM·도구 호출 실패는 대화에 오류 답변으로 표면화(고아 방지)
+        ok = False
         _log.exception("[chat] turn failed for conversation %s", conversation_id)
         err = "분석 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
         assistant_parts.append({"type": "text", "text": err})
         yield ("delta", {"text": err})
+    if ok and not completed:
+        # 라운드 상한을 도구호출로 소진 — 최종 답변 없이 끝나는 무응답 방지(graceful).
+        # 위임 후 simulate가 1라운드로 성공해 이 경로는 드묾(방어선·추가 LLM콜 0).
+        msg = "요청을 완료하지 못했어요(분석이 길어졌습니다). 조금 더 구체적으로 말씀해 주시겠어요?"
+        assistant_parts.append({"type": "text", "text": msg})
+        yield ("delta", {"text": msg})
     _persist(session, conversation_id, "assistant", assistant_parts)
+    _persist_turn_metric(session, conversation_id, model, acc, ttft_ms,
+                         int((time.perf_counter() - t0) * 1000), ok)
     yield ("done", {"parts": assistant_parts})
 
 

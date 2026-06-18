@@ -434,14 +434,15 @@ class SettingsApp:
         f = ttk.Frame(self.nb)
         self.nb.add(f, text="주문 내역")
         ttk.Label(f, style="Muted.TLabel",
-                  text="최근 100건의 주문 이벤트 — 제출 / 체결 / 취소 / 거부 모두."
+                  text="최근 100건의 주문 이벤트 — 제출 / 체결 / 취소 / 거부 모두. "
+                       "손익은 청산이 끝난 건만 표시됩니다(선물 정산)."
                   ).pack(anchor="w", padx=12, pady=(8, 0))
         self.tv_orders = self._make_tree(f, [
             ("time", "시각", 130), ("event", "상태", 70),
             ("side", "방향", 50), ("symbol", "종목", 80),
             ("qty", "수량", 60), ("limit", "지정가", 80),
-            ("fill", "체결가", 80), ("strategy", "전략", 110),
-            ("reason", "사유", 110),
+            ("fill", "체결가", 80), ("pnl", "손익", 110),
+            ("strategy", "전략", 110), ("reason", "사유", 110),
         ])
 
     def _build_tab_debug(self):
@@ -934,6 +935,19 @@ class SettingsApp:
         iso = p.get("submitted_ts_iso", "")
         return (iso or "").replace("T", " ")[:19]
 
+    @staticmethod
+    def _fmt_pnl(pnl) -> str:
+        """실현손익 — 부호 포함 정수. None(청산 전·손익 미계산 건)이면 '—'.
+
+        선물은 계약통화 정산손익(코스피200선물=원). 통화 단위는 표 다른 열과
+        동일하게 미표기 — 종목으로 식별."""
+        if pnl is None:
+            return "—"
+        try:
+            return f"{float(pnl):+,.0f}"
+        except (TypeError, ValueError):
+            return "—"
+
     def _refresh_pending(self):
         self.tv_pending.delete(*self.tv_pending.get_children())
         local = _read_json(PENDING_ORDERS_PATH, {})
@@ -952,8 +966,16 @@ class SettingsApp:
 
     def _refresh_orders(self):
         self.tv_orders.delete(*self.tv_orders.get_children())
+        # 체결 손익은 trades.jsonl이 진실원천 — orders.jsonl 체결행과 조인해 표시
+        # (청산 정산만 존재 → 진입·주식매도는 '—'). 1회 인덱스 후 행마다 조회.
+        pnl_idx = order_log.realized_pnl_index()
         for o in order_log.read_orders(100):
             side = "buy" if o.get("side") == "buy" else "sell"
+            pnl = None
+            if o.get("event") in ("filled", "partial"):
+                pnl = pnl_idx.get(order_log._trade_key(
+                    o.get("ts", ""), side, o.get("symbol", ""),
+                    o.get("qty", 0), o.get("fill_price")))
             self.tv_orders.insert("", "end", values=(
                 self._fmt_ts(o.get("ts", "")),
                 o.get("event", ""),
@@ -962,6 +984,7 @@ class SettingsApp:
                 o.get("qty", ""),
                 f"{o.get('limit_price') or 0:,.0f}" if o.get("limit_price") else "—",
                 f"{o.get('fill_price') or 0:,.0f}" if o.get("fill_price") else "—",
+                self._fmt_pnl(pnl),
                 o.get("strategy", ""),
                 o.get("reason", ""),
             ), tags=(side,))
@@ -1067,6 +1090,8 @@ class SettingsApp:
         """잔고 — KIS 계좌 스냅샷 + 포지션 수익률(백그라운드). 브로커·in-flight 가드."""
         if getattr(self, "_balance_fetching", False):
             return
+        gen = getattr(self, "_balance_gen", 0) + 1
+        self._balance_gen = gen        # 진행 중 조회 세대 — watchdog/late done 정합
 
         def job():
             from . import analytics
@@ -1079,6 +1104,8 @@ class SettingsApp:
             return snap.get("balance", {}) or {}, positions
 
         def done(res, err):
+            if gen != getattr(self, "_balance_gen", 0):
+                return                 # watchdog 후 새 요청에 의해 교체됨 — stale 갱신 차단
             self._balance_fetching = False
             try:
                 self.tv_balance.delete(*self.tv_balance.get_children())
@@ -1112,8 +1139,24 @@ class SettingsApp:
             self._balance_fetching = True
             self.balance_summary.config(text="잔고 불러오는 중…")
             self._run_bg(job, done)
+            # watchdog: 다계좌(주식·선물 국내/해외) 순차 조회가 느린 서버에서 누적돼
+            # in-flight 가드가 영구 '불러오는 중'으로 멈추는(수동 새로고침까지 막힘) 것을 차단.
+            self.root.after(20_000, lambda: self._balance_watchdog(gen))
         except Exception:
             self._balance_fetching = False
+
+    def _balance_watchdog(self, gen: int) -> None:
+        """잔고 조회가 상한(20s) 내 안 끝나면 in-flight 가드를 풀고 안내 — 영구 멈춤 차단.
+
+        가드만 해제하고 세대(gen)는 유지하므로 느리게라도 완료되면 done()이 정상
+        갱신한다. watchdog 후 사용자가 새로고침하면 새 세대가 되어 옛 job의 늦은
+        완료는 done()의 gen 가드로 무시된다."""
+        if gen != getattr(self, "_balance_gen", 0):
+            return                          # 이미 다른 조회로 교체됨
+        if getattr(self, "_balance_fetching", False):
+            self._balance_fetching = False
+            self.balance_summary.config(
+                text="잔고 조회가 지연됩니다(서버 응답 느림) — ‘새로고침’으로 다시 시도하세요.")
 
     def _get_balance_broker(self):
         """잔고 조회용 브로커 — 1회 생성 후 재사용(매 조회 토큰 재발급 방지)."""

@@ -17,7 +17,7 @@ _SERVER_DIR = Path(__file__).resolve().parent.parent
 if str(_SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVER_DIR))
 
-from app.routers.ir_compile import _schema_issues  # noqa: E402
+from app.compile_service import _schema_issues  # noqa: E402
 from quant_core.ir_engine import StrategyIR  # noqa: E402
 
 # 실측: LLM이 param_grid 항목을 {long_threshold:{path,value}}로 감싸 최상위 path 누락.

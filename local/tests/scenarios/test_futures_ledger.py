@@ -1,4 +1,4 @@
-"""M4 — Trader ledger 선물 인지(롱/숏 정산회계) + 주식 무변경 검증.
+"""M4 — Trader ledger 선물 인지(롱/숏 정산회계) + 주식 실현손익 검증.
 
 _apply_fill을 직접 구동해 ledger side/qty/entry_price + 거래로그 realized_pnl을 확인.
 isolated_trader(SimBroker + tmp 영속경로·KST 고정)로 격리. 정산손익 = (청산−진입)×계약×승수×부호.
@@ -66,8 +66,9 @@ def test_futures_short_add_averages(isolated_trader):
     assert lg["side"] == "short" and lg["qty"] == 2 and lg["entry_price"] == 2000.0
 
 
-# ── 주식 무변경 ────────────────────────────────────────────────────────────────
-def test_equity_long_open_close_no_realized_field(isolated_trader):
+# ── 주식 실현손익 ──────────────────────────────────────────────────────────────
+def test_equity_long_close_records_realized(isolated_trader):
+    # 주식 청산도 실현손익을 기록한다(승수=1). 주문 내역 손익 표시용.
     trader, _ = isolated_trader
     trader._apply_fill("O1", _pending("e1", "005930", "buy"), 10, 70000.0, [])
     lg = trader.ledger["e1"]
@@ -75,7 +76,7 @@ def test_equity_long_open_close_no_realized_field(isolated_trader):
     trader._apply_fill("O2", _pending("e1", "005930", "sell"), 10, 71000.0, [])
     assert "e1" not in trader.ledger
     ev = _trades()[-1]
-    assert ev["action"] == "sell" and "realized_pnl" not in ev       # 주식 거래로그 무변경
+    assert ev["action"] == "sell" and ev["realized_pnl"] == (71000 - 70000) * 10  # 10000
 
 
 def test_equity_sell_without_position_is_noop(isolated_trader):

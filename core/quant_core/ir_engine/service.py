@@ -30,6 +30,44 @@ def _issue_dict(i) -> dict:
     return {"rule": i.rule, "severity": i.severity, "message": i.message, "path": i.path}
 
 
+def _futures_capital_warning(s: StrategyIR, dataset: dict, res: dict) -> dict | None:
+    """선물 1계약 증거금 > 가용예산이면 진입이 0건이 되는데, 엔진이 조용히 0거래로 보여
+    '왜 0인지' 오해를 부른다 — 명시 경고로 표면화한다. 엔진 증거금 사이징(계약수=int(예산/
+    (가격×승수×개시증거금률)), 라이브 패리티)은 정상이고, 이건 자본 설정이 계약 명목 대비
+    과소하다는 안내일 뿐(사이징 로직 무관·골든 무영향 — 거래>0이면 발동 안 함).
+
+    조건(거짓이면 None): query=simulate · 거래 0건 · 유니버스의 선물 1계약 증거금 > 예산.
+    예산 = 초기자본 × futures_margin_pct/100 (엔진 _budget과 동일 식)."""
+    if s.query != "simulate":
+        return None
+    metrics = res.get("metrics") or {}
+    if metrics.get("n_trades"):              # 거래가 있었으면 자본은 충분했음 → 무경고
+        return None
+    from ..exec_defaults import instrument_spec, is_futures
+    cap = float(s.simulation.initial_capital)
+    fmp = float(s.position.sizing.futures_margin_pct) / 100.0
+    budget = cap * fmp
+    for sym in s.universe.symbols:
+        if not is_futures(sym):
+            continue
+        df = dataset.get(sym)
+        if df is None or "Close" not in getattr(df, "columns", []):
+            continue
+        px = df["Close"].dropna()
+        if px.empty:
+            continue
+        ispec = instrument_spec(sym)
+        margin = float(px.iloc[-1]) * ispec.multiplier * ispec.init_margin_rate
+        if budget < margin:
+            need = margin / fmp if fmp > 0 else margin
+            return {"rule": "capital", "severity": 25, "path": "simulation.initial_capital",
+                    "message": (f"초기자본 {cap:,.0f}원으로는 {sym} 1계약 증거금"
+                                f"(약 {margin:,.0f}원)을 충당하지 못해 진입이 0건입니다. "
+                                f"초기자본을 약 {need:,.0f}원 이상으로 올리거나 사이징의 "
+                                f"futures_margin_pct를 높이세요.")}
+    return None
+
+
 def _parse(spec: dict, key: str):
     raw = spec.get(key)
     if raw is None:
@@ -141,5 +179,12 @@ def strategy_from_spec(
     # 최상위 디스패치 — query(동사) + study(펼침)로 단일/펼침/분석/기간분할 경로 선택.
     res = run_query(s, dataset)
     if res.get("success"):
-        res["warnings"] = [_issue_dict(i) for i in issues]
+        warns = [_issue_dict(i) for i in issues]
+        try:
+            cap_warn = _futures_capital_warning(s, dataset, res)
+        except Exception:   # noqa: BLE001 — 부가 경고 계산 실패가 정상 백테스트 결과를 깨지 않게(보조 정보)
+            cap_warn = None
+        if cap_warn:
+            warns.append(cap_warn)
+        res["warnings"] = warns
     return res

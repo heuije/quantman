@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from typing import Callable
 
+from quant_core.indicators import get_indicator_compare_group
+
 from .config import settings
 
 # ── few-shot: 단계별 추론 형식을 보여주는 검증된 예시 (특정 답 암기가 아니라 '과정'을 가르침) ──
@@ -37,7 +39,7 @@ _FEWSHOT = [
                 "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
                              "entry": {"mode": "on_signal"},
                              "exit": {"take_profit": 15, "stop_loss": -7}},
-                "simulation": {"initial_capital": 10000000, "fill": "next_open"},
+                "simulation": {"initial_capital": 100000000, "fill": "next_open"},
             },
             "assumptions": ["'60일 이동평균'을 종가 60일 단순이동평균으로 해석"],
             "expressible": True,
@@ -57,7 +59,7 @@ _FEWSHOT = [
                     "right": {"op": "const", "params": {"value": 0}}}},
                 "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
                              "entry": {"mode": "always"}, "exit": {}},
-                "simulation": {"initial_capital": 10000000, "fill": "close", "leverage": 2},
+                "simulation": {"initial_capital": 100000000, "fill": "close", "leverage": 2},
             },
             "assumptions": ["'2배'를 시뮬레이션 레버리지 2로 해석", "신호는 항상 참(종가>0)으로 매일 보유 유지"],
             "expressible": True,
@@ -78,12 +80,46 @@ _FEWSHOT = [
                         "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}}}}}},
                 "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
                              "entry": {"mode": "on_signal"}, "exit": {"hold_days": 20}},
-                "simulation": {"initial_capital": 10000000, "fill": "next_open"},
+                "simulation": {"initial_capital": 100000000, "fill": "next_open"},
                 "study": {"axis": "parameter", "param_grid": [
                     {"path": "signal.inputs.right.params.window", "values": [10, 20, 60]},
                     {"path": "position.exit.hold_days", "values": [20, 40]}]},
             },
             "assumptions": ["이동평균 기간 N을 [10,20,60], 보유일을 [20,40]으로 격자 해석"],
+            "expressible": True,
+        },
+    },
+    {
+        # cross-asset 신호 참조 + %단위 임계 + 비용(분수) + 당일 롱숏 — 라이브 결함 부류 앵커
+        # (±0.1%를 −0.001로 100×축소·commission_pct 환각·S&P500 접두 소실을 한 예시로 교정).
+        "nl": "S&P500이 전일대비 -0.1% 이하면 코스피200선물을 시가매수해 당일 종가청산, +0.1% 이상이면 시가매도해 당일 종가청산. 수수료 편도 0.01%로 연도별 수익률.",
+        "out": {
+            "intent_summary": "코스피200선물 일중매매. 전일 S&P500 등락률이 -0.1% 이하면 시가 매수→당일 종가 청산(롱), +0.1% 이상이면 시가 매도→당일 종가 청산(숏). 연도별 성과.",
+            "strategy_archetype": "조건별 롱숏 일중매매(이벤트룰)",
+            "mapping_rationale": "타 자산(S&P500) 신호로 코스피200선물 매매 → 신호 ref에 'S&P500.pct_change_1d'(cross-asset, 매매는 universe 종목으로). 조건별 롱/숏=부호점수 select(레시피1): ≤-0.1%→+1(롱)·≥+0.1%→-1(숏)·그 외 0. pct_change_1d는 %단위라 임계는 -0.1·0.1(−0.001로 분수화 금지). 당일매매=on_signal+exit.hold_days=0+fill=next_open(시가진입·종가청산). 수수료 편도 0.01%=simulation.commission=0.0001(분수, commission_pct 아님). 연도별=study.axis=time_fold+reduction=enumerate.",
+            "strategy": {
+                "name": "S&P500 신호 코스피200선물 일중 롱숏",
+                "universe": {"kind": "single", "symbols": ["코스피200선물"]},
+                "signal": {"op": "select", "inputs": {
+                    "cond": {"op": "compare", "params": {"op": "<="}, "inputs": {
+                        "left": {"op": "data", "params": {"ref": "S&P500.pct_change_1d"}},
+                        "right": {"op": "const", "params": {"value": -0.1}}}},
+                    "a": {"op": "const", "params": {"value": 1}},
+                    "b": {"op": "select", "inputs": {
+                        "cond": {"op": "compare", "params": {"op": ">="}, "inputs": {
+                            "left": {"op": "data", "params": {"ref": "S&P500.pct_change_1d"}},
+                            "right": {"op": "const", "params": {"value": 0.1}}}},
+                        "a": {"op": "const", "params": {"value": -1}},
+                        "b": {"op": "const", "params": {"value": 0}}}}}},
+                "position": {"direction": "long_short", "sizing": {"mode": "equal_weight"},
+                             "entry": {"mode": "on_signal", "threshold": 0}, "exit": {"hold_days": 0}},
+                "simulation": {"initial_capital": 100000000, "fill": "next_open", "commission": 0.0001},
+                "study": {"axis": "time_fold", "reduction": "enumerate", "folds": 10},
+            },
+            "assumptions": ["S&P500.pct_change_1d=전일대비 등락률(%)을 cross-asset 신호로 참조",
+                            "전일 S&P500 기준 당일 코스피200선물 시가진입·종가청산(hold_days=0)",
+                            "수수료 편도 0.01%=commission 0.0001(분수), 슬리피지 미지정→엔진 기본",
+                            "연도별=time_fold 10분할(enumerate)"],
             "expressible": True,
         },
     },
@@ -148,6 +184,8 @@ def _system_prompt(catalog: list[dict], capabilities: dict, indicator_cols: list
         f"<example>\n입력: {ex['nl']}\nemit_strategy 인자:\n{json.dumps(ex['out'], ensure_ascii=False, indent=1)}\n</example>"
         for ex in _FEWSHOT
     )
+    # %계열 지표(COMPARE_GROUP SSOT) — 임계 const 스케일 가이드용(값이 이미 퍼센트).
+    pct_cols = [c for c in indicator_cols if get_indicator_compare_group(c) == "pct"]
     return f"""<role>
 너는 한국어 투자전략 설명을 백테스트 IR(StrategyIR JSON)로 변환하는 결정론적 컴파일러다.
 오직 emit_strategy 도구로만 결과를 제출한다. 아래 <capabilities>·<block_catalog>·<reference_data>에
@@ -183,6 +221,14 @@ StrategyIR = {{
 종목 표기: 국내주식=6자리 코드(삼성전자 005930), 미국주식=티커(AAPL), 내장 자산명=정확한 키
 (S&P500, 코스피200선물, 원유선물, 금선물, 은선물(COMEX), 천연가스선물, 나스닥선물, 비트코인선물 등). 모르면 사용자가 쓴 명칭 그대로.
 </reference_data>
+
+<units_and_costs>
+const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라이브 실측 결함 — ±0.1%를 ±0.001로 100× 축소해 매일 진입). 반드시:
+- **%계열 지표는 값이 이미 퍼센트**다. "전일대비 -0.1%"는 const **-0.1** 이다. -0.001(분수)로 ÷100 하지 말 것. 익절/손절(take_profit·stop_loss)도 퍼센트(15% → 15). SYM. 접두가 붙어도 동일(S&P500.pct_change_1d 도 %).
+  %계열 지표: {", ".join(pct_cols)}
+- **타 종목 신호 참조**는 "SYM.지표" 형태(예: S&P500.pct_change_1d) — 신호가 다른 자산을 봐도 매매는 universe 종목으로 한다. 재작성(repair) 시 SYM. 접두를 떨어뜨려 자기참조로 바꾸지 말 것.
+- **비용**을 사용자가 지정하면 simulation.commission·simulation.slippage 에 **분수**로 넣는다: 편도 0.01% → 0.0001, 0.005% → 0.00005, 0.1% → 0.001. (commission_pct·transaction_cost_pct 같은 필드는 **없다** — 쓰면 조용히 무시된다.) 미지정이면 비우고 엔진 기본값(수수료 0.03%·슬리피지 0.1%)에 맡긴다.
+</units_and_costs>
 
 <idioms>
 원자(블록)만으로는 안 보이는 **검증된 합성 레시피**. 의도가 아래 패턴에 해당하면 그대로 따르고,

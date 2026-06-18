@@ -12,20 +12,15 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-import quant_core as qc
-from quant_core.blocks import catalog_spec
-from quant_core.ir_engine import (StrategyIR, capability_spec, explain_ir,
-                                   field_contract, validate_strategy)
-
+from ..compile_service import compile_strategy
 from ..config import settings
 from ..db import get_session
 from ..deps import get_current_user
-from ..ir_compiler import compile_nl
-from ..models import CompileLog, TradableSymbol, User
+from ..models import CompileLog, User
 
 router = APIRouter(prefix="/ir", tags=["ir"])
 
@@ -61,28 +56,6 @@ def _compile_quota(session: Session, user_id: int,
     used = int(used or 0)
     return {"used": used, "limit": limit, "remaining": max(0, limit - used),
             "admin_unlocked": unlocked}
-
-
-def _schema_issues(e: ValidationError) -> list[dict]:
-    """Pydantic 스키마 오류를 'fixable'한 이슈 목록으로 — 모든 에러를 위치(loc) + 그 자리
-    스키마 계약(field_contract)과 함께 반환한다. 첫 에러만/위치 없이 주면 repair 루프가
-    어디를 고칠지 몰라 수렴 못 한다(실측: param_grid 항목 모양 오류가 "Field required·
-    path=root"로만 와서 LLM이 2회 다 실패). repair 루프가 이 path·message를 그대로 인용한다."""
-    issues: list[dict] = []
-    for er in e.errors()[:12]:            # 폭주 상한(다축 격자 등은 에러 수십 개 가능)
-        loc = er.get("loc", ())
-        contract = field_contract(loc[:-1] if loc else ())   # 그 자리 컨테이너 계약
-        hint = f" — 올바른 형식: {contract}" if contract else ""
-        ctx = er.get("ctx") or {}
-        if ctx.get("expected"):           # enum/리터럴 허용값
-            hint += f" (허용: {ctx['expected']})"
-        issues.append({"rule": "schema", "severity": 30, "is_error": True,
-                       "message": f"정의 형식 오류: {er.get('msg', '')}{hint}",
-                       "path": ".".join(str(x) for x in loc) or "root"})
-    if not issues:
-        issues = [{"rule": "schema", "severity": 30, "is_error": True,
-                   "message": f"정의 형식 오류: {e}", "path": "root"}]
-    return issues
 
 
 class IrCompileIn(BaseModel):
@@ -137,34 +110,7 @@ def ir_compile(body: IrCompileIn, user: User = Depends(get_current_user),
                 "used": quota["used"], "limit": quota["limit"],
                 "remaining": 0, "admin_unlocked": quota["admin_unlocked"]}
 
-    # 심볼 키는 **관리목록(작은 JSON)에서 직접 조립** — 무거운 dataset 캐시(get_symbol_index)에
-    # 의존하면 콜드스타트 데이터 갱신과 락/세대 경합으로 컴파일이 지연·블록된다(검증된 실패).
-    # 컴파일 검증은 (1) 정적 지표 vocab + (2) 알려진 심볼 키 집합만 필요 — 둘 다 compute·락 불필요.
-    from quant_core import data_fetcher as _df
-    sym_keys = (set(_df.ALL_SYMBOLS)
-                | {s["name"] for s in _df.load_user_stocks()}
-                | set(_df.load_managed_kr_codes())
-                | {s["code"] for s in _df.load_managed_overseas()})
-    valid_refs = (sym_keys | {"Open", "High", "Low", "Close", "Volume"}
-                  | set(qc.get_all_indicator_columns()))
-    valid_keys = sym_keys
-    indicator_cols = sorted(qc.get_all_indicator_columns())
-    rows = session.exec(select(TradableSymbol).where(TradableSymbol.user_id == user.id)).all()
-    name_map = {r.name.strip().lower(): r.symbol for r in rows if r.name}
-
-    def _validate(strat: dict) -> tuple[list[dict], bool]:
-        try:
-            s = StrategyIR.model_validate(strat)
-        except ValidationError as e:
-            return (_schema_issues(e), False)
-        out = [{"rule": i.rule, "severity": i.severity, "is_error": i.is_error,
-                "message": i.message, "path": i.path}
-               for i in validate_strategy(s, valid_refs=valid_refs)]
-        return (out, not any(i["is_error"] for i in out))
-
-    res = compile_nl(body.nl, catalog=catalog_spec(), capabilities=capability_spec(),
-                     indicator_cols=indicator_cols, valid_keys=valid_keys,
-                     name_map=name_map, validate_fn=_validate)
+    res = compile_strategy(session, user.id, body.nl)
 
     log = CompileLog(user_id=user.id, nl_input=body.nl, compiled_ir=res.get("ir") or {},
                      assumptions=res.get("assumptions") or [], issues=res.get("issues") or [],
@@ -173,15 +119,7 @@ def ir_compile(body: IrCompileIn, user: User = Depends(get_current_user),
     session.commit()
     session.refresh(log)
 
-    # 백테스트 구성 설명(MECE 버킷 + 산문 요약) — 성공 IR에 한해 생성. 유저에게
-    # "어떤 가정·설정으로 백테스트가 구성되는지"를 그대로 노출(특히 silent 기본값).
-    explanation = None
-    if res.get("success") and res.get("ir"):
-        try:
-            explanation = explain_ir(StrategyIR.model_validate(res["ir"]),
-                                     res.get("assumptions") or [])
-        except ValidationError:
-            explanation = None
+    explanation = res.get("explanation")
 
     # 이번 시도를 포함한 사용량 — used=직전 카운트+1(방금 기록한 log). UI가
     # "오늘 N/M회"를 즉시 갱신하도록 응답에 싣는다.
