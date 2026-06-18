@@ -111,6 +111,7 @@ export type ChatStreamHandlers = {
 
 async function streamChatMessage(
   conversationId: number, message: string, h: ChatStreamHandlers,
+  adminPassword?: string,
 ): Promise<void> {
   const t = tokenStore.get();
   const res = await fetch(`${BASE}/chat/stream`, {
@@ -119,9 +120,12 @@ async function streamChatMessage(
       "Content-Type": "application/json",
       ...(t ? { Authorization: `Bearer ${t}` } : {}),
     },
-    body: JSON.stringify({ conversation_id: conversationId, message }),
+    body: JSON.stringify(adminPassword
+      ? { conversation_id: conversationId, message, admin_password: adminPassword }
+      : { conversation_id: conversationId, message }),
   });
   if (!res.ok || !res.body) {
+    // 429(한도 초과)도 여기로 — 서버가 b.detail에 친절한 한도 안내를 담아 보낸다.
     const b = await res.json().catch(() => ({}));
     throw new Error(b.detail || `${res.status} ${res.statusText}`);
   }
@@ -350,6 +354,12 @@ export const api = {
     req<{ id: number; title: string }[]>("/chat/conversations"),
   getConversation: (id: number) =>
     req<{ id: number; messages: ChatMessage[] }>(`/chat/conversations/${id}`),
+  // 챗봇 일일 사용량 조회 — 메시지 소모 없음. 비번 동봉 시 언락 즉시 검증(카운터·언락 공용).
+  chatQuota: (adminPassword?: string) =>
+    req<CompileQuota>("/chat/quota", {
+      method: "POST",
+      body: JSON.stringify(adminPassword ? { admin_password: adminPassword } : {}),
+    }),
   // P1b — 턴을 SSE로 스트리밍(위 streamChatMessage 재노출). 비스트리밍 /chat/message는
   // 서버에 유지(테스트 오라클·비SSE API)하되 웹은 스트리밍만 사용한다.
   streamChatMessage,

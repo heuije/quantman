@@ -189,3 +189,152 @@ def test_stream_endpoint_real_generator_persists(monkeypatch):
                       .order_by(Message.id)).all()
     assert [m.role for m in rows] == ["user", "assistant"]
     assert any(p["type"] == "tool_result" for p in rows[1].parts)
+
+
+# ── 인당 일일 사용량 캡 (#127 NL컴파일러 패턴을 챗봇에 미러) ───────────────────────
+
+def test_chat_quota_initial_zero():
+    """새 유저: 오늘 사용 0, 기본 한도 5회(상품 요구), 미언락."""
+    client, tok, eng, uid = _build()
+    q = client.post("/chat/quota", headers=_auth(tok), json={}).json()
+    assert q == {"used": 0, "limit": 5, "remaining": 5, "admin_unlocked": False}
+
+
+def test_chat_quota_counts_only_user_messages():
+    """'사용량' = user 메시지(질문 턴) 수. assistant 메시지는 카운트하지 않는다."""
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    from app.chat.agent import _persist
+    with Session(eng) as s:
+        _persist(s, cid, "user", [{"type": "text", "text": "q1"}])
+        _persist(s, cid, "assistant", [{"type": "text", "text": "a1"}])
+        _persist(s, cid, "user", [{"type": "text", "text": "q2"}])
+    q = client.post("/chat/quota", headers=_auth(tok), json={}).json()
+    assert q["used"] == 2 and q["remaining"] == 3
+
+
+def test_chat_quota_per_user_across_conversations():
+    """한 유저의 모든 대화를 합산하고(새 대화로 우회 불가), 남의 메시지는 제외한다."""
+    client, tok, eng, uid = _build()
+    c1 = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    c2 = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    from app.chat.agent import _persist
+    with Session(eng) as s:
+        _persist(s, c1, "user", [{"type": "text", "text": "a"}])
+        _persist(s, c2, "user", [{"type": "text", "text": "b"}])      # 다른 대화도 합산
+        other = User(email="z@example.com"); s.add(other); s.commit(); s.refresh(other)
+        oc = Conversation(user_id=other.id); s.add(oc); s.commit(); s.refresh(oc)
+        _persist(s, oc.id, "user", [{"type": "text", "text": "c"}])   # 남의 메시지는 미포함
+    q = client.post("/chat/quota", headers=_auth(tok), json={}).json()
+    assert q["used"] == 2
+
+
+def test_chat_quota_excludes_previous_days_kst():
+    """오늘(KST) 자정 이전 메시지는 카운트에서 제외(일일 리셋)."""
+    from datetime import datetime, timezone, timedelta
+    from app.models import Message
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    with Session(eng) as s:
+        old = Message(conversation_id=cid, role="user",
+                      parts=[{"type": "text", "text": "old"}],
+                      created_at=datetime.now(timezone.utc) - timedelta(days=2))
+        s.add(old); s.commit()
+    q = client.post("/chat/quota", headers=_auth(tok), json={}).json()
+    assert q["used"] == 0
+
+
+def test_chat_quota_admin_password_raises_limit(monkeypatch):
+    """올바른 운영진 비번 → 한도 상향(20). 틀린 비번 → 미언락(기본 한도)."""
+    monkeypatch.setattr(chat_router.settings, "CHAT_DAILY_LIMIT", 2)
+    monkeypatch.setattr(chat_router.settings, "CHAT_ADMIN_LIMIT", 20)
+    monkeypatch.setattr(chat_router.settings, "CHAT_ADMIN_PASSWORD", "secret-pw")
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    from app.chat.agent import _persist
+    with Session(eng) as s:
+        for i in range(3):
+            _persist(s, cid, "user", [{"type": "text", "text": f"q{i}"}])
+    q = client.post("/chat/quota", headers=_auth(tok), json={}).json()
+    assert q["limit"] == 2 and q["remaining"] == 0 and q["admin_unlocked"] is False
+    q2 = client.post("/chat/quota", headers=_auth(tok),
+                     json={"admin_password": "secret-pw"}).json()
+    assert q2["admin_unlocked"] is True and q2["limit"] == 20
+    assert q2["used"] == 3 and q2["remaining"] == 17
+    q3 = client.post("/chat/quota", headers=_auth(tok),
+                     json={"admin_password": "nope"}).json()
+    assert q3["admin_unlocked"] is False and q3["limit"] == 2
+
+
+def test_chat_message_blocked_at_limit(monkeypatch):
+    """한도 도달 시 /chat/message는 429 + rate_limited, run_chat_turn 미호출(LLM 비용 0)."""
+    monkeypatch.setattr(chat_router.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(chat_router.settings, "CHAT_DAILY_LIMIT", 2)
+    called = []
+    monkeypatch.setattr(chat_router, "run_chat_turn", lambda *a, **k: called.append(1) or [])
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    from app.chat.agent import _persist
+    with Session(eng) as s:
+        _persist(s, cid, "user", [{"type": "text", "text": "q1"}])
+        _persist(s, cid, "user", [{"type": "text", "text": "q2"}])
+    r = client.post("/chat/message", headers=_auth(tok),
+                    json={"conversation_id": cid, "message": "q3"})
+    assert r.status_code == 429, r.text
+    body = r.json()
+    assert body["rate_limited"] is True and body["limit"] == 2 and body["remaining"] == 0
+    assert called == []
+
+
+def test_chat_message_allowed_under_limit(monkeypatch):
+    """한도 미만이면 정상 200."""
+    monkeypatch.setattr(chat_router.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(chat_router.settings, "CHAT_DAILY_LIMIT", 5)
+    monkeypatch.setattr(chat_router, "run_chat_turn",
+                        lambda *a, **k: [{"type": "text", "text": "ok"}])
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    r = client.post("/chat/message", headers=_auth(tok),
+                    json={"conversation_id": cid, "message": "q1"})
+    assert r.status_code == 200, r.text
+
+
+def test_chat_message_admin_password_bypasses_block(monkeypatch):
+    """기본 한도 소진 후에도 운영진 비번 동봉 시 통과."""
+    monkeypatch.setattr(chat_router.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(chat_router.settings, "CHAT_DAILY_LIMIT", 1)
+    monkeypatch.setattr(chat_router.settings, "CHAT_ADMIN_LIMIT", 20)
+    monkeypatch.setattr(chat_router.settings, "CHAT_ADMIN_PASSWORD", "secret-pw")
+    monkeypatch.setattr(chat_router, "run_chat_turn",
+                        lambda *a, **k: [{"type": "text", "text": "ok"}])
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    from app.chat.agent import _persist
+    with Session(eng) as s:
+        _persist(s, cid, "user", [{"type": "text", "text": "q1"}])     # 기본 한도 1 소진
+    blocked = client.post("/chat/message", headers=_auth(tok),
+                          json={"conversation_id": cid, "message": "q2"})
+    assert blocked.status_code == 429
+    ok = client.post("/chat/message", headers=_auth(tok),
+                     json={"conversation_id": cid, "message": "q2",
+                           "admin_password": "secret-pw"})
+    assert ok.status_code == 200, ok.text
+
+
+def test_chat_stream_blocked_at_limit(monkeypatch):
+    """스트림도 시작 전 동기 차단 — 429 JSON, stream_chat_turn 미호출."""
+    monkeypatch.setattr(chat_router.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(chat_router.settings, "CHAT_DAILY_LIMIT", 1)
+    called = []
+    monkeypatch.setattr(chat_router, "stream_chat_turn",
+                        lambda *a, **k: called.append(1) or iter(()))
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    from app.chat.agent import _persist
+    with Session(eng) as s:
+        _persist(s, cid, "user", [{"type": "text", "text": "q1"}])
+    r = client.post("/chat/stream", headers=_auth(tok),
+                    json={"conversation_id": cid, "message": "q2"})
+    assert r.status_code == 429, r.text
+    assert r.json()["rate_limited"] is True
+    assert called == []
