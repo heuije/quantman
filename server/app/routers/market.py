@@ -95,10 +95,36 @@ def market_context(request: Request, response: Response,
 
 
 _RANGE_DAYS = {
-    "1m": 30, "3m": 95, "6m": 190, "12m": 380, "1y": 380,
+    "1m": 30, "1mo": 30, "3m": 95, "3mo": 95, "6m": 190, "6mo": 190,
+    "12m": 380, "1y": 380,
     "3y": 1120, "5y": 1850, "10y": 3700, "15y": 5550,
     "20y": 7400, "25y": 9250, "30y": 11100,
 }
+
+# P1 — symbol_detail 원시 fetch 캐싱(핸드오프 설계서). 병목의 99%가 FinanceDataReader 라이브
+# fetch(TTFB)라, 종목당 (ticker, 오늘) 키로 1회만 받아두고 range는 슬라이스만 한다. 고정 상한
+# (최장 range + 워밍업)으로 받아 모든 range 호출이 fetch 1회를 공유 → 2번째부터 즉시.
+_MAX_FETCH_DAYS = 11600   # ≈31.5y (30y range + 240MA 워밍업)
+
+
+@lru_cache(maxsize=512)
+def _raw_ohlcv(sym: str, _day: str):
+    import FinanceDataReader as fdr
+    start = (datetime.now().date() - timedelta(days=_MAX_FETCH_DAYS)).isoformat()
+    return fdr.DataReader(sym, start)
+
+
+@lru_cache(maxsize=16)
+def _raw_bench(bench_sym: str, _day: str):
+    import FinanceDataReader as fdr
+    start = (datetime.now().date() - timedelta(days=_MAX_FETCH_DAYS)).isoformat()
+    return fdr.DataReader(bench_sym, start)
+
+
+def clear_price_cache() -> None:
+    """장 마감 후 원시 시세 캐시 무효화 — 장중 첫 호출값이 종일 고정되는 것 방지(금일 종가 정합)."""
+    _raw_ohlcv.cache_clear()
+    _raw_bench.cache_clear()
 
 
 @lru_cache(maxsize=2)
@@ -211,15 +237,16 @@ def symbol_detail(symbol: str, range: str = "1y",
     if not sym:
         raise HTTPException(status_code=400, detail="종목 코드가 필요합니다.")
     span = _RANGE_DAYS.get(range, 400)
-    # ma240 워밍업: 240 거래일(≈350 달력일) 확보 위해 표시구간 + 여유분 fetch
-    fetch_start = (datetime.now().date() - timedelta(days=span + 400)).isoformat()
+    today = datetime.now().date().isoformat()
+    # P1 — 원시 일봉은 (ticker, 오늘) 캐시에서 1회 fetch 공유. range는 슬라이스만(워밍업 포함).
     try:
-        raw = fdr.DataReader(sym, fetch_start)
+        raw_full = _raw_ohlcv(sym, today)
     except Exception as e:  # 외부 데이터 소스 한계 — 호출자에 명확히 전달
         raise HTTPException(status_code=502, detail=f"가격 데이터 조회 실패: {e}")
-    if raw is None or raw.empty or "Close" not in raw.columns:
+    if raw_full is None or raw_full.empty or "Close" not in raw_full.columns:
         raise HTTPException(status_code=404,
                             detail=f"'{symbol}' 가격 데이터를 찾을 수 없습니다.")
+    raw = raw_full.tail(span + 400)     # ma240 워밍업 포함 슬라이스(지표 계산 비용 한정)
 
     ind = compute_all(raw.copy())     # rsi_14·atr_14·realized_vol 등 기본 지표
     c = ind["Close"]
@@ -271,7 +298,7 @@ def symbol_detail(symbol: str, range: str = "1y",
     bench_rebased = None
     beta = None
     try:
-        braw = fdr.DataReader(bench_sym, fetch_start)
+        braw = _raw_bench(bench_sym, today)     # 벤치마크도 (지수, 오늘) 캐시 공유(4중 중복 제거)
         if braw is not None and not braw.empty and "Close" in braw.columns:
             bclose = braw["Close"].reindex(show.index, method="ffill")
             base_s, base_b = show["Close"].iloc[0], bclose.iloc[0]
@@ -450,6 +477,20 @@ def industry_ebitda(name: str, user: User = Depends(get_current_user)):
     """지연 로딩: 종목별 EBITDA/EBITDA률/D&A(FnGuide 현금흐름표). 트리맵·표 표시 후 별도 호출."""
     from .. import industry as industry_mod
     return industry_mod.industry_ebitda(name)
+
+
+@router.get("/industry-of/{ticker}")
+def industry_of(ticker: str, user: User = Depends(get_current_user)):
+    """해당 종목이 속한 산업명(없으면 null). HOME 경쟁사분석이 현재 종목의 산업을 자동 인식."""
+    from .. import industry as industry_mod
+    return {"ticker": ticker, "industry": industry_mod.industry_of(ticker)}
+
+
+@router.get("/industry/{name}/returns")
+def industry_returns(name: str, user: User = Depends(get_current_user)):
+    """지연 로딩: 종목별 기간수익률(5/20/60/120/240일). 트리맵은 벌크 시총으로 즉시 뜨고 hover용은 후속."""
+    from .. import industry as industry_mod
+    return industry_mod.industry_returns(name)
 
 
 @router.get("/news")

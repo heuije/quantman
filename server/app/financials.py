@@ -13,6 +13,7 @@ import logging
 import os
 import re
 from datetime import date
+from functools import lru_cache
 from io import StringIO
 
 import pandas as pd  # noqa: F401  (bs4가 주 파서지만 환경 일치 위해 유지)
@@ -212,12 +213,7 @@ def refresh(code: str) -> dict:
     return data
 
 
-def financials(code: str) -> dict:
-    """Financials 탭용 — 저장본 즉시 반환(없거나 만료 시 1회 조회·저장).
-
-    탭 클릭 시 로딩 없이 뜨도록, 정상 운영에선 cron이 미리 채워둔 저장본을 그대로 서빙한다.
-    """
-    code = str(code).strip()
+def _load_or_fetch(code: str) -> dict:
     path = _path(code)
     try:
         if os.path.exists(path):
@@ -237,6 +233,37 @@ def financials(code: str) -> dict:
                 return json.load(f)
         except Exception:
             return {"fetched": "", "annual": {}, "quarterly": {}}
+
+
+@lru_cache(maxsize=1024)
+def _cached(code: str, _day: str) -> dict:
+    return _load_or_fetch(code)
+
+
+def financials(code: str) -> dict:
+    """Financials 탭용 — 메모리 캐시(프로세스 내 즉시) → 디스크 저장본 → 라이브(최후) 순.
+
+    디스크는 Railway 재시작 시 휘발하므로 (code, 오늘) 메모리 lru_cache로 같은 종목 재요청·재마운트를
+    즉시 응답한다. 기동 시 prewarm으로 산업 종목을 미리 데워 첫 진입도 빠르게."""
+    return _cached(str(code).strip(), date.today().isoformat())
+
+
+def clear_cache() -> None:
+    """장 마감 후 등 캐시 무효화."""
+    _cached.cache_clear()
+
+
+def prewarm(codes: list[str]) -> int:
+    """기동 시 산업 종목 재무제표를 메모리(+디스크)에 미리 적재 — 첫 탭 진입도 즉시."""
+    n = 0
+    for c in codes:
+        try:
+            d = financials(c)
+            if d.get("annual"):
+                n += 1
+        except Exception:
+            pass
+    return n
 
 
 def refresh_all(codes: list[str]) -> int:

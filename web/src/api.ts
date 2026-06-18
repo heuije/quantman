@@ -263,6 +263,13 @@ export const api = {
   industryEbitda: (name: string) =>
     req<Record<string, { da: number | null; ebitda: number | null; ebitda_margin: number | null }>>(
       `/market/industry/${encodeURIComponent(name)}/ebitda`),
+  // 종목 → 속한 산업명(경쟁사분석 자동 인식). 없으면 industry=null
+  industryOf: (ticker: string) =>
+    req<{ ticker: string; industry: string | null }>(`/market/industry-of/${encodeURIComponent(ticker)}`),
+  // 산업 트리맵 기간수익률 지연 로딩(hover용) — {ticker: {d5,d20,d60,d120,d240}}
+  industryReturns: (name: string) =>
+    req<Record<string, { d5: number | null; d20: number | null; d60: number | null; d120: number | null; d240: number | null } | null>>(
+      `/market/industry/${encodeURIComponent(name)}/returns`),
   // 섹터 키워드 뉴스 / 기업 개요
   sectorNews: (kr: string[], glob: string[]) =>
     req<SectorNews>(`/market/news?kr=${encodeURIComponent(kr.join(","))}&glob=${encodeURIComponent(glob.join(","))}`),
