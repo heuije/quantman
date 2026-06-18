@@ -43,6 +43,12 @@
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [2026-06-19] 증빙 엑셀 export (P1: 백테스트) [완료·미배포]
+- 의도: 챗봇/빌더가 IR 백테스트를 돌리면 *결과만* 주는 게 아니라 '어떤 데이터를 어떤 연산으로' 산출했는지 **데이터+라이브수식 엑셀**로 증빙(선물 `build_oil_excel` 취지). 온디맨드 버튼. 모든 IR 분석유형이 목표지만 P1은 SIMULATE만(나머지 형상 P2·실시간 변수조정 P3).
+- 계획: `core/ir_engine/excel_export.py`(`build_strategy_excel` 5시트)+TDD → server `POST /ir/strategy/export.xlsx`(`/ir/strategy` 본문·실행 재사용, LLM 없음=토큰0) → web 공용 `ExcelExportButton`(챗·빌더).
+- 시행착오·인사이트: ⚠엔진은 정수주·현금·마진·지연체결의 **이벤트 NAV 시뮬**이라 셀 수식으로 NAV 경로를 정확히 복제 불가(naive `cumprod(가중×수익)`≠엔진). → 라이브 수식은 **엔진 정본 자산곡선(equity) 위 정의식 변환**(일수익·낙폭·CAGR·샤프·MDD)만 — `bps=0`이면 엔진 metrics와 *정확히 일치*(증빙), '일일추가비용(bps)' 노란칸으로 사후 비용 민감도(라이브). 전략 로직/파라미터 변경 라이브 재계산은 **P3 재실행**이 담당 → 엑셀에 'IR→수식 컴파일러' 불필요(분업: 엑셀=산술·비용 검증). ⚠샤프는 `backtest._metrics`가 pandas `.std()`(ddof=1 표본)라 Excel **STDEV.S**(STDEV.P 아님). ⚠openpyxl은 수식 미평가 → 라이브수식 *수치* 검증은 파이썬 모사(formula-math) 테스트로 엔진 metrics 재현을 고정 + 수동 Excel 1회.
+- 결과 구현: `build_strategy_excel(ir, dataset, result)` 5시트(백테스트=라이브수식·거래내역=정적앵커·원자료·일별비중·지표설명). **엔진 무변경(골든 byte-identical).** 서버 `_load_ir_dataset` 헬퍼로 `/ir/strategy`·export 공용(드리프트 0)·**simulate만 게이트**(그 외 400, P2 예정). 웹 `ExcelExportButton`(`var(--accent)`, `trendExport` blob 다운로드 패턴)을 ChatResultView simulate + IrBuilder ResultPanel 재사용. **검증: core 309·server 336·web build+lint(신규 0)·excel 8(formula-math 포함)·endpoint 2.** 미배포(사용자 승인 대기). 잔여: P2 형상별 엑셀(select/describe/sweep/relate 감사표)·P3 실시간 변수조정.
+
 ### [날짜미상] 부호방향 long_short 라이브 양방향 (M5d) [완료]
 - 의도: 조건별 롱/숏을 단일 전략으로 라이브 양방향 매매(예: S&P 부호 → 코스피200선물 시가매수 or 시가매도). `direction="long_short"` + score 부호방향으로, 기존 단방향 라이브를 깨지 않으면서 부호에 따라 바별 롱/숏을 체결하는 게 목표. 랭킹 long_short(top_n/top_pct·scheduled)와는 구분되며 단일·선물 한정 범위.
 - 계획: 방향정책의 단일 출처 `engine._direction_for(buy_bool, score_vals, base_sign, threshold)` 도입 후 4계층 배선 — spec 예외(on_signal+long_short+score) → 게이트(`_assert_live_tradable`) → preview(`_evaluate_ir_strategy`) → executor(`_try_buy_one_symbol`). NL 컴파일러 라우팅도 함께.

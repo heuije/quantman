@@ -29,6 +29,7 @@ import {
 } from "recharts";
 import { Link } from "react-router-dom";
 import EquityChart from "./EquityChart";
+import ExcelExportButton from "./ExcelExportButton";
 import {
   DiagnosisPanel, EventStudyChart, ExtremizeChart, ICChart, RankedListChart,
   RegressionChart, ReportCards, SignalDistChart, SweepChart,
@@ -358,6 +359,7 @@ export default function ChatResultView({ result }: Props) {
   // ── simulate: 지표행 + 자산곡선 (axis 없는 단일 백테스트 폴백) ───────────────
   if (r.equity && r.equity.length > 0) {
     const m = r.metrics ?? {};
+    const ir = (result as { ir?: Record<string, unknown> }).ir;
     return (
       <div className="chat-result">
         <div className="chat-result-metrics">
@@ -386,6 +388,7 @@ export default function ChatResultView({ result }: Props) {
           benchmark={r.benchmark}
           trades={r.trades}
         />
+        {ir && <ExcelExportButton ir={ir} />}
       </div>
     );
   }
