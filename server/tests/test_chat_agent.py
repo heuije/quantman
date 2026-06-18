@@ -412,3 +412,29 @@ def test_loop_exhaustion_yields_fallback_text(monkeypatch):
         c = Conversation(user_id=u.id); s.add(c); s.commit(); s.refresh(c)
         parts = ag.run_chat_turn(s, c.id, "분석해줘", client=_C())
     assert any(p["type"] == "text" and "완료하지 못" in p["text"] for p in parts)
+
+
+def test_tool_result_nan_sanitized_to_valid_json(monkeypatch):
+    """백테스트 metrics의 NaN/inf가 None으로 정리돼 브라우저 JSON.parse가 깨지지 않는다.
+
+    라이브 회귀: simulate가 sharpe=NaN(변동성 0 등)을 내면 SSE/응답이 'NaN' 토큰을 실어
+    JSON.parse가 깨졌다. /ir 백테스트 경로와 동일한 clean_json을 도구 결과에 적용해 닫는다.
+    """
+    import json
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    monkeypatch.setattr(chat_agent, "run_tool",
+                        lambda name, inp: {"success": True,
+                                           "metrics": {"cagr": 0.1, "sharpe": float("nan"),
+                                                       "mdd": float("-inf")}})
+    queue = [
+        _Resp([_Block(type="tool_use", id="x", name="screen",
+                      input={"score_ref": "__SELF__.pb_ratio", "top_n": 3})],
+              stop_reason="tool_use"),
+        _Resp([_Block(type="text", text="결과입니다")], stop_reason="end_turn"),
+    ]
+    parts = chat_agent.run_chat_turn(s, conv.id, "스크리닝", client=_FakeClient(queue))
+    tr = next(p for p in parts if p["type"] == "tool_result")
+    m = tr["result"]["metrics"]
+    assert m["sharpe"] is None and m["mdd"] is None and m["cagr"] == 0.1   # NaN/inf→None
+    json.dumps(tr["result"], allow_nan=False)   # NaN 토큰 잔존 시 ValueError(브라우저 JSON.parse 호환)

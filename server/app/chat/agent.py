@@ -16,6 +16,7 @@ import time
 from sqlmodel import Session, select
 
 from ..models import ChatTurnMetric, Conversation, Message
+from ..serialize import clean_json
 from .tools import (TOOL_SCHEMAS, compact_summary, run_simulate, run_tool,
                     save_strategy_tool)
 from .prompt import chat_system_prompt
@@ -212,6 +213,9 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                         full = save_strategy_tool(session, uid, conversation_id, inp)
                 else:
                     full = run_tool(b.name, inp)
+                # 도구 결과의 NaN/inf→None — JSON은 NaN을 표현 못 해 브라우저 JSON.parse·
+                # Postgres JSONB가 깨진다(/ir 백테스트 경로와 동일한 clean_json 재사용).
+                full = clean_json(full)
                 assistant_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": inp})
                 assistant_parts.append({"type": "tool_result", "tool_use_id": b.id,
                                         "name": b.name, "result": full})
