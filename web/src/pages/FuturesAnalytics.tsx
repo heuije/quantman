@@ -39,6 +39,7 @@ import {
   type OilSeasonality,
   type OilTrendEvents,
   type OilTrendScan,
+  type OilTrendScanCell,
   type OilWalkForward,
 } from "../api";
 
@@ -1408,6 +1409,8 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   const [dLo, setDLo] = useState<number | "">("");     // 과거 증감율 하한
   const [dHi, setDHi] = useState<number | "">("");     // 과거 증감율 상한
   const [dGap, setDGap] = useState(TE_DEF_GAP);        // 이벤트 최소 간격(영업일) — 클러스터/겹침 디클러스터. 기본 60: 독립 표본 확보. (L,H) 지도는 저표본도 그리므로(n≥3) 60이어도 안 비고 저신뢰 음영으로 표시됨
+  // (L,H) 지도 셀 지표 — 기본은 사용자가 최적화하는 '평균 향후수익률'.
+  const [scanMetric, setScanMetric] = useState<"ret" | "up" | "r2" | "n">("ret");
 
   // 적용된 설정 (확인 클릭 시 스냅샷)
   const [applied, setApplied] = useState<
@@ -1575,19 +1578,27 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     return { line, shades };
   }, [prices, declustered, applied, dateIdx]);
 
-  // (L,H) 설명력 지도용 — 칸 조회 Map + R² 최댓값(틴트 정규화).
+  // (L,H) 지도용 — 칸 조회 Map + 선택 지표값 추출/정규화(지표별 색scale).
   const scanView = useMemo(() => {
     if (!scan) return null;
     const byKey = new Map(scan.cells.map((c) => [`${c.lookback}|${c.horizon}`, c] as const));
-    // 틴트 정규화는 **고신뢰 칸(n≥min_n)** 기준 — 표본 적은 칸의 과장된 R²(예 n=3에서 1.0)가
-    // maxR2를 끌어올려 진짜 칸을 흐리게 만드는 것 방지. 고신뢰 칸이 없으면 전체로 폴백.
-    const hi = scan.cells.filter((c) => c.r_squared != null && c.n >= scan.min_n).map((c) => c.r_squared as number);
-    const any = scan.cells.filter((c) => c.r_squared != null).map((c) => c.r_squared as number);
-    const maxR2 = Math.max(1e-9, ...(hi.length ? hi : any), 0);
-    // 빈상태는 이제 **모든 칸이 회귀 불가(n<3)** 일 때만 — 저표본(3≤n<min_n)은 그려진다.
-    const allNull = scan.cells.length > 0 && scan.cells.every((c) => c.r_squared == null);
-    return { byKey, maxR2, allNull };
-  }, [scan]);
+    // 선택 지표의 셀 값(없으면 null → '·'). R²는 n<3이면 null이지만 수익률/상승비율/표본수는
+    // n≥1이면 값이 있어 더 많은 칸이 그려진다.
+    const valOf = (c: OilTrendScanCell): number | null =>
+      scanMetric === "r2" ? c.r_squared
+        : scanMetric === "up" ? c.up_ratio
+          : scanMetric === "n" ? c.n
+            : c.mean_forward;
+    // 색 정규화 — 고신뢰 칸(n≥min_n) 기준(저표본 과장이 스케일 끌어올리는 것 방지), 없으면 전체.
+    const hi = scan.cells.filter((c) => valOf(c) != null && c.n >= scan.min_n).map((c) => valOf(c) as number);
+    const any = scan.cells.filter((c) => valOf(c) != null).map((c) => valOf(c) as number);
+    const base = hi.length ? hi : any;
+    const maxPos = Math.max(1e-9, ...base, 0);                  // r2·n: 양수 정규화
+    const maxAbs = Math.max(1e-9, ...base.map((v) => Math.abs(v)), 0);  // ret: 발산(절댓값)
+    // 빈상태 = 모든 칸이 이 지표로 그릴 값 없음(R²=전부 n<3 / 수익률·상승=전부 n=0).
+    const allNull = scan.cells.length > 0 && scan.cells.every((c) => valOf(c) == null);
+    return { byKey, valOf, maxPos, maxAbs, allNull };
+  }, [scan, scanMetric]);
 
   const op = result ? teOpinion(result.mean) : null;
 
@@ -1781,19 +1792,35 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           {applied && scanView && scan && (
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
               <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
-                <b>(과거 L, 미래 H) 설명력 지도</b> — 행=과거 L일, 열=미래 H일. 종가범위{applied.nLo <= -1e8 ? "" : ` ${priceSym}${applied.nLo}~${priceSym}${applied.nHi}`} 내
-                forward~past <b>R²</b>(색 진하기) · β부호(+/−) · 부호안정 <b>✓</b>(train·test 동부호) · HAC p&lt;.05 <b>*</b>. <b>점선·흐린 칸</b>=저신뢰(표본 n&lt;{scan.min_n}).
-                {" "}<b style={{ color: "var(--accent-strong)" }}>칸 클릭 → 그 (L,H)로 위 결과·회귀 재계산.</b>
+                <b>(과거 L, 미래 H) 지도</b> — 행=과거 L일, 열=미래 H일, 종가범위{applied.nLo <= -1e8 ? "" : ` ${priceSym}${applied.nLo}~${priceSym}${applied.nHi}`} 내 매칭으로 계산.
+                {" "}<b style={{ color: "var(--accent-strong)" }}>칸 클릭 → 그 (L,H)로 위 결과·회귀 재계산.</b> <b>점선·흐린 칸</b>=저신뢰(표본 n&lt;{scan.min_n}).
+              </div>
+              {/* 셀 지표 토글 — 값 하나씩 넣지 않고 격자에서 최적 조합을 한눈에 */}
+              <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <span className="muted" style={{ fontSize: 12 }}>셀 지표:</span>
+                {([["ret", "평균 향후수익률"], ["up", "상승비율"], ["r2", "설명력 R²"], ["n", "표본수"]] as const).map(([m, lbl]) => (
+                  <button key={m} onClick={() => setScanMetric(m)}
+                    style={{
+                      fontSize: 12, padding: "3px 10px", borderRadius: 6, cursor: "pointer",
+                      border: scanMetric === m ? "1px solid var(--accent)" : "1px solid var(--border)",
+                      background: scanMetric === m ? "var(--accent-soft)" : "transparent",
+                      color: scanMetric === m ? "var(--accent-strong)" : "var(--muted)",
+                      fontWeight: scanMetric === m ? 700 : 400,
+                    }}>{lbl}</button>
+                ))}
+                <span className="muted" style={{ fontSize: 11 }}>
+                  {scanMetric === "ret" ? "수익=빨강 / 손실=파랑" : scanMetric === "up" ? "50% 기준 빨강/파랑" : "값 클수록 진함"}
+                </span>
               </div>
               {!scanView.allNull && (
                 <div className="muted" style={{ fontSize: 11, marginBottom: 8, color: "var(--amber)" }}>
-                  ⚠ 다중비교 주의: {scan.n_cells}개 칸 중 R² 최댓값만 믿으면 과최적화. 고-R²가 <b>연속 영역</b>이고 <b>✓(OOS 부호안정)</b>·낮은 p가 받쳐줄 때만 신뢰.
+                  ⚠ 다중비교 주의: {scan.n_cells}개 칸 중 최댓값 한 칸만 믿으면 과최적화. 고-값이 <b>연속 영역</b>이고 <b>표본수</b>·<b>OOS 부호안정</b>이 받쳐줄 때만 신뢰.
                 </div>
               )}
               {scanView.allNull && !scanLoading && (
                 <div style={{ fontSize: 13, padding: "14px 14px", background: "#f1efe8", borderRadius: 8, lineHeight: 1.65, color: "var(--text)" }}>
                   <b>표본이 거의 없어 지도를 그릴 수 없습니다.</b><br />
-                  {scan.n_cells}개 칸이 <b>전부</b> 독립 표본 <b>3건 미만</b>이라 회귀선조차 적합할 수 없습니다(저표본은 그리지만, 이건 그보다 더 성긴 경우). 현재 종가 범위{applied.nLo <= -1e8 ? "" : ` ${priceSym}${applied.nLo}~${priceSym}${applied.nHi}`}와 이벤트 최소 간격 <b>{applied.gap}일</b> 조합이 너무 성깁니다.<br />
+                  {scan.n_cells}개 칸 <b>전부</b> 이 조건에서 매칭 표본이 거의 없습니다(R² 지표는 칸당 3건 이상 필요). 현재 종가 범위{applied.nLo <= -1e8 ? "" : ` ${priceSym}${applied.nLo}~${priceSym}${applied.nHi}`}와 이벤트 최소 간격 <b>{applied.gap}일</b> 조합이 너무 성깁니다.<br />
                   → <b style={{ color: "var(--accent-strong)" }}>이벤트 최소 간격을 줄이거나</b>(현재 {applied.gap}일) <b style={{ color: "var(--accent-strong)" }}>종가 범위를 넓혀</b> 다시 확인하세요.
                 </div>
               )}
@@ -1813,30 +1840,49 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                         {scan.horizons.map((H) => {
                           const c = scanView.byKey.get(`${L}|${H}`);
                           const isCur = applied.L === L && applied.H === H;
-                          if (!c || c.r_squared == null) {
-                            // r_squared null = n<3 (회귀 불가). 저표본(3≤n<min_n)은 아래에서 그려진다.
+                          const v = c ? scanView.valOf(c) : null;
+                          if (!c || v == null) {
+                            // 이 지표로 그릴 값 없음(R²=n<3 / 수익률·상승=n=0).
                             return (
-                              <td key={H} title={c ? `n=${c.n} · 회귀 불가(n<3)` : ""}
+                              <td key={H} title={c ? `n=${c.n} · (이 지표 값 없음)` : ""}
                                 style={{ background: "#f1efe8", color: "var(--muted)", opacity: 0.5, borderRadius: 5,
                                   cursor: "default", outline: isCur ? "2px solid #d97757" : "none" }}>·</td>
                             );
                           }
-                          // 저신뢰(n<min_n): 그리되 흐리게(알파 상한↓)+점선+표본수 표시 — 작은 n의
-                          // 과장된 R²를 진짜 신호로 오인하지 않도록(데이터 스누핑 가드와 동일 취지).
+                          // 저신뢰(n<min_n)는 흐리게(알파 상한↓)+점선+표본수 — 작은 n의 과장된 값 오인 방지.
                           const lowConf = c.n < scan.min_n;
-                          const alpha = Math.min(lowConf ? 0.4 : 0.85, (c.r_squared / scanView.maxR2) * 0.85);
-                          const sig = c.hac_p_value != null && c.hac_p_value < 0.05;
+                          const cap = lowConf ? 0.4 : 0.85;
+                          // 지표별 색: 수익률·상승비율=발산(수익/높음=빨강·손실/낮음=파랑, 한국관례),
+                          // R²·표본수=오렌지 농도. 텍스트도 지표별 포맷.
+                          let a: number, bg: string, txt: string;
+                          if (scanMetric === "ret") {
+                            a = Math.min(cap, (Math.abs(v) / scanView.maxAbs) * 0.85);
+                            bg = v >= 0 ? `rgba(222,48,51,${a})` : `rgba(22,104,196,${a})`;
+                            txt = (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+                          } else if (scanMetric === "up") {
+                            a = Math.min(cap, (Math.abs(v - 50) / 50) * 0.85);
+                            bg = v >= 50 ? `rgba(222,48,51,${a})` : `rgba(22,104,196,${a})`;
+                            txt = v.toFixed(0) + "%";
+                          } else {  // r2 | n — 오렌지 농도
+                            a = Math.min(cap, (v / scanView.maxPos) * 0.85);
+                            bg = `rgba(217,119,87,${a})`;
+                            txt = scanMetric === "n" ? String(v) : v.toFixed(2);
+                          }
+                          const sub = scanMetric === "r2"
+                            ? `${(c.slope ?? 0) >= 0 ? "β+" : "β−"}${c.sign_stable ? " ✓" : ""}${c.hac_p_value != null && c.hac_p_value < 0.05 ? " *" : ""}${lowConf ? ` ⚠n${c.n}` : ""}`
+                            : `n${c.n}${lowConf ? " ⚠" : ""}`;
+                          const tip = `L=${L}, H=${H} · n=${c.n}${lowConf ? ` ⚠저신뢰(<${scan.min_n})` : ""}`
+                            + ` · 평균향후 ${c.mean_forward != null ? c.mean_forward.toFixed(2) + "%" : "—"}`
+                            + ` · 상승 ${c.up_ratio != null ? c.up_ratio.toFixed(0) + "%" : "—"}`
+                            + ` · R² ${c.r_squared != null ? c.r_squared.toFixed(3) : "—"}`
+                            + ` · β ${c.slope != null ? c.slope.toFixed(2) : "—"} · 부호안정 ${c.sign_stable ? "예" : "아니오"}`;
                           return (
-                            <td key={H}
-                              title={`L=${L}, H=${H} · n=${c.n}${lowConf ? ` ⚠ 저신뢰(<${scan.min_n})` : ""} · R²=${c.r_squared.toFixed(3)} · β=${(c.slope ?? 0).toFixed(2)} · HAC p=${(c.hac_p_value ?? 1).toFixed(3)} · OOS R²=${c.oos_r_squared != null ? c.oos_r_squared.toFixed(3) : "—"} · 부호안정 ${c.sign_stable ? "예" : "아니오"}`}
-                              onClick={() => applyAndCompute(L, H)}
-                              style={{ background: `rgba(217,119,87,${alpha})`, color: alpha > 0.5 ? "#fff" : "var(--text)",
+                            <td key={H} title={tip} onClick={() => applyAndCompute(L, H)}
+                              style={{ background: bg, color: a > 0.55 ? "#fff" : "var(--text)",
                                 borderRadius: 5, cursor: "pointer", outline: isCur ? "2px solid #d97757" : "none",
                                 border: lowConf ? "1px dashed var(--muted)" : undefined }}>
-                              <div style={{ fontWeight: 600 }}>{c.r_squared.toFixed(2)}</div>
-                              <div style={{ fontSize: 10, opacity: 0.9 }}>
-                                {(c.slope ?? 0) >= 0 ? "β+" : "β−"}{c.sign_stable ? " ✓" : ""}{sig ? " *" : ""}{lowConf ? ` ⚠n${c.n}` : ""}
-                              </div>
+                              <div style={{ fontWeight: 600 }}>{txt}</div>
+                              <div style={{ fontSize: 10, opacity: 0.9 }}>{sub}</div>
                             </td>
                           );
                         })}

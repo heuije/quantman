@@ -210,6 +210,9 @@ def test_explanatory_scan_grid_price_band_and_structure():
     # n=11 → train=6/test=5 (≥3) → OOS·부호안정성 계산됨.
     assert c.oos_r_squared is not None and c.oos_slope is not None
     assert isinstance(c.sign_stable, bool)
+    # 수익률 지표: 단조 상승 합성 → 향후 증감율 전부 양수 → 상승비율 100%·평균>0.
+    assert not math.isnan(c.mean_forward) and c.mean_forward > 0
+    assert c.up_ratio == 100.0
 
 
 def test_explanatory_scan_draws_low_sample_down_to_n3():
@@ -225,6 +228,8 @@ def test_explanatory_scan_draws_low_sample_down_to_n3():
     blank = trend_explanatory_scan(df, [2], [2], 110, 111)
     assert len(blank) == 1 and blank[0].n == 2
     assert math.isnan(blank[0].r_squared) and blank[0].oos_r_squared is None
+    # 회귀 불가(n<3)여도 평균 향후수익률·상승비율은 n≥1이면 계산됨(수익률 지표용).
+    assert not math.isnan(blank[0].mean_forward) and not math.isnan(blank[0].up_ratio)
 
 
 def test_explanatory_scan_deterministic():

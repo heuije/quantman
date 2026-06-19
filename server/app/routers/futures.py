@@ -913,6 +913,8 @@ class ScanCellOut(BaseModel):
     oos_r_squared: Optional[float]
     oos_slope: Optional[float]
     sign_stable: bool
+    mean_forward: Optional[float]  # 평균 향후 H일 증감율 (%). n≥1이면 값(R²와 달리 n<3도)
+    up_ratio: Optional[float]      # 향후 증감율>0 비율 (%)
 
 
 class TrendScanResponse(BaseModel):
@@ -990,6 +992,7 @@ def trend_scan_endpoint(
                 intercept=_nn(c.intercept), hac_p_value=_nn(c.hac_p_value),
                 oos_r_squared=_nn(c.oos_r_squared), oos_slope=_nn(c.oos_slope),
                 sign_stable=c.sign_stable,
+                mean_forward=_nn(c.mean_forward), up_ratio=_nn(c.up_ratio),
             )
             for c in cells
         ],

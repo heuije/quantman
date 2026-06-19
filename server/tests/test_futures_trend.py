@@ -96,9 +96,13 @@ def test_trend_scan_grid(monkeypatch):
     # 종가 ∈ [110,120] = close[t]=100+t → t∈10..20 = 11건.
     assert cell["n"] == 11
     assert cell["r_squared"] is not None              # n≥min_n → 회귀 실행
+    # 수익률 지표 노출: 단조 상승 합성 → 향후 증감율 전부 양수.
+    assert cell["mean_forward"] is not None and cell["mean_forward"] > 0
+    assert cell["up_ratio"] == 100.0
     assert set(cell) == {
         "lookback", "horizon", "n", "r_squared", "slope", "intercept",
         "hac_p_value", "oos_r_squared", "oos_slope", "sign_stable",
+        "mean_forward", "up_ratio",
     }
 
 

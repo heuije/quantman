@@ -704,6 +704,8 @@ export interface OilTrendScanCell {
   oos_r_squared: number | null;
   oos_slope: number | null;
   sign_stable: boolean;        // train·test 기울기 동부호
+  mean_forward: number | null; // 평균 향후 H일 증감율(%) — n≥1이면 값(R²와 달리 n<3도)
+  up_ratio: number | null;     // 향후 증감율>0 비율(%)
 }
 
 export interface OilTrendScan {

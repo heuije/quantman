@@ -180,6 +180,8 @@ class ScanCell:
     oos_r_squared: float | None   # test 반쪽 R² (회귀 불가 시 None)
     oos_slope: float | None       # test 반쪽 기울기
     sign_stable: bool             # train·test 기울기 동부호 (둘 다 회귀 가능)
+    mean_forward: float           # 매칭(디클러스터) 건의 평균 향후 H일 증감율 (%). n==0이면 nan
+    up_ratio: float               # 향후 증감율>0 비율 (%). n==0이면 nan
 
 
 def _decluster_by_gap(events: list[TrendEvent], gap: int, pos: dict) -> list[TrendEvent]:
@@ -240,12 +242,17 @@ def trend_explanatory_scan(
                    if price_lo <= e.close <= price_hi]
             evs = _decluster_by_gap(evs, int(gap), pos)
             n = len(evs)
+            # 평균 향후수익률·상승비율은 회귀 불가(n<3)여도 n≥1이면 계산 — 수익률 지표용.
+            fwd = [e.forward_return * 100.0 for e in evs]
+            mean_fwd = (sum(fwd) / n) if n else float("nan")
+            up_ratio = (100.0 * sum(1 for v in fwd if v > 0) / n) if n else float("nan")
             if n < 3:
                 cells.append(ScanCell(
                     lookback=int(L), horizon=int(H), n=n,
                     r_squared=float("nan"), slope=float("nan"),
                     intercept=float("nan"), hac_p_value=float("nan"),
                     oos_r_squared=None, oos_slope=None, sign_stable=False,
+                    mean_forward=mean_fwd, up_ratio=up_ratio,
                 ))
                 continue
             reg = trend_regression(evs, int(H))
@@ -263,6 +270,7 @@ def trend_explanatory_scan(
                 oos_r_squared=(reg_te.r_squared if reg_te else None),
                 oos_slope=(reg_te.slope if reg_te else None),
                 sign_stable=sign_stable,
+                mean_forward=mean_fwd, up_ratio=up_ratio,
             ))
     return cells
 
