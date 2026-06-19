@@ -6,6 +6,8 @@ simulate/save_strategy는 NL을 compile_strategy에 위임해 모델이 IR을 �
 """
 from __future__ import annotations
 
+import copy
+
 import quant_core as qc
 from pydantic import ValidationError
 from quant_core.ir_engine import (StrategyIR, needed_columns, needed_symbols,
@@ -106,7 +108,30 @@ INSPECT_TOOL = {
     },
 }
 
-TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL]
+ADJUST_TOOL = {
+    "name": "adjust_analysis",
+    "description": ("직전 simulate 분석의 **변수 값만** 바꿔 재실행한다(재컴파일 없이·토큰 0). "
+                    "비용·기간·top_n·보유기간·임계값 등 '마지막 분석의 파라미터 조정'일 때만 — "
+                    "새 전략/다른 신호/다른 종목은 simulate(nl)로. changes의 path는 직전 결과 "
+                    "adjustable(매니페스트)의 경로(예: simulation.commission)."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "changes": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "path": {"type": "string",
+                             "description": "조정 경로(예: simulation.commission, position.exit.hold_days)."},
+                    "value": {"description": "새 값(숫자·문자·불리언)."}},
+                    "required": ["path", "value"]},
+                "description": "바꿀 필드 목록.",
+            },
+        },
+        "required": ["changes"],
+    },
+}
+
+TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL, ADJUST_TOOL]
 
 
 # ── IR 조립 ──────────────────────────────────────────────────────────────────
@@ -292,6 +317,83 @@ def save_strategy_tool(session, user_id, conversation_id, tool_input: dict) -> d
     except Exception as e:  # noqa: BLE001 — 저장 실패를 모델 피드백으로 표면화
         return {"success": False, "error": f"전략 저장 실패: {e}"}
     return {"success": True, "strategy_id": row.id, "name": row.name, "run_mode": "draft"}
+
+
+# ── 변수 조정 재실행 (①명세 — nl 재컴파일 대신 IR 핸들 필드 수정) ──────────────
+
+def _set_path(d: dict, path: str, value) -> None:
+    """점경로로 중첩 dict에 값 설정 (web ParamControls setPath의 py 대응)."""
+    cur = d
+    keys = path.split(".")
+    for k in keys[:-1]:
+        nxt = cur.get(k)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[k] = nxt
+        cur = nxt
+    cur[keys[-1]] = value
+
+
+def _coerce(entry: dict, value) -> object:
+    """매니페스트 항목 타입으로 값 강제 + 범위/옵션 검증. 잘못된 값 → ValueError."""
+    typ = entry.get("type")
+    if typ == "bool":
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("true", "1", "yes", "참")
+    if typ == "select":
+        sval = str(value)
+        opts = entry.get("options") or []
+        if opts and sval not in opts:
+            raise ValueError(f"'{entry['path']}'는 {opts} 중 하나라야 합니다(받음: {sval}).")
+        return sval
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"'{entry['path']}'는 숫자라야 합니다(받음: {value}).")
+    if entry.get("min") is not None:
+        num = max(num, float(entry["min"]))
+    if entry.get("max") is not None:
+        num = min(num, float(entry["max"]))
+    base = entry.get("value")
+    return int(num) if isinstance(base, int) and not isinstance(base, bool) else num
+
+
+def run_adjust(session, conversation_id, tool_input: dict) -> dict:
+    """직전 simulate의 검증 IR에서 '값만' 바꿔 재실행(재컴파일 0·토큰 0). ①명세 근본수정.
+
+    nl 재서술→재컴파일의 비결정 발산(같은 의도가 다른 IR·다른 수치로)을 끊는다. 조정 가능한
+    필드는 param_manifest(SSOT)가 정의 — 그 외 경로는 거부. 실패는 예외 대신 모델 피드백.
+    """
+    ir = _last_simulate_ir(session, conversation_id)
+    if ir is None:
+        return {"success": False, "error": "조정할 직전 분석이 없습니다. 먼저 simulate로 분석하세요."}
+    ir = copy.deepcopy(ir)               # 저장된 결과 IR 공유객체 변형 방지
+    changes = tool_input.get("changes") or []
+    if not changes:
+        return {"success": False, "error": "adjust_analysis: changes(바꿀 필드)가 필요합니다."}
+    by_path = {p["path"]: p for p in param_manifest(ir)}
+    applied = []
+    for ch in changes:
+        path = str((ch or {}).get("path") or "")
+        if path not in by_path:
+            return {"success": False, "error": f"조정 불가 필드: '{path}'. 가능: {sorted(by_path)}"}
+        try:
+            val = _coerce(by_path[path], ch.get("value"))
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        _set_path(ir, path, val)
+        applied.append(f"{path}={val}")
+    try:
+        StrategyIR.model_validate(ir)                  # 조정 후 유효성 재검(부류 가드)
+    except ValidationError as e:
+        return {"success": False, "error": f"조정된 IR이 유효하지 않습니다: {e}"}
+    res = strategy_from_spec(ir, _load_dataset(ir))
+    if isinstance(res, dict) and res.get("success"):
+        res["ir"] = ir
+        res["adjustable"] = param_manifest(ir)
+        res["adjusted"] = applied
+    return res
 
 
 # ── compact 요약 ──────────────────────────────────────────────────────────────

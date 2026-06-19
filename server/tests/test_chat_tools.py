@@ -10,7 +10,7 @@ from app.chat.tools import assemble_ir, TOOL_SCHEMAS
 
 def test_tool_schemas_present():
     names = {t["name"] for t in TOOL_SCHEMAS}
-    assert names == {"screen", "simulate", "save_strategy", "describe", "inspect"}
+    assert names == {"screen", "simulate", "save_strategy", "describe", "inspect", "adjust_analysis"}
 
 
 def test_assemble_screen_makes_valid_select_ir():
@@ -175,6 +175,61 @@ def test_compact_save_strategy():
     out = compact_summary("save_strategy",
                           {"success": True, "strategy_id": 7, "name": "내 전략", "run_mode": "draft"})
     assert "내 전략" in out and "7" in out
+
+
+# ── PR-B: adjust_analysis (①명세 — IR 핸들 값조정 재실행, nl 재컴파일 차단) ────
+
+def _adjust_base_ir():
+    return {"name": "t", "query": "simulate",
+            "universe": {"kind": "list", "symbols": ["AAA", "BBB", "CCC"]},
+            "signal": {"op": "data", "params": {"ref": "__SELF__.momentum_12_1m"}},
+            "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
+                         "entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 2}},
+            "simulation": {"initial_capital": 100000000.0, "commission": 0.0003}}
+
+
+def test_adjust_tool_registered():
+    assert "adjust_analysis" in {t["name"] for t in TOOL_SCHEMAS}
+
+
+def test_run_adjust_one_field_diff(monkeypatch):
+    """값 1개만 바꾸고 나머지는 동일 — nl 재컴파일 없는 결정적 재실행(①)."""
+    monkeypatch.setattr(chat_tools, "_last_simulate_ir", lambda s, c: _adjust_base_ir())
+    monkeypatch.setattr(chat_tools, "_load_dataset", lambda ir: {})
+    seen = {}
+    monkeypatch.setattr(chat_tools, "strategy_from_spec",
+                        lambda ir, ds: seen.update(ir=ir) or {"success": True, "equity": [1, 2],
+                                                              "metrics": {"cagr": 1.0}})
+    out = chat_tools.run_adjust(None, 1, {"changes": [{"path": "simulation.commission", "value": 0}]})
+    assert out["success"] is True
+    assert seen["ir"]["simulation"]["commission"] == 0                  # 바뀜
+    assert seen["ir"]["simulation"]["initial_capital"] == 100000000.0   # 그대로
+    assert seen["ir"]["position"]["entry"]["top_n"] == 2                # 그대로
+    assert out["adjusted"] == ["simulation.commission=0.0"]
+    assert "adjustable" in out                                          # 조정 패널 재동봉
+
+
+def test_run_adjust_invalid_path(monkeypatch):
+    monkeypatch.setattr(chat_tools, "_last_simulate_ir", lambda s, c: _adjust_base_ir())
+    out = chat_tools.run_adjust(None, 1, {"changes": [{"path": "signal.op", "value": "x"}]})
+    assert out["success"] is False and "조정 불가" in out["error"]
+
+
+def test_run_adjust_no_prior(monkeypatch):
+    monkeypatch.setattr(chat_tools, "_last_simulate_ir", lambda s, c: None)
+    out = chat_tools.run_adjust(None, 1, {"changes": [{"path": "simulation.commission", "value": 0}]})
+    assert out["success"] is False and "직전 분석" in out["error"]
+
+
+def test_run_adjust_clamps_to_range(monkeypatch):
+    """범위 밖 값은 매니페스트 min/max로 클램프(가드)."""
+    monkeypatch.setattr(chat_tools, "_last_simulate_ir", lambda s, c: _adjust_base_ir())
+    monkeypatch.setattr(chat_tools, "_load_dataset", lambda ir: {})
+    seen = {}
+    monkeypatch.setattr(chat_tools, "strategy_from_spec",
+                        lambda ir, ds: seen.update(ir=ir) or {"success": True, "equity": [1]})
+    chat_tools.run_adjust(None, 1, {"changes": [{"path": "simulation.commission", "value": 5}]})
+    assert seen["ir"]["simulation"]["commission"] == 0.01              # max로 클램프
 
 
 # ── P3: describe(단일 360) + inspect(원시 시계열) 도구 ────────────────────────
