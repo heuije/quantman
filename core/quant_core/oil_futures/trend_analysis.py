@@ -173,11 +173,11 @@ class ScanCell:
     lookback: int
     horizon: int
     n: int                        # 종가범위 조건 후 표본수
-    r_squared: float              # in-sample R² (forward~past, 종가범위 조건). 부족 시 nan
-    slope: float                  # in-sample 기울기 β. 부족 시 nan
+    r_squared: float              # in-sample R² (forward~past, 종가범위 조건). n<3(회귀 불가) 시 nan
+    slope: float                  # in-sample 기울기 β. n<3 시 nan
     intercept: float
     hac_p_value: float            # HAC p (겹침 자기상관 보정)
-    oos_r_squared: float | None   # test 반쪽 R² (표본 부족 시 None)
+    oos_r_squared: float | None   # test 반쪽 R² (회귀 불가 시 None)
     oos_slope: float | None       # test 반쪽 기울기
     sign_stable: bool             # train·test 기울기 동부호 (둘 다 회귀 가능)
 
@@ -206,7 +206,6 @@ def trend_explanatory_scan(
     price_lo: float,
     price_hi: float,
     oos_split: float = 0.5,
-    min_n: int = 30,
     gap: int = 0,
 ) -> list[ScanCell]:
     """(L,H) 격자 × 종가범위 조건 → 칸마다 forward~past 설명력 + OOS 안정성.
@@ -218,16 +217,20 @@ def trend_explanatory_scan(
       - OOS: events 를 날짜순(오름차순 보장) 앞 oos_split / 뒤로 나눠 각각 회귀 →
         test 의 r2·slope, train·test 기울기 동부호면 sign_stable.
 
+    **표본 하한 = 회귀의 통계적 최소(n≥3)뿐** — 선을 적합할 수 없는 n<3만 비운다
+    (r_squared=nan). 표본이 적어도(3≤n) 격자를 그려 사용자가 전체 형상을 보게 한다.
+    "신뢰 임계"(예 n<30 저신뢰)는 컴퓨트가 아니라 표시 관심사이므로 여기서 비우지
+    않고 호출측(서버 응답 min_n + 웹 저신뢰 음영·경고)이 판단한다.
+
     설명력은 **종가범위만** 조건으로 한다 — 증감율 밴드를 넣으면 x축이 절단돼
     R²·기울기 추정이 불안정해진다(범위 절단 편향). 증감율 밴드는 호출측에서
     '질문 지점'으로만 쓴다.
 
     ⚠ 데이터 스누핑: 여러 칸을 스캔해 R² 최댓값(또는 p 최솟값) 한 칸을 고르면
     과최적화(다중비교)다. 호출측은 (1) 전체 격자를 보여 고-R²가 연속영역인지,
-    (2) sign_stable·OOS 로 견고성을 판단하게 하고, 다중비교 경고를 노출해야 한다.
+    (2) sign_stable·OOS·표본수로 견고성을 판단하게 하고, 다중비교·저표본 경고를 노출해야 한다.
     """
     cells: list[ScanCell] = []
-    floor_n = max(3, int(min_n))
     pos = {pd.Timestamp(d): i for i, d in enumerate(df["date"].to_numpy())} if gap > 0 else {}
     for L in lookbacks:
         for H in horizons:
@@ -237,7 +240,7 @@ def trend_explanatory_scan(
                    if price_lo <= e.close <= price_hi]
             evs = _decluster_by_gap(evs, int(gap), pos)
             n = len(evs)
-            if n < floor_n:
+            if n < 3:
                 cells.append(ScanCell(
                     lookback=int(L), horizon=int(H), n=n,
                     r_squared=float("nan"), slope=float("nan"),
