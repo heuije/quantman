@@ -270,13 +270,12 @@ def seed_from_investing_csv(symbol: str, csv_path) -> pd.DataFrame:
     return df
 
 
-def seed_from_clean_csv(symbol: str, csv_path) -> pd.DataFrame:
-    """정제완료 OHLCV CSV(date,open,high,low,close[,volume]; 오름차순) → parquet **덮어쓰기** 시드.
+def read_clean_csv(csv_path) -> pd.DataFrame:
+    """표준화 OHLCV CSV(date,open,high,low,close[,volume]; 오름차순) → 정제 DataFrame.
 
-    번들 정적 CSV(server/app/data/static/kospi200_futures.csv = 투자닷컴 KOSPI200 연속선물 2010+
-    스냅샷, 번들 시점에 1회 정제)를 깊은 base로 적재. clean_investing_csv는 *원시* 투자닷컴 포맷
-    (한글헤더·날짜공백·K접미사)용 — 이 함수는 *이미 표준화된* CSV용. 이후 최근분은
-    fetch_kis_futures_daily(KIS 증분)가 이 base 위에 append → "데이터포인트당 소스 1개"(과거=CSV·신규=KIS).
+    시드(seed_from_clean_csv)와 공백 점검(csv_coverage_gap)이 *동일 파싱*을 쓰도록 분리.
+    clean_investing_csv는 *원시* 투자닷컴 포맷(한글헤더·날짜공백·K접미사)용 — 이 함수는 *이미
+    표준화된* CSV(번들 server/app/data/static/kospi200_futures.csv)용.
     """
     raw = pd.read_csv(csv_path)
     raw = raw.rename(columns={"date": "d", "open": "Open", "high": "High",
@@ -294,11 +293,39 @@ def seed_from_clean_csv(symbol: str, csv_path) -> pd.DataFrame:
     df = df[(~pd.isna(idx)) & (~pd.isna(close))].sort_index()
     df["Volume"] = df["Volume"].fillna(0.0)
     df.index.name = None
+    return df
+
+
+def seed_from_clean_csv(symbol: str, csv_path) -> pd.DataFrame:
+    """정제완료 OHLCV CSV → parquet **덮어쓰기** 시드. 번들 정적 CSV(투자닷컴 KOSPI200 연속선물
+    2010+ 스냅샷)를 깊은 base로 적재. 이후 최근분은 fetch_kis_futures_daily(KIS 증분)가 이 base
+    위에 append → "데이터포인트당 소스 1개"(과거=CSV·신규=KIS).
+    """
+    df = read_clean_csv(csv_path)
     if df.empty:
         raise ValueError(f"정제 CSV 결과가 비어 있음: {csv_path}")
-    _save(symbol, df)            # 덮어쓰기 — 기존(얕은 KIS·프록시 ETF·혼합) 데이터를 깊은 연속물로 교체
+    _save(symbol, df)            # 덮어쓰기 — 기존(얕은 KIS·프록시 ETF·혼합·구멍난) 데이터를 깊은 연속물로 교체
     mark_data_dirty()
     return df
+
+
+def csv_coverage_gap(existing: pd.DataFrame, csv_path, *, tol: float = 0.99) -> bool:
+    """parquet이 번들 CSV 대비 **내부 공백**(결손)이 있나 — 재시드 트리거 판정.
+
+    _refresh의 needs_deep가 min-date(깊이)만 보면 '깊지만 구멍난' parquet(예: 2021/2023/2024
+    구간 결손)이 영구 미복구된다 — 선물분석 탭은 CSV를 직독해 멀쩡한데 인사이트 엔진만 거래0.
+    CSV 구간[min,max] 안에서 parquet의 유효(non-NaN Close) 행이 CSV의 tol배 미만이면 True →
+    CSV 재시드 필요. KIS 증분은 CSV 구간 *이후*만 append하므로, 정상이면 [csv.min,csv.max]
+    안은 parquet=CSV로 정확히 일치(tol 여유는 휴장일 미세차 흡수).
+    """
+    if existing is None or existing.empty or "Close" not in existing.columns:
+        return True
+    csv_df = read_clean_csv(csv_path)
+    overlap = csv_df.index[csv_df.index <= existing.index.max()]
+    if len(overlap) == 0:
+        return False
+    have = int(existing["Close"].reindex(overlap).notna().sum())
+    return have < len(overlap) * tol
 
 
 def append_daily_bars(symbol: str, new: pd.DataFrame) -> pd.DataFrame:

@@ -438,10 +438,16 @@ def _refresh_kospi_futures() -> None:
     sym = "코스피200선물"
     csv_path = Path(__file__).resolve().parent / "data" / "static" / "kospi200_futures.csv"
 
-    # 1) 깊은 base — parquet이 없거나 2010까지 안 내려가면(얕음/오염) CSV로 재구축(덮어쓰기).
+    # 1) 깊은 base — parquet이 없거나·얕거나·내부 공백이면 CSV로 재구축(덮어쓰기).
     existing = dfm._load_existing(sym)
+    # ⚠ 내부 공백도 재시드 트리거 — min-date(깊이)만 보면 '깊지만 구멍난' parquet(예: 2021/2023/2024
+    # 구간 결손)이 영구 미복구된다. 인사이트 엔진 백테스트가 그 연도 거래0이던 근본 — 선물분석 탭은
+    # 같은 CSV를 직독해 멀쩡한데 엔진만 parquet 캐시가 갈라졌다.
+    gappy = bool(csv_path.exists() and dfm.csv_coverage_gap(existing, csv_path))
     needs_deep = (existing is None or existing.empty
-                  or existing.index.min() > datetime(2010, 12, 31))
+                  or existing.index.min() > datetime(2010, 12, 31) or gappy)
+    if gappy and existing is not None and not existing.empty:
+        _log.warning("KOSPI200 선물 parquet 내부 공백 감지(CSV 대비 결손) — CSV 재시드로 복구")
     if needs_deep:
         if not csv_path.exists():
             _log.error("KOSPI200 선물 깊은 시드 실패 — 번들 CSV 없음: %s", csv_path)
