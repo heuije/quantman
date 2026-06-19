@@ -42,7 +42,7 @@ def test_persist_and_history_compaction():
         {"type": "text", "text": "스크리닝할게요"},
         {"type": "tool_use", "id": "t1", "name": "screen", "input": {"top_n": 3}},
         {"type": "tool_result", "tool_use_id": "t1", "name": "screen",
-         "result": {"success": True, "as_of": "2026-06-17", "universe_size": 9,
+         "result": {"success": True, "query": "select", "as_of": "2026-06-17", "universe_size": 9,
                     "results": [{"symbol": "AAA", "score": 0.8}]}},
     ])
 
@@ -166,7 +166,7 @@ def test_history_reconstructs_alternating_rounds():
         {"type": "text", "text": "스크리닝할게요"},
         {"type": "tool_use", "id": "t1", "name": "screen", "input": {"top_n": 3}},
         {"type": "tool_result", "tool_use_id": "t1", "name": "screen",
-         "result": {"success": True, "as_of": "2026-06-17", "universe_size": 9,
+         "result": {"success": True, "query": "select", "as_of": "2026-06-17", "universe_size": 9,
                     "results": [{"symbol": "AAA", "score": 0.8}]}},
         {"type": "text", "text": "AAA가 가장 저평가입니다."},
     ])

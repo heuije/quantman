@@ -9,7 +9,7 @@ from __future__ import annotations
 import quant_core as qc
 from pydantic import ValidationError
 from quant_core.ir_engine import (StrategyIR, needed_columns, needed_symbols,
-                                   param_manifest, strategy_from_spec)
+                                   param_manifest, strategy_from_spec, summarize_result)
 
 from ..compile_service import compile_strategy
 from ..models import Message
@@ -297,43 +297,18 @@ def save_strategy_tool(session, user_id, conversation_id, tool_input: dict) -> d
 # ── compact 요약 ──────────────────────────────────────────────────────────────
 
 def compact_summary(tool_name: str, result: dict) -> str:
-    """full 엔진 결과 → 모델 컨텍스트용 짧은 요약. 숫자는 결과에서만(지어내기 금지)."""
-    if not result.get("success"):
+    """full 엔진 결과 → 모델 컨텍스트용 **형상 파생** 요약(summarize_result). 숫자는 결과에서만.
+
+    ②관측 근본수정: 도구이름이 아니라 result_shape로 분기해 simulate의 *모든* 분석형상
+    (연도별·파라미터별·팩터별·이벤트 등)의 **분할 결과를 모델이 한 번에** 보게 한다 —
+    이전엔 simulate를 4스칼라로만 줘 모델이 buckets를 못 보고 재실행하던 헛돌이의 근본.
+    save_strategy(저장 카드)만 엔진 결과형상이 아니라 별도 처리.
+    """
+    if not isinstance(result, dict):
+        return f"[{tool_name}] 완료"
+    if not result.get("success", True):
         return f"[{tool_name} 실패] {result.get('error', '알 수 없는 오류')}"
-    if tool_name == "save_strategy":
+    if tool_name == "save_strategy" or result.get("strategy_id") is not None:
         return (f"[save_strategy] '{result.get('name')}' 전략을 draft로 저장(id={result.get('strategy_id')}). "
                 "모의/실전은 웹 자동매매 메뉴에서.")
-    if tool_name == "describe":
-        pr = result.get("price") or {}
-        f = result.get("fundamentals") or {}
-        return (f"[describe] {result.get('symbol')}({result.get('sector')}) "
-                f"종가={pr.get('last')}, PBR={f.get('pb_ratio')}, PER={f.get('trailing_pe')}, "
-                f"EV/EBITDA={f.get('ev_ebitda')}")
-    if tool_name == "inspect":
-        cols = result.get("columns") or []
-        dates = result.get("dates") or []
-        series = result.get("series") or {}
-        last = []
-        for c in cols:
-            vals = [v for v in (series.get(c) or []) if v is not None]
-            if vals:
-                last.append(f"{c}={vals[-1]:.6g}")
-        rng = f"{dates[0]}~{dates[-1]}" if dates else "?"
-        return (f"[inspect] {result.get('symbol')} {rng} ({len(dates)}일). "
-                f"최근값: {', '.join(last) if last else '없음'}")
-    if tool_name == "screen":
-        rows = result.get("results") or []
-
-        def _one(r):
-            sc = r.get("score")
-            return f"{r['symbol']}({sc:.3g})" if sc is not None else str(r["symbol"])
-
-        top = ", ".join(_one(r) for r in rows[:8])
-        return (f"[screen] as_of={result.get('as_of')}, 후보 {result.get('universe_size')}개 중 "
-                f"{len(rows)}개 선별. 상위: {top}")
-    if tool_name == "simulate":
-        m = result.get("metrics") or {}
-        parts = [f"{k}={m[k]:.3g}" for k in ("cagr", "sharpe", "mdd", "cum_return")
-                 if isinstance(m.get(k), (int, float))]
-        return "[simulate] " + (", ".join(parts) if parts else "결과 산출")
-    return f"[{tool_name}] 완료"
+    return summarize_result(result)

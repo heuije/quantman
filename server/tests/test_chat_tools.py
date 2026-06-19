@@ -77,17 +77,29 @@ from app.chat.tools import compact_summary
 
 
 def test_compact_screen():
-    res = {"success": True, "as_of": "2026-06-17", "universe_size": 10, "eligible_size": 4,
+    res = {"success": True, "query": "select", "as_of": "2026-06-17", "universe_size": 10,
+           "eligible_size": 4,
            "results": [{"symbol": "AAA", "score": 0.82}, {"symbol": "BBB", "score": 0.79}]}
     out = compact_summary("screen", res)
     assert "AAA" in out and "0.82" in out and "2026-06-17" in out
 
 
 def test_compact_simulate():
-    res = {"success": True, "metrics": {"cagr": 0.123, "sharpe": 0.9, "mdd": -0.22,
-                                        "cum_return": 1.4}}
+    res = {"success": True, "equity": [100, 101, 102],
+           "metrics": {"cagr": 3.46, "sharpe": 0.26, "mdd": -65.7, "total_return": 64.4}}
     out = compact_summary("simulate", res)
-    assert "cagr" in out and "0.123" in out
+    assert "백테스트" in out and "3.46" in out and "샤프" in out
+
+
+def test_compact_simulate_period_surfaces_buckets():
+    """②관측 근본수정: simulate가 연도분할이면 요약이 연도별 buckets를 담는다(이전엔 4스칼라뿐 →
+    모델이 연도 수치를 못 봐 재실행하던 헛돌이의 근본 차단)."""
+    res = {"success": True, "axis": "period_split",
+           "metrics": {"cagr": -9.4, "sharpe": -0.39},
+           "buckets": {"2015": {"cum_return": 3.1, "cagr": 3.1, "sharpe": 0.26, "mdd": -10, "n": 250},
+                       "2024": {"cum_return": -23.3, "cagr": -23.3, "sharpe": -1.1, "mdd": -25, "n": 240}}}
+    out = compact_summary("simulate", res)
+    assert "2015" in out and "2024" in out and "3.1" in out and "-23.3" in out
 
 
 def test_compact_failure():
@@ -205,15 +217,16 @@ def test_run_inspect_missing_column_returns_error(monkeypatch):
 
 def test_compact_describe():
     out = compact_summary("describe",
-                          {"success": True, "symbol": "005930", "sector": "반도체",
+                          {"success": True, "report": "single", "symbol": "005930", "sector": "반도체",
                            "price": {"last": 72000}, "fundamentals": {"pb_ratio": 1.2,
                                                                       "trailing_pe": 10.0}})
-    assert "005930" in out
+    assert "005930" in out and "PBR" in out
 
 
 def test_compact_inspect():
     out = compact_summary("inspect",
-                          {"success": True, "symbol": "005930", "columns": ["consensus_target"],
+                          {"success": True, "query": "inspect", "symbol": "005930",
+                           "columns": ["consensus_target"],
                            "dates": ["2026-06-16", "2026-06-17"],
                            "series": {"consensus_target": [81000.0, 82000.0]}})
     assert "005930" in out and "82000" in out                  # 최근값 표면화
