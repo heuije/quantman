@@ -94,6 +94,14 @@ tolerance는 **미국 전용 라이브 버퍼**(국내 무시)·default ±3%·�
 
 **교훈.** 위 §교훈 distill. 추가: order_status가 미체결-only TR이면 체결/취소를 못 봐 unknown→정산 reconcile 백스톱 의존(GOTCHAS G10) — 신규 브로커 체결인지는 전체-state 조회 TR 필요.
 
+### [진행중] LS Phase C 라이브 테스트 — ⚠초안 필드 실측 (2026-06-20 착수, `feat/ls-broker-phase-c`)
+
+**의도.** 사용자가 LS 모의계좌를 개설해 단위테스트(mock 경계)가 못 잡은 ⚠초안 필드(t0424/t1102/t0425 블록·필드명, 주문 성공 rsp_cd, **당일매매 핵심 t0425 체결인지 `status`**)를 실측 확정하고 fill→ledger→종가청산 통합 흐름을 검증한다. 범위=실행계층 LS 국소 교정만(전략/백테스트/데이터·KIS 무변경).
+
+**준비물(이번 세션).** ① `local/verify_ls.py` — verify_kis 대칭 raw-캡처 프로브. `_post` 캡처 래퍼로 본문 중복 없이 각 TR 요청/응답 덤프(자격증명·계좌 자동 마스킹), `--kosdaq`(exchgubun)·`--order`(모의 1주 라운드트립 + **t0425 chegb=0 status 실측**). LS 키는 GUI wizard로 등록(`run.py setup`은 KIS 전용). ② `docs/ls-api/PHASE-C-LIVE-TEST.md` — 단계 런북(C-0 읽기→C-1 주문→C-2 풀사이클 E2E→C-3 실전 마이크로) + 실측 체크리스트(G11~G21·미확인5를 TR·필드·캡처단계·교정액션으로 매핑). 안전 게이트=모의먼저·1주·읽기→주문·킬스위치 수동감시.
+
+**잔여(키 대기).** 사용자 LS 모의키 발급 후 C-0부터 raw 회수→내가 ls_broker 교정→C-1 status 확정 시 `order_status`를 chegb=0 전환(당일매매 잠금해제)→C-2 E2E. 완료선언은 모의 E2E 통과 후.
+
 ### [진행중] 자동매매 신뢰성 ultra 캠페인 — 다중일 무발주 근본 바로잡기 (2026-06-11 착수)
 
 **의도.** 자동매매가 며칠 연속 발주를 못 하고(락 컨보이·거짓 킬스위치·체결 미기록·거짓 stale)

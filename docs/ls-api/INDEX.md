@@ -5,6 +5,9 @@
 
 > 이 KB는 A2 초안(2026-06-17) + 공식문서 대조 검토(2026-06-19). 국내주식 핵심 6종 + 예수금 TR.
 > 선물·해외주식·조건검색 등은 필요 시 추가.
+>
+> 🧪 **라이브 테스트(Phase C)**: [`PHASE-C-LIVE-TEST.md`](PHASE-C-LIVE-TEST.md) = 단계별 런북 + ⚠필드 실측 체크리스트.
+> 실측 도구 = [`local/verify_ls.py`](../../local/verify_ls.py) (각 TR raw 응답 캡처 — `python verify_ls.py [--kosdaq|--order]`).
 
 ---
 
