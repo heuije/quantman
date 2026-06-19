@@ -104,3 +104,23 @@ def test_simulate_not_misclassified_as_sweep():
     res = {"success": True, "equity": [100, 101, 102], "metrics": {"cagr": 5.0, "sharpe": 1.0}}
     assert result_shape(res) == "simulate"
     assert "백테스트" in summarize_result(res)
+
+
+def test_inactive_buckets_flagged():
+    """무체결 구간(변동·수익 0) 감지 — '0%=무수익'이 아니라 '무체결'(데이터·신호 결손) 표면화(#2)."""
+    from quant_core.ir_engine.run import _inactive_buckets
+    buckets = {
+        "2020": {"n": 248, "std": 1.2, "cum_return": 5.0},      # 활성
+        "2021": {"n": 248, "std": 0.0, "cum_return": 0.0},      # 무체결
+        "2023": {"n": 245, "std": 0, "cum_return": 0},          # 무체결
+    }
+    assert _inactive_buckets(buckets) == ["2021", "2023"]
+
+
+def test_summarize_surfaces_warnings():
+    """모델 요약이 무거래/데이터결손 경고를 표면화 — 봇이 침묵의 0%를 오독하지 않도록(#2)."""
+    res = {"success": True, "axis": "period_split",
+           "buckets": {"2021": {"n": 248, "std": 0.0, "cum_return": 0.0, "cagr": 0.0, "mdd": 0.0}},
+           "warnings": [{"code": "inactive_buckets", "message": "무거래 구간: 2021 — 데이터 결손 가능"}]}
+    s = summarize_result(res)
+    assert "⚠" in s and "무거래 구간: 2021" in s

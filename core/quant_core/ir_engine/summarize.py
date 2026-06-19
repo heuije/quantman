@@ -125,6 +125,10 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
                and isinstance(t.get("p_value"), (int, float)) and t["p_value"] < 0.05]
         if sig:
             extra.append(f"유의차(p<0.05): {', '.join(map(str, sig))}")
+        for w in (result.get("warnings") or []):     # 무거래/데이터결손 등 경고를 모델에 표면화
+            msg = w.get("message") if isinstance(w, dict) else str(w)
+            if msg:
+                extra.append(f"⚠ {msg}")
         lines = [_bucket_line(k, b) for k, b in items[:max_rows]]
         if len(items) > max_rows:
             lines.append(f"  …외 {len(items) - max_rows}개 구간(생략)")
