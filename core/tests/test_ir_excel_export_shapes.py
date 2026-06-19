@@ -106,7 +106,7 @@ CASES = [
      {"조건별성과": ["전체(포트폴리오)", "조건"], "설명": ["조건 대조"]}),
     ("period_split", ds_factor, {"universe": ALL, "signal": SIG_M, "position": POS, "simulation": SIM,
         "query": "simulate", "study": {"axis": "time_fold", "reduction": "consistency", "split_period": "year"}},
-     {"기간별성과": ["기간", "일관성", "2020"], "설명": ["기간분할"]}),
+     {"연도별성과": ["연도", "엑셀 연수익", "2020"], "백테스트": ["라이브", "STDEV.S"], "원자료": ["원자료"]}),
     ("extremize", ds_factor, {"universe": ALL, "signal": SIG_M, "position": POS, "simulation": SIM,
         "query": "simulate", "study": {"axis": "entity", "reduction": "extremize", "assets": ["AAA", "BBB", "CCC"],
         "objective": {"metric": "cum_return", "direction": "max", "oos_guard": True}}},
@@ -182,8 +182,8 @@ def test_portfolio_hhi_formula_matches_engine() -> None:
 def test_all_shapes_have_methodology_sheet() -> None:
     """모든 P2 형상에 전략정의(IR)+방법론을 담은 '설명' 시트가 붙는다(증빙 꼬리표)."""
     for label, ds_fn, ir_dict, _checks in CASES:
-        if label == "simulate":
-            continue   # P1은 '지표·설명'으로 동일 역할
+        if label in ("simulate", "period_split"):
+            continue   # 단일 자산곡선 형상은 '지표·설명'(simulate 시트 재사용)으로 동일 역할
         _ir, _ds, _res, xlsx = _build(ds_fn, ir_dict)
         wb = load_workbook(io.BytesIO(xlsx))
         assert "설명" in wb.sheetnames, f"[{label}] '설명' 시트 누락"
