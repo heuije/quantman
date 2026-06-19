@@ -345,6 +345,14 @@ def run_extremize(strategy: StrategyIR, dataset: dict) -> dict:
 
 # ── 기간분할 (비전 §3.5·§6) — 워크포워드/OOS/시계열 k-fold ────────────────────
 
+def _inactive_buckets(buckets: dict) -> list:
+    """수익·변동이 모두 0인 구간(무체결) 키 — '0%는 무수익이 아니라 무체결(데이터·신호 결손)'을
+    정직히 표면화하기 위함(예: 코스피200선물 데이터 공백 연도가 침묵의 0%로 보이던 것)."""
+    return [k for k, b in buckets.items()
+            if isinstance(b, dict) and b.get("n")
+            and not b.get("std") and not b.get("cum_return")]
+
+
 def run_period_split(strategy: StrategyIR, dataset: dict) -> dict:
     """전략을 1회 실행한 뒤 수익을 시간순 폴드로 나눠 OOS 일관성을 본다.
 
@@ -390,8 +398,15 @@ def run_period_split(strategy: StrategyIR, dataset: dict) -> dict:
             label = ("인샘플" if i == 0 else "아웃샘플") if is_oos else f"구간{i + 1}"
             buckets[label] = summarize_returns(pd.Series(f))
         consistency = walk_forward_consistency(rets, n_folds=n)
+    # 무거래 구간 표면화 — 0%가 '무수익'이 아니라 '무체결(데이터·신호 결손)'일 수 있음을 정직히 알린다.
+    warnings = list(res.get("warnings") or [])
+    inactive = _inactive_buckets(buckets)
+    if inactive:
+        warnings.append({"code": "inactive_buckets",
+                         "message": (f"무거래 구간: {', '.join(map(str, inactive))} — 해당 기간 가격·신호 "
+                                     "데이터가 결손됐을 수 있습니다(0%는 무수익이 아니라 무체결).")})
     return {"success": True, "axis": "period_split", "buckets": buckets,
-            "consistency": consistency, "metrics": res["metrics"]}
+            "consistency": consistency, "metrics": res["metrics"], "warnings": warnings}
 
 
 # ── 신호값 분석 (target=signal) — 수익률이 아닌 신호 자체의 분포 ───────────────
