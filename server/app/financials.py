@@ -253,6 +253,52 @@ def clear_cache() -> None:
     _cached.cache_clear()
 
 
+def to_xlsx(code: str) -> bytes:
+    """재무제표 전체(연간·분기 × 손익/재무/현금)를 .xlsx 바이트로 — 사용자 다운로드용.
+
+    시트 = '연간_손익계산서' 등 6개. 각 시트: 계정 × 기간 값 표 + 증감률(YoY/QoQ) 행.
+    파생/비율 행(이익률·EBITDA 등)도 저장본 그대로 포함. 값 없으면 빈 칸."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment
+    from openpyxl.utils import get_column_letter
+
+    data = financials(code)
+    labels = {"PL": "손익계산서", "BS": "재무상태표", "CF": "현금흐름표"}
+    wb = Workbook()
+    wb.remove(wb.active)
+    for pdata, tag in [(data.get("annual") or {}, "연간"), (data.get("quarterly") or {}, "분기")]:
+        for key in ("PL", "BS", "CF"):
+            st = pdata.get(key) or {}
+            periods = st.get("periods") or []
+            rows = st.get("rows") or []
+            if not periods or not rows:
+                continue
+            ws = wb.create_sheet(f"{tag}_{labels[key]}"[:31])
+            ws.append(["계정"] + list(periods))
+            for c in ws[1]:
+                c.font = Font(bold=True)
+                c.alignment = Alignment(horizontal="center")
+            for r in rows:
+                is_pct = bool(r.get("pct"))
+                vals = r.get("values") or []
+                ws.append([r.get("account", "")] + [(v if v is not None else None) for v in vals])
+                row_i = ws.max_row
+                for j in range(len(vals)):
+                    cell = ws.cell(row=row_i, column=2 + j)
+                    cell.number_format = "0.0" if is_pct else "#,##0;(#,##0);-"
+                    cell.alignment = Alignment(horizontal="right")
+            ws.column_dimensions["A"].width = 30
+            for i in range(len(periods)):
+                ws.column_dimensions[get_column_letter(2 + i)].width = 14
+            ws.freeze_panes = "B2"
+    if not wb.sheetnames:
+        wb.create_sheet("재무제표").append(["재무 데이터가 없습니다."])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def prewarm(codes: list[str]) -> int:
     """기동 시 산업 종목 재무제표를 메모리(+디스크)에 미리 적재 — 첫 탭 진입도 즉시."""
     n = 0

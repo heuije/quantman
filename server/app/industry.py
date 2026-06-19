@@ -26,6 +26,8 @@ INDUSTRIES = {
     "전자부품": "industry_전자부품.csv",
     "건설": "industry_건설.csv",
     "금융": "industry_금융.csv",
+    "석유화학": "industry_석유화학.csv",
+    "화장품": "industry_화장품.csv",
 }
 
 
@@ -104,6 +106,12 @@ _DAN_ORDER = {
     "건설자재": 0, "종합건설": 1, "후방·서비스": 2,
     # 금융
     "은행·지주": 0, "증권": 1, "보험": 2, "여신·소비자금융": 3, "금융서비스": 4,
+    # 석유화학
+    "기초유분": 0, "기초유기": 1, "기초무기": 2,
+    "합성수지": 3, "합성고무": 4, "합성섬유": 5, "염료·안료": 6,
+    "도료·잉크": 7, "계면활성제·세제": 8, "비료·농약": 9, "유지·바이오": 10, "기능성소재": 11,
+    # 화장품
+    "원료": 0, "ODM·OEM": 1, "브랜드": 2,
 }
 
 
@@ -351,10 +359,25 @@ def _da_map(tickers: tuple[str, ...], _day: str) -> dict:
     return out
 
 
+_SNAP_TTL = 90   # 초 — 최신 트리맵 시총·등락 신선화 주기. 벌크 StockListing 1콜이라 가벼움.
+
+
+def _bucket() -> str:
+    """현재 시각을 _SNAP_TTL초 버킷으로 — lru_cache 키에 넣어 주기적 재조회(실시간 시세) 유도."""
+    import time
+    return f"t{int(time.time() // _SNAP_TTL)}"
+
+
 def industry(name: str, as_of: str | None = None) -> list[dict] | None:
-    """산업 밸류체인 데이터. as_of(yyyy-mm-dd) 지정 시 그 시점 시총·등락으로 계산(과거 트리맵)."""
+    """산업 밸류체인 데이터.
+
+    · as_of 지정(과거 트리맵): 일자 캐시(그 시점 시총·등락 고정).
+    · 미지정(최신): **시간 버킷 키**로 캐시 → _SNAP_TTL(90초)마다 _snapshot 재조회해 **시세가
+      장중 실시간으로 갱신**된다(이전엔 _day 키로 종일 고정돼 안 바뀌던 문제 해소)."""
     try:
-        return _industry(name, date.today().isoformat(), as_of or "")
+        if as_of:
+            return _industry(name, date.today().isoformat(), as_of)
+        return _industry(name, _bucket(), "")
     except Exception as e:
         _log.warning("산업 분석 fetch 실패 %s: %s", name, e)
         return None

@@ -281,6 +281,26 @@ export const api = {
     req<CompanyProfile>(`/market/profile/${encodeURIComponent(ticker)}`),
   financials: (ticker: string) =>
     req<FinancialsData>(`/market/financials/${encodeURIComponent(ticker)}`),
+  // 재무제표 전체 .xlsx 다운로드 — req<T>는 JSON 전용이라 blob 직접 처리.
+  financialsExcel: async (ticker: string) => {
+    const t = tokenStore.get();
+    const res = await fetch(`${BASE}/market/financials/${encodeURIComponent(ticker)}/export.xlsx`, {
+      headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      throw new Error(b.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `financials_${ticker}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
   analyzePortfolio: (body: PortfolioAnalyzeIn) =>
     req<PortfolioAnalysis>("/portfolio/analyze", {
       method: "POST", body: JSON.stringify(body),

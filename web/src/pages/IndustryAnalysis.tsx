@@ -279,14 +279,18 @@ const TIP = { contentStyle: { fontSize: 12, padding: "8px 11px", borderRadius: 8
 // 선택 종목의 추정 실적 + 애널리스트 리포트 — 개별종목분석(KrSections)의 표를 그대로 재사용.
 export function CompanyReport({ ticker, company }: { ticker: string; company?: IndustryCompany }) {
   const [kr, setKr] = useState<KrExtras | null>(null);
+  const [cur, setCur] = useState<number | null>(null);   // 현재가(상승여력 계산용)
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let alive = true;
-    setBusy(true); setKr(null);
+    setBusy(true); setKr(null); setCur(null);
     api.krExtras(ticker)
       .then((d) => { if (alive) setKr(d); })
       .catch(() => { if (alive) setKr(null); })
       .finally(() => { if (alive) setBusy(false); });
+    api.symbolDetail(ticker, "1mo")
+      .then((d) => { if (alive) setCur(d.last?.close ?? null); })
+      .catch(() => { /* 무시 */ });
     return () => { alive = false; };
   }, [ticker]);
 
@@ -337,10 +341,36 @@ export function CompanyReport({ ticker, company }: { ticker: string; company?: I
   };
   const hasMult = !!earnings && (!!earnings.rows["PER"] || !!earnings.rows["PBR"] || (capEok != null && daEok != null));
 
+  // #5 컨센서스 목표주가(평균) + 상승여력 — 추정실적 상단 배너. 컨센서스 없으면 리포트 목표가로 폴백.
+  const cTargets = (kr?.consensus || []).map((c) => c.target).filter((t): t is number => t != null && t > 0);
+  const rTargets = (kr?.reports || []).map((r) => r.target).filter((t): t is number => t != null && t > 0);
+  const tList = cTargets.length ? cTargets : rTargets;
+  const avgTarget = tList.length ? Math.round(tList.reduce((s, t) => s + t, 0) / tList.length) : null;
+  const tUpside = (avgTarget != null && cur != null && cur > 0) ? (avgTarget / cur - 1) * 100 : null;
+
   if (busy) return <p style={{ color: "var(--muted)", fontSize: 13 }}>리포트 불러오는 중…</p>;
 
   return (
     <>
+      {/* #5 컨센서스 목표주가 — 추정실적 상단. 가격 + 현재가 대비 상승여력(±%) */}
+      {avgTarget != null && (
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap",
+          marginBottom: 12, padding: "10px 14px", background: "var(--accent-soft)",
+          border: "1px solid var(--border)", borderRadius: 8 }}>
+          <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 700 }}>
+            컨센서스 {cTargets.length ? "평균 목표주가" : "목표주가"}</span>
+          <span style={{ fontSize: 20, fontWeight: 800 }}>{avgTarget.toLocaleString()}원</span>
+          {tUpside != null && (
+            <span style={{ fontSize: 14, fontWeight: 700, color: tUpside >= 0 ? UP : DOWN }}>
+              {tUpside >= 0 ? "▲" : "▼"} {tUpside >= 0 ? "+" : ""}{tUpside.toFixed(1)}%
+            </span>
+          )}
+          {cur != null && (
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>현재 {cur.toLocaleString()}원</span>
+          )}
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>· {tList.length}개 증권사 기준</span>
+        </div>
+      )}
       {/* 추정 실적 — 개별종목분석과 동일 */}
       {hasEarnings ? (
         <div style={{ overflowX: "auto" }}>
@@ -817,8 +847,8 @@ export function SectorNewsPanel() {
         <a key={i} href={n.url} target="_blank" rel="noreferrer"
           style={{ display: "block", padding: "8px 2px", borderBottom: "1px solid var(--border)", textDecoration: "none", color: "inherit" }}>
           <div style={{ fontWeight: 600, fontSize: "12pt", color: DOWN }}>{n.title}</div>
-          {n.summary && <div style={{ fontSize: "12pt", color: "var(--muted)", marginTop: 3, lineHeight: 1.5 }}>{n.summary}</div>}
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>{n.source}{n.date ? ` · ${n.date}` : ""}</div>
+          {/* 본문 삭제 — 기사링크(제목)와 중복. 그 자리에 날짜(연도)·언론사명을 본문 크기(12pt)로 */}
+          <div style={{ fontSize: "12pt", color: "var(--muted)", marginTop: 3 }}>{n.date ? `${n.date} · ` : ""}{n.source}</div>
         </a>
       ))}
     </>
@@ -1037,7 +1067,7 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
   if (busy && companies.length === 0)
     return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>경쟁사 데이터 불러오는 중…</p>;
   if (!busy && !indName)
-    return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>이 종목은 등록된 산업 밸류체인 데이터에 없습니다. (현재 지원: 2차전지·반도체·전자부품·건설·금융)</p>;
+    return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>이 종목은 등록된 산업 밸류체인 데이터에 없습니다. (현재 지원: 2차전지·반도체·전자부품·건설·금융·석유화학·화장품)</p>;
 
   return (
     <>
@@ -1172,6 +1202,27 @@ export default function IndustryAnalysis() {
       .finally(() => setRefreshing(false));
   };
 
+  // #4 실시간 갱신 — 장중(평일 09:00~15:40 KST)엔 60초마다 시총·등락 자동 재조회.
+  // 백엔드 _snapshot은 90초 TTL로 신선화되므로(industry.py), 폴링이 최신 시세를 가져온다.
+  // 과거(asOfReq) 조회 중엔 폴링하지 않음. 장외엔 시세 불변이라 폴링 불필요.
+  useEffect(() => {
+    if (asOfReq) return;
+    const marketOpen = () => {
+      const n = new Date();
+      const wd = n.getDay();                        // 0=일,6=토
+      const hm = n.getHours() * 60 + n.getMinutes();
+      return wd >= 1 && wd <= 5 && hm >= 9 * 60 && hm <= 15 * 60 + 40;
+    };
+    const id = setInterval(() => {
+      if (!marketOpen() || document.hidden) return;
+      api.industryDetail(root, undefined)          // 90초 TTL 버킷이 최신 시세 반영(refresh=true 불필요)
+        .then((d) => { setData(d); mergeEbitda(); mergeReturns(); })
+        .catch(() => { /* 무시 */ });
+    }, 60000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root, asOfReq]);
+
   const companies = data?.companies || [];
   // 트리맵·검색에서 기업 선택 → HOME(개별 기업 분석)으로 이동
   const pickCompany = (ticker: string) => navigate(`/dashboard?symbol=${ticker}`);
@@ -1188,11 +1239,11 @@ export default function IndustryAnalysis() {
 
       {/* 산업 탭 — 클릭 시 해당 산업 트리맵으로 전환 */}
       <div style={{ display: "flex", gap: 6, margin: "4px 0 12px", flexWrap: "wrap" }}>
-        {(data?.available || ["2차전지", "반도체", "전자부품", "건설", "금융"]).map((nm) => {
+        {(data?.available || ["2차전지", "반도체", "전자부품", "건설", "금융", "석유화학", "화장품"]).map((nm) => {
           const on = nm === root;
           return (
             <button key={nm} type="button" onClick={() => { if (nm !== root) { setRoot(nm); setAsOfReq(""); } }}
-              style={{ fontSize: 13, fontWeight: 700, padding: "5px 14px", borderRadius: 999, cursor: "pointer",
+              style={{ fontSize: "12pt", fontWeight: 700, padding: "6px 16px", borderRadius: 999, cursor: "pointer",
                 background: on ? "rgba(79,143,245,0.22)" : "transparent",
                 border: `1px solid ${on ? "rgba(79,143,245,0.7)" : "var(--border)"}`,
                 color: on ? "#1668c4" : "var(--muted)" }}>
