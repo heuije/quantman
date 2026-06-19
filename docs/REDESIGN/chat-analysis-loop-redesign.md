@@ -1,7 +1,8 @@
 # 챗 분석 루프 근본 재설계 — 설계안 (MECE 근본수정 + 검증)
 
-> 상태: 설계 검토용(미구현). 진단 원장: 본 세션 트랜스크립트 분석(conv#1~8, prod Neon).
-> 정본 기준: `origin/main`. 구현은 승인 후 `feat/` 브랜치·draft PR로.
+> 상태: **P1·P2·P3 구현·검증 완료**(branch `feat/chat-loop-redesign`, 로컬 커밋 — push/merge는 사용자 허락 대기).
+> 진단 원장: 본 세션 트랜스크립트 분석(conv#1~8, prod Neon). 정본 기준: `origin/main`.
+> 검증: core 358 pass · server 346 pass · 골든 무변경 · web tsc+vite build·eslint 0. 별개 A(PR-D 컴파일러 의미가드)는 후속 트랙.
 
 ## 0. 문제 — 한 줄
 
