@@ -277,7 +277,7 @@ class LsBroker:
                 ord_prc_ptn_code: str, unit_price: float) -> dict:
         """국내주식 신규주문 — CSPAT00601 단일 TR(매수·매도 BnsTpCode로 구분).
 
-        ⚠ PATH "/stock/order" — A2 KB 가정. Phase C 실측 확정.
+        🟢 PATH "/stock/order" — 신규·정정·취소 단일 경로(tr_cd로 구분), 커뮤니티 래퍼 대조 확인(GOTCHAS G18).
         ⚠ InBlock 키 "CSPAT00601InBlock1" — A2 KB 🟢.
         ⚠ BnsTpCode: "2"=매수/"1"=매도 — A2 KB G7 🟢.
         ⚠ OrdprcPtnCode: "00"=지정가/"03"=시장가 — A2 KB G8 🟢.
