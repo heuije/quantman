@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ValidationError
 from sqlmodel import Session, select
 
@@ -16,8 +17,9 @@ import quant_core as qc
 from quant_core.blocks import DatasetMeta, available_refs, catalog_spec
 from quant_core.blocks.node import Node, referenced_symbols
 from quant_core.data.feeds import news_kr
-from quant_core.ir_engine import (StrategyIR, backtest_from_spec, needed_columns,
-                                  needed_symbols, strategy_from_spec, validate_strategy)
+from quant_core.ir_engine import (StrategyIR, backtest_from_spec, build_strategy_excel,
+                                  needed_columns, needed_symbols, strategy_from_spec,
+                                  validate_strategy)
 
 from .. import data_cache, kis_master_cache
 from ..data_cache import get_dataset
@@ -28,6 +30,37 @@ from ..models import BacktestRun, Strategy, StrategyVersion, User
 from ..serialize import clean_json, serialize_backtest
 
 router = APIRouter(prefix="/ir", tags=["ir"])
+
+_XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _load_ir_dataset(body: dict):
+    """IR 본문 → (dataset, manifest). /ir/strategy·export.xlsx 공용 — 단일 출처.
+
+    부분집합 로드로 전 유니버스 45컬럼(~9.4GB) 빌드를 우회:
+      · single/list: 필요 종목만(load_dataset_for). · all/screener: 전 종목 × 참조 컬럼만
+        (get_projected; SELECT는 최근 ~400행만 — OOM·타임아웃 회피). · strat/파싱실패:
+        안전하게 전체(get_dataset).
+    무결성 매니페스트는 그 dataset으로 빌드 — SELECT(읽기전용)는 skip(게이트 미가동).
+    """
+    is_select = False
+    try:
+        _sir = StrategyIR.model_validate(body)
+        needed = needed_symbols(_sir)
+        cols = needed_columns(_sir)
+        is_select = _sir.query == "select"
+    except ValidationError:
+        needed = cols = None
+    if needed is not None:
+        dataset = qc.load_dataset_for(needed)
+    elif cols is not None:
+        dataset = data_cache.get_projected(cols, symbols=None,
+                                           recent_days=400 if is_select else None)
+    else:
+        dataset = get_dataset()
+    manifest = (None if is_select
+                else build_dataset_manifest(dataset, version=data_cache.get_version()))
+    return dataset, manifest
 
 
 class IrBacktestIn(BaseModel):
@@ -193,27 +226,7 @@ def ir_strategy(body: dict, user: User = Depends(get_current_user),
     #   · strat: 조합 등 결정 불가 → 안전하게 전체(get_dataset). 드묾.
     # 무결성 매니페스트는 그 dataset으로 빌드 — 게이트 판정은 동일(생존편향 D-surv는 universe=all 전용).
     # 파싱 실패는 needed=cols=None→전체 경로로 두면 strategy_from_spec이 동일 에러를 반환(중복 검증 회피).
-    is_select = False
-    try:
-        _sir = StrategyIR.model_validate(body)
-        needed = needed_symbols(_sir)
-        cols = needed_columns(_sir)
-        is_select = _sir.query == "select"
-    except ValidationError:
-        needed = cols = None
-    if needed is not None:               # single/list — 필요 종목만
-        dataset = qc.load_dataset_for(needed)
-    elif cols is not None:               # all/screener — 전 종목 × 참조 컬럼만(프로젝션)
-        # SELECT(as-of 스냅샷)는 최신 단면만 쓰므로 최근 구간(~400행)만 로드 — 전체이력×전종목
-        # 프로젝션(전 유니버스 OOM·타임아웃 근본원인)을 회피. 분포·IC 등은 전체이력 필요(None).
-        dataset = data_cache.get_projected(cols, symbols=None,
-                                           recent_days=400 if is_select else None)
-    else:                                # strat: 조합 등 — 안전하게 전체
-        dataset = get_dataset()
-    # SELECT는 읽기전용 스냅샷 — 무결성 매니페스트(전체이력 패스·생존편향 게이트)는 백테스트
-    # 자금투입 가드라 불필요·무거움 → skip. 게이트는 simulate 전용(manifest=None=게이트 미가동).
-    manifest = (None if is_select
-                else build_dataset_manifest(dataset, version=data_cache.get_version()))
+    dataset, manifest = _load_ir_dataset(body)
     # 무결성 4액션 게이트 가동 — manifest(실측) vs DataSpec(요구). meta는 manifest에서 도출.
     # strict=true(body)면 편향형 경고를 거부로 승격(실전 자금 투입 前 게이트).
     res = strategy_from_spec(
@@ -244,3 +257,36 @@ def ir_strategy(body: dict, user: User = Depends(get_current_user),
     payload["warnings"] = res.get("warnings", [])
     _persist_ir_backtest(session, user, body, payload)
     return payload
+
+
+@router.post("/strategy/export.xlsx")
+def ir_strategy_export(body: dict, user: User = Depends(get_current_user),
+                       session: Session = Depends(get_session)):
+    """StrategyIR 분석 → 데이터 + (라이브)수식 '증빙' 엑셀(.xlsx).
+
+    /ir/strategy 와 같은 본문·실행 경로(LLM 없음 — 토큰 0). 결과만 주지 않고 '어떤 데이터를
+    어떤 연산으로' 산출했는지 엑셀로 증빙한다(선물 export 취지). **전 분석유형 지원** —
+    build_strategy_excel이 결과 형상(simulate·sweep·period·extremize·select·describe·
+    relate·event·signal)별로 전용 시트 구성으로 직렬화한다(메타분석은 감사표).
+    """
+    dataset, manifest = _load_ir_dataset(body)
+    res = strategy_from_spec(
+        body, dataset, valid_refs=available_refs(dataset),
+        manifest=manifest, strict=bool(body.get("strict", False)),
+        strategy_resolver=_make_strategy_resolver(session, user))
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error") or "분석 실행 실패")
+    try:
+        sir = StrategyIR.model_validate(body)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=f"전략 정의 오류: {e.errors()[0]['msg']}")
+    try:
+        xlsx = build_strategy_excel(sir, dataset, res)   # 형상별 디스패치(P2 — 전 분석유형)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"엑셀 내보내기 미지원 형상: {e}")
+    # 한글 전략명은 RFC 5987 filename*(UTF-8)로, 호환 위해 ASCII filename 폴백 병기.
+    fname = quote(f"{sir.name or 'backtest'}.xlsx")
+    return Response(
+        content=xlsx, media_type=_XLSX_MEDIA,
+        headers={"Content-Disposition":
+                 f"attachment; filename=\"strategy_backtest.xlsx\"; filename*=UTF-8''{fname}"})

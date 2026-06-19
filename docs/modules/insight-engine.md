@@ -43,6 +43,24 @@
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [2026-06-19] 증빙 엑셀 export (P3: 실시간 변수조정) [완료·미배포]
+- 의도: 분석 결과의 핵심 변수를 챗에서 실시간 조정 → **토큰 없이 재계산** → 차트 갱신(엑셀 독립변수처럼). 매번 챗 재요청(토큰 낭비) 대신. 노코드 IR 빌더 노하우(파라미터 컨트롤 + `/ir/strategy` 재실행) 재사용.
+- 계획: `param_manifest(ir)` 코어(spec SSOT 노브 추출) → 챗 결과에 `adjustable` 동봉 → 웹 `ParamControls`(디바운스 재실행) + `ChatResultView` wrapper로 결과 라이브 교체.
+- 시행착오·인사이트: 핵심=재실행이 **LLM 안 거치는 `/ir/strategy`**(빌더가 이미 쓰는 경로)라 토큰0. manifest는 *현재 IR에 의미 있는* 노브만(없는 30필드 나열 금지 — over-engineering 회피)·비용/자본은 항상 노출(엑셀 노란셀 격)·None이면 엔진 기본값을 시작값으로(실효값 표기). 디바운스 400ms로 드래그 중 과다 재실행 방지. wrapper가 live 결과·IR 상태 보유 → 차트 순수 재렌더·export 버튼은 조정된 IR 사용.
+- 결과 구현: `ir_engine/params.py::param_manifest(ir)`(simulate: top_n·rebalance·threshold·amount_pct·hold_days·tp·sl·trail·commission·slippage·capital·leverage·folds / select: top_n·descending). `tools.py` run_simulate·run_tool가 `res["adjustable"]` 동봉. 웹 `ParamControls`(number/select/bool·setPath로 IR 재구성·400ms 디바운스→`api.runIrStrategy`→onRun)·`ChatResultView` wrapper(live state). **검증: test_param_manifest(4)·test_chat_tools(+2)·core 328·server 339·web build+lint(신규0).** describe/relate는 노브 없어 패널 미노출(MVP — windows 리스트 편집 후순위). 미배포(PR#172 draft).
+
+### [2026-06-19] 증빙 엑셀 export (P2: 전 분석유형) [완료·미배포]
+- 의도: P1(백테스트)에 이어 **모든 IR 분석유형**(스윕 param/entity/label·기간분할·최적화·select·describe single/portfolio/signal·relate ic/regression/event)을 증빙 엑셀로 export. 엑셀이 챗봇 신뢰성 증명의 핵심 수단이라 형상별 MECE 검증 필수.
+- 계획: `build_strategy_excel`을 결과형상 디스패처 + 형상별 빌더 10종. 메타분석=감사표(값+방법론), describe=라이브수식 가능분. 엔드포인트 simulate 게이트 제거. 챗·빌더 결과뷰 wrapper로 IR 보유 결과 전부에 export 버튼.
+- 시행착오·인사이트: ⚠형상 판정은 **probe로 13형상 실제 실행→result 구조 덤프**가 진실원천(추측 금지). `axis="condition"`(label 스윕)이 equity를 들고 다녀 simulate 오인 위험 → **axis 우선 디스패치**(#169 교훈 재적용). 메타분석은 각 버킷이 별도 시뮬/추정량이라 한 시트 라이브수식 불가 → 감사표(값)+사용 IR+방법론으로 증빙. DESCRIBE는 원자료 종가로 52주·연변동성, 포트는 `HHI=SUMPRODUCT`·가중PBR 라이브(엔진값과 대조). chat 도구 IR 동봉을 `run_tool`(screen/describe)까지 확장(inspect=원시 dump라 IR 없음→버튼 미노출).
+- 결과 구현: `excel_export.py` build_strategy_excel 디스패치 + `_build_{select,describe_single,describe_portfolio,sweep,condition,period_split,extremize,signal_dist,relation,event}` + 공용 헬퍼(`_perf_table`·`_methodology`). 엔드포인트 전 형상 허용(실행 실패만 400). 웹 `ChatResultBody`/`ResultPanelBody` wrapper로 IR 보유 결과 전부 버튼. **MECE 검증: `test_ir_excel_export_shapes`(12형상 파라미터화 — 시트·헤더·값·수식 직접 검수 + 포트 HHI 수식=엔진값 정확일치) + 직접 inspect(전 시트 셀/수식 덤프 확인) + 샘플 13종(`퀀트/sample_excels/`).** core 324·server 337·web build+lint(신규0). 골든 무변경. 미배포(PR#172 draft에 추가 예정).
+
+### [2026-06-19] 증빙 엑셀 export (P1: 백테스트) [완료·미배포]
+- 의도: 챗봇/빌더가 IR 백테스트를 돌리면 *결과만* 주는 게 아니라 '어떤 데이터를 어떤 연산으로' 산출했는지 **데이터+라이브수식 엑셀**로 증빙(선물 `build_oil_excel` 취지). 온디맨드 버튼. 모든 IR 분석유형이 목표지만 P1은 SIMULATE만(나머지 형상 P2·실시간 변수조정 P3).
+- 계획: `core/ir_engine/excel_export.py`(`build_strategy_excel` 5시트)+TDD → server `POST /ir/strategy/export.xlsx`(`/ir/strategy` 본문·실행 재사용, LLM 없음=토큰0) → web 공용 `ExcelExportButton`(챗·빌더).
+- 시행착오·인사이트: ⚠엔진은 정수주·현금·마진·지연체결의 **이벤트 NAV 시뮬**이라 셀 수식으로 NAV 경로를 정확히 복제 불가(naive `cumprod(가중×수익)`≠엔진). → 라이브 수식은 **엔진 정본 자산곡선(equity) 위 정의식 변환**(일수익·낙폭·CAGR·샤프·MDD)만 — `bps=0`이면 엔진 metrics와 *정확히 일치*(증빙), '일일추가비용(bps)' 노란칸으로 사후 비용 민감도(라이브). 전략 로직/파라미터 변경 라이브 재계산은 **P3 재실행**이 담당 → 엑셀에 'IR→수식 컴파일러' 불필요(분업: 엑셀=산술·비용 검증). ⚠샤프는 `backtest._metrics`가 pandas `.std()`(ddof=1 표본)라 Excel **STDEV.S**(STDEV.P 아님). ⚠openpyxl은 수식 미평가 → 라이브수식 *수치* 검증은 파이썬 모사(formula-math) 테스트로 엔진 metrics 재현을 고정 + 수동 Excel 1회.
+- 결과 구현: `build_strategy_excel(ir, dataset, result)` 5시트(백테스트=라이브수식·거래내역=정적앵커·원자료·일별비중·지표설명). **엔진 무변경(골든 byte-identical).** 서버 `_load_ir_dataset` 헬퍼로 `/ir/strategy`·export 공용(드리프트 0)·**simulate만 게이트**(그 외 400, P2 예정). 웹 `ExcelExportButton`(`var(--accent)`, `trendExport` blob 다운로드 패턴)을 ChatResultView simulate + IrBuilder ResultPanel 재사용. **검증: core 309·server 336·web build+lint(신규 0)·excel 8(formula-math 포함)·endpoint 2.** 미배포(사용자 승인 대기). 잔여: P2 형상별 엑셀(select/describe/sweep/relate 감사표)·P3 실시간 변수조정.
+
 ### [날짜미상] 부호방향 long_short 라이브 양방향 (M5d) [완료]
 - 의도: 조건별 롱/숏을 단일 전략으로 라이브 양방향 매매(예: S&P 부호 → 코스피200선물 시가매수 or 시가매도). `direction="long_short"` + score 부호방향으로, 기존 단방향 라이브를 깨지 않으면서 부호에 따라 바별 롱/숏을 체결하는 게 목표. 랭킹 long_short(top_n/top_pct·scheduled)와는 구분되며 단일·선물 한정 범위.
 - 계획: 방향정책의 단일 출처 `engine._direction_for(buy_bool, score_vals, base_sign, threshold)` 도입 후 4계층 배선 — spec 예외(on_signal+long_short+score) → 게이트(`_assert_live_tradable`) → preview(`_evaluate_ir_strategy`) → executor(`_try_buy_one_symbol`). NL 컴파일러 라우팅도 함께.

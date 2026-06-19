@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type IrValidation, type IrExplanation, type CompileQuota } from "../api";
 import SentenceTree, { type Catalog } from "../components/SentenceTree";
 import EquityChart from "../components/EquityChart";
+import ExcelExportButton from "../components/ExcelExportButton";
 import {
   SweepChart, SignalDistChart, ICChart, EventStudyChart,
   RankedListChart, ReportCards, DiagnosisPanel, RegressionChart, ExtremizeChart,
@@ -187,6 +188,8 @@ export default function IrBuilder() {
   const [groupLabel, setGroupLabel] = useState<IrNode | null>(null);
 
   const [result, setResult] = useState<IrStrategyResult | null>(null);
+  // 결과를 만든 IR(증빙 엑셀 export용) — 현재 빌더 폼이 아니라 실제 실행된 본문.
+  const [ranIr, setRanIr] = useState<Record<string, unknown> | null>(null);
   const [running, setRunning] = useState(false);
   // 컴파일된 research IR(신규 동사) — 있으면 빌더 폼 대신 이 IR을 직접 실행.
   const [researchIr, setResearchIr] = useState<IrStrategyDef | null>(null);
@@ -609,6 +612,7 @@ export default function IrBuilder() {
         if (compileId != null) {
           api.compileFeedback(compileId, true, false).catch(() => {});
         }
+        setRanIr(researchIr as unknown as Record<string, unknown>);
         setResult(await api.runIrStrategy(researchIr as unknown as Record<string, unknown>));
         return;
       }
@@ -622,6 +626,7 @@ export default function IrBuilder() {
       }
       const body: Record<string, unknown> = { ...built };
       if (editId) body.strategy_id = Number(editId);
+      setRanIr(body);
       setResult(await api.runIrStrategy(body));
     } catch (e) {
       setResult({ success: false, error: (e as Error).message });
@@ -1296,12 +1301,22 @@ export default function IrBuilder() {
         모의 적용 시 로컬앱이 매일 09:00 자동 실행합니다. 충분히 검증한 뒤 실전으로 승격하세요.
       </p>
 
-      {result && <ResultPanel result={result} />}
+      {result && <ResultPanel result={result} ir={ranIr} />}
     </div>
   );
 }
 
-function ResultPanel({ result }: { result: IrStrategyResult }) {
+function ResultPanel({ result, ir }: { result: IrStrategyResult; ir: Record<string, unknown> | null }) {
+  // 결과 종류 불문(백테스트·스크리닝·진단·스윕·관계 등) 결과 아래 '엑셀로 내보내기' 1회 노출.
+  return (
+    <>
+      <ResultPanelBody result={result} />
+      {ir && <ExcelExportButton ir={ir} />}
+    </>
+  );
+}
+
+function ResultPanelBody({ result }: { result: IrStrategyResult }) {
   if (!result.success) {
     return (
       <div className="panel result-fail">

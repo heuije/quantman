@@ -326,3 +326,34 @@ def test_inspect_unknown_column_returns_valid_options(monkeypatch):
     out = tools.run_inspect({"symbol": "005930", "columns": ["target_price"]})
     assert out["success"] is False
     assert "Close" in out["error"] and "consensus_target" in out["error"]   # 유효 컬럼 제시
+
+
+# ── P3: 실시간 변수조정 — 결과에 조정가능 매니페스트 동봉 ──────────────────────
+
+def test_run_tool_attaches_adjustable_manifest(monkeypatch):
+    """screen(select) 결과에 '변수 조정' 매니페스트(adjustable) 동봉."""
+    monkeypatch.setattr(chat_tools, "_load_dataset", lambda ir: {"A": object()})
+    monkeypatch.setattr(chat_tools, "strategy_from_spec",
+                        lambda ir, ds: {"success": True, "query": "select", "results": []})
+    out = chat_tools.run_tool("screen", {"score_ref": "__SELF__.pb_ratio", "top_n": 4, "descending": False})
+    assert isinstance(out.get("adjustable"), list)
+    assert "select.top_n" in {p["path"] for p in out["adjustable"]}
+
+
+def test_run_simulate_attaches_adjustable_manifest(monkeypatch):
+    """simulate 결과에 조정 노브(top_n·commission·initial_capital) 동봉."""
+    from app.chat import tools
+    monkeypatch.setattr(tools, "compile_strategy", lambda s, uid, nl: {
+        "success": True,
+        "ir": {"universe": {"kind": "all"},
+               "signal": {"op": "data", "params": {"ref": "__SELF__.momentum_12_1m"}},
+               "query": "simulate",
+               "position": {"entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 5}},
+               "simulation": {"initial_capital": 1e7}},
+        "assumptions": [], "explanation": {}})
+    monkeypatch.setattr(tools, "_load_dataset", lambda ir: {})
+    monkeypatch.setattr(tools, "strategy_from_spec",
+                        lambda ir, ds: {"success": True, "metrics": {"cagr": 0.1}})
+    out = tools.run_simulate(session=None, user_id=1, tool_input={"nl": "모멘텀"})
+    paths = {p["path"] for p in out["adjustable"]}
+    assert {"position.entry.top_n", "simulation.commission", "simulation.initial_capital"} <= paths

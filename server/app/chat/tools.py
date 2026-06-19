@@ -9,7 +9,7 @@ from __future__ import annotations
 import quant_core as qc
 from pydantic import ValidationError
 from quant_core.ir_engine import (StrategyIR, needed_columns, needed_symbols,
-                                   strategy_from_spec)
+                                   param_manifest, strategy_from_spec)
 
 from ..compile_service import compile_strategy
 from ..models import Message
@@ -195,6 +195,7 @@ def run_simulate(session, user_id, tool_input: dict) -> dict:
     res = strategy_from_spec(ir, dataset)
     if isinstance(res, dict) and res.get("success"):
         res["ir"] = ir
+        res["adjustable"] = param_manifest(ir)   # 실시간 변수조정 노브(웹 '변수 조정' 패널)
         res["explanation"] = comp.get("explanation")
         res["assumptions"] = comp.get("assumptions") or []
     return res
@@ -234,13 +235,18 @@ def run_tool(tool_name: str, tool_input: dict) -> dict:
     {success:False,error}로 — agent 루프가 tool_result로 모델에 피드백.
     """
     if tool_name == "inspect":
-        return run_inspect(tool_input)
+        return run_inspect(tool_input)   # 원시 시계열 dump — IR 없음(엑셀 증빙 대상 아님)
     try:
         ir = assemble_ir(tool_name, tool_input)
     except (ValueError, KeyError, TypeError) as e:
         return {"success": False, "error": f"도구 입력 오류({tool_name}): {e}"}
     dataset = _load_dataset(ir)
-    return strategy_from_spec(ir, dataset)   # valid_refs=None → 엔진이 available_refs 도출
+    res = strategy_from_spec(ir, dataset)   # valid_refs=None → 엔진이 available_refs 도출
+    # 결과에 IR + 조정가능 변수 동봉 → 챗 결과뷰의 '엑셀로 내보내기'(증빙)·'변수 조정'(실시간 재실행).
+    if isinstance(res, dict) and res.get("success"):
+        res["ir"] = ir
+        res["adjustable"] = param_manifest(ir)
+    return res
 
 
 def _last_simulate_ir(session, conversation_id) -> dict | None:
