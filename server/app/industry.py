@@ -351,10 +351,25 @@ def _da_map(tickers: tuple[str, ...], _day: str) -> dict:
     return out
 
 
+_SNAP_TTL = 90   # 초 — 최신 트리맵 시총·등락 신선화 주기. 벌크 StockListing 1콜이라 가벼움.
+
+
+def _bucket() -> str:
+    """현재 시각을 _SNAP_TTL초 버킷으로 — lru_cache 키에 넣어 주기적 재조회(실시간 시세) 유도."""
+    import time
+    return f"t{int(time.time() // _SNAP_TTL)}"
+
+
 def industry(name: str, as_of: str | None = None) -> list[dict] | None:
-    """산업 밸류체인 데이터. as_of(yyyy-mm-dd) 지정 시 그 시점 시총·등락으로 계산(과거 트리맵)."""
+    """산업 밸류체인 데이터.
+
+    · as_of 지정(과거 트리맵): 일자 캐시(그 시점 시총·등락 고정).
+    · 미지정(최신): **시간 버킷 키**로 캐시 → _SNAP_TTL(90초)마다 _snapshot 재조회해 **시세가
+      장중 실시간으로 갱신**된다(이전엔 _day 키로 종일 고정돼 안 바뀌던 문제 해소)."""
     try:
-        return _industry(name, date.today().isoformat(), as_of or "")
+        if as_of:
+            return _industry(name, date.today().isoformat(), as_of)
+        return _industry(name, _bucket(), "")
     except Exception as e:
         _log.warning("산업 분석 fetch 실패 %s: %s", name, e)
         return None

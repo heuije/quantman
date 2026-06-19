@@ -810,14 +810,6 @@ export function RatingsSummary({ ticker, name, onOpen }:
   );
 }
 
-// 기사 요약에서 첫 문장(없으면 첫 문단)만 추출 — 기사 링크와 본문 중복을 줄이고 핵심만 노출.
-function firstSentence(s: string): string {
-  const para = s.trim().split(/\n+/)[0];
-  const m = para.match(/^[\s\S]*?[.!?。…](?=\s|$)/);
-  const sent = (m ? m[0] : para).trim();
-  return sent.length > 140 ? sent.slice(0, 140).trim() + "…" : sent;
-}
-
 // 섹터 키워드 뉴스 (Google News RSS — 국내/해외). 클릭 시 원문.
 const SECTOR_NEWS_KW = {
   kr: ["2차전지", "양극재", "음극재", "배터리", "ESS", "분리막", "동박", "전지박", "폐배터리", "전고체", "데이터센터"],
@@ -855,9 +847,8 @@ export function SectorNewsPanel() {
         <a key={i} href={n.url} target="_blank" rel="noreferrer"
           style={{ display: "block", padding: "8px 2px", borderBottom: "1px solid var(--border)", textDecoration: "none", color: "inherit" }}>
           <div style={{ fontWeight: 600, fontSize: "12pt", color: DOWN }}>{n.title}</div>
-          {/* 기사링크(제목)와 중복 줄이기 — 날짜·신문사명 + 본문 첫 문장만 */}
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>{n.date ? `${n.date} · ` : ""}{n.source}</div>
-          {n.summary && <div style={{ fontSize: "12pt", color: "var(--muted)", marginTop: 2, lineHeight: 1.5 }}>{firstSentence(n.summary)}</div>}
+          {/* 본문 삭제 — 기사링크(제목)와 중복. 그 자리에 날짜(연도)·언론사명을 본문 크기(12pt)로 */}
+          <div style={{ fontSize: "12pt", color: "var(--muted)", marginTop: 3 }}>{n.date ? `${n.date} · ` : ""}{n.source}</div>
         </a>
       ))}
     </>
@@ -1211,6 +1202,27 @@ export default function IndustryAnalysis() {
       .finally(() => setRefreshing(false));
   };
 
+  // #4 실시간 갱신 — 장중(평일 09:00~15:40 KST)엔 60초마다 시총·등락 자동 재조회.
+  // 백엔드 _snapshot은 90초 TTL로 신선화되므로(industry.py), 폴링이 최신 시세를 가져온다.
+  // 과거(asOfReq) 조회 중엔 폴링하지 않음. 장외엔 시세 불변이라 폴링 불필요.
+  useEffect(() => {
+    if (asOfReq) return;
+    const marketOpen = () => {
+      const n = new Date();
+      const wd = n.getDay();                        // 0=일,6=토
+      const hm = n.getHours() * 60 + n.getMinutes();
+      return wd >= 1 && wd <= 5 && hm >= 9 * 60 && hm <= 15 * 60 + 40;
+    };
+    const id = setInterval(() => {
+      if (!marketOpen() || document.hidden) return;
+      api.industryDetail(root, undefined)          // 90초 TTL 버킷이 최신 시세 반영(refresh=true 불필요)
+        .then((d) => { setData(d); mergeEbitda(); mergeReturns(); })
+        .catch(() => { /* 무시 */ });
+    }, 60000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root, asOfReq]);
+
   const companies = data?.companies || [];
   // 트리맵·검색에서 기업 선택 → HOME(개별 기업 분석)으로 이동
   const pickCompany = (ticker: string) => navigate(`/dashboard?symbol=${ticker}`);
@@ -1231,7 +1243,7 @@ export default function IndustryAnalysis() {
           const on = nm === root;
           return (
             <button key={nm} type="button" onClick={() => { if (nm !== root) { setRoot(nm); setAsOfReq(""); } }}
-              style={{ fontSize: 13, fontWeight: 700, padding: "5px 14px", borderRadius: 999, cursor: "pointer",
+              style={{ fontSize: "12pt", fontWeight: 700, padding: "6px 16px", borderRadius: 999, cursor: "pointer",
                 background: on ? "rgba(79,143,245,0.22)" : "transparent",
                 border: `1px solid ${on ? "rgba(79,143,245,0.7)" : "var(--border)"}`,
                 color: on ? "#1668c4" : "var(--muted)" }}>

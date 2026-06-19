@@ -65,6 +65,17 @@ const CHART_NAVY = "#264a85", CHART_GOLD = "#d4a738";
 type SeriesArr = (number | null)[];
 interface ChartDef { t: string; unit: "억원" | "%"; v: SeriesArr; yoy?: SeriesArr; mg?: SeriesArr; }
 
+// 기간 라벨 — 연간 "2023/12"→FY23, 분기 "2026/03"→1Q26. 차트 x축·기간 드롭다운 공용.
+function periodLabel(p: string, quarterly: boolean): string {
+  const [y, m] = p.split("/");
+  const yy = y.slice(2);
+  if (quarterly) {
+    const q = ({ "03": 1, "06": 2, "09": 3, "12": 4 } as Record<string, number>)[m] ?? m;
+    return `${q}Q${yy}`;
+  }
+  return `FY${yy}`;
+}
+
 // Financials 주요지표 — 한경식. PL/BS/CF 섹션 분리, 한 행 2개, 막대(값)+선(YoY/QoQ),
 // 이익률 항목은 마진선 추가, 막대 위 값(1자리) 라벨, 색상=네이비+골드. 연간/분기 src 반영.
 function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
@@ -121,17 +132,7 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   ];
 
   const lineLbl = quarterly ? "QoQ%" : "YoY%";
-
-  // x축 라벨 — 연간: FY23, 분기: 1Q26(분기Q+2자리연도). 03→1Q·06→2Q·09→3Q·12→4Q.
-  const xLabel = (p: string) => {
-    const [y, m] = p.split("/");
-    const yy = y.slice(2);
-    if (quarterly) {
-      const q = ({ "03": 1, "06": 2, "09": 3, "12": 4 } as Record<string, number>)[m] ?? m;
-      return `${q}Q${yy}`;
-    }
-    return `FY${yy}`;
-  };
+  const xLabel = (p: string) => periodLabel(p, quarterly);   // FY23 / 1Q26
   const renderChart = (c: ChartDef) => {
     const isPct = c.unit === "%";
     // 선은 "수준 지표"(마진%)에만 — YoY/QoQ는 절대값과 방향이 반대로 갈 수 있어(값↓인데 감소율
@@ -154,14 +155,15 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
     const fmtVal = (n: number) => isPct ? `${n}%` : `${Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 })}${uTip}`;
     return (
       <div key={c.t} className="panel" style={{ marginBottom: 0, padding: "10px 8px 4px" }}>
-        <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
-          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 10 }}> {unit}</span></div>
-        <ResponsiveContainer width="100%" height={210}>
-          <ComposedChart data={data} margin={{ top: 16, right: hasLine ? 2 : 4, bottom: 0, left: 0 }}>
+        <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
+          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {unit}</span></div>
+        <ResponsiveContainer width="100%" height={230}>
+          {/* #3 글자·숫자 본문 크기로 확대(12) + barCategoryGap로 막대폭 절반 수준 축소 */}
+          <ComposedChart data={data} margin={{ top: 22, right: hasLine ? 4 : 6, bottom: 0, left: 0 }} barCategoryGap="50%">
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="x" tick={{ fontSize: 9 }} interval={0} />
-            <YAxis yAxisId="v" tick={{ fontSize: 9 }} width={32} tickFormatter={axisFmt} />
-            {hasLine && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 9 }} width={26} tickFormatter={(n) => `${n}%`} />}
+            <XAxis dataKey="x" tick={{ fontSize: 12 }} interval={0} />
+            <YAxis yAxisId="v" tick={{ fontSize: 12 }} width={46} tickFormatter={axisFmt} />
+            {hasLine && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 12 }} width={38} tickFormatter={(n) => `${n}%`} />}
             <Tooltip content={(o) => {
               if (!o.active || !o.payload?.length) return null;
               const d = o.payload[0].payload as { x: string; v: number | null; yoy: number | null; mg: number | null };
@@ -177,11 +179,11 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
             {isPct ? (
               // %만 있는 지표(ROE·부채비율 등)는 막대가 아닌 선그래프 — 추세 비교용.
               <Line yAxisId="v" dataKey="v" stroke={CHART_NAVY} strokeWidth={2} dot name={c.t} isAnimationActive={false} connectNulls>
-                <LabelList dataKey="v" position="top" formatter={lblFmt} style={{ fontSize: 8.5, fill: CHART_NAVY, fontWeight: 700 }} />
+                <LabelList dataKey="v" position="top" formatter={lblFmt} style={{ fontSize: 12, fill: CHART_NAVY, fontWeight: 700 }} />
               </Line>
             ) : (
               <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} name={c.t} isAnimationActive={false}>
-                <LabelList dataKey="v" position="top" formatter={lblFmt} style={{ fontSize: 8.5, fill: CHART_NAVY, fontWeight: 700 }} />
+                <LabelList dataKey="v" position="top" formatter={lblFmt} style={{ fontSize: 12, fill: CHART_NAVY, fontWeight: 700 }} />
               </Bar>
             )}
             {showMg && <Line yAxisId="r" dataKey="mg" stroke={CHART_GOLD} strokeWidth={1.5} dot name="마진%" isAnimationActive={false} connectNulls />}
@@ -226,8 +228,14 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
       .finally(() => { if (alive) setBusy(false); });
     return () => { alive = false; };
   }, [ticker]);
-  // 연간↔분기 전환 시 그래프 기간 범위 초기화(기간 목록이 달라짐)
-  useEffect(() => { setPFrom(""); setPTo(""); }, [period]);
+  // 그래프 기간 기본값 = 해당 구분의 전체 범위(예: FY23~FY25). 데이터 로드·연간↔분기 전환 시 재설정.
+  useEffect(() => {
+    if (!data) return;
+    const s = period === "A" ? data.annual : data.quarterly;
+    const ps = s.PL?.periods || s.BS?.periods || s.CF?.periods || [];
+    setPFrom(ps[0] || "");
+    setPTo(ps[ps.length - 1] || "");
+  }, [data, period]);
 
   const downloadExcel = () => {
     setXlBusy(true);
@@ -359,17 +367,16 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
           <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: "var(--muted)" }}>
             <span>그래프 기간</span>
             <select value={pFrom} onChange={(e) => setPFrom(e.target.value)} style={{ fontSize: 12, padding: "3px 6px" }}>
-              <option value="">처음</option>
-              {chartPeriods.map((p) => <option key={p} value={p}>{p}</option>)}
+              {chartPeriods.map((p) => <option key={p} value={p}>{periodLabel(p, period === "Q")}</option>)}
             </select>
             <span>~</span>
             <select value={pTo} onChange={(e) => setPTo(e.target.value)} style={{ fontSize: 12, padding: "3px 6px" }}>
-              <option value="">마지막</option>
-              {chartPeriods.map((p) => <option key={p} value={p}>{p}</option>)}
+              {chartPeriods.map((p) => <option key={p} value={p}>{periodLabel(p, period === "Q")}</option>)}
             </select>
-            {(pFrom || pTo) && (
-              <button type="button" className="ghost sm" onClick={() => { setPFrom(""); setPTo(""); }}
-                style={{ fontSize: 11, padding: "2px 8px" }}>전체</button>
+            {(pFrom !== chartPeriods[0] || pTo !== chartPeriods[chartPeriods.length - 1]) && (
+              <button type="button" className="ghost sm"
+                onClick={() => { setPFrom(chartPeriods[0]); setPTo(chartPeriods[chartPeriods.length - 1]); }}
+                style={{ fontSize: 11, padding: "2px 8px" }}>전체 기간</button>
             )}
           </div>
         )}
