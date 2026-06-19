@@ -126,7 +126,7 @@ def backtest_from_spec(
     exit_kw = {k: spec[k] for k in _EXIT_KW if k in spec and spec[k] is not None}
     res = run_backtest_ir(dataset, trade_symbol, buy, sell_node=sell, **exit_kw)
     # 비-error 무결성 경고(예: 펀더멘털 PIT 미태깅)를 결과에 동봉
-    res["warnings"] = [_issue_dict(i) for i in issues]
+    res["warnings"] = list(res.get("warnings") or []) + [_issue_dict(i) for i in issues]
     return res
 
 
@@ -179,7 +179,7 @@ def strategy_from_spec(
     # 최상위 디스패치 — query(동사) + study(펼침)로 단일/펼침/분석/기간분할 경로 선택.
     res = run_query(s, dataset)
     if res.get("success"):
-        warns = [_issue_dict(i) for i in issues]
+        warns = list(res.get("warnings") or []) + [_issue_dict(i) for i in issues]   # run_query(무거래 등) 보존 후 병합
         try:
             cap_warn = _futures_capital_warning(s, dataset, res)
         except Exception:   # noqa: BLE001 — 부가 경고 계산 실패가 정상 백테스트 결과를 깨지 않게(보조 정보)
