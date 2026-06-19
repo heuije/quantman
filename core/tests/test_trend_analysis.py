@@ -196,7 +196,7 @@ def test_explanatory_scan_grid_price_band_and_structure():
     df = _mk(closes)
     cells = trend_explanatory_scan(
         df, lookbacks=[2, 3], horizons=[2, 3],
-        price_lo=110, price_hi=120, oos_split=0.5, min_n=5,
+        price_lo=110, price_hi=120, oos_split=0.5,
     )
     assert len(cells) == 4                        # 2×2 격자
     assert all(isinstance(c, ScanCell) for c in cells)
@@ -212,20 +212,25 @@ def test_explanatory_scan_grid_price_band_and_structure():
     assert isinstance(c.sign_stable, bool)
 
 
-def test_explanatory_scan_min_n_gates_low_sample():
+def test_explanatory_scan_draws_low_sample_down_to_n3():
+    # 표본이 적어도(3≤n) 격자를 그린다 — 회귀 불가능한 n<3만 비운다(신뢰 임계는
+    # 컴퓨트가 아니라 표시 관심사라 여기서 비우지 않음).
     closes = list(range(100, 150))
     df = _mk(closes)
-    # 같은 밴드 n=11인데 min_n=12 → 비활성(nan·None).
-    gated = trend_explanatory_scan(df, [2], [2], 110, 120, min_n=12)
-    assert len(gated) == 1 and gated[0].n == 11
-    assert math.isnan(gated[0].r_squared) and math.isnan(gated[0].slope)
-    assert gated[0].oos_r_squared is None and gated[0].sign_stable is False
+    # 종가 ∈ [110,120] = 11건 — 옛 min_n=30 게이트면 비었을 저표본이지만 이제 그려진다.
+    drawn = trend_explanatory_scan(df, [2], [2], 110, 120)
+    assert len(drawn) == 1 and drawn[0].n == 11
+    assert not math.isnan(drawn[0].r_squared) and not math.isnan(drawn[0].slope)
+    # 종가 ∈ [110,111] = 2건(<3, 선 적합 불가) → 비움(nan·None).
+    blank = trend_explanatory_scan(df, [2], [2], 110, 111)
+    assert len(blank) == 1 and blank[0].n == 2
+    assert math.isnan(blank[0].r_squared) and blank[0].oos_r_squared is None
 
 
 def test_explanatory_scan_deterministic():
     closes = list(range(100, 150))
     df = _mk(closes)
-    kw = dict(lookbacks=[2, 3, 4], horizons=[2, 5], price_lo=105, price_hi=140, min_n=5)
+    kw = dict(lookbacks=[2, 3, 4], horizons=[2, 5], price_lo=105, price_hi=140)
     a = trend_explanatory_scan(df, **kw)
     b = trend_explanatory_scan(df, **kw)
     key = lambda cs: [(c.lookback, c.horizon, c.n, c.r_squared, c.slope, c.sign_stable) for c in cs]
@@ -265,7 +270,7 @@ def test_explanatory_scan_gap_declusters():
     closes = list(range(100, 150))
     df = _mk(closes)
     # 종가 ∈ [110,120] = 11 연속일. gap=0 → 11건, gap=5 → t=10,15,20 = 3건.
-    no_gap = trend_explanatory_scan(df, [2], [2], 110, 120, min_n=3, gap=0)
-    gapped = trend_explanatory_scan(df, [2], [2], 110, 120, min_n=3, gap=5)
+    no_gap = trend_explanatory_scan(df, [2], [2], 110, 120, gap=0)
+    gapped = trend_explanatory_scan(df, [2], [2], 110, 120, gap=5)
     assert no_gap[0].n == 11
     assert gapped[0].n == 3

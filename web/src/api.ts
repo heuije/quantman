@@ -351,6 +351,32 @@ export const api = {
     req<IrStrategyResult>("/ir/strategy", {
       method: "POST", body: JSON.stringify(strategy),
     }),
+  // StrategyIR 백테스트(simulate) → 데이터+라이브수식 '증빙' 엑셀 다운로드(LLM 없음·토큰0).
+  // 결과만이 아니라 '어떤 데이터를 어떤 연산으로' 산출했는지 엑셀로 검증. blob 직접 처리(POST).
+  exportIrStrategyXlsx: async (strategy: Record<string, unknown>) => {
+    const t = tokenStore.get();
+    const res = await fetch(`${BASE}/ir/strategy/export.xlsx`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      },
+      body: JSON.stringify(strategy),
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      throw new Error(b.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(strategy.name as string) || "backtest"}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
   // 논리 정합성 실시간 검증 — 백테스트 없이 이슈 목록(에러/경고) 반환.
   validateIr: (strategy: Record<string, unknown>) =>
     req<IrValidation>("/ir/validate", {

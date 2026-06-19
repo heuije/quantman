@@ -3,7 +3,7 @@
 국내주식 TR 색인. **작업 전 `grep -i <키워드> INDEX.md`로 후보 찾기.**
 상세는 `endpoints/{tr_cd}_*.md` 참조.
 
-> 이 KB는 A2 단계 초안 (2026-06-17). 국내주식 핵심 6종만 포함.
+> 이 KB는 A2 초안(2026-06-17) + 공식문서 대조 검토(2026-06-19). 국내주식 핵심 6종 + 예수금 TR.
 > 선물·해외주식·조건검색 등은 필요 시 추가.
 
 ---
@@ -12,22 +12,22 @@
 
 | tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
 |---|---|---|---|---|
-| [`CSPAT00601`](endpoints/CSPAT00601_현물신규주문.md) | 현물신규주문 | 매수·매도 통합 단일 TR (BnsTpCode로 구분) | `buy()`·`sell()`·`buy_limit()`·`sell_limit()` (via `_submit`) | 🟢 |
-| [`CSPAT00701`](endpoints/CSPAT00701_현물정정주문.md) | 현물정정주문 | 가격·수량 정정 | 미배선 (Broker 프로토콜에 정정 없음 — 취소+재주문) | 🟢 |
-| [`CSPAT00801`](endpoints/CSPAT00801_현물취소주문.md) | 현물취소주문 | 주문 취소 | `cancel()` | 🟢 |
+| [`CSPAT00601`](endpoints/CSPAT00601_현물신규주문.md) | 현물신규주문 | 매수·매도 통합 단일 TR (BnsTpCode로 구분). 경로=`POST /stock/order` (tr_cd 헤더로 구분, `/stock/order-cancel` 별도경로 없음) | `buy()`·`sell()`·`buy_limit()`·`sell_limit()` (via `_submit`) | 🟢 크로스소스 확인 |
+| [`CSPAT00701`](endpoints/CSPAT00701_현물정정주문.md) | 현물정정주문 | 가격·수량 정정. 경로=`POST /stock/order` (tr_cd=CSPAT00701) | 미배선 (Broker 프로토콜에 정정 없음 — 취소+재주문) | 🟢 크로스소스 확인 |
+| [`CSPAT00801`](endpoints/CSPAT00801_현물취소주문.md) | 현물취소주문 | 주문 취소. 경로=`POST /stock/order` (tr_cd=CSPAT00801) | `cancel()` | 🟢 크로스소스 확인 |
 
 ## 국내주식 — 잔고·미체결 (2 TRs)
 
 | tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
 |---|---|---|---|---|
-| [`t0424`](endpoints/t0424_주식잔고조회2.md) | 주식잔고조회2 | 보유 포지션 목록 (체결기준) | `account_snapshot()` (via `_balance_raw`) | 🟢 |
-| [`t0425`](endpoints/t0425_주식미체결조회.md) | 주식미체결 | 미체결 주문 목록 | `pending_orders()`·`order_status()` (via `_pending_raw`) | 🟢 |
+| [`t0424`](endpoints/t0424_주식잔고조회2.md) | 주식잔고조회2 | 보유 포지션 목록 (체결기준). sunamt=순자산·mamt=원가·**tappamt=평가금액(total_eval)**·**sunamt1=추정D2예수금(cash근사)**·dtsunik=실현손익·tdtsunik=평가손익 | `account_snapshot()` (via `_balance_raw`) | 🟢 필드의미 크로스소스 확정 |
+| [`t0425`](endpoints/t0425_주식미체결조회.md) | 주식미체결 | chegb="2"=미체결only / chegb="0"=전체(체결·취소 포함). OutBlock1: **cheprice=체결가**·price=주문가·medosu="매수"/"매도"(문자열)·price1=현재가·**status(char10)=체결상태**. hname 없음(종목명 t0424에만) | `pending_orders()`(chegb="2")·`order_status()`(chegb="0"으로 전환 예정) (via `_pending_raw`) | 🟢 필드 크로스소스 / ⚠ status값 키검증 |
 
 ## 국내주식 — 시세 (1 TR)
 
 | tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
 |---|---|---|---|---|
-| [`t1102`](endpoints/t1102_주식현재가.md) | 주식현재가 | 종목 현재가·OHLC | `price()`·`today_open()` | 🟢 |
+| [`t1102`](endpoints/t1102_주식현재가.md) | 주식현재가 | 경로=`POST /stock/market-data`. InBlock: shcode(6자리,A접두사없음)·exchgubun(기본'K'=KOSPI,KOSDAQ='Q'⚠). OutBlock: price=현재가·open=시가·high·low·volume·**recprice=전일종가**(≠pclose) | `price()`·`today_open()` | 🟢 3소스 일치 / ⚠ KOSDAQ exchgubun 키검증 |
 
 ## 기타 국내주식 (미작성, 색인만)
 
@@ -35,7 +35,7 @@
 
 | tr_cd | 이름 | 용도 | 우리 코드 위치 | 검증상태 |
 |---|---|---|---|---|
-| `CSPAQ22200` | 현물계좌예수금 | 현금 예수금·주문가능금액 | 미배선 (account_snapshot은 t0424 사용) | ⚠️ 미검증 |
+| `CSPAQ22200` | 현물계좌예수금 | **정확한 주문가능금액(D2entra 등)** 소스. t0424의 sunamt1(추정D2예수금) 근사를 대체해 cash 정밀화 — Phase C 구현 예정 | 미배선 (현재 t0424.sunamt1로 근사) | ⚠️ 필드명·응답구조 키검증 필요 (Phase C) |
 | `CSPAQ12300` | 현물계좌잔고내역 | 대안 잔고조회 (t0424 보완) | 미배선 (t0424로 대체) | 🟢 필드 일부 확인 |
 | `t1101` | 주식현재가호가 | 10단 호가 | 미배선 | 🟢 |
 | `t1301` | 주식시간대별체결 | 시간대별 체결 내역 | 미배선 | 🟢 |

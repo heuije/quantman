@@ -35,6 +35,21 @@ export default function ChatLab() {
   }, [adminPw]);
   useEffect(() => { refreshQuota(); }, [refreshQuota]);
 
+  // 마운트 시 최근 대화 복원 — 다른 탭 갔다 와도 직전 대화가 보이도록(④ 영속; 서버에 이미 보관).
+  useEffect(() => {
+    let alive = true;
+    api.listConversations()
+      .then((convs) => {
+        if (!alive || convs.length === 0) return undefined;
+        const recent = convs.reduce((a, b) => (b.id > a.id ? b : a));
+        return api.getConversation(recent.id).then((full) => {
+          if (alive) { setConvId(full.id); setMessages(full.messages); }
+        });
+      })
+      .catch(() => {/* 복원 실패는 빈(새) 대화로 시작 — 무해 */});
+    return () => { alive = false; };
+  }, []);
+
   async function unlockLimit() {
     const pw = window.prompt("운영진 비밀번호를 입력하면 일일 사용 한도가 상향됩니다.");
     if (pw == null || !pw.trim()) return;
@@ -55,6 +70,12 @@ export default function ChatLab() {
   function lockLimit() {
     sessionStorage.removeItem("chat_admin_pw");
     setAdminPw("");
+  }
+
+  function newChat() {        // 복원된/현재 대화를 두고 새 대화 시작(복원이 덫이 되지 않도록)
+    setConvId(null);
+    setMessages([]);
+    setError(null);
   }
 
   async function send() {
@@ -108,21 +129,44 @@ export default function ChatLab() {
     <div className="chat-lab">
       <h1 className="chat-title">전략 연구소 <span className="chat-beta">챗봇 베타</span></h1>
       <p className="chat-sub muted">자연어로 종목 분석·백테스트를 요청하고 대화하세요.</p>
+      {messages.length > 0 && (
+        <button onClick={newChat}
+                style={{ fontSize: "0.8em", padding: "3px 12px", marginBottom: 8,
+                         alignSelf: "flex-start", cursor: "pointer" }}>
+          + 새 대화
+        </button>
+      )}
       <div className="chat-thread" ref={threadRef}>
         {messages.length === 0 && (
           <div className="chat-empty muted">
             예: "저평가 반도체주 3개 골라줘" · "삼성전자 20일선 돌파 매수 전략 백테스트해줘"
           </div>
         )}
-        {messages.map((m, i) => (
-          <div key={i} className={"chat-msg " + m.role}>
-            {m.parts.length === 0
-              ? (m.role === "assistant" && busy
-                  ? <p className="chat-text muted">분석 중…</p>
-                  : null)
-              : m.parts.map((p, j) => <PartView key={j} part={p} />)}
-          </div>
-        ))}
+        {messages.map((m, i) => {
+          // 한 메시지에 도구결과가 여럿이면(에이전트 다중 호출) 마지막만 펼치고 이전은 접는다 —
+          // 거의 같은 차트가 난립하던 ④ 표현 결함 차단(③로 재실행이 줄어도 남는 다중호출 대비).
+          let lastTr = -1;
+          m.parts.forEach((p, j) => { if (p.type === "tool_result") lastTr = j; });
+          return (
+            <div key={i} className={"chat-msg " + m.role}>
+              {m.parts.length === 0
+                ? (m.role === "assistant" && busy
+                    ? <p className="chat-text muted">분석 중…</p>
+                    : null)
+                : m.parts.map((p, j) =>
+                    p.type === "tool_result" && j !== lastTr ? (
+                      <details key={j} style={{ margin: "4px 0" }}>
+                        <summary style={{ cursor: "pointer", fontSize: "0.8em", color: "var(--muted)" }}>
+                          📊 중간 분석 결과 (펼치기)
+                        </summary>
+                        <PartView part={p} />
+                      </details>
+                    ) : (
+                      <PartView key={j} part={p} />
+                    ))}
+            </div>
+          );
+        })}
       </div>
       {error && <div className="chat-error">{error}</div>}
       {quota && (

@@ -10,6 +10,7 @@ DB는 논리적 턴(parts: text/tool_use/tool_result, full payload)을 저장하
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 
@@ -17,7 +18,7 @@ from sqlmodel import Session, select
 
 from ..models import ChatTurnMetric, Conversation, Message
 from ..serialize import clean_json
-from .tools import (TOOL_SCHEMAS, compact_summary, run_simulate, run_tool,
+from .tools import (TOOL_SCHEMAS, compact_summary, run_adjust, run_simulate, run_tool,
                     save_strategy_tool)
 from .prompt import chat_system_prompt
 
@@ -67,6 +68,16 @@ def _history_to_wire(session: Session, conversation_id: int) -> list[dict]:
 
 
 MAX_TOOL_ROUNDS = 8     # 한 사용자 턴당 도구 라운드 상한(무한루프·비용 가드)
+
+
+def _ir_sig(ir) -> str | None:
+    """IR 서명 — 한 턴 내 '동일 분석 재실행'(③제어 중복 헛돌이) 감지용."""
+    if not isinstance(ir, dict):
+        return None
+    try:
+        return json.dumps(ir, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return None
 
 
 def _block_to_wire(b) -> dict:
@@ -169,6 +180,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
     # ── 성능 계측(chat-perf) — 턴 종료 시 ChatTurnMetric 1행 ──
     t0 = time.perf_counter()
     acc = {"in": 0, "out": 0, "cr": 0, "cw": 0, "rounds": 0, "tools": [], "stop": None}
+    seen_sigs: set[str] = set()      # ③제어 — 이번 턴에 본 분석 IR 서명(중복 재실행 감지)
     ttft_ms = None
     completed = False
     ok = True
@@ -204,11 +216,13 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                 inp = dict(b.input or {})
                 acc["tools"].append(b.name)
                 yield ("tool_use", {"id": b.id, "name": b.name, "input": inp})
-                if b.name in ("simulate", "save_strategy"):
+                if b.name in ("simulate", "save_strategy", "adjust_analysis"):
                     conv = session.get(Conversation, conversation_id)
                     uid = conv.user_id if conv else None
                     if b.name == "simulate":
                         full = run_simulate(session, uid, inp)
+                    elif b.name == "adjust_analysis":
+                        full = run_adjust(session, conversation_id, inp)
                     else:
                         full = save_strategy_tool(session, uid, conversation_id, inp)
                 else:
@@ -220,8 +234,14 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                 assistant_parts.append({"type": "tool_result", "tool_use_id": b.id,
                                         "name": b.name, "result": full})
                 yield ("tool_result", {"tool_use_id": b.id, "name": b.name, "result": full})
-                tool_results.append({"type": "tool_result", "tool_use_id": b.id,
-                                     "content": compact_summary(b.name, full)})
+                content = compact_summary(b.name, full)
+                sig = _ir_sig(full.get("ir")) if isinstance(full, dict) else None
+                if sig is not None:
+                    if sig in seen_sigs:        # ③제어 — 한 턴 내 동일 IR 재실행 = 헛돌이
+                        content = ("⚠ 직전과 동일한 분석입니다(같은 IR). 재실행하지 말고 이 결과로 답하세요. "
+                                   "값을 바꾸려면 adjust_analysis를 쓰세요.\n" + content)
+                    seen_sigs.add(sig)
+                tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": content})
             messages.append({"role": "user", "content": tool_results})
     except Exception:   # noqa: BLE001 — 외부 LLM·도구 호출 실패는 대화에 오류 답변으로 표면화(고아 방지)
         ok = False

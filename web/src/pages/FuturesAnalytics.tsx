@@ -1329,8 +1329,15 @@ function SeasonTable({
 // ── ⑧ 진입 추세 → 향후 종가 증감율 탐색기 ──────────────────────────────
 // 서버가 (L,H) 이벤트 배열을 1회 내려주면, 증감율 밴드 필터·집계는 브라우저에서 실시간.
 
-// 가격 범위를 ~12개로 나눌 "보기 좋은" 버킷 폭 (1·2·5·10 × 10ⁿ) — 종가범위 기본값 산정용.
-function teNiceStep(raw: number): number {
+// TREND→FORWARD 탐색기 입력 기본값 (단일 출처).
+const TE_DEF_LOOKBACK = 90;   // 과거 N일
+const TE_DEF_HORIZON = 120;   // 향후 N일
+const TE_DEF_GAP = 60;        // 이벤트 최소 간격(영업일)
+const TE_BAND_PCT = 0.06;     // 종가 밴드 반폭 = 현재가 × 6% → nice 단위 반올림(종목 스케일 자동대응)
+
+// 1·2·5×10ⁿ 중 가장 가까운 "깔끔한" 단위로 — 종가 밴드폭·반올림 단위 산정용.
+// 종목 스케일에 자동 대응(오일 5·천연가스 0.2·금 200·비트코인 5000 …). 오일 6%≈5.04 → 5.
+function teNiceUnit(raw: number): number {
   if (raw <= 0) return 1;
   const mag = Math.pow(10, Math.floor(Math.log10(raw)));
   const norm = raw / mag;
@@ -1396,11 +1403,11 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   // 입력 draft (확인 전엔 계산 안 함)
   const [dNLo, setDNLo] = useState<number | "">("");   // 종가 하한
   const [dNHi, setDNHi] = useState<number | "">("");   // 종가 상한
-  const [dL, setDL] = useState(20);
-  const [dH, setDH] = useState(60);
+  const [dL, setDL] = useState(TE_DEF_LOOKBACK);
+  const [dH, setDH] = useState(TE_DEF_HORIZON);
   const [dLo, setDLo] = useState<number | "">("");     // 과거 증감율 하한
   const [dHi, setDHi] = useState<number | "">("");     // 과거 증감율 상한
-  const [dGap, setDGap] = useState(20);                // 이벤트 최소 간격(영업일) — 클러스터/겹침 디클러스터. 기본 20: 좁은 종가범위에서도 (L,H) 지도가 칸당 min_n(30)을 넘기도록(60은 과대 디클러스터로 전 칸 표본부족→공란)
+  const [dGap, setDGap] = useState(TE_DEF_GAP);        // 이벤트 최소 간격(영업일) — 클러스터/겹침 디클러스터. 기본 60: 독립 표본 확보. (L,H) 지도는 저표본도 그리므로(n≥3) 60이어도 안 비고 저신뢰 음영으로 표시됨
 
   // 적용된 설정 (확인 클릭 시 스냅샷)
   const [applied, setApplied] = useState<
@@ -1426,21 +1433,22 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
       .then((p) => {
         setPrices(p);
         if (p.length) {
-          const closes = p.map((x) => x.close);
-          const min = Math.min(...closes), max = Math.max(...closes);
-          const step = teNiceStep((max - min) / 12);
           const last = p[p.length - 1].close;
-          const lo = Math.floor(last / step) * step;
-          const dec = step >= 10 ? 0 : step >= 1 ? 1 : step >= 0.1 ? 2 : 3;
-          setDNLo(Number(lo.toFixed(dec)));
-          setDNHi(Number((lo + step).toFixed(dec)));
-          // 증감율 밴드 기본값 = 현재 추세(과거 20일 증감율)의 5%p 버킷 →
+          // 종가 범위 기본값 = 현재가 ± (현재가×6%를 nice 단위로 반올림). 종목 스케일 자동대응
+          // (오일≈±5·천연가스±0.2·금±200·비트코인±5000 …). 중심도 그 단위로 반올림.
+          const hw = teNiceUnit(last * TE_BAND_PCT);
+          const c = Math.round(last / hw) * hw;
+          const dec = hw >= 10 ? 0 : hw >= 1 ? 1 : hw >= 0.1 ? 2 : 3;
+          setDNLo(Number((c - hw).toFixed(dec)));
+          setDNHi(Number((c + hw).toFixed(dec)));
+          // 증감율 밴드 기본값 = 현재(기본 lookback일) 증감율 ±5%p (5로 반올림) →
           // 첫 확인부터 '종가범위 ∧ 증감율' 두 조건이 모두 활성(음영=두 조건 교집합).
-          if (p.length > 20) {
-            const chg = (last / p[p.length - 1 - 20].close - 1) * 100;
-            const blo = Math.floor(chg / 5) * 5;
-            setDLo(blo);
-            setDHi(blo + 5);
+          const w = Math.min(TE_DEF_LOOKBACK, p.length - 1);
+          if (w >= 1) {
+            const chg = (last / p[p.length - 1 - w].close - 1) * 100;
+            const cc = Math.round(chg / 5) * 5;
+            setDLo(cc - 5);
+            setDHi(cc + 5);
           }
         }
       })
@@ -1571,8 +1579,12 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   const scanView = useMemo(() => {
     if (!scan) return null;
     const byKey = new Map(scan.cells.map((c) => [`${c.lookback}|${c.horizon}`, c] as const));
-    const maxR2 = Math.max(1e-9, ...scan.cells.map((c) => c.r_squared ?? 0));
-    // 전 칸 표본부족(모두 min_n 미만 → r_squared null): 격자 대신 사유·해법 안내.
+    // 틴트 정규화는 **고신뢰 칸(n≥min_n)** 기준 — 표본 적은 칸의 과장된 R²(예 n=3에서 1.0)가
+    // maxR2를 끌어올려 진짜 칸을 흐리게 만드는 것 방지. 고신뢰 칸이 없으면 전체로 폴백.
+    const hi = scan.cells.filter((c) => c.r_squared != null && c.n >= scan.min_n).map((c) => c.r_squared as number);
+    const any = scan.cells.filter((c) => c.r_squared != null).map((c) => c.r_squared as number);
+    const maxR2 = Math.max(1e-9, ...(hi.length ? hi : any), 0);
+    // 빈상태는 이제 **모든 칸이 회귀 불가(n<3)** 일 때만 — 저표본(3≤n<min_n)은 그려진다.
     const allNull = scan.cells.length > 0 && scan.cells.every((c) => c.r_squared == null);
     return { byKey, maxR2, allNull };
   }, [scan]);
@@ -1583,7 +1595,8 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     <>
       <style>{`
         .te-blank{display:inline-flex;align-items:center;gap:2px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:7px;padding:2px 9px;margin:0 3px;font-weight:600;color:var(--accent-strong)}
-        .te-blank input{width:58px;border:none;background:transparent;color:var(--accent-strong);font:inherit;font-weight:600;text-align:center}
+        .te-blank input{width:58px;border:none;background:transparent;color:var(--accent-strong);font:inherit;font-weight:600;text-align:center;-moz-appearance:textfield;appearance:textfield}
+        .te-blank input::-webkit-outer-spin-button,.te-blank input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
         .te-blank input::placeholder{color:#c19a86}
         .te-hm{border-collapse:separate;border-spacing:3px}
         .te-hm td,.te-hm th{padding:6px 8px;text-align:center;font-size:12px;white-space:nowrap}
@@ -1665,9 +1678,11 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                   → 향후 {applied.H}일 평균 종가 증감율{" "}
                   <b className={result.mean >= 0 ? "pos" : "neg"} style={{ fontSize: 19 }}>
                     {(result.mean >= 0 ? "+" : "") + result.mean.toFixed(2)}%
-                  </b>{" "}
+                  </b>
+                  {", 상승 비율 "}
+                  <b style={{ fontSize: 19 }}>{result.up.toFixed(0)}%</b>{" "}
                   <span className="muted" style={{ fontSize: 13 }}>
-                    (독립 표본 n={result.n}{matched.length > result.n ? ` / 원시 ${matched.length}건` : ""}, 상승 비율 {result.up.toFixed(0)}%{result.n < 30 ? " ⚠ 저신뢰" : ""})
+                    (독립 표본 n={result.n}{matched.length > result.n ? ` / 원시 ${matched.length}건` : ""})
                   </span>
                 </div>
                 {op && (
@@ -1767,7 +1782,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
               <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
                 <b>(과거 L, 미래 H) 설명력 지도</b> — 행=과거 L일, 열=미래 H일. 종가범위{applied.nLo <= -1e8 ? "" : ` ${priceSym}${applied.nLo}~${priceSym}${applied.nHi}`} 내
-                forward~past <b>R²</b>(색 진하기) · β부호(+/−) · 부호안정 <b>✓</b>(train·test 동부호) · HAC p&lt;.05 <b>*</b>.
+                forward~past <b>R²</b>(색 진하기) · β부호(+/−) · 부호안정 <b>✓</b>(train·test 동부호) · HAC p&lt;.05 <b>*</b>. <b>점선·흐린 칸</b>=저신뢰(표본 n&lt;{scan.min_n}).
                 {" "}<b style={{ color: "var(--accent-strong)" }}>칸 클릭 → 그 (L,H)로 위 결과·회귀 재계산.</b>
               </div>
               {!scanView.allNull && (
@@ -1777,8 +1792,8 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
               )}
               {scanView.allNull && !scanLoading && (
                 <div style={{ fontSize: 13, padding: "14px 14px", background: "#f1efe8", borderRadius: 8, lineHeight: 1.65, color: "var(--text)" }}>
-                  <b>표본 부족 — 지도를 그릴 수 없습니다.</b><br />
-                  {scan.n_cells}개 칸이 <b>전부</b> 독립 표본 {scan.min_n}건 미만입니다. 현재 종가 범위{applied.nLo <= -1e8 ? "" : ` ${priceSym}${applied.nLo}~${priceSym}${applied.nHi}`}와 이벤트 최소 간격 <b>{applied.gap}일</b> 조합이 너무 성깁니다.<br />
+                  <b>표본이 거의 없어 지도를 그릴 수 없습니다.</b><br />
+                  {scan.n_cells}개 칸이 <b>전부</b> 독립 표본 <b>3건 미만</b>이라 회귀선조차 적합할 수 없습니다(저표본은 그리지만, 이건 그보다 더 성긴 경우). 현재 종가 범위{applied.nLo <= -1e8 ? "" : ` ${priceSym}${applied.nLo}~${priceSym}${applied.nHi}`}와 이벤트 최소 간격 <b>{applied.gap}일</b> 조합이 너무 성깁니다.<br />
                   → <b style={{ color: "var(--accent-strong)" }}>이벤트 최소 간격을 줄이거나</b>(현재 {applied.gap}일) <b style={{ color: "var(--accent-strong)" }}>종가 범위를 넓혀</b> 다시 확인하세요.
                 </div>
               )}
@@ -1799,23 +1814,28 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                           const c = scanView.byKey.get(`${L}|${H}`);
                           const isCur = applied.L === L && applied.H === H;
                           if (!c || c.r_squared == null) {
+                            // r_squared null = n<3 (회귀 불가). 저표본(3≤n<min_n)은 아래에서 그려진다.
                             return (
-                              <td key={H} title={c ? `n=${c.n} (표본 부족)` : ""}
+                              <td key={H} title={c ? `n=${c.n} · 회귀 불가(n<3)` : ""}
                                 style={{ background: "#f1efe8", color: "var(--muted)", opacity: 0.5, borderRadius: 5,
                                   cursor: "default", outline: isCur ? "2px solid #d97757" : "none" }}>·</td>
                             );
                           }
-                          const alpha = Math.min(0.85, (c.r_squared / scanView.maxR2) * 0.85);
+                          // 저신뢰(n<min_n): 그리되 흐리게(알파 상한↓)+점선+표본수 표시 — 작은 n의
+                          // 과장된 R²를 진짜 신호로 오인하지 않도록(데이터 스누핑 가드와 동일 취지).
+                          const lowConf = c.n < scan.min_n;
+                          const alpha = Math.min(lowConf ? 0.4 : 0.85, (c.r_squared / scanView.maxR2) * 0.85);
                           const sig = c.hac_p_value != null && c.hac_p_value < 0.05;
                           return (
                             <td key={H}
-                              title={`L=${L}, H=${H} · n=${c.n} · R²=${c.r_squared.toFixed(3)} · β=${(c.slope ?? 0).toFixed(2)} · HAC p=${(c.hac_p_value ?? 1).toFixed(3)} · OOS R²=${c.oos_r_squared != null ? c.oos_r_squared.toFixed(3) : "—"} · 부호안정 ${c.sign_stable ? "예" : "아니오"}`}
+                              title={`L=${L}, H=${H} · n=${c.n}${lowConf ? ` ⚠ 저신뢰(<${scan.min_n})` : ""} · R²=${c.r_squared.toFixed(3)} · β=${(c.slope ?? 0).toFixed(2)} · HAC p=${(c.hac_p_value ?? 1).toFixed(3)} · OOS R²=${c.oos_r_squared != null ? c.oos_r_squared.toFixed(3) : "—"} · 부호안정 ${c.sign_stable ? "예" : "아니오"}`}
                               onClick={() => applyAndCompute(L, H)}
                               style={{ background: `rgba(217,119,87,${alpha})`, color: alpha > 0.5 ? "#fff" : "var(--text)",
-                                borderRadius: 5, cursor: "pointer", outline: isCur ? "2px solid #d97757" : "none" }}>
+                                borderRadius: 5, cursor: "pointer", outline: isCur ? "2px solid #d97757" : "none",
+                                border: lowConf ? "1px dashed var(--muted)" : undefined }}>
                               <div style={{ fontWeight: 600 }}>{c.r_squared.toFixed(2)}</div>
                               <div style={{ fontSize: 10, opacity: 0.9 }}>
-                                {(c.slope ?? 0) >= 0 ? "β+" : "β−"}{c.sign_stable ? " ✓" : ""}{sig ? " *" : ""}
+                                {(c.slope ?? 0) >= 0 ? "β+" : "β−"}{c.sign_stable ? " ✓" : ""}{sig ? " *" : ""}{lowConf ? ` ⚠n${c.n}` : ""}
                               </div>
                             </td>
                           );

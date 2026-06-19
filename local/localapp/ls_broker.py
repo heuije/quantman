@@ -28,13 +28,11 @@ log = logging.getLogger("localapp.ls_broker")
 _BASE = "https://openapi.ls-sec.co.kr:8080"
 _TOKEN_CACHE = APP_DIR / ".ls_token.json"
 
-# LS 성공코드 — ⚠ 키검증 대상(현 가정 "00000"). 한 곳(SSOT)에서만 정의.
-_RSP_OK = "00000"
 
 
 class _Throttle:
-    """sliding-window throttle. ⚠ LS TPS 미확인 → 보수적 3/s 시작, 검증 후 조정."""
-    def __init__(self, max_calls: int = 3, window_sec: float = 1.0):
+    """sliding-window throttle. LS 비공식 실측 ~2 req/s, 공식 미공개 → Phase C 확정."""
+    def __init__(self, max_calls: int = 2, window_sec: float = 1.0):
         self.max_calls, self.window_sec = max_calls, window_sec
         self._calls: list[float] = []
         self._lock = threading.Lock()
@@ -169,13 +167,16 @@ class LsBroker:
             }},
         )
 
-    def account_snapshot(self) -> dict:
+    def account_snapshot(self, overseas: bool = True) -> dict:
         """국내주식 잔고 스냅샷.
 
+        overseas: Broker 프로토콜 서명 패리티를 위해 수락하지만 무시한다 — LS는 국내 only.
+
         반환 balance:
-          cash         원화 예수금(KRW) — ⚠ t0424OutBlock.sunamt 추정(실측 확정 필요)
-          total_eval   평가금액(KRW) — ⚠ t0424OutBlock.mamt 추정
-          cash_usd     0.0  (LS 국내 only — USD 키 하드코딩)
+          cash         추정D2예수금(KRW) — t0424OutBlock.sunamt1 (공식문서 대조 확인 2026-06-19)
+                       ⚠ TODO(Phase C): 정확한 주문가능금액은 별도 TR CSPAQ22200 필요.
+          total_eval   평가금액(KRW) — t0424OutBlock.tappamt (공식문서 대조 확인 2026-06-19)
+          cash_usd     0.0  (LS 국내 only)
           fx_usdkrw    0.0
           foreign_eval_krw  0.0
 
@@ -184,7 +185,6 @@ class LsBroker:
         조회 실패 시 balance["fetch_failed"]=["domestic"] 설정 — 절대 0으로 위장하지 않음.
         이 마커가 없으면 Trader 킬스위치가 "평가금액=0=−98% 손실"로 오판해 전량 청산한다
         (−98% 부류버그 근본 수정: kis_broker.py 동일 패턴).
-        ⚠ t0424OutBlock 필드명(mamt/sunamt 등) — A2 KB 가정, Phase C 실측 확정.
         ⚠ t0424OutBlock1 필드명(expcode/hname/janqty/pamt/price) — A2 KB 가정.
         """
         try:
@@ -203,10 +203,11 @@ class LsBroker:
             }
 
         summary = body.get("t0424OutBlock") or {}
-        # ⚠ cash/total_eval 소스 필드: sunamt(평가금액)?/mamt(시가총액)? — 실측 확정 필요.
-        # 현재는 sunamt→cash, mamt→total_eval 가정.
-        cash = int(float(summary.get("sunamt") or 0))
-        total_eval = int(float(summary.get("mamt") or 0))
+        # cash: sunamt1 = 추정D2예수금 (공식문서 대조 확인 2026-06-19)
+        # ⚠ TODO(Phase C): 정확한 주문가능금액은 별도 TR CSPAQ22200 필요.
+        # total_eval: tappamt = 평가금액 (공식문서 대조 확인 2026-06-19)
+        cash = int(float(summary.get("sunamt1") or 0))
+        total_eval = int(float(summary.get("tappamt") or 0))
 
         positions = []
         for it in body.get("t0424OutBlock1") or []:
@@ -276,7 +277,7 @@ class LsBroker:
                 ord_prc_ptn_code: str, unit_price: float) -> dict:
         """국내주식 신규주문 — CSPAT00601 단일 TR(매수·매도 BnsTpCode로 구분).
 
-        ⚠ PATH "/stock/order" — A2 KB 가정. Phase C 실측 확정.
+        🟢 PATH "/stock/order" — 신규·정정·취소 단일 경로(tr_cd로 구분), 커뮤니티 래퍼 대조 확인(GOTCHAS G18).
         ⚠ InBlock 키 "CSPAT00601InBlock1" — A2 KB 🟢.
         ⚠ BnsTpCode: "2"=매수/"1"=매도 — A2 KB G7 🟢.
         ⚠ OrdprcPtnCode: "00"=지정가/"03"=시장가 — A2 KB G8 🟢.
@@ -339,13 +340,14 @@ class LsBroker:
     def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
         """미체결 주문 취소 — CSPAT00801.
 
-        ⚠ PATH "/stock/order-cancel" — A2 KB 가정. Phase C 실측 확정.
+        PATH "/stock/order" — 신규/정정/취소 모두 동일 경로, tr_cd 헤더로 TR 구분.
+        커뮤니티 래퍼 대조 확인: "/stock/order-cancel" 경로는 404 반환.
         ⚠ InBlock 키 "CSPAT00801InBlock1" — A2 KB 🟢.
         ⚠ OrgOrdNo long, IsuNo="A"+6자리, OrdQty — A2 KB 🟢.
         ⚠ AcntNo/InptPwd 필요 여부 — 미검증. 현재 AcntNo 포함.
         """
         resp = self._post(
-            "/stock/order-cancel", "CSPAT00801",
+            "/stock/order", "CSPAT00801",
             {"CSPAT00801InBlock1": {
                 "AcntNo": self.account_no,   # ⚠ 형식 G6
                 "InptPwd": "",               # ⚠ 필요 여부 미검증
@@ -417,7 +419,8 @@ class LsBroker:
                     "status": status,
                     "filled_qty": filled_qty,
                     "remain_qty": remain_qty,
-                    "fill_price": float(row.get("price") or 0),  # ⚠ 체결가 아닌 주문가 가능성
+                    # cheprice = 체결가격, price = 주문가격 (A2 KB 🟢 공식문서 대조 확인 2026-06-19)
+                    "fill_price": float(row.get("cheprice") or row.get("price") or 0),
                 }
 
         # 목록에 없으면 unknown (이미 체결 전체 → chegb="2" 에서 사라짐 가능)
@@ -479,36 +482,48 @@ def canonical_odno(s) -> str:
 def normalize_ls_order_resp(raw: dict, *, ordno_field: str) -> dict:
     """LS 주문/취소 응답 → Broker 정규형 {success, order_no, message, msg_cd}.
 
-    ⚠ LS rsp_cd 성공값 "00000" — A2 KB 가정. Phase C 실측 확정.
-    ⚠ OutBlock 키 탐색 순서: OutBlock2 우선 → OutBlock1 fallback (실측 전).
+    성공 판정 = OrdNo 존재 여부.
+    근거: LS 주문 TR(CSPAT006xx)은 매수 성공 "00040"/매도 "00039" 등 비표준 코드를 쓰고,
+    조회 TR만 "00000"을 사용한다(programgarden-finance 문서·커뮤니티 래퍼 대조 확인).
+    따라서 rsp_cd로 성공을 판정하면 *모든* 정상 주문을 실패로 읽는다.
+    OrdNo가 실제 주문번호(non-empty/non-zero)이면 접수 성공이 보장된다.
+    정확한 성공 rsp_cd 값은 Phase C 키 발급 후 docs/ls-api에 확정.
+
+    OutBlock 탐색: OutBlock2 우선 → 다른 OutBlock fallback (키 순서 보장 불가이므로
+    전체 순회 후 OutBlock2 히트가 있으면 그 값을 사용, 없으면 첫 번째 OutBlock 값 사용).
 
     Trader가 의존하는 키:
-      success  bool  — rsp_cd == _RSP_OK
+      success  bool  — bool(order_no) (실제 OrdNo = 접수 성공)
       order_no str   — OutBlock 내 ordno_field 값 (없으면 "")
       message  str   — rsp_msg
       msg_cd   str   — rsp_cd
 
     raw LS 키(rsp_cd, OutBlock*)는 반환 dict에 포함하지 않는다(정규형 계약).
     """
-    success = raw.get("rsp_cd") == _RSP_OK
     message = raw.get("rsp_msg", "")
     msg_cd = raw.get("rsp_cd", "")
 
+    # OutBlock 탐색: OutBlock2 우선, fallback은 첫 번째 OutBlock 값
     order_no = ""
-    if success:
-        # OutBlock2 우선, OutBlock1 fallback
-        # ⚠ LS OutBlock 키 명명은 TR코드+OutBlock2/OutBlock1 패턴 (A2 KB 가정).
-        for key, val in raw.items():
-            if not isinstance(val, dict):
-                continue
-            if "OutBlock" not in key:
-                continue
-            v = val.get(ordno_field)
-            if v is not None:
-                order_no = str(v)
-                # OutBlock2가 있으면 우선 — 키 이름에 "2"가 있는 블록 먼저 시도
-                if "OutBlock2" in key:
-                    break
+    ob2_hit = ""
+    ob_any_hit = ""
+    for key, val in raw.items():
+        if not isinstance(val, dict):
+            continue
+        if "OutBlock" not in key:
+            continue
+        v = val.get(ordno_field)
+        # None/""/0/"0" 은 미접수로 간주
+        if v is None or v == "" or v == 0 or v == "0":
+            continue
+        candidate = str(v)
+        if "OutBlock2" in key:
+            ob2_hit = candidate
+        elif not ob_any_hit:
+            ob_any_hit = candidate
+
+    order_no = ob2_hit or ob_any_hit
+    success = bool(order_no)
 
     return {
         "success": success,

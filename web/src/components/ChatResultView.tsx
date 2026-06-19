@@ -28,7 +28,10 @@ import {
   CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { Link } from "react-router-dom";
+import { useState } from "react";
 import EquityChart from "./EquityChart";
+import ExcelExportButton from "./ExcelExportButton";
+import ParamControls, { type AdjustableParam } from "./ParamControls";
 import {
   DiagnosisPanel, EventStudyChart, ExtremizeChart, ICChart, RankedListChart,
   RegressionChart, ReportCards, SignalDistChart, SweepChart,
@@ -104,20 +107,24 @@ function SweepBuckets({ result }: { result: IrStrategyResult }) {
   const buckets = result.buckets!;
   const rows = Object.entries(buckets);
   const pairwise = result.compare?.pairwise ?? {};
-  const title = axis === "parameter" ? "파라미터"
-    : axis === "asset" ? "종목별"
-    : axis === "period_split" ? "기간분할" : "국면별";
+  // 축 종류별 라벨 — 기간분할은 키 형태로 연/분기/월 판별(엔진 split_period 결과). 표 머리·부제 공용.
+  const colLabel = axis === "parameter" ? "파라미터"
+    : axis === "asset" ? "종목"
+    : axis === "condition" ? "국면"
+    : rows.every(([k]) => /^\d{4}$/.test(k)) ? "연도"
+    : rows.every(([k]) => /^\d{4}Q\d$/.test(k)) ? "분기"
+    : rows.every(([k]) => /^\d{4}-\d{2}$/.test(k)) ? "월" : "기간";
   return (
     <div className="chat-result">
       <div className="muted" style={{ fontSize: "0.8em", marginBottom: 4 }}>
-        펼침 결과 — {title} (백테스트 손익)</div>
+        {colLabel}별 성과 (백테스트 손익)</div>
       {result.warnings?.length ? (
         <div className="warn-banner">⚠ {result.warnings.map((w) => w.message).join(" · ")}</div>
       ) : null}
       <SweepChart axis={axis} buckets={buckets} axes={result.axes} />
       <div style={{ overflowX: "auto" }}>
         <table className="sweep-table">
-          <thead><tr><th>구분</th><th>표본</th><th>누적(%)</th><th>CAGR(%)</th>
+          <thead><tr><th>{colLabel}</th><th>표본</th><th>누적(%)</th><th>CAGR(%)</th>
             <th>MDD(%)</th><th>샤프</th><th>소르티노</th><th>승률(%)</th><th>손익비</th></tr></thead>
           <tbody>
             {rows.map(([k, b]) => (
@@ -258,6 +265,27 @@ function ICStudy({ result }: { result: IrStrategyResult }) {
 }
 
 export default function ChatResultView({ result }: Props) {
+  // 결과가 IR을 들고 오면(=엔진 분석) 결과 아래에 '엑셀로 내보내기'(증빙)와 '변수 조정'(실시간
+  // 재실행) 도구를 붙인다. inspect(원시 dump)·저장 카드 등 IR 없는 결과엔 미노출.
+  const ir0 = (result as { ir?: Record<string, unknown> }).ir;
+  const manifest = (result as { adjustable?: AdjustableParam[] }).adjustable;
+  // 변수 조정 재실행 시 표시 결과·IR을 교체(원본 챗 메시지는 불변 — 로컬 상태로 미리보기).
+  const [live, setLive] = useState<{ ir: Record<string, unknown> | undefined; result: Record<string, unknown> }>(
+    { ir: ir0, result },
+  );
+  return (
+    <>
+      <ChatResultBody result={live.result} />
+      {ir0 && <ExcelExportButton ir={live.ir ?? ir0} />}
+      {ir0 && manifest && manifest.length > 0 && (
+        <ParamControls baseIr={ir0} manifest={manifest}
+          onRun={(ir, res) => setLive({ ir, result: res })} />
+      )}
+    </>
+  );
+}
+
+function ChatResultBody({ result }: Props) {
   const r = result as unknown as IrStrategyResult;
 
   // ── save_strategy: 저장 완료 카드 ──────────────────────────────────────────

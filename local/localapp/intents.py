@@ -233,12 +233,21 @@ def reconcile_submitting(broker, date_iso: str,
 
     # KR은 한 번에 전 종목 조회. US는 종목별 조회.
     kr_rows: list | None
-    try:
-        body = broker._daily_ccld()  # noqa: SLF001 — reconcile은 raw row가 필요
-        kr_rows = body.get("output1", []) or []
-    except Exception as e:
-        log.error("KR _daily_ccld 실패 — KR intent reconcile 보류: %s", e)
+    if not hasattr(broker, "_daily_ccld"):
+        # LS 등 _daily_ccld 미지원 브로커: KR reconcile skip.
+        # submitting 게이트는 보수적으로 유지 — 정산 reconcile(15:50)이 백스톱.
+        log.info(
+            "브로커가 _daily_ccld 미지원(LS 등) — KR intent reconcile skip; "
+            "submitting 게이트는 보수적 유지, 정산 reconcile 백스톱"
+        )
         kr_rows = None
+    else:
+        try:
+            body = broker._daily_ccld()  # noqa: SLF001 — reconcile은 raw row가 필요
+            kr_rows = body.get("output1", []) or []
+        except Exception as e:
+            log.error("KR _daily_ccld 실패 — KR intent reconcile 보류: %s", e)
+            kr_rows = None
 
     us_rows_cache: dict[str, list | None] = {}
 

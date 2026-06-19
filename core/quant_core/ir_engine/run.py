@@ -357,7 +357,17 @@ def run_period_split(strategy: StrategyIR, dataset: dict) -> dict:
     rets = daily_returns(res["equity"])
     st = strategy.study
     buckets: dict = {}
-    if st.split_dates:
+    if st.split_period:
+        # 달력 주기(연/분기/월) 그룹 — 엔진이 실데이터 index로 분할. 컴파일러는 전체기간의 실제 연도
+        # 범위를 몰라 folds를 추측할 수 없다("연도별"→folds=252 라이브 오남용의 근본해법). 키=주기 라벨.
+        freq = {"year": "Y", "quarter": "Q", "month": "M"}[st.split_period]
+        periods = rets.index.to_period(freq)
+        for p in periods.unique():
+            grp = rets[periods == p]
+            if len(grp):
+                buckets[str(p)] = summarize_returns(grp)
+        consistency = walk_forward_consistency(rets, n_folds=max(len(buckets), 1))
+    elif st.split_dates:
         # 명시 날짜 경계 — 지정 시점으로 분할(세그먼트 라벨=실제 기간 span). 학습/검증을
         # 등분이 아닌 사용자 지정 시점으로 가른다(예: ["2018-01-01"] → 2010-17 / 2018-25).
         cuts = sorted(pd.Timestamp(d) for d in st.split_dates)

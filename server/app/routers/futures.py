@@ -906,7 +906,7 @@ class ScanCellOut(BaseModel):
     lookback: int
     horizon: int
     n: int
-    r_squared: Optional[float]    # 표본 부족(min_n 미만) 시 None
+    r_squared: Optional[float]    # 회귀 불가(n<3) 시 None. min_n 미만이어도 그려짐(저신뢰)
     slope: Optional[float]
     intercept: Optional[float]
     hac_p_value: Optional[float]
@@ -978,7 +978,9 @@ def trend_scan_endpoint(
         raise HTTPException(422, "min_n 은 3 이상")
 
     df = _df(symbol)
-    cells = trend_explanatory_scan(df, ls, hs, lo, hi, oos_split=oos_split, min_n=min_n, gap=max(0, gap))
+    # min_n은 더 이상 컴퓨트 게이트가 아니다 — 스캔은 회귀 가능한 모든 칸(n≥3)을 그리고,
+    # min_n은 응답에 실어 클라이언트가 '저신뢰'(n<min_n) 음영·경고에만 쓴다(표시 임계).
+    cells = trend_explanatory_scan(df, ls, hs, lo, hi, oos_split=oos_split, gap=max(0, gap))
     return TrendScanResponse(
         price_lo=lo, price_hi=hi, lookbacks=ls, horizons=hs,
         cells=[

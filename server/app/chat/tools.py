@@ -6,10 +6,12 @@ simulate/save_strategy는 NL을 compile_strategy에 위임해 모델이 IR을 �
 """
 from __future__ import annotations
 
+import copy
+
 import quant_core as qc
 from pydantic import ValidationError
 from quant_core.ir_engine import (StrategyIR, needed_columns, needed_symbols,
-                                   strategy_from_spec)
+                                   param_manifest, strategy_from_spec, summarize_result)
 
 from ..compile_service import compile_strategy
 from ..models import Message
@@ -106,7 +108,30 @@ INSPECT_TOOL = {
     },
 }
 
-TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL]
+ADJUST_TOOL = {
+    "name": "adjust_analysis",
+    "description": ("직전 simulate 분석의 **변수 값만** 바꿔 재실행한다(재컴파일 없이·토큰 0). "
+                    "비용·기간·top_n·보유기간·임계값 등 '마지막 분석의 파라미터 조정'일 때만 — "
+                    "새 전략/다른 신호/다른 종목은 simulate(nl)로. changes의 path는 직전 결과 "
+                    "adjustable(매니페스트)의 경로(예: simulation.commission)."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "changes": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "path": {"type": "string",
+                             "description": "조정 경로(예: simulation.commission, position.exit.hold_days)."},
+                    "value": {"description": "새 값(숫자·문자·불리언)."}},
+                    "required": ["path", "value"]},
+                "description": "바꿀 필드 목록.",
+            },
+        },
+        "required": ["changes"],
+    },
+}
+
+TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL, ADJUST_TOOL]
 
 
 # ── IR 조립 ──────────────────────────────────────────────────────────────────
@@ -195,6 +220,7 @@ def run_simulate(session, user_id, tool_input: dict) -> dict:
     res = strategy_from_spec(ir, dataset)
     if isinstance(res, dict) and res.get("success"):
         res["ir"] = ir
+        res["adjustable"] = param_manifest(ir)   # 실시간 변수조정 노브(웹 '변수 조정' 패널)
         res["explanation"] = comp.get("explanation")
         res["assumptions"] = comp.get("assumptions") or []
     return res
@@ -234,13 +260,18 @@ def run_tool(tool_name: str, tool_input: dict) -> dict:
     {success:False,error}로 — agent 루프가 tool_result로 모델에 피드백.
     """
     if tool_name == "inspect":
-        return run_inspect(tool_input)
+        return run_inspect(tool_input)   # 원시 시계열 dump — IR 없음(엑셀 증빙 대상 아님)
     try:
         ir = assemble_ir(tool_name, tool_input)
     except (ValueError, KeyError, TypeError) as e:
         return {"success": False, "error": f"도구 입력 오류({tool_name}): {e}"}
     dataset = _load_dataset(ir)
-    return strategy_from_spec(ir, dataset)   # valid_refs=None → 엔진이 available_refs 도출
+    res = strategy_from_spec(ir, dataset)   # valid_refs=None → 엔진이 available_refs 도출
+    # 결과에 IR + 조정가능 변수 동봉 → 챗 결과뷰의 '엑셀로 내보내기'(증빙)·'변수 조정'(실시간 재실행).
+    if isinstance(res, dict) and res.get("success"):
+        res["ir"] = ir
+        res["adjustable"] = param_manifest(ir)
+    return res
 
 
 def _last_simulate_ir(session, conversation_id) -> dict | None:
@@ -288,46 +319,98 @@ def save_strategy_tool(session, user_id, conversation_id, tool_input: dict) -> d
     return {"success": True, "strategy_id": row.id, "name": row.name, "run_mode": "draft"}
 
 
+# ── 변수 조정 재실행 (①명세 — nl 재컴파일 대신 IR 핸들 필드 수정) ──────────────
+
+def _set_path(d: dict, path: str, value) -> None:
+    """점경로로 중첩 dict에 값 설정 (web ParamControls setPath의 py 대응)."""
+    cur = d
+    keys = path.split(".")
+    for k in keys[:-1]:
+        nxt = cur.get(k)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[k] = nxt
+        cur = nxt
+    cur[keys[-1]] = value
+
+
+def _coerce(entry: dict, value) -> object:
+    """매니페스트 항목 타입으로 값 강제 + 범위/옵션 검증. 잘못된 값 → ValueError."""
+    typ = entry.get("type")
+    if typ == "bool":
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("true", "1", "yes", "참")
+    if typ == "select":
+        sval = str(value)
+        opts = entry.get("options") or []
+        if opts and sval not in opts:
+            raise ValueError(f"'{entry['path']}'는 {opts} 중 하나라야 합니다(받음: {sval}).")
+        return sval
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"'{entry['path']}'는 숫자라야 합니다(받음: {value}).")
+    if entry.get("min") is not None:
+        num = max(num, float(entry["min"]))
+    if entry.get("max") is not None:
+        num = min(num, float(entry["max"]))
+    base = entry.get("value")
+    return int(num) if isinstance(base, int) and not isinstance(base, bool) else num
+
+
+def run_adjust(session, conversation_id, tool_input: dict) -> dict:
+    """직전 simulate의 검증 IR에서 '값만' 바꿔 재실행(재컴파일 0·토큰 0). ①명세 근본수정.
+
+    nl 재서술→재컴파일의 비결정 발산(같은 의도가 다른 IR·다른 수치로)을 끊는다. 조정 가능한
+    필드는 param_manifest(SSOT)가 정의 — 그 외 경로는 거부. 실패는 예외 대신 모델 피드백.
+    """
+    ir = _last_simulate_ir(session, conversation_id)
+    if ir is None:
+        return {"success": False, "error": "조정할 직전 분석이 없습니다. 먼저 simulate로 분석하세요."}
+    ir = copy.deepcopy(ir)               # 저장된 결과 IR 공유객체 변형 방지
+    changes = tool_input.get("changes") or []
+    if not changes:
+        return {"success": False, "error": "adjust_analysis: changes(바꿀 필드)가 필요합니다."}
+    by_path = {p["path"]: p for p in param_manifest(ir)}
+    applied = []
+    for ch in changes:
+        path = str((ch or {}).get("path") or "")
+        if path not in by_path:
+            return {"success": False, "error": f"조정 불가 필드: '{path}'. 가능: {sorted(by_path)}"}
+        try:
+            val = _coerce(by_path[path], ch.get("value"))
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        _set_path(ir, path, val)
+        applied.append(f"{path}={val}")
+    try:
+        StrategyIR.model_validate(ir)                  # 조정 후 유효성 재검(부류 가드)
+    except ValidationError as e:
+        return {"success": False, "error": f"조정된 IR이 유효하지 않습니다: {e}"}
+    res = strategy_from_spec(ir, _load_dataset(ir))
+    if isinstance(res, dict) and res.get("success"):
+        res["ir"] = ir
+        res["adjustable"] = param_manifest(ir)
+        res["adjusted"] = applied
+    return res
+
+
 # ── compact 요약 ──────────────────────────────────────────────────────────────
 
 def compact_summary(tool_name: str, result: dict) -> str:
-    """full 엔진 결과 → 모델 컨텍스트용 짧은 요약. 숫자는 결과에서만(지어내기 금지)."""
-    if not result.get("success"):
+    """full 엔진 결과 → 모델 컨텍스트용 **형상 파생** 요약(summarize_result). 숫자는 결과에서만.
+
+    ②관측 근본수정: 도구이름이 아니라 result_shape로 분기해 simulate의 *모든* 분석형상
+    (연도별·파라미터별·팩터별·이벤트 등)의 **분할 결과를 모델이 한 번에** 보게 한다 —
+    이전엔 simulate를 4스칼라로만 줘 모델이 buckets를 못 보고 재실행하던 헛돌이의 근본.
+    save_strategy(저장 카드)만 엔진 결과형상이 아니라 별도 처리.
+    """
+    if not isinstance(result, dict):
+        return f"[{tool_name}] 완료"
+    if not result.get("success", True):
         return f"[{tool_name} 실패] {result.get('error', '알 수 없는 오류')}"
-    if tool_name == "save_strategy":
+    if tool_name == "save_strategy" or result.get("strategy_id") is not None:
         return (f"[save_strategy] '{result.get('name')}' 전략을 draft로 저장(id={result.get('strategy_id')}). "
                 "모의/실전은 웹 자동매매 메뉴에서.")
-    if tool_name == "describe":
-        pr = result.get("price") or {}
-        f = result.get("fundamentals") or {}
-        return (f"[describe] {result.get('symbol')}({result.get('sector')}) "
-                f"종가={pr.get('last')}, PBR={f.get('pb_ratio')}, PER={f.get('trailing_pe')}, "
-                f"EV/EBITDA={f.get('ev_ebitda')}")
-    if tool_name == "inspect":
-        cols = result.get("columns") or []
-        dates = result.get("dates") or []
-        series = result.get("series") or {}
-        last = []
-        for c in cols:
-            vals = [v for v in (series.get(c) or []) if v is not None]
-            if vals:
-                last.append(f"{c}={vals[-1]:.6g}")
-        rng = f"{dates[0]}~{dates[-1]}" if dates else "?"
-        return (f"[inspect] {result.get('symbol')} {rng} ({len(dates)}일). "
-                f"최근값: {', '.join(last) if last else '없음'}")
-    if tool_name == "screen":
-        rows = result.get("results") or []
-
-        def _one(r):
-            sc = r.get("score")
-            return f"{r['symbol']}({sc:.3g})" if sc is not None else str(r["symbol"])
-
-        top = ", ".join(_one(r) for r in rows[:8])
-        return (f"[screen] as_of={result.get('as_of')}, 후보 {result.get('universe_size')}개 중 "
-                f"{len(rows)}개 선별. 상위: {top}")
-    if tool_name == "simulate":
-        m = result.get("metrics") or {}
-        parts = [f"{k}={m[k]:.3g}" for k in ("cagr", "sharpe", "mdd", "cum_return")
-                 if isinstance(m.get(k), (int, float))]
-        return "[simulate] " + (", ".join(parts) if parts else "결과 산출")
-    return f"[{tool_name}] 완료"
+    return summarize_result(result)

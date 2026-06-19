@@ -42,7 +42,7 @@ def test_persist_and_history_compaction():
         {"type": "text", "text": "스크리닝할게요"},
         {"type": "tool_use", "id": "t1", "name": "screen", "input": {"top_n": 3}},
         {"type": "tool_result", "tool_use_id": "t1", "name": "screen",
-         "result": {"success": True, "as_of": "2026-06-17", "universe_size": 9,
+         "result": {"success": True, "query": "select", "as_of": "2026-06-17", "universe_size": 9,
                     "results": [{"symbol": "AAA", "score": 0.8}]}},
     ])
 
@@ -130,6 +130,30 @@ def test_run_chat_turn_dispatches_and_persists(monkeypatch):
     assert any(p["type"] == "tool_result" for p in rows[1].parts)
 
 
+def test_dup_simulate_warns_model(monkeypatch):
+    """③제어: 한 턴에 같은 IR로 simulate를 재호출하면 모델에 가는 요약에 '동일한 분석' 경고가 붙는다
+    (conv#8식 표현만 바꾼 재실행 헛돌이 차단). 첫 호출엔 경고 없음."""
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    fixed = {"success": True, "equity": [1, 2], "metrics": {"cagr": 1.0},
+             "ir": {"name": "x", "query": "simulate", "universe": {"kind": "single", "symbols": ["A"]}}}
+    monkeypatch.setattr(chat_agent, "run_simulate", lambda sess, uid, inp: dict(fixed))
+    queue = [
+        _Resp([_Block(type="tool_use", id="a", name="simulate", input={"nl": "v1"})], "tool_use"),
+        _Resp([_Block(type="tool_use", id="b", name="simulate", input={"nl": "v2 표현만 다름"})], "tool_use"),
+        _Resp([_Block(type="text", text="답")], "end_turn"),
+    ]
+    fc = _FakeClient(queue)
+    chat_agent.run_chat_turn(s, conv.id, "분석", client=fc)
+    last_msgs = fc.messages.received[-1]["messages"]
+    trs = [c for m in last_msgs if isinstance(m.get("content"), list)
+           for c in m["content"] if isinstance(c, dict) and c.get("type") == "tool_result"]
+    joined = [str(c.get("content")) for c in trs]
+    assert len(trs) == 2
+    assert "동일한 분석" not in joined[0]      # 첫 호출 — 경고 없음
+    assert "동일한 분석" in joined[1]          # 둘째(동일 IR) — 경고
+
+
 def test_run_chat_turn_no_tool_just_text(monkeypatch):
     s = _mem_session()
     conv = Conversation(user_id=1)
@@ -166,7 +190,7 @@ def test_history_reconstructs_alternating_rounds():
         {"type": "text", "text": "스크리닝할게요"},
         {"type": "tool_use", "id": "t1", "name": "screen", "input": {"top_n": 3}},
         {"type": "tool_result", "tool_use_id": "t1", "name": "screen",
-         "result": {"success": True, "as_of": "2026-06-17", "universe_size": 9,
+         "result": {"success": True, "query": "select", "as_of": "2026-06-17", "universe_size": 9,
                     "results": [{"symbol": "AAA", "score": 0.8}]}},
         {"type": "text", "text": "AAA가 가장 저평가입니다."},
     ])

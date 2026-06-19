@@ -29,6 +29,15 @@ from .trader import Trader
 
 log = logging.getLogger("localapp.intraday_loop")
 
+
+def _should_start_kis_ws() -> bool:
+    """KIS 전용 WebSocket(시세·체결)을 시작해야 하면 True.
+
+    비KIS(LS 등) 활성 시 False — WS 대신 REST 폴링 fallback이 사용된다.
+    order-WS 게이트(~459)와 price-WS 게이트(~433)가 같은 조건을 공유한다.
+    """
+    return get_active_broker() == "kis"
+
 # 모듈 전역 상태 — scheduler가 start/stop 호출
 _state = {
     "running": False,
@@ -429,14 +438,20 @@ def start(market: str = "KRX") -> dict:
 
         ws = KisWebSocket(broker, on_tick=_on_tick_detect)
         ws_started = False
-        try:
-            ws.start()
-            ws_started = True
-        except Exception as e:
-            # Q3: WebSocket 시작 자체 실패해도 loop 중단하지 않음. REST 폴링 fallback
-            # thread가 ws.is_connected를 보고 폴링으로 stop loss 평가 유지.
-            log.error("[%s] WebSocket 시작 실패 — REST 폴링 fallback만으로 동작: %s",
-                       market, e)
+        if not _should_start_kis_ws():
+            # 비KIS 브로커(LS 등): 시세 WS skip — REST 폴링 fallback이 stop loss 평가.
+            # ws.is_connected는 False로 유지돼 폴링 thread가 자동 활성화된다.
+            log.info("[%s] 비KIS 브로커 — 실시간 시세 WS skip (REST 폴링으로 stop loss 평가)",
+                     market)
+        else:
+            try:
+                ws.start()
+                ws_started = True
+            except Exception as e:
+                # Q3: WebSocket 시작 자체 실패해도 loop 중단하지 않음. REST 폴링 fallback
+                # thread가 ws.is_connected를 보고 폴링으로 stop loss 평가 유지.
+                log.error("[%s] WebSocket 시작 실패 — REST 폴링 fallback만으로 동작: %s",
+                           market, e)
 
         # 초기 구독: 이번 시장의 보유 종목만 (WebSocket 미동작이면 skip)
         held = [s for s in manager.held_symbols() if _in_market(s)]
@@ -456,7 +471,7 @@ def start(market: str = "KRX") -> dict:
         order_ws = None
         # (b) KIS 전용: 체결통보 WebSocket은 KIS만 — 비KIS(LS) 활성 시 skip. LS WS는
         # Phase 3 후속이고 REST 폴링이 체결 인지 fallback. runner._wait_for_order_ws와 동일 게이트.
-        if get_active_broker() != "kis":
+        if not _should_start_kis_ws():
             log.info("[%s] 비KIS 브로커 활성 — KIS 체결통보 WebSocket skip (REST 폴링 fallback)",
                       market)
         else:

@@ -114,12 +114,12 @@ _FEWSHOT = [
                 "position": {"direction": "long_short", "sizing": {"mode": "equal_weight"},
                              "entry": {"mode": "on_signal", "threshold": 0}, "exit": {"hold_days": 0}},
                 "simulation": {"initial_capital": 100000000, "fill": "next_open", "commission": 0.0001},
-                "study": {"axis": "time_fold", "reduction": "enumerate", "folds": 10},
+                "study": {"axis": "time_fold", "reduction": "enumerate", "split_period": "year"},
             },
             "assumptions": ["S&P500.pct_change_1d=전일대비 등락률(%)을 cross-asset 신호로 참조",
                             "전일 S&P500 기준 당일 코스피200선물 시가진입·종가청산(hold_days=0)",
                             "수수료 편도 0.01%=commission 0.0001(분수), 슬리피지 미지정→엔진 기본",
-                            "연도별=time_fold 10분할(enumerate)"],
+                            "연도별=split_period='year'(달력 연 단위, 키=2015·2016… — folds 추측 아님)"],
             "expressible": True,
         },
     },
@@ -200,8 +200,9 @@ StrategyIR = {{
   "position": {{"direction":.., "sizing":{{"mode":..}}, "entry":{{"mode":..}}, "exit":{{..}}, "overlays":{{..}}}},
   "simulation": {{"initial_capital":.., "fill":.., "leverage":.., "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", ...}},
   "query": "simulate|select|describe|relate",   // 무엇을 묻는가(기본 simulate=손익 백테스트). select=현시점 스크리닝, describe=살펴보기(단일종목 리포트·포트폴리오 진단·신호 분포), relate=관계/이벤트.
-  "study": {{"axis":"none|parameter|entity|label|time_fold", "reduction":"enumerate|contrast|consistency|extremize", "param_grid":[{{"path":점경로,"values":[..]}}], "assets":[..], "label":<블록>, "target_node":<블록>, "relation_kind":"ic|regression", "factors":[<블록>,..], "windows":[..], "event":<블록>, "objective":{{"metric":..,"direction":"max|min","oos_guard":bool}}}}  // objective는 extremize 전용
+  "study": {{"axis":"none|parameter|entity|label|time_fold", "reduction":"enumerate|contrast|consistency|extremize", "param_grid":[{{"path":점경로,"values":[..]}}], "assets":[..], "label":<블록>, "split_period":"year|quarter|month", "folds":N, "split_dates":["YYYY-MM-DD",..], "target_node":<블록>, "relation_kind":"ic|regression", "factors":[<블록>,..], "windows":[..], "event":<블록>, "objective":{{"metric":..,"direction":"max|min","oos_guard":bool}}}}  // objective는 extremize 전용
 }}
+// ⚠ time_fold에서 **"연도별/연간/매년"은 study.split_period="year"**(엔진이 달력 연으로 분할, 키=2015·2016…). folds=252 같은 "1년 거래일수"로 추측하지 말 것(라이브 결함). 분기별=quarter·월별=month. folds는 단순 시간순 등분 수일 뿐.
 펼침/분석이 없으면 query·study를 생략(기본 simulate·axis=none). 종목 자신의 컬럼은 ref에 "__SELF__." 접두(예 "__SELF__.Close"). 신호 out_type: condition(룰)·score(팩터)·value·label.
 </ir_structure>
 
