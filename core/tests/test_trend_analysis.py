@@ -254,16 +254,35 @@ def test_trend_matched_band_filter_and_decluster():
     assert none_neg == []
 
 
-def test_build_oil_trend_excel_bytes():
+def test_build_oil_trend_excel_live_formulas():
+    import io as _io
+
+    from openpyxl import load_workbook
+
     closes = list(range(100, 150))
     df = _mk(closes)
     ev, raw = trend_matched(df, 2, 2, 110, 120, 0, 100, gap=0)
     data = build_oil_trend_excel(
-        ev, raw, lookback=2, horizon=2, price_lo=110, price_hi=120,
+        df, ev, raw, lookback=2, horizon=2, price_lo=110, price_hi=120,
         change_lo=0, change_hi=100, gap=0, name="원유", price_sym="$",
     )
-    assert isinstance(data, bytes) and len(data) > 0
-    assert data[:2] == b"PK"                      # xlsx = zip 시그니처
+    assert isinstance(data, bytes) and data[:2] == b"PK"   # xlsx = zip 시그니처
+
+    wb = load_workbook(_io.BytesIO(data))
+    assert wb.sheetnames[0] == "데이터+계산"
+    assert "이벤트(현재)" in wb.sheetnames                  # 정적 스냅샷(교차검증)
+    ws = wb["데이터+계산"]
+    formulas = [c.value for col in ws.iter_cols() for c in col
+                if isinstance(c.value, str) and c.value.startswith("=")]
+    # 라이브 수식 — 증감율(INDEX 윈도우)·디클러스터(채택)·요약 회귀(SLOPE)
+    assert any("INDEX($E:$E" in f for f in formulas), "과거/향후 증감율 수식 없음"
+    assert any("SLOPE(" in f for f in formulas), "회귀 β 수식 없음"
+    assert any("COUNT(L" in f for f in formulas), "요약 n 수식 없음"
+    # 노란 파라미터 칸(B2~B8)이 값으로 들어가 수식이 참조
+    assert ws["B2"].value == 110 and ws["B6"].value == 2   # 종가하한·과거L
+    # 정적 스냅샷 n이 실제 디클러스터 결과와 일치
+    snap = wb["이벤트(현재)"]
+    assert f"{len(ev)} / {raw}" == snap["B6"].value
 
 
 def test_explanatory_scan_gap_declusters():

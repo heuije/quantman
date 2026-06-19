@@ -1009,10 +1009,10 @@ def trend_export_endpoint(
     change_hi: float = 1e9,
     gap: int = 0,
 ):
-    """추세 탐색기 '향후 종가 증감율' 결과(조건·요약·이벤트)를 .xlsx 로 반환.
+    """추세 탐색기 '향후 종가 증감율'을 **라이브 수식 .xlsx** 로 반환.
 
-    종가범위 ∧ 과거증감율범위 매칭 → G영업일 디클러스터(화면과 동일, trend_matched).
-    백테스트 export 와 달리 서술용 데이터 덤프(라이브 수식 없음).
+    raw OHLCV + Excel 수식(종가/증감율 밴드 매칭·gap 디클러스터·요약·회귀)을 담아,
+    노란 칸을 바꾸면 엑셀에서 재계산된다(화면과 동일 로직, trend_matched=정적 스냅샷).
     """
     if lookback < 1 or not (1 <= horizon <= 500):
         raise HTTPException(422, "lookback≥1, 1≤horizon≤500 이어야 함")
@@ -1022,7 +1022,7 @@ def trend_export_endpoint(
     clo, chi = (change_lo, change_hi) if change_lo <= change_hi else (change_hi, change_lo)
     events, raw_n = trend_matched(df, lookback, horizon, lo, hi, clo, chi, max(0, gap))
     data = build_oil_trend_excel(
-        events, raw_n,
+        df, events, raw_n,
         lookback=lookback, horizon=horizon,
         price_lo=lo, price_hi=hi, change_lo=clo, change_hi=chi, gap=max(0, gap),
         name=cfg.name, price_sym=("" if cfg.currency == "KRW" else "$"),

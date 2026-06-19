@@ -385,7 +385,8 @@ def build_oil_excel(
 
 
 def build_oil_trend_excel(
-    events: list,          # list[TrendEvent] (duck-typed: .date/.close/.past_return/.forward_return)
+    df: pd.DataFrame,      # 전체 OHLCV (date ASC) — 라이브 수식이 참조할 raw 데이터
+    events: list,          # list[TrendEvent] — 현재 디클러스터 결과(정적 스냅샷·교차검증용)
     raw_n: int,
     *,
     lookback: int,
@@ -398,83 +399,175 @@ def build_oil_trend_excel(
     name: str,
     price_sym: str,
 ) -> bytes:
-    """추세 탐색기 '향후 종가 증감율' 결과를 .xlsx 로 — 조건/요약/이벤트 3시트.
+    """추세 탐색기 '향후 종가 증감율'을 **라이브 수식 .xlsx** 로.
 
-    events 는 trend_matched 의 디클러스터 결과(화면과 동일). 백테스트 수식 엑셀과 달리
-    서술용 데이터 덤프(조건·이벤트·요약) — 라이브 수식 없음.
+    시트1 '데이터+계산': raw OHLCV + Excel 수식(과거/향후 증감율·종가·증감율 밴드 매칭·
+    gap 디클러스터·요약·회귀). 노란 칸(종가범위·증감율범위·과거L·향후H·간격)을 바꾸면
+    전체 재계산 — 백테스트 엑셀과 동일한 라이브 방식. 시트2 '이벤트(현재)': 다운로드
+    시점 결과의 정적 스냅샷(수식 결과 교차검증·앱 화면과 일치).
     """
+    df = df.sort_values("date").reset_index(drop=True)
+    n = len(df)
+
     bold = Font(bold=True)
-    title_font = Font(bold=True, size=14)
+    title_font = Font(bold=True, size=14, color="20201D")
+    accent_font = Font(bold=True, color=_ACCENT)
+    italic = Font(italic=True, color="6F6A62")
+    input_fill = PatternFill("solid", fgColor=_INPUT_BG)
+    head_fill = PatternFill("solid", fgColor=_HEAD_BG)
+    border = _thin_border()
+    center = Alignment(horizontal="center")
 
-    def _rng(lo: float, hi: float, sym: str, suf: str) -> str:
-        l = "−∞" if lo <= -1e8 else f"{sym}{lo:g}{suf}"
-        h = "∞" if hi >= 1e8 else f"{sym}{hi:g}{suf}"
-        return f"{l} ~ {h}"
+    HROW = 10               # 헤더 행
+    D0 = HROW + 1           # 첫 데이터 행
+    last = HROW + n         # 마지막 데이터 행 (n=0이면 HROW)
+    psym = price_sym or ""
 
-    n = len(events)
-    mean = sum(e.forward_return * 100.0 for e in events) / n if n else 0.0
-    up = 100.0 * sum(1 for e in events if e.forward_return > 0) / n if n else 0.0
-    if mean >= 4:
-        opinion = "강한 상승 경향"
-    elif mean >= 1:
-        opinion = "상승 경향"
-    elif mean <= -4:
-        opinion = "강한 하락 경향"
-    elif mean <= -1:
-        opinion = "하락 경향"
-    else:
-        opinion = "중립 (뚜렷한 방향성 없음)"
+    def _cv(v: float) -> float:
+        # ±무한대 경계(±1e9)는 표시용 유한 sentinel(±100000; %수익률엔 사실상 무한대).
+        return -100000.0 if v <= -1e8 else (100000.0 if v >= 1e8 else float(v))
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "조건"
-    ws["A1"] = f"{name} — 향후 종가 증감율 분석"
+    ws.title = "데이터+계산"
+    disp = name if "선물" in name else f"{name} 선물"
+    ws["A1"] = f"{disp} — 향후 종가 증감율 (라이브 수식)"
     ws["A1"].font = title_font
-    cond_rows = [
-        ("종가 범위", _rng(price_lo, price_hi, price_sym, "")),
-        ("과거 기간 (L)", f"{lookback} 영업일"),
-        ("과거 증감율 범위", _rng(change_lo, change_hi, "", "%")),
-        ("향후 기간 (H)", f"{horizon} 영업일"),
-        ("이벤트 최소 간격", f"{gap} 영업일 (0=원시)"),
-    ]
-    for i, (k, v) in enumerate(cond_rows, start=3):
-        ws[f"A{i}"] = k
-        ws[f"A{i}"].font = bold
-        ws[f"B{i}"] = v
-    ws.column_dimensions["A"].width = 20
-    ws.column_dimensions["B"].width = 30
 
-    sm = wb.create_sheet("요약")
-    sm["A1"] = "요약"
-    sm["A1"].font = title_font
-    sum_rows: list[tuple[str, object]] = [
-        ("독립 표본 n", n),
-        ("원시 매칭 수", raw_n),
-        (f"평균 향후 {horizon}일 종가 증감율 (%)", round(mean, 2)),
-        ("상승 비율 (%)", round(up, 1)),
-        ("전망", opinion),
+    # ── 입력칸(노란) B2~B8 — 바꾸면 전체 재계산 ───────────────────────
+    inputs = [
+        (f"종가 하한 ({psym})", _cv(price_lo)),
+        (f"종가 상한 ({psym})", _cv(price_hi)),
+        ("과거 증감율 하한 (%)", _cv(change_lo)),
+        ("과거 증감율 상한 (%)", _cv(change_hi)),
+        ("과거 기간 L (영업일)", int(lookback)),
+        ("향후 기간 H (영업일)", int(horizon)),
+        ("이벤트 최소 간격 (영업일, 0=원시)", int(gap)),
     ]
-    for i, (k, v) in enumerate(sum_rows, start=3):
-        sm[f"A{i}"] = k
-        sm[f"A{i}"].font = bold
-        sm[f"B{i}"] = v
-    sm.column_dimensions["A"].width = 30
-    sm.column_dimensions["B"].width = 18
+    for i, (label, val) in enumerate(inputs):
+        r = 2 + i
+        ws[f"A{r}"] = label
+        ws[f"A{r}"].font = bold
+        c = ws[f"B{r}"]
+        c.value = val
+        c.fill = input_fill
+        c.border = border
+        c.alignment = center
+    ws["C2"] = "← 노란 칸을 바꾸면 전체가 재계산됩니다"
+    ws["C2"].font = italic
 
-    ev = wb.create_sheet("이벤트")
-    hdr = ["신호일", "종가", f"과거 {lookback}일 증감율(%)", f"향후 {horizon}일 종가증감율(%)"]
-    ev.append(hdr)
-    for c in range(1, len(hdr) + 1):
-        ev.cell(row=1, column=c).font = bold
-    for e in events:
-        ev.append([
-            str(e.date.date()),
-            round(float(e.close), 2),
-            round(e.past_return * 100.0, 2),
-            round(e.forward_return * 100.0, 2),
-        ])
+    # ── 요약(전부 수식) D2~E7 ─────────────────────────────────────────
+    summary = [
+        ("독립 표본 n", f"=COUNT(L{D0}:L{last})", "0"),
+        ("원시 매칭 수", f"=SUM(H{D0}:H{last})", "0"),
+        ("평균 향후 증감율 (%)", f"=IFERROR(AVERAGE(L{D0}:L{last}),0)", "+0.00;-0.00"),
+        ("상승 비율 (%)", f'=IFERROR(COUNTIF(L{D0}:L{last},">0")/COUNT(L{D0}:L{last})*100,0)', "0.0"),
+        ("회귀 β (향후~과거)", f'=IFERROR(SLOPE(L{D0}:L{last},K{D0}:K{last}),"")', "+0.000;-0.000"),
+        ("회귀 R²", f'=IFERROR(RSQ(L{D0}:L{last},K{D0}:K{last}),"")', "0.000"),
+    ]
+    for i, (label, formula, fmt) in enumerate(summary):
+        r = 2 + i
+        ws[f"D{r}"] = label
+        ws[f"D{r}"].font = accent_font
+        cell = ws[f"E{r}"]
+        cell.value = formula
+        cell.font = bold
+        cell.number_format = fmt
+        cell.border = border
+
+    # ── 헤더(HROW) + raw 데이터 + 수식 열 ─────────────────────────────
+    # A날짜 B시 C고 D저 E종 | F과거증감율 G향후증감율 H매칭 I채택(디클러스터)
+    # J최근채택행(헬퍼) | K채택과거 L채택향후
+    headers = ["날짜", "시가", "고가", "저가", "종가",
+               "과거증감율(%)", "향후증감율(%)", "매칭", "채택", "_최근채택행",
+               "채택 과거(%)", "채택 향후(%)"]
+    for j, h in enumerate(headers):
+        c = ws.cell(row=HROW, column=1 + j, value=h)
+        c.font = bold
+        c.fill = head_fill
+        c.border = border
+        c.alignment = center
+
+    for idx in range(n):
+        r = D0 + idx
+        row = df.iloc[idx]
+        ws.cell(row=r, column=1, value=pd.Timestamp(row["date"]).to_pydatetime())
+        ws.cell(row=r, column=2, value=float(row["open"]))
+        ws.cell(row=r, column=3, value=float(row["high"]))
+        ws.cell(row=r, column=4, value=float(row["low"]))
+        ws.cell(row=r, column=5, value=float(row["close"]))
+        # F 과거증감율% = (종가 ÷ 종가[행−L] − 1)×100. 행−L<첫데이터면 공란.
+        ws.cell(row=r, column=6, value=(
+            f'=IF(ROW()-$B$6<{D0},"",IFERROR((E{r}/INDEX($E:$E,ROW()-$B$6)-1)*100,""))'
+        ))
+        # G 향후증감율% = (종가[행+H] ÷ 종가 − 1)×100. 행+H>끝이면 공란.
+        ws.cell(row=r, column=7, value=(
+            f'=IF(ROW()+$B$7>{last},"",IFERROR((INDEX($E:$E,ROW()+$B$7)/E{r}-1)*100,""))'
+        ))
+        # H 매칭 = 종가∈[B2,B3] ∧ 과거증감율∈[B4,B5] (양 증감율 존재 시).
+        ws.cell(row=r, column=8, value=(
+            f'=IF(AND(ISNUMBER(F{r}),ISNUMBER(G{r}),E{r}>=$B$2,E{r}<=$B$3,'
+            f'F{r}>=$B$4,F{r}<=$B$5),1,0)'
+        ))
+        # I 채택 / J 최근채택행 — gap 영업일 이내 연속 매칭은 1건만(그리디 디클러스터).
+        if idx == 0:
+            ws.cell(row=r, column=9, value=f'=IF(H{r}=1,1,0)')
+            ws.cell(row=r, column=10, value=f'=IF(I{r}=1,ROW(),-1000000)')
+        else:
+            ws.cell(row=r, column=9, value=f'=IF(AND(H{r}=1,ROW()-J{r-1}>=$B$8),1,0)')
+            ws.cell(row=r, column=10, value=f'=IF(I{r}=1,ROW(),J{r-1})')
+        # K 채택 과거% / L 채택 향후% (회귀 x·y, 요약 입력).
+        ws.cell(row=r, column=11, value=f'=IF(I{r}=1,F{r},"")')
+        ws.cell(row=r, column=12, value=f'=IF(I{r}=1,G{r},"")')
+
+    for idx in range(n):
+        r = D0 + idx
+        ws.cell(row=r, column=1).number_format = "yyyy-mm-dd"
+        for col in (2, 3, 4, 5):
+            ws.cell(row=r, column=col).number_format = "#,##0.00"
+        for col in (6, 7, 11, 12):
+            ws.cell(row=r, column=col).number_format = "+0.00;-0.00"
+
+    widths = [12, 10, 10, 10, 10, 14, 14, 8, 8, 12, 13, 13]
+    for j, w in enumerate(widths):
+        ws.column_dimensions[get_column_letter(1 + j)].width = w
+    ws.column_dimensions["J"].hidden = True       # 디클러스터 헬퍼 열 숨김
+    if n:
+        ws.freeze_panes = f"A{D0}"
+
+    # ── 시트2: 현재 결과 정적 스냅샷 (라이브 수식 교차검증·앱 화면과 일치) ──
+    snap = wb.create_sheet("이벤트(현재)")
+    nn = len(events)
+    mean = sum(e.forward_return * 100.0 for e in events) / nn if nn else 0.0
+    upr = 100.0 * sum(1 for e in events if e.forward_return > 0) / nn if nn else 0.0
+    snap["A1"] = "현재 결과 (정적 스냅샷 — 왼쪽 시트 라이브 수식과 대조용)"
+    snap["A1"].font = title_font
+    srows: list[tuple[str, object]] = [
+        ("종가 범위", f"{psym}{price_lo:g} ~ {psym}{price_hi:g}"),
+        ("과거 L / 향후 H", f"{lookback} / {horizon} 영업일"),
+        ("이벤트 최소 간격", f"{gap} 영업일"),
+        ("독립 표본 n / 원시", f"{nn} / {raw_n}"),
+        (f"평균 향후 {horizon}일 증감율 (%)", round(mean, 2)),
+        ("상승 비율 (%)", round(upr, 1)),
+    ]
+    for i, (k, v) in enumerate(srows, start=3):
+        snap[f"A{i}"] = k
+        snap[f"A{i}"].font = bold
+        snap[f"B{i}"] = v
+    hr = 10
+    hdr2 = ["신호일", "종가", f"과거 {lookback}일 증감율(%)", f"향후 {horizon}일 증감율(%)"]
+    for j, h in enumerate(hdr2):
+        c = snap.cell(row=hr, column=1 + j, value=h)
+        c.font = bold
+        c.fill = head_fill
+    for i, e in enumerate(events):
+        rr = hr + 1 + i
+        snap.cell(row=rr, column=1, value=str(e.date.date()))
+        snap.cell(row=rr, column=2, value=round(float(e.close), 2))
+        snap.cell(row=rr, column=3, value=round(e.past_return * 100.0, 2))
+        snap.cell(row=rr, column=4, value=round(e.forward_return * 100.0, 2))
     for col, w in zip("ABCD", (12, 12, 22, 24)):
-        ev.column_dimensions[col].width = w
+        snap.column_dimensions[col].width = w
 
     buf = io.BytesIO()
     wb.save(buf)
