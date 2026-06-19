@@ -215,6 +215,32 @@ def _snapshot(_day: str) -> dict:
     return out
 
 
+_NV_UA = {"User-Agent": "Mozilla/5.0"}
+_NV_URL = "https://polling.finance.naver.com/api/realtime/domestic/stock/"
+
+
+@lru_cache(maxsize=16)
+def _naver_quotes(codes: tuple[str, ...], _bucket: str) -> dict:
+    """네이버 준실시간 시세(키 불필요) — 코드 → {close, chg}. 트리맵 시세를 거의 실시간으로.
+
+    closePrice=현재가(장중), fluctuationsRatio=등락률%. delayTime 0(준실시간). 비공식 스크래핑이라
+    40개씩 배치 콤마 호출로 호출 수·차단 위험을 낮춘다(_bucket로 90초 캐시 → 7초 폴링 권고 준수)."""
+    out: dict = {}
+    for i in range(0, len(codes), 40):
+        batch = codes[i:i + 40]
+        try:
+            r = requests.get(_NV_URL + ",".join(batch), headers=_NV_UA, timeout=8)
+            for d in r.json().get("datas", []):
+                code = str(d.get("itemCode", "")).zfill(6)
+                close = _num(d.get("closePriceRaw") or d.get("closePrice"))
+                chg = _num(d.get("fluctuationsRatioRaw") or d.get("fluctuationsRatio"))
+                if close is not None:
+                    out[code] = {"close": close, "chg": chg}
+        except Exception as e:
+            _log.warning("네이버 시세 배치 실패(%s종목): %s", len(batch), e)
+    return out
+
+
 @lru_cache(maxsize=64)
 def _industry(name: str, _day: str, as_of: str = "") -> list[dict] | None:
     fname = INDUSTRIES.get(name)
@@ -256,11 +282,24 @@ def _industry(name: str, _day: str, as_of: str = "") -> list[dict] | None:
             x["ret"] = {k: q[k] for k in ("d5", "d20", "d60", "d120", "d240")} if q else None
             x["da"] = x["ebitda"] = x["ebitda_margin"] = None
     else:
-        snap = _snapshot(_day)
+        # 최신: 네이버 준실시간 시세(close·chg) + 상장주식수(일 캐시)로 시총 = close×주식수.
+        # 네이버 실패 종목만 StockListing 스냅샷으로 폴백(장외·차단 대비).
+        today = date.today().isoformat()
+        tickers = tuple(x["ticker"] for x in rows)
+        nv = _naver_quotes(tickers, _day)        # _day=시간버킷 → 90초 신선화
+        shares = _shares(today)
+        need_fb = any(not (nv.get(x["ticker"], {}).get("close") and shares.get(x["ticker"])) for x in rows)
+        snap = _snapshot(today) if need_fb else {}
         for x in rows:
-            s = snap.get(x["ticker"]) or {}
-            x["cap"] = s.get("cap")
-            x["chg"] = s.get("chg")
+            q = nv.get(x["ticker"]) or {}
+            sh = shares.get(x["ticker"])
+            if q.get("close") is not None and sh:
+                x["cap"] = q["close"] * sh
+                x["chg"] = q.get("chg")
+            else:                                 # 폴백 — StockListing(지연)
+                s = snap.get(x["ticker"]) or {}
+                x["cap"] = s.get("cap")
+                x["chg"] = s.get("chg")
             x["ret"] = None          # 기간수익률은 industry_returns로 지연 로딩
             x["da"] = x["ebitda"] = x["ebitda_margin"] = None
     # 세부분류 내 시총 점유율(M/s) — 분모=같은 세부분류 시총 합계
@@ -412,24 +451,46 @@ def industry_ebitda(name: str) -> dict:
 
 
 @lru_cache(maxsize=8)
-def _industry_returns(name: str, _day: str) -> dict:
-    """종목별 기간수익률(5/20/60/120/240일) — DataReader(느림). 트리맵 hover용 지연 로딩 전용.
-    최신 트리맵은 벌크 스냅샷(cap·chg)으로 즉시 뜨고, 이 수익률은 그 후 별도 호출로 채운다."""
+def _return_anchors(name: str, _day: str) -> dict:
+    """종목별 기간수익률 '앵커' — N거래일 전 종가(5/20/60/120/240) + 최근종가. DataReader, 일 1회(무거움).
+
+    역사 종가는 일중 불변이라 일 캐시. 현재가는 호출 시 네이버 라이브로 덮어 수익률을 산출
+    (DataReader '오늘 종가'가 장중 전일고정이던 문제 해소)."""
+    from concurrent.futures import ThreadPoolExecutor
     rows = _industry(name, _day, "")
     if not rows:
         return {}
-    q = _returns(tuple(r["ticker"] for r in rows), _day, "")
+
+    def one(tk: str):
+        c = _closes(tk, _day)
+        if c is None or len(c) < 2:
+            return tk, None
+        def at(n):
+            return float(c.iloc[-1 - n]) if len(c) > n else None
+        return tk, {"d5": at(5), "d20": at(20), "d60": at(60), "d120": at(120), "d240": at(240),
+                    "last": float(c.iloc[-1])}
     out: dict = {}
-    for r in rows:
-        v = q.get(r["ticker"])
-        out[r["ticker"]] = {k: v[k] for k in ("d5", "d20", "d60", "d120", "d240")} if v else None
+    with ThreadPoolExecutor(max_workers=20) as ex:
+        for tk, v in ex.map(one, [r["ticker"] for r in rows]):
+            out[tk] = v
     return out
 
 
 def industry_returns(name: str) -> dict:
-    """지연 로딩: 종목별 기간수익률 사전. 실패 시 빈 dict."""
+    """지연 로딩: 종목별 기간수익률(5/20/60/120/240일). 역사 앵커(일 캐시) + 네이버 현재가로 라이브 산출."""
     try:
-        return _industry_returns(name, date.today().isoformat())
+        today = date.today().isoformat()
+        anchors = _return_anchors(name, today)
+        live = _naver_quotes(tuple(anchors.keys()), _bucket())
+        out: dict = {}
+        for tk, a in anchors.items():
+            cur = ((live.get(tk) or {}).get("close")) or (a or {}).get("last")
+            if not a or cur is None:
+                out[tk] = None
+                continue
+            out[tk] = {k: (round((cur / a[k] - 1) * 100, 1) if a.get(k) else None)
+                       for k in ("d5", "d20", "d60", "d120", "d240")}
+        return out
     except Exception as e:
         _log.warning("기간수익률 fetch 실패 %s: %s", name, e)
         return {}
@@ -449,6 +510,7 @@ def refresh_prices() -> None:
     _closes.cache_clear()
     _returns.cache_clear()
     _snapshot.cache_clear()
+    _naver_quotes.cache_clear()
     _industry.cache_clear()
-    _industry_returns.cache_clear()
+    _return_anchors.cache_clear()
     _as_of.cache_clear()
