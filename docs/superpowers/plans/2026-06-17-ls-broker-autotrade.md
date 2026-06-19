@@ -666,10 +666,27 @@ git commit -m "feat(local): setup wizard 브로커 선택(KIS/LS) + LS 자격증
 
 키 없이는 **검증 불가**(4원칙 #4: 추측 완료 금지). 사용자가 LS 계좌개설→OpenAPI 신청→모의 키 수령 후:
 
-- [ ] **미확인 5건 실측**: ①해외옵션 지원 ②정확 rate limit(TPS) ③모의 유효기간·대상자산군 ④토큰 1일 발급제한 ⑤IP 등록 요구. → `docs/ls-api/GOTCHAS.md` 확정.
-- [ ] **응답 필드 라이브 확정**: B6의 모든 `⚠` 표식(rsp_cd 성공값·OutBlock 블록명·OrdNo/잔고/체결 필드명·계좌포맷·매매구분 코드)을 실측으로 확정 → fixture·상수 교체. throttle TPS 조정.
-- [ ] **order_status 체결/취소 인식 수정 (GOTCHAS G10)**: B6 `order_status`는 t0425 `chegb="2"`(미체결만)라 전량체결·취소를 인지 못 하고 `unknown` 반환(체결은 정산 reconcile 백스톱). 모의 키로 체결·취소 1건씩 발생 → t0425 `chegb="0"`(전체) 응답에서 filled vs cancelled 구분 필드 확인 → `order_status`를 전체조회/일별체결 TR로 전환(`pending_orders`는 chegb="2" 유지). **구분 필드 확인 전엔 변경 금지**(취소→체결 오인 방지).
-- [ ] **모의 E2E 라운드트립**: 모의 키로 매수→체결조회→잔고반영→매도→종가청산 1회. SimBroker 골든 회귀 byte-identical 보존.
+> **검토 업데이트 (2026-06-19)**: 공식문서 대조·KIS패리티 검토(cross-source)로 아래 항목들이 이 브랜치에서 코드 수정 완료됨. 단위테스트(459 green)가 통합 결함을 못 잡은 이유는 브로커 경계를 mock으로 처리했기 때문 — **Phase C 모의 E2E가 fill→ledger→종가청산 전체 흐름을 반드시 검증해야 한다.**
+
+### ✅ 이 브랜치(cross-source 검토)에서 해결됨 — 키 불필요
+
+- [x] **주문 성공 판정 = OrdNo 존재** (rsp_cd 특정 코드 아님): 주문 TR은 "00039/00040" 반환, 조회 TR만 "00000". `normalize_ls_order_resp`를 OrdNo 기준으로 수정 완료(G17).
+- [x] **취소 경로 = `POST /stock/order`** (tr_cd=CSPAT00801): `/stock/order-cancel` 별도 경로 없음(404) 확인. 코드 수정 완료(G18).
+- [x] **total_eval = tappamt** (평가금액): 이전 mamt(원가) 사용은 킬스위치 손실감지 불가 오류 → tappamt로 교정(G15, M1).
+- [x] **cash ≈ sunamt1** (추정D2예수금): 이전 sunamt(순자산) 사용은 과대사이징 위험 → sunamt1로 교정(G15, M1).
+- [x] **fill_price = cheprice** (체결가): 이전 price(주문가) 사용은 체결가 오독 → cheprice로 교정(G20, M1).
+- [x] **throttle 2/s**: 커뮤니티 실측 ~2/s 확인 → `_Throttle(max_calls=2, window_sec=1.0)`으로 설정(G14, M3).
+- [x] **시세 WS 없음 / intents 가드**: LS Phase 3 전까지 WS 미구현, `get_approval_key()` 없음 → REST 폴링 전환 게이트 추가. intents 브로커-aware 가드 추가.
+
+### ⚠ 아직 키 필요 — Phase C 실측 항목
+
+- [ ] **정확 주문 성공코드 확정**: rsp_cd="00039"(매도)/"00040"(매수) 실측 확인(G17). 현 코드는 OrdNo 기준이라 코드표 오독 없음; 정확 값은 로깅/디버깅 용도로 문서화.
+- [ ] **CSPAQ22200 구현 — cash 정밀화**: `account_snapshot`의 cash 소스를 t0424.sunamt1(근사) → `CSPAQ22200`(정확 주문가능금액)으로 전환. 필드명(D2entra 등)·응답 구조 키로 확인 후 구현(G16, INDEX.md CSPAQ22200 행).
+- [ ] **P2 체결 인지 — chegb="0" + status 값 실측 (당일매매 핵심)**: t0425의 `status` 필드 실제 값("접수"/"체결"/"취소" 등 정확 문자열)을 키로 확인. 이것이 확인돼야 `order_status`를 chegb="0"으로 전환해 체결/취소를 즉시 인지할 수 있다. **이 인지가 없으면 hold_days=0 종가청산에서 fill→포지션 정산 reconcile이 external_extras(정산 백스톱)에만 의존하게 되어 당일매매 실시간 트래킹 불가**(G10·G19). 모의 키로 체결 1건·취소 1건 발생시켜 status 값 확인 → order_status 전환 구현.
+- [ ] **AcntNo/InptPwd 생략 여부**: 현 코드는 body에 포함 중. REST 래퍼(lssec-go)는 생략 → ⚠ 엄격 스키마 시 400 가능. 첫 주문 응답 확인(G11).
+- [ ] **KOSDAQ exchgubun='Q' 검증**: t1102 기본값 'K'=KOSPI, KOSDAQ는 'Q' 필요 가능성. KOSDAQ 종목(예: 035720) 시세 조회로 확인(G21).
+- [ ] **미확인 5건 실측**: ①해외옵션 지원 ②토큰 1일 발급 제한 ③모의 유효기간·대상자산군 ④IP 등록 요구 ⑤AcntNo 생략 여부(위 항목과 겹침). → GOTCHAS.md 확정.
+- [ ] **모의 E2E 라운드트립**: 모의 키로 **매수→체결조회(fill 즉시 인지)→잔고반영→매도→종가청산** 1회. fill→ledger→종가청산 전체 흐름을 검증(단위테스트 mock 경계가 통합 결함을 못 잡음 — 이 E2E가 필수). SimBroker 골든 회귀 byte-identical 보존.
 - [ ] **라이브 게이트**: 국내주식 마이크로 실거래 1건으로 확정(KIS 패턴) → 점진 개방.
 - [ ] **완료 선언**: 모의 E2E 통과 후에만 "국내주식 LS 지원 완료". 그 전까지 "초안".
 

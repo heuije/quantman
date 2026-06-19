@@ -5,18 +5,136 @@
 
 ---
 
+## 공식문서 대조·KIS패리티 검토 (2026-06-19, 키발급 전 cross-source) — 신규 확정/수정
+
+아래는 공식(openapi.ls-sec.co.kr), teranum/ls-openapi-samples, gobenpark/lssec-go,
+k-im-minsu/k-ebest-im, programgarden-finance, xingAPI .res 스키마 등 복수 소스를 교차 확인한 결과다.
+🟢=크로스소스 확인 / ⚠=키 발급 후 실측 필요.
+
+---
+
+### G11 — AcntNo/InptPwd 주문 body 포함 여부 ⚠ 키검증
+
+- **상황**: REST 래퍼(lssec-go·programgarden)는 `AcntNo`·`InptPwd`를 **생략**(Bearer 토큰에서 계좌 추론). xingAPI legacy는 포함.
+- **현 코드**: `CSPAT00601InBlock1`에 `AcntNo`·`InptPwd` 포함 중.
+- **위험**: 엄격 스키마면 여분 필드로 400 거부 가능성(미확인).
+- **근거**: gobenpark/lssec-go REST wrapper 직독 — OrderNewOption 구조에 AcntNo 없음.
+- **확정 방법**: ⚠ 모의 키 첫 주문 응답(성공/400) 확인 후 생략 여부 결정.
+
+---
+
+### G12 — OrdPrc 타입: 스펙 double, 코드 int 전송 ⚠ 무해 추정
+
+- **상황**: CSPAT00601 스펙은 `OrdPrc`를 double(13.2)로 정의. 현 코드는 Python int를 JSON으로 직렬화 → JSON 정수.
+- **추정**: JSON 정수는 서버가 double로 읽으므로 대개 무해.
+- **근거**: 타입 불일치가 이슈가 된 커뮤니티 보고 없음.
+- **확정 방법**: ⚠ 모의 키로 지정가 주문(OrdPrc=정수) 성공 확인.
+
+---
+
+### G13 — mac_address 헤더: 법인 필수, 개인 불필요 🟢 크로스소스
+
+- **내용**: `mac_address` 요청 헤더는 법인 계좌에만 필수. 개인 계좌(현 타깃)는 불필요 → 미포함 무방.
+- **참고**: KIS의 `hashkey` 개념은 LS에 **없음** — 헤더에 hashkey 포함하지 않는다.
+- **근거**: programgarden-finance 개인 계좌 래퍼에 mac_address 헤더 없음; 공식 about-openapi 법인 전용 명시.
+
+---
+
+### G14 — rate limit: 일 5,000회 + 초당 ~2회 실측 🟢 크로스소스 / ⚠ 공식 미공개
+
+- **내용**: 일 5,000회(커뮤니티 다수 언급) + TPS **~2회/s**(커뮤니티 실측, 공식 미공개). 현 코드(`_Throttle`)는 보수적 3/s로 설정됨. → **2/s로 낮추는 게 더 안전**(현 브랜치 M3에서 반영).
+- **원래 G4(TPS 미확인)**의 TPS 부분을 이 entry가 업데이트한다. G4는 일 5,000회 근거로 유지.
+- **근거**: k-im-minsu/k-ebest-im 이슈 스레드, programgarden-finance 코드 주석.
+
+---
+
+### G15 — t0424OutBlock 필드 의미 확정 🟢 크로스소스
+
+- **내용 (이전 가정 교정)**:
+  - `sunamt` = 추정순자산(주식 포함, **≠ 예수금**) → **킬스위치 손실감지에 쓰면 안 됨**(직전 draft 오류)
+  - `mamt` = 매입금액(원가)
+  - `tappamt` = 평가금액(시가) → **total_eval = tappamt**(이 브랜치 수정 완료)
+  - `sunamt1` = 추정D2예수금 → **cash 근사값으로 사용**(직전 sunamt 사용은 순자산이라 과대사이징 위험)
+  - `dtsunik` = 실현손익, `tdtsunik` = 평가손익
+- **영향**: `total_eval`에 `mamt`(원가)를 쓰면 킬스위치 손실 감지 불가. `cash`에 `sunamt`(순자산)을 쓰면 매수 사이징이 잔고보다 커질 수 있음.
+- **근거**: t0424.res xingAPI 스키마 + programgarden-finance 라이브 샘플 응답 필드 해설.
+
+---
+
+### G16 — 진짜 주문가능금액은 t0424에 없음 → CSPAQ22200 필요 🟢 크로스소스 / ⚠ 필드 키검증
+
+- **내용**: t0424는 잔고/평가 위주이고 정확한 주문가능금액(D2entra 등 D+2 결제 기준 가용현금)은 별도 TR `CSPAQ22200`(현물계좌예수금)에 있다.
+- **현 코드**: `sunamt1`(추정D2예수금)으로 근사 — 방향은 맞으나 CSPAQ22200보다 부정확.
+- **Phase C**: CSPAQ22200 필드명·응답 구조를 키로 확인 후 cash 소스를 전환할지 결정.
+- **근거**: lssec-go 예수금 조회 별도 메서드 존재 + INDEX.md 기타 항목.
+
+---
+
+### G17 — 주문 성공코드: 조회 "00000" ≠ 주문 "00039/00040" ⚠ 코드표 키검증
+
+- **내용 (G1 교정)**: **CSPAT006xx(주문) TR은 성공 시 `rsp_cd="00040"`(매수) / `"00039"`(매도)** 반환. `"00000"`은 *조회* TR 전용 성공코드다 — 주문 응답에 "00000"을 체크하면 **항상 실패 판정**한다.
+- **현재 수정**: 특정 코드 대신 **OutBlock2의 `OrdNo` 존재**로 성공 판정 → 코드값 불확실성과 무관하게 견고.
+  (`normalize_ls_order_resp`의 성공 판정을 OrdNo 기준으로 전환, `_RSP_OK` 상수 사용 제거 — 이 브랜치 수정 완료.)
+- **근거**: programgarden-finance 주문 응답 해설("매수=00040, 매도=00039").
+- **확정 방법**: ⚠ 키로 주문 1회 발행해 실제 rsp_cd 값 확인(정확 코드표).
+
+---
+
+### G18 — 주문 경로: 단일 POST /stock/order (취소도 같음) 🟢 크로스소스
+
+- **내용**: 신규(`CSPAT00601`)·정정(`CSPAT00701`)·취소(`CSPAT00801`) **모두 `POST /stock/order`**, `tr_cd` 헤더로 TR 구분. `/stock/order-cancel` 같은 별도 경로는 **존재하지 않음**(404).
+- **근거**: gobenpark/lssec-go `OrderCancelOption.Path()` → `/stock/order` 반환.
+
+---
+
+### G19 — t0425OutBlock1 체결/미체결 구분: status + chegb="0" 🟢 필드 확인 / ⚠ status값 키검증
+
+- **내용 (G10 해결 경로 업데이트)**:
+  - `t0425OutBlock1`에 `status` 필드(char10)가 존재한다는 것이 크로스소스로 확인됨.
+  - `chegb="0"`(전체조회)로 호출하면 체결·취소 행도 결과에 포함되고 `status`로 구분 가능.
+  - **G10의 "체결/취소 인지 불가" 문제의 해결 경로가 확정됨**: `order_status`를 `chegb="0"` 전환 + `status` 값으로 filled/cancelled 판별.
+  - **단, `status`의 실제 값**("접수"/"체결"/"취소" 등 정확 문자열)은 ⚠ 키 발급 후 실측 필요.
+  - **Phase C 전까지 변경 금지**: status 값 오독 시 취소→체결 오인 위험.
+- **근거**: xingAPI .res 스키마에 status(char10) 필드 정의 확인.
+
+---
+
+### G20 — t0425OutBlock1 필드 의미 교정 🟢 크로스소스
+
+- **내용 (draft 필드명 교정)**:
+  - `cheprice` = 체결가 (≠ `price` = 주문가 — 주문가와 체결가는 다름)
+  - `price1` = 현재가
+  - `medosu` = `"매수"` / `"매도"` **문자열** (정수 코드 아님)
+  - `hname` **없음**: 종목명(hname)은 t0424OutBlock1에만 있음. t0425에서 종목명을 꺼내려면 별도 조회 필요.
+- **fill_price는 `cheprice` 사용** (이 브랜치 M1 수정 완료 — 직전 `price` 사용은 주문가를 체결가로 오인).
+- **근거**: teranum/ls-openapi-samples t0425 응답 예시 + xingAPI .res 필드 정의.
+
+---
+
+### G21 — t1102: 경로·필드·KOSDAQ exchgubun 🟢 3소스 일치 / ⚠ KOSDAQ
+
+- **내용**:
+  - 경로: `POST /stock/market-data`
+  - InBlock: `shcode` (bare 6자리, "A" 접두사 없음)
+  - OutBlock: `price`=현재가, `open`=시가, `high`, `low`, `volume`, `recprice`=전일종가 (**≠ `pclose`** — KIS의 stck_prdy_clpr와 이름 다름)
+  - `exchgubun` 선택 InBlock 파라미터, 기본 `'K'`=KOSPI
+  - **⚠ KOSDAQ 종목**: `exchgubun='Q'` 필요 가능성 있음 — 미지정 시 KOSDAQ 시세가 KOSPI 조회로 잘못될 수 있음. 키 발급 후 KOSDAQ 종목(예: 035720 카카오)으로 확인.
+- **근거**: teranum/ls-openapi-samples t1102.py + gobenpark/lssec-go + k-im-minsu/k-ebest-im 3소스 일치.
+
+---
+
 ## 초안 수록 (2026-06-17, A2) — 키 미발급 상태 가정 목록
 
 아래는 라이브 확인 전 "가정" 수준의 함정들이다. 🟢=공개 소스 확인, ⚠️ 가정=추론.
 
 ---
 
-### G1 — rsp_cd 성공 코드 정확값 ⚠️ 가정
+### G1 — rsp_cd 성공 코드 정확값 ⚠️ 가정 → **G17에서 교정됨 (2026-06-19)**
 
-- **가정**: 성공 시 `rsp_cd = "00000"` (5자리 "0")
-- **근거**: LS 공식 howto-sample 페이지에서 Standard Response 섹션이 `"00000"=success`로 명시
-- **주의**: KIS는 `rt_cd="0"` (1자리), LS는 `"00000"` (5자리)로 **다르다**. LsBroker 구현 시 `rsp_cd != "00000"` 체크.
-- **확정 방법**: 키 발급 후 토큰 발급·TR 1회 호출 시 응답에서 직접 확인.
+- **가정(원문)**: 성공 시 `rsp_cd = "00000"` (5자리 "0")
+- **교정(G17)**: 이 가정은 *조회* TR에만 적용된다. 주문 TR은 `"00039"/"00040"` 반환. 현 코드는 OrdNo 기준으로 수정 완료.
+- **근거**: LS 공식 howto-sample 페이지에서 Standard Response 섹션이 `"00000"=success`로 명시 (조회 전용)
+- **확정 방법**: 키 발급 후 주문 1회 발행해 실제 rsp_cd 값 확인.
 
 ---
 
