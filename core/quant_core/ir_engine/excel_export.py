@@ -141,14 +141,16 @@ def build_strategy_excel(
     raise ValueError(f"build_strategy_excel: 미지원 결과 형상 (query={q}, axis={axis}, report={report})")
 
 
-def _build_simulate(ir, dataset, result, disp: str) -> bytes:
-    """SIMULATE(1회 백테스트) 결과 → 증빙 .xlsx (P1 — 데이터+라이브수식)."""
+def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
+    """SIMULATE 증빙 시트(백테스트 라이브수식·거래내역·원자료·일별비중·지표·설명)를 wb에 추가.
+
+    period_split(연도별)도 재사용 — 연도 분석은 단일 자산곡선을 연도로 자른 것이라 원자료+라이브
+    수식+거래 검증 시트가 동일하게 성립(파라미터 스윕 같은 N개 독립 시뮬과 다름)."""
     equity = result.get("equity")
     if not isinstance(equity, pd.Series) or equity.empty:
-        raise ValueError("_build_simulate: result['equity'] (pd.Series) 필요.")
+        raise ValueError("_simulate_sheets: result['equity'] (pd.Series) 필요.")
     metrics = result.get("metrics") or {}
 
-    wb = Workbook()
     bold = Font(bold=True)
     title_font = Font(bold=True, size=14, color="20201D")
     accent_font = Font(bold=True, color=_ACCENT)
@@ -158,9 +160,8 @@ def _build_simulate(ir, dataset, result, disp: str) -> bytes:
     border = _thin_border()
     center = Alignment(horizontal="center")
 
-    # ── 시트 1: 백테스트 (엔진 자산곡선 + 라이브 정의식 수식) ────────────────────
-    ws = wb.active
-    ws.title = "백테스트"
+    # ── 시트: 백테스트 (엔진 자산곡선 + 라이브 정의식 수식) ──────────────────────
+    ws = wb.create_sheet("백테스트")
     n = len(equity)
     last = _ROW_D0 + n - 1
 
@@ -388,9 +389,13 @@ def _build_simulate(ir, dataset, result, disp: str) -> bytes:
     info.column_dimensions["A"].width = 22
     info.column_dimensions["B"].width = 90
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
+
+def _build_simulate(ir, dataset, result, disp: str) -> bytes:
+    """SIMULATE(1회 백테스트) → 증빙 .xlsx (P1 — 데이터+라이브수식)."""
+    wb = Workbook()
+    wb.remove(wb.active)                      # 기본 빈 시트 제거 — 시트는 _simulate_sheets가 생성
+    _simulate_sheets(wb, ir, dataset, result, disp)
+    return _save(wb)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -698,27 +703,78 @@ def _build_condition(ir, dataset, result, disp: str) -> bytes:
     return _save(wb)
 
 
+def _year_of(key) -> "int | None":
+    """버킷 키('2021'·'2021Q1'·'2010-01-01~…')에서 연도 추출. 실패 None — 라이브 수식 행매핑용."""
+    import re
+    m = re.search(r"\d{4}", str(key))
+    return int(m.group()) if m else None
+
+
 def _build_period_split(ir, dataset, result, disp: str) -> bytes:
-    """PERIOD_SPLIT — 기간(연/분기/구간)별 성과 + walk-forward 일관성 감사표."""
+    """PERIOD_SPLIT(연도별) → **원자료+라이브수식** 증빙 .xlsx.
+
+    연도 분석 = 단일 자산곡선을 연도로 자른 것 → simulate 증빙 시트(원자료·백테스트 라이브수식·
+    거래내역·일별비중·지표·설명)를 재사용 + **연도별 집계 라이브 수식** 시트. 각 연도 수익을
+    '백테스트' 시트 조정자산 비율(=E[연말]/E[직전]−1)로 재계산해 엔진값과 대조 → 원자료→일별→연도를
+    셀 수식으로 수동 검증(IB/PE급). (P2 감사표[값만]를 대체 — 파라미터 스윕 등 N개 독립 시뮬과 달리
+    단일 곡선이라 라이브 성립.)
+    """
+    from .run import run_strategy_ir
     S = _styles()
     wb = Workbook()
-    ws = wb.active
-    ws.title = "기간별성과"
-    _title(ws, f"{disp} — 기간별 성과 (walk-forward 일관성)", S)
-    nxt = _perf_table(ws, 3, "기간", list((result.get("buckets") or {}).items()), S)
+    wb.remove(wb.active)
+    ws = wb.create_sheet("연도별성과")        # 헤드라인 시트(먼저)
+    _title(ws, f"{disp} — 연도별 성과 (단일 자산곡선 분할 · 라이브 수식)", S)
+    ws.cell(2, 1, "엑셀 연수익 = '백테스트' 시트 조정자산 비율(라이브 수식). 엔진값과 일치 = 증빙.").font = S["italic"]
+
+    # base 백테스트 재실행 → 일별 자산곡선(원자료·수식 시트 + 연도 집계 수식의 기준).
+    base = None
+    try:
+        sir = ir if hasattr(ir, "model_dump") else StrategyIR.model_validate(ir)
+        base = run_strategy_ir(sir, dataset)
+    except Exception:
+        base = None
+    eq = base.get("equity") if isinstance(base, dict) and base.get("success") else None
+    year_rows: dict = {}
+    if isinstance(eq, pd.Series) and not eq.empty:
+        for i, ts in enumerate(eq.index):
+            year_rows.setdefault(pd.Timestamp(ts).year, []).append(_ROW_D0 + i)
+
+    _header(ws, 4, ["연도", "엔진 누적(%)", "엑셀 연수익(%) 라이브", "CAGR(%)", "샤프", "MDD(%)", "표본", "비고"], S)
+    r = 5
+    for key, b in (result.get("buckets") or {}).items():
+        b = b or {}
+        ws.cell(r, 1, str(key)).font = S["bold"]
+        ws.cell(r, 2, _num(b.get("cum_return"))).number_format = "0.00"
+        rows = year_rows.get(_year_of(key))
+        if rows:
+            prior = rows[0] - 1 if rows[0] - 1 >= _ROW_D0 else _ROW_D0
+            ws.cell(r, 3, f"=(백테스트!E{rows[-1]}/백테스트!E{prior}-1)*100").number_format = "0.00"
+        else:
+            ws.cell(r, 3, "—")
+        ws.cell(r, 4, _num(b.get("cagr"))).number_format = "0.00"
+        ws.cell(r, 5, _num(b.get("sharpe"))).number_format = "0.00"
+        ws.cell(r, 6, _num(b.get("mdd"))).number_format = "0.00"
+        ws.cell(r, 7, _num(b.get("n"))).number_format = "#,##0"
+        if b.get("n") and not b.get("std") and not b.get("cum_return"):
+            ws.cell(r, 8, "무거래(데이터·신호 결손 가능)").font = S["italic"]
+        r += 1
     cons = result.get("consistency", {}) or {}
-    ws.cell(nxt + 1, 1, "일관성").font = S["accent"]
-    for j, (k, lbl, fmt) in enumerate([("n_folds", "구간 수", "#,##0"),
-                                       ("positive_folds", "양(+)수익 구간", "#,##0"),
-                                       ("consistency", "일관성(양구간 비율)", "0.00")]):
-        ws.cell(nxt + 2 + j, 1, lbl).font = S["bold"]
-        ws.cell(nxt + 2 + j, 2, _num(cons.get(k))).number_format = fmt
-    ws.freeze_panes = "A4"
-    _methodology(wb, ir, f"{disp} — 기간분할 방법론", [
-        ("기간분할", "전체기간을 달력 주기(연/분기/월) 또는 N등분으로 쪼개 각 구간 성과를 따로 측정."),
-        ("일관성", "양(+)수익 구간 비율 — 전략이 특정 기간에만 통했는지 검증(과적합 신호)."),
-        ("값 only(감사표)", "엔진 산출 구간 성과를 그대로 표기."),
-    ], S)
+    ws.cell(r + 1, 1, f"일관성: 양(+) {cons.get('positive_folds', '?')}/{cons.get('n_folds', '?')} 구간").font = S["accent"]
+    for w_ in (result.get("warnings") or []):
+        r += 1
+        ws.cell(r + 1, 1, "⚠ " + (w_.get("message", str(w_)) if isinstance(w_, dict) else str(w_))).font = S["italic"]
+    for col, wd in zip("ABCDEFGH", (10, 13, 22, 10, 8, 10, 8, 28)):
+        ws.column_dimensions[col].width = wd
+    ws.freeze_panes = "A5"
+
+    if eq is not None:
+        _simulate_sheets(wb, ir, dataset, base, disp)     # 원자료+백테스트 라이브수식+거래+비중+지표·설명
+    else:
+        _methodology(wb, ir, f"{disp} — 연도별 방법론", [
+            ("연수익(라이브)", "각 연도 = 조정자산[연말]/조정자산[직전]−1. base 백테스트 재실행 실패로 일별 시트 생략."),
+            ("값(엔진)", "엔진 산출 연도 성과를 그대로 표기(대조 기준)."),
+        ], S)
     return _save(wb)
 
 

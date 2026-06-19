@@ -16,6 +16,11 @@ def test_chat_prompt_builds():
     assert isinstance(p, str) and len(p) > 500
 
 
+def test_chat_prompt_forbids_arbitrary_backtest_period():
+    """기간 미지정 시 임의 고정 과거 범위를 nl에 넣지 말라는 규율 — 2025/2026 누락 방지(#3)."""
+    assert "임의 백테스트 기간" in cp.chat_system_prompt()
+
+
 def test_chat_prompt_requires_reading_fold_and_cost_results():
     """결과(buckets·explanation·warnings·ir)를 읽어 답하라는 규율이 프롬프트에 실제 노출돼야."""
     p = cp.chat_system_prompt()

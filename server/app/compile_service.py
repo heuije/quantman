@@ -39,6 +39,33 @@ def _schema_issues(e: ValidationError) -> list[dict]:
     return issues
 
 
+# %-단위 수익률류 지표 — 임계가 |const|<0.01이면 '0.1%→0.001' 식 ÷100(분수화) 오류로 보고
+# ×100 교정. 프롬프트가 '−0.1로 쓰라'고 명시해도 LLM이 비결정적으로 −0.001을 내므로(이미 인입된
+# nl까지), 결정적 후보정으로 부류를 닫는다. <0.01 한정이라 정상 임계(0.05%=0.05 등)는 불변.
+_PCT_RETURN_INDS = {"pct_change_1d", "pct_change_5d", "pct_change_20d", "pct_change_252d",
+                    "log_return_1d", "momentum_12_1m"}
+
+
+def _normalize_pct_thresholds(node, warns: list | None = None) -> list:
+    """compare(%수익률 지표, const)에서 |const|<0.01(÷100 오류)을 ×100 결정적 교정. 경고 목록 반환."""
+    if warns is None:
+        warns = []
+    if not isinstance(node, dict):
+        return warns
+    if node.get("op") == "compare":
+        left = (node.get("inputs") or {}).get("left") or {}
+        right = (node.get("inputs") or {}).get("right") or {}
+        ref = (left.get("params") or {}).get("ref", "") if left.get("op") == "data" else ""
+        if ref.split(".")[-1] in _PCT_RETURN_INDS and right.get("op") == "const":
+            v = (right.get("params") or {}).get("value")
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < abs(v) < 0.01:
+                right["params"]["value"] = v * 100
+                warns.append(f"임계값 {v}→{v * 100} 교정 — {ref.split('.')[-1]}는 % 단위(0.1%는 0.1, 분수 0.001 아님)")
+    for child in (node.get("inputs") or {}).values():
+        _normalize_pct_thresholds(child, warns)
+    return warns
+
+
 def compile_strategy(session: Session, user_id: int | None, nl: str) -> dict:
     """자연어 전략 서술 → 검증된 StrategyIR. compile_nl(Haiku) 내부 수리 루프.
 
@@ -75,6 +102,12 @@ def compile_strategy(session: Session, user_id: int | None, nl: str) -> dict:
     res = compile_nl(nl, catalog=catalog_spec(), capabilities=capability_spec(),
                      indicator_cols=indicator_cols, valid_keys=valid_keys,
                      name_map=name_map, validate_fn=_validate)
+
+    # 후보정: %수익률 임계 단위 오류(−0.001 등) 결정적 교정 — LLM 비결정 보정(별개 A 부류).
+    if res.get("success") and isinstance(res.get("ir"), dict):
+        unit_warns = _normalize_pct_thresholds(res["ir"].get("signal"))
+        if unit_warns:
+            res["assumptions"] = list(res.get("assumptions") or []) + unit_warns
 
     explanation = None
     if res.get("success") and res.get("ir"):
