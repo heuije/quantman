@@ -1067,7 +1067,7 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
   if (busy && companies.length === 0)
     return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>경쟁사 데이터 불러오는 중…</p>;
   if (!busy && !indName)
-    return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>이 종목은 등록된 산업 밸류체인 데이터에 없습니다. (현재 지원: 2차전지·반도체·전자부품·건설·금융)</p>;
+    return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>이 종목은 등록된 산업 밸류체인 데이터에 없습니다. (현재 지원: 2차전지·반도체·전자부품·건설·금융·석유화학·화장품)</p>;
 
   return (
     <>
@@ -1239,7 +1239,7 @@ export default function IndustryAnalysis() {
 
       {/* 산업 탭 — 클릭 시 해당 산업 트리맵으로 전환 */}
       <div style={{ display: "flex", gap: 6, margin: "4px 0 12px", flexWrap: "wrap" }}>
-        {(data?.available || ["2차전지", "반도체", "전자부품", "건설", "금융"]).map((nm) => {
+        {(data?.available || ["2차전지", "반도체", "전자부품", "건설", "금융", "석유화학", "화장품"]).map((nm) => {
           const on = nm === root;
           return (
             <button key={nm} type="button" onClick={() => { if (nm !== root) { setRoot(nm); setAsOfReq(""); } }}
