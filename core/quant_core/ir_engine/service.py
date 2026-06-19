@@ -180,6 +180,9 @@ def strategy_from_spec(
     res = run_query(s, dataset)
     if res.get("success"):
         warns = list(res.get("warnings") or []) + [_issue_dict(i) for i in issues]   # run_query(무거래 등) 보존 후 병합
+        from .data_quality import assess_data_quality   # Phase 0.5 — 실행 전 데이터 품질 불변식
+        warns += assess_data_quality(dataset, start=getattr(s.simulation, "start", None),
+                                     end=getattr(s.simulation, "end", None))
         try:
             cap_warn = _futures_capital_warning(s, dataset, res)
         except Exception:   # noqa: BLE001 — 부가 경고 계산 실패가 정상 백테스트 결과를 깨지 않게(보조 정보)

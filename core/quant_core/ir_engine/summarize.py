@@ -101,7 +101,12 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
                 parts.append(f"{lbl} {_f(m.get(k), 1 if k == 'win_rate' else 2)}{u}")
         if m.get("n_trades") is not None:
             parts.append(f"거래 {m.get('n_trades')}회")
-        return "[백테스트] " + " · ".join(parts)
+        out = "[백테스트] " + " · ".join(parts)
+        for w in (result.get("warnings") or []):       # 데이터 결손·무거래 등 경고 표면화(Phase 0.5)
+            msg = w.get("message") if isinstance(w, dict) else str(w)
+            if msg:
+                out += f"\n⚠ {msg}"
+        return out
 
     if shape == "sweep":
         axis = result.get("axis")
