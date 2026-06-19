@@ -1329,8 +1329,15 @@ function SeasonTable({
 // ── ⑧ 진입 추세 → 향후 종가 증감율 탐색기 ──────────────────────────────
 // 서버가 (L,H) 이벤트 배열을 1회 내려주면, 증감율 밴드 필터·집계는 브라우저에서 실시간.
 
-// 가격 범위를 ~12개로 나눌 "보기 좋은" 버킷 폭 (1·2·5·10 × 10ⁿ) — 종가범위 기본값 산정용.
-function teNiceStep(raw: number): number {
+// TREND→FORWARD 탐색기 입력 기본값 (단일 출처).
+const TE_DEF_LOOKBACK = 90;   // 과거 N일
+const TE_DEF_HORIZON = 120;   // 향후 N일
+const TE_DEF_GAP = 60;        // 이벤트 최소 간격(영업일)
+const TE_BAND_PCT = 0.06;     // 종가 밴드 반폭 = 현재가 × 6% → nice 단위 반올림(종목 스케일 자동대응)
+
+// 1·2·5×10ⁿ 중 가장 가까운 "깔끔한" 단위로 — 종가 밴드폭·반올림 단위 산정용.
+// 종목 스케일에 자동 대응(오일 5·천연가스 0.2·금 200·비트코인 5000 …). 오일 6%≈5.04 → 5.
+function teNiceUnit(raw: number): number {
   if (raw <= 0) return 1;
   const mag = Math.pow(10, Math.floor(Math.log10(raw)));
   const norm = raw / mag;
@@ -1396,11 +1403,11 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   // 입력 draft (확인 전엔 계산 안 함)
   const [dNLo, setDNLo] = useState<number | "">("");   // 종가 하한
   const [dNHi, setDNHi] = useState<number | "">("");   // 종가 상한
-  const [dL, setDL] = useState(20);
-  const [dH, setDH] = useState(60);
+  const [dL, setDL] = useState(TE_DEF_LOOKBACK);
+  const [dH, setDH] = useState(TE_DEF_HORIZON);
   const [dLo, setDLo] = useState<number | "">("");     // 과거 증감율 하한
   const [dHi, setDHi] = useState<number | "">("");     // 과거 증감율 상한
-  const [dGap, setDGap] = useState(20);                // 이벤트 최소 간격(영업일) — 클러스터/겹침 디클러스터. 기본 20: 좁은 종가범위에서도 (L,H) 지도가 칸당 min_n(30)을 넘기도록(60은 과대 디클러스터로 전 칸 표본부족→공란)
+  const [dGap, setDGap] = useState(TE_DEF_GAP);        // 이벤트 최소 간격(영업일) — 클러스터/겹침 디클러스터. 기본 60: 독립 표본 확보. (L,H) 지도는 저표본도 그리므로(n≥3) 60이어도 안 비고 저신뢰 음영으로 표시됨
 
   // 적용된 설정 (확인 클릭 시 스냅샷)
   const [applied, setApplied] = useState<
@@ -1426,21 +1433,22 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
       .then((p) => {
         setPrices(p);
         if (p.length) {
-          const closes = p.map((x) => x.close);
-          const min = Math.min(...closes), max = Math.max(...closes);
-          const step = teNiceStep((max - min) / 12);
           const last = p[p.length - 1].close;
-          const lo = Math.floor(last / step) * step;
-          const dec = step >= 10 ? 0 : step >= 1 ? 1 : step >= 0.1 ? 2 : 3;
-          setDNLo(Number(lo.toFixed(dec)));
-          setDNHi(Number((lo + step).toFixed(dec)));
-          // 증감율 밴드 기본값 = 현재 추세(과거 20일 증감율)의 5%p 버킷 →
+          // 종가 범위 기본값 = 현재가 ± (현재가×6%를 nice 단위로 반올림). 종목 스케일 자동대응
+          // (오일≈±5·천연가스±0.2·금±200·비트코인±5000 …). 중심도 그 단위로 반올림.
+          const hw = teNiceUnit(last * TE_BAND_PCT);
+          const c = Math.round(last / hw) * hw;
+          const dec = hw >= 10 ? 0 : hw >= 1 ? 1 : hw >= 0.1 ? 2 : 3;
+          setDNLo(Number((c - hw).toFixed(dec)));
+          setDNHi(Number((c + hw).toFixed(dec)));
+          // 증감율 밴드 기본값 = 현재(기본 lookback일) 증감율 ±5%p (5로 반올림) →
           // 첫 확인부터 '종가범위 ∧ 증감율' 두 조건이 모두 활성(음영=두 조건 교집합).
-          if (p.length > 20) {
-            const chg = (last / p[p.length - 1 - 20].close - 1) * 100;
-            const blo = Math.floor(chg / 5) * 5;
-            setDLo(blo);
-            setDHi(blo + 5);
+          const w = Math.min(TE_DEF_LOOKBACK, p.length - 1);
+          if (w >= 1) {
+            const chg = (last / p[p.length - 1 - w].close - 1) * 100;
+            const cc = Math.round(chg / 5) * 5;
+            setDLo(cc - 5);
+            setDHi(cc + 5);
           }
         }
       })
@@ -1587,7 +1595,8 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     <>
       <style>{`
         .te-blank{display:inline-flex;align-items:center;gap:2px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:7px;padding:2px 9px;margin:0 3px;font-weight:600;color:var(--accent-strong)}
-        .te-blank input{width:58px;border:none;background:transparent;color:var(--accent-strong);font:inherit;font-weight:600;text-align:center}
+        .te-blank input{width:58px;border:none;background:transparent;color:var(--accent-strong);font:inherit;font-weight:600;text-align:center;-moz-appearance:textfield;appearance:textfield}
+        .te-blank input::-webkit-outer-spin-button,.te-blank input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
         .te-blank input::placeholder{color:#c19a86}
         .te-hm{border-collapse:separate;border-spacing:3px}
         .te-hm td,.te-hm th{padding:6px 8px;text-align:center;font-size:12px;white-space:nowrap}
