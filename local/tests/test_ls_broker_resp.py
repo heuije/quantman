@@ -59,12 +59,29 @@ def test_normalize_cancel_outblock1():
     assert r["order_no"] == "55555"
 
 
-def test_normalize_missing_outblock_returns_empty_ordno():
-    """OutBlock 없을 때 order_no=""이고 성공 플래그는 rsp_cd 기준."""
+def test_normalize_no_ordno_is_not_success():
+    """OrdNo 없으면 rsp_cd가 무엇이든 success=False (C1: 성공 판정=OrdNo 존재 여부).
+
+    LS 주문 TR은 조회 TR과 달리 rsp_cd="00000"을 성공 코드로 쓰지 않는다.
+    OutBlock 없음 → order_no="" → success=False.
+    """
     raw = {"rsp_cd": "00000", "rsp_msg": "OK"}
     r = normalize_ls_order_resp(raw, ordno_field="OrdNo")
-    assert r["success"] is True
+    assert r["success"] is False
     assert r["order_no"] == ""
+
+
+def test_normalize_success_based_on_ordno_not_rsp_cd():
+    """rsp_cd="00040"(LS 매수 성공 코드) + OrdNo 있음 → success=True (C1 검증).
+
+    "00000"이 아닌 TR-specific 성공 코드에서도 OrdNo 있으면 접수 성공으로 판정.
+    """
+    raw = {"rsp_cd": "00040", "rsp_msg": "매수주문 완료",
+           "CSPAT00601OutBlock2": {"OrdNo": "123"}}
+    r = normalize_ls_order_resp(raw, ordno_field="OrdNo")
+    assert r["success"] is True
+    assert r["order_no"] == "123"
+    assert r["msg_cd"] == "00040"
 
 
 # ── account_snapshot fetch_failed 마커 ────────────────────────────────────────
@@ -89,13 +106,17 @@ def test_account_snapshot_happy_path(monkeypatch):
     b = object.__new__(ls_broker.LsBroker)
     b.account_no = "5550123401"
 
-    # A2 KB t0424 응답 예시 기반 fixture (⚠ 초안)
+    # A2 KB t0424 응답 예시 기반 fixture (C3/C4: tappamt/sunamt1 추가, 공식문서 대조 확인 2026-06-19)
+    # sunamt1=8000(추정D2예수금→cash), tappamt=326800(평가금액→total_eval)
+    # 구 필드 sunamt/mamt를 다른 값으로 decoy 설정해 wrong-field regression을 차단.
     _fixture = {
         "rsp_cd": "00000",
         "t0424OutBlock": {
             "cts_expcode": "",
-            "mamt": "326800",
-            "sunamt": "8000",
+            "tappamt": "326800",   # C3: 평가금액 (total_eval 소스)
+            "sunamt1": "8000",     # C4: 추정D2예수금 (cash 소스)
+            "mamt": "999999",      # decoy — 이걸 읽으면 total_eval 단언 실패
+            "sunamt": "777777",    # decoy — 이걸 읽으면 cash 단언 실패
             "dtsunik": "1000",
             "tdtsunik": "1200",
         },
@@ -122,10 +143,12 @@ def test_account_snapshot_happy_path(monkeypatch):
     monkeypatch.setattr(b, "_balance_raw", lambda: _fixture, raising=False)
     snap = b.account_snapshot()
 
-    # balance 구조 확인
+    # balance 구조 + 정확한 필드 소스 확인 (C3/C4)
     bal = snap["balance"]
     assert "cash" in bal
     assert "total_eval" in bal
+    assert bal["cash"] == 8000, f"cash는 sunamt1=8000 이어야 함 (got {bal['cash']})"
+    assert bal["total_eval"] == 326800, f"total_eval은 tappamt=326800 이어야 함 (got {bal['total_eval']})"
     assert bal["cash_usd"] == 0.0
     assert bal["fx_usdkrw"] == 0.0
     assert bal["foreign_eval_krw"] == 0.0
@@ -220,11 +243,11 @@ def test_all_order_methods_return_normalized(monkeypatch, method, args, fixture)
 
 @pytest.mark.parametrize("method,args,fixture", _ORDER_METHODS[:-1])  # cancel 제외
 def test_order_methods_success_true_on_ok(monkeypatch, method, args, fixture):
-    """rsp_cd=00000 → success=True."""
+    """OrdNo 있는 정상 응답 → success=True (C1: OrdNo 기반 성공 판정)."""
     from localapp import ls_broker
     b = _broker_with_fakes(monkeypatch, fixture)
     r = getattr(b, method)(*args)
-    assert r["success"] is True, f"{method} rsp_cd=00000 이지만 success=False"
+    assert r["success"] is True, f"{method} OrdNo 있지만 success=False"
 
 
 @pytest.mark.parametrize("method,args,_", _ORDER_METHODS[:-1])
@@ -260,9 +283,13 @@ def test_sell_resv_limit_raises_not_implemented():
 
 # ── order_status 상태 어휘 + canonical_odno 매칭 ─────────────────────────────
 
-def _t0425_row(ordno, qty, remain, side_str, price=80000, ordtime="112251750"):
-    """t0425OutBlock1 행 fixture — A2 KB 필드명 기반 (⚠ 초안)."""
-    return {
+def _t0425_row(ordno, qty, remain, side_str, price=80000, ordtime="112251750",
+               cheprice=None):
+    """t0425OutBlock1 행 fixture — A2 KB 필드명 기반 (⚠ 초안).
+
+    cheprice: 체결가격 (M1). 기본값 None = 필드 없음(미체결 상태처럼). 값 주면 포함.
+    """
+    row = {
         "ordno": ordno,
         "expcode": "005930",
         "medosu": side_str,   # "매수" / "매도"
@@ -274,6 +301,9 @@ def _t0425_row(ordno, qty, remain, side_str, price=80000, ordtime="112251750"):
         "ordtime": ordtime,
         "hname": "삼성전자",
     }
+    if cheprice is not None:
+        row["cheprice"] = cheprice
+    return row
 
 
 @pytest.mark.parametrize("remain,qty,expected_status", [
@@ -426,3 +456,66 @@ def test_today_open_returns_zero_on_missing(monkeypatch):
                         lambda sym: {"rsp_cd": "00000", "t1102OutBlock": {"price": 81300}},
                         raising=False)
     assert b.today_open("005930") == 0.0
+
+
+# ── M1: fill_price는 cheprice(체결가) 우선, price(주문가) fallback ────────────
+
+def test_order_status_fill_price_uses_cheprice(monkeypatch):
+    """M1: cheprice(체결가) 있으면 fill_price로 사용; price(주문가)와 다를 때 회귀 방지."""
+    from localapp import ls_broker
+    b = object.__new__(ls_broker.LsBroker)
+    b.account_no = "5550123401"
+
+    # price=80000(주문가), cheprice=81200(체결가) — 다른 값으로 wrong-field regression 차단
+    _fixture_resp = {
+        "rsp_cd": "00000",
+        "t0425OutBlock1": [_t0425_row("77777", 5, 0, "매수",
+                                       price=80000, cheprice=81200)],
+    }
+    monkeypatch.setattr(b, "_pending_raw", lambda: _fixture_resp, raising=False)
+    result = b.order_status("77777", "005930")
+    assert result["fill_price"] == 81200.0, (
+        f"fill_price는 cheprice=81200 이어야 함 (got {result['fill_price']})")
+
+
+def test_order_status_fill_price_fallback_to_price_when_no_cheprice(monkeypatch):
+    """M1 fallback: cheprice 없으면 price 사용."""
+    from localapp import ls_broker
+    b = object.__new__(ls_broker.LsBroker)
+    b.account_no = "5550123401"
+
+    # cheprice 없음 → price=80500 fallback
+    _fixture_resp = {
+        "rsp_cd": "00000",
+        "t0425OutBlock1": [_t0425_row("88888", 5, 3, "매수", price=80500)],
+    }
+    monkeypatch.setattr(b, "_pending_raw", lambda: _fixture_resp, raising=False)
+    result = b.order_status("88888", "005930")
+    assert result["fill_price"] == 80500.0
+
+
+# ── P1-LS: account_snapshot(overseas=False) — Broker 서명 패리티 ──────────────
+
+def test_account_snapshot_accepts_overseas_kwarg(monkeypatch):
+    """P1-LS: Trader가 overseas=False로 호출해도 TypeError 없이 정상 동작.
+
+    LsBroker.account_snapshot(overseas=...) 서명이 KIS Broker 프로토콜과 패리티를 맞춤.
+    overseas는 무시됨(LS는 국내 only).
+    """
+    from localapp import ls_broker
+    b = object.__new__(ls_broker.LsBroker)
+    b.account_no = "5550123401"
+
+    _fixture = {
+        "rsp_cd": "00000",
+        "t0424OutBlock": {"sunamt1": "5000", "tappamt": "200000"},
+        "t0424OutBlock1": [],
+    }
+    monkeypatch.setattr(b, "_balance_raw", lambda: _fixture, raising=False)
+
+    # overseas=False로 명시 호출 — TypeError 없어야 함
+    snap = b.account_snapshot(overseas=False)
+    assert isinstance(snap, dict)
+    assert snap["balance"]["cash"] == 5000
+    assert snap["balance"]["total_eval"] == 200000
+    assert snap["positions"] == []
