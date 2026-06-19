@@ -523,6 +523,19 @@ def company_financials(ticker: str, user: User = Depends(get_current_user)):
     return financials.financials(ticker.strip())
 
 
+@router.get("/financials/{ticker}/export.xlsx")
+def company_financials_xlsx(ticker: str, user: User = Depends(get_current_user)):
+    """재무제표 전체(연간·분기 × 손익/재무/현금)를 .xlsx 파일로 다운로드."""
+    from .. import financials
+    code = ticker.strip()
+    data = financials.to_xlsx(code)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="financials_{code}.xlsx"'},
+    )
+
+
 def _session_now() -> dict:
     """한국 정규장 기준 현재 세션 표시. 서버 tz와 무관하게 KST로 계산."""
     kst = datetime.now(ZoneInfo("Asia/Seoul"))

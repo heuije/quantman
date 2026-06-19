@@ -279,14 +279,18 @@ const TIP = { contentStyle: { fontSize: 12, padding: "8px 11px", borderRadius: 8
 // 선택 종목의 추정 실적 + 애널리스트 리포트 — 개별종목분석(KrSections)의 표를 그대로 재사용.
 export function CompanyReport({ ticker, company }: { ticker: string; company?: IndustryCompany }) {
   const [kr, setKr] = useState<KrExtras | null>(null);
+  const [cur, setCur] = useState<number | null>(null);   // 현재가(상승여력 계산용)
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let alive = true;
-    setBusy(true); setKr(null);
+    setBusy(true); setKr(null); setCur(null);
     api.krExtras(ticker)
       .then((d) => { if (alive) setKr(d); })
       .catch(() => { if (alive) setKr(null); })
       .finally(() => { if (alive) setBusy(false); });
+    api.symbolDetail(ticker, "1mo")
+      .then((d) => { if (alive) setCur(d.last?.close ?? null); })
+      .catch(() => { /* 무시 */ });
     return () => { alive = false; };
   }, [ticker]);
 
@@ -337,10 +341,36 @@ export function CompanyReport({ ticker, company }: { ticker: string; company?: I
   };
   const hasMult = !!earnings && (!!earnings.rows["PER"] || !!earnings.rows["PBR"] || (capEok != null && daEok != null));
 
+  // #5 컨센서스 목표주가(평균) + 상승여력 — 추정실적 상단 배너. 컨센서스 없으면 리포트 목표가로 폴백.
+  const cTargets = (kr?.consensus || []).map((c) => c.target).filter((t): t is number => t != null && t > 0);
+  const rTargets = (kr?.reports || []).map((r) => r.target).filter((t): t is number => t != null && t > 0);
+  const tList = cTargets.length ? cTargets : rTargets;
+  const avgTarget = tList.length ? Math.round(tList.reduce((s, t) => s + t, 0) / tList.length) : null;
+  const tUpside = (avgTarget != null && cur != null && cur > 0) ? (avgTarget / cur - 1) * 100 : null;
+
   if (busy) return <p style={{ color: "var(--muted)", fontSize: 13 }}>리포트 불러오는 중…</p>;
 
   return (
     <>
+      {/* #5 컨센서스 목표주가 — 추정실적 상단. 가격 + 현재가 대비 상승여력(±%) */}
+      {avgTarget != null && (
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap",
+          marginBottom: 12, padding: "10px 14px", background: "var(--accent-soft)",
+          border: "1px solid var(--border)", borderRadius: 8 }}>
+          <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 700 }}>
+            컨센서스 {cTargets.length ? "평균 목표주가" : "목표주가"}</span>
+          <span style={{ fontSize: 20, fontWeight: 800 }}>{avgTarget.toLocaleString()}원</span>
+          {tUpside != null && (
+            <span style={{ fontSize: 14, fontWeight: 700, color: tUpside >= 0 ? UP : DOWN }}>
+              {tUpside >= 0 ? "▲" : "▼"} {tUpside >= 0 ? "+" : ""}{tUpside.toFixed(1)}%
+            </span>
+          )}
+          {cur != null && (
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>현재 {cur.toLocaleString()}원</span>
+          )}
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>· {tList.length}개 증권사 기준</span>
+        </div>
+      )}
       {/* 추정 실적 — 개별종목분석과 동일 */}
       {hasEarnings ? (
         <div style={{ overflowX: "auto" }}>
@@ -780,6 +810,14 @@ export function RatingsSummary({ ticker, name, onOpen }:
   );
 }
 
+// 기사 요약에서 첫 문장(없으면 첫 문단)만 추출 — 기사 링크와 본문 중복을 줄이고 핵심만 노출.
+function firstSentence(s: string): string {
+  const para = s.trim().split(/\n+/)[0];
+  const m = para.match(/^[\s\S]*?[.!?。…](?=\s|$)/);
+  const sent = (m ? m[0] : para).trim();
+  return sent.length > 140 ? sent.slice(0, 140).trim() + "…" : sent;
+}
+
 // 섹터 키워드 뉴스 (Google News RSS — 국내/해외). 클릭 시 원문.
 const SECTOR_NEWS_KW = {
   kr: ["2차전지", "양극재", "음극재", "배터리", "ESS", "분리막", "동박", "전지박", "폐배터리", "전고체", "데이터센터"],
@@ -817,8 +855,9 @@ export function SectorNewsPanel() {
         <a key={i} href={n.url} target="_blank" rel="noreferrer"
           style={{ display: "block", padding: "8px 2px", borderBottom: "1px solid var(--border)", textDecoration: "none", color: "inherit" }}>
           <div style={{ fontWeight: 600, fontSize: "12pt", color: DOWN }}>{n.title}</div>
-          {n.summary && <div style={{ fontSize: "12pt", color: "var(--muted)", marginTop: 3, lineHeight: 1.5 }}>{n.summary}</div>}
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>{n.source}{n.date ? ` · ${n.date}` : ""}</div>
+          {/* 기사링크(제목)와 중복 줄이기 — 날짜·신문사명 + 본문 첫 문장만 */}
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>{n.date ? `${n.date} · ` : ""}{n.source}</div>
+          {n.summary && <div style={{ fontSize: "12pt", color: "var(--muted)", marginTop: 2, lineHeight: 1.5 }}>{firstSentence(n.summary)}</div>}
         </a>
       ))}
     </>

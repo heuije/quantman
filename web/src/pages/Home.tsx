@@ -67,7 +67,8 @@ interface ChartDef { t: string; unit: "억원" | "%"; v: SeriesArr; yoy?: Series
 
 // Financials 주요지표 — 한경식. PL/BS/CF 섹션 분리, 한 행 2개, 막대(값)+선(YoY/QoQ),
 // 이익률 항목은 마진선 추가, 막대 위 값(1자리) 라벨, 색상=네이비+골드. 연간/분기 src 반영.
-function FinCharts({ src, quarterly, stmt }: { src: FinancialsData["annual"]; quarterly: boolean; stmt: keyof FinancialsData["annual"] }) {
+function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
+  { src: FinancialsData["annual"]; quarterly: boolean; stmt: keyof FinancialsData["annual"]; from?: string; to?: string }) {
   const norm = (s: string) => s.replace(/\s/g, "");
   const row = (st: FinStatement | undefined, names: string[]) =>
     st?.rows.find((r) => names.includes(norm(r.account)));
@@ -75,6 +76,8 @@ function FinCharts({ src, quarterly, stmt }: { src: FinancialsData["annual"]; qu
   const periods = pl?.periods || bs?.periods || cf?.periods || [];
   if (periods.length === 0) return null;
   const N = periods.length;
+  // #3 사용자 지정 기간(from~to)만 차트에 표시. 기간 "YYYY/MM"은 사전식 비교로 정렬됨.
+  const keep = periods.map((p) => (!from || p >= from) && (!to || p <= to));
   const vals = (st: FinStatement | undefined, names: string[]): SeriesArr => row(st, names)?.values ?? Array(N).fill(null);
   const chg = (st: FinStatement | undefined, names: string[]): SeriesArr => row(st, names)?.change ?? Array(N).fill(null);
   const sumS = (...as: SeriesArr[]): SeriesArr => periods.map((_, i) =>
@@ -137,13 +140,14 @@ function FinCharts({ src, quarterly, stmt }: { src: FinancialsData["annual"]; qu
     const showMg = !isPct && !!c.mg;
     const hasLine = showMg;   // 우측 % 축은 마진 선이 있을 때만
     // 차트 내 단위 일관화 — 1조(=10,000억) 이상이면 조, 미만이면 억. 축·라벨·툴팁·헤더 모두 동일 단위.
-    const nums = c.v.filter((x): x is number => x != null).map(Math.abs);
+    const nums = c.v.filter((x, i): x is number => x != null && keep[i]).map(Math.abs);   // 단위는 표시 기간 기준
     const useJo = !isPct && nums.length > 0 && Math.max(...nums) >= 10000;
     const div = useJo ? 10000 : 1;
     const unit = isPct ? "%" : useJo ? "조원" : "억원";
     const uTip = isPct ? "%" : useJo ? "조" : "억";
     const data = periods.map((p, i) => ({ x: xLabel(p),
-      v: c.v[i] == null ? null : (c.v[i] as number) / div, yoy: c.yoy?.[i] ?? null, mg: c.mg?.[i] ?? null }));
+      v: c.v[i] == null ? null : (c.v[i] as number) / div, yoy: c.yoy?.[i] ?? null, mg: c.mg?.[i] ?? null }))
+      .filter((_, i) => keep[i]);   // #3 사용자 지정 기간만
     const axisFmt = isPct ? (n: number) => `${n}%` : useJo ? (n: number) => n.toFixed(1) : (n: number) => Math.round(n).toLocaleString();
     const lblFmt = (n: unknown) => n == null ? "" : useJo
       ? Number(n).toFixed(1) : Number(n).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -209,6 +213,10 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
   const [stmtTab, setStmtTab] = useState<keyof FinancialsData["annual"]>("PL");  // 상단 탭: 손익/재무/현금
   const [period, setPeriod] = useState<"A" | "Q">("A");                 // 하위 탭: 연간/분기
   const [showChg, setShowChg] = useState(true);                        // 증감률(YoY/QoQ) 행 일괄 표시
+  const [showCharts, setShowCharts] = useState(true);                  // #1 그래프 토글(접기/펼치기)
+  const [pFrom, setPFrom] = useState("");                              // #3 그래프 기간 시작(""=처음)
+  const [pTo, setPTo] = useState("");                                  // #3 그래프 기간 끝(""=마지막)
+  const [xlBusy, setXlBusy] = useState(false);                         // #4 엑셀 다운로드 진행
 
   useEffect(() => {
     let alive = true; setBusy(true); setErr(false); setData(null);
@@ -218,6 +226,13 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
       .finally(() => { if (alive) setBusy(false); });
     return () => { alive = false; };
   }, [ticker]);
+  // 연간↔분기 전환 시 그래프 기간 범위 초기화(기간 목록이 달라짐)
+  useEffect(() => { setPFrom(""); setPTo(""); }, [period]);
+
+  const downloadExcel = () => {
+    setXlBusy(true);
+    api.financialsExcel(ticker).catch(() => { /* 무시 */ }).finally(() => setXlBusy(false));
+  };
 
   const eokN = (v: number | null) => v == null ? "—" : Math.round(v).toLocaleString();
   const pctV = (v: number | null) => v == null ? "—" : `${v.toFixed(1)}%`;
@@ -300,9 +315,10 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
     return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>재무 데이터가 아직 없습니다. (다음 보고서 마감일에 자동 수집)</p>;
 
   const src = period === "A" ? data.annual : data.quarterly;
+  const chartPeriods = src.PL?.periods || src.BS?.periods || src.CF?.periods || [];
   return (
     <>
-      {/* 연간 / 분기 — 차트·표 공통 기간 선택 */}
+      {/* 연간 / 분기 — 차트·표 공통 기간 선택 + 엑셀 다운로드 */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
         {([["A", "연간 (YoY %)"], ["Q", "분기 (QoQ %)"]] as const).map(([k, lbl]) => (
           <button key={k} type="button" onClick={() => setPeriod(k)}
@@ -311,6 +327,14 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
               background: period === k ? "rgba(79,143,245,0.16)" : "transparent",
               color: period === k ? "#4f8ff5" : "var(--muted)" }}>{lbl}</button>
         ))}
+        {/* #4 재무제표 전체 엑셀 다운로드 */}
+        <button type="button" className="ghost sm" onClick={downloadExcel} disabled={xlBusy}
+          style={{ marginLeft: "auto", fontSize: 12, padding: "6px 14px", display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          {xlBusy ? "내려받는 중…" : "엑셀 다운로드"}
+        </button>
       </div>
       {/* 손익계산서 / 재무상태표 / 현금흐름표 — 탭 선택에 따라 차트·표가 함께 바뀜 */}
       <div style={{ display: "flex", gap: 2, borderBottom: "2px solid var(--border)", marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
@@ -325,8 +349,33 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
           {showChg ? "▾ 증감률 행 접기" : "▸ 증감률 행 펼치기"}
         </button>
       </div>
-      {/* 선택 재무제표의 지표별 차트 → 상세 표 */}
-      <FinCharts src={src} quarterly={period === "Q"} stmt={stmtTab} />
+      {/* #1 그래프 토글 + #3 그래프 기간(연도/분기) 사용자 지정 */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button type="button" className="ghost sm" onClick={() => setShowCharts((v) => !v)}
+          style={{ fontSize: 12, padding: "5px 12px" }}>
+          {showCharts ? "▾ 그래프 접기" : "▸ 그래프 펼치기"}
+        </button>
+        {showCharts && chartPeriods.length > 1 && (
+          <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: "var(--muted)" }}>
+            <span>그래프 기간</span>
+            <select value={pFrom} onChange={(e) => setPFrom(e.target.value)} style={{ fontSize: 12, padding: "3px 6px" }}>
+              <option value="">처음</option>
+              {chartPeriods.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <span>~</span>
+            <select value={pTo} onChange={(e) => setPTo(e.target.value)} style={{ fontSize: 12, padding: "3px 6px" }}>
+              <option value="">마지막</option>
+              {chartPeriods.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+            {(pFrom || pTo) && (
+              <button type="button" className="ghost sm" onClick={() => { setPFrom(""); setPTo(""); }}
+                style={{ fontSize: 11, padding: "2px 8px" }}>전체</button>
+            )}
+          </div>
+        )}
+      </div>
+      {/* 선택 재무제표의 지표별 차트(토글·기간 적용) → 상세 표 */}
+      {showCharts && <FinCharts src={src} quarterly={period === "Q"} stmt={stmtTab} from={pFrom} to={pTo} />}
       {renderTable(period, stmtTab, src[stmtTab])}
     </>
   );
