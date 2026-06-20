@@ -124,3 +124,26 @@ def test_summarize_surfaces_warnings():
            "warnings": [{"code": "inactive_buckets", "message": "무거래 구간: 2021 — 데이터 결손 가능"}]}
     s = summarize_result(res)
     assert "⚠" in s and "무거래 구간: 2021" in s
+
+
+def test_strategy_from_spec_preserves_run_query_warnings(monkeypatch):
+    """service가 run_query(무거래 등) 경고를 검증경고로 **덮어쓰지 않고 병합**(#2 전달 버그 회귀가드 —
+    conv#10에서 2026 무거래 경고가 strategy_from_spec의 res['warnings']= 덮어쓰기로 유실됐던 것)."""
+    import numpy as np
+    import pandas as pd
+    from quant_core.ir_engine import service
+
+    fake = {"success": True, "axis": "period_split", "buckets": {}, "metrics": {},
+            "warnings": [{"code": "inactive_buckets", "message": "무거래 구간: 2026"}]}
+    monkeypatch.setattr(service, "run_query", lambda s, ds: dict(fake))
+    idx = pd.date_range("2020-01-02", periods=60, freq="B")
+    ds = {"AAA": pd.DataFrame({"Open": 100.0, "High": 101.0, "Low": 99.0,
+                              "Close": np.linspace(100, 110, 60), "Volume": 1e6}, index=idx)}
+    ir = {"universe": {"kind": "single", "symbols": ["AAA"]},
+          "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}},
+          "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
+                       "entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 1}},
+          "query": "simulate", "study": {"axis": "time_fold", "split_period": "year"}}
+    res = service.strategy_from_spec(ir, ds)
+    msgs = [w.get("message", "") for w in (res.get("warnings") or [])]
+    assert any("무거래" in m for m in msgs), f"run_query 경고 유실: {res.get('warnings')}"

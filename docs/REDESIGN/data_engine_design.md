@@ -143,3 +143,33 @@
 - FDR `DataReader`(NAVER 백엔드 2000~, 무로그인, 정상) — `StockListing`만 로그인 게이트.
 - OpenDART: opendart.fss.or.kr (2015~ 전체재무제표, 20k/일, 에러020).
 - yfinance: KR 대형주 OHLCV 깊은 이력 OK·전 종목/펀더멘털 약함. SEC EDGAR(US 무키). GDELT(뉴스 무료·한국어). Finnhub(US 실적). FnGuide/WISEfn(KR 추정치 유료 독점).
+
+---
+
+## 7. v2 — 무결성·효율 진화 (2026-06-20 추가)
+
+> §2~6은 **소싱 일원화**(레지스트리 + 3서빙뷰)로 결함 A(분열)·C(이중경로)를 닫는다. 그러나
+> **결함 B(실행 전 완전성·최신성 불변식 부재)**는 다루지 않는다 — 소스를 통일해도 "백테스트가 쓰는
+> 데이터가 완전·최신한지" 보장하는 *계약*이 없으면 침묵 실패(#4 KOSPI 내부공백 0%, 2026 신호
+> staleness 0%)는 남는다. **소싱 일원화 ≠ 품질 보장.** 두 기둥을 추가한다(기존 설계 유지·재발명 아님).
+
+### 기둥 Ⅰ — 데이터 품질 계약 (결함 B, 키스톤)
+데이터가 품질 계약과 함께 흐른다. datapoint가 완전성·최신성을 *선언*하고 3지점이 *강제*:
+- **선언(레지스트리):** 항목당 `Coverage`={거래달력, history_floor, max_staleness, completeness_validator}. `csv_coverage_gap`을 validator의 한 구현으로 일반화(KOSPI 전용→전 소스).
+- **갱신 시(오케스트레이터):** validator로 내부공백·staleness 감지 → 자동 재시드(KOSPI 재시드 패턴 전 소스로).
+- **서빙 시:** history/snapshot/symbol이 데이터 + 품질 매니페스트(per-symbol last_date·결손) 반환.
+- **🔑 실행 시(키스톤·Phase 0.5):** `strategy_from_spec` 진입에서 `assess_data_quality`로 [start,end] 완전·최신 검사 → 미달=명시 경고(침묵 0% 차단). 어느 심볼·미래 심볼이든 **한 진입점에서 전수**. (`#2 무거래 경고`=사후 버전, 이건 사전.)
+
+### 기둥 Ⅱ — 레지스트리 구동 갱신 오케스트레이터 (효율 + B)
+흩어진 `fetch_*`·크론 6개·startup 스레드 → 단일 오케스트레이터(레지스트리 순회·cadence·validator로 갱신 판정). 한 곳에서 동일 규율, 새 심볼은 등록만으로 가드 상속. 효율: stale만 fetch·API한도·병렬.
+
+### 효율
+①중복 fetch 제거(원칙5 코드 강제) ②이중경로 제거(선물분석·portfolio도 서빙뷰 소비) ③갱신 일원화 ④뷰 분리 유지(과일원화 회피).
+
+### 단계 (기존 Phase 진화)
+- **Phase 0**(레지스트리) + `Coverage` 필드.
+- **🔑 Phase 0.5 (실행 전 불변식) — NEW·최소·최고 레버리지·기존 Phase와 독립:** `assess_data_quality`(휴리스틱·결정적: 무데이터·내부공백·교차심볼 신선도발산, now() 미사용) → `strategy_from_spec` 경고 병합 → 모델요약·웹 표면화. **현재 데이터로도 즉시 효과.**
+- **Phase 1~6** 유지 + 각 Phase가 레지스트리에 validator 등록. 오케스트레이터는 Phase 3과 일원화. 절대 신선도(vs 오늘)는 레지스트리 Coverage(후속).
+
+### 검증
+불변식: stale/gappy fixture→명시 경고(침묵 0% 없음)·골든 14 불변. 오케스트레이터: 순회·stale만 fetch. 서빙: 품질 매니페스트 동반.
