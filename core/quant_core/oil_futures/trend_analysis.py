@@ -275,6 +275,87 @@ def trend_explanatory_scan(
     return cells
 
 
+@dataclass(frozen=True)
+class SweepCell:
+    """2D 스윕 한 칸 — 행/열 축 값 인덱스 + 표본·평균향후·상승비율·R²."""
+
+    row: int                  # 행 축 값 인덱스
+    col: int                  # 열 축 값 인덱스
+    n: int
+    mean_forward: float       # 평균 향후 H일 증감율 (%). n==0이면 nan
+    up_ratio: float           # 향후 증감율>0 비율 (%). n==0이면 nan
+    r_squared: float          # forward~past R². n<3이면 nan
+
+
+SWEEP_AXES = ("close", "change", "lookback", "horizon")
+
+
+def trend_sweep_2d(
+    df: pd.DataFrame,
+    *,
+    row_axis: str,
+    col_axis: str,
+    row_values: list,         # close/change 축=(lo,hi) 밴드 / lookback/horizon 축=정수
+    col_values: list,
+    lookback: int,            # 스윕 안 하는 축의 고정값
+    horizon: int,
+    price_lo: float,
+    price_hi: float,
+    change_lo: float,
+    change_hi: float,
+    gap: int = 0,
+) -> list[SweepCell]:
+    """4축{close·change·lookback·horizon} 중 2축을 격자로 스윕 → 칸마다 표본·평균향후·상승비율·R².
+
+    스윕 안 하는 2축은 고정값(lookback/horizon/price_*/change_*). close/change 축 값은 (lo,hi)
+    밴드, lookback/horizon 축 값은 정수. 셀 = 종가밴드 ∧ 증감율밴드 매칭 → gap 디클러스터 →
+    지표((L,H) 설명력 지도와 동일 파이프라인의 4축 일반화). 값 하나씩 넣지 않고 한눈에 비교용.
+    """
+    if row_axis not in SWEEP_AXES or col_axis not in SWEEP_AXES:
+        raise ValueError(f"축은 {SWEEP_AXES} 중 하나")
+    if row_axis == col_axis:
+        raise ValueError("행 축과 열 축은 달라야 함")
+    pos = {pd.Timestamp(d): i for i, d in enumerate(df["date"].to_numpy())} if gap > 0 else {}
+    ev_cache: dict[tuple[int, int], list] = {}
+
+    def _events(L: int, H: int) -> list:
+        key = (L, H)
+        if key not in ev_cache:
+            ev_cache[key] = trend_events(df, L, H)   # (L,H) 고정 축이면 1회만 계산
+        return ev_cache[key]
+
+    cells: list[SweepCell] = []
+    for ri, rv in enumerate(row_values):
+        for ci, cv in enumerate(col_values):
+            L, H = int(lookback), int(horizon)
+            clo, chi, chlo, chhi = price_lo, price_hi, change_lo, change_hi
+            for axis, val in ((row_axis, rv), (col_axis, cv)):
+                if axis == "lookback":
+                    L = int(val)
+                elif axis == "horizon":
+                    H = int(val)
+                elif axis == "close":
+                    clo, chi = float(val[0]), float(val[1])
+                else:  # change
+                    chlo, chhi = float(val[0]), float(val[1])
+            if L < 1 or H < 1:
+                cells.append(SweepCell(ri, ci, 0, float("nan"), float("nan"), float("nan")))
+                continue
+            evs = [e for e in _events(L, H)
+                   if clo <= e.close <= chi and chlo <= e.past_return * 100.0 <= chhi]
+            evs = _decluster_by_gap(evs, int(gap), pos)
+            n = len(evs)
+            fwd = [e.forward_return * 100.0 for e in evs]
+            mean_fwd = (sum(fwd) / n) if n else float("nan")
+            up_r = (100.0 * sum(1 for v in fwd if v > 0) / n) if n else float("nan")
+            r2 = float("nan")
+            if n >= 3:
+                reg = trend_regression(evs, H)
+                r2 = reg.r_squared if reg else float("nan")
+            cells.append(SweepCell(ri, ci, n, mean_fwd, up_r, r2))
+    return cells
+
+
 def trend_matched(
     df: pd.DataFrame,
     lookback: int,

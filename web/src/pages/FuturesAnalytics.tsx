@@ -37,9 +37,11 @@ import {
   type OilMacroContext,
   type OilPricePoint,
   type OilSeasonality,
+  type OilSweepAxis,
   type OilTrendEvents,
   type OilTrendScan,
   type OilTrendScanCell,
+  type OilTrendSweep,
   type OilWalkForward,
 } from "../api";
 
@@ -1346,6 +1348,39 @@ function teNiceUnit(raw: number): number {
   return nice * mag;
 }
 
+type TeMetric = "ret" | "up" | "r2" | "n";
+
+// (L,H) 지도·2D 스윕 공용 셀 스타일 — 지표별 색·텍스트. 수익률·상승비율=발산(수익/높음=빨강·
+// 손실/낮음=파랑, 한국관례), R²·표본수=오렌지 농도. lowConf면 알파 상한↓. maxAbs/maxPos는
+// 호출측이 고신뢰 칸 기준으로 계산한 정규화 분모.
+function teMetricCell(metric: TeMetric, v: number, lowConf: boolean, maxPos: number, maxAbs: number):
+    { bg: string; txt: string; fg: string } {
+  const cap = lowConf ? 0.4 : 0.85;
+  let a: number, bg: string, txt: string;
+  if (metric === "ret") {
+    a = Math.min(cap, (Math.abs(v) / maxAbs) * 0.85);
+    bg = v >= 0 ? `rgba(222,48,51,${a})` : `rgba(22,104,196,${a})`;
+    txt = (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+  } else if (metric === "up") {
+    a = Math.min(cap, (Math.abs(v - 50) / 50) * 0.85);
+    bg = v >= 50 ? `rgba(222,48,51,${a})` : `rgba(22,104,196,${a})`;
+    txt = v.toFixed(0) + "%";
+  } else {  // r2 | n — 오렌지 농도
+    a = Math.min(cap, (v / maxPos) * 0.85);
+    bg = `rgba(217,119,87,${a})`;
+    txt = metric === "n" ? String(v) : v.toFixed(2);
+  }
+  return { bg, txt, fg: a > 0.55 ? "#fff" : "var(--text)" };
+}
+
+// 2D 스윕 축 옵션 (라벨·코너 약칭).
+const TE_SWEEP_AXES: { v: OilSweepAxis; label: string; short: string }[] = [
+  { v: "close", label: "종가 범위", short: "종가" },
+  { v: "change", label: "증감율 범위", short: "증감율" },
+  { v: "lookback", label: "과거 L", short: "과거L" },
+  { v: "horizon", label: "향후 H", short: "향후H" },
+];
+
 // 매칭 조건의 평균 향후 종가 증감율에 따른 한줄 전망.
 // G영업일 이내 연속/겹친 이벤트는 1건만(그리디). events 는 날짜 오름차순 가정.
 function teDeclusterByGap<T extends { date: string }>(events: T[], gap: number, dateIdx: Map<string, number>): T[] {
@@ -1410,7 +1445,14 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   const [dHi, setDHi] = useState<number | "">("");     // 과거 증감율 상한
   const [dGap, setDGap] = useState(TE_DEF_GAP);        // 이벤트 최소 간격(영업일) — 클러스터/겹침 디클러스터. 기본 60: 독립 표본 확보. (L,H) 지도는 저표본도 그리므로(n≥3) 60이어도 안 비고 저신뢰 음영으로 표시됨
   // (L,H) 지도 셀 지표 — 기본은 사용자가 최적화하는 '평균 향후수익률'.
-  const [scanMetric, setScanMetric] = useState<"ret" | "up" | "r2" | "n">("ret");
+  const [scanMetric, setScanMetric] = useState<TeMetric>("ret");
+  // 2D 스윕 — 행/열 축 선택(나머지 2축은 현재 입력 고정) + 지표.
+  const [sweepRowAxis, setSweepRowAxis] = useState<OilSweepAxis>("close");
+  const [sweepColAxis, setSweepColAxis] = useState<OilSweepAxis>("horizon");
+  const [sweepMetric, setSweepMetric] = useState<TeMetric>("ret");
+  const [sweep, setSweep] = useState<OilTrendSweep | null>(null);
+  const [sweepLoading, setSweepLoading] = useState(false);
+  const [sweepError, setSweepError] = useState<string | null>(null);
 
   // 적용된 설정 (확인 클릭 시 스냅샷)
   const [applied, setApplied] = useState<
@@ -1509,6 +1551,40 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
         e.past_return * 100 >= applied.lo && e.past_return * 100 <= applied.hi,
     );
   }, [data, applied]);
+
+  // 2D 스윕 — applied(확인 스냅샷)·축 변경 시 재조회. 나머지 2축은 applied 고정값.
+  useEffect(() => {
+    if (!applied) { setSweep(null); return; }
+    if (sweepRowAxis === sweepColAxis) { setSweep(null); setSweepError("행 축과 열 축을 다르게 선택하세요"); return; }
+    setSweepLoading(true);
+    setSweepError(null);
+    futuresApi.trendSweep(symbol, {
+      row_axis: sweepRowAxis, col_axis: sweepColAxis,
+      lookback: applied.L, horizon: applied.H,
+      price_lo: applied.nLo, price_hi: applied.nHi,
+      change_lo: applied.lo, change_hi: applied.hi, gap: applied.gap,
+    })
+      .then(setSweep)
+      .catch((e) => { setSweep(null); setSweepError(e?.message || "스윕 조회 실패"); })
+      .finally(() => setSweepLoading(false));
+  }, [applied, sweepRowAxis, sweepColAxis, symbol]);
+
+  // 스윕 색 정규화 — 선택 지표값 추출 + 고신뢰 칸(n≥min_n) 기준 정규화(저표본 과장 방지).
+  const sweepView = useMemo(() => {
+    if (!sweep) return null;
+    const valOf = (c: OilTrendSweep["cells"][number]): number | null =>
+      sweepMetric === "r2" ? c.r_squared
+        : sweepMetric === "up" ? c.up_ratio
+          : sweepMetric === "n" ? c.n
+            : c.mean_forward;
+    const hiv = sweep.cells.filter((c) => valOf(c) != null && c.n >= sweep.min_n).map((c) => valOf(c) as number);
+    const anyv = sweep.cells.filter((c) => valOf(c) != null).map((c) => valOf(c) as number);
+    const base = hiv.length ? hiv : anyv;
+    const maxPos = Math.max(1e-9, ...base, 0);
+    const maxAbs = Math.max(1e-9, ...base.map((x) => Math.abs(x)), 0);
+    const byKey = new Map(sweep.cells.map((c) => [`${c.row}|${c.col}`, c] as const));
+    return { valOf, maxPos, maxAbs, byKey };
+  }, [sweep, sweepMetric]);
 
   // 날짜→가격 인덱스(영업일 간격 계산용).
   const dateIdx = useMemo(() => new Map(prices.map((p, i) => [p.date, i] as const)), [prices]);
@@ -1851,23 +1927,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                           }
                           // 저신뢰(n<min_n)는 흐리게(알파 상한↓)+점선+표본수 — 작은 n의 과장된 값 오인 방지.
                           const lowConf = c.n < scan.min_n;
-                          const cap = lowConf ? 0.4 : 0.85;
-                          // 지표별 색: 수익률·상승비율=발산(수익/높음=빨강·손실/낮음=파랑, 한국관례),
-                          // R²·표본수=오렌지 농도. 텍스트도 지표별 포맷.
-                          let a: number, bg: string, txt: string;
-                          if (scanMetric === "ret") {
-                            a = Math.min(cap, (Math.abs(v) / scanView.maxAbs) * 0.85);
-                            bg = v >= 0 ? `rgba(222,48,51,${a})` : `rgba(22,104,196,${a})`;
-                            txt = (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
-                          } else if (scanMetric === "up") {
-                            a = Math.min(cap, (Math.abs(v - 50) / 50) * 0.85);
-                            bg = v >= 50 ? `rgba(222,48,51,${a})` : `rgba(22,104,196,${a})`;
-                            txt = v.toFixed(0) + "%";
-                          } else {  // r2 | n — 오렌지 농도
-                            a = Math.min(cap, (v / scanView.maxPos) * 0.85);
-                            bg = `rgba(217,119,87,${a})`;
-                            txt = scanMetric === "n" ? String(v) : v.toFixed(2);
-                          }
+                          const { bg, txt, fg } = teMetricCell(scanMetric, v, lowConf, scanView.maxPos, scanView.maxAbs);
                           const sub = scanMetric === "r2"
                             ? `${(c.slope ?? 0) >= 0 ? "β+" : "β−"}${c.sign_stable ? " ✓" : ""}${c.hac_p_value != null && c.hac_p_value < 0.05 ? " *" : ""}${lowConf ? ` ⚠n${c.n}` : ""}`
                             : `n${c.n}${lowConf ? " ⚠" : ""}`;
@@ -1878,7 +1938,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                             + ` · β ${c.slope != null ? c.slope.toFixed(2) : "—"} · 부호안정 ${c.sign_stable ? "예" : "아니오"}`;
                           return (
                             <td key={H} title={tip} onClick={() => applyAndCompute(L, H)}
-                              style={{ background: bg, color: a > 0.55 ? "#fff" : "var(--text)",
+                              style={{ background: bg, color: fg,
                                 borderRadius: 5, cursor: "pointer", outline: isCur ? "2px solid #d97757" : "none",
                                 border: lowConf ? "1px dashed var(--muted)" : undefined }}>
                               <div style={{ fontWeight: 600 }}>{txt}</div>
@@ -1893,6 +1953,85 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
               </div>
               )}
               {scanLoading && <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>지도 계산 중…</div>}
+            </div>
+          )}
+
+          {/* 2D 스윕 — 4축 중 2개 격자(값 하나씩 안 넣고 한눈에). 나머지 2축은 현재 입력 고정 */}
+          {applied && (
+            <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+              <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
+                <b>2D 스윕</b> — 4축(종가범위·증감율범위·과거L·향후H) 중 둘을 격자로. 나머지 2축은 현재 입력 고정. 값 하나씩 안 넣고 최적 조합을 한눈에.
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <span className="muted" style={{ fontSize: 12 }}>행</span>
+                <select value={sweepRowAxis} onChange={(e) => setSweepRowAxis(e.target.value as OilSweepAxis)}
+                  style={{ fontSize: 12, padding: "3px 6px", borderRadius: 6, border: "1px solid var(--border)" }}>
+                  {TE_SWEEP_AXES.map((ax) => <option key={ax.v} value={ax.v} disabled={ax.v === sweepColAxis}>{ax.label}</option>)}
+                </select>
+                <span className="muted" style={{ fontSize: 12 }}>열</span>
+                <select value={sweepColAxis} onChange={(e) => setSweepColAxis(e.target.value as OilSweepAxis)}
+                  style={{ fontSize: 12, padding: "3px 6px", borderRadius: 6, border: "1px solid var(--border)" }}>
+                  {TE_SWEEP_AXES.map((ax) => <option key={ax.v} value={ax.v} disabled={ax.v === sweepRowAxis}>{ax.label}</option>)}
+                </select>
+                <span style={{ flex: "0 0 12px" }} />
+                {([["ret", "평균 향후수익률"], ["up", "상승비율"], ["r2", "설명력 R²"], ["n", "표본수"]] as const).map(([m, lbl]) => (
+                  <button key={m} onClick={() => setSweepMetric(m)}
+                    style={{
+                      fontSize: 12, padding: "3px 10px", borderRadius: 6, cursor: "pointer",
+                      border: sweepMetric === m ? "1px solid var(--accent)" : "1px solid var(--border)",
+                      background: sweepMetric === m ? "var(--accent-soft)" : "transparent",
+                      color: sweepMetric === m ? "var(--accent-strong)" : "var(--muted)",
+                      fontWeight: sweepMetric === m ? 700 : 400,
+                    }}>{lbl}</button>
+                ))}
+              </div>
+              {sweepError && <div className="muted" style={{ fontSize: 12, color: "var(--amber)", marginBottom: 6 }}>{sweepError}</div>}
+              {sweepLoading && <div className="muted" style={{ fontSize: 11 }}>스윕 계산 중…</div>}
+              {sweep && sweepView && !sweepLoading && (
+                <div className="table-scroll sticky-table" style={{ maxHeight: 420 }}>
+                  <table className="te-hm">
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: "left" }}>
+                          {TE_SWEEP_AXES.find((a) => a.v === sweepRowAxis)?.short}＼{TE_SWEEP_AXES.find((a) => a.v === sweepColAxis)?.short}
+                        </th>
+                        {sweep.col_labels.map((cl, ci) => <th key={ci}>{cl}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sweep.row_labels.map((rl, ri) => (
+                        <tr key={ri}>
+                          <th style={{ textAlign: "left" }}>{rl}</th>
+                          {sweep.col_labels.map((_, ci) => {
+                            const c = sweepView.byKey.get(`${ri}|${ci}`);
+                            const v = c ? sweepView.valOf(c) : null;
+                            if (!c || v == null) {
+                              return <td key={ci} title={c ? `n=${c.n}` : ""}
+                                style={{ background: "#f1efe8", color: "var(--muted)", opacity: 0.5, borderRadius: 5 }}>·</td>;
+                            }
+                            const lowConf = c.n < sweep.min_n;
+                            const { bg, txt, fg } = teMetricCell(sweepMetric, v, lowConf, sweepView.maxPos, sweepView.maxAbs);
+                            const tip = `n=${c.n}${lowConf ? " ⚠저신뢰" : ""}`
+                              + ` · 평균향후 ${c.mean_forward != null ? c.mean_forward.toFixed(2) + "%" : "—"}`
+                              + ` · 상승 ${c.up_ratio != null ? c.up_ratio.toFixed(0) + "%" : "—"}`
+                              + ` · R² ${c.r_squared != null ? c.r_squared.toFixed(3) : "—"}`;
+                            return (
+                              <td key={ci} title={tip}
+                                style={{ background: bg, color: fg, borderRadius: 5, border: lowConf ? "1px dashed var(--muted)" : undefined }}>
+                                <div style={{ fontWeight: 600 }}>{txt}</div>
+                                <div style={{ fontSize: 10, opacity: 0.9 }}>n{c.n}{lowConf ? " ⚠" : ""}</div>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div className="muted" style={{ fontSize: 11, marginTop: 6, color: "var(--amber)" }}>
+                ⚠ 다중비교: 최댓값 한 칸만 믿으면 과최적화 — 고-값이 <b>연속 영역</b>이고 <b>표본수</b>가 받쳐줄 때만 신뢰. 점선·흐림 = 저신뢰(n&lt;{sweep?.min_n ?? 30}).
+              </div>
             </div>
           )}
 

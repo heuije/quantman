@@ -31,6 +31,7 @@ from quant_core.oil_futures import (  # noqa: E402
     trend_explanatory_scan,
     trend_matched,
     trend_regression,
+    trend_sweep_2d,
 )
 
 
@@ -298,3 +299,44 @@ def test_explanatory_scan_gap_declusters():
     gapped = trend_explanatory_scan(df, [2], [2], 110, 120, gap=5)
     assert no_gap[0].n == 11
     assert gapped[0].n == 3
+
+
+# ───── trend_sweep_2d: 4축 중 2축 격자 ─────────────────────────────────────
+def test_trend_sweep_2d_close_by_horizon_grid():
+    closes = list(range(100, 150))
+    df = _mk(closes)
+    cells = trend_sweep_2d(
+        df, row_axis="close", col_axis="horizon",
+        row_values=[(110, 120), (120, 130)], col_values=[2, 5],
+        lookback=2, horizon=2, price_lo=110, price_hi=120,
+        change_lo=-1e9, change_hi=1e9, gap=0,
+    )
+    by = {(c.row, c.col): c for c in cells}
+    assert set(by) == {(0, 0), (0, 1), (1, 0), (1, 1)}         # 2×2 격자
+    # close∈[110,120] = 11건, 단조상승 → 향후 전부 양수.
+    assert by[(0, 0)].n == 11 and by[(0, 0)].up_ratio == 100.0 and by[(0, 0)].mean_forward > 0
+
+
+def test_trend_sweep_2d_lookback_horizon_matches_scan():
+    # L×H 스윕(증감율 무제한)은 설명력 스캔과 같은 표본·평균향후를 봐야 함(같은 파이프라인).
+    closes = list(range(100, 150))
+    df = _mk(closes)
+    sweep = trend_sweep_2d(
+        df, row_axis="lookback", col_axis="horizon",
+        row_values=[2], col_values=[2], lookback=2, horizon=2,
+        price_lo=110, price_hi=120, change_lo=-1e9, change_hi=1e9, gap=0,
+    )
+    scan = trend_explanatory_scan(df, [2], [2], 110, 120)
+    assert sweep[0].n == scan[0].n
+    assert sweep[0].mean_forward == scan[0].mean_forward
+
+
+def test_trend_sweep_2d_rejects_same_axis():
+    df = _mk(list(range(100, 150)))
+    with pytest.raises(ValueError):
+        trend_sweep_2d(
+            df, row_axis="close", col_axis="close",
+            row_values=[(1, 2)], col_values=[(1, 2)],
+            lookback=2, horizon=2, price_lo=1, price_hi=2,
+            change_lo=-1e9, change_hi=1e9,
+        )

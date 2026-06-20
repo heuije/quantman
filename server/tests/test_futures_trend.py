@@ -149,3 +149,38 @@ def test_trend_scan_gap_declusters(monkeypatch):
     # 종가 ∈ [110,120] = 11 연속일 → gap=0 11건, gap=5 디클러스터 3건.
     assert base["cells"][0]["n"] == 11
     assert gapped["cells"][0]["n"] == 3
+
+
+# ───── /trend-sweep (2D 스윕) ───────────────────────────────────────────
+def test_trend_sweep_requires_auth():
+    app = FastAPI()
+    app.include_router(futures.router)
+    r = TestClient(app).get("/futures/oil/trend-sweep?row_axis=close&col_axis=horizon&lookback=2&horizon=2&price_lo=110&price_hi=120")
+    assert r.status_code == 401
+
+
+def test_trend_sweep_close_by_horizon(monkeypatch):
+    client = _client(monkeypatch)
+    r = client.get("/futures/oil/trend-sweep?row_axis=close&col_axis=horizon&lookback=2&horizon=2&price_lo=110&price_hi=120")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["row_axis"] == "close" and body["col_axis"] == "horizon"
+    assert len(body["row_labels"]) == 7 and len(body["col_labels"]) == 7   # 종가 ±3 버킷 × H 7개
+    assert len(body["cells"]) == 49
+    cell = body["cells"][0]
+    assert set(cell) == {"row", "col", "n", "mean_forward", "up_ratio", "r_squared"}
+
+
+def test_trend_sweep_rejects_same_axis(monkeypatch):
+    client = _client(monkeypatch)
+    assert client.get(
+        "/futures/oil/trend-sweep?row_axis=close&col_axis=close&lookback=2&horizon=2&price_lo=110&price_hi=120"
+    ).status_code == 422
+
+
+def test_trend_sweep_change_axis_needs_band(monkeypatch):
+    # 증감율 축인데 증감율 범위 미지정(무제한) → 422.
+    client = _client(monkeypatch)
+    assert client.get(
+        "/futures/oil/trend-sweep?row_axis=change&col_axis=horizon&lookback=2&horizon=2&price_lo=110&price_hi=120"
+    ).status_code == 422

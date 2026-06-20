@@ -719,6 +719,26 @@ export interface OilTrendScan {
   min_n: number;
 }
 
+export type OilSweepAxis = "close" | "change" | "lookback" | "horizon";
+
+export interface OilTrendSweepCell {
+  row: number;
+  col: number;
+  n: number;
+  mean_forward: number | null;   // 평균 향후 H일 증감율(%)
+  up_ratio: number | null;       // 향후 증감율>0 비율(%)
+  r_squared: number | null;      // forward~past R² (n<3이면 null)
+}
+
+export interface OilTrendSweep {
+  row_axis: OilSweepAxis;
+  col_axis: OilSweepAxis;
+  row_labels: string[];          // 행 축 값 라벨 (예 "80~90" / "60일")
+  col_labels: string[];
+  cells: OilTrendSweepCell[];
+  min_n: number;                 // 저신뢰 표시 임계
+}
+
 export const futuresApi = {
   instruments: () => req<OilInstrument[]>("/futures/instruments"),
   dataInfo: (sym: string) => req<OilDataInfo>(`/futures/${sym}/data-info`),
@@ -863,6 +883,33 @@ export const futuresApi = {
     if (opts.min_n !== undefined) qs.set("min_n", String(opts.min_n));
     if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
     return req<OilTrendScan>(`/futures/${sym}/trend-scan?` + qs.toString());
+  },
+  // 4축 중 2축 격자 스윕 — 값 하나씩 안 넣고 한눈에 비교.
+  trendSweep: (sym: string, opts: {
+    row_axis: OilSweepAxis;
+    col_axis: OilSweepAxis;
+    lookback: number;
+    horizon: number;
+    price_lo: number;
+    price_hi: number;
+    change_lo?: number;
+    change_hi?: number;
+    gap?: number;
+    min_n?: number;
+  }) => {
+    const qs = new URLSearchParams({
+      row_axis: opts.row_axis,
+      col_axis: opts.col_axis,
+      lookback: String(opts.lookback),
+      horizon: String(opts.horizon),
+      price_lo: String(opts.price_lo),
+      price_hi: String(opts.price_hi),
+    });
+    if (opts.change_lo !== undefined) qs.set("change_lo", String(opts.change_lo));
+    if (opts.change_hi !== undefined) qs.set("change_hi", String(opts.change_hi));
+    if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
+    if (opts.min_n !== undefined) qs.set("min_n", String(opts.min_n));
+    return req<OilTrendSweep>(`/futures/${sym}/trend-sweep?` + qs.toString());
   },
   // 향후 종가 증감율 결과(조건·이벤트·요약) .xlsx 다운로드. blob 직접 처리.
   trendExport: async (sym: string, opts: {

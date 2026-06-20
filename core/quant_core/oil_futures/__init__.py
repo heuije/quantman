@@ -39,13 +39,16 @@ from .optimizer import (
 )
 from .excel_export import build_oil_excel, build_oil_trend_excel
 from .trend_analysis import (
+    SWEEP_AXES,
     ScanCell,
+    SweepCell,
     TrendEvent,
     TrendRegression,
     trend_events,
     trend_explanatory_scan,
     trend_matched,
     trend_regression,
+    trend_sweep_2d,
 )
 
 __all__ = [
@@ -58,4 +61,5 @@ __all__ = [
     "build_oil_excel", "build_oil_trend_excel",
     "TrendEvent", "TrendRegression", "trend_events", "trend_regression",
     "ScanCell", "trend_explanatory_scan", "trend_matched",
+    "SweepCell", "trend_sweep_2d", "SWEEP_AXES",
 ]

@@ -48,6 +48,7 @@ from quant_core.oil_futures import (
     trend_explanatory_scan,
     trend_matched,
     trend_regression,
+    trend_sweep_2d,
     walk_forward,
 )
 
@@ -998,6 +999,102 @@ def trend_scan_endpoint(
         ],
         n_cells=len(cells),
         oos_split=oos_split, min_n=min_n,
+    )
+
+
+# ── 2D 스윕 (4축 중 2개 격자) ──────────────────────────────────────────────────
+class SweepCellOut(BaseModel):
+    row: int
+    col: int
+    n: int
+    mean_forward: Optional[float]   # 평균 향후 H일 증감율 (%)
+    up_ratio: Optional[float]       # 향후 증감율>0 비율 (%)
+    r_squared: Optional[float]      # forward~past R² (n<3이면 None)
+
+
+class TrendSweepResponse(BaseModel):
+    row_axis: str
+    col_axis: str
+    row_labels: list[str]
+    col_labels: list[str]
+    cells: list[SweepCellOut]
+    min_n: int
+
+
+def _band_buckets(lo: float, hi: float, n_side: int = 3) -> list[tuple[float, float]]:
+    """현재 밴드 [lo,hi] 중심·동일 폭으로 양옆 n_side개씩 (총 2n+1) 밴드 생성."""
+    w = hi - lo
+    if w <= 0:
+        w = max(abs(hi), abs(lo), 1.0) * 0.1     # 폭 0 방어
+    return [(round(lo + k * w, 6), round(hi + k * w, 6)) for k in range(-n_side, n_side + 1)]
+
+
+def _sweep_axis_values(axis: str, lo: float, hi: float, clo: float, chi: float):
+    """축별 스윕 값 리스트 + 라벨. close/change=(lo,hi) 밴드 버킷, lookback/horizon=정수."""
+    if axis == "lookback":
+        vals = list(_SCAN_LOOKBACKS)
+        return vals, [f"{v}일" for v in vals]
+    if axis == "horizon":
+        vals = list(_SCAN_HORIZONS)
+        return vals, [f"{v}일" for v in vals]
+    if axis == "close":
+        bks = _band_buckets(lo, hi)
+        return bks, [f"{a:g}~{b:g}" for a, b in bks]
+    if axis == "change":
+        if abs(clo) >= 1e8 or abs(chi) >= 1e8:
+            raise HTTPException(422, "증감율 축을 쓰려면 증감율 범위를 먼저 지정하세요")
+        bks = _band_buckets(clo, chi)
+        return bks, [f"{a:g}~{b:g}%" for a, b in bks]
+    raise HTTPException(422, "축은 close/change/lookback/horizon 중 하나")
+
+
+@router.get("/{symbol}/trend-sweep", response_model=TrendSweepResponse)
+def trend_sweep_endpoint(
+    symbol: str,
+    row_axis: str,
+    col_axis: str,
+    lookback: int,
+    horizon: int,
+    price_lo: float,
+    price_hi: float,
+    change_lo: float = -1e9,
+    change_hi: float = 1e9,
+    gap: int = 0,
+    min_n: int = 30,
+):
+    """4축{close·change·lookback·horizon} 중 2축을 격자 스윕 → 칸마다 표본·평균향후·상승비율·R².
+
+    스윕 안 하는 축은 입력 고정값. close/change 축은 현재 밴드 폭으로 중심 ±3 버킷(7개) 생성.
+    값 하나씩 넣어 최선 수익을 찾던 불편 해소 — 격자에서 한눈에. (min_n=저신뢰 표시 임계.)
+    """
+    if row_axis == col_axis:
+        raise HTTPException(422, "행 축과 열 축은 달라야 함")
+    if lookback < 1 or not (1 <= horizon <= 500):
+        raise HTTPException(422, "lookback≥1, 1≤horizon≤500 이어야 함")
+    if min_n < 3:
+        raise HTTPException(422, "min_n 은 3 이상")
+    lo, hi = (price_lo, price_hi) if price_lo <= price_hi else (price_hi, price_lo)
+    clo, chi = (change_lo, change_hi) if change_lo <= change_hi else (change_hi, change_lo)
+    rvals, rlabels = _sweep_axis_values(row_axis, lo, hi, clo, chi)
+    cvals, clabels = _sweep_axis_values(col_axis, lo, hi, clo, chi)
+
+    df = _df(symbol)
+    cells = trend_sweep_2d(
+        df, row_axis=row_axis, col_axis=col_axis, row_values=rvals, col_values=cvals,
+        lookback=lookback, horizon=horizon, price_lo=lo, price_hi=hi,
+        change_lo=clo, change_hi=chi, gap=max(0, gap),
+    )
+    return TrendSweepResponse(
+        row_axis=row_axis, col_axis=col_axis, row_labels=rlabels, col_labels=clabels,
+        cells=[
+            SweepCellOut(
+                row=c.row, col=c.col, n=c.n,
+                mean_forward=_nn(c.mean_forward), up_ratio=_nn(c.up_ratio),
+                r_squared=_nn(c.r_squared),
+            )
+            for c in cells
+        ],
+        min_n=min_n,
     )
 
 
