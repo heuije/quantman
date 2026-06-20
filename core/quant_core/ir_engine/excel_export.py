@@ -84,18 +84,27 @@ def _ir_dict(ir: Any) -> dict:
     return ir if isinstance(ir, dict) else {}
 
 
-def _held_symbols(result: dict) -> tuple[list[str], int]:
-    """보유 종목(비중 패널 기준, 총 절대비중 내림차순). (상한 적용 목록, 전체 수)."""
-    syms: list[str] = []
-    w = result.get("weight")
-    if isinstance(w, pd.DataFrame) and not w.empty:
-        order = w.abs().sum().sort_values(ascending=False)
-        syms = [str(s) for s in order.index]
-    if not syms:
-        tdf = result.get("trades")
-        if isinstance(tdf, pd.DataFrame) and "종목" in tdf.columns:
-            syms = list(dict.fromkeys(str(s) for s in tdf["종목"].tolist()))
-    return syms[:_MAX_SYMS], len(syms)
+def _input_symbols_by_role(ir, dataset: dict) -> dict[str, list[str]]:
+    """입력 데이터를 역할별로 — 출력(거래종목)이 아니라 '전략이 소비한 데이터 전부'.
+
+    엔진은 dataset을 needed_symbols(=universe ∪ 신호 참조)로 적재하므로 universe를 뺀 나머지
+    dataset 키 = 신호로 참조되나 거래하지 않는 심볼(크로스에셋 등 — 기존 누락 부류).
+      subject : universe(거래·분석 대상) — 원자료에 OHLC.
+      signal  : dataset − subject (신호 참조) — 원자료에 종가.
+    (벤치마크는 엔진이 대상에서 파생 → dataset 부재. 펀더멘털 등 ③참조는 후속 Phase.)
+    """
+    def _in_ds(s: str) -> bool:
+        df = dataset.get(s)
+        return isinstance(df, pd.DataFrame) and not df.empty and "Close" in df.columns
+    subject: list[str] = []
+    try:
+        uni = (_ir_dict(ir).get("universe") or {}).get("symbols") or []
+        subject = [str(s) for s in uni if _in_ds(str(s))]
+    except Exception:   # noqa: BLE001 — IR 파싱 실패해도 dataset 기준 진행(증빙은 best-effort)
+        subject = []
+    sset = set(subject)
+    signal = [str(s) for s in dataset if str(s) not in sset and _in_ds(str(s))]
+    return {"subject": subject[:_MAX_SYMS], "signal": signal[:_MAX_SYMS]}
 
 
 def build_strategy_excel(
@@ -141,8 +150,153 @@ def build_strategy_excel(
     raise ValueError(f"build_strategy_excel: 미지원 결과 형상 (query={q}, axis={axis}, report={report})")
 
 
+# ── 신호 트리 → Excel 수식 컴파일러 (L2 — 신호·결정 라이브 패널) ────────────────
+# 엔진 indicators.py 정의와 1:1인 공통 지표만 셀 수식으로 재현. 미지원 op/지표·다중대상은 패널
+# 생략(폴백) — 틀린 "라이브 수식"은 없느니만 못함(4원칙 검증). 체결 지연·청산 룰은 엔진 소관이라
+# 패널은 '신호→포지션 결정'까지만 재현하고, 실제 체결은 거래내역이 정본임을 명시한다.
+_IND_LAG = {"price_level": 0, "Close": 0, "close": 0, "Open": 0, "High": 0, "Low": 0,
+            "pct_change_1d": 1, "pct_change_5d": 5, "pct_change_20d": 20,
+            "pct_change_252d": 252, "log_return_1d": 1}
+_CMP_EXCEL = {"<=": "<=", ">=": ">=", "<": "<", ">": ">", "==": "=", "!=": "<>",
+              "le": "<=", "ge": ">=", "lt": "<", "gt": ">", "eq": "=", "ne": "<>"}
+_AR_EXCEL = {"add": "+", "sub": "-", "mul": "*", "div": "/"}
+
+
+def _split_ref(ref: str, subjects: list[str]) -> tuple[str | None, str | None]:
+    """'SYM.지표'/'지표' → (sym, ind). 심볼 없으면 첫 subject. 미인식 지표→(None,None)."""
+    s = str(ref)
+    if "." in s:
+        sym, _, tail = s.rpartition(".")
+        return (sym, tail) if tail in _IND_LAG else (None, None)
+    if s in _IND_LAG:
+        return (subjects[0] if subjects else None), s
+    return None, None
+
+
+def _ind_excel(ind: str, col: str, r: int) -> str | None:
+    """지원 지표를 원자료 col열·행 r 기준 Excel 수식('=' 포함)으로. 엔진 indicators.py와 동일 정의."""
+    raw = f"원자료!{col}"
+    if ind in ("price_level", "Close", "close", "Open", "High", "Low"):
+        return f"={raw}{r}"
+    if ind in ("pct_change_1d", "pct_change_5d", "pct_change_20d", "pct_change_252d"):
+        return f"=({raw}{r}/{raw}{r - _IND_LAG[ind]}-1)*100"
+    if ind == "log_return_1d":
+        return f"=LN({raw}{r}/{raw}{r - 1})*100"
+    return None
+
+
+def _collect_data_refs(node, out: list[str]) -> None:
+    if not isinstance(node, dict):
+        return
+    if node.get("op") == "data":
+        out.append(str((node.get("params") or {}).get("ref")))
+    for v in (node.get("inputs") or {}).values():
+        _collect_data_refs(v, out)
+
+
+def _signal_to_excel(node, ref_to_col: dict[str, str]) -> str | None:
+    """signal 트리 → Excel 수식 본문('{r}' 행 자리표시자). data ref→지표열 cell. 미지원 op→None."""
+    if not isinstance(node, dict):
+        return None
+    op = node.get("op")
+    p = node.get("params") or {}
+    ins = node.get("inputs") or {}
+    if op == "const":
+        try:
+            return repr(float(p.get("value")))
+        except (TypeError, ValueError):
+            return None
+    if op == "data":
+        col = ref_to_col.get(str(p.get("ref")))
+        return f"{col}{{r}}" if col else None
+    if op == "compare":
+        lt = _signal_to_excel(ins.get("left"), ref_to_col)
+        rt = _signal_to_excel(ins.get("right"), ref_to_col)
+        ox = _CMP_EXCEL.get(str(p.get("op")))
+        return f"({lt}{ox}{rt})" if (lt and rt and ox) else None
+    if op == "select":
+        c = _signal_to_excel(ins.get("cond"), ref_to_col)
+        a = _signal_to_excel(ins.get("a"), ref_to_col)
+        b = _signal_to_excel(ins.get("b"), ref_to_col)
+        return f"IF({c},{a},{b})" if (c and a and b) else None
+    if op in _AR_EXCEL:
+        a = _signal_to_excel(ins.get("a") or ins.get("left"), ref_to_col)
+        b = _signal_to_excel(ins.get("b") or ins.get("right"), ref_to_col)
+        return f"({a}{_AR_EXCEL[op]}{b})" if (a and b) else None
+    return None
+
+
+def _signal_panel(wb: "Workbook", ird: dict, equity, roles: dict,
+                  raw_col_map: dict, disp: str) -> bool:
+    """신호·결정 라이브 패널 — 신호값·포지션을 입력(원자료)에서 셀로 독립 재현. 불가→False(폴백).
+
+    단일 대상 전략만(다중대상 포트는 종목별 결정이 1열로 표현 불가 → 생략). 모든 data ref가
+    지원 지표 + 원자료에 존재해야 함. 트리가 지원 op로만 구성돼야 함. 하나라도 어긋나면 False.
+    """
+    sig = ird.get("signal")
+    subjects = list(roles.get("subject") or [])
+    if not isinstance(sig, dict) or len(subjects) != 1:
+        return False
+    refs: list[str] = []
+    _collect_data_refs(sig, refs)
+    refs = list(dict.fromkeys(refs))
+    if not refs:
+        return False
+    raw_of: dict[str, tuple[str, int, str]] = {}   # ref → (원자료 col, lag, 지표명)
+    for ref in refs:
+        sym, ind = _split_ref(ref, subjects)
+        if ind is None:
+            return False
+        field = ind if ind in ("Open", "High", "Low") else "Close"
+        col = raw_col_map.get((sym, field))
+        if col is None:
+            return False
+        raw_of[ref] = (col, _IND_LAG.get(ind, 0), ind)
+    ref_to_col = {ref: get_column_letter(2 + i) for i, ref in enumerate(refs)}
+    body = _signal_to_excel(sig, ref_to_col)
+    if body is None:
+        return False
+
+    bold = Font(bold=True)
+    title_font = Font(bold=True, size=14, color="20201D")
+    italic = Font(italic=True, color=_NOTE)
+    head_fill = PatternFill("solid", fgColor=_HEAD_BG)
+    border = _thin_border()
+    center = Alignment(horizontal="center")
+    n = len(equity)
+    idx_list = list(equity.index)
+    first = 6
+    maxlag = max((lg for _, lg, _ in raw_of.values()), default=0)
+    pos_col_i = 2 + len(refs)
+    ps = wb.create_sheet("신호·결정")
+    ps.cell(1, 1, f"신호·결정 (라이브 재현) — {disp}").font = title_font
+    ps.cell(2, 1, "신호값·포지션을 입력(원자료)에서 셀 수식으로 독립 재현 — 엔진과 별개 검산. "
+                  "실제 체결(신호→주문 지연·청산 룰)은 '거래내역'이 정본. 점수 양수=롱·음수=숏·0=관망.").font = italic
+    headers = ["날짜", *[f"{ref} (신호값)" for ref in refs], "포지션 점수(룰)"]
+    for j, h in enumerate(headers):
+        c = ps.cell(5, 1 + j, h)
+        c.font = bold
+        c.fill = head_fill
+        c.border = border
+        c.alignment = center
+    for i in range(n):
+        r = first + i
+        ps.cell(r, 1, pd.Timestamp(idx_list[i]).to_pydatetime()).number_format = "yyyy-mm-dd"
+        if r - maxlag < first:
+            continue   # 룩백 부족(엔진 NaN 구간) → 공란
+        for j, ref in enumerate(refs):
+            col, _lg, ind = raw_of[ref]
+            ps.cell(r, 2 + j, _ind_excel(ind, col, r)).number_format = "0.0000"
+        ps.cell(r, pos_col_i, "=" + body.format(r=r)).number_format = "0.00"
+    ps.column_dimensions["A"].width = 12
+    for j in range(len(refs) + 1):
+        ps.column_dimensions[get_column_letter(2 + j)].width = 18
+    ps.freeze_panes = "B6"
+    return True
+
+
 def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
-    """SIMULATE 증빙 시트(백테스트 라이브수식·거래내역·원자료·일별비중·지표·설명)를 wb에 추가.
+    """SIMULATE 증빙 시트(백테스트 라이브수식·거래내역·원자료·신호·결정·지표·설명)를 wb에 추가.
 
     period_split(연도별)도 재사용 — 연도 분석은 단일 자산곡선을 연도로 자른 것이라 원자료+라이브
     수식+거래 검증 시트가 동일하게 성립(파라미터 스윕 같은 N개 독립 시뮬과 다름)."""
@@ -281,68 +435,80 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
         tr.column_dimensions[col].width = w
     tr.freeze_panes = "A5"
 
-    # 보유종목 목록(원자료·일별비중 공용)
-    syms, n_syms_total = _held_symbols(result)
-
-    # ── 시트 3: 원자료 (보유종목 종가 — 정적 값, '어떤 데이터') ──────────────────
+    # ── 시트 3: 원자료 (입력 데이터 — 대상 OHLC + 신호 종가, 역할 태깅) ──────────
+    # ★ 재설계(excel-export-redesign): 출력(거래종목 _held_symbols)이 아니라 '전략이 쓴 데이터
+    #   전부'(입력). 신호 참조 종목(크로스에셋 등)은 거래 안 해도 입력이므로 포함 — 신호 검증 가능.
+    roles = _input_symbols_by_role(ir, dataset)
     raw = wb.create_sheet("원자료")
-    raw.cell(1, 1, f"원자료 — 보유종목 종가 ({disp})").font = title_font
-    raw.cell(2, 1, "각 열 = 종목 종가(Close). 엔진은 전체 OHLCV 사용 — 여기 종가는 마킹·수익 기준.").font = italic
-    if n_syms_total > len(syms):
-        raw.cell(3, 1, f"※ 보유종목 {n_syms_total}개 중 비중 상위 {len(syms)}개만 표시(가로 폭 상한).").font = italic
+    raw.cell(1, 1, f"원자료 — 입력 데이터 ({disp})").font = title_font
+    raw.cell(2, 1, "전략이 소비한 데이터 전부. 대상=OHLC(거래·마킹 기준)·신호=종가(결정 입력). 거래 안 해도 신호면 포함.").font = italic
+    # 컬럼 계획: 날짜 | 대상 OHLC… | 신호 종가… (역할 라벨)
+    plan: list[tuple[str, str, str]] = []   # (헤더라벨, 심볼, OHLC 필드)
+    for s in roles["subject"]:
+        for field, fl in (("Open", "시가"), ("High", "고가"), ("Low", "저가"), ("Close", "종가")):
+            plan.append((f"{s} {fl}(대상)", s, field))
+    for s in roles["signal"]:
+        plan.append((f"{s} 종가(신호)", s, "Close"))
     raw.cell(5, 1, "날짜").font = bold
     raw.cell(5, 1).fill = head_fill
     raw.cell(5, 1).border = border
-    closes: dict[str, pd.Series] = {}
-    for j, s in enumerate(syms):
-        c = raw.cell(5, 2 + j, s)
+    series: dict[int, pd.Series] = {}
+    for j, (label, s, field) in enumerate(plan):
+        c = raw.cell(5, 2 + j, label)
         c.font = bold
         c.fill = head_fill
         c.border = border
         c.alignment = center
         df = dataset.get(s)
-        if isinstance(df, pd.DataFrame) and "Close" in df.columns:
-            closes[s] = df["Close"].reindex(equity.index)
+        if isinstance(df, pd.DataFrame) and field in df.columns:
+            series[j] = df[field].reindex(equity.index)
     for i in range(n):
         r = 6 + i
         raw.cell(r, 1, pd.Timestamp(idx_list[i]).to_pydatetime()).number_format = "yyyy-mm-dd"
-        for j, s in enumerate(syms):
-            ser = closes.get(s)
+        for j in range(len(plan)):
+            ser = series.get(j)
             v = ser.iloc[i] if ser is not None else None
             cell = raw.cell(r, 2 + j, None if v is None or pd.isna(v) else float(v))
             cell.number_format = "#,##0.00"
     raw.column_dimensions["A"].width = 12
-    for j in range(len(syms)):
-        raw.column_dimensions[get_column_letter(2 + j)].width = 11
+    for j in range(len(plan)):
+        raw.column_dimensions[get_column_letter(2 + j)].width = 12
     raw.freeze_panes = "B6"
 
-    # ── 시트 4: 일별비중 (엔진 EOD 기여 비중 — 정적 값, '어떤 포지션') ───────────
+    # ── 시트: 신호·결정 (L2 — 신호값·포지션을 원자료에서 라이브 재현, 공통 지표·단일대상 한정) ──
+    raw_col_map = {(s, field): get_column_letter(2 + j)
+                   for j, (_lab, s, field) in enumerate(plan)}
+    _signal_panel(wb, _ir_dict(ir), equity, roles, raw_col_map, disp)
+
+    # ── 시트 4: 일별비중 (엔진 EOD 기여 비중) · 패널 있을 때만 생성 ───────────────
+    # 단일종목/방향성 백테스트는 엔진이 weight 패널을 내지 않음 → 빈 시트 대신 생략(죽은 시트 제거).
     wpanel = result.get("weight")
-    wp = wb.create_sheet("일별비중")
-    wp.cell(1, 1, f"일별 비중 — 엔진 EOD 기여 패널 ({disp})").font = title_font
-    wp.cell(2, 1, "양수=롱·음수=숏 (자기자본 대비 비중). 엔진이 기록한 일별 포지션 — '어떤 연산'의 가중치.").font = italic
-    wp.cell(4, 1, "날짜").font = bold
-    wp.cell(4, 1).fill = head_fill
-    wp.cell(4, 1).border = border
-    for j, s in enumerate(syms):
-        c = wp.cell(4, 2 + j, s)
-        c.font = bold
-        c.fill = head_fill
-        c.border = border
-        c.alignment = center
     if isinstance(wpanel, pd.DataFrame) and not wpanel.empty:
+        wp_syms = [str(c) for c in wpanel.columns][:_MAX_SYMS]
+        wp = wb.create_sheet("일별비중")
+        wp.cell(1, 1, f"일별 비중 — 엔진 EOD 기여 패널 ({disp})").font = title_font
+        wp.cell(2, 1, "양수=롱·음수=숏 (자기자본 대비 비중). 엔진이 기록한 일별 포지션.").font = italic
+        wp.cell(4, 1, "날짜").font = bold
+        wp.cell(4, 1).fill = head_fill
+        wp.cell(4, 1).border = border
+        for j, s in enumerate(wp_syms):
+            c = wp.cell(4, 2 + j, s)
+            c.font = bold
+            c.fill = head_fill
+            c.border = border
+            c.alignment = center
         wp_al = wpanel.reindex(equity.index)
         for i in range(n):
             r = 5 + i
             wp.cell(r, 1, pd.Timestamp(idx_list[i]).to_pydatetime()).number_format = "yyyy-mm-dd"
-            for j, s in enumerate(syms):
+            for j, s in enumerate(wp_syms):
                 v = wp_al[s].iloc[i] if s in wp_al.columns else None
                 cell = wp.cell(r, 2 + j, None if v is None or pd.isna(v) else float(v))
                 cell.number_format = "0.00%"
-    wp.column_dimensions["A"].width = 12
-    for j in range(len(syms)):
-        wp.column_dimensions[get_column_letter(2 + j)].width = 11
-    wp.freeze_panes = "B5"
+        wp.column_dimensions["A"].width = 12
+        for j in range(len(wp_syms)):
+            wp.column_dimensions[get_column_letter(2 + j)].width = 11
+        wp.freeze_panes = "B5"
 
     # ── 시트 5: 지표·설명 (엔진 metrics 전체 + 전략 정의 + 방법론) ───────────────
     info = wb.create_sheet("지표·설명")
@@ -379,6 +545,8 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
         ("라이브 수식", "엔진 정본 자산곡선(B열) 위에서 일수익·낙폭·CAGR·샤프·MDD를 정의식으로 재계산 — bps=0이면 엔진 지표와 일치(증빙)."),
         ("일일 추가비용(bps)", "백테스트 시트 B3. 일별 수익률에서 차감하는 사후 비용 민감도(라이브). 엔진 비용모델 변경이 아님."),
         ("거래내역", "엔진이 산출한 확정 거래(정적 값). 진입가·청산가·수익률은 엔진과 byte 일치 — 검증 앵커."),
+        ("원자료(입력 데이터)", "전략이 소비한 데이터 전부 — 대상은 OHLC, 신호 참조 종목(거래 안 해도)은 종가. 신호종목 가격으로 신호 로직을 직접 수동검증."),
+        ("신호·결정 패널", "신호값·포지션 룰을 원자료에서 셀 수식으로 독립 재현(공통 지표·단일대상 한정). 엔진 실집행(신호→체결 지연·청산 룰)은 거래내역이 정본 — 패널은 결정 로직 검산용. 미지원 신호는 패널 생략."),
         ("엑셀이 복제 못 하는 것", "엔진은 정수주·현금·마진콜·지연체결의 이벤트 NAV 시뮬레이션 — 셀 수식으로 NAV 경로를 정확히 재현하지 않는다(자산곡선은 엔진 값 그대로 사용)."),
         ("전략 로직 변경", "임계값·기간·종목 등 전략 파라미터를 바꿔 다시 보려면 '변수 조정'(엔진 재실행) — 엑셀은 산술·비용 검증 도구."),
     ]
@@ -386,6 +554,12 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
         info.cell(rr, 1, k).font = bold
         info.cell(rr, 2, v).alignment = Alignment(wrap_text=True, vertical="top")
         rr += 1
+    for w in (result.get("warnings") or []):     # 데이터 품질·실행 경고도 엑셀에 표면화(재설계 원칙 #5)
+        msg = w.get("message") if isinstance(w, dict) else str(w)
+        if msg:
+            rr += 1
+            info.cell(rr, 1, "⚠").font = bold
+            info.cell(rr, 2, msg).alignment = Alignment(wrap_text=True, vertical="top")
     info.column_dimensions["A"].width = 22
     info.column_dimensions["B"].width = 90
 
@@ -455,12 +629,33 @@ def _perf_table(ws, row0: int, label_header: str, rows: list, S: dict) -> int:
     return r
 
 
-def _methodology(wb, ir, title: str, notes: list, S: dict):
-    """'설명' 시트 — 사용 전략 정의(IR) + 방법론·한계. 전 형상 공용 증빙 꼬리표."""
+def _warning_block(info, rr: int, result, S: dict) -> int:
+    """결과의 데이터 품질·실행 경고(Phase 0.5·무거래 등)를 설명 시트에 표면화. 다음 행 반환.
+
+    ★ 재설계 원칙 #5: 데이터 품질 계약이 챗 응답뿐 아니라 엑셀(오프라인 검토 surface)에도
+    닿아야 한다 — 전 연산유형 공통. 경고 없으면 무동작.
+    """
+    warns = (result or {}).get("warnings") or []
+    msgs = [w.get("message") if isinstance(w, dict) else str(w) for w in warns]
+    msgs = [m for m in msgs if m]
+    if not msgs:
+        return rr
+    info.cell(rr, 1, "⚠ 데이터 품질·실행 경고").font = S["accent"]
+    rr += 1
+    for m in msgs:
+        info.cell(rr, 1, "⚠").font = S["bold"]
+        info.cell(rr, 2, m).alignment = S["wrap"]
+        rr += 1
+    return rr + 1
+
+
+def _methodology(wb, ir, title: str, notes: list, S: dict, result=None):
+    """'설명' 시트 — (데이터 경고) + 전략 정의(IR) + 방법론·한계. 전 형상 공용 증빙 꼬리표."""
     info = wb.create_sheet("설명")
     info.cell(1, 1, title).font = S["title"]
-    info.cell(3, 1, "전략 정의 (IR)").font = S["accent"]
-    rr = 4
+    rr = _warning_block(info, 3, result, S)   # 경고 먼저(있으면) — 데이터 품질 계약 표면화
+    info.cell(rr, 1, "전략 정의 (IR)").font = S["accent"]
+    rr += 1
     ird = _ir_dict(ir)
     for key in ("name", "query", "universe", "signal", "position", "simulation", "study", "select"):
         if key not in ird or ird[key] in (None, {}, []):
@@ -516,7 +711,7 @@ def _build_select(ir, dataset, result, disp: str) -> bytes:
         ("점수(score)", "신호 블록의 as-of(기준일) 횡단 값. descending=참이면 큰 순, 거짓이면 작은 순(예: 저PBR)."),
         ("선별", f"top_n/top_pct 상위만 표시. as-of={result.get('as_of', '')} 단면 스냅샷(시계열 아님)."),
         ("값 정직성", "점수·표시지표는 엔진이 산출한 그 시점 값. 팩터 산식 자체는 IR signal 트리(설명 시트) 참조."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -581,7 +776,7 @@ def _build_describe_single(ir, dataset, result, disp: str) -> bytes:
         ("값/수식", "요약 지표는 엔진 산출값. '원자료' 종가로 52주 고저·연변동성을 라이브 수식으로 재계산해 대조(엔진값과 일치 확인용)."),
         ("수익률", "1/3/6/12개월 = 해당 영업일수 전 종가 대비 변화(%)."),
         ("펀더멘털", "데이터에 있으면 표기, 없으면 빈칸 — 정직(가짜 채움 없음)."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -649,7 +844,7 @@ def _build_describe_portfolio(ir, dataset, result, disp: str) -> bytes:
         ("라이브 수식", "HHI·유효종목수·최대비중·가중PBR을 보유 비중/PBR로 라이브 재계산(엔진값과 대조). 비중 셀 바꾸면 갱신."),
         ("PBR(as-of)", "각 보유종목 데이터의 마지막 PBR. 없으면 빈칸."),
         ("위험(값)", "포트 연변동성·평균 쌍상관은 일별수익 공분산 기반 엔진 산출값(셀 복제 범위 외)."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -671,7 +866,7 @@ def _build_sweep(ir, dataset, result, disp: str) -> bytes:
         ("스윕", f"{label_h} 축을 펼쳐 각 값마다 독립 백테스트를 돌린 성과 비교."),
         ("값 only(감사표)", "각 버킷은 별도 시뮬이라 한 시트 라이브 수식으로 재현 불가 — 엔진 산출 성과를 그대로 표기."),
         ("성과 정의", "CAGR·샤프·MDD 등은 각 버킷 일별수익에서 산출(PERF 정규지표)."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -699,7 +894,7 @@ def _build_condition(ir, dataset, result, disp: str) -> bytes:
         ("조건 대조", "라벨(섹터·국면 등)로 일별 기여를 분할해 그룹별 성과를 비교. '전체'=포트폴리오 합산."),
         ("쌍대 t검정", "각 라벨 쌍의 일별수익 평균 차이 유의성(2-표본 t)."),
         ("값 only(감사표)", "엔진 산출 버킷 성과·검정통계를 그대로 표기."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -774,7 +969,7 @@ def _build_period_split(ir, dataset, result, disp: str) -> bytes:
         _methodology(wb, ir, f"{disp} — 연도별 방법론", [
             ("연수익(라이브)", "각 연도 = 조정자산[연말]/조정자산[직전]−1. base 백테스트 재실행 실패로 일별 시트 생략."),
             ("값(엔진)", "엔진 산출 연도 성과를 그대로 표기(대조 기준)."),
-        ], S)
+        ], S, result=result)
     return _save(wb)
 
 
@@ -816,7 +1011,7 @@ def _build_extremize(ir, dataset, result, disp: str) -> bytes:
                  f"{obj.get('direction', '')})를 최대/최소화하는 후보 선택."),
         ("과최적화 가드", "in-sample 최적을 시간폴드 OOS 일관성으로 교차검증(oos_guard)."),
         ("값 only(감사표)", "엔진 산출 랭킹·성과를 그대로 표기."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -856,7 +1051,7 @@ def _build_signal_dist(ir, dataset, result, disp: str) -> bytes:
     _methodology(wb, ir, f"{disp} — 신호 분포 방법론", [
         ("신호 분포", "분석 노드(target_node)의 횡단·시계열 값 전체 분포 — 평균·분위수·히스토그램."),
         ("값 only(감사표)", "엔진 산출 분포 통계를 그대로 표기."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -902,7 +1097,7 @@ def _build_relation(ir, dataset, result, disp: str) -> bytes:
                  ("계수 해석", "양(+)·t유의 = 그 팩터가 미래수익과 양의 관계."),
                  ("값 only(감사표)", "엔진 산출 회귀통계를 그대로 표기.")]
         ws.freeze_panes = "A5"
-    _methodology(wb, ir, f"{disp} — 관계분석 방법론", notes, S)
+    _methodology(wb, ir, f"{disp} — 관계분석 방법론", notes, S, result=result)
     return _save(wb)
 
 
@@ -930,5 +1125,5 @@ def _build_event(ir, dataset, result, disp: str) -> bytes:
     _methodology(wb, ir, f"{disp} — 이벤트 스터디 방법론", [
         ("이벤트 스터디", "이벤트(조건 충족) 발생 후 forward 윈도 수익 분포. MAE=구간내 최대손실, MFE=최대이익."),
         ("값 only(감사표)", "엔진 산출 이벤트 통계를 그대로 표기."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
