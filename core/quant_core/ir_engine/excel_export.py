@@ -163,11 +163,13 @@ _AR_EXCEL = {"add": "+", "sub": "-", "mul": "*", "div": "/"}
 
 
 def _split_ref(ref: str, subjects: list[str]) -> tuple[str | None, str | None]:
-    """'SYM.지표'/'지표' → (sym, ind). 심볼 없으면 첫 subject. 미인식 지표→(None,None)."""
+    """'SYM.지표'/'__SELF__.지표'/'지표' → (sym, ind). 심볼 없음·__SELF__→첫 subject. 미인식 지표→(None,None)."""
     s = str(ref)
     if "." in s:
         sym, _, tail = s.rpartition(".")
-        return (sym, tail) if tail in _IND_LAG else (None, None)
+        if sym == "__SELF__":   # 엔진 자기참조 토큰 — 패널 resolver도 단일대상 subject로 해석(없으면 무효)
+            sym = subjects[0] if subjects else None
+        return (sym, tail) if (tail in _IND_LAG and sym) else (None, None)
     if s in _IND_LAG:
         return (subjects[0] if subjects else None), s
     return None, None
