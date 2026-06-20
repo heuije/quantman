@@ -31,6 +31,20 @@ function colorByChg(chg: number | null): string {
 
 const GU_ORDER = ["Upstream", "Midstream", "Downstream"];
 const ROOT_ID = "2차전지";
+// 산업 탭 상위 구분 — 한국 증시 표준 섹터분류 WICS 10개 대분류. 현재 없는 대분류도 '쭉' 깔아
+// 전체 산업 지도를 보여주고(준비 중), 기존 산업을 해당 대분류에 매핑. (출처: WICS/FnGuide)
+const INDUSTRY_GROUPS: { label: string; items: string[] }[] = [
+  { label: "에너지", items: [] },
+  { label: "소재", items: ["석유화학", "2차전지"] },
+  { label: "산업재", items: ["건설"] },
+  { label: "경기소비재", items: ["화장품"] },
+  { label: "필수소비재", items: [] },
+  { label: "건강관리", items: [] },
+  { label: "금융", items: ["금융"] },
+  { label: "IT", items: ["반도체", "전자부품"] },
+  { label: "커뮤니케이션서비스", items: [] },
+  { label: "유틸리티", items: [] },
+];
 // 트리맵 타일 표시 크기 보정 — 초대형주가 화면을 가려 다른 종목이 안 보이는 문제 방지.
 // 표시 크기만 줄이고 툴팁·시총·M/S는 실제값 유지. ref="maxOther"=보정대상 제외 최대 시총,
 // ref=티커=그 종목 시총. 보정 표시값 = 기준 × factor (시총이 변해도 데이터에서 자동 계산).
@@ -1160,7 +1174,10 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
 export default function IndustryAnalysis() {
   const navigate = useNavigate();
   const [data, setData] = useState<IndustryData | null>(null);
-  const [root, setRoot] = useState("2차전지");   // 선택된 산업(트리맵 탭)
+  const [root, setRoot] = useState("2차전지");   // 선택된 산업(소분류)
+  // 펼쳐진 대분류(WICS 섹터) — 클릭 시 그 소분류만 표시. 기본=현재 산업이 속한 대분류.
+  const [openSector, setOpenSector] = useState<string>(
+    () => INDUSTRY_GROUPS.find((g) => g.items.includes("2차전지"))?.label || "소재");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [asOfReq, setAsOfReq] = useState("");   // 트리맵 기준일(yyyy-mm-dd, ""=최신 거래일)
@@ -1237,21 +1254,74 @@ export default function IndustryAnalysis() {
     <div className="dashboard-fullwidth industry-67">
       <h1>Industry Analysis</h1>
 
-      {/* 산업 탭 — 클릭 시 해당 산업 트리맵으로 전환 */}
-      <div style={{ display: "flex", gap: 6, margin: "4px 0 12px", flexWrap: "wrap" }}>
-        {(data?.available || ["2차전지", "반도체", "전자부품", "건설", "금융", "석유화학", "화장품"]).map((nm) => {
+      {/* 산업 탭 — WICS 대분류(골드 라운드 버튼) 클릭 시 그 소분류(파란 사각 버튼)만 펼침(아코디언).
+          대분류는 버튼형이되 소분류와 다른 디자인. 없는 대분류는 흐리게 + 클릭 시 '준비 중'. */}
+      {(() => {
+        const avail = data?.available || ["2차전지", "반도체", "전자부품", "건설", "금융", "석유화학", "화장품"];
+        const grouped = new Set(INDUSTRY_GROUPS.flatMap((g) => g.items));
+        const groups = [...INDUSTRY_GROUPS.map((g) => ({ label: g.label, items: g.items.filter((nm) => avail.includes(nm)) }))];
+        const extras = avail.filter((nm) => !grouped.has(nm));
+        if (extras.length) groups.push({ label: "기타", items: extras });
+        const cur = groups.find((g) => g.label === openSector) || groups.find((g) => g.items.length) || groups[0];
+        const sub = cur ? cur.items : [];
+        // 대분류 버튼(골드·라운드) — 소분류와 다른 디자인. 클릭 시 펼침.
+        // 그레이 네이비 팔레트 — 대분류 탭/패널 공용(활성 탭이 패널과 같은 색으로 '연결')
+        const GN_BG = "#1a2436";   // 그레이 네이비 패널·활성 탭 배경(불투명 → 탭-패널 경계 자연 결합)
+        const GN_BD = "#33425e";   // 그레이 네이비 테두리
+        const secBtn = (g: { label: string; items: string[] }) => {
+          const on = !!cur && g.label === cur.label;
+          const empty = g.items.length === 0;
+          return (
+            <button key={g.label} type="button" onClick={() => setOpenSector(g.label)}
+              onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = "rgba(51,66,94,0.30)"; }}
+              onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = "transparent"; }}
+              style={{ fontSize: "13.5pt", fontWeight: 800, padding: "8px 18px", cursor: "pointer",
+                borderRadius: "6px 6px 0 0", marginBottom: -1,   // 위만 둥근 직사각형 + 패널 상단선과 겹침
+                transition: "background .12s ease",
+                background: on ? GN_BG : "transparent",
+                borderTop: `1px solid ${on ? GN_BD : "transparent"}`,
+                borderLeft: `1px solid ${on ? GN_BD : "transparent"}`,
+                borderRight: `1px solid ${on ? GN_BD : "transparent"}`,
+                borderBottom: `1px solid ${on ? GN_BG : "transparent"}`,   // 활성 하단=패널색 → 경계 지워 연결
+                color: on ? "var(--text)" : "var(--navy-300)", opacity: empty ? 0.5 : 1 }}>
+              {g.label}
+            </button>
+          );
+        };
+        // 소분류 버튼(파란·사각)
+        const tab = (nm: string) => {
           const on = nm === root;
           return (
             <button key={nm} type="button" onClick={() => { if (nm !== root) { setRoot(nm); setAsOfReq(""); } }}
-              style={{ fontSize: "12pt", fontWeight: 700, padding: "6px 16px", borderRadius: 999, cursor: "pointer",
+              onMouseEnter={(e) => { if (!on) { e.currentTarget.style.background = "rgba(79,143,245,0.14)"; e.currentTarget.style.color = "#1668c4"; e.currentTarget.style.borderColor = "rgba(79,143,245,0.5)"; } }}
+              onMouseLeave={(e) => { if (!on) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text)"; e.currentTarget.style.borderColor = "var(--border)"; } }}
+              style={{ fontSize: "11.5pt", fontWeight: 800, padding: "6px 16px", borderRadius: 4, cursor: "pointer",
+                transition: "background .12s ease, color .12s ease, border-color .12s ease",
                 background: on ? "rgba(79,143,245,0.22)" : "transparent",
                 border: `1px solid ${on ? "rgba(79,143,245,0.7)" : "var(--border)"}`,
-                color: on ? "#1668c4" : "var(--muted)" }}>
+                color: on ? "#1668c4" : "var(--text)" }}>
               {nm}
             </button>
           );
-        })}
-      </div>
+        };
+        return (
+          <div style={{ margin: "6px 0 14px" }}>
+            {/* 대분류 탭 행 — 하단선이 패널과 이어짐 */}
+            <div style={{ display: "flex", gap: 3, flexWrap: "wrap", borderBottom: `1px solid ${GN_BD}` }}>
+              {groups.map(secBtn)}
+            </div>
+            {/* 선택된 대분류의 소분류 패널 — 활성 탭과 같은 그레이 네이비로 연결 */}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "12px 14px",
+              background: GN_BG, border: `1px solid ${GN_BD}`, borderTop: "none", borderRadius: "0 6px 6px 6px" }}>
+              {sub.length
+                ? sub.map(tab)
+                : <span style={{ fontSize: 12, color: "var(--navy-300)", border: "1px dashed var(--border)", borderRadius: 4, padding: "6px 14px" }}>
+                    {cur?.label} 산업은 준비 중입니다
+                  </span>}
+            </div>
+          </div>
+        );
+      })()}
 
       {err && <div className="error">{err}</div>}
       {busy && <p style={{ color: "var(--muted)" }}>산업 데이터 불러오는 중…</p>}
