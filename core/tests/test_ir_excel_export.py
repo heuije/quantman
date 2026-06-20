@@ -142,14 +142,43 @@ def test_summary_engine_values_vs_excel_formulas(built) -> None:
 
 
 def test_raw_and_weight_sheets_have_held_symbols(built) -> None:
-    """원자료·일별비중 헤더에 보유종목이 노출된다(데이터·포지션 증빙)."""
+    """원자료(역할태깅 대상 OHLC)·일별비중 헤더에 대상 종목이 노출된다(데이터·포지션 증빙)."""
     _ir_, _ds, res, xlsx = built
     held = set(str(s) for s in res["weight"].columns)
     wb = load_workbook(io.BytesIO(xlsx))
-    raw_hdr = {wb["원자료"].cell(5, c).value for c in range(2, 2 + len(held))}
+    # 원자료: 역할 태깅 헤더("{종목} 시가/…/종가(대상)") — 종목명이 부분문자열로 등장.
+    raw_hdr = [wb["원자료"].cell(5, c).value for c in range(2, wb["원자료"].max_column + 1)]
+    for s in held:
+        assert any(s in str(h) and "대상" in str(h) for h in raw_hdr), f"원자료에 대상 {s} 없음: {raw_hdr}"
+    # 일별비중: weight 패널 있으면 생성 — 헤더에 보유종목.
     wgt_hdr = {wb["일별비중"].cell(4, c).value for c in range(2, 2 + len(held))}
-    assert held & raw_hdr, f"원자료 헤더에 보유종목 없음: {raw_hdr}"
     assert held & wgt_hdr, f"일별비중 헤더에 보유종목 없음: {wgt_hdr}"
+
+
+def test_input_roles_include_signal_refs_and_empty_weight_drops_sheet() -> None:
+    """★ 재설계 핵심(입력 주도): 신호로만 참조되는 심볼(크로스에셋·거래 안 함)이 입력 역할로
+    잡혀 원자료에 등장하고, weight 패널 없는 단일종목 백테스트는 일별비중 시트를 생략한다."""
+    from quant_core.ir_engine.excel_export import _input_symbols_by_role
+    ds = {"코스피200선물": _bars(0.001), "S&P500": _bars(-0.001)}
+    # 헬퍼: subject=universe, signal=dataset−universe(신호로만 참조된 심볼)
+    roles = _input_symbols_by_role({"universe": {"kind": "single", "symbols": ["코스피200선물"]}}, ds)
+    assert roles["subject"] == ["코스피200선물"]
+    assert "S&P500" in roles["signal"]
+    # 통합: 크로스에셋 신호 단일종목 시뮬 → 원자료에 신호종목 등장, weight 없어 일별비중 생략
+    sig = Node(op="select", inputs={
+        "cond": Node(op="compare", params={"op": "<="},
+                     inputs={"left": data("S&P500.pct_change_1d"), "right": const(-0.1)}),
+        "a": const(1), "b": const(0)})
+    ir = StrategyIR(name="신호종목 원자료 테스트", signal=sig,
+                    universe=Universe(kind="single", symbols=["코스피200선물"]),
+                    position=PositionSpec(direction="long_short", sizing=Sizing(mode="equal_weight"),
+                                          entry=Entry(mode="on_signal"), exit=Exit(hold_days=0)),
+                    simulation=SimSpec(initial_capital=1e8, commission=0.0))
+    res = run_strategy_ir(ir, ds)
+    wb = load_workbook(io.BytesIO(build_strategy_excel(ir, ds, res)))
+    raw_hdr = [wb["원자료"].cell(5, c).value for c in range(2, wb["원자료"].max_column + 1)]
+    assert any("S&P500" in str(h) and "신호" in str(h) for h in raw_hdr), f"신호종목 누락: {raw_hdr}"
+    assert "일별비중" not in wb.sheetnames
 
 
 def test_deterministic_equity(built) -> None:

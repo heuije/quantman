@@ -84,18 +84,27 @@ def _ir_dict(ir: Any) -> dict:
     return ir if isinstance(ir, dict) else {}
 
 
-def _held_symbols(result: dict) -> tuple[list[str], int]:
-    """보유 종목(비중 패널 기준, 총 절대비중 내림차순). (상한 적용 목록, 전체 수)."""
-    syms: list[str] = []
-    w = result.get("weight")
-    if isinstance(w, pd.DataFrame) and not w.empty:
-        order = w.abs().sum().sort_values(ascending=False)
-        syms = [str(s) for s in order.index]
-    if not syms:
-        tdf = result.get("trades")
-        if isinstance(tdf, pd.DataFrame) and "종목" in tdf.columns:
-            syms = list(dict.fromkeys(str(s) for s in tdf["종목"].tolist()))
-    return syms[:_MAX_SYMS], len(syms)
+def _input_symbols_by_role(ir, dataset: dict) -> dict[str, list[str]]:
+    """입력 데이터를 역할별로 — 출력(거래종목)이 아니라 '전략이 소비한 데이터 전부'.
+
+    엔진은 dataset을 needed_symbols(=universe ∪ 신호 참조)로 적재하므로 universe를 뺀 나머지
+    dataset 키 = 신호로 참조되나 거래하지 않는 심볼(크로스에셋 등 — 기존 누락 부류).
+      subject : universe(거래·분석 대상) — 원자료에 OHLC.
+      signal  : dataset − subject (신호 참조) — 원자료에 종가.
+    (벤치마크는 엔진이 대상에서 파생 → dataset 부재. 펀더멘털 등 ③참조는 후속 Phase.)
+    """
+    def _in_ds(s: str) -> bool:
+        df = dataset.get(s)
+        return isinstance(df, pd.DataFrame) and not df.empty and "Close" in df.columns
+    subject: list[str] = []
+    try:
+        uni = (_ir_dict(ir).get("universe") or {}).get("symbols") or []
+        subject = [str(s) for s in uni if _in_ds(str(s))]
+    except Exception:   # noqa: BLE001 — IR 파싱 실패해도 dataset 기준 진행(증빙은 best-effort)
+        subject = []
+    sset = set(subject)
+    signal = [str(s) for s in dataset if str(s) not in sset and _in_ds(str(s))]
+    return {"subject": subject[:_MAX_SYMS], "signal": signal[:_MAX_SYMS]}
 
 
 def build_strategy_excel(
@@ -281,68 +290,75 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
         tr.column_dimensions[col].width = w
     tr.freeze_panes = "A5"
 
-    # 보유종목 목록(원자료·일별비중 공용)
-    syms, n_syms_total = _held_symbols(result)
-
-    # ── 시트 3: 원자료 (보유종목 종가 — 정적 값, '어떤 데이터') ──────────────────
+    # ── 시트 3: 원자료 (입력 데이터 — 대상 OHLC + 신호 종가, 역할 태깅) ──────────
+    # ★ 재설계(excel-export-redesign): 출력(거래종목 _held_symbols)이 아니라 '전략이 쓴 데이터
+    #   전부'(입력). 신호 참조 종목(크로스에셋 등)은 거래 안 해도 입력이므로 포함 — 신호 검증 가능.
+    roles = _input_symbols_by_role(ir, dataset)
     raw = wb.create_sheet("원자료")
-    raw.cell(1, 1, f"원자료 — 보유종목 종가 ({disp})").font = title_font
-    raw.cell(2, 1, "각 열 = 종목 종가(Close). 엔진은 전체 OHLCV 사용 — 여기 종가는 마킹·수익 기준.").font = italic
-    if n_syms_total > len(syms):
-        raw.cell(3, 1, f"※ 보유종목 {n_syms_total}개 중 비중 상위 {len(syms)}개만 표시(가로 폭 상한).").font = italic
+    raw.cell(1, 1, f"원자료 — 입력 데이터 ({disp})").font = title_font
+    raw.cell(2, 1, "전략이 소비한 데이터 전부. 대상=OHLC(거래·마킹 기준)·신호=종가(결정 입력). 거래 안 해도 신호면 포함.").font = italic
+    # 컬럼 계획: 날짜 | 대상 OHLC… | 신호 종가… (역할 라벨)
+    plan: list[tuple[str, str, str]] = []   # (헤더라벨, 심볼, OHLC 필드)
+    for s in roles["subject"]:
+        for field, fl in (("Open", "시가"), ("High", "고가"), ("Low", "저가"), ("Close", "종가")):
+            plan.append((f"{s} {fl}(대상)", s, field))
+    for s in roles["signal"]:
+        plan.append((f"{s} 종가(신호)", s, "Close"))
     raw.cell(5, 1, "날짜").font = bold
     raw.cell(5, 1).fill = head_fill
     raw.cell(5, 1).border = border
-    closes: dict[str, pd.Series] = {}
-    for j, s in enumerate(syms):
-        c = raw.cell(5, 2 + j, s)
+    series: dict[int, pd.Series] = {}
+    for j, (label, s, field) in enumerate(plan):
+        c = raw.cell(5, 2 + j, label)
         c.font = bold
         c.fill = head_fill
         c.border = border
         c.alignment = center
         df = dataset.get(s)
-        if isinstance(df, pd.DataFrame) and "Close" in df.columns:
-            closes[s] = df["Close"].reindex(equity.index)
+        if isinstance(df, pd.DataFrame) and field in df.columns:
+            series[j] = df[field].reindex(equity.index)
     for i in range(n):
         r = 6 + i
         raw.cell(r, 1, pd.Timestamp(idx_list[i]).to_pydatetime()).number_format = "yyyy-mm-dd"
-        for j, s in enumerate(syms):
-            ser = closes.get(s)
+        for j in range(len(plan)):
+            ser = series.get(j)
             v = ser.iloc[i] if ser is not None else None
             cell = raw.cell(r, 2 + j, None if v is None or pd.isna(v) else float(v))
             cell.number_format = "#,##0.00"
     raw.column_dimensions["A"].width = 12
-    for j in range(len(syms)):
-        raw.column_dimensions[get_column_letter(2 + j)].width = 11
+    for j in range(len(plan)):
+        raw.column_dimensions[get_column_letter(2 + j)].width = 12
     raw.freeze_panes = "B6"
 
-    # ── 시트 4: 일별비중 (엔진 EOD 기여 비중 — 정적 값, '어떤 포지션') ───────────
+    # ── 시트 4: 일별비중 (엔진 EOD 기여 비중) · 패널 있을 때만 생성 ───────────────
+    # 단일종목/방향성 백테스트는 엔진이 weight 패널을 내지 않음 → 빈 시트 대신 생략(죽은 시트 제거).
     wpanel = result.get("weight")
-    wp = wb.create_sheet("일별비중")
-    wp.cell(1, 1, f"일별 비중 — 엔진 EOD 기여 패널 ({disp})").font = title_font
-    wp.cell(2, 1, "양수=롱·음수=숏 (자기자본 대비 비중). 엔진이 기록한 일별 포지션 — '어떤 연산'의 가중치.").font = italic
-    wp.cell(4, 1, "날짜").font = bold
-    wp.cell(4, 1).fill = head_fill
-    wp.cell(4, 1).border = border
-    for j, s in enumerate(syms):
-        c = wp.cell(4, 2 + j, s)
-        c.font = bold
-        c.fill = head_fill
-        c.border = border
-        c.alignment = center
     if isinstance(wpanel, pd.DataFrame) and not wpanel.empty:
+        wp_syms = [str(c) for c in wpanel.columns][:_MAX_SYMS]
+        wp = wb.create_sheet("일별비중")
+        wp.cell(1, 1, f"일별 비중 — 엔진 EOD 기여 패널 ({disp})").font = title_font
+        wp.cell(2, 1, "양수=롱·음수=숏 (자기자본 대비 비중). 엔진이 기록한 일별 포지션.").font = italic
+        wp.cell(4, 1, "날짜").font = bold
+        wp.cell(4, 1).fill = head_fill
+        wp.cell(4, 1).border = border
+        for j, s in enumerate(wp_syms):
+            c = wp.cell(4, 2 + j, s)
+            c.font = bold
+            c.fill = head_fill
+            c.border = border
+            c.alignment = center
         wp_al = wpanel.reindex(equity.index)
         for i in range(n):
             r = 5 + i
             wp.cell(r, 1, pd.Timestamp(idx_list[i]).to_pydatetime()).number_format = "yyyy-mm-dd"
-            for j, s in enumerate(syms):
+            for j, s in enumerate(wp_syms):
                 v = wp_al[s].iloc[i] if s in wp_al.columns else None
                 cell = wp.cell(r, 2 + j, None if v is None or pd.isna(v) else float(v))
                 cell.number_format = "0.00%"
-    wp.column_dimensions["A"].width = 12
-    for j in range(len(syms)):
-        wp.column_dimensions[get_column_letter(2 + j)].width = 11
-    wp.freeze_panes = "B5"
+        wp.column_dimensions["A"].width = 12
+        for j in range(len(wp_syms)):
+            wp.column_dimensions[get_column_letter(2 + j)].width = 11
+        wp.freeze_panes = "B5"
 
     # ── 시트 5: 지표·설명 (엔진 metrics 전체 + 전략 정의 + 방법론) ───────────────
     info = wb.create_sheet("지표·설명")
@@ -379,6 +395,7 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
         ("라이브 수식", "엔진 정본 자산곡선(B열) 위에서 일수익·낙폭·CAGR·샤프·MDD를 정의식으로 재계산 — bps=0이면 엔진 지표와 일치(증빙)."),
         ("일일 추가비용(bps)", "백테스트 시트 B3. 일별 수익률에서 차감하는 사후 비용 민감도(라이브). 엔진 비용모델 변경이 아님."),
         ("거래내역", "엔진이 산출한 확정 거래(정적 값). 진입가·청산가·수익률은 엔진과 byte 일치 — 검증 앵커."),
+        ("원자료(입력 데이터)", "전략이 소비한 데이터 전부 — 대상은 OHLC, 신호 참조 종목(거래 안 해도)은 종가. 신호종목 가격으로 신호 로직을 직접 수동검증."),
         ("엑셀이 복제 못 하는 것", "엔진은 정수주·현금·마진콜·지연체결의 이벤트 NAV 시뮬레이션 — 셀 수식으로 NAV 경로를 정확히 재현하지 않는다(자산곡선은 엔진 값 그대로 사용)."),
         ("전략 로직 변경", "임계값·기간·종목 등 전략 파라미터를 바꿔 다시 보려면 '변수 조정'(엔진 재실행) — 엑셀은 산술·비용 검증 도구."),
     ]
