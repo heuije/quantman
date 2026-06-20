@@ -20,13 +20,14 @@ for _p in (str(_CORE), str(_TESTS)):
         sys.path.insert(0, _p)
 
 from quant_core.ir_engine import StrategyIR, result_shape, run_query, summarize_result
-from test_ir_excel_export_shapes import CASES   # 동일 13형상 픽스처 재사용
+from analysis_corpus import BASE_CASES   # 13형상 픽스처(단일 진실원천)
 
-_BY_LABEL = {c[0]: c for c in CASES}
+_BY_LABEL = {c["name"]: c for c in BASE_CASES}
 
 
 def _run(label):
-    _l, ds_fn, ir_dict, _checks = _BY_LABEL[label]
+    case = _BY_LABEL[label]
+    ds_fn, ir_dict = case["ds"], case["ir"]
     ds = ds_fn() if callable(ds_fn) else ds_fn
     res = run_query(StrategyIR.model_validate(ir_dict), ds)
     assert res.get("success"), f"[{label}] 엔진 실행 실패: {res.get('error')}"
