@@ -181,6 +181,50 @@ def test_input_roles_include_signal_refs_and_empty_weight_drops_sheet() -> None:
     assert "일별비중" not in wb.sheetnames
 
 
+def test_signal_decision_panel_formulas_match_engine_indicators() -> None:
+    """★ Phase 2 (L2): 신호·결정 패널의 신호값·포지션 수식이 엔진 지표 정의(indicators.py)와
+    1:1 일치한다 — 틀린 라이브 수식 방지(4원칙 검증). 미지원 op는 폴백(None)."""
+    from quant_core.ir_engine.excel_export import _ind_excel, _signal_to_excel
+    # 지표 셀 수식 = 엔진 정의(pct_change_1d = Close.pct_change(1)*100 / price_level = Close)
+    assert _ind_excel("pct_change_1d", "F", 7) == "=(원자료!F7/원자료!F6-1)*100"
+    assert _ind_excel("pct_change_5d", "F", 7) == "=(원자료!F7/원자료!F2-1)*100"
+    assert _ind_excel("price_level", "F", 7) == "=원자료!F7"
+    assert _ind_excel("rsi_14", "F", 7) is None    # 미지원 → 폴백
+    # 트리 컴파일(select/compare/const/data) — data ref는 지표열 cell로 치환
+    tree = {"op": "select", "inputs": {
+        "cond": {"op": "compare", "params": {"op": "<="}, "inputs": {
+            "left": {"op": "data", "params": {"ref": "S&P500.pct_change_1d"}},
+            "right": {"op": "const", "params": {"value": -0.1}}}},
+        "a": {"op": "const", "params": {"value": 1}}, "b": {"op": "const", "params": {"value": 0}}}}
+    assert _signal_to_excel(tree, {"S&P500.pct_change_1d": "B"}) == "IF((B{r}<=-0.1),1.0,0.0)"
+    assert _signal_to_excel({"op": "unknown_xyz"}, {}) is None   # 미지원 op → 폴백
+
+    # 통합: 단일대상+크로스에셋 신호 → 패널 생성, 포지션 = 중첩 IF
+    ds = {"코스피200선물": _bars(0.001), "S&P500": _bars(-0.0008)}
+    sig = Node(op="select", inputs={
+        "cond": Node(op="compare", params={"op": "<="},
+                     inputs={"left": data("S&P500.pct_change_1d"), "right": const(-0.1)}),
+        "a": const(1), "b": const(0)})
+    ir = StrategyIR(name="패널테스트", signal=sig,
+                    universe=Universe(kind="single", symbols=["코스피200선물"]),
+                    position=PositionSpec(direction="long_short", sizing=Sizing(mode="equal_weight"),
+                                          entry=Entry(mode="on_signal"), exit=Exit(hold_days=0)),
+                    simulation=SimSpec(initial_capital=1e8, commission=0.0))
+    res = run_strategy_ir(ir, ds)
+    wb = load_workbook(io.BytesIO(build_strategy_excel(ir, ds, res)))
+    assert "신호·결정" in wb.sheetnames
+    ps = wb["신호·결정"]
+    posf = next(ps.cell(r, 3).value for r in range(7, 30) if ps.cell(r, 3).value)
+    assert posf.startswith("=IF(") and "<=-0.1" in posf, posf
+
+
+def test_signal_panel_skipped_for_multi_symbol_portfolio(built) -> None:
+    """다중 대상 포트는 종목별 결정이 1열로 표현 불가 → 신호·결정 패널 생략(폴백)."""
+    _ir_, _ds, _res, xlsx = built   # 3종목 fixture
+    wb = load_workbook(io.BytesIO(xlsx))
+    assert "신호·결정" not in wb.sheetnames
+
+
 def test_deterministic_equity(built) -> None:
     """엔진 결정론 — 동일 IR·데이터 재실행 시 자산곡선 동일(증빙 앵커의 전제)."""
     ir2, ds2 = _ir(), _dataset()
