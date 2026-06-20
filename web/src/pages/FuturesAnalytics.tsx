@@ -582,7 +582,7 @@ export default function FuturesAnalytics() {
 
       {/* ⑧ 진입 추세 → 미래 수익률 탐색기 */}
       <section className="panel">
-        <h2 className="section-title">TREND → FORWARD · 진입 추세 → 향후 종가 증감율 탐색기</h2>
+        <h2 className="section-title">TREND → FORWARD · 진입 추세 → 향후 종가 증가율 탐색기</h2>
         <TrendExplorer symbol={symbol} priceSym={priceSym} />
       </section>
     </div>
@@ -1329,8 +1329,8 @@ function SeasonTable({
   );
 }
 
-// ── ⑧ 진입 추세 → 향후 종가 증감율 탐색기 ──────────────────────────────
-// 서버가 (L,H) 이벤트 배열을 1회 내려주면, 증감율 밴드 필터·집계는 브라우저에서 실시간.
+// ── ⑧ 진입 추세 → 향후 종가 증가율 탐색기 ──────────────────────────────
+// 서버가 (L,H) 이벤트 배열을 1회 내려주면, 증가율 밴드 필터·집계는 브라우저에서 실시간.
 
 // TREND→FORWARD 탐색기 입력 기본값 (단일 출처).
 const TE_DEF_LOOKBACK = 90;   // 과거 N일
@@ -1376,12 +1376,12 @@ function teMetricCell(metric: TeMetric, v: number, lowConf: boolean, maxPos: num
 // 2D 스윕 축 옵션 (라벨·코너 약칭).
 const TE_SWEEP_AXES: { v: OilSweepAxis; label: string; short: string }[] = [
   { v: "close", label: "종가 범위", short: "종가" },
-  { v: "change", label: "증감율 범위", short: "증감율" },
+  { v: "change", label: "증가율 범위", short: "증가율" },
   { v: "lookback", label: "과거 L", short: "과거L" },
   { v: "horizon", label: "향후 H", short: "향후H" },
 ];
 
-// 매칭 조건의 평균 향후 종가 증감율에 따른 한줄 전망.
+// 매칭 조건의 평균 향후 종가 증가율에 따른 한줄 전망.
 // G영업일 이내 연속/겹친 이벤트는 1건만(그리디). events 는 날짜 오름차순 가정.
 function teDeclusterByGap<T extends { date: string }>(events: T[], gap: number, dateIdx: Map<string, number>): T[] {
   if (gap <= 0) return events;
@@ -1431,9 +1431,9 @@ function teOpinion(mean: number): { txt: string; cls: string } {
   return { txt: "⚖ 중립 (뚜렷한 방향성 없음)", cls: "muted" };
 }
 
-// ⑧ 진입 추세 → 향후 종가 증감율 탐색기.
-// 폼(종가범위·과거L·증감율범위·미래H·이벤트최소간격)을 채우고 [확인]을 누르면 계산: 문장 결과+전망 /
-// 전체기간 가격차트(매칭 구간 음영) / 종가대×증감율 히트맵 / 회귀(과거×미래).
+// ⑧ 진입 추세 → 향후 종가 증가율 탐색기.
+// 폼(종가범위·과거L·증가율범위·미래H·이벤트최소간격)을 채우고 [확인]을 누르면 계산: 문장 결과+전망 /
+// 전체기간 가격차트(매칭 구간 음영) / 종가대×증가율 히트맵 / 회귀(과거×미래).
 // /trend-events(이벤트) + /prices(전체 가격 시계열)을 브라우저에서 집계.
 function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string }) {
   // 입력 draft (확인 전엔 계산 안 함)
@@ -1441,8 +1441,8 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
   const [dNHi, setDNHi] = useState<number | "">("");   // 종가 상한
   const [dL, setDL] = useState(TE_DEF_LOOKBACK);
   const [dH, setDH] = useState(TE_DEF_HORIZON);
-  const [dLo, setDLo] = useState<number | "">("");     // 과거 증감율 하한
-  const [dHi, setDHi] = useState<number | "">("");     // 과거 증감율 상한
+  const [dLo, setDLo] = useState<number | "">("");     // 과거 증가율 하한
+  const [dHi, setDHi] = useState<number | "">("");     // 과거 증가율 상한
   const [dGap, setDGap] = useState(TE_DEF_GAP);        // 이벤트 최소 간격(영업일) — 클러스터/겹침 디클러스터. 기본 60: 독립 표본 확보. (L,H) 지도는 저표본도 그리므로(n≥3) 60이어도 안 비고 저신뢰 음영으로 표시됨
   // (L,H) 지도 셀 지표 — 기본은 사용자가 최적화하는 '평균 향후수익률'.
   const [scanMetric, setScanMetric] = useState<TeMetric>("ret");
@@ -1486,8 +1486,8 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           const dec = hw >= 10 ? 0 : hw >= 1 ? 1 : hw >= 0.1 ? 2 : 3;
           setDNLo(Number((c - hw).toFixed(dec)));
           setDNHi(Number((c + hw).toFixed(dec)));
-          // 증감율 밴드 기본값 = 현재(기본 lookback일) 증감율 ±5%p (5로 반올림) →
-          // 첫 확인부터 '종가범위 ∧ 증감율' 두 조건이 모두 활성(음영=두 조건 교집합).
+          // 증가율 밴드 기본값 = 현재(기본 lookback일) 증가율 ±5%p (5로 반올림) →
+          // 첫 확인부터 '종가범위 ∧ 증가율' 두 조건이 모두 활성(음영=두 조건 교집합).
           const w = Math.min(TE_DEF_LOOKBACK, p.length - 1);
           if (w >= 1) {
             const chg = (last / p[p.length - 1 - w].close - 1) * 100;
@@ -1502,7 +1502,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
   const latestClose = prices.length ? prices[prices.length - 1].close : null;
 
-  // 현재 (과거 dL일) 증감율 — 최신 가격 기준 안내 (draft L에 live; 분석과 무관).
+  // 현재 (과거 dL일) 증가율 — 최신 가격 기준 안내 (draft L에 live; 분석과 무관).
   const currentChange = useMemo(() => {
     if (prices.length <= dL) return null;
     const last = prices[prices.length - 1].close;
@@ -1543,7 +1543,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     }
   }
 
-  // 매칭 이벤트: 설정 종가범위 ∧ 과거 증감율 범위.
+  // 매칭 이벤트: 설정 종가범위 ∧ 과거 증가율 범위.
   const matched = useMemo(() => {
     if (!data || !applied) return [];
     return data.events.filter(
@@ -1604,7 +1604,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
     return { n, mean, up };
   }, [declustered]);
 
-  // 회귀/산점도: 종가범위만(증감율 밴드 제외 — x축 절단 회피) → gap 디클러스터.
+  // 회귀/산점도: 종가범위만(증가율 밴드 제외 — x축 절단 회피) → gap 디클러스터.
   // = (L,H) 지도 셀과 동일 조건이고 결과·음영과 일관. 독립 표본이라 단순 OLS로 충분(HAC 불필요).
   const scatterDecl = useMemo(() => {
     if (!data || !applied) return [];
@@ -1691,7 +1691,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
       `}</style>
 
       <p className="muted" style={{ marginBottom: 12 }}>
-        종가 범위·진입 직전 추세·기간을 채우고 <b>확인</b>을 누르면, 과거 비슷했던 구간들의 향후 종가 증감율·전망과
+        종가 범위·진입 직전 추세·기간을 채우고 <b>확인</b>을 누르면, 과거 비슷했던 구간들의 향후 종가 증가율·전망과
         해당 구간들의 가격 차트를 보여줍니다.
       </p>
 
@@ -1714,7 +1714,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
             <span className="te-blank">
               <input type="number" min={1} max={250} value={dL} onChange={(e) => setDL(Math.max(1, Number(e.target.value) || 1))} />일
             </span>{" "}
-            동안 증감율이{" "}
+            동안 증가율이{" "}
             <span className="te-blank">
               <input type="number" step={1} value={dLo} placeholder="하한"
                 onChange={(e) => setDLo(e.target.value === "" ? "" : Number(e.target.value))} />%
@@ -1727,13 +1727,13 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
             <span className="te-blank">
               <input type="number" min={1} max={500} value={dH} onChange={(e) => setDH(Math.max(1, Number(e.target.value) || 1))} />일
             </span>{" "}
-            후 종가 증감율은?
+            후 종가 증가율은?
           </div>
 
-          {/* 현재 종가·증감율 참고 문구 (질문 문장 뒤) */}
+          {/* 현재 종가·증가율 참고 문구 (질문 문장 뒤) */}
           {latestClose !== null && (
             <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>
-              (참고: 현재 종가는 <b>{priceSym}{latestClose.toFixed(2)}</b>이며, 과거 <b>{dL}일</b> 동안 증감율은{" "}
+              (참고: 현재 종가는 <b>{priceSym}{latestClose.toFixed(2)}</b>이며, 과거 <b>{dL}일</b> 동안 증가율은{" "}
               {currentChange !== null
                 ? <b className={currentChange >= 0 ? "pos" : "neg"}>{(currentChange >= 0 ? "+" : "") + currentChange.toFixed(1)}%</b>
                 : "—"}
@@ -1762,7 +1762,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
             result ? (
               <>
                 <div style={{ fontSize: 15, marginBottom: 6 }}>
-                  → 향후 {applied.H}일 평균 종가 증감율{" "}
+                  → 향후 {applied.H}일 평균 종가 증가율{" "}
                   <b className={result.mean >= 0 ? "pos" : "neg"} style={{ fontSize: 19 }}>
                     {(result.mean >= 0 ? "+" : "") + result.mean.toFixed(2)}%
                   </b>
@@ -1779,7 +1779,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
                       전망: {op.txt}
                     </span>{" "}
                     <span className="muted" style={{ fontSize: 12 }}>
-                      (이 조건의 향후 평균 종가 증감율 {(result.mean >= 0 ? "+" : "") + result.mean.toFixed(2)}% 기준)
+                      (이 조건의 향후 평균 종가 증가율 {(result.mean >= 0 ? "+" : "") + result.mean.toFixed(2)}% 기준)
                     </span>
                   </div>
                 )}
@@ -1792,7 +1792,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           {/* 엑셀 내보내기 — 조건·이벤트·요약 (.xlsx) */}
           {applied && !loading && result && (
             <button className="export-btn" disabled={teExporting} style={{ marginBottom: 14 }}
-              title="현재 조건의 향후 종가 증감율 결과(조건·매칭 이벤트·요약)를 엑셀로"
+              title="현재 조건의 향후 종가 증가율 결과(조건·매칭 이벤트·요약)를 엑셀로"
               onClick={async () => {
                 setTeExporting(true);
                 try {
@@ -1813,7 +1813,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
 
           {/* 전체기간 가격차트 + 매칭 구간 음영 */}
           <div className="muted" style={{ fontSize: 13, margin: "8px 0 6px" }}>
-            전체기간 가격 — <span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 종가{applied ? ` ${applied.nLo <= -1e8 ? "−∞" : priceSym + applied.nLo}~${applied.nHi >= 1e8 ? "∞" : priceSym + applied.nHi}` : ""} <b>∧</b> 증감율{applied ? ` ${applied.lo <= -1e8 ? "−∞" : applied.lo + "%"}~${applied.hi >= 1e8 ? "∞" : applied.hi + "%"}` : ""} <b>둘 다</b> 만족하는 신호발생일~청산예정일(+{applied?.H ?? dH}일) 구간{declustered.length ? ` · ${declustered.length}건${matched.length > declustered.length ? ` (원시 ${matched.length})` : ""}` : ""}.
+            전체기간 가격 — <span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 종가{applied ? ` ${applied.nLo <= -1e8 ? "−∞" : priceSym + applied.nLo}~${applied.nHi >= 1e8 ? "∞" : priceSym + applied.nHi}` : ""} <b>∧</b> 증가율{applied ? ` ${applied.lo <= -1e8 ? "−∞" : applied.lo + "%"}~${applied.hi >= 1e8 ? "∞" : applied.hi + "%"}` : ""} <b>둘 다</b> 만족하는 신호발생일~청산예정일(+{applied?.H ?? dH}일) 구간{declustered.length ? ` · ${declustered.length}건${matched.length > declustered.length ? ` (원시 ${matched.length})` : ""}` : ""}.
           </div>
           <ResponsiveContainer width="100%" height={260}>
             <ComposedChart data={chart.line} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
@@ -1835,7 +1835,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           {applied && !loading && reg && pastRange && (
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
               <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
-                회귀분석 — 과거 <b>{applied.L}일</b> 증감율(x) → 미래 <b>{applied.H}일</b> 종가 증감율(y) · 종가범위+간격 <b>독립 {reg.n.toLocaleString()}건</b>
+                회귀분석 — 과거 <b>{applied.L}일</b> 증가율(x) → 미래 <b>{applied.H}일</b> 종가 증가율(y) · 종가범위+간격 <b>독립 {reg.n.toLocaleString()}건</b>
               </div>
               <div className="bt-metrics" style={{ marginBottom: 10 }}>
                 <Metric label="기울기 β" value={(reg.slope >= 0 ? "+" : "") + reg.slope.toFixed(2)}
@@ -1849,12 +1849,12 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
               <ResponsiveContainer width="100%" height={280}>
                 <ScatterChart margin={{ top: 8, right: 20, bottom: 30, left: 16 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
-                  <XAxis type="number" dataKey="x" name="과거 증감율" domain={["auto", "auto"]}
+                  <XAxis type="number" dataKey="x" name="과거 증가율" domain={["auto", "auto"]}
                     tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => Math.round(Number(v)) + "%"}
-                    label={{ value: `과거 ${applied.L}일 증감율 (%)`, position: "insideBottom", offset: -6, style: { fontSize: 11, fill: "#6f6a62" } }} />
-                  <YAxis type="number" dataKey="y" name="향후 종가 증감율" domain={["auto", "auto"]}
+                    label={{ value: `과거 ${applied.L}일 증가율 (%)`, position: "insideBottom", offset: -6, style: { fontSize: 11, fill: "#6f6a62" } }} />
+                  <YAxis type="number" dataKey="y" name="향후 종가 증가율" domain={["auto", "auto"]}
                     tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => Math.round(Number(v)) + "%"}
-                    label={{ value: `향후 ${applied.H}일 종가 증감율 (%)`, angle: -90, position: "insideLeft", style: { fontSize: 11, fill: "#6f6a62", textAnchor: "middle" } }} />
+                    label={{ value: `향후 ${applied.H}일 종가 증가율 (%)`, angle: -90, position: "insideLeft", style: { fontSize: 11, fill: "#6f6a62", textAnchor: "middle" } }} />
                   <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(v) => `${Number(v).toFixed(2)}%`} />
                   <ReferenceLine y={0} stroke="#6f6a62" />
                   {regSeg && <ReferenceLine segment={regSeg} stroke="#d97757" strokeWidth={2} />}
@@ -1960,7 +1960,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           {applied && (
             <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
               <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
-                <b>2D 스윕</b> — 4축(종가범위·증감율범위·과거L·향후H) 중 둘을 격자로. 나머지 2축은 현재 입력 고정. 값 하나씩 안 넣고 최적 조합을 한눈에.
+                <b>2D 스윕</b> — 4축(종가범위·증가율범위·과거L·향후H) 중 둘을 격자로. 나머지 2축은 현재 입력 고정. 값 하나씩 안 넣고 최적 조합을 한눈에.
               </div>
               <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
                 <span className="muted" style={{ fontSize: 12 }}>행</span>
@@ -2036,7 +2036,7 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           )}
 
           <div className="muted" style={{ fontSize: 11, marginTop: 12 }}>
-            ⚠️ <b>종가 증감율</b>은 종가-종가 기준 서술용(실 백테스트의 익일 시가·비용·청산룰과 다름 — 관계 측정용). forward 윈도우 겹침·레짐 집중은 <b>이벤트 최소 간격(디클러스터)</b>으로 독립표본화 — 결과·회귀·(L,H) 지도에 동일 적용.
+            ⚠️ <b>종가 증가율</b>은 종가-종가 기준 서술용(실 백테스트의 익일 시가·비용·청산룰과 다름 — 관계 측정용). forward 윈도우 겹침·레짐 집중은 <b>이벤트 최소 간격(디클러스터)</b>으로 독립표본화 — 결과·회귀·(L,H) 지도에 동일 적용.
             범위를 좁힐수록 표본↓·통계 불안정(n&lt;30 ⚠). (L,H) 지도는 종가범위 조건, 위 회귀는 전체기간 — 조건이 달라 R²가 다를 수 있음.
           </div>
         </>

@@ -399,10 +399,10 @@ def build_oil_trend_excel(
     name: str,
     price_sym: str,
 ) -> bytes:
-    """추세 탐색기 '향후 종가 증감율'을 **라이브 수식 .xlsx** 로.
+    """추세 탐색기 '향후 종가 증가율'을 **라이브 수식 .xlsx** 로.
 
-    시트1 '데이터+계산': raw OHLCV + Excel 수식(과거/향후 증감율·종가·증감율 밴드 매칭·
-    gap 디클러스터·요약·회귀). 노란 칸(종가범위·증감율범위·과거L·향후H·간격)을 바꾸면
+    시트1 '데이터+계산': raw OHLCV + Excel 수식(과거/향후 증가율·종가·증가율 밴드 매칭·
+    gap 디클러스터·요약·회귀). 노란 칸(종가범위·증가율범위·과거L·향후H·간격)을 바꾸면
     전체 재계산 — 백테스트 엑셀과 동일한 라이브 방식. 시트2 '이벤트(현재)': 다운로드
     시점 결과의 정적 스냅샷(수식 결과 교차검증·앱 화면과 일치).
     """
@@ -431,15 +431,15 @@ def build_oil_trend_excel(
     ws = wb.active
     ws.title = "데이터+계산"
     disp = name if "선물" in name else f"{name} 선물"
-    ws["A1"] = f"{disp} — 향후 종가 증감율 (라이브 수식)"
+    ws["A1"] = f"{disp} — 향후 종가 증가율 (라이브 수식)"
     ws["A1"].font = title_font
 
     # ── 입력칸(노란) B2~B8 — 바꾸면 전체 재계산 ───────────────────────
     inputs = [
         (f"종가 하한 ({psym})", _cv(price_lo)),
         (f"종가 상한 ({psym})", _cv(price_hi)),
-        ("과거 증감율 하한 (%)", _cv(change_lo)),
-        ("과거 증감율 상한 (%)", _cv(change_hi)),
+        ("과거 증가율 하한 (%)", _cv(change_lo)),
+        ("과거 증가율 상한 (%)", _cv(change_hi)),
         ("과거 기간 L (영업일)", int(lookback)),
         ("향후 기간 H (영업일)", int(horizon)),
         ("이벤트 최소 간격 (영업일, 0=원시)", int(gap)),
@@ -460,7 +460,7 @@ def build_oil_trend_excel(
     summary = [
         ("독립 표본 n", f"=COUNT(L{D0}:L{last})", "0"),
         ("원시 매칭 수", f"=SUM(H{D0}:H{last})", "0"),
-        ("평균 향후 증감율 (%)", f"=IFERROR(AVERAGE(L{D0}:L{last}),0)", "+0.00;-0.00"),
+        ("평균 향후 증가율 (%)", f"=IFERROR(AVERAGE(L{D0}:L{last}),0)", "+0.00;-0.00"),
         ("상승 비율 (%)", f'=IFERROR(COUNTIF(L{D0}:L{last},">0")/COUNT(L{D0}:L{last})*100,0)', "0.0"),
         ("회귀 β (향후~과거)", f'=IFERROR(SLOPE(L{D0}:L{last},K{D0}:K{last}),"")', "+0.000;-0.000"),
         ("회귀 R²", f'=IFERROR(RSQ(L{D0}:L{last},K{D0}:K{last}),"")', "0.000"),
@@ -476,10 +476,10 @@ def build_oil_trend_excel(
         cell.border = border
 
     # ── 헤더(HROW) + raw 데이터 + 수식 열 ─────────────────────────────
-    # A날짜 B시 C고 D저 E종 | F과거증감율 G향후증감율 H매칭 I채택(디클러스터)
+    # A날짜 B시 C고 D저 E종 | F과거증가율 G향후증가율 H매칭 I채택(디클러스터)
     # J최근채택행(헬퍼) | K채택과거 L채택향후
     headers = ["날짜", "시가", "고가", "저가", "종가",
-               "과거증감율(%)", "향후증감율(%)", "매칭", "채택", "_최근채택행",
+               "과거증가율(%)", "향후증가율(%)", "매칭", "채택", "_최근채택행",
                "채택 과거(%)", "채택 향후(%)"]
     for j, h in enumerate(headers):
         c = ws.cell(row=HROW, column=1 + j, value=h)
@@ -496,15 +496,15 @@ def build_oil_trend_excel(
         ws.cell(row=r, column=3, value=float(row["high"]))
         ws.cell(row=r, column=4, value=float(row["low"]))
         ws.cell(row=r, column=5, value=float(row["close"]))
-        # F 과거증감율% = (종가 ÷ 종가[행−L] − 1)×100. 행−L<첫데이터면 공란.
+        # F 과거증가율% = (종가 ÷ 종가[행−L] − 1)×100. 행−L<첫데이터면 공란.
         ws.cell(row=r, column=6, value=(
             f'=IF(ROW()-$B$6<{D0},"",IFERROR((E{r}/INDEX($E:$E,ROW()-$B$6)-1)*100,""))'
         ))
-        # G 향후증감율% = (종가[행+H] ÷ 종가 − 1)×100. 행+H>끝이면 공란.
+        # G 향후증가율% = (종가[행+H] ÷ 종가 − 1)×100. 행+H>끝이면 공란.
         ws.cell(row=r, column=7, value=(
             f'=IF(ROW()+$B$7>{last},"",IFERROR((INDEX($E:$E,ROW()+$B$7)/E{r}-1)*100,""))'
         ))
-        # H 매칭 = 종가∈[B2,B3] ∧ 과거증감율∈[B4,B5] (양 증감율 존재 시).
+        # H 매칭 = 종가∈[B2,B3] ∧ 과거증가율∈[B4,B5] (양 증가율 존재 시).
         ws.cell(row=r, column=8, value=(
             f'=IF(AND(ISNUMBER(F{r}),ISNUMBER(G{r}),E{r}>=$B$2,E{r}<=$B$3,'
             f'F{r}>=$B$4,F{r}<=$B$5),1,0)'
@@ -547,7 +547,7 @@ def build_oil_trend_excel(
         ("과거 L / 향후 H", f"{lookback} / {horizon} 영업일"),
         ("이벤트 최소 간격", f"{gap} 영업일"),
         ("독립 표본 n / 원시", f"{nn} / {raw_n}"),
-        (f"평균 향후 {horizon}일 증감율 (%)", round(mean, 2)),
+        (f"평균 향후 {horizon}일 증가율 (%)", round(mean, 2)),
         ("상승 비율 (%)", round(upr, 1)),
     ]
     for i, (k, v) in enumerate(srows, start=3):
@@ -555,7 +555,7 @@ def build_oil_trend_excel(
         snap[f"A{i}"].font = bold
         snap[f"B{i}"] = v
     hr = 10
-    hdr2 = ["신호일", "종가", f"과거 {lookback}일 증감율(%)", f"향후 {horizon}일 증감율(%)"]
+    hdr2 = ["신호일", "종가", f"과거 {lookback}일 증가율(%)", f"향후 {horizon}일 증가율(%)"]
     for j, h in enumerate(hdr2):
         c = snap.cell(row=hr, column=1 + j, value=h)
         c.font = bold
