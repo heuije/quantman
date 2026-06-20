@@ -554,6 +554,12 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
         info.cell(rr, 1, k).font = bold
         info.cell(rr, 2, v).alignment = Alignment(wrap_text=True, vertical="top")
         rr += 1
+    for w in (result.get("warnings") or []):     # 데이터 품질·실행 경고도 엑셀에 표면화(재설계 원칙 #5)
+        msg = w.get("message") if isinstance(w, dict) else str(w)
+        if msg:
+            rr += 1
+            info.cell(rr, 1, "⚠").font = bold
+            info.cell(rr, 2, msg).alignment = Alignment(wrap_text=True, vertical="top")
     info.column_dimensions["A"].width = 22
     info.column_dimensions["B"].width = 90
 
@@ -623,12 +629,33 @@ def _perf_table(ws, row0: int, label_header: str, rows: list, S: dict) -> int:
     return r
 
 
-def _methodology(wb, ir, title: str, notes: list, S: dict):
-    """'설명' 시트 — 사용 전략 정의(IR) + 방법론·한계. 전 형상 공용 증빙 꼬리표."""
+def _warning_block(info, rr: int, result, S: dict) -> int:
+    """결과의 데이터 품질·실행 경고(Phase 0.5·무거래 등)를 설명 시트에 표면화. 다음 행 반환.
+
+    ★ 재설계 원칙 #5: 데이터 품질 계약이 챗 응답뿐 아니라 엑셀(오프라인 검토 surface)에도
+    닿아야 한다 — 전 연산유형 공통. 경고 없으면 무동작.
+    """
+    warns = (result or {}).get("warnings") or []
+    msgs = [w.get("message") if isinstance(w, dict) else str(w) for w in warns]
+    msgs = [m for m in msgs if m]
+    if not msgs:
+        return rr
+    info.cell(rr, 1, "⚠ 데이터 품질·실행 경고").font = S["accent"]
+    rr += 1
+    for m in msgs:
+        info.cell(rr, 1, "⚠").font = S["bold"]
+        info.cell(rr, 2, m).alignment = S["wrap"]
+        rr += 1
+    return rr + 1
+
+
+def _methodology(wb, ir, title: str, notes: list, S: dict, result=None):
+    """'설명' 시트 — (데이터 경고) + 전략 정의(IR) + 방법론·한계. 전 형상 공용 증빙 꼬리표."""
     info = wb.create_sheet("설명")
     info.cell(1, 1, title).font = S["title"]
-    info.cell(3, 1, "전략 정의 (IR)").font = S["accent"]
-    rr = 4
+    rr = _warning_block(info, 3, result, S)   # 경고 먼저(있으면) — 데이터 품질 계약 표면화
+    info.cell(rr, 1, "전략 정의 (IR)").font = S["accent"]
+    rr += 1
     ird = _ir_dict(ir)
     for key in ("name", "query", "universe", "signal", "position", "simulation", "study", "select"):
         if key not in ird or ird[key] in (None, {}, []):
@@ -684,7 +711,7 @@ def _build_select(ir, dataset, result, disp: str) -> bytes:
         ("점수(score)", "신호 블록의 as-of(기준일) 횡단 값. descending=참이면 큰 순, 거짓이면 작은 순(예: 저PBR)."),
         ("선별", f"top_n/top_pct 상위만 표시. as-of={result.get('as_of', '')} 단면 스냅샷(시계열 아님)."),
         ("값 정직성", "점수·표시지표는 엔진이 산출한 그 시점 값. 팩터 산식 자체는 IR signal 트리(설명 시트) 참조."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -749,7 +776,7 @@ def _build_describe_single(ir, dataset, result, disp: str) -> bytes:
         ("값/수식", "요약 지표는 엔진 산출값. '원자료' 종가로 52주 고저·연변동성을 라이브 수식으로 재계산해 대조(엔진값과 일치 확인용)."),
         ("수익률", "1/3/6/12개월 = 해당 영업일수 전 종가 대비 변화(%)."),
         ("펀더멘털", "데이터에 있으면 표기, 없으면 빈칸 — 정직(가짜 채움 없음)."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -817,7 +844,7 @@ def _build_describe_portfolio(ir, dataset, result, disp: str) -> bytes:
         ("라이브 수식", "HHI·유효종목수·최대비중·가중PBR을 보유 비중/PBR로 라이브 재계산(엔진값과 대조). 비중 셀 바꾸면 갱신."),
         ("PBR(as-of)", "각 보유종목 데이터의 마지막 PBR. 없으면 빈칸."),
         ("위험(값)", "포트 연변동성·평균 쌍상관은 일별수익 공분산 기반 엔진 산출값(셀 복제 범위 외)."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -839,7 +866,7 @@ def _build_sweep(ir, dataset, result, disp: str) -> bytes:
         ("스윕", f"{label_h} 축을 펼쳐 각 값마다 독립 백테스트를 돌린 성과 비교."),
         ("값 only(감사표)", "각 버킷은 별도 시뮬이라 한 시트 라이브 수식으로 재현 불가 — 엔진 산출 성과를 그대로 표기."),
         ("성과 정의", "CAGR·샤프·MDD 등은 각 버킷 일별수익에서 산출(PERF 정규지표)."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -867,7 +894,7 @@ def _build_condition(ir, dataset, result, disp: str) -> bytes:
         ("조건 대조", "라벨(섹터·국면 등)로 일별 기여를 분할해 그룹별 성과를 비교. '전체'=포트폴리오 합산."),
         ("쌍대 t검정", "각 라벨 쌍의 일별수익 평균 차이 유의성(2-표본 t)."),
         ("값 only(감사표)", "엔진 산출 버킷 성과·검정통계를 그대로 표기."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -942,7 +969,7 @@ def _build_period_split(ir, dataset, result, disp: str) -> bytes:
         _methodology(wb, ir, f"{disp} — 연도별 방법론", [
             ("연수익(라이브)", "각 연도 = 조정자산[연말]/조정자산[직전]−1. base 백테스트 재실행 실패로 일별 시트 생략."),
             ("값(엔진)", "엔진 산출 연도 성과를 그대로 표기(대조 기준)."),
-        ], S)
+        ], S, result=result)
     return _save(wb)
 
 
@@ -984,7 +1011,7 @@ def _build_extremize(ir, dataset, result, disp: str) -> bytes:
                  f"{obj.get('direction', '')})를 최대/최소화하는 후보 선택."),
         ("과최적화 가드", "in-sample 최적을 시간폴드 OOS 일관성으로 교차검증(oos_guard)."),
         ("값 only(감사표)", "엔진 산출 랭킹·성과를 그대로 표기."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -1024,7 +1051,7 @@ def _build_signal_dist(ir, dataset, result, disp: str) -> bytes:
     _methodology(wb, ir, f"{disp} — 신호 분포 방법론", [
         ("신호 분포", "분석 노드(target_node)의 횡단·시계열 값 전체 분포 — 평균·분위수·히스토그램."),
         ("값 only(감사표)", "엔진 산출 분포 통계를 그대로 표기."),
-    ], S)
+    ], S, result=result)
     return _save(wb)
 
 
@@ -1070,7 +1097,7 @@ def _build_relation(ir, dataset, result, disp: str) -> bytes:
                  ("계수 해석", "양(+)·t유의 = 그 팩터가 미래수익과 양의 관계."),
                  ("값 only(감사표)", "엔진 산출 회귀통계를 그대로 표기.")]
         ws.freeze_panes = "A5"
-    _methodology(wb, ir, f"{disp} — 관계분석 방법론", notes, S)
+    _methodology(wb, ir, f"{disp} — 관계분석 방법론", notes, S, result=result)
     return _save(wb)
 
 
@@ -1098,5 +1125,5 @@ def _build_event(ir, dataset, result, disp: str) -> bytes:
     _methodology(wb, ir, f"{disp} — 이벤트 스터디 방법론", [
         ("이벤트 스터디", "이벤트(조건 충족) 발생 후 forward 윈도 수익 분포. MAE=구간내 최대손실, MFE=최대이익."),
         ("값 only(감사표)", "엔진 산출 이벤트 통계를 그대로 표기."),
-    ], S)
+    ], S, result=result)
     return _save(wb)

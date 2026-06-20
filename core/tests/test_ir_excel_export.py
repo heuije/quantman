@@ -225,6 +225,28 @@ def test_signal_panel_skipped_for_multi_symbol_portfolio(built) -> None:
     assert "신호·결정" not in wb.sheetnames
 
 
+def test_data_quality_warnings_surface_in_excel() -> None:
+    """★ Phase 3 (원칙 #5): 데이터 품질·실행 경고가 엑셀 설명/지표 시트에 표면화된다 — 전 유형 공통.
+    챗 응답뿐 아니라 엑셀(오프라인 검토 surface)에도 데이터 품질 계약이 닿아야 함."""
+    from openpyxl import Workbook as _WB
+
+    from quant_core.ir_engine.excel_export import _styles, _warning_block
+    # 단위: _warning_block이 경고 메시지를 시트에 쓴다 / 없으면 무동작
+    ws0 = _WB().active
+    nxt = _warning_block(ws0, 3, {"warnings": [{"code": "stale_data", "message": "S&P500: 데이터 결손"}]}, _styles())
+    flat = [ws0.cell(r, c).value for r in range(1, nxt + 1) for c in (1, 2)]
+    assert any("S&P500: 데이터 결손" in str(v) for v in flat)
+    assert _warning_block(_WB().active, 3, {"warnings": []}, _styles()) == 3   # 경고 없음→무동작
+
+    # 통합: 경고 주입한 simulate 결과 → '지표·설명' 시트에 ⚠ 메시지 등장
+    res = dict(run_strategy_ir(_ir(), _dataset()))
+    res["warnings"] = [{"code": "data_gap", "message": "BBB: 밀도 부족 테스트경고"}]
+    wb = load_workbook(io.BytesIO(build_strategy_excel(_ir(), _dataset(), res)))
+    info = wb["지표·설명"]
+    cells = [info.cell(r, c).value for r in range(1, info.max_row + 1) for c in (1, 2)]
+    assert any("BBB: 밀도 부족 테스트경고" in str(v) for v in cells), "simulate 지표·설명에 경고 누락"
+
+
 def test_deterministic_equity(built) -> None:
     """엔진 결정론 — 동일 IR·데이터 재실행 시 자산곡선 동일(증빙 앵커의 전제)."""
     ir2, ds2 = _ir(), _dataset()
