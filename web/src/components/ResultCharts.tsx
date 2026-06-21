@@ -4,7 +4,7 @@ import {
   Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
 } from "recharts";
 import type {
-  IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
+  BreadthResult, IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
   IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrSweepBucket, PrescribeResult,
 } from "../types";
 
@@ -955,6 +955,53 @@ export function PrescribePanel({ r }: { r: PrescribeResult }) {
       </div>
       <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
         ★ 추천 · 트리맵=추천 목적의 비중(면적). 최대샤프는 기대수익=과거평균 추정(노이즈 큼) — 위험기반이 더 안정적.
+      </div>
+    </Box>
+  );
+}
+
+// ── 시장 breadth (P5c) — 상승/하락 폭 + MA 상회 + 섹터 분산("시장이 왜/어떤가") ──
+export function BreadthPanel({ r }: { r: BreadthResult }) {
+  const n = r.n ?? 0;
+  const pctUp = r.pct_up != null ? r.pct_up * 100 : 50;
+  const sectors = r.sector_breakdown ?? [];
+  const maxAbs = Math.max(0.0001, ...sectors.map(([, v]) => Math.abs(v)));
+  const sign = (v: number | null | undefined) => (v == null ? C.text : v >= 0 ? C.up : C.down);
+  const movers = (xs?: [string, number][]) =>
+    (xs ?? []).map(([s, v]) => `${s} ${(v * 100).toFixed(1)}%`).join(", ") || "—";
+  return (
+    <Box title="시장 breadth" sub={`${n}종목 · 상승 ${r.n_up ?? 0} / 하락 ${r.n_down ?? 0}`}>
+      <div style={{ display: "flex", height: 22, borderRadius: 4, overflow: "hidden", marginBottom: 8 }}>
+        <div style={{ width: `${pctUp}%`, background: C.up, color: "#fff", fontSize: 11,
+          textAlign: "center", lineHeight: "22px", minWidth: 30 }}>상승 {r.n_up ?? 0}</div>
+        <div style={{ flex: 1, background: C.down, color: "#fff", fontSize: 11,
+          textAlign: "center", lineHeight: "22px", minWidth: 30 }}>하락 {r.n_down ?? 0}</div>
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 12, marginBottom: 8 }}>
+        <span>평균 1일 <b style={{ color: sign(r.avg_r1) }}>{_pctOr(r.avg_r1)}</b></span>
+        <span>5일 <b style={{ color: sign(r.avg_r5) }}>{_pctOr(r.avg_r5)}</b></span>
+        <span>20일 <b style={{ color: sign(r.avg_r20) }}>{_pctOr(r.avg_r20)}</b></span>
+        <span style={{ color: C.muted }}>20일선 위 {_pctOr(r.pct_above_ma20)} · 60일선 위 {_pctOr(r.pct_above_ma60)}</span>
+      </div>
+      {sectors.length > 0 ? (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>섹터별 평균 1일 수익</div>
+          {sectors.map(([name, v]) => (
+            <div key={name} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, margin: "2px 0" }}>
+              <span style={{ width: 84, textAlign: "right", color: C.muted, overflow: "hidden",
+                textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+              <div style={{ flex: 1, height: 12, background: C.panel, borderRadius: 2 }}>
+                <div style={{ height: 12, borderRadius: 2, background: v >= 0 ? C.up : C.down,
+                  width: `${(Math.abs(v) / maxAbs) * 100}%` }} />
+              </div>
+              <span style={{ width: 52, color: v >= 0 ? C.up : C.down }}>{(v * 100).toFixed(1)}%</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div style={{ display: "flex", gap: 16, fontSize: 11, flexWrap: "wrap" }}>
+        <div><span style={{ color: C.muted }}>상위: </span>{movers(r.top_gainers)}</div>
+        <div><span style={{ color: C.muted }}>하위: </span>{movers(r.top_losers)}</div>
       </div>
     </Box>
   );

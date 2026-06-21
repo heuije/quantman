@@ -429,6 +429,23 @@ export interface PrescribeResult {
   warnings?: IrIssue[];
 }
 
+// P5c 시장 breadth — 종목군 등락·MA 상회·섹터 분산
+export interface BreadthResult {
+  n?: number;
+  n_up?: number;
+  n_down?: number;
+  n_flat?: number;
+  pct_up?: number | null;
+  avg_r1?: number | null;
+  avg_r5?: number | null;
+  avg_r20?: number | null;
+  pct_above_ma20?: number | null;
+  pct_above_ma60?: number | null;
+  top_gainers?: [string, number][];
+  top_losers?: [string, number][];
+  sector_breakdown?: [string, number, number][];
+}
+
 export interface IrStrategyResult extends BacktestResult {
   warnings?: IrIssue[];
   issues?: IrIssue[];

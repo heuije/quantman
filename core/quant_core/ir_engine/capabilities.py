@@ -174,6 +174,10 @@ def capability_spec() -> dict:
              "does": "포트폴리오 비중 최적화 — 위험기반(최소분산·리스크패리티·동일가중)+최대샤프 동시 산출",
              "use_for": "'포트폴리오 비중 추천'·'어떻게 배분'. universe.kind=list(종목 2+), "
                         "prescribe.max_weight(집중 상한)·window(추정기간). 결과=비중 트리맵+포트 지표."},
+            {"value": "breadth",
+             "does": "시장 폭(breadth) — 종목군의 등락 비율·MA 상회 비율·섹터 분산(최신 바)",
+             "use_for": "'시장/코스피 어떤가·왜 빠지나'(what). universe.kind=all/list. 상승하락 수·평균수익·"
+                        "20/60일선 상회·상위하위·섹터별. why(거시·뉴스)는 사이드카·해석 보강."},
         ],
         # SELECT 동사 전용 설정 — query="select"일 때만. as-of 단면 랭킹 스크리닝의 모양 제어.
         "select": {

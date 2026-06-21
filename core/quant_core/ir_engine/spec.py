@@ -230,7 +230,7 @@ class StrategyIR(BaseModel):
     signal: Node                        # condition(룰) 또는 score(팩터)
     position: PositionSpec = Field(default_factory=PositionSpec)
     simulation: SimSpec = Field(default_factory=SimSpec)
-    query: Literal["select", "describe", "relate", "simulate", "prescribe"] = "simulate"
+    query: Literal["select", "describe", "relate", "simulate", "prescribe", "breadth"] = "simulate"
     study: Study = Field(default_factory=Study)
     select: Optional[SelectSpec] = None    # query="select" 전용
     prescribe: Optional[PrescribeSpec] = None   # query="prescribe" 전용
@@ -654,6 +654,10 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     if s.query == "prescribe" and s.universe.kind == "single":
         issues.append(Issue("S-PRESCRIBE", SEV_ERROR,
                             "포트폴리오 추천은 종목이 2개 이상이어야 합니다(universe.kind=list).", "universe"))
+    # breadth(시장 폭) — 다수 종목 집계라 단일종목 불가.
+    if s.query == "breadth" and s.universe.kind == "single":
+        issues.append(Issue("S-BREADTH", SEV_ERROR,
+                            "시장 breadth는 종목군이 필요합니다(universe.kind=all/list).", "universe"))
     describe_dist = s.query == "describe" and u.kind in ("all", "list")
     if describe_dist or is_ic:
         tn = st.target_node

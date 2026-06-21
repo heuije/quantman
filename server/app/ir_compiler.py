@@ -199,7 +199,7 @@ StrategyIR = {{
   "signal": <블록트리>,          // 신호. {{op, params, inputs:{{slot: 자식블록}}}} 재귀. 잎: data{{ref}}, const{{value}}
   "position": {{"direction":.., "sizing":{{"mode":..}}, "entry":{{"mode":..}}, "exit":{{..}}, "overlays":{{..}}}},
   "simulation": {{"initial_capital":.., "fill":.., "leverage":.., "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", ...}},
-  "query": "simulate|select|describe|relate|prescribe",   // 무엇을 묻는가(기본 simulate=손익 백테스트). select=현시점 스크리닝, describe=살펴보기(단일종목 리포트·포트폴리오 진단·신호 분포), relate=관계/이벤트/상관, prescribe=포트폴리오 비중 추천(최적화).
+  "query": "simulate|select|describe|relate|prescribe|breadth",   // 무엇을 묻는가(기본 simulate=손익 백테스트). select=현시점 스크리닝, describe=살펴보기(단일종목 리포트·포트폴리오 진단·신호 분포), relate=관계/이벤트/상관, prescribe=포트폴리오 비중 추천(최적화), breadth=시장 폭(장세).
   "prescribe": {{"max_weight":0~1|null, "window":N|null}},   // query="prescribe" 전용 — 종목당 비중 상한·추정 거래일수(생략 가능)
   "study": {{"axis":"none|parameter|entity|label|time_fold", "reduction":"enumerate|contrast|consistency|extremize", "param_grid":[{{"path":점경로,"values":[..]}}], "assets":[..], "label":<블록>, "split_period":"year|quarter|month", "folds":N, "split_dates":["YYYY-MM-DD",..], "target_node":<블록>, "relation_kind":"ic|regression|correlation", "factors":[<블록>,..], "windows":[..], "event":<블록>, "objective":{{"metric":..,"direction":"max|min","oos_guard":bool}}}}  // objective는 extremize 전용
 }}
@@ -299,6 +299,9 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
 13. [포트폴리오 비중 추천] "이 종목들 어떻게 배분/비중 얼마"·"포트폴리오 추천(종목+비중)"·"분산 최적 비중"처럼
     *비중 처방*이면 → query="prescribe" + universe.kind="list"(종목 2+). 위험기반(최소분산·리스크패리티·동일가중)
     +최대샤프를 동시 산출(결과=비중 트리맵). 종목당 상한=prescribe.max_weight, 추정기간=prescribe.window. signal은 명목(data Close).
+14. [시장 breadth] "코스피 왜 빠져/올라"·"시장 분위기·장세 어때"·"상승하락 종목 수/시장 폭"처럼 *시장 전반 상태*면
+    → query="breadth" + universe.kind="all"(전체) 또는 list(대표 종목군). 상승하락 비율·평균수익·MA 상회·섹터별 약강세.
+    *왜*(거시·뉴스 인과)는 엔진이 아니라 사이드카·해석이 보강 — breadth는 시장 폭의 what을 결정적으로 제공. signal은 명목.
 </idioms>
 
 <process>

@@ -33,6 +33,8 @@ def result_shape(result: Any) -> str:
         return "select"
     if result.get("query") == "prescribe":
         return "prescribe"
+    if result.get("query") == "breadth":
+        return "breadth"
     if result.get("report") == "single":
         return "describe_single"
     if result.get("report") == "portfolio":
@@ -248,6 +250,20 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
             for fac in (_win(bw, w).get("factors") or []):
                 lines.append(f"  {w}일 {fac.get('name')}: coef {_f(fac.get('coef'), 4)} · t {_f(fac.get('t_stat'))}")
         return "[다중팩터 회귀 Fama-MacBeth] 계수 양(+)·t유의=미래수익과 양의 관계\n" + "\n".join(lines)
+
+    if shape == "breadth":
+        lines = [f"[시장 breadth] {result.get('n', '?')}종목 · 상승 {result.get('n_up', '?')}/"
+                 f"하락 {result.get('n_down', '?')} (상승비율 {_pct(result.get('pct_up'))}%) · "
+                 f"평균 1일 {_pct(result.get('avg_r1'))}% / 5일 {_pct(result.get('avg_r5'))}% / "
+                 f"20일 {_pct(result.get('avg_r20'))}%",
+                 f"  20일선 위 {_pct(result.get('pct_above_ma20'))}% · "
+                 f"60일선 위 {_pct(result.get('pct_above_ma60'))}%"]
+        sb = result.get("sector_breakdown") or []
+        if sb:
+            worst = ", ".join(f"{k} {_pct(v)}%" for k, v, _ in sb[:3])
+            best = ", ".join(f"{k} {_pct(v)}%" for k, v, _ in sb[-3:][::-1])
+            lines.append(f"  섹터 약세: {worst} · 강세: {best}")
+        return "\n".join(lines)
 
     if shape == "prescribe":
         objs = result.get("objectives") or {}

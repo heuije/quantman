@@ -135,6 +135,8 @@ def _dispatch_query(strategy: StrategyIR, dataset: dict) -> dict:
         return run_select(strategy, dataset)
     if q == "prescribe":
         return run_prescribe(strategy, dataset)
+    if q == "breadth":
+        return run_breadth(strategy, dataset)
     if q == "describe":
         u = strategy.universe
         if u.kind == "single":
@@ -916,6 +918,67 @@ def run_prescribe(strategy: StrategyIR, dataset: dict) -> dict:
             "warnings": [{"code": "mean_return_estimate",
                           "message": "최대샤프 비중은 기대수익=과거평균 추정이라 노이즈가 큽니다 — "
                                      "위험기반(최소분산·리스크패리티)이 더 안정적입니다."}]}
+
+
+# ── 시장 breadth (PHASE 5c — "시장이 왜/어떤가") ──────────────────────────────
+
+def run_breadth(strategy: StrategyIR, dataset: dict) -> dict:
+    """시장 breadth — 유니버스 종목들의 등락·MA 상회 비율·섹터 분산('지수가 왜 빠지나'의 what).
+
+    최신 바 기준: 1일 등락 부호로 상승/하락 종목 수, 1·5·20일 평균수익, 20/60일선 상회 비율,
+    상위/하위 종목, (섹터 컬럼 있으면) 섹터별 평균 1일수익. 종목 2+ 필요. why(거시·뉴스)는
+    엔진 밖 사이드카(P4)·해석이 보강 — 여기선 결정적 시장 폭 수치만.
+    """
+    syms = _universe_symbols(strategy, dataset)
+    rows = []
+    for s in syms:
+        df = dataset.get(s)
+        if df is None or df.empty or "Close" not in df.columns:
+            continue
+        c = df["Close"].astype(float).dropna()
+        if len(c) < 21:
+            continue
+        ma60 = float(c.iloc[-60:].mean()) if len(c) >= 60 else None
+        sec = None
+        if "sector" in df.columns:
+            sv = df["sector"].dropna()
+            sec = str(sv.iloc[-1]) if len(sv) else None
+        rows.append({
+            "symbol": s,
+            "r1": float(c.iloc[-1] / c.iloc[-2] - 1.0),
+            "r5": float(c.iloc[-1] / c.iloc[-6] - 1.0) if len(c) >= 6 else None,
+            "r20": float(c.iloc[-1] / c.iloc[-21] - 1.0),
+            "above_ma20": bool(c.iloc[-1] > c.iloc[-20:].mean()),
+            "above_ma60": (bool(c.iloc[-1] > ma60) if ma60 is not None else None),
+            "sector": sec})
+    if len(rows) < 2:
+        return _empty("시장 breadth는 가용 종목이 2개 이상이어야 합니다.")
+    n = len(rows)
+    n_up = sum(1 for x in rows if x["r1"] > 0)
+    n_down = sum(1 for x in rows if x["r1"] < 0)
+
+    def _avg(key: str):
+        vals = [x[key] for x in rows if x[key] is not None]
+        return round(sum(vals) / len(vals), 4) if vals else None
+
+    ma60_rows = [x for x in rows if x["above_ma60"] is not None]
+    ranked = sorted(rows, key=lambda x: x["r1"], reverse=True)
+    sectors: dict = {}
+    for x in rows:
+        if x["sector"]:
+            sectors.setdefault(x["sector"], []).append(x["r1"])
+    sector_avg = sorted(([k, round(sum(v) / len(v), 4), len(v)] for k, v in sectors.items()),
+                        key=lambda t: t[1])
+    return {"success": True, "query": "breadth", "n": n,
+            "n_up": n_up, "n_down": n_down, "n_flat": n - n_up - n_down,
+            "pct_up": round(n_up / n, 4),
+            "avg_r1": _avg("r1"), "avg_r5": _avg("r5"), "avg_r20": _avg("r20"),
+            "pct_above_ma20": round(sum(1 for x in rows if x["above_ma20"]) / n, 4),
+            "pct_above_ma60": (round(sum(1 for x in ma60_rows if x["above_ma60"]) / len(ma60_rows), 4)
+                               if ma60_rows else None),
+            "top_gainers": [[x["symbol"], round(x["r1"], 4)] for x in ranked[:5]],
+            "top_losers": [[x["symbol"], round(x["r1"], 4)] for x in ranked[-5:][::-1]],
+            "sector_breakdown": sector_avg[:12]}
 
 
 # ── 이벤트 스터디 (비전 §4 시간축) ────────────────────────────────────────────

@@ -113,3 +113,49 @@ def test_prescribe_rejects_single_symbol():
     ir = {**_prescribe_ir(), "universe": {"kind": "single", "symbols": ["AAA"]}}
     res = strategy_from_spec(ir, _ds_corr())
     assert not res.get("success")                     # S-PRESCRIBE: 2종목 이상
+
+
+# ── 5c 시장 breadth ───────────────────────────────────────────────────────────
+
+def _ds_breadth() -> dict:
+    """5종목: 2개 상승(반도체)·3개 하락(자동차·화학) + 섹터 태깅 — 결정적 시장 폭."""
+    idx = pd.date_range("2022-01-03", periods=80, freq="B")
+    up, down = np.linspace(100, 130, 80), np.linspace(130, 100, 80)
+
+    def _sec(close, sec):
+        df = _ohlc(close, idx)
+        df["sector"] = sec
+        return df
+
+    return {"AAA": _sec(up, "반도체"), "BBB": _sec(up * 0.99 + 1, "반도체"),
+            "CCC": _sec(down, "자동차"), "DDD": _sec(down * 1.01, "자동차"),
+            "EEE": _sec(down + 0.5, "화학")}
+
+
+def _breadth_ir() -> dict:
+    return {"universe": {"kind": "list", "symbols": ["AAA", "BBB", "CCC", "DDD", "EEE"]},
+            "signal": _SIG, "query": "breadth"}
+
+
+def test_breadth_counts_and_shape():
+    res = run_query(StrategyIR.model_validate(_breadth_ir()), _ds_breadth())
+    assert res.get("success"), res.get("error")
+    assert res["shape"] == "breadth" == result_shape(res)
+    assert res["n"] == 5
+    assert res["n_up"] + res["n_down"] + res["n_flat"] == 5
+    assert res["n_down"] >= 3                          # CCC·DDD·EEE 하락
+    assert 0.0 <= res["pct_above_ma20"] <= 1.0
+    secs = {k: v for k, v, _ in res["sector_breakdown"]}
+    assert "반도체" in secs and "자동차" in secs        # 섹터 분해
+    assert secs["자동차"] < 0 < secs["반도체"]          # 약세/강세 방향
+
+
+def test_breadth_summary():
+    s = summarize_result(run_query(StrategyIR.model_validate(_breadth_ir()), _ds_breadth()))
+    assert "breadth" in s and "상승" in s and "20일선" in s
+
+
+def test_breadth_rejects_single_symbol():
+    ir = {**_breadth_ir(), "universe": {"kind": "single", "symbols": ["AAA"]}}
+    res = strategy_from_spec(ir, _ds_breadth())
+    assert not res.get("success")                     # S-BREADTH

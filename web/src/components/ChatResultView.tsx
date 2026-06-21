@@ -26,11 +26,11 @@ import EquityChart from "./EquityChart";
 import ExcelExportButton from "./ExcelExportButton";
 import ParamControls, { type AdjustableParam } from "./ParamControls";
 import {
-  CorrelationHeatmap, DiagnosisPanel, EventStudyChart, ExtremizeChart, ICChart, PrescribePanel,
-  RankedListChart, RegressionChart, ReportCards, SignalDistChart, SweepChart,
+  BreadthPanel, CorrelationHeatmap, DiagnosisPanel, EventStudyChart, ExtremizeChart, ICChart,
+  PrescribePanel, RankedListChart, RegressionChart, ReportCards, SignalDistChart, SweepChart,
 } from "./ResultCharts";
 import type {
-  IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
+  BreadthResult, IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
   IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrStrategyResult, PrescribeResult,
 } from "../types";
 
@@ -399,6 +399,9 @@ const RENDERERS: Record<string, (result: Record<string, unknown>) => ReactElemen
   relate_ic: (result) => <ICStudy result={result as unknown as IrStrategyResult} />,
   prescribe: (result) => (
     <div className="chat-result"><PrescribePanel r={result as unknown as PrescribeResult} /></div>
+  ),
+  breadth: (result) => (
+    <div className="chat-result"><BreadthPanel r={result as unknown as BreadthResult} /></div>
   ),
   correlation_matrix: (result) => {
     const r = result as unknown as {
