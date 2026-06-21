@@ -190,14 +190,27 @@ def test_signal_decision_panel_formulas_match_engine_indicators() -> None:
     assert _ind_excel("pct_change_5d", "F", 7) == "=(원자료!F7/원자료!F2-1)*100"
     assert _ind_excel("price_level", "F", 7) == "=원자료!F7"
     assert _ind_excel("rsi_14", "F", 7) is None    # 미지원 → 폴백
-    # 트리 컴파일(select/compare/const/data) — data ref는 지표열 cell로 치환
+    # 윈도우 지표(F2) — 원자료 Close 윈도우로 엔진 정의 1:1 (ma_dev=(Close/MA-1)*100, ma_gap)
+    assert _ind_excel("ma_dev_20d", "F", 25) == "=(원자료!F25/AVERAGE(원자료!F6:원자료!F25)-1)*100"
+    assert _ind_excel("ma_gap_20_60", "F", 65).startswith("=(AVERAGE(원자료!F46:원자료!F65)")
+    # 트리 컴파일(행별: data ref→지표열 cell, 행 r 확정). 미지원 op→폴백(None).
     tree = {"op": "select", "inputs": {
         "cond": {"op": "compare", "params": {"op": "<="}, "inputs": {
             "left": {"op": "data", "params": {"ref": "S&P500.pct_change_1d"}},
             "right": {"op": "const", "params": {"value": -0.1}}}},
         "a": {"op": "const", "params": {"value": 1}}, "b": {"op": "const", "params": {"value": 0}}}}
-    assert _signal_to_excel(tree, {"S&P500.pct_change_1d": "B"}) == "IF((B{r}<=-0.1),1.0,0.0)"
-    assert _signal_to_excel({"op": "unknown_xyz"}, {}) is None   # 미지원 op → 폴백
+    rmap = {"S&P500.pct_change_1d": "B"}
+    raw_of = {"S&P500.pct_change_1d": ("B", 1, "pct_change_1d")}
+    assert _signal_to_excel(tree, rmap, raw_of, 7) == "IF((B7<=-0.1),1.0,0.0)"
+    assert _signal_to_excel({"op": "unknown_xyz"}, {}, {}, 7) is None   # 미지원 op → 폴백
+    # 윈도우 op(F3): ts_mean → 원자료 AVERAGE 범위(MA20). 엔진 ts_mean=rolling(20).mean()와 1:1.
+    ma_tree = {"op": "compare", "params": {"op": ">"}, "inputs": {
+        "left": {"op": "data", "params": {"ref": "코스피200선물.Close"}},
+        "right": {"op": "ts_mean", "params": {"window": 20},
+                  "inputs": {"signal": {"op": "data", "params": {"ref": "코스피200선물.Close"}}}}}}
+    raw_ma = {"코스피200선물.Close": ("E", 0, "Close")}
+    assert _signal_to_excel(ma_tree, {"코스피200선물.Close": "B"}, raw_ma, 25) == \
+        "(B25>AVERAGE(원자료!E6:원자료!E25))"
 
     # 통합: 단일대상+크로스에셋 신호 → 패널 생성, 포지션 = 중첩 IF
     ds = {"코스피200선물": _bars(0.001), "S&P500": _bars(-0.0008)}

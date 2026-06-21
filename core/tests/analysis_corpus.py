@@ -236,7 +236,8 @@ EDGE_CASES = [
              "signal": TREND, "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
              "entry": {"mode": "on_signal"}, "exit": {"hold_days": 10}},
              "simulation": {"initial_capital": 1e8}, "query": "simulate"},
-         checks={"백테스트": ["일일 추가비용", "=(E"], "거래내역": ["종목"]}),
+         checks={"백테스트": ["일일 추가비용", "=(E"], "거래내역": ["종목"],
+                 "신호·결정": ["라이브 재현", "AVERAGE"]}),   # F2/F3 — MA20(ts_mean) 패널 렌더
     dict(name="self_ref_panel", desc="단일종목 __SELF__ 자기참조(지원지표) — 신호·결정 라이브 패널(F1 회귀가드)",
          ds=ds_self_ref, real=None,
          ir={"universe": {"kind": "single", "symbols": ["AAA"]}, "signal": SELF_SIG, "position": SELF_POS,

@@ -156,10 +156,17 @@ def build_strategy_excel(
 # 패널은 '신호→포지션 결정'까지만 재현하고, 실제 체결은 거래내역이 정본임을 명시한다.
 _IND_LAG = {"price_level": 0, "Close": 0, "close": 0, "Open": 0, "High": 0, "Low": 0,
             "pct_change_1d": 1, "pct_change_5d": 5, "pct_change_20d": 20,
-            "pct_change_252d": 252, "log_return_1d": 1}
+            "pct_change_252d": 252, "log_return_1d": 1,
+            # 윈도우 지표(F2) — 룩백 = window-1 (rolling min_periods=window). 셀 수식은 원자료 Close 윈도우.
+            "ma_dev_20d": 19, "ma_dev_60d": 59, "ma_dev_200d": 199,
+            "bb_width": 19, "bb_pct": 19, "ma_gap_20_60": 59}
 _CMP_EXCEL = {"<=": "<=", ">=": ">=", "<": "<", ">": ">", "==": "=", "!=": "<>",
               "le": "<=", "ge": ">=", "lt": "<", "gt": ">", "eq": "=", "ne": "<>"}
 _AR_EXCEL = {"add": "+", "sub": "-", "mul": "*", "div": "/"}
+# 원자료에 그대로 있는 가격 레벨(윈도우 ts_* 연산이 셀 범위로 재현 가능한 입력).
+_RAW_LEVELS = {"price_level", "Close", "close", "Open", "High", "Low"}
+# 윈도우 시계열 op(F3) → Excel 범위함수. 엔진 expression_parser 정의와 1:1(std=ddof1=STDEV.S).
+_TS_FN = {"ts_mean": "AVERAGE", "ts_sum": "SUM", "ts_std": "STDEV.S", "ts_max": "MAX", "ts_min": "MIN"}
 
 
 def _split_ref(ref: str, subjects: list[str]) -> tuple[str | None, str | None]:
@@ -184,6 +191,21 @@ def _ind_excel(ind: str, col: str, r: int) -> str | None:
         return f"=({raw}{r}/{raw}{r - _IND_LAG[ind]}-1)*100"
     if ind == "log_return_1d":
         return f"=LN({raw}{r}/{raw}{r - 1})*100"
+    # ── 윈도우 지표(F2): 원자료 Close 윈도우로 엔진 indicators.py와 1:1 재현 ──
+    if ind in ("ma_dev_20d", "ma_dev_60d", "ma_dev_200d"):
+        w = {"ma_dev_20d": 20, "ma_dev_60d": 60, "ma_dev_200d": 200}[ind]
+        avg = f"AVERAGE({raw}{r - w + 1}:{raw}{r})"
+        return f"=({raw}{r}/{avg}-1)*100"                       # (Close-MA)/MA*100
+    if ind in ("bb_width", "bb_pct"):                            # window=20·k=2
+        avg = f"AVERAGE({raw}{r - 19}:{raw}{r})"
+        std = f"STDEV.S({raw}{r - 19}:{raw}{r})"
+        if ind == "bb_width":
+            return f"=(4*{std})/{avg}*100"                       # 2k·std/MA*100, k=2
+        return f"=({raw}{r}-{avg}+2*{std})/(4*{std})"           # (Close-lower)/(upper-lower)
+    if ind == "ma_gap_20_60":
+        a20 = f"AVERAGE({raw}{r - 19}:{raw}{r})"
+        a60 = f"AVERAGE({raw}{r - 59}:{raw}{r})"
+        return f"=({a20}-{a60})/{a60}*100"
     return None
 
 
@@ -196,8 +218,9 @@ def _collect_data_refs(node, out: list[str]) -> None:
         _collect_data_refs(v, out)
 
 
-def _signal_to_excel(node, ref_to_col: dict[str, str]) -> str | None:
-    """signal 트리 → Excel 수식 본문('{r}' 행 자리표시자). data ref→지표열 cell. 미지원 op→None."""
+def _signal_to_excel(node, ref_to_col, raw_of, r):
+    """signal 트리 → 행 r의 Excel 수식 본문(셀 참조 확정). data 잎→패널 신호열·윈도우 op→원자료
+    범위. 미지원 op/잎→None(패널 폴백). r은 정수 행번호(윈도우·전일 참조 위해 행별 컴파일)."""
     if not isinstance(node, dict):
         return None
     op = node.get("op")
@@ -210,54 +233,123 @@ def _signal_to_excel(node, ref_to_col: dict[str, str]) -> str | None:
             return None
     if op == "data":
         col = ref_to_col.get(str(p.get("ref")))
-        return f"{col}{{r}}" if col else None
+        return f"{col}{r}" if col else None
     if op == "compare":
-        lt = _signal_to_excel(ins.get("left"), ref_to_col)
-        rt = _signal_to_excel(ins.get("right"), ref_to_col)
+        lt = _signal_to_excel(ins.get("left"), ref_to_col, raw_of, r)
+        rt = _signal_to_excel(ins.get("right"), ref_to_col, raw_of, r)
         ox = _CMP_EXCEL.get(str(p.get("op")))
         return f"({lt}{ox}{rt})" if (lt and rt and ox) else None
     if op == "select":
-        c = _signal_to_excel(ins.get("cond"), ref_to_col)
-        a = _signal_to_excel(ins.get("a"), ref_to_col)
-        b = _signal_to_excel(ins.get("b"), ref_to_col)
+        c = _signal_to_excel(ins.get("cond"), ref_to_col, raw_of, r)
+        a = _signal_to_excel(ins.get("a"), ref_to_col, raw_of, r)
+        b = _signal_to_excel(ins.get("b"), ref_to_col, raw_of, r)
         return f"IF({c},{a},{b})" if (c and a and b) else None
     if op in _AR_EXCEL:
-        a = _signal_to_excel(ins.get("a") or ins.get("left"), ref_to_col)
-        b = _signal_to_excel(ins.get("b") or ins.get("right"), ref_to_col)
+        a = _signal_to_excel(ins.get("a") or ins.get("left"), ref_to_col, raw_of, r)
+        b = _signal_to_excel(ins.get("b") or ins.get("right"), ref_to_col, raw_of, r)
         return f"({a}{_AR_EXCEL[op]}{b})" if (a and b) else None
+    if op == "logic":                                  # F3 — AND/OR (엔진: 슬롯 자연정렬 결합)
+        keys = sorted(ins.keys(), key=lambda k: (len(k), k))
+        parts = [_signal_to_excel(ins[k], ref_to_col, raw_of, r) for k in keys]
+        if not parts or any(x is None for x in parts):
+            return None
+        fn = "OR" if str(p.get("logic", "AND")).upper() == "OR" else "AND"
+        return f"{fn}({','.join(parts)})"
+    if op == "cross":                                  # F3 — 돌파(오늘 교차 + 어제 반대편)
+        cl = _signal_to_excel(ins.get("left"), ref_to_col, raw_of, r)
+        cr = _signal_to_excel(ins.get("right"), ref_to_col, raw_of, r)
+        pl = _signal_to_excel(ins.get("left"), ref_to_col, raw_of, r - 1)
+        pr = _signal_to_excel(ins.get("right"), ref_to_col, raw_of, r - 1)
+        if not (cl and cr and pl and pr):
+            return None
+        if str(p.get("direction", "up")).lower() == "down":
+            return f"AND({cl}<{cr},{pl}>{pr})"
+        return f"AND({cl}>{cr},{pl}<{pr})"
+    if op in _TS_FN:                                   # F3 — 윈도우 시계열(MA·채널 등)
+        rng = _ts_range(ins.get("signal"), raw_of, r, int(p.get("window", 20)))
+        return f"{_TS_FN[op]}({rng})" if rng else None
+    if op in ("ts_delay", "ts_delta"):
+        info = _ts_raw(ins.get("signal"), raw_of)
+        if not info:
+            return None
+        col, w = info[0], int(p.get("window", 20))
+        return f"원자료!{col}{r - w}" if op == "ts_delay" else f"(원자료!{col}{r}-원자료!{col}{r - w})"
     return None
 
 
-def _signal_panel(wb: "Workbook", ird: dict, equity, roles: dict,
-                  raw_col_map: dict, disp: str) -> bool:
-    """신호·결정 라이브 패널 — 신호값·포지션을 입력(원자료)에서 셀로 독립 재현. 불가→False(폴백).
+def _ts_raw(inner, raw_of):
+    """ts_* 의 inner가 원자료 가격 레벨 data 잎이면 (원자료 col, ind), 아니면 None(폴백)."""
+    if not isinstance(inner, dict) or inner.get("op") != "data":
+        return None
+    info = raw_of.get(str((inner.get("params") or {}).get("ref")))
+    if not info or info[2] not in _RAW_LEVELS:
+        return None
+    return info[0], info[2]
 
-    단일 대상 전략만(다중대상 포트는 종목별 결정이 1열로 표현 불가 → 생략). 모든 data ref가
-    지원 지표 + 원자료에 존재해야 함. 트리가 지원 op로만 구성돼야 함. 하나라도 어긋나면 False.
-    """
+
+def _ts_range(inner, raw_of, r, w):
+    """윈도우 [r-w+1, r]의 원자료 범위 문자열 (inner가 가격 레벨일 때만)."""
+    info = _ts_raw(inner, raw_of)
+    return f"원자료!{info[0]}{r - w + 1}:원자료!{info[0]}{r}" if info else None
+
+
+def _signal_lag(node, raw_of) -> int:
+    """신호 트리가 요구하는 최대 룩백(행) — 윈도우·전일 참조가 유효하도록 패널 시작행을 결정."""
+    if not isinstance(node, dict):
+        return 0
+    op = node.get("op")
+    ins = node.get("inputs") or {}
+    p = node.get("params") or {}
+    if op == "data":
+        info = raw_of.get(str((p or {}).get("ref")))
+        return info[1] if info else 0
+    if op == "const":
+        return 0
+    if op == "cross":
+        return 1 + max([_signal_lag(ins.get("left"), raw_of),
+                        _signal_lag(ins.get("right"), raw_of)], default=0)
+    if op in _TS_FN:
+        return (int(p.get("window", 20)) - 1) + _signal_lag(ins.get("signal"), raw_of)
+    if op in ("ts_delay", "ts_delta"):
+        return int(p.get("window", 20)) + _signal_lag(ins.get("signal"), raw_of)
+    return max([_signal_lag(v, raw_of) for v in ins.values()], default=0)
+
+
+def _signal_panel(wb: "Workbook", ird: dict, equity, roles: dict,
+                  raw_col_map: dict, disp: str) -> str | None:
+    """신호·결정 라이브 패널 — 신호값·포지션을 입력(원자료)에서 셀로 독립 재현.
+
+    렌더 성공→None, 불가→**사유 문자열**(F4: 지표·설명에 구체 표면화). 단일 대상 전략·지원 지표·
+    지원 op만(다중대상·미지원 지표/연산은 셀 재현 불가 → 생략). 틀린 수식은 없느니만 못함(원칙1)."""
     sig = ird.get("signal")
     subjects = list(roles.get("subject") or [])
-    if not isinstance(sig, dict) or len(subjects) != 1:
-        return False
+    if not isinstance(sig, dict):
+        return "신호 정의 없음"
+    if len(subjects) != 1:
+        return f"다중 대상({len(subjects)}종목) — 패널은 단일 종목 전략만 재현(종목별 결정을 1열로 표현 불가)"
     refs: list[str] = []
     _collect_data_refs(sig, refs)
     refs = list(dict.fromkeys(refs))
     if not refs:
-        return False
+        return "신호에 데이터 참조 없음"
     raw_of: dict[str, tuple[str, int, str]] = {}   # ref → (원자료 col, lag, 지표명)
     for ref in refs:
         sym, ind = _split_ref(ref, subjects)
         if ind is None:
-            return False
+            return f"미지원 지표 — '{ref}'는 셀 수식 재현 대상 아님(RSI·ATR·변동성·모멘텀·펀더멘털 등)"
         field = ind if ind in ("Open", "High", "Low") else "Close"
         col = raw_col_map.get((sym, field))
         if col is None:
-            return False
+            return f"원자료 열 없음 — '{ref}'"
         raw_of[ref] = (col, _IND_LAG.get(ind, 0), ind)
     ref_to_col = {ref: get_column_letter(2 + i) for i, ref in enumerate(refs)}
-    body = _signal_to_excel(sig, ref_to_col)
-    if body is None:
-        return False
+    n = len(equity)
+    first = 6
+    maxlag = _signal_lag(sig, raw_of)
+    if n <= maxlag:
+        return f"룩백 부족 — 데이터 {n}행 < 필요 {maxlag + 1}행"
+    if _signal_to_excel(sig, ref_to_col, raw_of, first + maxlag) is None:
+        return "미지원 연산 — 신호 트리에 셀 재현 불가 연산 포함(ts_rank·횡단순위·라벨·modifier 등)"
 
     bold = Font(bold=True)
     title_font = Font(bold=True, size=14, color="20201D")
@@ -265,10 +357,7 @@ def _signal_panel(wb: "Workbook", ird: dict, equity, roles: dict,
     head_fill = PatternFill("solid", fgColor=_HEAD_BG)
     border = _thin_border()
     center = Alignment(horizontal="center")
-    n = len(equity)
     idx_list = list(equity.index)
-    first = 6
-    maxlag = max((lg for _, lg, _ in raw_of.values()), default=0)
     pos_col_i = 2 + len(refs)
     ps = wb.create_sheet("신호·결정")
     ps.cell(1, 1, f"신호·결정 (라이브 재현) — {disp}").font = title_font
@@ -289,12 +378,12 @@ def _signal_panel(wb: "Workbook", ird: dict, equity, roles: dict,
         for j, ref in enumerate(refs):
             col, _lg, ind = raw_of[ref]
             ps.cell(r, 2 + j, _ind_excel(ind, col, r)).number_format = "0.0000"
-        ps.cell(r, pos_col_i, "=" + body.format(r=r)).number_format = "0.00"
+        ps.cell(r, pos_col_i, "=" + _signal_to_excel(sig, ref_to_col, raw_of, r)).number_format = "0.00"
     ps.column_dimensions["A"].width = 12
     for j in range(len(refs) + 1):
         ps.column_dimensions[get_column_letter(2 + j)].width = 18
     ps.freeze_panes = "B6"
-    return True
+    return None
 
 
 def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
@@ -480,7 +569,7 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
     # ── 시트: 신호·결정 (L2 — 신호값·포지션을 원자료에서 라이브 재현, 공통 지표·단일대상 한정) ──
     raw_col_map = {(s, field): get_column_letter(2 + j)
                    for j, (_lab, s, field) in enumerate(plan)}
-    _signal_panel(wb, _ir_dict(ir), equity, roles, raw_col_map, disp)
+    panel_reason = _signal_panel(wb, _ir_dict(ir), equity, roles, raw_col_map, disp)
 
     # ── 시트 4: 일별비중 (엔진 EOD 기여 비중) · 패널 있을 때만 생성 ───────────────
     # 단일종목/방향성 백테스트는 엔진이 weight 패널을 내지 않음 → 빈 시트 대신 생략(죽은 시트 제거).
@@ -548,7 +637,10 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
         ("일일 추가비용(bps)", "백테스트 시트 B3. 일별 수익률에서 차감하는 사후 비용 민감도(라이브). 엔진 비용모델 변경이 아님."),
         ("거래내역", "엔진이 산출한 확정 거래(정적 값). 진입가·청산가·수익률은 엔진과 byte 일치 — 검증 앵커."),
         ("원자료(입력 데이터)", "전략이 소비한 데이터 전부 — 대상은 OHLC, 신호 참조 종목(거래 안 해도)은 종가. 신호종목 가격으로 신호 로직을 직접 수동검증."),
-        ("신호·결정 패널", "신호값·포지션 룰을 원자료에서 셀 수식으로 독립 재현(공통 지표·단일대상 한정). 엔진 실집행(신호→체결 지연·청산 룰)은 거래내역이 정본 — 패널은 결정 로직 검산용. 미지원 신호는 패널 생략."),
+        ("신호·결정 패널", "신호값·포지션 룰을 원자료에서 셀 수식으로 독립 재현(공통 지표·단일대상 한정). "
+         "엔진 실집행(신호→체결 지연·청산 룰)은 거래내역이 정본 — 패널은 결정 로직 검산용. ▸ " + (
+             "이 전략은 패널 생성됨(아래 '신호·결정' 시트)." if panel_reason is None
+             else f"이 전략은 패널 생략 — {panel_reason}.")),
         ("엑셀이 복제 못 하는 것", "엔진은 정수주·현금·마진콜·지연체결의 이벤트 NAV 시뮬레이션 — 셀 수식으로 NAV 경로를 정확히 재현하지 않는다(자산곡선은 엔진 값 그대로 사용)."),
         ("전략 로직 변경", "임계값·기간·종목 등 전략 파라미터를 바꿔 다시 보려면 '변수 조정'(엔진 재실행) — 엑셀은 산술·비용 검증 도구."),
     ]
