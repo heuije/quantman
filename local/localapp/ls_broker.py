@@ -472,20 +472,92 @@ class LsBroker(_LsAuth):
             }},
         )
 
+    def _overseas_ccld_raw(self, exec_yn: str) -> dict:
+        """COSAQ00102 계좌주문체결내역 — ExecYn 0전체/1체결/2미체결. OrdDt=당일."""
+        return self._post("/overseas-stock/accno", "COSAQ00102",
+                          {"COSAQ00102InBlock1": {"OrdDt": datetime.now().strftime("%Y%m%d"),
+                                                  "ExecYn": exec_yn, "SrtOrdNo": "999999999", "IsuNo": ""}})
+
+    def _overseas_order_status(self, order_no: str, symbol: str) -> dict:
+        """COSAQ00102(ExecYn='0') OrdNo 매칭 → filled/partial/cancelled/submitted.
+        ⚠ G-E2: OrdTrxPtnNm 부분체결/거부 문자열 실측 전 — '취소' 포함 시 cancelled, 그 외 Exec/Unerc로 판정."""
+        try:
+            rows = self._overseas_ccld_raw("0").get("COSAQ00102OutBlock3") or []
+        except Exception as e:
+            log.warning("LS 해외 order_status 실패 [%s]: %s", order_no, e)
+            return {"order_no": order_no, "status": "unknown", "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
+        for row in rows:
+            if canonical_odno(row.get("OrdNo")) != canonical_odno(order_no):
+                continue
+            exec_q = int(float(row.get("ExecQty") or 0))
+            unerc = int(float(row.get("UnercQty") or 0))
+            nm = str(row.get("OrdTrxPtnNm") or "")
+            if "취소" in nm:
+                st = "cancelled"
+            elif unerc == 0 and exec_q > 0:
+                st = "filled"
+            elif exec_q > 0:
+                st = "partial"
+            else:
+                st = "submitted"
+            return {"order_no": order_no, "status": st, "filled_qty": exec_q, "remain_qty": unerc,
+                    "fill_price": float(row.get("OvrsExecPrc") or 0)}
+        return {"order_no": order_no, "status": "unknown", "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
+
+    def _overseas_pending(self) -> list[dict]:
+        """COSAQ00102(ExecYn='2') 미체결 해외 주문 목록.
+        ⚠ G-E3: BnsTpCode(2매수/1매도) 필드 미확정 — 모의 E2E 실측 후 교정."""
+        try:
+            rows = self._overseas_ccld_raw("2").get("COSAQ00102OutBlock3") or []
+        except Exception as e:
+            log.warning("LS 해외 pending 실패: %s", e)
+            return []
+        out = []
+        for row in rows:
+            if str(row.get("OrgOrdNo") or "0") not in ("0", "", "000000000"):  # 정정/취소행 제외
+                continue
+            unerc = int(float(row.get("UnercQty") or 0))
+            if unerc <= 0:
+                continue
+            # ⚠ G-E3: COSAQ00102 매수/매도 필드 미확정 — LS 관례 BnsTpCode(2매수/1매도) 가정, 없으면 buy.
+            #         모의 E2E에서 정확 필드 실측 후 교정(라우팅엔 order_no 사용 — side는 표시/대사용).
+            side = "buy" if str(row.get("BnsTpCode") or "2") == "2" else "sell"
+            out.append({
+                "order_no": str(row.get("OrdNo") or ""),
+                "symbol": str(row.get("ShtnIsuNo") or "").strip().upper(),
+                "name": "",
+                "side": side,
+                "qty": int(float(row.get("OrdQty") or 0)),
+                "filled_qty": int(float(row.get("ExecQty") or 0)),
+                "remain_qty": unerc,
+                "limit_price": float(row.get("OvrsOrdPrc") or 0),
+                "ord_branch": "",
+                "submitted_at": str(row.get("OrdTime") or ""),
+                "market": "US",
+                "currency": "USD",
+            })
+        return out
+
     def order_status(self, order_no: str, symbol: str | None = None,
                      hint: dict | None = None) -> dict:
-        """특정 주문번호의 현재 상태 — t0425 미체결 조회.
+        """특정 주문번호의 현재 상태.
+
+        해외(symbol이 미국 종목): COSAQ00102(ExecYn='0') OrdNo 매칭.
+        국내: t0425 미체결 조회.
 
         hint: Broker 인터페이스 계약 파라미터. 국내주식은 무시(해외 예약주문 전용).
 
         반환 어휘: filled | partial | submitted | cancelled | unknown
         ⚠ t0425OutBlock1 필드(ordno/qty/ordrem/medosu/price) — A2 KB 🟢.
-        ⚠ **한계(docs/ls-api GOTCHAS G10)**: t0425를 chegb="2"(미체결만)로 조회하므로
+        ⚠ **한계(docs/ls-api GOTCHAS G10)**: 국내 t0425를 chegb="2"(미체결만)로 조회하므로
           전량 체결·취소된 주문은 목록에서 사라져 status="unknown"으로 떨어진다 —
           즉 폴링으로는 filled/cancelled를 인지하지 못하고, 체결은 15:50 정산
           reconcile_with_kis(실보유 diff)가 백스톱으로 잡는다. Phase C에서 chegb="0"(전체)
           또는 일별체결 TR로 전환(filled/cancelled 구분 필드 실측 후). 자금/방향 위험 없음.
         """
+        if symbol and market_index.is_us(symbol):
+            return self._overseas_order_status(order_no, symbol)
+
         try:
             body = self._pending_raw()
         except Exception as e:
@@ -519,39 +591,41 @@ class LsBroker(_LsAuth):
                 "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
 
     def pending_orders(self) -> list[dict]:
-        """미체결 주문 목록 — t0425 기반.
+        """미체결 주문 목록 — 국내 t0425 + 해외 COSAQ00102(ExecYn='2') 병합.
 
-        실패는 비치명적 — 로그 후 [] 반환.
+        실패는 비치명적 — 국내·해외 각각 로그 후 [] 반환.
         ⚠ t0425OutBlock1 medosu 필드: "매수"/"매도" 문자열 반환 — A2 KB 🟢.
         ⚠ hname(종목명) 필드: t0425OutBlock1에 포함 여부 미확인 — 없으면 "".
         ⚠ submitted_at: ordtime 형식(HHMMSSMMM) — A2 KB 🟢.
         """
+        out = []
         try:
             body = self._pending_raw()
+            for row in body.get("t0425OutBlock1") or []:
+                remain = int(float(row.get("ordrem") or 0))
+                if remain <= 0:
+                    continue
+                orig_qty = int(float(row.get("qty") or 0))
+                out.append({
+                    "order_no": str(row.get("ordno") or ""),
+                    "symbol": str(row.get("expcode") or "").strip(),   # 🟢 6자리
+                    "name": str(row.get("hname") or ""),               # ⚠ 필드 존재 여부 미확인
+                    "side": "buy" if str(row.get("medosu") or "") == "매수" else "sell",  # 🟢
+                    "qty": orig_qty,
+                    "filled_qty": max(0, orig_qty - remain),
+                    "remain_qty": remain,
+                    "limit_price": float(row.get("price") or 0),       # 🟢 주문가격
+                    "ord_branch": "",   # LS t0425에 해당 필드 없음(KIS ord_gno_brno 대응 없음)
+                    "submitted_at": str(row.get("ordtime") or ""),      # 🟢 HHMMSSMMM
+                    "market": "DOMESTIC",
+                    "currency": "KRW",
+                })
         except Exception as e:
-            log.warning("LS pending_orders 조회 실패: %s", e)
-            return []
-
-        out = []
-        for row in body.get("t0425OutBlock1") or []:
-            remain = int(float(row.get("ordrem") or 0))
-            if remain <= 0:
-                continue
-            orig_qty = int(float(row.get("qty") or 0))
-            out.append({
-                "order_no": str(row.get("ordno") or ""),
-                "symbol": str(row.get("expcode") or "").strip(),   # 🟢 6자리
-                "name": str(row.get("hname") or ""),               # ⚠ 필드 존재 여부 미확인
-                "side": "buy" if str(row.get("medosu") or "") == "매수" else "sell",  # 🟢
-                "qty": orig_qty,
-                "filled_qty": max(0, orig_qty - remain),
-                "remain_qty": remain,
-                "limit_price": float(row.get("price") or 0),       # 🟢 주문가격
-                "ord_branch": "",   # LS t0425에 해당 필드 없음(KIS ord_gno_brno 대응 없음)
-                "submitted_at": str(row.get("ordtime") or ""),      # 🟢 HHMMSSMMM
-                "market": "DOMESTIC",
-                "currency": "KRW",
-            })
+            log.warning("LS 국내 pending 실패: %s", e)
+        try:
+            out.extend(self._overseas_pending())
+        except Exception as e:
+            log.warning("LS 해외 pending 실패: %s", e)
         return out
 
     # ── 해외(미국) 시장 라우팅 ───────────────────────────────────────────────

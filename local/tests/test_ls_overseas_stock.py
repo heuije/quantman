@@ -244,3 +244,55 @@ def test_cancel_domestic_unchanged(monkeypatch):
     monkeypatch.setattr(b, "_post", fake_post, raising=False)
     b.cancel("100", "000660", 1)
     assert captured["tr"] == "CSPAT00801"
+
+
+# ── E6: 해외 체결조회 COSAQ00102 ─────────────────────────────────────────────
+
+
+def _ccld_rows(rows):
+    return {"COSAQ00102OutBlock3": rows}
+
+
+def test_overseas_order_status_filled(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(lb.market_index, "is_us", lambda s: True, raising=False)
+    monkeypatch.setattr(b, "_overseas_ccld_raw", lambda exec_yn: _ccld_rows([
+        {"OrdNo": "12345", "OrgOrdNo": "0", "ShtnIsuNo": "AAPL", "OrdQty": "3",
+         "ExecQty": "3", "UnercQty": "0", "OvrsExecPrc": "201.55", "OrdTrxPtnNm": "체결"}]), raising=False)
+    st = b.order_status("12345", symbol="AAPL")
+    assert st["status"] == "filled" and st["filled_qty"] == 3 and st["fill_price"] == 201.55
+
+
+def test_overseas_order_status_cancelled(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(lb.market_index, "is_us", lambda s: True, raising=False)
+    monkeypatch.setattr(b, "_overseas_ccld_raw", lambda exec_yn: _ccld_rows([
+        {"OrdNo": "5", "OrgOrdNo": "0", "ShtnIsuNo": "AAPL", "OrdQty": "1",
+         "ExecQty": "0", "UnercQty": "0", "OrdTrxPtnNm": "취소완료"}]), raising=False)
+    assert b.order_status("5", symbol="AAPL")["status"] == "cancelled"
+
+
+def test_overseas_order_status_partial(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(lb.market_index, "is_us", lambda s: True, raising=False)
+    monkeypatch.setattr(b, "_overseas_ccld_raw", lambda exec_yn: _ccld_rows([
+        {"OrdNo": "7", "OrgOrdNo": "0", "ShtnIsuNo": "AAPL", "OrdQty": "10",
+         "ExecQty": "4", "UnercQty": "6", "OvrsExecPrc": "200.0", "OrdTrxPtnNm": "체결"}]), raising=False)
+    assert b.order_status("7", symbol="AAPL")["status"] == "partial"
+
+
+def test_overseas_order_status_unknown(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(lb.market_index, "is_us", lambda s: True, raising=False)
+    monkeypatch.setattr(b, "_overseas_ccld_raw", lambda exec_yn: _ccld_rows([]), raising=False)
+    assert b.order_status("999", symbol="AAPL")["status"] == "unknown"
+
+
+def test_overseas_pending_merges(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_pending_raw", lambda: {"t0425OutBlock1": []}, raising=False)
+    monkeypatch.setattr(b, "_overseas_ccld_raw", lambda exec_yn: _ccld_rows([
+        {"OrdNo": "10", "OrgOrdNo": "0", "ShtnIsuNo": "AAPL", "OrdQty": "5",
+         "ExecQty": "0", "UnercQty": "5", "OvrsOrdPrc": "190.0", "OrdMktCode": "82"}]), raising=False)
+    pend = b.pending_orders()
+    assert len(pend) == 1 and pend[0]["order_no"] == "10" and pend[0]["currency"] == "USD"
