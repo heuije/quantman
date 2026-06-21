@@ -5,7 +5,7 @@ LsBroker와 동일 인증/HTTP(_LsAuth 상속), 선물 TR(/futureoption/*)만 �
 """
 from __future__ import annotations
 import logging
-from .ls_broker import _LsAuth, normalize_ls_order_resp, canonical_odno
+from .ls_broker import _LsAuth   # 주문/체결 메서드(normalize·canonical_odno)는 D5/D6서 추가 import
 from .secrets_store import load_ls_futures
 
 log = logging.getLogger("localapp.ls_futures_broker")

@@ -46,7 +46,7 @@ teranum `15.국내선물` 라이브 = "접속서버: **모의투자**" + CFOAT00
 **신규**: 경로 `/futureoption/{order,accno,market-data}` · 계좌 **2-TR 합성**(CFOAQ50600+t0441) · 시세키 `focode`/잔고 `expcode`(8자, 주식 6자와 다름) · **LS 전용 심볼 resolver**(t8432/t9943 마스터 — KIS `A01606`≠LS `101V6000`; ISIN 공통키로 매핑) · accno 1/s(보수적).
 
 ## Gaps (모의키 프로빙 / 로그인 공식문서)
-G-DF1 주문 rsp_cd 코드표(OrdNo판정이라 무관) · G-DF2 AcntNo/InptPwd body 필수여부(G11 동형) · **G-DF3 t0434.status 문자열 전체집합**(완료/접수/확인/취소/거부 — filled/cancelled 분기 전 필수) · G-DF4 보유시 EvalDpsamtTotamt 정산반영 · G-DF5 단축코드 cipher 전체규칙(t8432 마스터 런타임해석이 근본해결) · G-DF6 모의 시장가("03") 지원 · G-DF7 모의 호출제한·체결시뮬 · G-DF8 t0441 행형 확정(✅사실상 해소).
+G-DF1 주문 rsp_cd 코드표(OrdNo판정이라 무관) · G-DF2 AcntNo/InptPwd body 필수여부(G11 동형) · **G-DF3 t0434.status 문자열 전체집합**(완료/접수/확인/취소/거부 — filled/cancelled 분기 전 필수) · G-DF4 보유시 EvalDpsamtTotamt 정산반영 · G-DF5 단축코드 cipher 전체규칙(t8432 마스터 런타임해석이 근본해결) · G-DF6 모의 시장가("03") 지원 · G-DF7 모의 호출제한·체결시뮬 · G-DF8 t0441 행형 확정(✅사실상 해소) · **G-DF9 t8432 hname 필드 존재·형식**(t9943은 "F 2406" YYMM 4자리인데 resolver 정규식은 YYYYMM 6자리 가정 — t8432 실측 확정 필요; 미일치 시 resolve None→발주 skip 안전하나 거래 불가).
 → 공식 apiservice(로그인)에서 G-DF1~3 해소 가능. 나머지 모의키 프로빙(`verify_ls.py` 선물 확장).
 
 출처: [LsApiHelper](https://github.com/xorrhks0216/LsApiHelper) specs(b579d38a·09a668df·9f467798) · [teranum/ls-openapi-samples](https://github.com/teranum/ls-openapi-samples)(모의 라이브) · KIS `local/localapp/kis_futures_broker.py`·`broker_router.py`.

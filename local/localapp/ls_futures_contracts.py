@@ -12,7 +12,10 @@ import quant_core as qc
 from quant_core.futures_contract import instrument_spec, roll_lead_days
 
 _KOSPI200 = "코스피200선물"
-_HNAME_YM = re.compile(r"(\d{4})(\d{2})")   # "F 202406" → (2024, 06)
+# ⚠ G-DF9: t8432 hname 형식 미확정 — t9943 예시는 "F 2406"(YYMM 4자리)인데 본 정규식은
+# "F 202406"(YYYYMM 6자리)를 가정한다. t8432가 YYMM이면 매치 실패 → resolve None → 발주 skip
+# (안전, 오발주는 없음) → 단 거래 불가. 모의 t8432 실측으로 형식 확정 후 정규식 교정(Phase D-C).
+_HNAME_YM = re.compile(r"(\d{4})(\d{2})")   # YYYYMM 가정 (예 "F 202406")
 
 
 def _second_thursday(y: int, m: int) -> datetime.date:
@@ -57,6 +60,8 @@ class LsContractResolver:
         try:
             self._master = self.broker.index_futures_master()
         except Exception:   # 다운로드 실패는 None → resolve None → 발주 skip(추측 발주 금지)
+            # ⚠ 실패 시 당일 재시도 없음(_fetched=today 고정). 09:00 순간 API 장애면 하루 발주 불가.
+            #   안전쪽=현 동작(오발주 0). Phase D+: 실패 시 _fetched 미설정으로 재시도 허용 검토.
             self._master = None
         self._fetched = today
 
