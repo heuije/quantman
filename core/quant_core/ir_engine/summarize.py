@@ -167,11 +167,22 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
         rets = p.get("returns") or {}
         risk = result.get("risk") or {}
         f = result.get("fundamentals") or {}
-        return (f"[종목분석] {result.get('symbol')}({result.get('sector', '')}) · "
-                f"현재가 {_f(p.get('last'))} · 1M {_f(rets.get('1m'))}% · 12M {_f(rets.get('12m'))}% · "
-                f"52주 {_f(p.get('low_52w'))}~{_f(p.get('high_52w'))} · 연변동성 {_f(risk.get('vol_annualized'))}% · "
-                f"MDD {_f(risk.get('max_drawdown'))}% · PBR {_f(f.get('pb_ratio'))} · PER {_f(f.get('trailing_pe'))} · "
+        c = result.get("consensus") or {}
+        fl = result.get("flow") or {}
+        base = (f"[종목분석] {result.get('symbol')}({result.get('sector', '')}) · "
+                f"현재가 {_f(p.get('last'))} · 1M {_pct(rets.get('1m'))}% · 12M {_pct(rets.get('12m'))}% · "
+                f"52주 {_f(p.get('low_52w'))}~{_f(p.get('high_52w'))} · 연변동성 {_pct(risk.get('vol_annualized'))}% · "
+                f"MDD {_pct(risk.get('max_drawdown'))}% · PBR {_f(f.get('pb_ratio'))} · PER {_f(f.get('trailing_pe'))} · "
                 f"EV/EBITDA {_f(f.get('ev_ebitda'))}")
+        if c.get("consensus_target") is not None:
+            base += (f" · 컨센서스 목표가 {_f(c.get('consensus_target'))}"
+                     f"(상승여력 {_pct(c.get('target_upside'))}%·애널 {_f(c.get('analyst_count'), 0)}명"
+                     f"·의견 {_f(c.get('consensus_opinion'))}[-1매도~+1매수])")
+        ib, fb = fl.get("inst_net_buy_20d"), fl.get("foreign_net_buy_20d")
+        if ib is not None or fb is not None:
+            base += (f" · 최근20일순매수 기관 {_f(ib / 1e8) if ib is not None else '—'}억"
+                     f"·외국인 {_f(fb / 1e8) if fb is not None else '—'}억")
+        return base
 
     if shape == "describe_portfolio":
         c = result.get("concentration") or {}
@@ -181,7 +192,7 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
         sectors = ", ".join(f"{k} {_pct(val)}%" for k, val in list(sx.items())[:5])
         return (f"[포트진단] {result.get('n_holdings', '?')}종목 · HHI {_f(c.get('hhi'), 4)} "
                 f"(유효 {_f(c.get('effective_n'))}종목) · 최대비중 {_pct(c.get('top_weight'))}% · "
-                f"가중PBR {_f(v.get('weighted_pb'))} · 연변동성 {_f(risk.get('portfolio_vol_annualized'))}%"
+                f"가중PBR {_f(v.get('weighted_pb'))} · 연변동성 {_pct(risk.get('portfolio_vol_annualized'))}%"
                 + (f" · 섹터: {sectors}" if sectors else ""))
 
     if shape == "relate_ic":
