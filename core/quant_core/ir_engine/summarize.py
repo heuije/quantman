@@ -7,8 +7,9 @@
 
 원칙: 숫자는 결과에서만(지어내기 금지). 토큰 가드 — 행 상한·소수 자릿수.
 
-형상 판별식은 엑셀 증빙(excel_export.build_strategy_excel)·웹 차트(ChatResultBody)와 **동일
-순서**다(3투영 일관). P3에서 엔진이 result["shape"]를 정본으로 스탬프하면 셋 모두 그 키로 수렴한다.
+P3(seam #1 정비): 엔진(run_query)이 성공 결과에 result["shape"]를 스탬프한다 → 이 모듈과
+웹 ChatResultBody는 그 키를 **단일 정본**으로 분기(아래 result_shape는 미스탬프 결과만 순서의존
+폴백). excel_export는 sweep 변종을 더 잘게 나눠 axis 자체 디스패치를 유지(형상 태그보다 세분).
 """
 from __future__ import annotations
 
@@ -16,13 +17,18 @@ from typing import Any
 
 
 def result_shape(result: Any) -> str:
-    """엔진 결과 dict → canonical 형상 태그. excel_export·ChatResultBody와 동일 판별 순서.
+    """엔진 결과 dict → canonical 형상 태그.
 
-    ⚠ axis+buckets(분할) 판별을 equity(단일 백테스트)보다 **앞**에 둔다 — 국면대조는
+    엔진(run_query)이 스탬프한 result["shape"]가 있으면 그것이 정본. 없으면(inspect 우회·
+    레거시·직접 호출) 아래 순서의존 판별로 폴백(행동보존).
+    ⚠ 폴백 순서: axis+buckets(분할) 판별을 equity(단일 백테스트)보다 **앞**에 둔다 — 국면대조는
     top-level equity를 함께 실어 보내므로 뒤에 두면 일반 백테스트로 오인된다(#169 교훈).
     """
     if not isinstance(result, dict):
         return "unknown"
+    stamped = result.get("shape")
+    if isinstance(stamped, str) and stamped:
+        return stamped
     if result.get("query") == "select":
         return "select"
     if result.get("report") == "single":

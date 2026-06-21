@@ -68,6 +68,27 @@ def test_result_shape(label):
         f"[{label}] shape={result_shape(res)} != {EXPECT_SHAPE[label]}")
 
 
+@pytest.mark.parametrize("label", list(EXPECT_SHAPE), ids=list(EXPECT_SHAPE))
+def test_run_query_stamps_shape(label):
+    """P3: run_query가 성공 결과에 canonical result['shape']를 스탬프한다(단일 정본)."""
+    res = _run(label)
+    assert res.get("shape") == EXPECT_SHAPE[label], (
+        f"[{label}] 스탬프 누락/오류: shape={res.get('shape')}")
+
+
+def test_result_shape_prefers_stamped_over_derivation():
+    """소비측은 스탬프된 shape를 정본으로 쓴다 — 파생 판별과 충돌해도 스탬프 우선(재추론 안 함)."""
+    # 파생 판별이라면 select였을 dict에 임의 shape를 박아 스탬프 우선을 증명.
+    res = {"success": True, "query": "select", "results": [], "shape": "describe_single"}
+    assert result_shape(res) == "describe_single"
+
+
+def test_result_shape_falls_back_when_unstamped():
+    """미스탬프 결과(inspect 우회·레거시)는 순서의존 파생으로 폴백(행동보존)."""
+    assert result_shape({"success": True, "query": "select", "results": []}) == "select"
+    assert result_shape({"success": True, "query": "inspect", "columns": []}) == "inspect"
+
+
 @pytest.mark.parametrize("label", list(NEEDLES), ids=list(NEEDLES))
 def test_summary_contains_disaggregated(label):
     s = summarize_result(_run(label))

@@ -1,34 +1,27 @@
 /**
- * ChatResultView — tool_result 인라인 차트 렌더러 (P1a)
+ * ChatResultView — tool_result 인라인 차트 렌더러 (P1a · P3 레지스트리)
  *
- * 라우팅 (IrBuilder의 ResultPanel과 동일 판별자·동일 컴포넌트 재사용):
- *   save_strategy (r.strategy_id)        → 저장 완료 카드 + 내 전략 링크 (P2)
- *   select        (r.query === "select") → RankedListChart
- *   describe      (r.report==="single")  → ReportCards 단일종목 360
- *                 (r.report==="portfolio")→ DiagnosisPanel 포트폴리오 진단
- *   extremize     (r.reduction==="extremize") → ExtremizeChart
- *   relate-회귀   (r.axis==="relation" && r.relation==="regression") → RegressionChart
- *   relate-IC     (r.axis==="relation")  → ICChart + 표
- *   이벤트 스터디  (r.axis==="time")       → EventStudyChart + 표
- *   신호값 분포    (r.axis==="signal")     → SignalDistChart + 표
- *   펼침          (r.axis && r.buckets)   → SweepChart + 버킷 표 + 유의성
- *   inspect       (r.query==="inspect")  → 원시 시계열 라인차트
- *   simulate      (r.equity?.length)     → 지표행 + EquityChart  ← 위 분기 미스 시 폴백
- *   fallback                             → 칩 + 오류 메시지(있을 때)
+ * P3(seam #2 정비): 엔진(run_query)이 스탬프한 result.shape를 키로 **렌더러 레지스트리**를
+ * 단일 조회한다(순서의존 if/elif 제거). 새 형상(히트맵·트리맵 등) = RENDERERS 등록 1건.
+ *   shape → 컴포넌트:
+ *     select→RankedListChart · describe_single→ReportCards · describe_portfolio→DiagnosisPanel
+ *     extremize→ExtremizeChart · relate_regression→RegressionChart · relate_ic→ICChart
+ *     event_study→EventStudyChart · signal_dist→SignalDistChart · sweep→SweepChart(+버킷표·유의성)
+ *     inspect→원시 시계열 라인 · simulate→지표행+EquityChart
+ *   save_strategy(r.strategy_id)는 엔진 형상이 아니라 상태 카드 → 레지스트리 밖 선처리.
  *
- * ⚠ 순서 주의: 국면 contrast 결과는 top-level `equity`를 같이 실어 보내므로, axis/buckets
- *   기반 분기를 반드시 equity 분기 *앞*에 둬야 contrast가 일반 백테스트 곡선으로 오인 렌더되지
- *   않는다(buckets·compare.pairwise 유의성 누락 방지). equity 분기는 axis 없는 단일 백테스트 폴백.
+ * 폴백: 미스탬프 결과(레거시·우회)는 deriveShape(summarize.result_shape와 동일 순서)로 형상 추론.
+ *   ⚠ deriveShape 순서: 국면 contrast는 top-level equity를 함께 실어 보내므로 axis/buckets 판별을
+ *   equity 판별 *앞*에 둔다(일반 백테스트로 오인 방지). 스탬프가 있으면 이 순서는 무관.
  *
- * IrBuilder의 ResultPanel 로직을 참조하되 chat 버블 안에서 쓰기 적합한 최소형으로 구현한다.
- * 차트 컴포넌트는 ResultCharts에서 그대로 재사용한다. ResultPanel / IrBuilder는 수정하지 않는다.
+ * 차트 컴포넌트는 ResultCharts에서 재사용(노코드 ResultPanel과 공유). ResultPanel/IrBuilder는 미수정.
  */
 
 import {
   CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { Link } from "react-router-dom";
-import { useState } from "react";
+import { useState, type ReactElement } from "react";
 import EquityChart from "./EquityChart";
 import ExcelExportButton from "./ExcelExportButton";
 import ParamControls, { type AdjustableParam } from "./ParamControls";
@@ -285,10 +278,84 @@ export default function ChatResultView({ result }: Props) {
   );
 }
 
+// ── simulate: 지표행 + 자산곡선 (axis 없는 단일 백테스트) ─────────────────────
+function SimulateChart({ result }: Props) {
+  const r = result as unknown as IrStrategyResult;
+  const m = r.metrics ?? {};
+  return (
+    <div className="chat-result">
+      <div className="chat-result-metrics">
+        {CHAT_METRICS.map(([key, label, suf]) => {
+          const v = m[key] as number | null | undefined;
+          const pol =
+            key === "cagr" || key === "total_return"
+              ? typeof v === "number" ? (v >= 0 ? "pos" : "neg") : ""
+              : key === "mdd" ? "neg" : "";
+          return (
+            <div className="chat-result-stat" key={key}>
+              <div className="chat-result-label">{label}</div>
+              <div className={`chat-result-value ${pol}`}>{fmt(v, suf)}</div>
+            </div>
+          );
+        })}
+      </div>
+      <EquityChart equity={r.equity ?? []} benchmark={r.benchmark} trades={r.trades} />
+    </div>
+  );
+}
+
+// 형상 폴백 판별 — 1차는 항상 엔진 스탬프(result.shape). 미스탬프 결과만 여기서 재추론하며
+// summarize.result_shape와 **동일 순서**를 유지한다(행동보존). axis/buckets를 equity보다 앞에.
+function deriveShape(r: IrStrategyResult): string {
+  if (r.query === "select") return "select";
+  if (r.report === "single") return "describe_single";
+  if (r.report === "portfolio") return "describe_portfolio";
+  if (r.reduction === "extremize") return "extremize";
+  if (r.axis === "relation") return r.relation === "regression" ? "relate_regression" : "relate_ic";
+  if (r.axis === "time") return "event_study";
+  if (r.axis === "signal") return "signal_dist";
+  if (r.axis && r.buckets) return "sweep";
+  if ((r as { query?: string }).query === "inspect") return "inspect";
+  if (r.equity && r.equity.length > 0) return "simulate";
+  return "unknown";
+}
+
+// shape → 렌더러 레지스트리. 새 형상 = 여기 1건 등록(+ 엔진 스탬프 + summarize 케이스)으로 완결.
+// 순서 무관(키 조회) — equity-last 같은 순서의존 버그 부류가 구조적으로 사라진다.
+const RENDERERS: Record<string, (result: Record<string, unknown>) => ReactElement> = {
+  select: (result) => {
+    const r = result as unknown as IrStrategyResult;
+    return (
+      <div className="chat-result">
+        <RankedListChart results={r.results ?? []} as_of={r.as_of}
+          universe_size={r.universe_size} eligible_size={r.eligible_size} />
+      </div>
+    );
+  },
+  describe_single: (result) => (
+    <div className="chat-result"><ReportCards r={result as unknown as IrSingleReport} /></div>
+  ),
+  describe_portfolio: (result) => (
+    <div className="chat-result"><DiagnosisPanel r={result as unknown as IrPortfolioDiagnosis} /></div>
+  ),
+  extremize: (result) => (
+    <div className="chat-result"><ExtremizeChart r={result as unknown as IrExtremizeResult} /></div>
+  ),
+  relate_regression: (result) => (
+    <div className="chat-result"><RegressionChart r={result as unknown as IrRegressionResult} /></div>
+  ),
+  relate_ic: (result) => <ICStudy result={result as unknown as IrStrategyResult} />,
+  event_study: (result) => <EventStudy result={result as unknown as IrStrategyResult} />,
+  signal_dist: (result) => <SignalStudy result={result as unknown as IrStrategyResult} />,
+  sweep: (result) => <SweepBuckets result={result as unknown as IrStrategyResult} />,
+  inspect: (result) => <InspectChart result={result} />,
+  simulate: (result) => <SimulateChart result={result} />,
+};
+
 function ChatResultBody({ result }: Props) {
   const r = result as unknown as IrStrategyResult;
 
-  // ── save_strategy: 저장 완료 카드 ──────────────────────────────────────────
+  // save_strategy: 저장 완료 카드 (엔진 형상이 아닌 상태 결과 — 레지스트리 밖 선처리)
   const savedId = (result as { strategy_id?: number }).strategy_id;
   if (r.success !== false && typeof savedId === "number") {
     const name = (result as { name?: string }).name ?? "전략";
@@ -302,119 +369,12 @@ function ChatResultBody({ result }: Props) {
     );
   }
 
-  // ── select: 랭킹 선별 ──────────────────────────────────────────────────────
-  if (r.query === "select") {
-    return (
-      <div className="chat-result">
-        <RankedListChart
-          results={r.results ?? []}
-          as_of={r.as_of}
-          universe_size={r.universe_size}
-          eligible_size={r.eligible_size}
-        />
-      </div>
-    );
-  }
+  // 형상 레지스트리 단일 조회 — 엔진 스탬프(result.shape) 우선, 미스탬프는 deriveShape 폴백.
+  const shape = (r as { shape?: string }).shape ?? deriveShape(r);
+  const renderer = RENDERERS[shape];
+  if (renderer) return renderer(result);
 
-  // ── describe single: 단일종목 360 리포트 ───────────────────────────────────
-  if (r.report === "single") {
-    return (
-      <div className="chat-result">
-        <ReportCards r={result as unknown as IrSingleReport} />
-      </div>
-    );
-  }
-
-  // ── describe portfolio: 포트폴리오 진단 ────────────────────────────────────
-  if (r.report === "portfolio") {
-    return (
-      <div className="chat-result">
-        <DiagnosisPanel r={result as unknown as IrPortfolioDiagnosis} />
-      </div>
-    );
-  }
-
-  // ── extremize: 목적함수 최적해 + OOS 가드 ──────────────────────────────────
-  if (r.reduction === "extremize") {
-    return (
-      <div className="chat-result">
-        <ExtremizeChart r={result as unknown as IrExtremizeResult} />
-      </div>
-    );
-  }
-
-  // ── relate regression: 다중팩터 횡단 회귀 ──────────────────────────────────
-  if (r.axis === "relation" && r.relation === "regression") {
-    return (
-      <div className="chat-result">
-        <RegressionChart r={result as unknown as IrRegressionResult} />
-      </div>
-    );
-  }
-
-  // ── 이벤트 스터디(axis="time") ─────────────────────────────────────────────
-  if (r.axis === "time") {
-    return <EventStudy result={r} />;
-  }
-
-  // ── 신호값 분포(axis="signal") ─────────────────────────────────────────────
-  if (r.axis === "signal") {
-    return <SignalStudy result={r} />;
-  }
-
-  // ── 횡단 IC(axis="relation", 회귀 외) ──────────────────────────────────────
-  if (r.axis === "relation") {
-    return <ICStudy result={r} />;
-  }
-
-  // ── 펼침(parameter/asset/period_split/condition) — 버킷 표 ──────────────────
-  // ⚠ 반드시 equity 분기보다 앞: condition contrast가 top-level equity를 실어 보내므로
-  //   여기서 먼저 잡지 않으면 일반 백테스트 곡선으로 오인 렌더되어 buckets·유의성이 사라진다.
-  if (r.axis && r.buckets) {
-    return <SweepBuckets result={r} />;
-  }
-
-  // ── inspect: 원시 시계열 라인차트 ──────────────────────────────────────────
-  if ((result as { query?: string }).query === "inspect") {
-    return <InspectChart result={result} />;
-  }
-
-  // ── simulate: 지표행 + 자산곡선 (axis 없는 단일 백테스트 폴백) ───────────────
-  if (r.equity && r.equity.length > 0) {
-    const m = r.metrics ?? {};
-    return (
-      <div className="chat-result">
-        <div className="chat-result-metrics">
-          {CHAT_METRICS.map(([key, label, suf]) => {
-            const v = m[key] as number | null | undefined;
-            const pol =
-              key === "cagr" || key === "total_return"
-                ? typeof v === "number"
-                  ? v >= 0
-                    ? "pos"
-                    : "neg"
-                  : ""
-                : key === "mdd"
-                ? "neg"
-                : "";
-            return (
-              <div className="chat-result-stat" key={key}>
-                <div className="chat-result-label">{label}</div>
-                <div className={`chat-result-value ${pol}`}>{fmt(v, suf)}</div>
-              </div>
-            );
-          })}
-        </div>
-        <EquityChart
-          equity={r.equity ?? []}
-          benchmark={r.benchmark}
-          trades={r.trades}
-        />
-      </div>
-    );
-  }
-
-  // ── fallback: 성공 칩 or 오류 메시지 ──────────────────────────────────────
+  // fallback: 오류 메시지 or 완료 칩
   if (r.success === false && r.error) {
     return (
       <div className="chat-result-fallback">
@@ -423,6 +383,5 @@ function ChatResultBody({ result }: Props) {
       </div>
     );
   }
-
   return <div className="chat-tool done">✓ 분석 완료</div>;
 }

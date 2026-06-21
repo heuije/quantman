@@ -26,6 +26,7 @@ from .compare import (
 )
 from .comparison import compare_by_partition
 from .spec import StrategyIR, Study
+from .summarize import result_shape
 from .sweep import (
     daily_returns, partition_by_label, summarize_returns,
 )
@@ -109,10 +110,26 @@ def run_strategy_ir(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> d
 
 
 def run_query(strategy: StrategyIR, dataset: dict) -> dict:
-    """최상위 질문 디스패치 — 동사(query) + 펼침(study)으로 경로 선택."""
+    """최상위 질문 디스패치 — 동사(query) + 펼침(study)으로 경로 선택.
+
+    성공 결과엔 canonical 형상 태그 ``result["shape"]``를 스탬프한다(P3 seam #1 정비).
+    summarize(모델 텍스트)·웹 ChatResultView(차트)가 각자 순서의존으로 재추론하던 형상을
+    **단일 키로 수렴** — 새 형상 추가 시 두 투영의 판별 체인을 동기화할 필요를 없앤다(드리프트
+    차단). 미스탬프 결과(inspect 우회·레거시)는 소비측이 result_shape로 폴백(행동보존).
+    (excel_export는 sweep 변종 period_split/condition/parameter를 별 시트로 더 잘게 나눠야
+    해서 axis 기반 자체 디스패치를 유지한다 — 형상 태그보다 세분.)
+    """
     err = _root_type_error(strategy)
     if err is not None:
         return _empty(err)
+    res = _dispatch_query(strategy, dataset)
+    if isinstance(res, dict) and res.get("success", True) and "shape" not in res:
+        res["shape"] = result_shape(res)
+    return res
+
+
+def _dispatch_query(strategy: StrategyIR, dataset: dict) -> dict:
+    """query 동사 + study 펼침 → 실행 함수 라우팅(형상 스탬프 직전 단계)."""
     q = strategy.query
     if q == "select":
         return run_select(strategy, dataset)

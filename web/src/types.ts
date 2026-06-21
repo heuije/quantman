@@ -416,6 +416,9 @@ export interface IrICStat {
 export interface IrStrategyResult extends BacktestResult {
   warnings?: IrIssue[];
   issues?: IrIssue[];
+  // P3 seam #1 — 엔진(run_query)이 스탬프한 canonical 형상 태그. ChatResultView가 이 키로
+  // 렌더러 레지스트리를 단일 조회(없으면 deriveShape 폴백). select/describe_single/…/simulate.
+  shape?: string;
   // 결과 dict의 axis는 백엔드가 옛 라벨을 parity로 유지한다(요청의 study.axis 신값과
   // 다를 수 있음 — 예: study.axis="entity" 요청 → 결과 axis="asset"). 표시 전용.
   axis?: "condition" | "parameter" | "asset" | "time" | "period_split" | "signal" | "relation";
