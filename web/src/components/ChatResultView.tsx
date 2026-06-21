@@ -269,10 +269,26 @@ const EXCEL_SHAPES = new Set([
 function ContextCard({ context }: { context?: IrStrategyResult["context"] }) {
   if (!context) return null;
   const quotes = Object.entries(context.quotes ?? {});
+  const market = Object.entries(context.market ?? {});
   const news = context.news ?? [];
-  if (quotes.length === 0 && news.length === 0) return null;
+  if (quotes.length === 0 && market.length === 0 && news.length === 0) return null;
   return (
     <div className="chat-context">
+      {market.length > 0 && (
+        <div className="chat-context-quotes">
+          <span className="chat-context-label">시장</span>
+          {market.map(([name, m]) => (
+            <span key={name} className="chat-context-quote">
+              {name} {m.price != null ? m.price.toLocaleString() : "—"}
+              {m.chg != null && (
+                <span className={m.chg >= 0 ? "pos" : "neg"}>
+                  {" "}{m.chg >= 0 ? "+" : ""}{m.chg.toFixed(2)}%
+                </span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
       {quotes.length > 0 && (
         <div className="chat-context-quotes">
           <span className="chat-context-label">준실시간</span>

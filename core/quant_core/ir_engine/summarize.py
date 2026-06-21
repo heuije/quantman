@@ -110,6 +110,11 @@ def _context_block(result: Any) -> str:
                    for c, v in list(quotes.items())[:6] if isinstance(v, dict))
     if qs:
         parts.append(f"준실시간 시세 {qs}")
+    mkt = ctx.get("market") or {}            # 거시 시장 스냅샷(KR·US 지수+VIX) — breadth 해석용
+    ms = ", ".join(f"{k} {_f(v.get('price'))}({_f(v.get('chg'))}%)"
+                   for k, v in list(mkt.items())[:6] if isinstance(v, dict))
+    if ms:
+        parts.append(f"시장 현재가 {ms}")
     news = ctx.get("news") or []
     heads = " / ".join(n.get("title", "").strip() for n in news[:5]
                        if isinstance(n, dict) and n.get("title"))
@@ -263,7 +268,7 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
             worst = ", ".join(f"{k} {_pct(v)}%" for k, v, _ in sb[:3])
             best = ", ".join(f"{k} {_pct(v)}%" for k, v, _ in sb[-3:][::-1])
             lines.append(f"  섹터 약세: {worst} · 강세: {best}")
-        return "\n".join(lines)
+        return "\n".join(lines) + _context_block(result)   # 시장 스냅샷(지수·VIX 현재가) 표면화
 
     if shape == "prescribe":
         objs = result.get("objectives") or {}

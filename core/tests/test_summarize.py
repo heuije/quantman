@@ -171,6 +171,17 @@ def test_context_block_absent_when_no_context():
     assert "맥락·준실시간" not in summarize_result(res)
 
 
+def test_breadth_summary_surfaces_market_snapshot():
+    """P6: breadth 요약에 시장 스냅샷(지수·VIX 현재가)이 표면화 — '코스피 왜'에 지수 레벨 제공."""
+    res = {"success": True, "shape": "breadth", "n": 5, "n_up": 1, "n_down": 4,
+           "pct_up": 0.2, "avg_r1": -0.012, "avg_r5": -0.02, "avg_r20": -0.05,
+           "pct_above_ma20": 0.3, "pct_above_ma60": 0.4,
+           "context": {"market": {"코스피": {"price": 9052.42, "chg": -0.13},
+                                  "VIX": {"price": 16.78, "chg": 2.32}}, "source": "준실시간"}}
+    s = summarize_result(res)
+    assert "시장 현재가" in s and "코스피" in s and "VIX" in s
+
+
 def test_strategy_from_spec_preserves_run_query_warnings(monkeypatch):
     """service가 run_query(무거래 등) 경고를 검증경고로 **덮어쓰지 않고 병합**(#2 전달 버그 회귀가드 —
     conv#10에서 2026 무거래 경고가 strategy_from_spec의 res['warnings']= 덮어쓰기로 유실됐던 것)."""

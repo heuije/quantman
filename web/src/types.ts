@@ -452,10 +452,11 @@ export interface IrStrategyResult extends BacktestResult {
   // P3 seam #1 — 엔진(run_query)이 스탬프한 canonical 형상 태그. ChatResultView가 이 키로
   // 렌더러 레지스트리를 단일 조회(없으면 deriveShape 폴백). select/describe_single/…/simulate.
   shape?: string;
-  // P4 context 사이드카 — 서버가 엔진 밖에서 붙인 준실시간 시세·뉴스(골든 무누출·해석/표시 전용).
+  // P4 context 사이드카 — 서버가 엔진 밖에서 붙인 준실시간 시세·뉴스·시장스냅샷(골든 무누출·표시 전용).
   context?: {
     quotes?: Record<string, { close: number | null; chg: number | null }>;
     news?: { title: string; link: string; desc?: string; pub?: string }[];
+    market?: Record<string, { price: number | null; chg: number | null; change?: number | null }>;
     source?: string;
   };
   // P5a 상관행렬 (relation="correlation") — symbols 순서의 대칭 행렬 + 요약 쌍.

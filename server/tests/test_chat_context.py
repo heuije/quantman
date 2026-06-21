@@ -52,3 +52,22 @@ def test_attach_context_noop_on_failed_result():
     """success=False 결과엔 손대지 않는다."""
     out = ctx.attach_context({"success": False, "error": "x"})
     assert "context" not in out
+
+
+def test_attach_context_breadth_market_snapshot(monkeypatch):
+    """breadth엔 거시 시장 스냅샷(지수·VIX 현재가) 부착 — '코스피 왜'에 지수 레벨 제공."""
+    monkeypatch.setattr(ctx.live_quote, "market_snapshot",
+                        lambda: {"코스피": {"price": 9052.42, "chg": -0.13},
+                                 "VIX": {"price": 16.78, "chg": 2.32}})
+    out = ctx.attach_context({"success": True, "shape": "breadth", "n": 5})
+    assert out["context"]["market"]["코스피"]["price"] == 9052.42
+    assert out["context"]["market"]["VIX"]["chg"] == 2.32
+
+
+def test_attach_context_breadth_market_graceful(monkeypatch):
+    """시장 스냅샷 실패가 breadth 결과를 깨지 않는다."""
+    def boom():
+        raise RuntimeError("net")
+    monkeypatch.setattr(ctx.live_quote, "market_snapshot", boom)
+    out = ctx.attach_context({"success": True, "shape": "breadth", "n": 5})
+    assert out["success"] is True and "context" not in out

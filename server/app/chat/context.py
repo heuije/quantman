@@ -12,7 +12,7 @@ import re
 
 from quant_core.data.feeds import news_kr
 
-from .. import kis_master_cache
+from .. import kis_master_cache, live_quote
 from ..industry import _bucket, _naver_quotes
 
 _KR_CODE = re.compile(r"^\d{6}$")
@@ -58,6 +58,15 @@ def attach_context(result: dict) -> dict:
             if news:
                 ctx["news"] = news
         except Exception:   # noqa: BLE001 — 부가 뉴스 실패가 결과를 깨지 않게
+            pass
+
+    # breadth("시장이 왜")엔 거시 시장 스냅샷(KR·US 지수+VIX) 부착 — 지수 현재가·변동성 맥락.
+    if result.get("shape") == "breadth":
+        try:
+            mkt = live_quote.market_snapshot()
+            if mkt:
+                ctx["market"] = mkt
+        except Exception:   # noqa: BLE001 — 부가 시장 스냅샷 실패가 결과를 깨지 않게
             pass
 
     if ctx:
