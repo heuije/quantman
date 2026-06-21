@@ -258,6 +258,14 @@ class LsBroker(_LsAuth):
                 balance["foreign_eval_krw"] = ov["foreign_eval_krw"]
                 positions.extend(ov["positions"])
             except Exception as e:
+                # 해외 조회 *예외*(HTTP 에러 등)는 보수적으로 fetch_failed 표식 → 킬스위치 보류.
+                # ⚠ 0으로 degrade 금지: 미국 보유 사용자의 일시적 실패를 평가금 0으로 읽으면
+                #   −98% 거짓 청산 재발(trader.py:149 부류버그). HTTP-200 빈 응답(도메스틱 전용
+                #   계좌=정상 무USD)은 예외가 아니라 overseas_snapshot이 0을 반환 → 여기 안 옴 →
+                #   킬스위치는 국내 equity로 정상 평가. ⚠ OG6: 해외계좌 없는 LS 계좌의 COSOQ00201이
+                #   200-빈응답인지 HTTP-에러인지 미확정 — 후자면 도메스틱 전용 LS 사용자 킬스위치가
+                #   매 사이클 보류된다. 모의 E2E 실측 후, 그때만 '계좌없음' 에러코드 가드 추가
+                #   (일시적 실패는 계속 fetch_failed 유지 — KIS overseas와 동일 보수 정책).
                 log.warning("LS 해외 잔고 조회 실패 — 국내만 반영: %s", e)
                 balance["fetch_failed"] = ["overseas"]
         return {"balance": balance, "positions": positions}
