@@ -21,6 +21,7 @@ import requests
 from .config import APP_DIR
 from .secrets_store import load_ls
 from .state_store import save_json
+from . import market_index
 
 log = logging.getLogger("localapp.ls_broker")
 
@@ -480,6 +481,33 @@ class LsBroker(_LsAuth):
                 "currency": "KRW",
             })
         return out
+
+    # ── 해외(미국) 시장 라우팅 ───────────────────────────────────────────────
+    # 거래소코드 — research G23-1: 82=NASDAQ, 81=NYSE+AMEX(AMEX 통합). KIS NAS/NYS/AMS 3분할과 다름.
+    _LS_EXCD = {"NAS": "82", "NYS": "81", "AMS": "81"}
+
+    def _detect_market(self, symbol: str) -> str:
+        """종목→시장. 'DOMESTIC' 또는 미국 거래소 'NAS'/'NYS'/'AMS'.
+        market_index(브로커 무관 권위 소스) 재사용 — KIS _detect_market와 동일.
+        미국 티커 형태인데 인덱스에 없으면 추측 않고 RoutingError(발주 차단)."""
+        exch = market_index.exchange_of(symbol)
+        if exch:
+            return exch
+        if market_index._looks_domestic(symbol):
+            return "DOMESTIC"
+        s = symbol.strip().upper()
+        if s.isalpha() and 1 <= len(s) <= 5:
+            raise market_index.RoutingError(
+                f"미국 티커로 보이나 마스터 인덱스에 없음: {symbol} — 인덱스 갱신 필요. 발주 보류.")
+        return "DOMESTIC"
+
+    def _ls_excd(self, market: str) -> str:
+        """미국 거래소(NAS/NYS/AMS) → LS 시장코드(82/81)."""
+        return self._LS_EXCD.get(market, "82")
+
+    def _ls_ticker(self, symbol: str) -> str:
+        """LS 해외 IsuNo/keysymbol용 bare 티커(대문자). 클래스주(BRK-B)는 OG-E1(모의 실측)."""
+        return symbol.strip().upper()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
