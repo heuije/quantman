@@ -241,5 +241,50 @@ class LsFuturesBroker(_LsAuth):
     def overseas_buy_limit(self, symbol, qty, limit_price): return self._ov_submit(symbol, qty, "buy", "2", float(limit_price))
     def overseas_sell_limit(self, symbol, qty, limit_price): return self._ov_submit(symbol, qty, "sell", "2", float(limit_price))
 
+    def _ov_ccld_raw(self, only_unfilled: bool = False) -> dict:
+        from datetime import datetime
+        today = datetime.now().strftime("%Y%m%d")
+        return self._ov._post("/overseas-futureoption/accno", "CIDBQ02400",
+                              {"CIDBQ02400InBlock1": {"QrySrtDt": today, "QryEndDt": today,
+                                                      "ThdayTpCode": "1",
+                                                      "OrdStatCode": "2" if only_unfilled else "0",
+                                                      "OvrsDrvtFnoTpCode": "A"}})
+
+    def overseas_order_status(self, order_no) -> dict:
+        """CIDBQ02400 OvrsFutsOrdNo 매칭 → filled/partial/cancelled/submitted.
+        ⚠ G-OF4: TrxStatCodeNm 문자열 실측 전 — '취소' 포함 시 cancelled, 그 외 Exec/Unerc로 판정."""
+        try:
+            rows = self._ov_ccld_raw().get("CIDBQ02400OutBlock2") or []
+        except Exception as e:
+            log.warning("LS 해외선물 order_status 실패 [%s]: %s", order_no, e)
+            return {"order_no": order_no, "status": "unknown", "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
+        for row in rows:
+            if canonical_odno(row.get("OvrsFutsOrdNo")) != canonical_odno(order_no):
+                continue
+            ex = int(float(row.get("ExecQty") or 0))
+            un = int(float(row.get("UnercQty") or 0))
+            nm = str(row.get("TrxStatCodeNm") or "")
+            if "취소" in nm:
+                st = "cancelled"
+            elif un == 0 and ex > 0:
+                st = "filled"
+            elif ex > 0:
+                st = "partial"
+            else:
+                st = "submitted"
+            return {"order_no": order_no, "status": st, "filled_qty": ex, "remain_qty": un,
+                    "fill_price": float(row.get("AbrdFutsExecPrc") or 0)}
+        return {"order_no": order_no, "status": "unknown", "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
+
+    def overseas_cancel(self, order_no, symbol, orgn_ord_dt):
+        """CIDBT01000 취소 — OvrsFutsOrgOrdNo+IsuCodeVal+원주문일자(OrdDt) 필수(KIS overseas_cancel 미러).
+        라우터 hot-path 아님(CME 취소는 라우터서 NotImplemented·M10 직접배선 대상). 반환 {success,message,msg_cd}."""
+        resp = self._ov._post("/overseas-futureoption/order", "CIDBT01000",
+                              {"CIDBT01000InBlock1": {
+                                  "OrdDt": str(orgn_ord_dt), "IsuCodeVal": symbol,
+                                  "OvrsFutsOrgOrdNo": str(order_no), "FutsOrdTpCode": "3"}}, is_order=True)
+        r = normalize_ls_order_resp(resp, ordno_field="OvrsFutsOrdNo")
+        return {"success": r["success"], "message": r["message"], "msg_cd": r["msg_cd"]}
+
     # NOTE: orderable_qty(CFOAQ10100 NewOrdAbleQty)는 증거금 사이징 클램프용이나 현재 호출자
     # 없음(4원칙#2) → 제거. Trader 선물 사이징 배선 시 함께 추가(매핑=domestic-futures-research.md).

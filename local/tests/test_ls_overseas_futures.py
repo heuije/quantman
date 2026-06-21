@@ -152,3 +152,48 @@ def test_overseas_order_reject_no_ordno():
     b._ov = _OvDouble(resp={"rsp_cd": "99", "rsp_msg": "증거금부족"})
     r = b.overseas_buy("CLM26", 1)
     assert r["success"] is False and r["order_no"] == ""
+
+
+def _ov_ccld(rows):
+    return {"CIDBQ02400OutBlock2": rows}
+
+
+def test_overseas_order_status_filled():
+    b = object.__new__(lfb.LsFuturesBroker)
+    b._ov = _OvDouble(resp=_ov_ccld([{"OvrsFutsOrdNo": "0000000777", "OrdQty": "1", "ExecQty": "1",
+                       "UnercQty": "0", "AbrdFutsExecPrc": "71.20", "TrxStatCodeNm": "체결"}]))
+    st = b.overseas_order_status("777")
+    assert st["status"] == "filled" and st["filled_qty"] == 1 and st["fill_price"] == 71.20
+
+
+def test_overseas_order_status_partial():
+    b = object.__new__(lfb.LsFuturesBroker)
+    b._ov = _OvDouble(resp=_ov_ccld([{"OvrsFutsOrdNo": "7", "OrdQty": "5", "ExecQty": "2",
+                       "UnercQty": "3", "AbrdFutsExecPrc": "71.0"}]))
+    assert b.overseas_order_status("7")["status"] == "partial"
+
+
+def test_overseas_order_status_cancelled():
+    b = object.__new__(lfb.LsFuturesBroker)
+    b._ov = _OvDouble(resp=_ov_ccld([{"OvrsFutsOrdNo": "5", "OrdQty": "1", "ExecQty": "0",
+                       "UnercQty": "0", "TrxStatCodeNm": "취소"}]))
+    assert b.overseas_order_status("5")["status"] == "cancelled"
+
+
+def test_overseas_order_status_unknown():
+    b = object.__new__(lfb.LsFuturesBroker)
+    b._ov = _OvDouble(resp=_ov_ccld([]))
+    assert b.overseas_order_status("999")["status"] == "unknown"
+
+
+def test_overseas_cancel_body():
+    b = object.__new__(lfb.LsFuturesBroker)
+    ov = _OvDouble(resp={"CIDBT01000OutBlock2": {"OvrsFutsOrdNo": "55"}})
+    b._ov = ov
+    r = b.overseas_cancel("777", "CLM26", "20260622")
+    assert r["success"] is True and "order_no" not in r
+    bd = ov.calls[-1][1]["CIDBT01000InBlock1"]
+    assert bd["FutsOrdTpCode"] == "3"
+    assert bd["OvrsFutsOrgOrdNo"] == "777"
+    assert bd["IsuCodeVal"] == "CLM26"
+    assert bd["OrdDt"] == "20260622"
