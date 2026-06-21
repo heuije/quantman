@@ -425,6 +425,13 @@ export interface IrStrategyResult extends BacktestResult {
     news?: { title: string; link: string; desc?: string; pub?: string }[];
     source?: string;
   };
+  // P5a 상관행렬 (relation="correlation") — symbols 순서의 대칭 행렬 + 요약 쌍.
+  symbols?: string[];
+  matrix?: (number | null)[][];
+  avg_corr?: number | null;
+  n_obs?: number;
+  most_correlated?: [string, string, number] | null;
+  least_correlated?: [string, string, number] | null;
   // 결과 dict의 axis는 백엔드가 옛 라벨을 parity로 유지한다(요청의 study.axis 신값과
   // 다를 수 있음 — 예: study.axis="entity" 요청 → 결과 axis="asset"). 표시 전용.
   axis?: "condition" | "parameter" | "asset" | "time" | "period_split" | "signal" | "relation";

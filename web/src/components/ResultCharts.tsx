@@ -848,3 +848,44 @@ export function ExtremizeChart({ r }: { r: IrExtremizeResult }) {
     </Box>
   );
 }
+
+// ── 상관행렬 히트맵 (P5a) — N×N 셀, +상관=빨강(동행)·−상관=파랑(역행) 디버징(한국식 방향색) ──
+export function CorrelationHeatmap({ symbols, matrix }: {
+  symbols: string[]; matrix: (number | null)[][];
+}) {
+  if (!symbols.length) return null;
+  const cellColor = (v: number | null): string => {
+    if (v == null) return "transparent";
+    const t = Math.max(-1, Math.min(1, v));
+    const a = (0.1 + 0.6 * Math.abs(t)).toFixed(3);
+    return t >= 0 ? `rgba(222,48,51,${a})` : `rgba(22,104,196,${a})`;
+  };
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table className="corr-heatmap">
+        <thead>
+          <tr><th />{symbols.map((s) => <th key={s} title={s}>{s}</th>)}</tr>
+        </thead>
+        <tbody>
+          {symbols.map((s, i) => (
+            <tr key={s}>
+              <th title={s}>{s}</th>
+              {symbols.map((t, j) => {
+                const v = matrix[i]?.[j] ?? null;
+                return (
+                  <td key={t} style={{ background: cellColor(v) }}
+                      title={`${s} ↔ ${t}: ${v == null ? "—" : v.toFixed(3)}`}>
+                    {v == null ? "—" : v.toFixed(2)}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+        +상관(빨강)=함께 움직임 · −상관(파랑)=반대로 움직임(분산·헤지 후보)
+      </div>
+    </div>
+  );
+}

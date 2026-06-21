@@ -39,7 +39,12 @@ def result_shape(result: Any) -> str:
         return "extremize"
     axis = result.get("axis")
     if axis == "relation":
-        return "relate_regression" if result.get("relation") == "regression" else "relate_ic"
+        rel = result.get("relation")
+        if rel == "regression":
+            return "relate_regression"
+        if rel == "correlation":
+            return "correlation_matrix"
+        return "relate_ic"
     if axis == "time":
         return "event_study"
     if axis == "signal":
@@ -241,6 +246,17 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
             for fac in (_win(bw, w).get("factors") or []):
                 lines.append(f"  {w}일 {fac.get('name')}: coef {_f(fac.get('coef'), 4)} · t {_f(fac.get('t_stat'))}")
         return "[다중팩터 회귀 Fama-MacBeth] 계수 양(+)·t유의=미래수익과 양의 관계\n" + "\n".join(lines)
+
+    if shape == "correlation_matrix":
+        syms = result.get("symbols") or []
+        mc, lc = result.get("most_correlated"), result.get("least_correlated")
+        out = (f"[상관행렬] {len(syms)}종목 일별수익 피어슨 상관 · 평균 {_f(result.get('avg_corr'), 3)} "
+               f"(n={result.get('n_obs', '?')}일) — 상관 낮을수록 분산효과 큼")
+        if isinstance(mc, list) and len(mc) == 3:
+            out += f"\n  최고 동행: {mc[0]}↔{mc[1]} {_f(mc[2], 3)}"
+        if isinstance(lc, list) and len(lc) == 3:
+            out += f"\n  최저(분산·헤지 후보): {lc[0]}↔{lc[1]} {_f(lc[2], 3)}"
+        return out
 
     if shape == "event_study":
         overall = result.get("overall") or {}

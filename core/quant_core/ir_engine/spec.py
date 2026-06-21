@@ -195,7 +195,7 @@ class Study(BaseModel):
     # 설정 시 folds·split_dates보다 우선. 버킷 키=주기 라벨("2015"·"2015Q1"·"2015-01").
     split_period: Optional[Literal["year", "quarter", "month"]] = None
     target_node: Optional[Node] = None
-    relation_kind: Literal["ic", "regression"] = "ic"
+    relation_kind: Literal["ic", "regression", "correlation"] = "ic"
     factors: list[Node] = Field(default_factory=list)   # relation_kind=regression 설명변수(다중)
     event: Optional[Node] = None
     windows: list[int] = Field(default_factory=lambda: [5, 10, 20])
@@ -636,6 +636,11 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     # (relate + event는 이벤트 스터디라 target_node 없이 동작 → IC 모드일 때만 target_node 요구.)
     is_ic = s.query == "relate" and st.event is None and st.relation_kind == "ic"
     is_regression = s.query == "relate" and st.event is None and st.relation_kind == "regression"
+    # 상관행렬(correlation) — target_node·factors 불필요(가격수익 공행렬). 종목 2+만 요구.
+    if s.query == "relate" and st.event is None and st.relation_kind == "correlation" \
+            and s.universe.kind == "single":
+        issues.append(Issue("S-CORR", SEV_ERROR,
+                            "상관분석은 종목이 2개 이상이어야 합니다(universe.kind=list/all).", "universe"))
     describe_dist = s.query == "describe" and u.kind in ("all", "list")
     if describe_dist or is_ic:
         tn = st.target_node

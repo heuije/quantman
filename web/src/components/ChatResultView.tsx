@@ -26,7 +26,7 @@ import EquityChart from "./EquityChart";
 import ExcelExportButton from "./ExcelExportButton";
 import ParamControls, { type AdjustableParam } from "./ParamControls";
 import {
-  DiagnosisPanel, EventStudyChart, ExtremizeChart, ICChart, RankedListChart,
+  CorrelationHeatmap, DiagnosisPanel, EventStudyChart, ExtremizeChart, ICChart, RankedListChart,
   RegressionChart, ReportCards, SignalDistChart, SweepChart,
 } from "./ResultCharts";
 import type {
@@ -257,6 +257,13 @@ function ICStudy({ result }: { result: IrStrategyResult }) {
   );
 }
 
+// 엑셀 증빙(라이브 수식)을 지원하는 형상 — 백테스트·분석만. 시각화 전용 신형상(상관 히트맵·
+// 트리맵·breadth 등)은 수식 증빙 대상이 아니라 버튼을 숨긴다(build_strategy_excel 미지원 형상).
+const EXCEL_SHAPES = new Set([
+  "simulate", "select", "describe_single", "describe_portfolio",
+  "extremize", "sweep", "relate_ic", "relate_regression", "event_study", "signal_dist",
+]);
+
 // P4 맥락 카드 — 사이드카(준실시간 시세·뉴스)를 형상 렌더러와 **직교**하게 결과 아래 표시.
 // context 없으면(엔진 단독·다른 형상) 렌더 안 함. 시세 등락은 한국식 방향색(상승=빨강·하락=파랑).
 function ContextCard({ context }: { context?: IrStrategyResult["context"] }) {
@@ -307,11 +314,14 @@ export default function ChatResultView({ result }: Props) {
   const [live, setLive] = useState<{ ir: Record<string, unknown> | undefined; result: Record<string, unknown> }>(
     { ir: ir0, result },
   );
+  // 엑셀 버튼은 증빙 지원 형상에만 — 시각화 전용 형상(상관 히트맵 등)은 숨김.
+  const shape = (live.result as { shape?: string }).shape
+    ?? deriveShape(live.result as unknown as IrStrategyResult);
   return (
     <>
       <ChatResultBody result={live.result} />
       <ContextCard context={(live.result as unknown as IrStrategyResult).context} />
-      {ir0 && <ExcelExportButton ir={live.ir ?? ir0} />}
+      {ir0 && EXCEL_SHAPES.has(shape) && <ExcelExportButton ir={live.ir ?? ir0} />}
       {ir0 && manifest && manifest.length > 0 && (
         <ParamControls baseIr={ir0} manifest={manifest}
           onRun={(ir, res) => setLive({ ir, result: res })} />
@@ -387,6 +397,20 @@ const RENDERERS: Record<string, (result: Record<string, unknown>) => ReactElemen
     <div className="chat-result"><RegressionChart r={result as unknown as IrRegressionResult} /></div>
   ),
   relate_ic: (result) => <ICStudy result={result as unknown as IrStrategyResult} />,
+  correlation_matrix: (result) => {
+    const r = result as unknown as {
+      symbols?: string[]; matrix?: (number | null)[][]; avg_corr?: number | null; n_obs?: number;
+    };
+    return (
+      <div className="chat-result">
+        <div className="muted" style={{ fontSize: "0.8em", marginBottom: 4 }}>
+          상관행렬 — {r.symbols?.length ?? 0}종목 일별수익 (n={r.n_obs ?? "?"}일) · 평균 상관{" "}
+          {r.avg_corr != null ? r.avg_corr.toFixed(3) : "—"}
+        </div>
+        <CorrelationHeatmap symbols={r.symbols ?? []} matrix={r.matrix ?? []} />
+      </div>
+    );
+  },
   event_study: (result) => <EventStudy result={result as unknown as IrStrategyResult} />,
   signal_dist: (result) => <SignalStudy result={result as unknown as IrStrategyResult} />,
   sweep: (result) => <SweepBuckets result={result as unknown as IrStrategyResult} />,

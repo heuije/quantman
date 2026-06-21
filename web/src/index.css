@@ -2943,6 +2943,15 @@ thead th { color: var(--muted); font-weight: 600; }
 .chat-context-news a:hover { text-decoration: underline; }
 .chat-context-src { margin-top: 6px; font-size: 0.75em; }
 
+/* P5a 상관행렬 히트맵 — +상관=빨강(동행)·−상관=파랑(역행, 인라인 배경) */
+.corr-heatmap { border-collapse: collapse; font-size: 0.78em; }
+.corr-heatmap th, .corr-heatmap td {
+  border: 1px solid var(--border); padding: 3px 6px; text-align: center; min-width: 40px;
+}
+.corr-heatmap th {
+  color: var(--muted); font-weight: 600; background: var(--panel); white-space: nowrap;
+}
+
 /* 백테스트 지표행 */
 .chat-result-metrics {
   display: flex; flex-wrap: wrap; gap: 6px 16px;

@@ -146,6 +146,8 @@ def _dispatch_query(strategy: StrategyIR, dataset: dict) -> dict:
             return _run_event_study(strategy, dataset)
         if st.relation_kind == "regression":
             return _run_regression_study(strategy, dataset)
+        if st.relation_kind == "correlation":
+            return _run_correlation_study(strategy, dataset)
         return _run_ic_study(strategy, dataset)
     st = strategy.study
     if st.axis == "time_fold":
@@ -502,6 +504,40 @@ def _run_ic_study(strategy: StrategyIR, dataset: dict) -> dict:
         by_window[str(w)] = block
     return {"success": True, "axis": "relation", "relation": "ic",
             "windows": [str(w) for w in windows], "by_window": by_window}
+
+
+# ── 상관행렬 (RELATE — 분산투자·페어·헤지 후보) ────────────────────────────────
+
+def _run_correlation_study(strategy: StrategyIR, dataset: dict) -> dict:
+    """유니버스 종목 일별수익 간 상관행렬(피어슨) — 분산투자·페어·헤지 후보.
+
+    forward·예측이 아닌 동시점 수익 공동움직임. 종목 2+ 필요. windows[0] 지정 시 최근
+    그 거래일, 없으면 전체 가용기간. matrix는 symbols 순서의 대칭 행렬(자기상관 1.0).
+    """
+    syms = _universe_symbols(strategy, dataset)
+    closes = pd.DataFrame({s: dataset[s]["Close"].astype(float) for s in syms
+                           if s in dataset and "Close" in dataset[s].columns})
+    syms = list(closes.columns)
+    if len(syms) < 2:
+        return _empty("상관분석은 가격 데이터가 2종목 이상 필요합니다.")
+    rets = closes.pct_change()
+    window = strategy.study.windows[0] if strategy.study.windows else None
+    if window:
+        rets = rets.tail(int(window) + 1)
+    corr = rets.corr()                       # 피어슨 상관(결측 쌍은 NaN)
+    matrix = [[None if pd.isna(corr.iat[i, j]) else round(float(corr.iat[i, j]), 4)
+               for j in range(len(syms))] for i in range(len(syms))]
+    iu = np.triu_indices(len(syms), k=1)     # 비대각(상삼각) 쌍
+    pairs = [(syms[i], syms[j], float(corr.iat[i, j]))
+             for i, j in zip(*iu) if pd.notna(corr.iat[i, j])]
+    pairs.sort(key=lambda p: p[2])
+    finite = [p[2] for p in pairs]
+    return {"success": True, "axis": "relation", "relation": "correlation",
+            "symbols": syms, "matrix": matrix,
+            "n_obs": int(rets.dropna(how="any").shape[0]),
+            "avg_corr": round(sum(finite) / len(finite), 4) if finite else None,
+            "most_correlated": [pairs[-1][0], pairs[-1][1], round(pairs[-1][2], 4)] if pairs else None,
+            "least_correlated": [pairs[0][0], pairs[0][1], round(pairs[0][2], 4)] if pairs else None}
 
 
 # ── 다중팩터 횡단 회귀 (RELATE 심화 — Fama-MacBeth) ────────────────────────────
