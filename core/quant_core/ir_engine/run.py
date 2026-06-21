@@ -694,6 +694,26 @@ def run_describe_report(strategy: StrategyIR, dataset: dict) -> dict:
         else:
             fundamentals[col] = None
 
+    # 컨센서스(애널) — KR 라이브(main #149). 미커버(KR 외)는 None(가짜 채움 금지). PIT: asof 이전만.
+    consensus = {}
+    for col in ("consensus_target", "target_upside", "consensus_opinion",
+                "analyst_count", "target_revision_pct", "days_since_report"):
+        if col in df.columns:
+            s = df.loc[df.index <= asof, col].dropna()
+            consensus[col] = float(s.iloc[-1]) if len(s) else None
+        else:
+            consensus[col] = None
+
+    # 수급(기관·외국인 순매수, 원) — 최신일 + 최근 20거래일 누적.
+    flow = {}
+    for col in ("inst_net_buy", "foreign_net_buy"):
+        if col in df.columns:
+            s = df.loc[df.index <= asof, col].dropna()
+            flow[col] = float(s.iloc[-1]) if len(s) else None
+            flow[f"{col}_20d"] = float(s.iloc[-20:].sum()) if len(s) else None
+        else:
+            flow[col] = flow[f"{col}_20d"] = None
+
     return {
         "success": True, "query": "describe", "report": "single",
         "symbol": sym, "sector": get_symbol_group(sym, "Sector"),
@@ -702,6 +722,8 @@ def run_describe_report(strategy: StrategyIR, dataset: dict) -> dict:
                   "low_52w": lo_52w, "pct_from_52w_high": pct_from_high},
         "risk": {"vol_annualized": vol_ann, "max_drawdown": max_dd},
         "fundamentals": fundamentals,
+        "consensus": consensus,
+        "flow": flow,
     }
 
 

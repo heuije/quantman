@@ -330,6 +330,15 @@ export interface IrSingleReport {
   };
   risk: { vol_annualized: number | null; max_drawdown: number | null };
   fundamentals: Record<"pb_ratio" | "trailing_pe" | "ev_ebitda", number | null>;
+  consensus?: {        // 애널 컨센서스(KR 라이브 main #149). 미커버면 값 null.
+    consensus_target: number | null; target_upside: number | null;
+    consensus_opinion: number | null; analyst_count: number | null;
+    target_revision_pct: number | null; days_since_report: number | null;
+  };
+  flow?: {             // 수급(기관·외국인 순매수, 원) — 최신일 + 최근 20거래일 누적.
+    inst_net_buy: number | null; inst_net_buy_20d: number | null;
+    foreign_net_buy: number | null; foreign_net_buy_20d: number | null;
+  };
   news?: NewsItem[];   // 서버 엣지 enrich(키 미설정·이름 미해석이면 빈 배열)
 }
 

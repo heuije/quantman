@@ -481,6 +481,12 @@ export function ReportCards({ r }: { r: IrSingleReport }) {
   const grid: React.CSSProperties = {
     display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10,
   };
+  const cons = r.consensus;
+  const flow = r.flow;
+  const eok = (v: number | null | undefined) =>
+    v == null ? "—" : Math.round(v / 1e8).toLocaleString();
+  const opLabel = (v: number | null | undefined) =>
+    v == null ? "—" : v > 0.3 ? "매수 우위" : v < -0.3 ? "매도 우위" : "중립";
   return (
     <Box title={`${r.symbol} · ${r.sector || "—"} · ${r.as_of ?? "—"}`}
       sub={`데이터 ${r.data_points ?? "—"}일${longTermNA ? " · 252일 미만 — 장기수익 일부 미표기" : ""}`}>
@@ -544,6 +550,35 @@ export function ReportCards({ r }: { r: IrSingleReport }) {
             ))}
           </div>
         </Card>
+
+        {/* ⑤ 애널 컨센서스 — KR 라이브. 데이터 있을 때만(가짜 채움 금지). */}
+        {cons && cons.consensus_target != null && (
+          <Card title="애널 컨센서스">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              <Badge tone="accent">목표가 {f2(cons.consensus_target)}</Badge>
+              <Badge tone={(cons.target_upside ?? 0) >= 0 ? "up" : "down"}>
+                상승여력 {pct(cons.target_upside)}</Badge>
+              <Badge tone="muted">애널 {cons.analyst_count != null ? Math.round(cons.analyst_count) : "—"}명</Badge>
+              <Badge tone="muted">의견 {opLabel(cons.consensus_opinion)}</Badge>
+            </div>
+          </Card>
+        )}
+
+        {/* ⑥ 수급 — 최근 20거래일 기관·외국인 순매수(억원). 데이터 있을 때만. */}
+        {flow && (flow.inst_net_buy_20d != null || flow.foreign_net_buy_20d != null) && (
+          <Card title="수급 · 최근 20일 순매수">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {flow.inst_net_buy_20d != null && (
+                <Badge tone={flow.inst_net_buy_20d >= 0 ? "up" : "down"}>
+                  기관 {eok(flow.inst_net_buy_20d)}억</Badge>
+              )}
+              {flow.foreign_net_buy_20d != null && (
+                <Badge tone={flow.foreign_net_buy_20d >= 0 ? "up" : "down"}>
+                  외국인 {eok(flow.foreign_net_buy_20d)}억</Badge>
+              )}
+            </div>
+          </Card>
+        )}
       </div>
 
       {/* ⑤ 최근 뉴스 — '왜 움직였나' facet(네이버 검색). 없으면 카드 자체를 숨긴다. */}
