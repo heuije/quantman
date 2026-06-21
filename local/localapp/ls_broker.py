@@ -29,7 +29,6 @@ _BASE = "https://openapi.ls-sec.co.kr:8080"
 _TOKEN_CACHE = APP_DIR / ".ls_token.json"
 
 
-
 class _Throttle:
     """sliding-window throttle. LS 비공식 실측 ~2 req/s, 공식 미공개 → Phase C 확정."""
     def __init__(self, max_calls: int = 2, window_sec: float = 1.0):
@@ -54,16 +53,19 @@ class _Throttle:
 _GLOBAL_THROTTLE = _Throttle()   # 프로세스 전역 — 같은 LS 계정 부담 공유
 
 
-class LsBroker:
-    """LS증권 모의/실전 브로커. Broker Protocol 구현(국내주식 Phase 2).
+class _LsAuth:
+    """LS OpenAPI 인증/HTTP 베이스 — LsBroker·LsFuturesBroker 공통 재사용.
 
-    ⚠ B6 조회·주문 메서드 전체 초안(draft) — Phase C 키 발급 후 실측 확정.
+    OAuth 토큰(client_credentials)·throttle·_post를 담는다. 국내주식·선물 모두
+    동일 도메인·동일 인증 방식이라 여기 한 번만 구현한다(DRY).
+
+    creds dict 필수 키: app_key, app_secret, account_no.
+    선택 키: virtual(기본 True).
     """
 
-    def __init__(self):
-        creds = load_ls()
+    def __init__(self, creds: dict) -> None:
         if not creds:
-            raise RuntimeError("LS 자격증명이 없습니다. 먼저 setup으로 등록하세요.")
+            raise RuntimeError("LS 자격증명이 없습니다. setup에서 등록하세요.")
         self.key = creds["app_key"]
         self.secret = creds["app_secret"]
         self.virtual = creds.get("virtual", True)
@@ -145,6 +147,16 @@ class LsBroker:
             return r.json()
         last.raise_for_status()        # 재시도 소진 — 마지막 비정상 응답에서 raise
         raise RuntimeError("LS _post: 재시도 소진 후 도달 불가")  # unreachable 방어
+
+
+class LsBroker(_LsAuth):
+    """LS증권 모의/실전 브로커. Broker Protocol 구현(국내주식 Phase 2).
+
+    ⚠ B6 조회·주문 메서드 전체 초안(draft) — Phase C 키 발급 후 실측 확정.
+    """
+
+    def __init__(self):
+        super().__init__(load_ls())
 
     # ── ⚠ B6 구현 이하 전체 초안 — Phase C 키 발급 후 실측 확정 필요 ──────────────
 
