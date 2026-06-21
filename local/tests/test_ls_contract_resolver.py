@@ -24,3 +24,37 @@ def test_dataset_for_code_reverse():
     from localapp.ls_futures_contracts import LsContractResolver
     assert LsContractResolver.dataset_for_code_static("101V6000") == "코스피200선물"
     assert LsContractResolver.dataset_for_code_static("005930") is None
+
+
+# ── F5: 해외선물 resolver ─────────────────────────────────────────────────────
+from localapp import ls_futures_contracts as lfc
+
+
+class _MasterBroker:
+    """resolver용 더블 — overseas_futures_master만 제공."""
+    def __init__(self, rows): self._rows = rows
+    def overseas_futures_master(self): return self._rows
+
+
+def test_resolve_overseas_front_month():
+    rows = [
+        {"Symbol": "CLK26", "BscGdsCd": "CL", "ExchCd": "CME", "CtrtPrAmt": "1000"},
+        {"Symbol": "CLM26", "BscGdsCd": "CL", "ExchCd": "CME", "CtrtPrAmt": "1000"},
+        {"Symbol": "CLZ30", "BscGdsCd": "CL", "ExchCd": "CME", "CtrtPrAmt": "1000"},
+    ]
+    r = lfc.LsContractResolver(_MasterBroker(rows))
+    code = r.resolve("원유선물")
+    assert code is not None and code.startswith("CL")
+
+
+def test_dataset_for_code_overseas():
+    r = lfc.LsContractResolver(_MasterBroker([]))
+    assert r.dataset_for_code("CLM26") == "원유선물"
+    assert r.dataset_for_code("GCM26") == "금선물"
+    assert r.dataset_for_code("101V6000") == "코스피200선물"
+    assert r.dataset_for_code("ZZZ99") is None
+
+
+def test_resolve_overseas_unknown_root_none():
+    r = lfc.LsContractResolver(_MasterBroker([{"Symbol": "ESM26", "BscGdsCd": "ES", "ExchCd": "CME"}]))
+    assert r.resolve("원유선물") is None

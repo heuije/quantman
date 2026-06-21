@@ -9,9 +9,41 @@ import datetime
 import re
 
 import quant_core as qc
-from quant_core.futures_contract import instrument_spec, roll_lead_days
+from quant_core.futures_contract import instrument_spec, roll_lead_days, OVERSEAS_ROOTS
 
 _KOSPI200 = "코스피200선물"
+
+# CME 월물코드 → 월 (ADM23 = BscGdsCd + 월물코드 + 연2자리)
+# ⚠ o3101 필드명(Symbol/BscGdsCd)·LS BscGdsCd가 CME globex root와 동일한지(금 GC 등)·
+#   월물코드 규칙은 research 기반 — 모의 실측 확정(불일치 시 resolve None→발주 skip 안전, 거래 불가).
+#   resolve_expiry는 overseas (None,None) 유지(만기 backstop 후속).
+_CME_MONTHS = {"F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6,
+               "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12}
+
+
+def _pick_front_overseas(master, root, today):
+    """o3101 마스터에서 BscGdsCd==root 활성계약 중 근월물 Symbol. 미일치 → None.
+    마스터가 활성계약만 수록한다는 전제로 '현재월 이후 최근월'을 근월물로 선택(정밀 만기 불요)."""
+    cur = (today.year, today.month)
+    cands = []
+    for row in master or []:
+        if str(row.get("BscGdsCd") or "") != root:
+            continue
+        sym = str(row.get("Symbol") or "").strip()
+        if not sym.startswith(root) or len(sym) < len(root) + 3:
+            continue
+        tail = sym[len(root):]                 # 월물코드 + YY
+        mo = _CME_MONTHS.get(tail[0])
+        try:
+            yr = 2000 + int(tail[1:3])
+        except ValueError:
+            continue
+        if mo is None:
+            continue
+        if (yr, mo) >= cur:                    # 만기경과 제외(마스터=활성계약)
+            cands.append(((yr, mo), sym))
+    cands.sort()
+    return cands[0][1] if cands else None
 # ⚠ G-DF9: t8432 hname 형식 미확정 — t9943 예시는 "F 2406"(YYMM 4자리)인데 본 정규식은
 # "F 202406"(YYYYMM 6자리)를 가정한다. t8432가 YYMM이면 매치 실패 → resolve None → 발주 skip
 # (안전, 오발주는 없음) → 단 거래 불가. 모의 t8432 실측으로 형식 확정 후 정규식 교정(Phase D-C).
@@ -53,6 +85,8 @@ class LsContractResolver:
         self.broker = futures_broker
         self._master: list[dict] | None = None
         self._fetched: datetime.date | None = None
+        self._ov_master: list[dict] | None = None
+        self._ov_fetched: datetime.date | None = None
 
     def _ensure(self, today: datetime.date) -> None:
         if self._fetched == today:
@@ -65,16 +99,27 @@ class LsContractResolver:
             self._master = None
         self._fetched = today
 
+    def _ensure_overseas(self, today: datetime.date) -> None:
+        if self._ov_fetched == today:
+            return
+        try:
+            self._ov_master = self.broker.overseas_futures_master()
+        except Exception:   # 다운로드 실패 → None → resolve None → 발주 skip(추측발주 금지)
+            self._ov_master = None
+        self._ov_fetched = today
+
     def resolve(self, symbol: str) -> str | None:
         if not qc.is_futures(symbol):
             return symbol               # 주식은 심볼 그대로
         today = datetime.date.today()
-        self._ensure(today)
-        if not self._master:
-            return None
         if symbol == _KOSPI200:
-            return _pick_front_kospi200(self._master, today)
-        return None                     # 국내선물=KOSPI200 only(Phase D)
+            self._ensure(today)         # 기존 도메스틱 t8432
+            return _pick_front_kospi200(self._master, today) if self._master else None
+        root = OVERSEAS_ROOTS.get(symbol)
+        if root:
+            self._ensure_overseas(today)
+            return _pick_front_overseas(self._ov_master, root, today) if self._ov_master is not None else None
+        return None                     # 미등록 선물
 
     def resolve_expiry(self, symbol: str):
         """(계약코드, 만기일). 만기 자동청산 ledger 기록용. 미해석 → (None, None)."""
@@ -92,6 +137,10 @@ class LsContractResolver:
         """LS 계약코드 → 데이터셋 심볼(역매핑). 국내선물 101… → 코스피200선물. 주식/미등록 → None."""
         if code and code.startswith("101"):
             return _KOSPI200
+        for sym, root in OVERSEAS_ROOTS.items():
+            if code and code.startswith(root) and len(code) >= len(root) + 3 \
+                    and code[len(root)] in _CME_MONTHS:
+                return sym
         return None
 
     def dataset_for_code(self, code: str) -> str | None:

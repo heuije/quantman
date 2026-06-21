@@ -37,6 +37,11 @@ class LsFuturesBroker(_LsAuth):
         body = self._post("/futureoption/market-data", "t8432", {"t8432InBlock": {"gubun": "0"}})
         return body.get("t8432OutBlock") or []
 
+    def overseas_futures_master(self) -> list[dict]:
+        """o3101 해외선물 종목마스터 — Symbol(ADM23)·BscGdsCd·CtrtPrAmt. resolver가 1일 캐시."""
+        body = self._ov._post("/overseas-futureoption/market-data", "o3101", {"o3101InBlock": {"gubun": ""}})
+        return body.get("o3101OutBlock") or []
+
     def _acct_summary_raw(self) -> dict:
         return self._post("/futureoption/accno", "CFOAQ50600",
                           {"CFOAQ50600InBlock1": {"RecCnt": 1, "BalEvalTp": "1",
