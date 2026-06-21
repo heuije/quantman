@@ -167,5 +167,61 @@ class LsFuturesBroker(_LsAuth):
                         "market": "DOMESTIC", "currency": "KRW", "asset_class": "futures"})
         return out
 
+    def _ov_acct_raw(self) -> dict:
+        from datetime import datetime
+        return self._ov._post("/overseas-futureoption/accno", "CIDBQ03000",
+                              {"CIDBQ03000InBlock1": {"AcntTpCode": "1", "TrdDt": datetime.now().strftime("%Y%m%d")}})
+
+    def _ov_xchrat_raw(self) -> dict:
+        return self._ov._post("/overseas-futureoption/accno", "CIDBQ05300",
+                              {"CIDBQ05300InBlock1": {"CrcyCode": "USD"}})
+
+    def _ov_positions_raw(self) -> dict:
+        return self._ov._post("/overseas-futureoption/accno", "CIDBQ01500",
+                              {"CIDBQ01500InBlock1": {"AcntTpCode": "1", "BalTpCode": "1"}})
+
+    def overseas_account_snapshot(self) -> dict:
+        """해외선물 잔고 — {account(KRW), positions}. KRW equity = USD × Xchrat(CIDBQ05300).
+        2-3 TR 중 실패·Xchrat<=0은 raise(라우터 fetch_failed). ⚠ 필드명·G-OF5(USD→KRW 경로) research 기반 — 모의 실측."""
+        acct_rows = self._ov_acct_raw().get("CIDBQ03000OutBlock2") or []
+        acct = {}
+        for r in acct_rows:
+            if str(r.get("CrcyObjCode") or "TOT") in ("TOT", "", "USD"):
+                acct = r
+                break
+        if not acct and acct_rows:
+            acct = acct_rows[0]
+        equity_usd = float(acct.get("EvalAssetAmt") or 0)
+        order_cash_usd = float(acct.get("AbrdFutsOrdAbleAmt") or 0)
+        xrows = self._ov_xchrat_raw().get("CIDBQ05300OutBlock2") or []
+        xchrat = 0.0
+        for r in xrows:
+            if str(r.get("CrcyCode") or "") in ("USD", ""):
+                xchrat = float(r.get("Xchrat") or 0)
+                break
+        if xchrat <= 0:
+            raise RuntimeError(f"LS 해외선물 환율(Xchrat) 미수신({xchrat}) — KRW equity 산출 불가. 보류.")
+        account = {
+            "equity": equity_usd * xchrat,
+            "order_cash": order_cash_usd * xchrat,
+            "margin_total": float(acct.get("AbrdFutsCsgnMgn") or 0) * xchrat,
+            "eval_pnl": float(acct.get("AbrdFutsEvalPnlAmt") or 0) * xchrat,
+            "currency": "KRW", "fx_usdkrw": xchrat,
+        }
+        positions = []
+        for it in (self._ov_positions_raw().get("CIDBQ01500OutBlock2") or []):
+            qty = int(float(it.get("BalQty") or 0))
+            if qty == 0:
+                continue
+            positions.append({
+                "symbol": str(it.get("IsuCodeVal") or "").strip(),
+                "side": "long" if str(it.get("BnsTpCode") or "") == "2" else "short",
+                "qty": qty, "avg_price": float(it.get("PchsPrc") or 0),
+                "eval_price": float(it.get("OvrsDrvtNowPrc") or 0),
+                "eval_pnl": float(it.get("AbrdFutsEvalPnlAmt") or 0),
+                "market": "OVERSEAS", "currency": "USD", "asset_class": "futures",
+            })
+        return {"account": account, "positions": positions}
+
     # NOTE: orderable_qty(CFOAQ10100 NewOrdAbleQty)는 증거금 사이징 클램프용이나 현재 호출자
     # 없음(4원칙#2) → 제거. Trader 선물 사이징 배선 시 함께 추가(매핑=domestic-futures-research.md).
