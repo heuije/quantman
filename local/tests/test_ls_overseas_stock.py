@@ -296,3 +296,44 @@ def test_overseas_pending_merges(monkeypatch):
          "ExecQty": "0", "UnercQty": "5", "OvrsOrdPrc": "190.0", "OrdMktCode": "82"}]), raising=False)
     pend = b.pending_orders()
     assert len(pend) == 1 and pend[0]["order_no"] == "10" and pend[0]["currency"] == "USD"
+
+
+# ── E7: 해외 예약주문 COSAT00400 ─────────────────────────────────────────────
+
+
+def test_resv_buy_overseas(monkeypatch):
+    b = _broker()
+    _us_index_stub(monkeypatch)
+    captured = {}
+    def fake_post(path, tr, body, **k):
+        captured["body"] = body["COSAT00400InBlock1"]
+        return {"COSAT00400OutBlock2": {"RsvOrdNo": "448"}}
+    monkeypatch.setattr(b, "_post", fake_post, raising=False)
+    r = b.buy_resv_limit("AAPL", 2, 195.50)
+    assert r["success"] is True and r["order_no"] == "448"
+    bd = captured["body"]
+    assert bd["BnsTpCode"] == "2"
+    assert bd["CntryCode"] == "US"
+    assert bd["IsuNo"] == "AAPL"
+    assert bd["OvrsOrdPrc"] == 195.50
+    assert "AcntNo" in bd and "Pwd" in bd
+    assert bd["RsvOrdSrtDt"] and bd["RsvOrdEndDt"]
+
+
+def test_resv_sell_overseas_bnstp(monkeypatch):
+    b = _broker()
+    _us_index_stub(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(b, "_post", lambda p, t, body, **k: captured.update(body["COSAT00400InBlock1"])
+                        or {"COSAT00400OutBlock2": {"RsvOrdNo": "9"}}, raising=False)
+    b.sell_resv_limit("AAPL", 1, 210.0)
+    assert captured["BnsTpCode"] == "1"
+
+
+def test_resv_domestic_still_not_implemented(monkeypatch):
+    import pytest
+    b = _broker()
+    monkeypatch.setattr(lb.market_index, "exchange_of", lambda s: None, raising=False)
+    monkeypatch.setattr(lb.market_index, "_looks_domestic", lambda s: True, raising=False)
+    with pytest.raises(NotImplementedError):
+        b.buy_resv_limit("000660", 1, 70000)

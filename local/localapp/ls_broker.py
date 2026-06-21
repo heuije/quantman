@@ -399,18 +399,37 @@ class LsBroker(_LsAuth):
         return self._submit(symbol, qty, "sell", "00", float(limit_price)) if m == "DOMESTIC" \
             else self._submit_overseas(symbol, qty, "sell", float(limit_price), m)
 
-    def buy_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
-        """국내주식 예약주문 미구현 — 명시적 에러(조용한 no-op 금지).
+    def _submit_overseas_resv(self, symbol: str, qty: int, side: str,
+                               unit_price: float, market: str) -> dict:
+        """COSAT00400 미국 예약주문(등록). 지정가(00). AcntNo/Pwd body 필수(G23-5).
+        실행일창 = 오늘~오늘(당일 개장 단일가). ⚠ enum/필드 research 기반 — 모의 실측(OG4).
+        상태 추적(RsvOrdNo→COSAQ01400)은 모의 E2E(G-E4)에서 확정 — 현재 등록 scope만."""
+        from datetime import datetime
+        today = datetime.now().strftime("%Y%m%d")
+        resp = self._post("/overseas-stock/order", "COSAT00400",
+                          {"COSAT00400InBlock1": {
+                              "TrxTpCode": "1",
+                              "CntryCode": "US",
+                              "BnsTpCode": "2" if side == "buy" else "1",
+                              "AcntNo": self.account_no, "Pwd": "",
+                              "FcurrMktCode": self._ls_excd(market), "IsuNo": self._ls_ticker(symbol),
+                              "OrdQty": qty, "OvrsOrdPrc": float(unit_price), "OrdprcPtnCode": "00",
+                              "RsvOrdSrtDt": today, "RsvOrdEndDt": today}}, is_order=True)
+        return normalize_ls_order_resp(resp, ordno_field="RsvOrdNo")
 
-        LS 국내주식에 예약주문 TR이 없음(해외주식 후속 plan에서 검토 예정).
-        Broker 인터페이스 계약 이행: 미지원을 침묵으로 가장하면 Trader가
-        주문이 접수된 것으로 오판한다.
-        """
-        raise NotImplementedError("LS 예약주문은 해외주식 단계(후속 plan)")
+    def buy_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
+        """해외 예약주문 매수(COSAT00400). 국내는 미지원 — 명시적 NotImplementedError."""
+        m = self._detect_market(symbol)
+        if m == "DOMESTIC":
+            raise NotImplementedError("LS 국내주식 예약주문 미지원")
+        return self._submit_overseas_resv(symbol, qty, "buy", float(limit_price), m)
 
     def sell_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
-        """국내주식 예약주문 미구현 — 명시적 에러."""
-        raise NotImplementedError("LS 예약주문은 해외주식 단계(후속 plan)")
+        """해외 예약주문 매도(COSAT00400). 국내는 미지원 — 명시적 NotImplementedError."""
+        m = self._detect_market(symbol)
+        if m == "DOMESTIC":
+            raise NotImplementedError("LS 국내주식 예약주문 미지원")
+        return self._submit_overseas_resv(symbol, qty, "sell", float(limit_price), m)
 
     # ── 취소 (CSPAT00801 / COSAT00301) ──────────────────────────────────────
 
