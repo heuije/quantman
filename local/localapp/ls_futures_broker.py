@@ -6,25 +6,31 @@ LsBroker와 동일 인증/HTTP(_LsAuth 상속), 선물 TR(/futureoption/*)만 �
 from __future__ import annotations
 import logging
 from .ls_broker import _LsAuth, normalize_ls_order_resp, canonical_odno
-from .secrets_store import load_ls_futures
+from .secrets_store import load_ls_futures, load_ls_overseas_futures
 
 log = logging.getLogger("localapp.ls_futures_broker")
 
 
 class LsFuturesBroker(_LsAuth):
     def __init__(self):
-        creds = load_ls_futures()
-        if not creds:
+        dom = load_ls_futures()
+        ovc = load_ls_overseas_futures()
+        if not dom and not ovc:
             raise RuntimeError("LS 선물 자격증명이 없습니다. setup에서 등록하세요.")
-        super().__init__(creds)
+        # 도메스틱 인증을 베이스로(_LsAuth 상속·self._post=도메스틱·Phase D 무변경).
+        # 도메스틱이 없으면 해외 자격증명을 베이스로(해외전용 사용자) — domestic_configured로 게이트.
+        super().__init__(dom or ovc)
+        self._dom_configured = dom is not None
+        # 해외선물 인증은 별도 컨텍스트(KIS _ov_token 분리 미러). 같은 appkey면 토큰캐시 공유.
+        self._ov = _LsAuth(ovc) if ovc else None
 
     @property
     def domestic_configured(self) -> bool:
-        return True
+        return self._dom_configured
 
     @property
     def overseas_configured(self) -> bool:
-        return False   # Phase F에서 해외선물 분기
+        return self._ov is not None
 
     def index_futures_master(self) -> list[dict]:
         """t8432 지수선물 마스터 — shcode/expcode/hname. resolver가 1일 캐시."""
