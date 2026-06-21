@@ -15,6 +15,7 @@ const PartView = memo(function PartView({ part }: { part: ChatPart }) {
 
 export default function ChatLab() {
   const [convId, setConvId] = useState<number | null>(null);
+  const [convs, setConvs] = useState<{ id: number; title: string }[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,9 +40,11 @@ export default function ChatLab() {
   useEffect(() => {
     let alive = true;
     api.listConversations()
-      .then((convs) => {
-        if (!alive || convs.length === 0) return undefined;
-        const recent = convs.reduce((a, b) => (b.id > a.id ? b : a));
+      .then((list) => {
+        if (!alive) return undefined;
+        setConvs(list);
+        if (list.length === 0) return undefined;
+        const recent = list.reduce((a, b) => (b.id > a.id ? b : a));
         return api.getConversation(recent.id).then((full) => {
           if (alive) { setConvId(full.id); setMessages(full.messages); }
         });
@@ -76,6 +79,36 @@ export default function ChatLab() {
     setConvId(null);
     setMessages([]);
     setError(null);
+  }
+
+  const refreshConvs = useCallback(() => {
+    api.listConversations().then(setConvs).catch(() => {/* 목록 갱신 실패는 무해 */});
+  }, []);
+
+  async function selectConv(id: number) {
+    if (id === convId || busy) return;
+    try {
+      const full = await api.getConversation(id);
+      setConvId(full.id); setMessages(full.messages); setError(null);
+    } catch { setError("대화를 불러오지 못했습니다."); }
+  }
+
+  async function renameConv(id: number, current: string) {
+    const title = window.prompt("대화 제목", current);
+    if (title == null || !title.trim()) return;
+    try {
+      await api.updateConversation(id, title.trim());
+      setConvs((cs) => cs.map((c) => (c.id === id ? { ...c, title: title.trim() } : c)));
+    } catch { setError("이름 변경에 실패했습니다."); }
+  }
+
+  async function deleteConv(id: number) {
+    if (!window.confirm("이 대화를 삭제할까요? 되돌릴 수 없습니다.")) return;
+    try {
+      await api.deleteConversation(id);
+      setConvs((cs) => cs.filter((c) => c.id !== id));
+      if (id === convId) { setConvId(null); setMessages([]); }
+    } catch { setError("삭제에 실패했습니다."); }
   }
 
   async function send() {
@@ -122,20 +155,29 @@ export default function ChatLab() {
     } finally {
       setBusy(false);
       refreshQuota();              // 턴 후 카운터 갱신(차단 429였어도 used 반영)
+      refreshConvs();              // 새 대화 등장 + 첫 메시지 자동제목을 사이드바에 반영
     }
   }
 
   return (
-    <div className="chat-lab">
+    <div className="chat-layout">
+      <aside className="chat-sessions">
+        <button type="button" className="chat-sessions-new" onClick={newChat}>+ 새 대화</button>
+        {convs.map((c) => (
+          <div key={c.id}
+               className={"chat-session" + (c.id === convId ? " active" : "")}
+               onClick={() => void selectConv(c.id)}>
+            <span className="chat-session-title">{c.title}</span>
+            <button type="button" className="chat-session-act" title="이름 변경"
+                    onClick={(e) => { e.stopPropagation(); void renameConv(c.id, c.title); }}>✎</button>
+            <button type="button" className="chat-session-act" title="삭제"
+                    onClick={(e) => { e.stopPropagation(); void deleteConv(c.id); }}>🗑</button>
+          </div>
+        ))}
+      </aside>
+      <div className="chat-lab">
       <h1 className="chat-title">전략 연구소 <span className="chat-beta">챗봇 베타</span></h1>
       <p className="chat-sub muted">자연어로 종목 분석·백테스트를 요청하고 대화하세요.</p>
-      {messages.length > 0 && (
-        <button onClick={newChat}
-                style={{ fontSize: "0.8em", padding: "3px 12px", marginBottom: 8,
-                         alignSelf: "flex-start", cursor: "pointer" }}>
-          + 새 대화
-        </button>
-      )}
       <div className="chat-thread" ref={threadRef}>
         {messages.length === 0 && (
           <div className="chat-empty muted">
@@ -196,6 +238,7 @@ export default function ChatLab() {
         />
         <button type="button" className="chat-send" onClick={() => void send()}
           disabled={busy || !input.trim()}>전송</button>
+      </div>
       </div>
     </div>
   );

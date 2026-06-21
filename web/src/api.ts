@@ -407,6 +407,11 @@ export const api = {
     req<{ id: number; title: string }[]>("/chat/conversations"),
   getConversation: (id: number) =>
     req<{ id: number; messages: ChatMessage[] }>(`/chat/conversations/${id}`),
+  updateConversation: (id: number, title: string) =>
+    req<{ id: number; title: string }>(`/chat/conversations/${id}`,
+      { method: "PATCH", body: JSON.stringify({ title }) }),
+  deleteConversation: (id: number) =>
+    req<void>(`/chat/conversations/${id}`, { method: "DELETE" }),
   // 챗봇 일일 사용량 조회 — 메시지 소모 없음. 비번 동봉 시 언락 즉시 검증(카운터·언락 공용).
   chatQuota: (adminPassword?: string) =>
     req<CompileQuota>("/chat/quota", {
