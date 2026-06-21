@@ -356,21 +356,48 @@ class LsBroker(_LsAuth):
         )
         return normalize_ls_order_resp(resp, ordno_field="OrdNo")
 
+    def _submit_overseas(self, symbol: str, qty: int, side: str,
+                         unit_price: float, market: str) -> dict:
+        """COSAT00301 미국 주문. OrdPtnCode 02매수/01매도. 해외는 지정가(00) 강제 —
+        시장가 의도(unit_price<=0)는 g3101 현재가로 대체(OG3 안전·KIS 패턴). 가격 float."""
+        if unit_price <= 0:
+            quoted = self._price_overseas(symbol, market)
+            if quoted <= 0:
+                raise RuntimeError(
+                    f"해외 {market} {symbol} 현재가 조회 실패({quoted}) — 지정가 발주 불가. 주문 보류.")
+            unit_price = quoted
+        ord_ptn = "02" if side == "buy" else "01"
+        resp = self._post("/overseas-stock/order", "COSAT00301",
+                          {"COSAT00301InBlock1": {
+                              "OrdPtnCode": ord_ptn, "OrgOrdNo": 0,
+                              "OrdMktCode": self._ls_excd(market), "IsuNo": self._ls_ticker(symbol),
+                              "OrdQty": qty, "OvrsOrdPrc": float(unit_price),
+                              "OrdprcPtnCode": "00"}}, is_order=True)
+        return normalize_ls_order_resp(resp, ordno_field="OrdNo")
+
     def buy(self, symbol: str, qty: int) -> dict:
-        """시장가 매수. ⚠ OrdprcPtnCode="03" — A2 KB G8 🟢."""
-        return self._submit(symbol, qty, "buy", "03", 0.0)
+        """시장가 매수. 국내=CSPAT00601·시장가(03), 해외=COSAT00301·지정가(현재가 조회)."""
+        m = self._detect_market(symbol)
+        return self._submit(symbol, qty, "buy", "03", 0.0) if m == "DOMESTIC" \
+            else self._submit_overseas(symbol, qty, "buy", 0.0, m)
 
     def sell(self, symbol: str, qty: int) -> dict:
-        """시장가 매도. ⚠ OrdprcPtnCode="03" — A2 KB G8 🟢."""
-        return self._submit(symbol, qty, "sell", "03", 0.0)
+        """시장가 매도. 국내=CSPAT00601·시장가(03), 해외=COSAT00301·지정가(현재가 조회)."""
+        m = self._detect_market(symbol)
+        return self._submit(symbol, qty, "sell", "03", 0.0) if m == "DOMESTIC" \
+            else self._submit_overseas(symbol, qty, "sell", 0.0, m)
 
-    def buy_limit(self, symbol: str, qty: int, limit_price: int) -> dict:
-        """지정가 매수. ⚠ OrdprcPtnCode="00" — A2 KB G8 🟢."""
-        return self._submit(symbol, qty, "buy", "00", float(limit_price))
+    def buy_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
+        """지정가 매수. 국내=CSPAT00601·지정가(00), 해외=COSAT00301·지정가(00)."""
+        m = self._detect_market(symbol)
+        return self._submit(symbol, qty, "buy", "00", float(limit_price)) if m == "DOMESTIC" \
+            else self._submit_overseas(symbol, qty, "buy", float(limit_price), m)
 
-    def sell_limit(self, symbol: str, qty: int, limit_price: int) -> dict:
-        """지정가 매도. ⚠ OrdprcPtnCode="00" — A2 KB G8 🟢."""
-        return self._submit(symbol, qty, "sell", "00", float(limit_price))
+    def sell_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
+        """지정가 매도. 국내=CSPAT00601·지정가(00), 해외=COSAT00301·지정가(00)."""
+        m = self._detect_market(symbol)
+        return self._submit(symbol, qty, "sell", "00", float(limit_price)) if m == "DOMESTIC" \
+            else self._submit_overseas(symbol, qty, "sell", float(limit_price), m)
 
     def buy_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict:
         """국내주식 예약주문 미구현 — 명시적 에러(조용한 no-op 금지).
