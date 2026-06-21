@@ -51,3 +51,64 @@ def test_ls_ticker_bare():
     b = _broker()
     assert b._ls_ticker("AAPL") == "AAPL"
     assert b._ls_ticker("aapl") == "AAPL"
+
+
+def _us_index_stub(monkeypatch):
+    monkeypatch.setattr(lb.market_index, "exchange_of", lambda s: "NAS", raising=False)
+
+
+def test_overseas_snapshot_fields(monkeypatch):
+    b = _broker()
+    _us_index_stub(monkeypatch)
+    monkeypatch.setattr(b, "_overseas_balance_raw", lambda: {
+        "COSOQ00201OutBlock3": [{"CrcyCode": "USD", "FcurrDps": "10000.50", "BaseXchrat": "1350.0"}],
+        "COSOQ00201OutBlock4": [
+            {"ShtnIsuNo": "AAPL", "AstkBalQty": "10", "FcstckUprc": "150.0",
+             "OvrsScrtsCurpri": "200.0", "FcurrMktCode": "82"}]}, raising=False)
+    ov = b.overseas_snapshot()
+    assert ov["usd_cash"] == 10000.50
+    assert ov["fx_usdkrw"] == 1350.0
+    assert ov["foreign_eval_krw"] == (10000.50 + 10 * 200.0) * 1350.0
+    p = ov["positions"][0]
+    assert p["symbol"] == "AAPL" and p["qty"] == 10 and p["currency"] == "USD"
+    assert p["avg_price"] == 150.0 and p["eval_price"] == 200.0
+
+
+def test_account_snapshot_merges_overseas(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_balance_raw", lambda: {
+        "t0424OutBlock": {"sunamt": "5000000", "sunamt1": "5000000"},
+        "t0424OutBlock1": []}, raising=False)
+    monkeypatch.setattr(b, "overseas_snapshot", lambda: {
+        "usd_cash": 1000.0, "fx_usdkrw": 1300.0, "foreign_eval_krw": 2600000.0,
+        "positions": [{"symbol": "AAPL", "qty": 5, "currency": "USD", "market": "NAS",
+                       "avg_price": 100.0, "eval_price": 120.0}]}, raising=False)
+    snap = b.account_snapshot(overseas=True)
+    bal = snap["balance"]
+    assert bal["total_eval"] == 5000000
+    assert bal["cash_usd"] == 1000.0
+    assert bal["fx_usdkrw"] == 1300.0
+    assert bal["foreign_eval_krw"] == 2600000.0
+    assert any(p["symbol"] == "AAPL" for p in snap["positions"])
+
+
+def test_account_snapshot_overseas_failure_marks_fetch_failed(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_balance_raw", lambda: {
+        "t0424OutBlock": {"sunamt": "5000000", "sunamt1": "5000000"}, "t0424OutBlock1": []}, raising=False)
+    monkeypatch.setattr(b, "overseas_snapshot",
+                        lambda: (_ for _ in ()).throw(RuntimeError("5xx")), raising=False)
+    snap = b.account_snapshot(overseas=True)
+    assert snap["balance"]["total_eval"] == 5000000
+    assert snap["balance"]["fetch_failed"] == ["overseas"]
+
+
+def test_account_snapshot_overseas_false_skips(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_balance_raw", lambda: {
+        "t0424OutBlock": {"sunamt": "5000000", "sunamt1": "5000000"}, "t0424OutBlock1": []}, raising=False)
+    called = {"n": 0}
+    monkeypatch.setattr(b, "overseas_snapshot",
+                        lambda: called.__setitem__("n", called["n"] + 1) or {}, raising=False)
+    b.account_snapshot(overseas=False)
+    assert called["n"] == 0

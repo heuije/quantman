@@ -181,9 +181,11 @@ class LsBroker(_LsAuth):
         )
 
     def account_snapshot(self, overseas: bool = True) -> dict:
-        """국내주식 잔고 스냅샷.
+        """국내+미국 잔고 스냅샷. overseas=True(기본)면 COSOQ00201 해외 잔고도 병합.
 
-        overseas: Broker 프로토콜 서명 패리티를 위해 수락하지만 무시한다 — LS는 국내 only.
+        overseas=True: 해외 잔고(COSOQ00201)를 호출해 balance와 positions에 병합.
+                       실패 시 balance["fetch_failed"]=["overseas"] 마커 설정 후 국내만 반환.
+        overseas=False: 해외 잔고 조회 없이 국내만 반환.
 
         반환 balance:
           cash         추정D2예수금(KRW) — t0424OutBlock.sunamt1 (공식문서 대조 확인 2026-06-19)
@@ -191,11 +193,12 @@ class LsBroker(_LsAuth):
           total_eval   총자산(KRW) — t0424OutBlock.sunamt(추정순자산 = 주식평가 + 예수금). 모의 실측
                        확정(2026-06-20): tappamt(평가금액)는 보유 시가만이라 현금 제외 → 킬스위치
                        오발동(아래 주석). KIS tot_evlu_amt(총평가=유가증권+예수금)와 동일 의미.
-          cash_usd     0.0  (LS 국내 only)
-          fx_usdkrw    0.0
-          foreign_eval_krw  0.0
+          cash_usd     USD 예수금 (overseas=True·성공 시). 기본 0.0.
+          fx_usdkrw    USD/KRW 환율 (overseas=True·성공 시). 기본 0.0.
+          foreign_eval_krw  해외 평가금액 KRW 환산 (overseas=True·성공 시). 기본 0.0.
 
-        positions: qty>0 인 국내 종목만. market="DOMESTIC", currency="KRW".
+        positions: qty>0 인 국내 종목(market="DOMESTIC"·currency="KRW") +
+                   overseas=True·성공 시 미국 종목(market="NAS"/"NYS"·currency="USD").
 
         조회 실패 시 balance["fetch_failed"]=["domestic"] 설정 — 절대 0으로 위장하지 않음.
         이 마커가 없으면 Trader 킬스위치가 "평가금액=0=−98% 손실"로 오판해 전량 청산한다
@@ -243,16 +246,21 @@ class LsBroker(_LsAuth):
                 "currency": "KRW",
             })
 
-        return {
-            "balance": {
-                "cash": cash,
-                "total_eval": total_eval,
-                "cash_usd": 0.0,
-                "fx_usdkrw": 0.0,
-                "foreign_eval_krw": 0.0,
-            },
-            "positions": positions,
+        balance = {
+            "cash": cash, "total_eval": total_eval,
+            "cash_usd": 0.0, "fx_usdkrw": 0.0, "foreign_eval_krw": 0.0,
         }
+        if overseas:
+            try:
+                ov = self.overseas_snapshot()
+                balance["cash_usd"] = ov["usd_cash"]
+                balance["fx_usdkrw"] = ov["fx_usdkrw"]
+                balance["foreign_eval_krw"] = ov["foreign_eval_krw"]
+                positions.extend(ov["positions"])
+            except Exception as e:
+                log.warning("LS 해외 잔고 조회 실패 — 국내만 반영: %s", e)
+                balance["fetch_failed"] = ["overseas"]
+        return {"balance": balance, "positions": positions}
 
     # ── 시세 조회 (t1102) ─────────────────────────────────────────────────────
 
@@ -508,6 +516,43 @@ class LsBroker(_LsAuth):
     def _ls_ticker(self, symbol: str) -> str:
         """LS 해외 IsuNo/keysymbol용 bare 티커(대문자). 클래스주(BRK-B)는 OG-E1(모의 실측)."""
         return symbol.strip().upper()
+
+    # ── 해외(미국) 잔고 조회 (COSOQ00201) ────────────────────────────────────
+
+    def _overseas_balance_raw(self) -> dict:
+        """COSOQ00201 해외 종합잔고평가 — 통화별(OB3)·종목별(OB4). BaseDt=당일."""
+        from datetime import datetime
+        return self._post("/overseas-stock/accno", "COSOQ00201",
+                          {"COSOQ00201InBlock1": {"BaseDt": datetime.now().strftime("%Y%m%d"),
+                                                  "CrcyCode": "USD", "AstkBalTpCode": "00"}})
+
+    def overseas_snapshot(self) -> dict:
+        """미국 USD 예수금+환율+보유종목. foreign_eval_krw는 직접계산(벤더 환산필드 불일치 회피·KIS 동일).
+        ⚠ 필드명(FcurrDps/BaseXchrat/ShtnIsuNo/AstkBalQty/FcstckUprc/OvrsScrtsCurpri) research 기반 — 모의 실측 확정."""
+        body = self._overseas_balance_raw()
+        usd_cash = fx = 0.0
+        for row in body.get("COSOQ00201OutBlock3") or []:
+            if str(row.get("CrcyCode") or "") == "USD":
+                usd_cash = float(row.get("FcurrDps") or 0)
+                fx = float(row.get("BaseXchrat") or 0)
+                break
+        positions = []
+        for it in body.get("COSOQ00201OutBlock4") or []:
+            qty = int(float(it.get("AstkBalQty") or 0))
+            if qty <= 0:
+                continue
+            sym = str(it.get("ShtnIsuNo") or "").strip().upper()
+            positions.append({
+                "symbol": sym, "name": str(it.get("IsuKorNm") or it.get("IsuNm") or ""),
+                "qty": qty,
+                "avg_price": float(it.get("FcstckUprc") or 0),
+                "eval_price": float(it.get("OvrsScrtsCurpri") or 0),
+                "market": market_index.exchange_of(sym) or "US", "currency": "USD",
+            })
+        positions_eval_usd = sum(p["qty"] * p["eval_price"] for p in positions)
+        foreign_eval_krw = (usd_cash + positions_eval_usd) * fx if fx > 0 else 0.0
+        return {"usd_cash": usd_cash, "fx_usdkrw": fx,
+                "foreign_eval_krw": foreign_eval_krw, "positions": positions}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

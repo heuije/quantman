@@ -142,7 +142,12 @@ def test_account_snapshot_happy_path(monkeypatch):
         ],
     }
     monkeypatch.setattr(b, "_balance_raw", lambda: _fixture, raising=False)
-    snap = b.account_snapshot()
+    # E2: overseas_snapshot은 별도 TR(COSOQ00201) — 이 테스트는 국내 잔고 파싱만 검증하므로
+    # overseas를 스텁해 해외조회 없이 실행한다(실제 해외 경로는 test_ls_overseas_stock.py에서 전수).
+    monkeypatch.setattr(b, "overseas_snapshot",
+                        lambda: {"usd_cash": 0.0, "fx_usdkrw": 0.0,
+                                 "foreign_eval_krw": 0.0, "positions": []}, raising=False)
+    snap = b.account_snapshot(overseas=True)
 
     # balance 구조 + 정확한 필드 소스 확인 (C3/C4)
     bal = snap["balance"]
