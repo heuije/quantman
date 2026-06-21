@@ -1,8 +1,9 @@
 # 챗봇 목표 아키텍처 — "백테스트·스크리닝 비서" → "전문 분석·추천·내러티브 자문봇"
 
-> 상태: **Phase 1 설계 (blueprint)** · 정본 브랜치 `feat/chat-capability-redesign`
+> 상태: **Phase 1·2 구현완료 (draft PR#188) · Phase 3~5 미착수** · 정본 브랜치 `feat/chat-capability-redesign`
 > 목적: 후속 기능을 무작정 덧대 구조를 over-complicate하지 않도록 **최종 형상(완성본)을 먼저 고정**하고,
 > 모든 향후 증분이 직교적으로 붙는 **계약(seam)** 을 정의한다.
+> 진행 현황·다음 세션 인계는 **§9 (맨 아래)** 를 먼저 읽어라 — 무엇이 끝났고 어디서 이어가는지.
 
 ---
 
@@ -121,15 +122,18 @@ seam 정비는 이 레지스트리 패턴을 verb/result/render에 복제한다.
 
 순서는 **의존성·리스크·동시작업 충돌**로 결정. 각 단계 = 독립 PR, 골든 불변 + 하니스 $0 검증.
 
-### Phase 1 — 설계서 (이 문서) · 검증=리뷰 ✅
+### Phase 1 — 설계서 (이 문서) · 검증=리뷰 ✅ **완료** (커밋 01bfebf)
 
-### Phase 2 — capability SSOT + describe 표면화 〔foundation·additive·저위험·최고레버〕
-- **2a.** `get_all_indicator_columns`에 컨센서스·수급(·거시) 컬럼 포함 · `capability_spec`에 데이터소스 섹션 ·
-  `prompt.py`의 "미수급" 거짓고지 정정(파생 SSOT로).
-- **2b.** `run_describe_report`에 컨센서스·수급 블록(per-symbol 컬럼·PIT) · `summarize` describe compact 확장
-  (`target_upside`·`analyst_count`·`consensus_opinion`·수급 20일 누적) · `ReportCards`에 컨센서스/수급 카드.
+### Phase 2 — capability SSOT + describe 표면화 ✅ **완료** 〔foundation·additive·저위험·최고레버〕
+- **2a.** ✅ `get_all_indicator_columns`에 컨센서스·수급 컬럼 포함(`FLOW_INDICATOR_COLS`+`CONSENSUS_INDICATOR_COLS`) ·
+  `prompt.py`의 "수급·컨센서스 미수급" 거짓고지 정정(라이브로). (커밋 3ad1331)
+- **2b.** ✅ `run_describe_report`에 컨센서스·수급 블록(per-symbol 컬럼·PIT `df.loc[idx<=asof]`) · `summarize`
+  describe compact 확장(`target_upside`·`analyst_count`·`consensus_opinion`·수급 20일 누적) · `ReportCards`에
+  컨센서스/수급 카드. **+부류수정**: describe 요약 수익률·연변동성·MDD가 분수를 `%`로 표기(100× 축소)하던 버그를
+  `_f`→`_pct` 일괄 교정. (커밋 b9e57c9)
   ⚠ **거시(macro)는 단일종목 df에 없는 교차-엔티티라 엔진 아닌 Phase 4 사이드카로 이동**(엔진-거시 결합 회피).
-- **검증:** LLM-free 하니스(describe corpus 신규 케이스) · 골든 백테스트 byte-identical · web build+eslint · preview 스냅샷.
+- **검증:** ✅ 전체 **805 pass**(신규 회귀 `test_indicator_surfacing`·`test_describe_surfacing`) · 골든 백테스트
+  byte-identical · web build(tsc+vite)+eslint · ruff. **잔여 = 로그인 브라우저 E2E**(describe 카드 실렌더, 사용자측).
 
 ### Phase 3 — 결과 타입 유니온 + render 레지스트리 〔seam #1·#2〕
 - 결과 Pydantic 판별 유니온(기존 dict 호환 어댑터) · `result_shape()` → discriminator · `ChatResultView` 레지스트리화.
@@ -178,3 +182,80 @@ seam 정비는 이 레지스트리 패턴을 verb/result/render에 복제한다.
 | 내러티브(거시·뉴스) | 거시✅·뉴스=스텁 | (엔진 밖) | 사이드카·해석 | news/context 카드 |
 
 > 빈 칸 = "미배선" 명시. 새 기능은 이 매트릭스 4계층을 모두 채워야 완성([[arch_four_layer_contract]]).
+
+---
+
+## 9. 구현 현황 & 다음 세션 인계 (hand-off) — 2026-06-21
+
+이 절은 **"어디까지 했고, 다음에 무엇을 어디서 이어가나"** 단일 출처다. 다음 세션은 여기부터 읽어라.
+
+### 9.1 의도(재확인) — 한 문단
+챗봇이 주식투자자의 다양한 궁금증에 **①적절한 데이터 → ②정확한 연산 → ③직관적 시각화 → ④전문적 해석·조언**
+4박자로 답하게 만든다. 현 엔진은 **서술·검증**(describe/screen/simulate/diagnose)엔 강하나, 프런티어 질문은
+**처방축**(상관→포트폴리오 추천→히트맵/트리맵)과 **내러티브축**(거시·뉴스 종합·준실시간 "왜")을 요구한다.
+방침 = **rewrite 아님**(뼈대 B+ 직교). 약한 seam 3개(결과계약·render매핑·capability선언)를 1회 정비하고,
+프런티어를 클린 add. 데이터 수집은 이미 라이브(#149) — 본 작업은 **표면화 + 아키텍처 seam + 챗 + 웹**.
+
+### 9.2 완료된 것 (3개 독립 draft PR — 미머지)
+| PR | 범위 | 커밋/브랜치 | 검증 |
+|---|---|---|---|
+| **[#188](https://github.com/MercKR/quantman/pull/188)** | Phase 1 설계서 + Phase 2(capability SSOT·describe 컨센서스/수급 표면화·요약 100× 매그니튜드 부류수정) | `feat/chat-capability-redesign` 01bfebf·3ad1331·b9e57c9 | 805 pass·웹빌드·ruff·골든불변 |
+| **[#189](https://github.com/MercKR/quantman/pull/189)** | 대화 세션 멀티대화(좌측 사이드바·rename/delete endpoint·자동제목, **DB 스키마 변경 0**) | `feat/chat-sessions` | chat API 26pass·웹빌드 |
+| **[#190](https://github.com/MercKR/quantman/pull/190)** | 답변 쉬운말 executive summary 시작(프롬프트 `<answer_format>`) | `feat/chat-exec-summary` | 렌더검증·ruff |
+
+- 세 PR은 **파일 분리·독립 머지 가능**. #188은 `core`(indicators·run·summarize)를 만지니 **희제(선물 등 core 작업)와 머지 타이밍 조율** 권장(surgical/additive라 충돌 시 해소 쉬움).
+- **#189·#190은 아키텍처 로드맵과 직교**한 부가 개선(세션 UX·프롬프트). Phase 3~5와 독립.
+- 머지·push·배포는 **사용자 명시 허락 시에만**(자동 금지). 머지 시 Railway(server)+Vercel(web) 자동배포. 머지 후 희제 알림.
+
+### 9.3 다음에 이어갈 것 — Phase 3 → 4 → 5 (의존순)
+
+**먼저 Phase 3** (seam #1·#2). Phase 5의 새 형상(히트맵·트리맵·breadth)이 render 레지스트리에 깨끗이 등록되려면
+Phase 3가 선행이어야 한다. Phase 4(사이드카)는 엔진 무변이라 Phase 3와 **병렬 가능**.
+
+- **Phase 3 — 결과 타입 유니온 + render 레지스트리.** 진입점:
+  - 엔진: `core/quant_core/ir_engine/summarize.py`의 `result_shape()`(타입없는 dict 런타임 추론·순서의존).
+    **첫 수**: 각 결과 dict에 `shape` 판별자 필드를 **결과 생성 시점에 직접 emit**(additive·행동보존) → `result_shape()`는
+    그 필드를 읽기만. 그 다음 Pydantic 판별 유니온으로 점진 전환(기존 dict 호환 어댑터 유지).
+  - 웹: `web/src/components/ChatResultView.tsx`의 순서의존 if/elif switch(equity 분기가 반드시 마지막) →
+    `RENDERERS: Record<shape, Component>` 단일 조회로. 노코드 빌더 `ResultPanel`과 **동일 레지스트리 공유**.
+  - 리스크: 광범위 touch → **점진·행동보존·어댑터**로 완화. 기존 11형상부터 1:1 전환.
+
+- **Phase 4 — context 사이드카 일반화.** 진입점:
+  - `server/app/routers/ir.py`의 `_attach_symbol_news`(post-hoc·엔진 밖·단일종목·뉴스만) → 일반 context provider로.
+    **첫 수**: 준실시간 시세 스냅샷(현재가·등락률)을 `server/app/industry.py:219` `_naver_quotes` 재사용으로 enrich
+    (네이버 폴링·키 불필요·~90초). 그 다음 거시 레짐·뉴스를 다대상으로 일반화. **모델 식단(해석)에만 공급, 골든 dataset엔 미누출.**
+  - 보안경계: KIS 계좌·주문·자격증명·true-tick은 로컬 전용. *공개 시세 조회*(네이버)는 경계 밖 — 사이드카 OK.
+
+- **Phase 5 — 프런티어 클린 add (독립·병렬).** 각 기능은 §8 4계층 매트릭스를 모두 채워야 완성:
+  - 5a. 상관/공분산 `relation_kind="correlation"`(run.py) → 새 matrix 형상 → **히트맵** 렌더러. (Q4 전반부)
+  - 5b. `PRESCRIBE` verb(`run_prescribe` 최적화기: max_sharpe·min_var·risk_parity + constraints) → **트리맵 + 효율적 프런티어**. (Q4 후반부) ⚠ 최적화 추정방법은 착수 전 사용자 협의(scipy 가능하나 방법 합의 필요).
+  - 5c. breadth/지수 엔티티(신규 study) → "코스피 왜 빠져/어때"(Q3 *why*). 준실시간 *what*은 Phase 4 사이드카가 이미 커버.
+
+### 9.4 검증 레시피 (착수 전 baseline·완료 전 게이트)
+```
+# LLM-free 결정적 코어 회귀($0·무제한) — analysis_diag 하니스
+PYTHONPATH=core python scripts/analysis_diag.py          # 합성 코퍼스
+PYTHONPATH=core python scripts/analysis_diag.py --real   # frozen 실데이터
+# 전체 테스트
+cd core && python -m pytest -q          # 골든 백테스트 불변식 포함
+cd server && python -m pytest -q
+# 웹
+cd web && npm run build && npx eslint .  # tsc+vite+eslint
+ruff check core server                   # 린트
+```
+**원칙 4**: 골든 byte-identical + 하니스 통과 + 웹빌드 없이 "완료" 선언 금지. UI는 로그인 브라우저 E2E(사용자측).
+
+### 9.5 함정·주의 (반복 실수 방지)
+- **데이터 진실**: 컨센서스·수급은 **라이브**(main #149·크론 `main.py:862-879`·볼륨 2.3GB). `data/spec.py`의
+  `current_status="absent"`는 **stale 문서**(읽는 코드 0) — 믿지 말 것. 뉴스만 스텁(미배선).
+- **매그니튜드 규약**: `summarize.py`에서 `_pct(v)`=분수×100(표시%), `_f(v)`=숫자그대로. 수익률·변동성·MDD는
+  엔진서 **분수** → `%`로 표면화할 땐 반드시 `_pct`(Phase 2b에서 이 부류 100× 버그를 고쳤으니 답습 금지).
+- **선존 ruff E702**(세미콜론): `run.py:215/231/306/335/771`·`chat.py` create_conversation — **내 코드 아님, 건드리지 말 것**(범위 규율).
+- **체크아웃**: 작업 정본은 `_wt-diag`(워킹 체크아웃). `platform/`는 stale. 규칙·디자인 정본은 **origin/main**.
+- **충돌 회피**: `core/*`는 희제와 겹칠 수 있음(선물). `excel_export.py`·`core/tests`도 타 세션 in-flight 가능 → 편집 전 brief 확인·조율.
+- **커밋 메시지(한글)**: PowerShell `-m` 말고 **Bash(Git Bash UTF-8)** 로. main 직접 push 금지·작업단위 브랜치+PR.
+- **시각화는 도구가 아니라 결과 형상(shape) 1:1** — 유저가 차트종류 못 고름. 새 차트 = 엔진 새 형상 emit + render 등록(Phase 3 후 1건).
+
+### 9.6 관련 메모리·문서
+메모리 `project-chat-capability-baseline`(워크플로·데이터 8모달리티·갭지도 SSOT) · 본 설계서(아키텍처 SSOT) ·
+관련 [[project_chat_lab]]·[[project_question_engine]]·[[project_data_engine]]·[[arch_four_layer_contract]]·[[reference_retail_ai_demand]].
