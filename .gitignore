@@ -16,6 +16,8 @@ venv/
 *.db
 .token_cache.json
 .kis_token.json
+oauth_token.txt
+*oauth_token*
 ledger.json
 equity.json
 trades.jsonl
@@ -78,3 +80,5 @@ _apis_meta.json
 
 # 분석 진단 CLI 산출물(재생성 가능 — git 미저장)
 analysis_diag_out/
+# 챗봇 LLM 평가 하니스 산출물(트랜스크립트·REPORT — 재생성 가능)
+chat_eval_out/
