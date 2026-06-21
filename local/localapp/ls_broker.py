@@ -284,25 +284,40 @@ class LsBroker(_LsAuth):
             {"t1102InBlock": {"shcode": symbol}},  # shcode = 6자리 코드, A-접두사 불필요 🟢
         )
 
-    def price(self, symbol: str) -> float:
-        """현재가(KRW) 반환. ⚠ t1102OutBlock.price 필드 — A2 KB 🟢."""
-        body = self._price_raw(symbol)
-        out = body.get("t1102OutBlock") or {}
+    def _quote_overseas_raw(self, symbol: str, market: str) -> dict:
+        """g3101 해외 현재가 — keysymbol = exchcd(82/81) + bare 티커."""
+        excd = self._ls_excd(market)
+        return self._post("/overseas-stock/market-data", "g3101",
+                          {"g3101InBlock": {"delaygb": "R", "keysymbol": f"{excd}{self._ls_ticker(symbol)}",
+                                            "exchcd": excd, "symbol": self._ls_ticker(symbol)}})
+
+    def _price_overseas(self, symbol: str, market: str) -> float:
+        out = self._quote_overseas_raw(symbol, market).get("g3101OutBlock") or {}
         return float(out.get("price") or 0)
+
+    def price(self, symbol: str) -> float:
+        """현재가 반환. 국내=t1102(KRW), 해외=g3101(USD). ⚠ t1102OutBlock.price — A2 KB 🟢."""
+        market = self._detect_market(symbol)
+        if market == "DOMESTIC":
+            out = self._price_raw(symbol).get("t1102OutBlock") or {}
+            return float(out.get("price") or 0)
+        return self._price_overseas(symbol, market)
 
     def today_open(self, symbol: str) -> float:
         """당일 시가 반환. catch-up cycle에서 시장가→시초가 limit 변환 시 사용.
 
         시가 없으면(개장 전·장 종료 후·오류) 0.0 반환 → caller가 catch-up skip 결정.
-        ⚠ t1102OutBlock.open 필드 — A2 KB 🟢.
+        국내=t1102OutBlock.open, 해외=g3101OutBlock.open.
         """
         try:
-            body = self._price_raw(symbol)
-            out = body.get("t1102OutBlock") or {}
-            v = out.get("open")
-            if v is None or v == "" or v == 0:
-                return 0.0
-            return float(v)
+            market = self._detect_market(symbol)
+            if market == "DOMESTIC":
+                out = self._price_raw(symbol).get("t1102OutBlock") or {}
+                v = out.get("open")
+            else:
+                out = self._quote_overseas_raw(symbol, market).get("g3101OutBlock") or {}
+                v = out.get("open")
+            return float(v) if v not in (None, "", 0, "0") else 0.0
         except Exception:
             return 0.0
 

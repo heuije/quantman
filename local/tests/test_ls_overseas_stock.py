@@ -112,3 +112,38 @@ def test_account_snapshot_overseas_false_skips(monkeypatch):
                         lambda: called.__setitem__("n", called["n"] + 1) or {}, raising=False)
     b.account_snapshot(overseas=False)
     assert called["n"] == 0
+
+
+def test_price_overseas(monkeypatch):
+    b = _broker()
+    _us_index_stub(monkeypatch)
+    captured = {}
+    def fake_post(path, tr, body, **k):
+        captured["keysymbol"] = body["g3101InBlock"]["keysymbol"]
+        return {"g3101OutBlock": {"price": "201.55", "open": "199.00"}}
+    monkeypatch.setattr(b, "_post", fake_post, raising=False)
+    assert b.price("TSLA") == 201.55
+    assert captured["keysymbol"] == "82TSLA"
+
+
+def test_today_open_overseas(monkeypatch):
+    b = _broker()
+    _us_index_stub(monkeypatch)
+    monkeypatch.setattr(b, "_post", lambda *a, **k: {"g3101OutBlock": {"open": "199.00"}}, raising=False)
+    assert b.today_open("TSLA") == 199.00
+
+
+def test_price_domestic_unchanged(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(lb.market_index, "exchange_of", lambda s: None, raising=False)
+    monkeypatch.setattr(lb.market_index, "_looks_domestic", lambda s: True, raising=False)
+    monkeypatch.setattr(b, "_price_raw", lambda s: {"t1102OutBlock": {"price": "70000", "open": "69500"}}, raising=False)
+    assert b.price("000660") == 70000.0
+    assert b.today_open("000660") == 69500.0
+
+
+def test_today_open_overseas_zero_fallback(monkeypatch):
+    b = _broker()
+    _us_index_stub(monkeypatch)
+    monkeypatch.setattr(b, "_post", lambda *a, **k: {"g3101OutBlock": {"open": ""}}, raising=False)
+    assert b.today_open("TSLA") == 0.0
