@@ -16,6 +16,7 @@ from quant_core.ir_engine import (StrategyIR, needed_columns, needed_symbols,
 from ..compile_service import compile_strategy
 from ..models import Message
 from ..routers.strategies import save_ir_draft
+from ..serialize import serialize_ir_result
 
 # ── 도구 스키마 ──────────────────────────────────────────────────────────────
 
@@ -241,6 +242,7 @@ def run_simulate(session, user_id, tool_input: dict) -> dict:
     dataset = _load_dataset(ir)
     res = strategy_from_spec(ir, dataset)
     if isinstance(res, dict) and res.get("success"):
+        res, _ = serialize_ir_result(res)        # pandas→JSON(백테스트 영속/렌더) — 추가필드 前 직렬화
         res["ir"] = ir
         res["adjustable"] = param_manifest(ir)   # 실시간 변수조정 노브(웹 '변수 조정' 패널)
         res["explanation"] = comp.get("explanation")
@@ -297,6 +299,7 @@ def run_tool(tool_name: str, tool_input: dict) -> dict:
     res = strategy_from_spec(ir, dataset)   # valid_refs=None → 엔진이 available_refs 도출
     # 결과에 IR + 조정가능 변수 동봉 → 챗 결과뷰의 '엑셀로 내보내기'(증빙)·'변수 조정'(실시간 재실행).
     if isinstance(res, dict) and res.get("success"):
+        res, _ = serialize_ir_result(res)        # 모든 챗 도구 결과를 JSON-안전하게(부류 가드)
         res["ir"] = ir
         res["adjustable"] = param_manifest(ir)
     return res
@@ -418,6 +421,7 @@ def run_adjust(session, conversation_id, tool_input: dict) -> dict:
         return {"success": False, "error": f"조정된 IR이 유효하지 않습니다: {e}"}
     res = strategy_from_spec(ir, _load_dataset(ir))
     if isinstance(res, dict) and res.get("success"):
+        res, _ = serialize_ir_result(res)        # pandas→JSON(조정 재실행도 백테스트일 수 있음)
         res["ir"] = ir
         res["adjustable"] = param_manifest(ir)
         res["adjusted"] = applied
