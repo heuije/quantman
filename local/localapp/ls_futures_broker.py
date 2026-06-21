@@ -30,3 +30,39 @@ class LsFuturesBroker(_LsAuth):
         """t8432 지수선물 마스터 — shcode/expcode/hname. resolver가 1일 캐시."""
         body = self._post("/futureoption/market-data", "t8432", {"t8432InBlock": {"gubun": "0"}})
         return body.get("t8432OutBlock") or []
+
+    def _acct_summary_raw(self) -> dict:
+        return self._post("/futureoption/accno", "CFOAQ50600",
+                          {"CFOAQ50600InBlock1": {"RecCnt": 1, "BalEvalTp": "1",
+                                                  "FutsPrcEvalTp": "1", "LqtQtyQryTp": "1"}})
+
+    def _positions_raw(self) -> dict:
+        return self._post("/futureoption/accno", "t0441",
+                          {"t0441InBlock": {"cts_expcode": "", "cts_medocd": ""}})
+
+    def account_snapshot(self) -> dict:
+        """국내선물 잔고 — {account, positions}. 2-TR 중 실패는 raise(라우터가 fetch_failed).
+        ⚠ 필드명(EvalDpsamtTotamt/MnyOrdAbleAmt/jqty/medosu 등) research 기반 — Phase D-C 실측 확정."""
+        summary = (self._acct_summary_raw().get("CFOAQ50600OutBlock2") or {})
+        account = {
+            "equity": int(float(summary.get("EvalDpsamtTotamt") or 0)),       # 추정예탁자산(킬스위치)
+            "order_cash": int(float(summary.get("MnyOrdAbleAmt") or 0)),      # 현금주문가능(사이징)
+            "margin_total": int(float(summary.get("CsgnMgnTotamt") or 0)),
+            "eval_pnl": int(float(summary.get("FutsEvalPnlAmt") or 0)),
+            "currency": "KRW",
+        }
+        positions = []
+        for it in (self._positions_raw().get("t0441OutBlock1") or []):
+            qty = int(float(it.get("jqty") or 0))
+            if qty == 0:
+                continue
+            positions.append({
+                "symbol": str(it.get("expcode", "")).strip(),
+                "side": "long" if str(it.get("medosu") or "") == "매수" else "short",
+                "qty": qty,
+                "avg_price": float(it.get("pamt") or 0),
+                "eval_price": float(it.get("price") or 0),
+                "eval_pnl": float(it.get("dtsunik1") or 0),
+                "market": "DOMESTIC", "currency": "KRW", "asset_class": "futures",
+            })
+        return {"account": account, "positions": positions}
