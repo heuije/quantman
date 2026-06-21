@@ -119,3 +119,36 @@ def test_overseas_account_snapshot_raises_on_zero_xchrat():
     })
     with pytest.raises(Exception):
         b.overseas_account_snapshot()
+
+
+def test_overseas_buy_market():
+    b = object.__new__(lfb.LsFuturesBroker)
+    ov = _OvDouble(resp={"CIDBT00100OutBlock2": {"OvrsFutsOrdNo": "0000000777", "OrdDt": "20260622"}})
+    b._ov = ov
+    r = b.overseas_buy("CLM26", 1)
+    assert r["success"] is True and r["order_no"] == "0000000777"
+    tr, body = ov.calls[-1]
+    bd = body["CIDBT00100InBlock1"]
+    assert tr == "CIDBT00100"
+    assert bd["FutsOrdTpCode"] == "1"
+    assert bd["BnsTpCode"] == "2"
+    assert bd["AbrdFutsOrdPtnCode"] == "1"
+    assert bd["IsuCodeVal"] == "CLM26"
+
+
+def test_overseas_sell_limit_double_price():
+    b = object.__new__(lfb.LsFuturesBroker)
+    ov = _OvDouble(resp={"CIDBT00100OutBlock2": {"OvrsFutsOrdNo": "8"}})
+    b._ov = ov
+    b.overseas_sell_limit("GCM26", 2, 1985.5)
+    bd = ov.calls[-1][1]["CIDBT00100InBlock1"]
+    assert bd["BnsTpCode"] == "1"
+    assert bd["AbrdFutsOrdPtnCode"] == "2"
+    assert bd["OvrsDrvtOrdPrc"] == 1985.5
+
+
+def test_overseas_order_reject_no_ordno():
+    b = object.__new__(lfb.LsFuturesBroker)
+    b._ov = _OvDouble(resp={"rsp_cd": "99", "rsp_msg": "증거금부족"})
+    r = b.overseas_buy("CLM26", 1)
+    assert r["success"] is False and r["order_no"] == ""

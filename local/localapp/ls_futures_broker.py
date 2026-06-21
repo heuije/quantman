@@ -223,5 +223,23 @@ class LsFuturesBroker(_LsAuth):
             })
         return {"account": account, "positions": positions}
 
+    def _ov_submit(self, symbol, qty, side, ord_ptn, unit_price):
+        """CIDBT00100 신규주문. BnsTpCode 2매수/1매도, AbrdFutsOrdPtnCode 1시장/2지정. 가격 double."""
+        from datetime import datetime
+        prc = float(unit_price) if ord_ptn == "2" else 0
+        resp = self._ov._post("/overseas-futureoption/order", "CIDBT00100",
+                              {"CIDBT00100InBlock1": {
+                                  "OrdDt": datetime.now().strftime("%Y%m%d"),
+                                  "IsuCodeVal": symbol, "FutsOrdTpCode": "1",
+                                  "BnsTpCode": "2" if side == "buy" else "1",
+                                  "AbrdFutsOrdPtnCode": ord_ptn, "OvrsDrvtOrdPrc": prc,
+                                  "OrdQty": qty}}, is_order=True)
+        return normalize_ls_order_resp(resp, ordno_field="OvrsFutsOrdNo")
+
+    def overseas_buy(self, symbol, qty): return self._ov_submit(symbol, qty, "buy", "1", 0)
+    def overseas_sell(self, symbol, qty): return self._ov_submit(symbol, qty, "sell", "1", 0)
+    def overseas_buy_limit(self, symbol, qty, limit_price): return self._ov_submit(symbol, qty, "buy", "2", float(limit_price))
+    def overseas_sell_limit(self, symbol, qty, limit_price): return self._ov_submit(symbol, qty, "sell", "2", float(limit_price))
+
     # NOTE: orderable_qty(CFOAQ10100 NewOrdAbleQty)는 증거금 사이징 클램프용이나 현재 호출자
     # 없음(4원칙#2) → 제거. Trader 선물 사이징 배선 시 함께 추가(매핑=domestic-futures-research.md).
