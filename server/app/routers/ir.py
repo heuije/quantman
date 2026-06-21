@@ -27,7 +27,7 @@ from ..data_manifest import build_dataset_manifest
 from ..db import get_session
 from ..deps import get_current_user
 from ..models import BacktestRun, Strategy, StrategyVersion, User
-from ..serialize import clean_json, serialize_backtest, serialize_ir_result
+from ..serialize import serialize_backtest, serialize_ir_result
 
 router = APIRouter(prefix="/ir", tags=["ir"])
 
