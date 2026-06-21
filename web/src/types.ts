@@ -413,6 +413,22 @@ export interface IrICStat {
 }
 
 // StrategyIR 백테스트 결과 — 단일(equity/metrics)·펼침(axis/buckets)·이벤트(time) 통합.
+// P5b PRESCRIBE — 목적별 최적 비중 + 포트 지표(연율화)
+export interface PrescribeObjective {
+  weights: Record<string, number>;
+  exp_return: number | null;
+  exp_vol: number | null;
+  sharpe: number | null;
+}
+export interface PrescribeResult {
+  symbols?: string[];
+  objectives?: Record<string, PrescribeObjective>;
+  recommended?: string;
+  n_obs?: number;
+  max_weight?: number | null;
+  warnings?: IrIssue[];
+}
+
 export interface IrStrategyResult extends BacktestResult {
   warnings?: IrIssue[];
   issues?: IrIssue[];
@@ -432,6 +448,10 @@ export interface IrStrategyResult extends BacktestResult {
   n_obs?: number;
   most_correlated?: [string, string, number] | null;
   least_correlated?: [string, string, number] | null;
+  // P5b PRESCRIBE (query="prescribe") — 목적별 최적 비중.
+  objectives?: Record<string, PrescribeObjective>;
+  recommended?: string;
+  max_weight?: number | null;
   // 결과 dict의 axis는 백엔드가 옛 라벨을 parity로 유지한다(요청의 study.axis 신값과
   // 다를 수 있음 — 예: study.axis="entity" 요청 → 결과 axis="asset"). 표시 전용.
   axis?: "condition" | "parameter" | "asset" | "time" | "period_split" | "signal" | "relation";

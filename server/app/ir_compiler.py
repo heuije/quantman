@@ -199,7 +199,8 @@ StrategyIR = {{
   "signal": <블록트리>,          // 신호. {{op, params, inputs:{{slot: 자식블록}}}} 재귀. 잎: data{{ref}}, const{{value}}
   "position": {{"direction":.., "sizing":{{"mode":..}}, "entry":{{"mode":..}}, "exit":{{..}}, "overlays":{{..}}}},
   "simulation": {{"initial_capital":.., "fill":.., "leverage":.., "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", ...}},
-  "query": "simulate|select|describe|relate",   // 무엇을 묻는가(기본 simulate=손익 백테스트). select=현시점 스크리닝, describe=살펴보기(단일종목 리포트·포트폴리오 진단·신호 분포), relate=관계/이벤트.
+  "query": "simulate|select|describe|relate|prescribe",   // 무엇을 묻는가(기본 simulate=손익 백테스트). select=현시점 스크리닝, describe=살펴보기(단일종목 리포트·포트폴리오 진단·신호 분포), relate=관계/이벤트/상관, prescribe=포트폴리오 비중 추천(최적화).
+  "prescribe": {{"max_weight":0~1|null, "window":N|null}},   // query="prescribe" 전용 — 종목당 비중 상한·추정 거래일수(생략 가능)
   "study": {{"axis":"none|parameter|entity|label|time_fold", "reduction":"enumerate|contrast|consistency|extremize", "param_grid":[{{"path":점경로,"values":[..]}}], "assets":[..], "label":<블록>, "split_period":"year|quarter|month", "folds":N, "split_dates":["YYYY-MM-DD",..], "target_node":<블록>, "relation_kind":"ic|regression|correlation", "factors":[<블록>,..], "windows":[..], "event":<블록>, "objective":{{"metric":..,"direction":"max|min","oos_guard":bool}}}}  // objective는 extremize 전용
 }}
 // ⚠ time_fold에서 **"연도별/연간/매년"은 study.split_period="year"**(엔진이 달력 연으로 분할, 키=2015·2016…). folds=252 같은 "1년 거래일수"로 추측하지 말 것(라이브 결함). 분기별=quarter·월별=month. folds는 단순 시간순 등분 수일 뿐.
@@ -295,6 +296,9 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
 12. [상관행렬] "A와 B(와 C)의 상관계수"·"이 종목들 상관관계/같이 움직이나"·"분산투자 되나·헤지 후보"처럼
     *종목 간 수익 동조성*이면 → query="relate" + study.relation_kind="correlation" + universe.kind="list"(종목 2+).
     target_node·factors 불필요(가격수익 공행렬). windows=[N]으로 최근 N거래일 한정 가능(없으면 전체). 결과=상관 히트맵.
+13. [포트폴리오 비중 추천] "이 종목들 어떻게 배분/비중 얼마"·"포트폴리오 추천(종목+비중)"·"분산 최적 비중"처럼
+    *비중 처방*이면 → query="prescribe" + universe.kind="list"(종목 2+). 위험기반(최소분산·리스크패리티·동일가중)
+    +최대샤프를 동시 산출(결과=비중 트리맵). 종목당 상한=prescribe.max_weight, 추정기간=prescribe.window. signal은 명목(data Close).
 </idioms>
 
 <process>

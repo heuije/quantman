@@ -214,6 +214,14 @@ class SelectSpec(BaseModel):
     display: list[str] = Field(default_factory=list)   # 결과에 붙일 지표 컬럼(pb_ratio 등)
 
 
+# ── 처방 (PRESCRIBE 동사 — 포트폴리오 비중 최적화·추천) ───────────────────────
+
+class PrescribeSpec(BaseModel):
+    """PRESCRIBE 동사 — 포트폴리오 비중 최적화 설정(위험기반 3종 + 최대샤프 동시 산출)."""
+    max_weight: Optional[float] = None   # 종목당 비중 상한(0<cap<=1, None=무제한). 집중 방지.
+    window: Optional[int] = None          # 최근 N거래일로 공분산·기대수익 추정(None=전체 가용)
+
+
 # ── 전략 (통합) ───────────────────────────────────────────────────────────────
 
 class StrategyIR(BaseModel):
@@ -222,9 +230,10 @@ class StrategyIR(BaseModel):
     signal: Node                        # condition(룰) 또는 score(팩터)
     position: PositionSpec = Field(default_factory=PositionSpec)
     simulation: SimSpec = Field(default_factory=SimSpec)
-    query: Literal["select", "describe", "relate", "simulate"] = "simulate"
+    query: Literal["select", "describe", "relate", "simulate", "prescribe"] = "simulate"
     study: Study = Field(default_factory=Study)
     select: Optional[SelectSpec] = None    # query="select" 전용
+    prescribe: Optional[PrescribeSpec] = None   # query="prescribe" 전용
 
     @model_validator(mode="before")
     @classmethod
@@ -641,6 +650,10 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
             and s.universe.kind == "single":
         issues.append(Issue("S-CORR", SEV_ERROR,
                             "상관분석은 종목이 2개 이상이어야 합니다(universe.kind=list/all).", "universe"))
+    # 처방(prescribe) — 비중 최적화는 종목 2+ 필요(가격수익 공분산).
+    if s.query == "prescribe" and s.universe.kind == "single":
+        issues.append(Issue("S-PRESCRIBE", SEV_ERROR,
+                            "포트폴리오 추천은 종목이 2개 이상이어야 합니다(universe.kind=list).", "universe"))
     describe_dist = s.query == "describe" and u.kind in ("all", "list")
     if describe_dist or is_ic:
         tn = st.target_node

@@ -67,3 +67,49 @@ def test_correlation_rejects_single_symbol():
     ir = {**_corr_ir(), "universe": {"kind": "single", "symbols": ["AAA"]}}
     res = strategy_from_spec(ir, _ds_corr())
     assert not res.get("success")                          # S-CORR: 2종목 이상 필요
+
+
+# ── 5b PRESCRIBE (포트폴리오 비중 최적화) ─────────────────────────────────────
+
+def _prescribe_ir(**ps) -> dict:
+    ir = {"universe": {"kind": "list", "symbols": ["AAA", "BBB", "CCC"]},
+          "signal": _SIG, "query": "prescribe"}
+    if ps:
+        ir["prescribe"] = ps
+    return ir
+
+
+def test_prescribe_objectives_long_only_sum_one():
+    res = run_query(StrategyIR.model_validate(_prescribe_ir()), _ds_corr())
+    assert res.get("success"), res.get("error")
+    assert res["shape"] == "prescribe" == result_shape(res)
+    objs = res["objectives"]
+    assert set(objs) == {"min_variance", "max_sharpe", "risk_parity", "equal_weight"}
+    for key, o in objs.items():
+        w = list(o["weights"].values())
+        assert abs(sum(w) - 1.0) < 2e-3, f"{key} 비중합≠1 (4자리 반올림 허용)"
+        assert all(v >= -1e-9 for v in w), f"{key} 롱온리 위반"
+        assert o["exp_vol"] is not None
+    ew = objs["equal_weight"]["weights"]
+    assert all(abs(v - 1 / 3) < 1e-3 for v in ew.values())            # 1/N (4자리 반올림)
+    # 최소분산은 동일가중보다 변동성이 낮거나 같아야(최적화 작동 검증)
+    assert objs["min_variance"]["exp_vol"] <= objs["equal_weight"]["exp_vol"] + 1e-6
+
+
+def test_prescribe_max_weight_cap():
+    res = run_query(StrategyIR.model_validate(_prescribe_ir(max_weight=0.4)), _ds_corr())
+    assert res.get("success")
+    for o in res["objectives"].values():
+        assert all(v <= 0.4 + 1e-3 for v in o["weights"].values()), "max_weight 상한 위반"
+
+
+def test_prescribe_summary_warns_mean_return_noise():
+    s = summarize_result(run_query(StrategyIR.model_validate(_prescribe_ir()), _ds_corr()))
+    assert "포트추천" in s and ("최소분산" in s or "최대샤프" in s)
+    assert "⚠" in s and "과거평균" in s              # 기대수익 추정 노이즈 경고
+
+
+def test_prescribe_rejects_single_symbol():
+    ir = {**_prescribe_ir(), "universe": {"kind": "single", "symbols": ["AAA"]}}
+    res = strategy_from_spec(ir, _ds_corr())
+    assert not res.get("success")                     # S-PRESCRIBE: 2종목 이상

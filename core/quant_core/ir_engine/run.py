@@ -25,7 +25,7 @@ from .compare import (
     two_sample_test, walk_forward_consistency,
 )
 from .comparison import compare_by_partition
-from .spec import StrategyIR, Study
+from .spec import PrescribeSpec, StrategyIR, Study
 from .summarize import result_shape
 from .sweep import (
     daily_returns, partition_by_label, summarize_returns,
@@ -133,6 +133,8 @@ def _dispatch_query(strategy: StrategyIR, dataset: dict) -> dict:
     q = strategy.query
     if q == "select":
         return run_select(strategy, dataset)
+    if q == "prescribe":
+        return run_prescribe(strategy, dataset)
     if q == "describe":
         u = strategy.universe
         if u.kind == "single":
@@ -847,6 +849,73 @@ def run_portfolio_diagnosis(strategy: StrategyIR, dataset: dict) -> dict:
                      "with_fundamentals": sum(1 for s in holdings if "pb_ratio" in dataset[s].columns
                                               and dataset[s]["pb_ratio"].dropna().shape[0] > 0)},
     }
+
+
+# ── 처방 (PRESCRIBE — 포트폴리오 비중 최적화·추천) ────────────────────────────
+
+def run_prescribe(strategy: StrategyIR, dataset: dict) -> dict:
+    """PRESCRIBE — 포트폴리오 비중 최적화(추천). 위험기반 3종 + 최대샤프 동시 산출.
+
+    일별수익에서 공분산·기대수익 추정(연율화). 제약=롱온리·비중합 1·종목당 max_weight 상한.
+    min_variance/max_sharpe/risk_parity는 scipy SLSQP, equal_weight=1/N. max_sharpe는
+    기대수익=과거평균이라 추정 노이즈가 큼(경고 동반) — 위험기반이 더 안정적.
+    """
+    from scipy.optimize import minimize
+    ps = strategy.prescribe or PrescribeSpec()
+    syms = _universe_symbols(strategy, dataset)
+    closes = pd.DataFrame({s: dataset[s]["Close"].astype(float) for s in syms
+                           if s in dataset and "Close" in dataset[s].columns})
+    syms = list(closes.columns)
+    if len(syms) < 2:
+        return _empty("포트폴리오 추천은 가격 데이터가 2종목 이상 필요합니다.")
+    rets = closes.pct_change().dropna(how="any")
+    if ps.window:
+        rets = rets.tail(int(ps.window))
+    if rets.shape[0] < 20:
+        return _empty("비중 추정에 충분한 데이터가 없습니다(최소 20거래일).")
+    n = len(syms)
+    cov = rets.cov().to_numpy() * TRADING_DAYS
+    mu = rets.mean().to_numpy() * TRADING_DAYS
+    cap = max(float(ps.max_weight), 1.0 / n) if ps.max_weight else 1.0   # 합1 가능하도록 하한
+    bounds = [(0.0, cap)] * n
+    cons = ({"type": "eq", "fun": lambda w: float(w.sum() - 1.0)},)
+    w0 = np.full(n, 1.0 / n)
+
+    def _vol(w):
+        return float(np.sqrt(max(float(w @ cov @ w), 0.0)))
+
+    def _neg_sharpe(w):
+        v = _vol(w)
+        return -float(w @ mu) / v if v > 0 else 0.0
+
+    def _rp(w):                          # 리스크 패리티 — 종목별 위험기여(rc) 균등화
+        rc = w * (cov @ w)
+        return float(np.sum((rc - float(w @ cov @ w) / n) ** 2))
+
+    def _solve(obj):
+        r = minimize(obj, w0, method="SLSQP", bounds=bounds, constraints=cons,
+                     options={"maxiter": 800, "ftol": 1e-10})
+        w = np.clip(np.asarray(r.x, dtype=float), 0.0, None)
+        return (w / w.sum()) if w.sum() > 0 else w0
+
+    solved = {"min_variance": _solve(lambda w: float(w @ cov @ w)),
+              "max_sharpe": _solve(_neg_sharpe),
+              "risk_parity": _solve(_rp),
+              "equal_weight": w0}
+
+    def _metrics(w):
+        v, er = _vol(w), float(w @ mu)
+        return {"weights": {syms[i]: round(float(w[i]), 4) for i in range(n)},
+                "exp_return": round(er, 4), "exp_vol": round(v, 4),
+                "sharpe": round(er / v, 3) if v > 0 else None}
+
+    return {"success": True, "query": "prescribe", "symbols": syms,
+            "objectives": {k: _metrics(w) for k, w in solved.items()},
+            "recommended": "max_sharpe", "n_obs": int(rets.shape[0]),
+            "max_weight": (cap if ps.max_weight else None),
+            "warnings": [{"code": "mean_return_estimate",
+                          "message": "최대샤프 비중은 기대수익=과거평균 추정이라 노이즈가 큽니다 — "
+                                     "위험기반(최소분산·리스크패리티)이 더 안정적입니다."}]}
 
 
 # ── 이벤트 스터디 (비전 §4 시간축) ────────────────────────────────────────────

@@ -9,7 +9,7 @@
 from .backtest import run_backtest_ir  # noqa: F401
 from .run import (  # noqa: F401
     run_describe_report, run_extremize, run_period_split, run_portfolio_diagnosis,
-    run_query, run_select, run_strategy_ir, run_sweep,
+    run_prescribe, run_query, run_select, run_strategy_ir, run_sweep,
 )
 from .compare import (  # noqa: F401
     block_bootstrap_ci, bootstrap_mean_ci, compare_partition, distribution,
@@ -36,7 +36,7 @@ from .sweep import (  # noqa: F401
 )
 
 __all__ = [
-    "run_backtest_ir", "run_strategy_ir", "run_sweep", "run_period_split", "run_query", "run_select",
+    "run_backtest_ir", "run_strategy_ir", "run_sweep", "run_period_split", "run_query", "run_select", "run_prescribe",
     "run_describe_report", "run_portfolio_diagnosis", "run_extremize",
     "backtest_from_spec", "strategy_from_spec", "capability_spec", "explain_ir",
     "build_strategy_excel", "param_manifest", "result_shape", "summarize_result",

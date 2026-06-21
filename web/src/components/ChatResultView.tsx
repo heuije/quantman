@@ -26,12 +26,12 @@ import EquityChart from "./EquityChart";
 import ExcelExportButton from "./ExcelExportButton";
 import ParamControls, { type AdjustableParam } from "./ParamControls";
 import {
-  CorrelationHeatmap, DiagnosisPanel, EventStudyChart, ExtremizeChart, ICChart, RankedListChart,
-  RegressionChart, ReportCards, SignalDistChart, SweepChart,
+  CorrelationHeatmap, DiagnosisPanel, EventStudyChart, ExtremizeChart, ICChart, PrescribePanel,
+  RankedListChart, RegressionChart, ReportCards, SignalDistChart, SweepChart,
 } from "./ResultCharts";
 import type {
   IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
-  IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrStrategyResult,
+  IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrStrategyResult, PrescribeResult,
 } from "../types";
 
 // IrBuilder의 fmt 함수와 동일한 규칙 — % 지표는 toFixed(2)+"%" , 비율/정수는 그대로
@@ -397,6 +397,9 @@ const RENDERERS: Record<string, (result: Record<string, unknown>) => ReactElemen
     <div className="chat-result"><RegressionChart r={result as unknown as IrRegressionResult} /></div>
   ),
   relate_ic: (result) => <ICStudy result={result as unknown as IrStrategyResult} />,
+  prescribe: (result) => (
+    <div className="chat-result"><PrescribePanel r={result as unknown as PrescribeResult} /></div>
+  ),
   correlation_matrix: (result) => {
     const r = result as unknown as {
       symbols?: string[]; matrix?: (number | null)[][]; avg_corr?: number | null; n_obs?: number;

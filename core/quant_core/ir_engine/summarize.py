@@ -31,6 +31,8 @@ def result_shape(result: Any) -> str:
         return stamped
     if result.get("query") == "select":
         return "select"
+    if result.get("query") == "prescribe":
+        return "prescribe"
     if result.get("report") == "single":
         return "describe_single"
     if result.get("report") == "portfolio":
@@ -246,6 +248,28 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
             for fac in (_win(bw, w).get("factors") or []):
                 lines.append(f"  {w}일 {fac.get('name')}: coef {_f(fac.get('coef'), 4)} · t {_f(fac.get('t_stat'))}")
         return "[다중팩터 회귀 Fama-MacBeth] 계수 양(+)·t유의=미래수익과 양의 관계\n" + "\n".join(lines)
+
+    if shape == "prescribe":
+        objs = result.get("objectives") or {}
+        rec = result.get("recommended") or "max_sharpe"
+        lbl = {"min_variance": "최소분산", "max_sharpe": "최대샤프",
+               "risk_parity": "리스크패리티", "equal_weight": "동일가중"}
+        lines = [f"[포트추천] {len(result.get('symbols') or [])}종목 "
+                 f"(n={result.get('n_obs', '?')}일) · 추천={lbl.get(rec, rec)}"]
+        for key in ("max_sharpe", "min_variance", "risk_parity", "equal_weight"):
+            o = objs.get(key)
+            if not isinstance(o, dict):
+                continue
+            w = o.get("weights") or {}
+            top = sorted(w.items(), key=lambda kv: -(kv[1] or 0))[:6]
+            ws = ", ".join(f"{s} {_pct(v)}%" for s, v in top)
+            lines.append(f"  {lbl.get(key, key)}: 기대변동성 {_pct(o.get('exp_vol'))}% · "
+                         f"샤프 {_f(o.get('sharpe'))} · 비중 {ws}")
+        for wn in (result.get("warnings") or []):
+            msg = wn.get("message") if isinstance(wn, dict) else str(wn)
+            if msg:
+                lines.append(f"⚠ {msg}")
+        return "\n".join(lines)
 
     if shape == "correlation_matrix":
         syms = result.get("symbols") or []

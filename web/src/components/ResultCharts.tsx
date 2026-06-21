@@ -1,11 +1,11 @@
 import { useState } from "react";
 import {
   Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, LineChart,
-  Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
 } from "recharts";
 import type {
   IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
-  IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrSweepBucket,
+  IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrSweepBucket, PrescribeResult,
 } from "../types";
 
 /* recharts SVG는 CSS var를 못 받아 토큰값(DESIGN.md)을 직접 인라인한다(EquityChart와 동일 규약).
@@ -887,5 +887,75 @@ export function CorrelationHeatmap({ symbols, matrix }: {
         +상관(빨강)=함께 움직임 · −상관(파랑)=반대로 움직임(분산·헤지 후보)
       </div>
     </div>
+  );
+}
+
+// ── PRESCRIBE 비중 추천 (P5b) — 추천 목적의 비중 트리맵 + 목적별 비교표 ──────────
+const OBJ_LABEL: Record<string, string> = {
+  min_variance: "최소분산", max_sharpe: "최대샤프", risk_parity: "리스크패리티", equal_weight: "동일가중",
+};
+const _pctOr = (v: number | null | undefined) => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);
+
+// 트리맵 셀 — 면적=비중. recharts가 x/y/width/height/name/value/index를 주입.
+function WeightCell(props: {
+  x?: number; y?: number; width?: number; height?: number; name?: string; value?: number; index?: number;
+}) {
+  const { x = 0, y = 0, width = 0, height = 0, name = "", value, index = 0 } = props;
+  return (
+    <g>
+      <rect x={x} y={y} width={width} height={height}
+            style={{ fill: SECTOR_PALETTE[index % SECTOR_PALETTE.length], stroke: C.panel, strokeWidth: 2 }} />
+      {width > 44 && height > 22
+        ? <text x={x + 5} y={y + 15} fill="#fff" fontSize={11} fontWeight={600}>{name}</text> : null}
+      {width > 44 && height > 36 && value != null
+        ? <text x={x + 5} y={y + 29} fill="#fff" fontSize={10}>{(value * 100).toFixed(1)}%</text> : null}
+    </g>
+  );
+}
+
+export function PrescribePanel({ r }: { r: PrescribeResult }) {
+  const objs = r.objectives ?? {};
+  const rec = r.recommended ?? "max_sharpe";
+  const recObj = objs[rec];
+  const order = ["max_sharpe", "min_variance", "risk_parity", "equal_weight"].filter((k) => objs[k]);
+  const treeData = recObj
+    ? Object.entries(recObj.weights).filter(([, v]) => (v ?? 0) > 0.005)
+        .sort((a, b) => b[1] - a[1]).map(([name, size]) => ({ name, size }))
+    : [];
+  return (
+    <Box title="포트폴리오 비중 추천"
+         sub={`${r.symbols?.length ?? 0}종목 · 추천 ${OBJ_LABEL[rec] ?? rec} · n=${r.n_obs ?? "?"}일`}>
+      {treeData.length > 0 ? (
+        <ResponsiveContainer width="100%" height={220}>
+          <Treemap data={treeData} dataKey="size" nameKey="name"
+                   isAnimationActive={false} content={<WeightCell />} />
+        </ResponsiveContainer>
+      ) : null}
+      <div style={{ overflowX: "auto", marginTop: 8 }}>
+        <table className="sweep-table">
+          <thead><tr><th>목적</th><th>기대수익(연)</th><th>기대변동성(연)</th><th>샤프</th><th>상위 비중</th></tr></thead>
+          <tbody>
+            {order.map((k) => {
+              const o = objs[k];
+              if (!o) return null;
+              const top = Object.entries(o.weights).sort((a, b) => b[1] - a[1]).slice(0, 4)
+                .map(([s, v]) => `${s} ${(v * 100).toFixed(1)}%`).join(", ");
+              return (
+                <tr key={k} style={k === rec ? { fontWeight: 600 } : undefined}>
+                  <td>{OBJ_LABEL[k] ?? k}{k === rec ? " ★" : ""}</td>
+                  <td>{_pctOr(o.exp_return)}</td>
+                  <td>{_pctOr(o.exp_vol)}</td>
+                  <td>{o.sharpe != null ? o.sharpe.toFixed(2) : "—"}</td>
+                  <td style={{ fontSize: 11, color: C.muted }}>{top}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+        ★ 추천 · 트리맵=추천 목적의 비중(면적). 최대샤프는 기대수익=과거평균 추정(노이즈 큼) — 위험기반이 더 안정적.
+      </div>
+    </Box>
   );
 }
