@@ -143,6 +143,8 @@ docs/ls-api/
 | 🟢 LS 공식 샘플 페이지 | `https://openapi.ls-sec.co.kr/howto-sample` | 접근 성공. t1301·t1101·t0424·CSPAQ12300·NWS 필드 확인 |
 | 🟢 LS 공식 포털 메뉴 | `https://openapi.ls-sec.co.kr/apiservice` | 접근 성공. 카테고리 목록 확인(TR 상세는 로그인 게이트) |
 | 🟢 커뮤니티 샘플 repo | `https://github.com/teranum/ls-openapi-samples` | 접근 성공. Python 샘플 `14. 주식 잔고-미체결-주문.py` 등 직독 |
+| 🟢 커뮤니티 종합 래퍼 | `https://github.com/xorrhks0216/LsApiHelper` | OAuth2 + **364 TR 전체 카탈로그** + 34 카테고리 REST 래퍼 + WebSocket. **Phase C 필드 대조·Phase 3 WS 시 1차 교차참조** |
+| 🟢 토큰 발급 가이드 | `https://wikidocs.net/230259` (올바른 투자 로봇) | OAuth 토큰 발급·로그인 단계별 한국어 가이드 |
 | 🟢 xingAPI res 파일 | `https://github.com/ermaker/xingAPI/blob/master/ext/xingAPI/Res/CSPAT00600.res` | 접근 성공. CSPAT00600(CSPAT00601 전신) InBlock/OutBlock 필드 확인 |
 | ⚠️ LS 공식 API 상세 | `https://openapi.ls-sec.co.kr/apiservice?api_id=...` | 카테고리 메뉴만 표시. TR 상세는 로그인 필요 |
 | ⚠️ 토큰 엔드포인트 직접 | `https://openapi.ls-sec.co.kr/oauth2/token` | 404 (POST만 허용, GET은 없음 — 정상) |
