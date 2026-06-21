@@ -66,3 +66,18 @@ class LsFuturesBroker(_LsAuth):
                 "market": "DOMESTIC", "currency": "KRW", "asset_class": "futures",
             })
         return {"account": account, "positions": positions}
+
+    def _quote_raw(self, symbol: str) -> dict:
+        return self._post("/futureoption/market-data", "t2101",
+                          {"t2101InBlock": {"focode": symbol}})
+
+    def price(self, symbol: str) -> float:
+        return float((self._quote_raw(symbol).get("t2101OutBlock") or {}).get("price") or 0)
+
+    def today_open(self, symbol: str) -> float:
+        """catch-up 시초가. 없으면(개장전·오류) 0.0 → caller가 skip 결정."""
+        try:
+            v = (self._quote_raw(symbol).get("t2101OutBlock") or {}).get("open")
+            return float(v) if v not in (None, "", 0, "0") else 0.0
+        except Exception:
+            return 0.0

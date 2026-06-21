@@ -44,3 +44,17 @@ def test_account_snapshot_raises_on_partial_failure(monkeypatch):
     monkeypatch.setattr(b, "_positions_raw", lambda: {"t0441OutBlock1": []}, raising=False)
     with pytest.raises(Exception):
         b.account_snapshot()
+
+
+def test_price_and_open(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_quote_raw", lambda sym: {
+        "t2101OutBlock": {"price": "343.10", "open": "342.00", "jnilclose": "341.50"}}, raising=False)
+    assert b.price("101V6000") == 343.10
+    assert b.today_open("101V6000") == 342.00
+
+
+def test_today_open_zero_fallback(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_quote_raw", lambda sym: {"t2101OutBlock": {"open": ""}}, raising=False)
+    assert b.today_open("101V6000") == 0.0
