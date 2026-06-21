@@ -147,7 +147,11 @@ seam 정비는 이 레지스트리 패턴을 verb/result/render에 복제한다.
   뉴스(`news_kr`, 단일종목)로 enrich. agent.py가 clean_json 직전 호출. summarize `_context_block`·웹 `ContextCard`(형상 직교).
 - **골든 무누출:** 엔진 산출 후 `result["context"]`에만 추가(dataset·백테스트 미반영) · best-effort(실패 graceful).
 - **검증:** core 골든 불변 · server 신규 5(시세/뉴스/형상선택/graceful/KR코드) · 웹빌드.
-- **잔여(후속):** 거시 레짐 스냅샷은 5c breadth로 흡수(시장 what) — 별도 거시 사이드카는 필요 시 추가.
+- **확장 ✅ 통합 준실시간 시세** (브랜치 feat/chat-live-quotes): `server/app/live_quote.py` — 네이버 공개 폴링
+  단일 파서(`_poll`, 4 엔드포인트 동일 필드 closePriceRaw/fluctuationsRatioRaw)로 KR·US 지수+VIX 조회.
+  `market_snapshot()`(코스피·코스닥·나스닥·S&P·VIX)을 **breadth**에 `context.market` 부착 → "코스피 왜 떨어져"에
+  지수 현재가+변동성 맥락(이전에 '지수 현재가 못 읽던' 갭 해소). 라이브 검증(코스피 9052·VIX 16.78). 골든 무누출.
+  **후속 확장(동일 모듈):** FX(marketindex·다른 포맷)·US 개별주(worldstock+티커→Reuters 맵)·크립토(Binance).
 
 ### Phase 5 — 프런티어 ✅ **완료** (브랜치 feat/chat-frontier)
 - 5a. ✅ 상관 `relation_kind="correlation"` → `CorrelationHeatmap`(±상관 빨강/파랑). Q4 전반.
@@ -219,6 +223,7 @@ seam 정비는 이 레지스트리 패턴을 verb/result/render에 복제한다.
 | `feat/chat-result-registry` | 3 | shape 스탬프 + 웹 RENDERERS 레지스트리 | core 골든·하니스 18/18·web |
 | `feat/chat-context-sidecar` | 4 | 준실시간 시세·뉴스 사이드카(골든 무누출) | server +5·web |
 | `feat/chat-frontier` | 5 | 상관 히트맵·PRESCRIBE 트리맵·breadth | test_frontier 11·web |
+| `feat/chat-live-quotes` | 4+ | 통합 준실시간 시세 — 시장 스냅샷(지수·VIX) breadth 부착 | server +6·라이브 probe·web |
 
 스택 순서: capability-redesign(1·2) → result-registry(3) → context-sidecar(4) → frontier(5). 순서대로 머지.
 누적 검증(frontier HEAD 기준): **core 430 pass · server 361 pass · 하니스 18/18 · 웹빌드+eslint(신규 0) · ruff 신규 0 · 골든 byte-identical**.
