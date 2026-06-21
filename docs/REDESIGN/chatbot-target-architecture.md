@@ -151,7 +151,11 @@ seam 정비는 이 레지스트리 패턴을 verb/result/render에 복제한다.
   단일 파서(`_poll`, 4 엔드포인트 동일 필드 closePriceRaw/fluctuationsRatioRaw)로 KR·US 지수+VIX 조회.
   `market_snapshot()`(코스피·코스닥·나스닥·S&P·VIX)을 **breadth**에 `context.market` 부착 → "코스피 왜 떨어져"에
   지수 현재가+변동성 맥락(이전에 '지수 현재가 못 읽던' 갭 해소). 라이브 검증(코스피 9052·VIX 16.78). 골든 무누출.
-  **후속 확장(동일 모듈):** FX(marketindex·다른 포맷)·US 개별주(worldstock+티커→Reuters 맵)·크립토(Binance).
+  **확장 ✅ FX·US개별주·크립토** (커밋 519d4ee): `quotes_for`가 KR(6자리→domestic/stock)·US(티커→네이버 autocomplete
+  reutersCode resolve→worldstock)·크립토(비트코인→Binance 24hr) 자동 분류·라우팅. `_fx`(원/달러)는 market_snapshot
+  합류. context는 KR전용 `_naver_quotes`→`quotes_for` 통합(describe/select가 US·크립토도 시세 표시)·quote 형상
+  {close}→{price} 일원화. 라이브검증(삼성354000·AAPL298·비트코인64255·원달러1533).
+  **잔여(동일 모듈):** 선물 준실시간(KIS=실시간이나 로컬전용 경계 / naver 선물 코드 미확정)·상품(naver 코드 미확정).
 
 ### Phase 5 — 프런티어 ✅ **완료** (브랜치 feat/chat-frontier)
 - 5a. ✅ 상관 `relation_kind="correlation"` → `CorrelationHeatmap`(±상관 빨강/파랑). Q4 전반.
