@@ -16,7 +16,7 @@ if str(_CORE) not in sys.path:
     sys.path.insert(0, str(_CORE))
 
 from quant_core.ir_engine import (  # noqa: E402
-    StrategyIR, result_shape, run_query, strategy_from_spec, summarize_result,
+    StrategyIR, build_strategy_excel, result_shape, run_query, strategy_from_spec, summarize_result,
 )
 
 # 분석 동사의 명목 신호(corpus와 동일 — 엔진이 가격/수익을 자동 조립)
@@ -159,3 +159,26 @@ def test_breadth_rejects_single_symbol():
     ir = {**_breadth_ir(), "universe": {"kind": "single", "symbols": ["AAA"]}}
     res = strategy_from_spec(ir, _ds_breadth())
     assert not res.get("success")                     # S-BREADTH
+
+
+# ── 회귀가드: prescribe·breadth가 정식 검증경로(strategy_from_spec)도 통과해야 한다 ──
+# (run_query만 테스트하면 is_research 누락으로 S-entry 거부되는 버그를 놓친다 — 실제 챗 경로 보장)
+
+def test_prescribe_passes_full_validation():
+    res = strategy_from_spec(_prescribe_ir(), _ds_corr())
+    assert res.get("success"), res.get("error")       # is_research 포함 — S-entry 거부 안 됨
+    assert res["shape"] == "prescribe"
+
+
+def test_breadth_passes_full_validation():
+    res = strategy_from_spec(_breadth_ir(), _ds_breadth())
+    assert res.get("success"), res.get("error")
+    assert res["shape"] == "breadth"
+
+
+def test_correlation_excel_rejected():
+    """상관(correlation)은 엑셀 비대상 — _build_relation(ic/regression용)으로 흘리지 않고 거부."""
+    import pytest
+    res = run_query(StrategyIR.model_validate(_corr_ir()), _ds_corr())
+    with pytest.raises(ValueError):
+        build_strategy_excel(_corr_ir(), _ds_corr(), res)

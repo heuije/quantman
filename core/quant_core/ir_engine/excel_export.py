@@ -143,8 +143,8 @@ def build_strategy_excel(
         return _build_condition(ir, dataset, result, disp)
     if axis == "signal":
         return _build_signal_dist(ir, dataset, result, disp)
-    if axis == "relation":                # ic / regression
-        return _build_relation(ir, dataset, result, disp)
+    if axis == "relation" and result.get("relation") in ("ic", "regression"):
+        return _build_relation(ir, dataset, result, disp)   # 상관(correlation)은 엑셀 비대상 → 아래 ValueError
     if axis == "time":                    # event study
         return _build_event(ir, dataset, result, disp)
     raise ValueError(f"build_strategy_excel: 미지원 결과 형상 (query={q}, axis={axis}, report={report})")
