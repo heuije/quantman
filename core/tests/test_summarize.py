@@ -148,6 +148,29 @@ def test_summarize_surfaces_warnings():
     assert "⚠" in s and "무거래 구간: 2021" in s
 
 
+def test_context_block_surfaces_quotes_and_news():
+    """P4: describe_single 요약에 사이드카(준실시간 시세·뉴스)가 표면화 — 모델이 '왜/지금'에 답하게."""
+    res = {"success": True, "shape": "describe_single", "report": "single",
+           "symbol": "005930", "sector": "반도체",
+           "price": {"last": 70000, "returns": {"1m": 0.05, "12m": 0.2}},
+           "risk": {"vol_annualized": 0.25, "max_drawdown": -0.3},
+           "fundamentals": {"pb_ratio": 1.5, "trailing_pe": 12.0, "ev_ebitda": 8.0},
+           "context": {"quotes": {"005930": {"close": 71500, "chg": 2.14}},
+                       "news": [{"title": "삼성전자 신고가 경신", "link": "http://x"}],
+                       "source": "준실시간"}}
+    s = summarize_result(res)
+    assert "맥락·준실시간" in s
+    assert "005930" in s and "2.14" in s          # 준실시간 시세
+    assert "삼성전자 신고가 경신" in s              # 뉴스 헤드라인('왜 움직였나')
+
+
+def test_context_block_absent_when_no_context():
+    """context 없는 결과는 맥락 블록 미부착(엔진 단독 실행·다른 형상)."""
+    res = {"success": True, "shape": "describe_single", "report": "single", "symbol": "005930",
+           "price": {}, "risk": {}, "fundamentals": {}}
+    assert "맥락·준실시간" not in summarize_result(res)
+
+
 def test_strategy_from_spec_preserves_run_query_warnings(monkeypatch):
     """service가 run_query(무거래 등) 경고를 검증경고로 **덮어쓰지 않고 병합**(#2 전달 버그 회귀가드 —
     conv#10에서 2026 무거래 경고가 strategy_from_spec의 res['warnings']= 덮어쓰기로 유실됐던 것)."""

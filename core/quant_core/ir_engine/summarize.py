@@ -89,6 +89,29 @@ def _bucket_line(k: str, b: Any) -> str:
             f"샤프 {_f(b.get('sharpe'))} · MDD {_f(b.get('mdd'))}% (n={b.get('n', '—')})")
 
 
+def _context_block(result: Any) -> str:
+    """P4 사이드카(준실시간 시세·뉴스)를 모델 식단에 표면화 — 서버가 result["context"]에 붙인다
+    (엔진 밖·골든 무누출). context 없으면 빈 문자열(엔진 단독 실행·다른 형상)."""
+    ctx = result.get("context") if isinstance(result, dict) else None
+    if not isinstance(ctx, dict):
+        return ""
+    parts: list[str] = []
+    quotes = ctx.get("quotes") or {}
+    qs = ", ".join(f"{c} {_f(v.get('close'), 0)}({_f(v.get('chg'))}%)"
+                   for c, v in list(quotes.items())[:6] if isinstance(v, dict))
+    if qs:
+        parts.append(f"준실시간 시세 {qs}")
+    news = ctx.get("news") or []
+    heads = " / ".join(n.get("title", "").strip() for n in news[:5]
+                       if isinstance(n, dict) and n.get("title"))
+    if heads:
+        parts.append(f"최근뉴스(왜 움직였나): {heads}")
+    if not parts:
+        return ""
+    return ("\n[맥락·준실시간] " + " · ".join(parts)
+            + "\n(시세·뉴스는 준실시간 참고 — 분석 수치·등락률은 종가 기준)")
+
+
 def summarize_result(result: Any, *, max_rows: int = 40) -> str:
     """결과를 형상별로 '모델이 답하기에 충분한' 텍스트로 투영. 숫자는 결과에서만."""
     if not isinstance(result, dict):
@@ -166,7 +189,7 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
         rows = result.get("results") or []
         top = ", ".join(f"{r.get('symbol')}({_f(r.get('score'), 3)})" for r in rows[:max_rows])
         return (f"[스크리닝] 후보 {result.get('universe_size', '?')}개 중 {len(rows)}개 선별 "
-                f"(as-of {result.get('as_of', '?')}): {top}")
+                f"(as-of {result.get('as_of', '?')}): {top}" + _context_block(result))
 
     if shape == "describe_single":
         p = result.get("price") or {}
@@ -188,7 +211,7 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
         if ib is not None or fb is not None:
             base += (f" · 최근20일순매수 기관 {_f(ib / 1e8) if ib is not None else '—'}억"
                      f"·외국인 {_f(fb / 1e8) if fb is not None else '—'}억")
-        return base
+        return base + _context_block(result)
 
     if shape == "describe_portfolio":
         c = result.get("concentration") or {}
@@ -199,7 +222,7 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
         return (f"[포트진단] {result.get('n_holdings', '?')}종목 · HHI {_f(c.get('hhi'), 4)} "
                 f"(유효 {_f(c.get('effective_n'))}종목) · 최대비중 {_pct(c.get('top_weight'))}% · "
                 f"가중PBR {_f(v.get('weighted_pb'))} · 연변동성 {_pct(risk.get('portfolio_vol_annualized'))}%"
-                + (f" · 섹터: {sectors}" if sectors else ""))
+                + (f" · 섹터: {sectors}" if sectors else "") + _context_block(result))
 
     if shape == "relate_ic":
         bw = result.get("by_window") or {}

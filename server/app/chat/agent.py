@@ -18,6 +18,7 @@ from sqlmodel import Session, select
 
 from ..models import ChatTurnMetric, Conversation, Message
 from ..serialize import clean_json
+from .context import attach_context
 from .tools import (TOOL_SCHEMAS, compact_summary, run_adjust, run_simulate, run_tool,
                     save_strategy_tool)
 from .prompt import chat_system_prompt
@@ -227,6 +228,9 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                         full = save_strategy_tool(session, uid, conversation_id, inp)
                 else:
                     full = run_tool(b.name, inp)
+                # P4 context 사이드카 — describe/select 결과를 준실시간 시세·뉴스로 enrich
+                # (엔진 밖·골든 무누출·best-effort). 모델 해석·웹 맥락 카드용.
+                full = attach_context(full)
                 # 도구 결과의 NaN/inf→None — JSON은 NaN을 표현 못 해 브라우저 JSON.parse·
                 # Postgres JSONB가 깨진다(/ir 백테스트 경로와 동일한 clean_json 재사용).
                 full = clean_json(full)

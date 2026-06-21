@@ -257,6 +257,47 @@ function ICStudy({ result }: { result: IrStrategyResult }) {
   );
 }
 
+// P4 맥락 카드 — 사이드카(준실시간 시세·뉴스)를 형상 렌더러와 **직교**하게 결과 아래 표시.
+// context 없으면(엔진 단독·다른 형상) 렌더 안 함. 시세 등락은 한국식 방향색(상승=빨강·하락=파랑).
+function ContextCard({ context }: { context?: IrStrategyResult["context"] }) {
+  if (!context) return null;
+  const quotes = Object.entries(context.quotes ?? {});
+  const news = context.news ?? [];
+  if (quotes.length === 0 && news.length === 0) return null;
+  return (
+    <div className="chat-context">
+      {quotes.length > 0 && (
+        <div className="chat-context-quotes">
+          <span className="chat-context-label">준실시간</span>
+          {quotes.slice(0, 8).map(([code, q]) => (
+            <span key={code} className="chat-context-quote">
+              {code} {q.close != null ? q.close.toLocaleString() : "—"}
+              {q.chg != null && (
+                <span className={q.chg >= 0 ? "pos" : "neg"}>
+                  {" "}{q.chg >= 0 ? "+" : ""}{q.chg.toFixed(2)}%
+                </span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      {news.length > 0 && (
+        <div className="chat-context-news">
+          <span className="chat-context-label">최근뉴스</span>
+          <ul>
+            {news.slice(0, 5).map((n, i) => (
+              <li key={i}>
+                <a href={n.link} target="_blank" rel="noopener noreferrer">{n.title}</a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {context.source && <div className="chat-context-src muted">{context.source}</div>}
+    </div>
+  );
+}
+
 export default function ChatResultView({ result }: Props) {
   // 결과가 IR을 들고 오면(=엔진 분석) 결과 아래에 '엑셀로 내보내기'(증빙)와 '변수 조정'(실시간
   // 재실행) 도구를 붙인다. inspect(원시 dump)·저장 카드 등 IR 없는 결과엔 미노출.
@@ -269,6 +310,7 @@ export default function ChatResultView({ result }: Props) {
   return (
     <>
       <ChatResultBody result={live.result} />
+      <ContextCard context={(live.result as unknown as IrStrategyResult).context} />
       {ir0 && <ExcelExportButton ir={live.ir ?? ir0} />}
       {ir0 && manifest && manifest.length > 0 && (
         <ParamControls baseIr={ir0} manifest={manifest}
