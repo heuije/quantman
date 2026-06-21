@@ -429,6 +429,15 @@ export interface PrescribeResult {
   warnings?: IrIssue[];
 }
 
+// 뉴스 리서치 (shape "news_research") — Haiku 증거 다이제스트 + 결정적 인용
+export interface NewsDigestResult {
+  digest?: string;
+  citations?: { n: number; title: string; url: string; date: string; source: string }[];
+  period?: { kind: string; days?: number; start?: string; end?: string };
+  n?: number;
+  sources?: string[];
+}
+
 // P5c 시장 breadth — 종목군 등락·MA 상회·섹터 분산
 export interface BreadthResult {
   n?: number;

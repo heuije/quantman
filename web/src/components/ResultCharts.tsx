@@ -5,7 +5,8 @@ import {
 } from "recharts";
 import type {
   BreadthResult, IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
-  IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrSweepBucket, PrescribeResult,
+  IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrSweepBucket, NewsDigestResult,
+  PrescribeResult,
 } from "../types";
 
 /* recharts SVG는 CSS var를 못 받아 토큰값(DESIGN.md)을 직접 인라인한다(EquityChart와 동일 규약).
@@ -1003,6 +1004,32 @@ export function BreadthPanel({ r }: { r: BreadthResult }) {
         <div><span style={{ color: C.muted }}>상위: </span>{movers(r.top_gainers)}</div>
         <div><span style={{ color: C.muted }}>하위: </span>{movers(r.top_losers)}</div>
       </div>
+    </Box>
+  );
+}
+
+// ── 뉴스 리서치 (shape "news_research") — 증거 다이제스트 + 결정적 인용 링크 ──────
+export function NewsDigest({ r }: { r: NewsDigestResult }) {
+  const cites = r.citations ?? [];
+  return (
+    <Box title="뉴스 리서치" sub={`${r.n ?? 0}건 · ${(r.sources ?? []).join(", ")}`}>
+      <div style={{ whiteSpace: "pre-wrap", fontSize: 13, color: C.text, lineHeight: 1.55 }}>
+        {r.digest ?? "—"}
+      </div>
+      {cites.length > 0 ? (
+        <div style={{ marginTop: 8, borderTop: `1px solid ${C.grid}`, paddingTop: 6 }}>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>출처</div>
+          <ol style={{ margin: 0, paddingLeft: 18, fontSize: 11 }}>
+            {cites.map((c) => (
+              <li key={c.n} style={{ margin: "2px 0" }}>
+                <a href={c.url} target="_blank" rel="noopener noreferrer"
+                   style={{ color: C.accent, textDecoration: "none" }}>{c.title}</a>
+                <span style={{ color: C.muted }}> · {c.source} · {(c.date ?? "").slice(0, 8)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
     </Box>
   );
 }
