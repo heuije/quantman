@@ -25,7 +25,8 @@ from .compare import (
     two_sample_test, walk_forward_consistency,
 )
 from .comparison import compare_by_partition
-from .spec import StrategyIR, Study
+from .spec import PrescribeSpec, StrategyIR, Study
+from .summarize import result_shape
 from .sweep import (
     daily_returns, partition_by_label, summarize_returns,
 )
@@ -109,13 +110,33 @@ def run_strategy_ir(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> d
 
 
 def run_query(strategy: StrategyIR, dataset: dict) -> dict:
-    """최상위 질문 디스패치 — 동사(query) + 펼침(study)으로 경로 선택."""
+    """최상위 질문 디스패치 — 동사(query) + 펼침(study)으로 경로 선택.
+
+    성공 결과엔 canonical 형상 태그 ``result["shape"]``를 스탬프한다(P3 seam #1 정비).
+    summarize(모델 텍스트)·웹 ChatResultView(차트)가 각자 순서의존으로 재추론하던 형상을
+    **단일 키로 수렴** — 새 형상 추가 시 두 투영의 판별 체인을 동기화할 필요를 없앤다(드리프트
+    차단). 미스탬프 결과(inspect 우회·레거시)는 소비측이 result_shape로 폴백(행동보존).
+    (excel_export는 sweep 변종 period_split/condition/parameter를 별 시트로 더 잘게 나눠야
+    해서 axis 기반 자체 디스패치를 유지한다 — 형상 태그보다 세분.)
+    """
     err = _root_type_error(strategy)
     if err is not None:
         return _empty(err)
+    res = _dispatch_query(strategy, dataset)
+    if isinstance(res, dict) and res.get("success", True) and "shape" not in res:
+        res["shape"] = result_shape(res)
+    return res
+
+
+def _dispatch_query(strategy: StrategyIR, dataset: dict) -> dict:
+    """query 동사 + study 펼침 → 실행 함수 라우팅(형상 스탬프 직전 단계)."""
     q = strategy.query
     if q == "select":
         return run_select(strategy, dataset)
+    if q == "prescribe":
+        return run_prescribe(strategy, dataset)
+    if q == "breadth":
+        return run_breadth(strategy, dataset)
     if q == "describe":
         u = strategy.universe
         if u.kind == "single":
@@ -129,6 +150,8 @@ def run_query(strategy: StrategyIR, dataset: dict) -> dict:
             return _run_event_study(strategy, dataset)
         if st.relation_kind == "regression":
             return _run_regression_study(strategy, dataset)
+        if st.relation_kind == "correlation":
+            return _run_correlation_study(strategy, dataset)
         return _run_ic_study(strategy, dataset)
     st = strategy.study
     if st.axis == "time_fold":
@@ -487,6 +510,40 @@ def _run_ic_study(strategy: StrategyIR, dataset: dict) -> dict:
             "windows": [str(w) for w in windows], "by_window": by_window}
 
 
+# ── 상관행렬 (RELATE — 분산투자·페어·헤지 후보) ────────────────────────────────
+
+def _run_correlation_study(strategy: StrategyIR, dataset: dict) -> dict:
+    """유니버스 종목 일별수익 간 상관행렬(피어슨) — 분산투자·페어·헤지 후보.
+
+    forward·예측이 아닌 동시점 수익 공동움직임. 종목 2+ 필요. windows[0] 지정 시 최근
+    그 거래일, 없으면 전체 가용기간. matrix는 symbols 순서의 대칭 행렬(자기상관 1.0).
+    """
+    syms = _universe_symbols(strategy, dataset)
+    closes = pd.DataFrame({s: dataset[s]["Close"].astype(float) for s in syms
+                           if s in dataset and "Close" in dataset[s].columns})
+    syms = list(closes.columns)
+    if len(syms) < 2:
+        return _empty("상관분석은 가격 데이터가 2종목 이상 필요합니다.")
+    rets = closes.pct_change()
+    window = strategy.study.windows[0] if strategy.study.windows else None
+    if window:
+        rets = rets.tail(int(window) + 1)
+    corr = rets.corr()                       # 피어슨 상관(결측 쌍은 NaN)
+    matrix = [[None if pd.isna(corr.iat[i, j]) else round(float(corr.iat[i, j]), 4)
+               for j in range(len(syms))] for i in range(len(syms))]
+    iu = np.triu_indices(len(syms), k=1)     # 비대각(상삼각) 쌍
+    pairs = [(syms[i], syms[j], float(corr.iat[i, j]))
+             for i, j in zip(*iu) if pd.notna(corr.iat[i, j])]
+    pairs.sort(key=lambda p: p[2])
+    finite = [p[2] for p in pairs]
+    return {"success": True, "axis": "relation", "relation": "correlation",
+            "symbols": syms, "matrix": matrix,
+            "n_obs": int(rets.dropna(how="any").shape[0]),
+            "avg_corr": round(sum(finite) / len(finite), 4) if finite else None,
+            "most_correlated": [pairs[-1][0], pairs[-1][1], round(pairs[-1][2], 4)] if pairs else None,
+            "least_correlated": [pairs[0][0], pairs[0][1], round(pairs[0][2], 4)] if pairs else None}
+
+
 # ── 다중팩터 횡단 회귀 (RELATE 심화 — Fama-MacBeth) ────────────────────────────
 
 def _fama_macbeth(betas: np.ndarray):
@@ -794,6 +851,134 @@ def run_portfolio_diagnosis(strategy: StrategyIR, dataset: dict) -> dict:
                      "with_fundamentals": sum(1 for s in holdings if "pb_ratio" in dataset[s].columns
                                               and dataset[s]["pb_ratio"].dropna().shape[0] > 0)},
     }
+
+
+# ── 처방 (PRESCRIBE — 포트폴리오 비중 최적화·추천) ────────────────────────────
+
+def run_prescribe(strategy: StrategyIR, dataset: dict) -> dict:
+    """PRESCRIBE — 포트폴리오 비중 최적화(추천). 위험기반 3종 + 최대샤프 동시 산출.
+
+    일별수익에서 공분산·기대수익 추정(연율화). 제약=롱온리·비중합 1·종목당 max_weight 상한.
+    min_variance/max_sharpe/risk_parity는 scipy SLSQP, equal_weight=1/N. max_sharpe는
+    기대수익=과거평균이라 추정 노이즈가 큼(경고 동반) — 위험기반이 더 안정적.
+    """
+    from scipy.optimize import minimize
+    ps = strategy.prescribe or PrescribeSpec()
+    syms = _universe_symbols(strategy, dataset)
+    closes = pd.DataFrame({s: dataset[s]["Close"].astype(float) for s in syms
+                           if s in dataset and "Close" in dataset[s].columns})
+    syms = list(closes.columns)
+    if len(syms) < 2:
+        return _empty("포트폴리오 추천은 가격 데이터가 2종목 이상 필요합니다.")
+    rets = closes.pct_change().dropna(how="any")
+    if ps.window:
+        rets = rets.tail(int(ps.window))
+    if rets.shape[0] < 20:
+        return _empty("비중 추정에 충분한 데이터가 없습니다(최소 20거래일).")
+    n = len(syms)
+    cov = rets.cov().to_numpy() * TRADING_DAYS
+    mu = rets.mean().to_numpy() * TRADING_DAYS
+    cap = max(float(ps.max_weight), 1.0 / n) if ps.max_weight else 1.0   # 합1 가능하도록 하한
+    bounds = [(0.0, cap)] * n
+    cons = ({"type": "eq", "fun": lambda w: float(w.sum() - 1.0)},)
+    w0 = np.full(n, 1.0 / n)
+
+    def _vol(w):
+        return float(np.sqrt(max(float(w @ cov @ w), 0.0)))
+
+    def _neg_sharpe(w):
+        v = _vol(w)
+        return -float(w @ mu) / v if v > 0 else 0.0
+
+    def _rp(w):                          # 리스크 패리티 — 종목별 위험기여(rc) 균등화
+        rc = w * (cov @ w)
+        return float(np.sum((rc - float(w @ cov @ w) / n) ** 2))
+
+    def _solve(obj):
+        r = minimize(obj, w0, method="SLSQP", bounds=bounds, constraints=cons,
+                     options={"maxiter": 800, "ftol": 1e-10})
+        w = np.clip(np.asarray(r.x, dtype=float), 0.0, None)
+        return (w / w.sum()) if w.sum() > 0 else w0
+
+    solved = {"min_variance": _solve(lambda w: float(w @ cov @ w)),
+              "max_sharpe": _solve(_neg_sharpe),
+              "risk_parity": _solve(_rp),
+              "equal_weight": w0}
+
+    def _metrics(w):
+        v, er = _vol(w), float(w @ mu)
+        return {"weights": {syms[i]: round(float(w[i]), 4) for i in range(n)},
+                "exp_return": round(er, 4), "exp_vol": round(v, 4),
+                "sharpe": round(er / v, 3) if v > 0 else None}
+
+    return {"success": True, "query": "prescribe", "symbols": syms,
+            "objectives": {k: _metrics(w) for k, w in solved.items()},
+            "recommended": "max_sharpe", "n_obs": int(rets.shape[0]),
+            "max_weight": (cap if ps.max_weight else None),
+            "warnings": [{"code": "mean_return_estimate",
+                          "message": "최대샤프 비중은 기대수익=과거평균 추정이라 노이즈가 큽니다 — "
+                                     "위험기반(최소분산·리스크패리티)이 더 안정적입니다."}]}
+
+
+# ── 시장 breadth (PHASE 5c — "시장이 왜/어떤가") ──────────────────────────────
+
+def run_breadth(strategy: StrategyIR, dataset: dict) -> dict:
+    """시장 breadth — 유니버스 종목들의 등락·MA 상회 비율·섹터 분산('지수가 왜 빠지나'의 what).
+
+    최신 바 기준: 1일 등락 부호로 상승/하락 종목 수, 1·5·20일 평균수익, 20/60일선 상회 비율,
+    상위/하위 종목, (섹터 컬럼 있으면) 섹터별 평균 1일수익. 종목 2+ 필요. why(거시·뉴스)는
+    엔진 밖 사이드카(P4)·해석이 보강 — 여기선 결정적 시장 폭 수치만.
+    """
+    syms = _universe_symbols(strategy, dataset)
+    rows = []
+    for s in syms:
+        df = dataset.get(s)
+        if df is None or df.empty or "Close" not in df.columns:
+            continue
+        c = df["Close"].astype(float).dropna()
+        if len(c) < 21:
+            continue
+        ma60 = float(c.iloc[-60:].mean()) if len(c) >= 60 else None
+        sec = None
+        if "sector" in df.columns:
+            sv = df["sector"].dropna()
+            sec = str(sv.iloc[-1]) if len(sv) else None
+        rows.append({
+            "symbol": s,
+            "r1": float(c.iloc[-1] / c.iloc[-2] - 1.0),
+            "r5": float(c.iloc[-1] / c.iloc[-6] - 1.0) if len(c) >= 6 else None,
+            "r20": float(c.iloc[-1] / c.iloc[-21] - 1.0),
+            "above_ma20": bool(c.iloc[-1] > c.iloc[-20:].mean()),
+            "above_ma60": (bool(c.iloc[-1] > ma60) if ma60 is not None else None),
+            "sector": sec})
+    if len(rows) < 2:
+        return _empty("시장 breadth는 가용 종목이 2개 이상이어야 합니다.")
+    n = len(rows)
+    n_up = sum(1 for x in rows if x["r1"] > 0)
+    n_down = sum(1 for x in rows if x["r1"] < 0)
+
+    def _avg(key: str):
+        vals = [x[key] for x in rows if x[key] is not None]
+        return round(sum(vals) / len(vals), 4) if vals else None
+
+    ma60_rows = [x for x in rows if x["above_ma60"] is not None]
+    ranked = sorted(rows, key=lambda x: x["r1"], reverse=True)
+    sectors: dict = {}
+    for x in rows:
+        if x["sector"]:
+            sectors.setdefault(x["sector"], []).append(x["r1"])
+    sector_avg = sorted(([k, round(sum(v) / len(v), 4), len(v)] for k, v in sectors.items()),
+                        key=lambda t: t[1])
+    return {"success": True, "query": "breadth", "n": n,
+            "n_up": n_up, "n_down": n_down, "n_flat": n - n_up - n_down,
+            "pct_up": round(n_up / n, 4),
+            "avg_r1": _avg("r1"), "avg_r5": _avg("r5"), "avg_r20": _avg("r20"),
+            "pct_above_ma20": round(sum(1 for x in rows if x["above_ma20"]) / n, 4),
+            "pct_above_ma60": (round(sum(1 for x in ma60_rows if x["above_ma60"]) / len(ma60_rows), 4)
+                               if ma60_rows else None),
+            "top_gainers": [[x["symbol"], round(x["r1"], 4)] for x in ranked[:5]],
+            "top_losers": [[x["symbol"], round(x["r1"], 4)] for x in ranked[-5:][::-1]],
+            "sector_breakdown": sector_avg[:12]}
 
 
 # ── 이벤트 스터디 (비전 §4 시간축) ────────────────────────────────────────────

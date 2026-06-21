@@ -195,7 +195,7 @@ class Study(BaseModel):
     # 설정 시 folds·split_dates보다 우선. 버킷 키=주기 라벨("2015"·"2015Q1"·"2015-01").
     split_period: Optional[Literal["year", "quarter", "month"]] = None
     target_node: Optional[Node] = None
-    relation_kind: Literal["ic", "regression"] = "ic"
+    relation_kind: Literal["ic", "regression", "correlation"] = "ic"
     factors: list[Node] = Field(default_factory=list)   # relation_kind=regression 설명변수(다중)
     event: Optional[Node] = None
     windows: list[int] = Field(default_factory=lambda: [5, 10, 20])
@@ -214,6 +214,14 @@ class SelectSpec(BaseModel):
     display: list[str] = Field(default_factory=list)   # 결과에 붙일 지표 컬럼(pb_ratio 등)
 
 
+# ── 처방 (PRESCRIBE 동사 — 포트폴리오 비중 최적화·추천) ───────────────────────
+
+class PrescribeSpec(BaseModel):
+    """PRESCRIBE 동사 — 포트폴리오 비중 최적화 설정(위험기반 3종 + 최대샤프 동시 산출)."""
+    max_weight: Optional[float] = None   # 종목당 비중 상한(0<cap<=1, None=무제한). 집중 방지.
+    window: Optional[int] = None          # 최근 N거래일로 공분산·기대수익 추정(None=전체 가용)
+
+
 # ── 전략 (통합) ───────────────────────────────────────────────────────────────
 
 class StrategyIR(BaseModel):
@@ -222,9 +230,10 @@ class StrategyIR(BaseModel):
     signal: Node                        # condition(룰) 또는 score(팩터)
     position: PositionSpec = Field(default_factory=PositionSpec)
     simulation: SimSpec = Field(default_factory=SimSpec)
-    query: Literal["select", "describe", "relate", "simulate"] = "simulate"
+    query: Literal["select", "describe", "relate", "simulate", "prescribe", "breadth"] = "simulate"
     study: Study = Field(default_factory=Study)
     select: Optional[SelectSpec] = None    # query="select" 전용
+    prescribe: Optional[PrescribeSpec] = None   # query="prescribe" 전용
 
     @model_validator(mode="before")
     @classmethod
@@ -409,7 +418,7 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     # 포지션·진입·청산·사이징·오버레이·선물 규칙은 simulate 전용 — 리서치에 적용하면 유효 IR이
     # 거짓 거부돼 NL repair가 simulate로 후퇴한다. signal 타입/시장참조·유니버스 구조·스크리너
     # 유효성·질의별 규칙(S-SEL/S-PORT/S-target/S-REG/S-event)은 전 질의 공통으로 유지.
-    is_research = s.query in ("select", "describe", "relate")
+    is_research = s.query in ("select", "describe", "relate", "prescribe", "breadth")
 
     # 최상위 신호는 매매 가능한 타입이어야 — condition(룰 트리거) 또는 score(팩터 알파).
     # label(bucket·calendar)·scalar는 그룹라벨·국면 등 보조 역할일 뿐 신호 자체가 될 수 없다.
@@ -636,6 +645,19 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     # (relate + event는 이벤트 스터디라 target_node 없이 동작 → IC 모드일 때만 target_node 요구.)
     is_ic = s.query == "relate" and st.event is None and st.relation_kind == "ic"
     is_regression = s.query == "relate" and st.event is None and st.relation_kind == "regression"
+    # 상관행렬(correlation) — target_node·factors 불필요(가격수익 공행렬). 종목 2+만 요구.
+    if s.query == "relate" and st.event is None and st.relation_kind == "correlation" \
+            and s.universe.kind == "single":
+        issues.append(Issue("S-CORR", SEV_ERROR,
+                            "상관분석은 종목이 2개 이상이어야 합니다(universe.kind=list/all).", "universe"))
+    # 처방(prescribe) — 비중 최적화는 종목 2+ 필요(가격수익 공분산).
+    if s.query == "prescribe" and s.universe.kind == "single":
+        issues.append(Issue("S-PRESCRIBE", SEV_ERROR,
+                            "포트폴리오 추천은 종목이 2개 이상이어야 합니다(universe.kind=list).", "universe"))
+    # breadth(시장 폭) — 다수 종목 집계라 단일종목 불가.
+    if s.query == "breadth" and s.universe.kind == "single":
+        issues.append(Issue("S-BREADTH", SEV_ERROR,
+                            "시장 breadth는 종목군이 필요합니다(universe.kind=all/list).", "universe"))
     describe_dist = s.query == "describe" and u.kind in ("all", "list")
     if describe_dist or is_ic:
         tn = st.target_node

@@ -169,7 +169,15 @@ def capability_spec() -> dict:
              "use_for": "'이 종목 어때'(single)·'내 포트폴리오 진단'(portfolio)·신호 분포 연구(all/list+target_node)."},
             {"value": "relate", "does": "factor↔forward수익 횡단 IC(또는 event 지정 시 이벤트 스터디)",
              "use_for": "예측력·이벤트 반응. IC=study.target_node·windows·universe.kind!=single; "
-                        "이벤트 스터디=study.event·windows."},
+                        "이벤트 스터디=study.event·windows. (종목 간 상관행렬=relation_kind=correlation.)"},
+            {"value": "prescribe",
+             "does": "포트폴리오 비중 최적화 — 위험기반(최소분산·리스크패리티·동일가중)+최대샤프 동시 산출",
+             "use_for": "'포트폴리오 비중 추천'·'어떻게 배분'. universe.kind=list(종목 2+), "
+                        "prescribe.max_weight(집중 상한)·window(추정기간). 결과=비중 트리맵+포트 지표."},
+            {"value": "breadth",
+             "does": "시장 폭(breadth) — 종목군의 등락 비율·MA 상회 비율·섹터 분산(최신 바)",
+             "use_for": "'시장/코스피 어떤가·왜 빠지나'(what). universe.kind=all/list. 상승하락 수·평균수익·"
+                        "20/60일선 상회·상위하위·섹터별. why(거시·뉴스)는 사이드카·해석 보강."},
         ],
         # SELECT 동사 전용 설정 — query="select"일 때만. as-of 단면 랭킹 스크리닝의 모양 제어.
         "select": {
@@ -235,6 +243,8 @@ def capability_spec() -> dict:
             {"value": "ic", "does": "횡단 정보계수(Information Coefficient) — 팩터값과 forward수익의 순위상관"},
             {"value": "regression", "does": "다중 설명변수(factors)의 forward수익 횡단 회귀 — Fama-MacBeth 계수·t값·95% 신뢰구간",
              "use_for": "'여러 팩터 중 무엇이 수익을 설명하나(상호 통제 후)'. study.factors=[score 블록들]·windows·universe 2+종목. 단일=ic."},
+            {"value": "correlation", "does": "종목 간 일별수익 상관행렬(피어슨) — 동시점 동조성·분산효과",
+             "use_for": "'A·B 상관계수'·'같이 움직이나'·'분산·헤지 후보'. universe 2+종목, target_node·factors 불필요. windows=[N]로 최근 N일."},
         ],
         "regression_factors": {
             "field": "study.factors",

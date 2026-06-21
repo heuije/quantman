@@ -7,8 +7,9 @@
 
 원칙: 숫자는 결과에서만(지어내기 금지). 토큰 가드 — 행 상한·소수 자릿수.
 
-형상 판별식은 엑셀 증빙(excel_export.build_strategy_excel)·웹 차트(ChatResultBody)와 **동일
-순서**다(3투영 일관). P3에서 엔진이 result["shape"]를 정본으로 스탬프하면 셋 모두 그 키로 수렴한다.
+P3(seam #1 정비): 엔진(run_query)이 성공 결과에 result["shape"]를 스탬프한다 → 이 모듈과
+웹 ChatResultBody는 그 키를 **단일 정본**으로 분기(아래 result_shape는 미스탬프 결과만 순서의존
+폴백). excel_export는 sweep 변종을 더 잘게 나눠 axis 자체 디스패치를 유지(형상 태그보다 세분).
 """
 from __future__ import annotations
 
@@ -16,15 +17,24 @@ from typing import Any
 
 
 def result_shape(result: Any) -> str:
-    """엔진 결과 dict → canonical 형상 태그. excel_export·ChatResultBody와 동일 판별 순서.
+    """엔진 결과 dict → canonical 형상 태그.
 
-    ⚠ axis+buckets(분할) 판별을 equity(단일 백테스트)보다 **앞**에 둔다 — 국면대조는
+    엔진(run_query)이 스탬프한 result["shape"]가 있으면 그것이 정본. 없으면(inspect 우회·
+    레거시·직접 호출) 아래 순서의존 판별로 폴백(행동보존).
+    ⚠ 폴백 순서: axis+buckets(분할) 판별을 equity(단일 백테스트)보다 **앞**에 둔다 — 국면대조는
     top-level equity를 함께 실어 보내므로 뒤에 두면 일반 백테스트로 오인된다(#169 교훈).
     """
     if not isinstance(result, dict):
         return "unknown"
+    stamped = result.get("shape")
+    if isinstance(stamped, str) and stamped:
+        return stamped
     if result.get("query") == "select":
         return "select"
+    if result.get("query") == "prescribe":
+        return "prescribe"
+    if result.get("query") == "breadth":
+        return "breadth"
     if result.get("report") == "single":
         return "describe_single"
     if result.get("report") == "portfolio":
@@ -33,7 +43,12 @@ def result_shape(result: Any) -> str:
         return "extremize"
     axis = result.get("axis")
     if axis == "relation":
-        return "relate_regression" if result.get("relation") == "regression" else "relate_ic"
+        rel = result.get("relation")
+        if rel == "regression":
+            return "relate_regression"
+        if rel == "correlation":
+            return "correlation_matrix"
+        return "relate_ic"
     if axis == "time":
         return "event_study"
     if axis == "signal":
@@ -83,6 +98,34 @@ def _bucket_line(k: str, b: Any) -> str:
             f"샤프 {_f(b.get('sharpe'))} · MDD {_f(b.get('mdd'))}% (n={b.get('n', '—')})")
 
 
+def _context_block(result: Any) -> str:
+    """P4 사이드카(준실시간 시세·뉴스)를 모델 식단에 표면화 — 서버가 result["context"]에 붙인다
+    (엔진 밖·골든 무누출). context 없으면 빈 문자열(엔진 단독 실행·다른 형상)."""
+    ctx = result.get("context") if isinstance(result, dict) else None
+    if not isinstance(ctx, dict):
+        return ""
+    parts: list[str] = []
+    quotes = ctx.get("quotes") or {}
+    qs = ", ".join(f"{c} {_f(v.get('price'), 0)}({_f(v.get('chg'))}%)"
+                   for c, v in list(quotes.items())[:6] if isinstance(v, dict))
+    if qs:
+        parts.append(f"준실시간 시세 {qs}")
+    mkt = ctx.get("market") or {}            # 거시 시장 스냅샷(KR·US 지수+VIX) — breadth 해석용
+    ms = ", ".join(f"{k} {_f(v.get('price'))}({_f(v.get('chg'))}%)"
+                   for k, v in list(mkt.items())[:6] if isinstance(v, dict))
+    if ms:
+        parts.append(f"시장 현재가 {ms}")
+    news = ctx.get("news") or []
+    heads = " / ".join(n.get("title", "").strip() for n in news[:5]
+                       if isinstance(n, dict) and n.get("title"))
+    if heads:
+        parts.append(f"최근뉴스(왜 움직였나): {heads}")
+    if not parts:
+        return ""
+    return ("\n[맥락·준실시간] " + " · ".join(parts)
+            + "\n(시세·뉴스는 준실시간 참고 — 분석 수치·등락률은 종가 기준)")
+
+
 def summarize_result(result: Any, *, max_rows: int = 40) -> str:
     """결과를 형상별로 '모델이 답하기에 충분한' 텍스트로 투영. 숫자는 결과에서만."""
     if not isinstance(result, dict):
@@ -90,6 +133,9 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
     if not result.get("success", True):
         return f"[실패] {result.get('error', '알 수 없는 오류')}"
     shape = result_shape(result)
+
+    if shape == "news_research":          # 뉴스 리서치 = 이미 Haiku 다이제스트 텍스트(모델용)
+        return str(result.get("digest") or "[뉴스 리서치 결과 없음]")
 
     if shape == "simulate":
         m = result.get("metrics") or {}
@@ -160,7 +206,7 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
         rows = result.get("results") or []
         top = ", ".join(f"{r.get('symbol')}({_f(r.get('score'), 3)})" for r in rows[:max_rows])
         return (f"[스크리닝] 후보 {result.get('universe_size', '?')}개 중 {len(rows)}개 선별 "
-                f"(as-of {result.get('as_of', '?')}): {top}")
+                f"(as-of {result.get('as_of', '?')}): {top}" + _context_block(result))
 
     if shape == "describe_single":
         p = result.get("price") or {}
@@ -182,7 +228,7 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
         if ib is not None or fb is not None:
             base += (f" · 최근20일순매수 기관 {_f(ib / 1e8) if ib is not None else '—'}억"
                      f"·외국인 {_f(fb / 1e8) if fb is not None else '—'}억")
-        return base
+        return base + _context_block(result)
 
     if shape == "describe_portfolio":
         c = result.get("concentration") or {}
@@ -193,7 +239,7 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
         return (f"[포트진단] {result.get('n_holdings', '?')}종목 · HHI {_f(c.get('hhi'), 4)} "
                 f"(유효 {_f(c.get('effective_n'))}종목) · 최대비중 {_pct(c.get('top_weight'))}% · "
                 f"가중PBR {_f(v.get('weighted_pb'))} · 연변동성 {_pct(risk.get('portfolio_vol_annualized'))}%"
-                + (f" · 섹터: {sectors}" if sectors else ""))
+                + (f" · 섹터: {sectors}" if sectors else "") + _context_block(result))
 
     if shape == "relate_ic":
         bw = result.get("by_window") or {}
@@ -212,6 +258,53 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
             for fac in (_win(bw, w).get("factors") or []):
                 lines.append(f"  {w}일 {fac.get('name')}: coef {_f(fac.get('coef'), 4)} · t {_f(fac.get('t_stat'))}")
         return "[다중팩터 회귀 Fama-MacBeth] 계수 양(+)·t유의=미래수익과 양의 관계\n" + "\n".join(lines)
+
+    if shape == "breadth":
+        lines = [f"[시장 breadth] {result.get('n', '?')}종목 · 상승 {result.get('n_up', '?')}/"
+                 f"하락 {result.get('n_down', '?')} (상승비율 {_pct(result.get('pct_up'))}%) · "
+                 f"평균 1일 {_pct(result.get('avg_r1'))}% / 5일 {_pct(result.get('avg_r5'))}% / "
+                 f"20일 {_pct(result.get('avg_r20'))}%",
+                 f"  20일선 위 {_pct(result.get('pct_above_ma20'))}% · "
+                 f"60일선 위 {_pct(result.get('pct_above_ma60'))}%"]
+        sb = result.get("sector_breakdown") or []
+        if sb:
+            worst = ", ".join(f"{k} {_pct(v)}%" for k, v, _ in sb[:3])
+            best = ", ".join(f"{k} {_pct(v)}%" for k, v, _ in sb[-3:][::-1])
+            lines.append(f"  섹터 약세: {worst} · 강세: {best}")
+        return "\n".join(lines) + _context_block(result)   # 시장 스냅샷(지수·VIX 현재가) 표면화
+
+    if shape == "prescribe":
+        objs = result.get("objectives") or {}
+        rec = result.get("recommended") or "max_sharpe"
+        lbl = {"min_variance": "최소분산", "max_sharpe": "최대샤프",
+               "risk_parity": "리스크패리티", "equal_weight": "동일가중"}
+        lines = [f"[포트추천] {len(result.get('symbols') or [])}종목 "
+                 f"(n={result.get('n_obs', '?')}일) · 추천={lbl.get(rec, rec)}"]
+        for key in ("max_sharpe", "min_variance", "risk_parity", "equal_weight"):
+            o = objs.get(key)
+            if not isinstance(o, dict):
+                continue
+            w = o.get("weights") or {}
+            top = sorted(w.items(), key=lambda kv: -(kv[1] or 0))[:6]
+            ws = ", ".join(f"{s} {_pct(v)}%" for s, v in top)
+            lines.append(f"  {lbl.get(key, key)}: 기대변동성 {_pct(o.get('exp_vol'))}% · "
+                         f"샤프 {_f(o.get('sharpe'))} · 비중 {ws}")
+        for wn in (result.get("warnings") or []):
+            msg = wn.get("message") if isinstance(wn, dict) else str(wn)
+            if msg:
+                lines.append(f"⚠ {msg}")
+        return "\n".join(lines)
+
+    if shape == "correlation_matrix":
+        syms = result.get("symbols") or []
+        mc, lc = result.get("most_correlated"), result.get("least_correlated")
+        out = (f"[상관행렬] {len(syms)}종목 일별수익 피어슨 상관 · 평균 {_f(result.get('avg_corr'), 3)} "
+               f"(n={result.get('n_obs', '?')}일) — 상관 낮을수록 분산효과 큼")
+        if isinstance(mc, list) and len(mc) == 3:
+            out += f"\n  최고 동행: {mc[0]}↔{mc[1]} {_f(mc[2], 3)}"
+        if isinstance(lc, list) and len(lc) == 3:
+            out += f"\n  최저(분산·헤지 후보): {lc[0]}↔{lc[1]} {_f(lc[2], 3)}"
+        return out
 
     if shape == "event_study":
         overall = result.get("overall") or {}

@@ -68,6 +68,27 @@ def test_result_shape(label):
         f"[{label}] shape={result_shape(res)} != {EXPECT_SHAPE[label]}")
 
 
+@pytest.mark.parametrize("label", list(EXPECT_SHAPE), ids=list(EXPECT_SHAPE))
+def test_run_query_stamps_shape(label):
+    """P3: run_query가 성공 결과에 canonical result['shape']를 스탬프한다(단일 정본)."""
+    res = _run(label)
+    assert res.get("shape") == EXPECT_SHAPE[label], (
+        f"[{label}] 스탬프 누락/오류: shape={res.get('shape')}")
+
+
+def test_result_shape_prefers_stamped_over_derivation():
+    """소비측은 스탬프된 shape를 정본으로 쓴다 — 파생 판별과 충돌해도 스탬프 우선(재추론 안 함)."""
+    # 파생 판별이라면 select였을 dict에 임의 shape를 박아 스탬프 우선을 증명.
+    res = {"success": True, "query": "select", "results": [], "shape": "describe_single"}
+    assert result_shape(res) == "describe_single"
+
+
+def test_result_shape_falls_back_when_unstamped():
+    """미스탬프 결과(inspect 우회·레거시)는 순서의존 파생으로 폴백(행동보존)."""
+    assert result_shape({"success": True, "query": "select", "results": []}) == "select"
+    assert result_shape({"success": True, "query": "inspect", "columns": []}) == "inspect"
+
+
 @pytest.mark.parametrize("label", list(NEEDLES), ids=list(NEEDLES))
 def test_summary_contains_disaggregated(label):
     s = summarize_result(_run(label))
@@ -125,6 +146,47 @@ def test_summarize_surfaces_warnings():
            "warnings": [{"code": "inactive_buckets", "message": "무거래 구간: 2021 — 데이터 결손 가능"}]}
     s = summarize_result(res)
     assert "⚠" in s and "무거래 구간: 2021" in s
+
+
+def test_context_block_surfaces_quotes_and_news():
+    """P4: describe_single 요약에 사이드카(준실시간 시세·뉴스)가 표면화 — 모델이 '왜/지금'에 답하게."""
+    res = {"success": True, "shape": "describe_single", "report": "single",
+           "symbol": "005930", "sector": "반도체",
+           "price": {"last": 70000, "returns": {"1m": 0.05, "12m": 0.2}},
+           "risk": {"vol_annualized": 0.25, "max_drawdown": -0.3},
+           "fundamentals": {"pb_ratio": 1.5, "trailing_pe": 12.0, "ev_ebitda": 8.0},
+           "context": {"quotes": {"005930": {"close": 71500, "chg": 2.14}},
+                       "news": [{"title": "삼성전자 신고가 경신", "link": "http://x"}],
+                       "source": "준실시간"}}
+    s = summarize_result(res)
+    assert "맥락·준실시간" in s
+    assert "005930" in s and "2.14" in s          # 준실시간 시세
+    assert "삼성전자 신고가 경신" in s              # 뉴스 헤드라인('왜 움직였나')
+
+
+def test_context_block_absent_when_no_context():
+    """context 없는 결과는 맥락 블록 미부착(엔진 단독 실행·다른 형상)."""
+    res = {"success": True, "shape": "describe_single", "report": "single", "symbol": "005930",
+           "price": {}, "risk": {}, "fundamentals": {}}
+    assert "맥락·준실시간" not in summarize_result(res)
+
+
+def test_news_research_summary_returns_digest():
+    """research_news 결과 요약 = 이미 만들어진 Haiku 다이제스트(모델용 텍스트) 그대로."""
+    res = {"success": True, "shape": "news_research", "digest": "핵심 드라이버[1]…", "citations": []}
+    assert result_shape(res) == "news_research"
+    assert summarize_result(res) == "핵심 드라이버[1]…"
+
+
+def test_breadth_summary_surfaces_market_snapshot():
+    """P6: breadth 요약에 시장 스냅샷(지수·VIX 현재가)이 표면화 — '코스피 왜'에 지수 레벨 제공."""
+    res = {"success": True, "shape": "breadth", "n": 5, "n_up": 1, "n_down": 4,
+           "pct_up": 0.2, "avg_r1": -0.012, "avg_r5": -0.02, "avg_r20": -0.05,
+           "pct_above_ma20": 0.3, "pct_above_ma60": 0.4,
+           "context": {"market": {"코스피": {"price": 9052.42, "chg": -0.13},
+                                  "VIX": {"price": 16.78, "chg": 2.32}}, "source": "준실시간"}}
+    s = summarize_result(res)
+    assert "시장 현재가" in s and "코스피" in s and "VIX" in s
 
 
 def test_strategy_from_spec_preserves_run_query_warnings(monkeypatch):

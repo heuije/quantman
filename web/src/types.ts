@@ -413,9 +413,72 @@ export interface IrICStat {
 }
 
 // StrategyIR 백테스트 결과 — 단일(equity/metrics)·펼침(axis/buckets)·이벤트(time) 통합.
+// P5b PRESCRIBE — 목적별 최적 비중 + 포트 지표(연율화)
+export interface PrescribeObjective {
+  weights: Record<string, number>;
+  exp_return: number | null;
+  exp_vol: number | null;
+  sharpe: number | null;
+}
+export interface PrescribeResult {
+  symbols?: string[];
+  objectives?: Record<string, PrescribeObjective>;
+  recommended?: string;
+  n_obs?: number;
+  max_weight?: number | null;
+  warnings?: IrIssue[];
+}
+
+// 뉴스 리서치 (shape "news_research") — Haiku 증거 다이제스트 + 결정적 인용
+export interface NewsDigestResult {
+  digest?: string;
+  citations?: { n: number; title: string; url: string; date: string; source: string }[];
+  period?: { kind: string; days?: number; start?: string; end?: string };
+  n?: number;
+  sources?: string[];
+}
+
+// P5c 시장 breadth — 종목군 등락·MA 상회·섹터 분산
+export interface BreadthResult {
+  n?: number;
+  n_up?: number;
+  n_down?: number;
+  n_flat?: number;
+  pct_up?: number | null;
+  avg_r1?: number | null;
+  avg_r5?: number | null;
+  avg_r20?: number | null;
+  pct_above_ma20?: number | null;
+  pct_above_ma60?: number | null;
+  top_gainers?: [string, number][];
+  top_losers?: [string, number][];
+  sector_breakdown?: [string, number, number][];
+}
+
 export interface IrStrategyResult extends BacktestResult {
   warnings?: IrIssue[];
   issues?: IrIssue[];
+  // P3 seam #1 — 엔진(run_query)이 스탬프한 canonical 형상 태그. ChatResultView가 이 키로
+  // 렌더러 레지스트리를 단일 조회(없으면 deriveShape 폴백). select/describe_single/…/simulate.
+  shape?: string;
+  // P4 context 사이드카 — 서버가 엔진 밖에서 붙인 준실시간 시세·뉴스·시장스냅샷(골든 무누출·표시 전용).
+  context?: {
+    quotes?: Record<string, { price: number | null; chg: number | null; change?: number | null }>;
+    news?: { title: string; link: string; desc?: string; pub?: string }[];
+    market?: Record<string, { price: number | null; chg: number | null; change?: number | null }>;
+    source?: string;
+  };
+  // P5a 상관행렬 (relation="correlation") — symbols 순서의 대칭 행렬 + 요약 쌍.
+  symbols?: string[];
+  matrix?: (number | null)[][];
+  avg_corr?: number | null;
+  n_obs?: number;
+  most_correlated?: [string, string, number] | null;
+  least_correlated?: [string, string, number] | null;
+  // P5b PRESCRIBE (query="prescribe") — 목적별 최적 비중.
+  objectives?: Record<string, PrescribeObjective>;
+  recommended?: string;
+  max_weight?: number | null;
   // 결과 dict의 axis는 백엔드가 옛 라벨을 parity로 유지한다(요청의 study.axis 신값과
   // 다를 수 있음 — 예: study.axis="entity" 요청 → 결과 axis="asset"). 표시 전용.
   axis?: "condition" | "parameter" | "asset" | "time" | "period_split" | "signal" | "relation";

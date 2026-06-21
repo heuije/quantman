@@ -10,7 +10,8 @@ from app.chat.tools import assemble_ir, TOOL_SCHEMAS
 
 def test_tool_schemas_present():
     names = {t["name"] for t in TOOL_SCHEMAS}
-    assert names == {"screen", "simulate", "save_strategy", "describe", "inspect", "adjust_analysis"}
+    assert names == {"screen", "simulate", "save_strategy", "describe", "inspect",
+                     "adjust_analysis", "research_news"}
 
 
 def test_assemble_screen_makes_valid_select_ir():
