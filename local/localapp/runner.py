@@ -53,8 +53,8 @@ def make_broker() -> Broker:
                 "등록하세요. (LS 모의투자는 별도 키로 발급됩니다.)")
         from .ls_broker import LsBroker
         stock = LsBroker()
-        from .secrets_store import load_ls_futures
-        if load_ls_futures() is None:
+        from .secrets_store import load_ls_futures, load_ls_overseas_futures
+        if not (load_ls_futures() or load_ls_overseas_futures()):
             return stock                         # 국내주식만 — 무변경
         from .ls_futures_broker import LsFuturesBroker
         from .ls_futures_contracts import LsContractResolver

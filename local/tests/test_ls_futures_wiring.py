@@ -42,6 +42,28 @@ def test_make_broker_ls_stock_only_when_no_futures(monkeypatch):
     monkeypatch.setattr(secrets_store, "get_active_broker", lambda: "ls")
     monkeypatch.setattr(secrets_store, "load_ls", lambda: {"app_key": "x"})
     monkeypatch.setattr(secrets_store, "load_ls_futures", lambda: None)
+    monkeypatch.setattr(secrets_store, "load_ls_overseas_futures", lambda: None)
     import localapp.ls_broker as lb
     monkeypatch.setattr(lb, "LsBroker", lambda: "LS_STOCK")
     assert runner.make_broker() == "LS_STOCK"
+
+
+def test_make_broker_ls_returns_router_when_overseas_futures_only(monkeypatch):
+    """LS 활성 + 국내선물 자격증명 없음 + 해외선물 자격증명만 → BrokerRouter.
+
+    F6: 게이트가 load_ls_futures() OR load_ls_overseas_futures()로 확장돼야
+    CME 전용 환경에서도 BrokerRouter가 반환된다.
+    """
+    from localapp import runner, secrets_store
+    monkeypatch.setattr(secrets_store, "get_active_broker", lambda: "ls")
+    monkeypatch.setattr(secrets_store, "load_ls", lambda: {"app_key": "x"})
+    monkeypatch.setattr(secrets_store, "load_ls_futures", lambda: None)
+    monkeypatch.setattr(secrets_store, "load_ls_overseas_futures",
+                        lambda: {"app_key": "of"})
+    import localapp.ls_broker as lb
+    import localapp.ls_futures_broker as lfb
+    monkeypatch.setattr(lb, "LsBroker", lambda: "LS_STOCK")
+    monkeypatch.setattr(lfb, "LsFuturesBroker", lambda: "LS_FUT")
+    b = runner.make_broker()
+    from localapp.broker_router import BrokerRouter
+    assert isinstance(b, BrokerRouter)
