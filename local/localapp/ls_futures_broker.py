@@ -161,10 +161,5 @@ class LsFuturesBroker(_LsAuth):
                         "market": "DOMESTIC", "currency": "KRW", "asset_class": "futures"})
         return out
 
-    def orderable_qty(self, symbol, price, side="buy"):
-        body = self._post("/futureoption/accno", "CFOAQ10100",
-                          {"CFOAQ10100InBlock1": {"RecCnt": 1, "QryTp": "1", "FnoIsuNo": symbol,
-                                                  "BnsTpCode": "2" if side == "buy" else "1",
-                                                  "FnoOrdPrc": float(price), "FnoOrdprcPtnCode": "00",
-                                                  "OrdAmt": 0, "RatVal": 0}})
-        return int(float((body.get("CFOAQ10100OutBlock2") or {}).get("NewOrdAbleQty") or 0))
+    # NOTE: orderable_qty(CFOAQ10100 NewOrdAbleQty)는 증거금 사이징 클램프용이나 현재 호출자
+    # 없음(4원칙#2) → 제거. Trader 선물 사이징 배선 시 함께 추가(매핑=domestic-futures-research.md).

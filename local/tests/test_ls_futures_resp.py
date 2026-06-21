@@ -148,9 +148,3 @@ def test_cancel_normalizes(monkeypatch):
     monkeypatch.setattr(b, "_post", lambda p, t, body, **k: {"CFOAT00300OutBlock2": {"OrdNo": "99"}}, raising=False)
     r = b.cancel("10", "101V6000", 2)
     assert r["success"] is True and "order_no" not in r
-
-
-def test_orderable_qty(monkeypatch):
-    b = _broker()
-    monkeypatch.setattr(b, "_post", lambda p, t, body, **k: {"CFOAQ10100OutBlock2": {"NewOrdAbleQty": "3"}}, raising=False)
-    assert b.orderable_qty("101V6000", 342.0) == 3
