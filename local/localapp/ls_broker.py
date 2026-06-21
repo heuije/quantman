@@ -412,10 +412,22 @@ class LsBroker(_LsAuth):
         """국내주식 예약주문 미구현 — 명시적 에러."""
         raise NotImplementedError("LS 예약주문은 해외주식 단계(후속 plan)")
 
-    # ── 취소 (CSPAT00801) ─────────────────────────────────────────────────────
+    # ── 취소 (CSPAT00801 / COSAT00301) ──────────────────────────────────────
+
+    def _cancel_overseas(self, order_no, symbol, qty):
+        """COSAT00301 OrdPtnCode='08' 취소(OrgOrdNo+IsuNo+OrdQty)."""
+        market = market_index.exchange_of(symbol) or "NAS"
+        resp = self._post("/overseas-stock/order", "COSAT00301",
+                          {"COSAT00301InBlock1": {
+                              "OrdPtnCode": "08",
+                              "OrgOrdNo": int(order_no) if str(order_no).isdigit() else order_no,
+                              "OrdMktCode": self._ls_excd(market), "IsuNo": self._ls_ticker(symbol),
+                              "OrdQty": qty, "OvrsOrdPrc": 0, "OrdprcPtnCode": "00"}}, is_order=True)
+        r = normalize_ls_order_resp(resp, ordno_field="OrdNo")
+        return {"success": r["success"], "message": r["message"], "msg_cd": r["msg_cd"]}
 
     def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
-        """미체결 주문 취소 — CSPAT00801.
+        """미체결 주문 취소. 해외=COSAT00301(08), 국내=CSPAT00801.
 
         PATH "/stock/order" — 신규/정정/취소 모두 동일 경로, tr_cd 헤더로 TR 구분.
         커뮤니티 래퍼 대조 확인: "/stock/order-cancel" 경로는 404 반환.
@@ -423,6 +435,8 @@ class LsBroker(_LsAuth):
         ⚠ OrgOrdNo long, IsuNo="A"+6자리, OrdQty — A2 KB 🟢.
         ⚠ AcntNo/InptPwd 필요 여부 — 미검증. 현재 AcntNo 포함.
         """
+        if symbol and market_index.is_us(symbol):
+            return self._cancel_overseas(order_no, symbol, qty)
         resp = self._post(
             "/stock/order", "CSPAT00801",
             {"CSPAT00801InBlock1": {

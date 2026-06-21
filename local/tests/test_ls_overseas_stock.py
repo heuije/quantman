@@ -215,3 +215,32 @@ def test_order_reject_overseas_no_ordno(monkeypatch):
     monkeypatch.setattr(b, "_post", lambda *a, **k: {"rsp_cd": "99", "rsp_msg": "증거금부족"}, raising=False)
     r = b.buy("AAPL", 1)
     assert r["success"] is False and r["order_no"] == ""
+
+
+def test_cancel_overseas(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(lb.market_index, "is_us", lambda s: True, raising=False)
+    _us_index_stub(monkeypatch)
+    captured = {}
+    def fake_post(path, tr, body, **k):
+        captured["body"] = body["COSAT00301InBlock1"]
+        return {"COSAT00301OutBlock2": {"OrdNo": "55"}}
+    monkeypatch.setattr(b, "_post", fake_post, raising=False)
+    r = b.cancel("12345", "AAPL", 3)
+    assert r["success"] is True
+    assert "order_no" not in r
+    assert captured["body"]["OrdPtnCode"] == "08"
+    assert captured["body"]["OrgOrdNo"] == 12345
+    assert captured["body"]["IsuNo"] == "AAPL"
+
+
+def test_cancel_domestic_unchanged(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(lb.market_index, "is_us", lambda s: False, raising=False)
+    captured = {}
+    def fake_post(path, tr, body, **k):
+        captured["tr"] = tr
+        return {"CSPAT00801OutBlock2": {"OrdNo": "9"}}
+    monkeypatch.setattr(b, "_post", fake_post, raising=False)
+    b.cancel("100", "000660", 1)
+    assert captured["tr"] == "CSPAT00801"
