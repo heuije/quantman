@@ -1,6 +1,6 @@
 # 챗봇 목표 아키텍처 — "백테스트·스크리닝 비서" → "전문 분석·추천·내러티브 자문봇"
 
-> 상태: **Phase 1·2 구현완료 (draft PR#188) · Phase 3~5 미착수** · 정본 브랜치 `feat/chat-capability-redesign`
+> 상태: **Phase 1~5 전 구현완료** (1·2=PR#188 · 3·4·5=신규 스택 브랜치, 머지 대기) · 정본 브랜치 `feat/chat-capability-redesign`
 > 목적: 후속 기능을 무작정 덧대 구조를 over-complicate하지 않도록 **최종 형상(완성본)을 먼저 고정**하고,
 > 모든 향후 증분이 직교적으로 붙는 **계약(seam)** 을 정의한다.
 > 진행 현황·다음 세션 인계는 **§9 (맨 아래)** 를 먼저 읽어라 — 무엇이 끝났고 어디서 이어가는지.
@@ -135,20 +135,26 @@ seam 정비는 이 레지스트리 패턴을 verb/result/render에 복제한다.
 - **검증:** ✅ 전체 **805 pass**(신규 회귀 `test_indicator_surfacing`·`test_describe_surfacing`) · 골든 백테스트
   byte-identical · web build(tsc+vite)+eslint · ruff. **잔여 = 로그인 브라우저 E2E**(describe 카드 실렌더, 사용자측).
 
-### Phase 3 — 결과 타입 유니온 + render 레지스트리 〔seam #1·#2〕
-- 결과 Pydantic 판별 유니온(기존 dict 호환 어댑터) · `result_shape()` → discriminator · `ChatResultView` 레지스트리화.
-- **점진:** 기존 11형상부터 1:1 행동보존 전환 → 순서버그 회귀 제거.
-- **검증:** 하니스 형상별 출력 동등 · web 스냅샷 · 순서의존 회귀 테스트.
+### Phase 3 — render 레지스트리 + shape 스탬프 ✅ **완료** 〔seam #1·#2〕 (브랜치 feat/chat-result-registry)
+- **구현:** `run_query`가 성공 결과에 canonical `result["shape"]` 스탬프(`_dispatch_query` 분리) → `summarize.result_shape`·
+  웹 `ChatResultView`가 그 키로 단일 분기(순서의존 if/elif → `RENDERERS` 레지스트리). 미스탬프는 deriveShape/result_shape 폴백.
+- **결정(범위):** Pydantic 판별유니온(내부 타이핑)은 dict+스탬프로 목표(단일 출처·클린 확장) 달성돼 **불필요 — 미채택**(원칙2).
+  excel_export은 sweep 변종 세분 위해 axis 자체 디스패치 유지(형상보다 잘게).
+- **검증:** 하니스 18/18 · core 골든 byte-identical · test_summarize 스탬프 회귀 4 · web build+eslint.
 
-### Phase 4 — context 사이드카 일반화
-- `_attach_*` → 일반 context provider(거시·뉴스·종합·**준실시간 시세 스냅샷**) · 다대상. `_naver_quotes` 재사용.
-- **검증:** 골든 불변(엔진 무변) · 결정성 · 사이드카 실패시 graceful · 실시간 가격 dataset 미누출.
+### Phase 4 — context 사이드카 ✅ **완료** (브랜치 feat/chat-context-sidecar)
+- **구현:** `server/app/chat/context.py attach_context` — describe/select 결과를 네이버 준실시간 시세(`_naver_quotes` 재사용)+
+  뉴스(`news_kr`, 단일종목)로 enrich. agent.py가 clean_json 직전 호출. summarize `_context_block`·웹 `ContextCard`(형상 직교).
+- **골든 무누출:** 엔진 산출 후 `result["context"]`에만 추가(dataset·백테스트 미반영) · best-effort(실패 graceful).
+- **검증:** core 골든 불변 · server 신규 5(시세/뉴스/형상선택/graceful/KR코드) · 웹빌드.
+- **잔여(후속):** 거시 레짐 스냅샷은 5c breadth로 흡수(시장 what) — 별도 거시 사이드카는 필요 시 추가.
 
-### Phase 5 — 프런티어 클린 add (독립·병렬 가능)
-- 5a. 상관/공분산 `relation_kind="correlation"` → 히트맵.
-- 5b. `PRESCRIBE` verb(최적화) → 트리맵 + 프런티어.
-- 5c. breadth/지수 엔티티 → "코스피 왜/어때".
-- **검증:** 각 하니스 케이스 + 골든 + 1e-N 수치 대조.
+### Phase 5 — 프런티어 ✅ **완료** (브랜치 feat/chat-frontier)
+- 5a. ✅ 상관 `relation_kind="correlation"` → `CorrelationHeatmap`(±상관 빨강/파랑). Q4 전반.
+- 5b. ✅ `PRESCRIBE` verb → `run_prescribe`(scipy SLSQP: 최소분산·리스크패리티·동일가중·**최대샤프**[사용자 협의]) →
+  `PrescribePanel` 비중 트리맵+목적 비교표. Q4 후반. (효율적 프런티어 곡선=선택, 미구현 — 트리맵+지표로 충분.)
+- 5c. ✅ `breadth` verb → `run_breadth`(등락 비율·MA 상회·섹터 약강세) → `BreadthPanel`. "코스피 왜"의 what(why=P4 사이드카).
+- **검증:** test_frontier 11(상관3·처방4·breadth3) · 골든 불변 · capability coverage · 웹빌드.
 
 **충돌 회피:** `excel_export.py`·`core/tests`는 타 세션 in-flight → 회피/조율. `spec.py`·`run.py` 편집 전 brief 확인.
 
@@ -207,10 +213,18 @@ seam 정비는 이 레지스트리 패턴을 verb/result/render에 복제한다.
 - **#189·#190은 아키텍처 로드맵과 직교**한 부가 개선(세션 UX·프롬프트). Phase 3~5와 독립.
 - 머지·push·배포는 **사용자 명시 허락 시에만**(자동 금지). 머지 시 Railway(server)+Vercel(web) 자동배포. 머지 후 희제 알림.
 
-### 9.3 다음에 이어갈 것 — Phase 3 → 4 → 5 (의존순)
+### 9.2b 신규 Phase 3·4·5 브랜치 (linear 스택, 머지 대기)
+| 브랜치 | Phase | 핵심 | 검증 |
+|---|---|---|---|
+| `feat/chat-result-registry` | 3 | shape 스탬프 + 웹 RENDERERS 레지스트리 | core 골든·하니스 18/18·web |
+| `feat/chat-context-sidecar` | 4 | 준실시간 시세·뉴스 사이드카(골든 무누출) | server +5·web |
+| `feat/chat-frontier` | 5 | 상관 히트맵·PRESCRIBE 트리맵·breadth | test_frontier 11·web |
 
-**먼저 Phase 3** (seam #1·#2). Phase 5의 새 형상(히트맵·트리맵·breadth)이 render 레지스트리에 깨끗이 등록되려면
-Phase 3가 선행이어야 한다. Phase 4(사이드카)는 엔진 무변이라 Phase 3와 **병렬 가능**.
+스택 순서: capability-redesign(1·2) → result-registry(3) → context-sidecar(4) → frontier(5). 순서대로 머지.
+누적 검증(frontier HEAD 기준): **core 430 pass · server 361 pass · 하니스 18/18 · 웹빌드+eslint(신규 0) · ruff 신규 0 · 골든 byte-identical**.
+
+### 9.3 ✅ Phase 3·4·5 구현 완료 — 구현 위치(유지보수 참조)
+세 phase 모두 §5 마커 ✅. 아래는 후속 유지보수·확장용 진입점 지도.
 
 - **Phase 3 — 결과 타입 유니온 + render 레지스트리.** 진입점:
   - 엔진: `core/quant_core/ir_engine/summarize.py`의 `result_shape()`(타입없는 dict 런타임 추론·순서의존).
