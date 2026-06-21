@@ -171,6 +171,13 @@ def test_context_block_absent_when_no_context():
     assert "맥락·준실시간" not in summarize_result(res)
 
 
+def test_news_research_summary_returns_digest():
+    """research_news 결과 요약 = 이미 만들어진 Haiku 다이제스트(모델용 텍스트) 그대로."""
+    res = {"success": True, "shape": "news_research", "digest": "핵심 드라이버[1]…", "citations": []}
+    assert result_shape(res) == "news_research"
+    assert summarize_result(res) == "핵심 드라이버[1]…"
+
+
 def test_breadth_summary_surfaces_market_snapshot():
     """P6: breadth 요약에 시장 스냅샷(지수·VIX 현재가)이 표면화 — '코스피 왜'에 지수 레벨 제공."""
     res = {"success": True, "shape": "breadth", "n": 5, "n_up": 1, "n_down": 4,

@@ -131,7 +131,29 @@ ADJUST_TOOL = {
     },
 }
 
-TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL, ADJUST_TOOL]
+RESEARCH_NEWS_TOOL = {
+    "name": "research_news",
+    "description": ("뉴스로 답해야 하는 질문(최근 이슈·왜 올랐나/빠졌나·특정 시점 사건·시장/매크로 동향)에 쓴다. "
+                    "queries에 엔티티+관련 매크로/섹터 키워드를, period에 기간을 네가 판단해 넣으면 최근=네이버·"
+                    "과거=GDELT로 수집해 본문까지 읽고 증거 다이제스트(인용 포함)를 돌려준다. 단순 '○○ 어때'는 "
+                    "describe(헤드라인 자동)로 충분 — 심층·기간·매크로·본문이 필요할 때 이 도구."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "queries": {"type": "array", "items": {"type": "string"},
+                        "description": "엔티티 + 관련 매크로/섹터 키워드(2~4). 예: ['삼성전자','반도체 업황','D램 가격']."},
+            "period": {"type": "object",
+                       "description": "{kind:'recent',days:N} 또는 {kind:'range',start:'YYYY-MM-DD',end:'YYYY-MM-DD'}."},
+            "max_articles": {"type": "integer", "description": "최대 기사 수(기본 8)."},
+            "depth": {"type": "string", "enum": ["headlines", "full"],
+                      "description": "full=본문+다이제스트(기본) / headlines=빠른 헤드라인만."},
+        },
+        "required": ["queries", "period"],
+    },
+}
+
+TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL, ADJUST_TOOL,
+                RESEARCH_NEWS_TOOL]
 
 
 # ── IR 조립 ──────────────────────────────────────────────────────────────────
@@ -261,6 +283,12 @@ def run_tool(tool_name: str, tool_input: dict) -> dict:
     """
     if tool_name == "inspect":
         return run_inspect(tool_input)   # 원시 시계열 dump — IR 없음(엑셀 증빙 대상 아님)
+    if tool_name == "research_news":      # 뉴스 리서치 — 엔진 우회(수집+본문+Haiku 다이제스트)
+        from .news_research import research_news
+        return research_news(tool_input.get("queries") or [],
+                             tool_input.get("period") or {"kind": "recent", "days": 7},
+                             int(tool_input.get("max_articles") or 8),
+                             str(tool_input.get("depth") or "full"))
     try:
         ir = assemble_ir(tool_name, tool_input)
     except (ValueError, KeyError, TypeError) as e:

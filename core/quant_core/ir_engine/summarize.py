@@ -134,6 +134,9 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
         return f"[실패] {result.get('error', '알 수 없는 오류')}"
     shape = result_shape(result)
 
+    if shape == "news_research":          # 뉴스 리서치 = 이미 Haiku 다이제스트 텍스트(모델용)
+        return str(result.get("digest") or "[뉴스 리서치 결과 없음]")
+
     if shape == "simulate":
         m = result.get("metrics") or {}
         parts = [f"{lbl} {_f(m.get(k))}{u}" for k, lbl, u in (
