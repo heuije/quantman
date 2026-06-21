@@ -338,3 +338,87 @@ def test_chat_stream_blocked_at_limit(monkeypatch):
     assert r.status_code == 429, r.text
     assert r.json()["rate_limited"] is True
     assert called == []
+
+
+# ── 멀티세션: 이름변경 · 삭제(cascade) · 소유자격리 · 자동제목 ─────────────────────
+
+def test_rename_conversation():
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    r = client.patch(f"/chat/conversations/{cid}", headers=_auth(tok),
+                     json={"title": "저평가 반도체 분석"})
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "저평가 반도체 분석"
+    rows = client.get("/chat/conversations", headers=_auth(tok)).json()
+    assert next(c for c in rows if c["id"] == cid)["title"] == "저평가 반도체 분석"
+
+
+def test_rename_empty_title_falls_back():
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    r = client.patch(f"/chat/conversations/{cid}", headers=_auth(tok), json={"title": "   "})
+    assert r.status_code == 200 and r.json()["title"] == "새 대화"
+
+
+def test_rename_other_users_conversation_404():
+    client, tok, eng, uid = _build()
+    with Session(eng) as s:
+        other = User(email="r@example.com"); s.add(other); s.commit(); s.refresh(other)
+        oc = Conversation(user_id=other.id); s.add(oc); s.commit(); s.refresh(oc); ocid = oc.id
+    r = client.patch(f"/chat/conversations/{ocid}", headers=_auth(tok), json={"title": "탈취"})
+    assert r.status_code == 404, r.text
+
+
+def test_delete_conversation_cascades():
+    from app.chat.agent import _persist
+    from app.models import ChatTurnMetric, Message
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    with Session(eng) as s:
+        _persist(s, cid, "user", [{"type": "text", "text": "q"}])
+        _persist(s, cid, "assistant", [{"type": "text", "text": "a"}])
+        s.add(ChatTurnMetric(conversation_id=cid, user_id=uid)); s.commit()
+    r = client.delete(f"/chat/conversations/{cid}", headers=_auth(tok))
+    assert r.status_code == 204, r.text
+    with Session(eng) as s:                       # 대화·메시지·메트릭 모두 제거(명시적 cascade)
+        assert s.get(Conversation, cid) is None
+        assert s.exec(select(Message).where(Message.conversation_id == cid)).all() == []
+        assert s.exec(select(ChatTurnMetric)
+                      .where(ChatTurnMetric.conversation_id == cid)).all() == []
+    assert all(c["id"] != cid for c in client.get("/chat/conversations", headers=_auth(tok)).json())
+
+
+def test_delete_other_users_conversation_404():
+    client, tok, eng, uid = _build()
+    with Session(eng) as s:
+        other = User(email="d@example.com"); s.add(other); s.commit(); s.refresh(other)
+        oc = Conversation(user_id=other.id); s.add(oc); s.commit(); s.refresh(oc); ocid = oc.id
+    r = client.delete(f"/chat/conversations/{ocid}", headers=_auth(tok))
+    assert r.status_code == 404, r.text
+    with Session(eng) as s:                       # 남의 대화는 보존
+        assert s.get(Conversation, ocid) is not None
+
+
+def test_autotitle_sets_from_first_message(monkeypatch):
+    monkeypatch.setattr(chat_router.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(chat_router, "run_chat_turn",
+                        lambda *a, **k: [{"type": "text", "text": "ok"}])
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    client.post("/chat/message", headers=_auth(tok),
+                json={"conversation_id": cid, "message": "저평가 반도체주 3개 골라줘"})
+    rows = client.get("/chat/conversations", headers=_auth(tok)).json()
+    assert next(c for c in rows if c["id"] == cid)["title"] == "저평가 반도체주 3개 골라줘"
+
+
+def test_autotitle_does_not_overwrite_renamed(monkeypatch):
+    monkeypatch.setattr(chat_router.settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(chat_router, "run_chat_turn",
+                        lambda *a, **k: [{"type": "text", "text": "ok"}])
+    client, tok, eng, uid = _build()
+    cid = client.post("/chat/conversations", headers=_auth(tok)).json()["id"]
+    client.patch(f"/chat/conversations/{cid}", headers=_auth(tok), json={"title": "내 제목"})
+    client.post("/chat/message", headers=_auth(tok),
+                json={"conversation_id": cid, "message": "두 번째여도 덮지 않음"})
+    rows = client.get("/chat/conversations", headers=_auth(tok)).json()
+    assert next(c for c in rows if c["id"] == cid)["title"] == "내 제목"

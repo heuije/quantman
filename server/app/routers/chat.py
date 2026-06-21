@@ -20,7 +20,7 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..db import get_session
 from ..deps import get_current_user
-from ..models import Conversation, Message, User
+from ..models import ChatTurnMetric, Conversation, Message, User
 from ..chat.agent import run_chat_turn, stream_chat_turn
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -45,6 +45,21 @@ def _owned(session: Session, user: User, conversation_id: int) -> Conversation:
     if conv is None or conv.user_id != user.id:
         raise HTTPException(status_code=404, detail="대화를 찾을 수 없습니다.")
     return conv
+
+
+def _autotitle(session: Session, conv: Conversation, message: str) -> None:
+    """첫 user 메시지로 대화 제목 자동 설정(기본 '새 대화'일 때만) — 목록 식별성."""
+    if conv.title != "새 대화":
+        return
+    n = session.exec(select(func.count()).select_from(Message)
+                     .where(Message.conversation_id == conv.id)).one()
+    if int(n or 0) > 0:
+        return
+    title = " ".join(message.split())[:40]
+    if title:
+        conv.title = title
+        session.add(conv)
+        session.commit()
 
 
 def _kst_day_start_utc() -> datetime:
@@ -119,6 +134,37 @@ def get_conversation(conversation_id: int, user: User = Depends(get_current_user
             "messages": [{"role": m.role, "parts": m.parts} for m in msgs]}
 
 
+class ConvUpdateIn(BaseModel):
+    title: str
+
+
+@router.patch("/conversations/{conversation_id}")
+def rename_conversation(conversation_id: int, body: ConvUpdateIn,
+                        user: User = Depends(get_current_user),
+                        session: Session = Depends(get_session)):
+    conv = _owned(session, user, conversation_id)
+    conv.title = body.title.strip()[:80] or "새 대화"
+    session.add(conv)
+    session.commit()
+    session.refresh(conv)
+    return {"id": conv.id, "title": conv.title}
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204)
+def delete_conversation(conversation_id: int, user: User = Depends(get_current_user),
+                        session: Session = Depends(get_session)):
+    """대화 + 종속행(메시지·턴지표) 하드 삭제. FK ondelete 미설정이라 명시적 cascade."""
+    conv = _owned(session, user, conversation_id)
+    for m in session.exec(select(Message)
+                          .where(Message.conversation_id == conversation_id)).all():
+        session.delete(m)
+    for tm in session.exec(select(ChatTurnMetric)
+                           .where(ChatTurnMetric.conversation_id == conversation_id)).all():
+        session.delete(tm)
+    session.delete(conv)
+    session.commit()
+
+
 @router.post("/quota")
 def chat_quota(body: QuotaIn, user: User = Depends(get_current_user),
                session: Session = Depends(get_session)):
@@ -132,10 +178,11 @@ def post_message(body: MessageIn, user: User = Depends(get_current_user),
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=503,
                             detail="챗봇이 아직 설정되지 않았습니다(ANTHROPIC_API_KEY 미설정).")
-    _owned(session, user, body.conversation_id)
+    conv = _owned(session, user, body.conversation_id)
     quota = _chat_quota(session, user.id, body.admin_password)
     if quota["remaining"] <= 0:                       # 서버 강제 — LLM 호출 전 차단(비용·악용 통제)
         return _rate_limited(quota)
+    _autotitle(session, conv, body.message)           # 첫 메시지면 제목 자동 설정
     parts = run_chat_turn(session, body.conversation_id, body.message)
     return {"role": "assistant", "parts": parts}
 
@@ -152,10 +199,11 @@ def post_message_stream(body: MessageIn, user: User = Depends(get_current_user),
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=503,
                             detail="챗봇이 아직 설정되지 않았습니다(ANTHROPIC_API_KEY 미설정).")
-    _owned(session, user, body.conversation_id)
+    conv = _owned(session, user, body.conversation_id)
     quota = _chat_quota(session, user.id, body.admin_password)
     if quota["remaining"] <= 0:                       # 스트림 시작 전 동기 차단(서버 강제)
         return _rate_limited(quota)
+    _autotitle(session, conv, body.message)           # 첫 메시지면 제목 자동 설정
 
     def event_stream():
         for kind, payload in stream_chat_turn(session, body.conversation_id, body.message):
