@@ -21,7 +21,6 @@ def test_save_load_ls_futures(monkeypatch):
     assert c["app_key"] == "AK" and c["account_no"] == "5550-9999" and c["virtual"] is True
 
 
-@pytest.mark.xfail(reason="LsFuturesBroker/LsContractResolver/dataset_for_code arrive in D2/D7")
 def test_make_broker_ls_returns_router_when_futures(monkeypatch):
     """LS 활성 + 선물 자격증명 → BrokerRouter(LsBroker, LsFuturesBroker)."""
     from localapp import runner, secrets_store

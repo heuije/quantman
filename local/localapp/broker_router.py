@@ -33,13 +33,17 @@ log = logging.getLogger("localapp.broker_router")
 class BrokerRouter:
     """stock(KisBroker) + futures(KisFuturesBroker)를 심볼로 라우팅. Broker Protocol 충족(duck)."""
 
-    def __init__(self, stock, futures, *, resolve, resolve_expiry=None):
+    def __init__(self, stock, futures, *, resolve, resolve_expiry=None, dataset_for_code=None):
         self._stock = stock
         self._futures = futures
         self._resolve = resolve          # callable(symbol) -> 계약코드 | None
         # M6: callable(symbol) -> (계약코드, 만기일date) — 진입 시 ledger 기록(만기 자동청산).
         # 미주입(구 배선)이면 contract_expiry가 (None,None) → Trader는 만기 미기록.
         self._resolve_expiry = resolve_expiry
+        # D7: 계약코드→데이터셋 심볼 역매핑 콜백. 기본=quant_core.dataset_for_contract(KIS코드 인식).
+        # LS 브로커는 LS-aware 역매핑을 주입해 자신의 코드(101V6000 등)를 정규화한다.
+        # KIS 호출자는 이 파라미터를 생략 → 종전과 byte-identical 동작 보존.
+        self._d4c = dataset_for_code or dataset_for_contract
 
     # ── 라우팅 헬퍼 ─────────────────────────────────────────────────────────────
     def _is_fut(self, symbol) -> bool:
@@ -184,7 +188,7 @@ class BrokerRouter:
             for p in (fsnap.get("positions") or []):
                 np = dict(p)
                 code = str(p.get("symbol", "") or "")
-                ds = dataset_for_contract(code)
+                ds = self._d4c(code)
                 if ds:                               # 계약코드 → 데이터셋 심볼(ledger 매칭 키)
                     np["contract_code"] = code
                     np["symbol"] = ds
