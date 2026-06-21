@@ -17,6 +17,7 @@ _KIS_FUT = "kis_futures_credentials"   # 선물옵션 계좌(상품코드 03) �
 _KIS_OVF = "kis_overseas_futures_credentials"   # 해외선물옵션 계좌(상품코드 08) — 국내선물·주식과 별개
 _DEVICE = "device_token"
 _LS = "ls_credentials"
+_LS_FUT = "ls_futures_credentials"   # LS 선물계좌 (국내선물·해외선물 공통; 별도 계좌)
 _BROKER_CHOICE = "active_broker"   # "kis" | "ls" — 단일 브로커 모델 SSOT
 
 
@@ -115,6 +116,21 @@ def load_ls() -> dict | None:
     return json.loads(raw) if raw else None
 
 
+def save_ls_futures(app_key: str, app_secret: str, account_no: str,
+                    virtual: bool = True) -> None:
+    """LS 선물(국내·해외) 자격증명. 국내주식과 별도 계좌(LS OPEN API 계좌단위).
+    이 정보는 사용자 PC를 떠나지 않는다(서버·리포 전송 금지)."""
+    keyring.set_password(KEYRING_SERVICE, _LS_FUT, json.dumps({
+        "app_key": app_key, "app_secret": app_secret,
+        "account_no": account_no, "virtual": virtual,
+    }))
+
+
+def load_ls_futures() -> dict | None:
+    raw = keyring.get_password(KEYRING_SERVICE, _LS_FUT)
+    return json.loads(raw) if raw else None
+
+
 def set_active_broker(name: str) -> None:
     if name not in ("kis", "ls"):
         raise ValueError(f"지원하지 않는 브로커: {name}")
@@ -142,7 +158,7 @@ def active_cred_label() -> str:
 def clear() -> None:
     global _cached_device_token
     _cached_device_token = None
-    for key in (_KIS, _KIS_FUT, _KIS_OVF, _LS, _BROKER_CHOICE, _DEVICE):
+    for key in (_KIS, _KIS_FUT, _KIS_OVF, _LS, _LS_FUT, _BROKER_CHOICE, _DEVICE):
         try:
             keyring.delete_password(KEYRING_SERVICE, key)
         except keyring.errors.PasswordDeleteError:
