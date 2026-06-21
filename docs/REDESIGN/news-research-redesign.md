@@ -1,7 +1,8 @@
 # 챗봇 뉴스 리서치 재설계 — 능동 `research_news` 도구 (Approach C)
 
-> 상태: **설계(spec) · 미구현.** 브레인스토밍 합의 산출물. 다음 단계 = 구현 계획(writing-plans).
-> 정본 브랜치: `feat/chat-news-research`.
+> 상태: **구현 완료** (feat/chat-news-research · 미push). 계획=`news-research-plan.md` 6 TDD 태스크 완료.
+> 검증: core 438 pass(골든 불변)·server 379·하니스 18/18·웹빌드·ruff 0신규. trafilatura는 이미 설치돼 있어
+> 본문 추출에 사용(§8 의존성 결정 해소). 잔여=사용자 push/머지 허락 + 키(NAVER) 있는 환경 라이브 E2E.
 
 ## 0. 배경·목표
 
