@@ -57,15 +57,40 @@ def test_market_snapshot_labels_and_merges(monkeypatch):
 
 
 def test_quotes_for_routes_by_symbol_type(monkeypatch):
-    """KR(6자리)→domestic/stock · US(티커)→worldstock · 크립토→binance 자동 분류."""
+    """KR(6자리)→domestic/stock · US(티커)→worldstock · 크립토→binance · 해외선물상품→Yahoo 자동 분류."""
     monkeypatch.setattr(live_quote, "_poll",
                         lambda cat, codes, b: {c: {"price": 1.0, "chg": 0.0} for c in codes.split(",")})
     monkeypatch.setattr(live_quote, "world_stock_quotes", lambda us: {t: {"price": 2.0} for t in us})
     monkeypatch.setattr(live_quote, "crypto_quotes", lambda cs: {n: {"price": 3.0} for n in cs})
-    out = live_quote.quotes_for(("005930", "AAPL", "비트코인"))
+    monkeypatch.setattr(live_quote, "commodity_quotes", lambda cs: {n: {"price": 4.0} for n in cs})
+    out = live_quote.quotes_for(("005930", "AAPL", "비트코인", "원유선물"))
     assert out["005930"]["price"] == 1.0     # KR
     assert out["AAPL"]["price"] == 2.0       # US
     assert out["비트코인"]["price"] == 3.0    # 크립토
+    assert out["원유선물"]["price"] == 4.0    # 해외 선물·상품(Yahoo)
+
+
+def test_yahoo_parses_chart_meta(monkeypatch):
+    """Yahoo v8 chart meta — regularMarketPrice + chartPreviousClose로 1일 등락% 산출."""
+    payload = {"chart": {"result": [{"meta": {"regularMarketPrice": 76.54, "chartPreviousClose": 75.85}}]}}
+    monkeypatch.setattr(live_quote.requests, "get", lambda *a, **k: _Resp(payload))
+    out = live_quote._yahoo("CL=F", "tY")
+    assert out["price"] == 76.54 and out["chg"] == 0.91   # (76.54/75.85-1)*100
+
+
+def test_commodity_quotes_maps_engine_name(monkeypatch):
+    monkeypatch.setattr(live_quote, "_yahoo",
+                        lambda sym, b: {"price": 76.54, "chg": 0.91} if sym == "CL=F" else None)
+    out = live_quote.commodity_quotes(("원유선물",))   # 엔진명 → CL=F
+    assert out["원유선물"]["price"] == 76.54
+
+
+def test_quotes_for_routes_kr_futures(monkeypatch):
+    """코스피200선물 → 네이버 domestic/index 'FUT' 코드 라우팅·역매핑(엔진명 복원)."""
+    monkeypatch.setattr(live_quote, "_poll",
+                        lambda cat, codes, b: {"FUT": {"price": 1476.5, "chg": 0.44}} if cat == "domestic/index" else {})
+    out = live_quote.quotes_for(("코스피200선물",))
+    assert out["코스피200선물"]["price"] == 1476.5
 
 
 def test_world_stock_quotes_resolves_reuters(monkeypatch):

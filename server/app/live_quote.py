@@ -22,15 +22,23 @@ _BASE = "https://polling.finance.naver.com/api/realtime/"
 _AC_URL = "https://ac.stock.naver.com/ac"                       # 티커→reutersCode resolve
 _FX_URL = "https://api.stock.naver.com/marketindex/exchange/"   # 환율(다른 포맷)
 _BINANCE_URL = "https://api.binance.com/api/v3/ticker/24hr"     # 크립토
+_YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"   # 해외 선물·상품(~10분 지연)
 
 # 시장 스냅샷 구성(거래 지수만 — 직접 코드, 티커 매핑 불요). KR=domestic/index, US/VIX=worldstock/index.
 _KR_INDEX = {"KOSPI": "코스피", "KOSDAQ": "코스닥"}
 _US_INDEX = {".IXIC": "나스닥", ".INX": "S&P500", ".VIX": "VIX"}
 
-# 심볼 분류 — KR 종목(6자리)·US 티커(영문)·크립토(데이터엔진 자산명→Binance 심볼).
+# 심볼 분류 — KR 종목(6자리)·US 티커(영문)·크립토·해외선물상품(데이터엔진 자산명 기준).
 _KR_CODE = re.compile(r"^\d{6}$")
 _US_TICKER = re.compile(r"^[A-Z][A-Z.\-]{0,9}$")
 _CRYPTO_MAP = {"비트코인": "BTCUSDT"}
+# 데이터엔진 자산명 → Yahoo 심볼(해외 선물·상품·지수선물). 엔진 YFINANCE_SYMBOLS와 동일 소스(단일소스 유지).
+_YAHOO_MAP = {
+    "원유선물": "CL=F", "천연가스선물": "NG=F", "금선물": "GC=F",
+    "나스닥선물": "NQ=F", "은선물(COMEX)": "SI=F", "비트코인선물": "BTC=F", "S&P500": "^GSPC",
+}
+# 국내 지수선물 — 네이버 domestic/index(폴링 패밀리) 코드. 엔진명 "코스피200선물"(CSV+KIS 실선물) 기준.
+_KR_FUTURES_MAP = {"코스피200선물": "FUT"}
 
 
 def _bucket() -> str:
@@ -154,20 +162,60 @@ def crypto_quotes(names: tuple) -> dict:
     return out
 
 
-def quotes_for(symbols: tuple) -> dict:
-    """대표 종목 준실시간 시세 — KR(6자리)·US(티커)·크립토 자동 분류·라우팅. {symbol: {price,chg,change}}.
+@lru_cache(maxsize=64)
+def _yahoo(sym: str, bucket: str) -> dict | None:
+    """Yahoo v8 chart(무인증) — {price, chg, change}. 거래소 정책상 ~10분 지연. 실패=None.
 
-    네이버 공개 폴링(KR domestic/stock · US worldstock/stock) + Binance(크립토). 골든 무누출·best-effort.
+    chg는 chartPreviousClose(전 거래일 종가) 대비. range=1d라 당일 1일 변동률.
+    """
+    try:
+        m = requests.get(f"{_YAHOO_URL}{sym}", params={"interval": "1d", "range": "1d"},
+                         headers=_UA, timeout=8).json()["chart"]["result"][0]["meta"]
+        price, prev = _num(m.get("regularMarketPrice")), _num(m.get("chartPreviousClose"))
+        if price is not None:
+            return {"price": price,
+                    "chg": round((price / prev - 1) * 100, 2) if prev else None,
+                    "change": round(price - prev, 2) if prev else None}
+    except Exception:   # noqa: BLE001
+        pass
+    return None
+
+
+def commodity_quotes(names: tuple) -> dict:
+    """해외 선물·상품 준실시간(Yahoo·~10분 지연) — 데이터엔진 자산명 기준. {name: {price,chg,change}}."""
+    b = _bucket()
+    out = {}
+    for name in names:
+        sym = _YAHOO_MAP.get(name)
+        q = _yahoo(sym, b) if sym else None
+        if q:
+            out[name] = q
+    return out
+
+
+def quotes_for(symbols: tuple) -> dict:
+    """대표 종목 준실시간 시세 — KR(6자리)·US(티커)·크립토·해외선물상품 자동 분류·라우팅. {symbol: {price,chg,change}}.
+
+    네이버 폴링(KR domestic/stock · US worldstock/stock) + Binance(크립토) + Yahoo(해외 선물·상품·지수선물,
+    ~10분 지연). 모두 엔진 의존 소스(단일소스 유지)·골든 무누출·best-effort.
     """
     syms = [str(s) for s in symbols if s]
     kr = tuple(s for s in syms if _KR_CODE.match(s))
+    kr_fut = tuple(s for s in syms if s in _KR_FUTURES_MAP)
     crypto = tuple(s for s in syms if s in _CRYPTO_MAP)
-    us = tuple(s for s in syms if s not in crypto and not _KR_CODE.match(s) and _US_TICKER.match(s))
+    commodity = tuple(s for s in syms if s in _YAHOO_MAP)
+    us = tuple(s for s in syms if s not in crypto and s not in commodity and s not in kr_fut
+               and not _KR_CODE.match(s) and _US_TICKER.match(s))
     out: dict = {}
     if kr:
         out.update(_poll("domestic/stock", ",".join(kr), _bucket()))
+    if kr_fut:
+        polled = _poll("domestic/index", ",".join(_KR_FUTURES_MAP[s] for s in kr_fut), _bucket())
+        out.update({s: polled[_KR_FUTURES_MAP[s]] for s in kr_fut if _KR_FUTURES_MAP[s] in polled})
     if us:
         out.update(world_stock_quotes(us))
     if crypto:
         out.update(crypto_quotes(crypto))
+    if commodity:
+        out.update(commodity_quotes(commodity))
     return out
