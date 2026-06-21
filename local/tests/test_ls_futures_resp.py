@@ -58,3 +58,55 @@ def test_today_open_zero_fallback(monkeypatch):
     b = _broker()
     monkeypatch.setattr(b, "_quote_raw", lambda sym: {"t2101OutBlock": {"open": ""}}, raising=False)
     assert b.today_open("101V6000") == 0.0
+
+
+def test_buy_market_normalizes_ordno(monkeypatch):
+    b = _broker()
+    captured = {}
+    def _post(path, tr, body, **k):
+        captured["body"] = body["CFOAT00100InBlock1"]
+        return {"rsp_cd": "00040", "rsp_msg": "정상", "CFOAT00100OutBlock2": {"OrdNo": "777"}}
+    monkeypatch.setattr(b, "_post", _post, raising=False)
+    r = b.buy("101V6000", 1)
+    assert r == {"success": True, "order_no": "777", "message": "정상", "msg_cd": "00040"}
+    assert captured["body"]["BnsTpCode"] == "2"
+    assert captured["body"]["FnoOrdprcPtnCode"] == "03"
+
+
+def test_sell_uses_bnstp_1(monkeypatch):
+    b = _broker()
+    captured = {}
+    def _post(path, tr, body, **k):
+        captured["body"] = body["CFOAT00100InBlock1"]
+        return {"CFOAT00100OutBlock2": {"OrdNo": "8"}}
+    monkeypatch.setattr(b, "_post", _post, raising=False)
+    b.sell("101V6000", 1)
+    assert captured["body"]["BnsTpCode"] == "1"
+
+
+def test_buy_limit_sends_double_price(monkeypatch):
+    b = _broker()
+    captured = {}
+    def _post(path, tr, body, **k):
+        captured["body"] = body["CFOAT00100InBlock1"]
+        return {"CFOAT00100OutBlock2": {"OrdNo": "9"}}
+    monkeypatch.setattr(b, "_post", _post, raising=False)
+    b.buy_limit("101V6000", 1, 342.25)
+    assert captured["body"]["FnoOrdprcPtnCode"] == "00"
+    assert captured["body"]["FnoOrdPrc"] == 342.25   # double 포인트 — int 절삭 금지
+
+
+def test_order_reject_no_ordno(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_post", lambda *a, **k: {"rsp_cd": "99", "rsp_msg": "증거금부족"}, raising=False)
+    r = b.buy("101V6000", 1)
+    assert r["success"] is False and r["order_no"] == ""
+
+
+def test_resv_not_implemented():
+    import pytest
+    b = _broker()
+    with pytest.raises(NotImplementedError):
+        b.buy_resv_limit("101V6000", 1, 342.0)
+    with pytest.raises(NotImplementedError):
+        b.sell_resv_limit("101V6000", 1, 342.0)

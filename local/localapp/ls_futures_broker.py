@@ -5,7 +5,7 @@ LsBroker와 동일 인증/HTTP(_LsAuth 상속), 선물 TR(/futureoption/*)만 �
 """
 from __future__ import annotations
 import logging
-from .ls_broker import _LsAuth   # 주문/체결 메서드(normalize·canonical_odno)는 D5/D6서 추가 import
+from .ls_broker import _LsAuth, normalize_ls_order_resp
 from .secrets_store import load_ls_futures
 
 log = logging.getLogger("localapp.ls_futures_broker")
@@ -81,3 +81,24 @@ class LsFuturesBroker(_LsAuth):
             return float(v) if v not in (None, "", 0, "0") else 0.0
         except Exception:
             return 0.0
+
+    def _submit(self, symbol, qty, side, ord_ptn, unit_price):
+        bns = "2" if side == "buy" else "1"          # 롱숏 net via BnsTpCode (국내선물 진입/청산 별도코드 없음)
+        prc = float(unit_price) if ord_ptn == "00" else 0   # double 포인트 — int 절삭 금지
+        resp = self._post("/futureoption/order", "CFOAT00100",
+                          {"CFOAT00100InBlock1": {
+                              "FnoIsuNo": symbol, "BnsTpCode": bns,
+                              "FnoOrdprcPtnCode": ord_ptn, "FnoOrdPrc": prc, "OrdQty": qty}},
+                          is_order=True)
+        return normalize_ls_order_resp(resp, ordno_field="OrdNo")
+
+    def buy(self, symbol, qty): return self._submit(symbol, qty, "buy", "03", 0)
+    def sell(self, symbol, qty): return self._submit(symbol, qty, "sell", "03", 0)
+    def buy_limit(self, symbol, qty, limit_price): return self._submit(symbol, qty, "buy", "00", float(limit_price))
+    def sell_limit(self, symbol, qty, limit_price): return self._submit(symbol, qty, "sell", "00", float(limit_price))
+
+    def buy_resv_limit(self, *a, **k):
+        raise NotImplementedError("국내선물 예약주문 미지원")
+
+    def sell_resv_limit(self, *a, **k):
+        raise NotImplementedError("국내선물 예약주문 미지원")
