@@ -113,6 +113,13 @@ def ds_kr_futures(n=520):
     return {"코스피200선물": _ohlc(_noisy(n, 0.011, seed=3, drift=0.0002))}
 
 
+def ds_self_ref(n=320):
+    """단일종목 __SELF__ 자기참조 패널용 — pct_change_1d 미리 계산(직접 전달 데이터셋은 자동산출 안 함)."""
+    close = _noisy(n, 0.013, seed=7, drift=0.0004)
+    pc = pd.Series(close).pct_change(1).to_numpy() * 100
+    return {"AAA": _ohlc(close, {"pct_change_1d": pc})}
+
+
 # ── 신호·포지션 IR 조각 ───────────────────────────────────────────────────────
 SIG_C = {"op": "data", "params": {"ref": "__SELF__.Close"}}
 SIG_M = {"op": "data", "params": {"ref": "__SELF__.momentum_12_1m"}}
@@ -138,6 +145,13 @@ CROSS_SIG = {"op": "select", "inputs": {
 CROSS_POS = {"direction": "long_short", "sizing": {"mode": "equal_weight"},
              "entry": {"mode": "on_signal", "threshold": 0}, "exit": {"hold_days": 0}}
 CROSS_UNI = {"kind": "single", "symbols": ["코스피200선물"]}
+
+# 단일종목 자기참조(__SELF__) — 지원지표(pct_change_1d)+지원op(compare)면 신호·결정 패널이 떠야 함(F1).
+SELF_SIG = {"op": "compare", "params": {"op": "<="},
+            "inputs": {"left": {"op": "data", "params": {"ref": "__SELF__.pct_change_1d"}},
+                       "right": {"op": "const", "params": {"value": -1.0}}}}
+SELF_POS = {"direction": "long", "sizing": {"mode": "pct_cash", "amount_pct": 20},
+            "entry": {"mode": "on_signal"}, "exit": {"hold_days": 5}}
 
 
 # ── 코퍼스 ────────────────────────────────────────────────────────────────────
@@ -222,7 +236,13 @@ EDGE_CASES = [
              "signal": TREND, "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
              "entry": {"mode": "on_signal"}, "exit": {"hold_days": 10}},
              "simulation": {"initial_capital": 1e8}, "query": "simulate"},
-         checks={"백테스트": ["일일 추가비용", "=(E"], "거래내역": ["종목"]}),
+         checks={"백테스트": ["일일 추가비용", "=(E"], "거래내역": ["종목"],
+                 "신호·결정": ["라이브 재현", "AVERAGE"]}),   # F2/F3 — MA20(ts_mean) 패널 렌더
+    dict(name="self_ref_panel", desc="단일종목 __SELF__ 자기참조(지원지표) — 신호·결정 라이브 패널(F1 회귀가드)",
+         ds=ds_self_ref, real=None,
+         ir={"universe": {"kind": "single", "symbols": ["AAA"]}, "signal": SELF_SIG, "position": SELF_POS,
+             "simulation": {"initial_capital": 1e8, "fill": "next_open"}, "query": "simulate"},
+         checks={"신호·결정": ["라이브 재현", "포지션 점수(룰)"], "원자료": ["원자료"]}),
 ]
 
 CASES = BASE_CASES + EDGE_CASES
