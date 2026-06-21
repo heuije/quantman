@@ -8,6 +8,8 @@
 >
 > 🧪 **라이브 테스트(Phase C)**: [`PHASE-C-LIVE-TEST.md`](PHASE-C-LIVE-TEST.md) = 단계별 런북 + ⚠필드 실측 체크리스트.
 > 실측 도구 = [`local/verify_ls.py`](../../local/verify_ls.py) (각 TR raw 응답 캡처 — `python verify_ls.py [--kosdaq|--order]`).
+>
+> 📚 **확장 자산군 리서치(Phase D/E/F, 2026-06-22)**: [국내선물](domestic-futures-research.md) · [해외주식](overseas-stock-research.md) · [해외선물](overseas-futures-research.md) — TR 표·Broker 매핑·특화·Gap. **🟢 4자산군 전부 LS 모의투자 지원 확정**(KIS는 해외선물 모의 미지원이었던 것과 대조).
 
 ---
 
