@@ -21,7 +21,8 @@ def test_fetch_body_p_fallback(monkeypatch):
     monkeypatch.setattr(news_body.requests, "get", lambda *a, **k: _Resp(html))
     news_body.fetch_body.cache_clear()
     body = news_body.fetch_body("http://x.com/article-1")
-    assert "첫 문단." in body and "둘째 문단." in body
+    # 추출기(trafilatura/폴백)별 구두점 간격 차이가 있어 단어 단위로 검증
+    assert "첫 문단" in body and "둘째 문단" in body
 
 
 def test_fetch_body_length_cap(monkeypatch):
