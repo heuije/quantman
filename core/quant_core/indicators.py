@@ -534,8 +534,13 @@ def get_indicator_columns() -> list[str]:
 
 
 def get_all_indicator_columns() -> list[str]:
-    """가격 기반 + 펀더멘털 지표 전체 목록."""
-    return list(BASE_INDICATOR_COLS) + list(FUND_INDICATOR_COLS)
+    """가격·펀더멘털·수급·컨센서스 지표 전체 목록.
+
+    챗봇 reference_data·NL 컴파일러 valid-ref·블록빌더 목록의 **단일 출처(SSOT)**.
+    수급(FLOW)·컨센서스(CONSENSUS)는 KR 종목 라이브 데이터(main #149) — 그 외 종목은 NaN.
+    """
+    return (list(BASE_INDICATOR_COLS) + list(FUND_INDICATOR_COLS)
+            + list(FLOW_INDICATOR_COLS) + list(CONSENSUS_INDICATOR_COLS))
 
 
 def get_indicator_label(col: str) -> str:
