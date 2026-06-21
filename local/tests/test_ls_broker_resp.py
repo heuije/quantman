@@ -106,17 +106,18 @@ def test_account_snapshot_happy_path(monkeypatch):
     b = object.__new__(ls_broker.LsBroker)
     b.account_no = "5550123401"
 
-    # A2 KB t0424 응답 예시 기반 fixture (C3/C4: tappamt/sunamt1 추가, 공식문서 대조 확인 2026-06-19)
-    # sunamt1=8000(추정D2예수금→cash), tappamt=326800(평가금액→total_eval)
-    # 구 필드 sunamt/mamt를 다른 값으로 decoy 설정해 wrong-field regression을 차단.
+    # LS t0424 fixture — 모의 라이브 실측(2026-06-20) 의미 반영:
+    #   sunamt=추정순자산(주식평가 + 예수금 = 총자산) → total_eval, sunamt1=추정D2예수금 → cash.
+    #   tappamt(평가금액=보유 시가만)·mamt(매입원가)는 decoy: total_eval로 읽으면 현금 제외/원가라
+    #   킬스위치 오발동(현금 비중 큰 계좌에서 거짓 -100%). 현금8000 + 평가326800 = 순자산334800.
     _fixture = {
         "rsp_cd": "00000",
         "t0424OutBlock": {
             "cts_expcode": "",
-            "tappamt": "326800",   # C3: 평가금액 (total_eval 소스)
-            "sunamt1": "8000",     # C4: 추정D2예수금 (cash 소스)
-            "mamt": "999999",      # decoy — 이걸 읽으면 total_eval 단언 실패
-            "sunamt": "777777",    # decoy — 이걸 읽으면 cash 단언 실패
+            "sunamt": "334800",    # 추정순자산(총자산) → total_eval 소스
+            "sunamt1": "8000",     # 추정D2예수금 → cash 소스
+            "tappamt": "326800",   # decoy — 평가금액(보유 시가만, 현금 제외): total_eval로 읽으면 실패
+            "mamt": "320000",      # decoy — 매입원가: total_eval로 읽으면 실패
             "dtsunik": "1000",
             "tdtsunik": "1200",
         },
@@ -148,7 +149,8 @@ def test_account_snapshot_happy_path(monkeypatch):
     assert "cash" in bal
     assert "total_eval" in bal
     assert bal["cash"] == 8000, f"cash는 sunamt1=8000 이어야 함 (got {bal['cash']})"
-    assert bal["total_eval"] == 326800, f"total_eval은 tappamt=326800 이어야 함 (got {bal['total_eval']})"
+    assert bal["total_eval"] == 334800, \
+        f"total_eval은 sunamt=334800(총자산) 이어야 함 — tappamt(326800)는 현금 제외→킬스위치 버그 (got {bal['total_eval']})"
     assert bal["cash_usd"] == 0.0
     assert bal["fx_usdkrw"] == 0.0
     assert bal["foreign_eval_krw"] == 0.0
@@ -508,7 +510,7 @@ def test_account_snapshot_accepts_overseas_kwarg(monkeypatch):
 
     _fixture = {
         "rsp_cd": "00000",
-        "t0424OutBlock": {"sunamt1": "5000", "tappamt": "200000"},
+        "t0424OutBlock": {"sunamt1": "5000", "sunamt": "205000", "tappamt": "200000"},
         "t0424OutBlock1": [],
     }
     monkeypatch.setattr(b, "_balance_raw", lambda: _fixture, raising=False)
@@ -517,5 +519,5 @@ def test_account_snapshot_accepts_overseas_kwarg(monkeypatch):
     snap = b.account_snapshot(overseas=False)
     assert isinstance(snap, dict)
     assert snap["balance"]["cash"] == 5000
-    assert snap["balance"]["total_eval"] == 200000
+    assert snap["balance"]["total_eval"] == 205000   # sunamt(총자산), tappamt 아님
     assert snap["positions"] == []

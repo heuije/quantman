@@ -175,7 +175,9 @@ class LsBroker:
         반환 balance:
           cash         추정D2예수금(KRW) — t0424OutBlock.sunamt1 (공식문서 대조 확인 2026-06-19)
                        ⚠ TODO(Phase C): 정확한 주문가능금액은 별도 TR CSPAQ22200 필요.
-          total_eval   평가금액(KRW) — t0424OutBlock.tappamt (공식문서 대조 확인 2026-06-19)
+          total_eval   총자산(KRW) — t0424OutBlock.sunamt(추정순자산 = 주식평가 + 예수금). 모의 실측
+                       확정(2026-06-20): tappamt(평가금액)는 보유 시가만이라 현금 제외 → 킬스위치
+                       오발동(아래 주석). KIS tot_evlu_amt(총평가=유가증권+예수금)와 동일 의미.
           cash_usd     0.0  (LS 국내 only)
           fx_usdkrw    0.0
           foreign_eval_krw  0.0
@@ -205,9 +207,13 @@ class LsBroker:
         summary = body.get("t0424OutBlock") or {}
         # cash: sunamt1 = 추정D2예수금 (공식문서 대조 확인 2026-06-19)
         # ⚠ TODO(Phase C): 정확한 주문가능금액은 별도 TR CSPAQ22200 필요.
-        # total_eval: tappamt = 평가금액 (공식문서 대조 확인 2026-06-19)
+        # total_eval: sunamt = 추정순자산(주식 평가 + 예수금 = 총자산). 모의 라이브 실측 확정(2026-06-20):
+        #   tappamt(평가금액)는 보유종목 시가만이라 현금을 제외한다 → 현금 비중 큰/미보유 계좌에서
+        #   total_eval≈0 이 되어 _unified_equity_krw(국내 equity=total_eval)가 거짓 -100%로 킬스위치를
+        #   오발동한다(−98% 부류버그 재발, trader.py:149). KIS tot_evlu_amt(총평가=유가증권+예수금)와
+        #   동일 의미의 LS 필드가 sunamt다. (probe: 보유0·현금5억 → sunamt=5억, tappamt=0)
         cash = int(float(summary.get("sunamt1") or 0))
-        total_eval = int(float(summary.get("tappamt") or 0))
+        total_eval = int(float(summary.get("sunamt") or 0))
 
         positions = []
         for it in body.get("t0424OutBlock1") or []:
