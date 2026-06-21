@@ -246,13 +246,12 @@ class LsFuturesBroker(_LsAuth):
     def overseas_buy_limit(self, symbol, qty, limit_price): return self._ov_submit(symbol, qty, "buy", "2", float(limit_price))
     def overseas_sell_limit(self, symbol, qty, limit_price): return self._ov_submit(symbol, qty, "sell", "2", float(limit_price))
 
-    def _ov_ccld_raw(self, only_unfilled: bool = False) -> dict:
+    def _ov_ccld_raw(self) -> dict:
         from datetime import datetime
         today = datetime.now().strftime("%Y%m%d")
         return self._ov._post("/overseas-futureoption/accno", "CIDBQ02400",
                               {"CIDBQ02400InBlock1": {"QrySrtDt": today, "QryEndDt": today,
-                                                      "ThdayTpCode": "1",
-                                                      "OrdStatCode": "2" if only_unfilled else "0",
+                                                      "ThdayTpCode": "1", "OrdStatCode": "0",
                                                       "OvrsDrvtFnoTpCode": "A"}})
 
     def overseas_order_status(self, order_no) -> dict:
