@@ -5,7 +5,7 @@ LsBroker와 동일 인증/HTTP(_LsAuth 상속), 선물 TR(/futureoption/*)만 �
 """
 from __future__ import annotations
 import logging
-from .ls_broker import _LsAuth, normalize_ls_order_resp
+from .ls_broker import _LsAuth, normalize_ls_order_resp, canonical_odno
 from .secrets_store import load_ls_futures
 
 log = logging.getLogger("localapp.ls_futures_broker")
@@ -102,3 +102,69 @@ class LsFuturesBroker(_LsAuth):
 
     def sell_resv_limit(self, *a, **k):
         raise NotImplementedError("국내선물 예약주문 미지원")
+
+    def cancel(self, order_no, symbol, qty):
+        resp = self._post("/futureoption/order", "CFOAT00300",
+                          {"CFOAT00300InBlock1": {
+                              "OrgOrdNo": int(order_no) if str(order_no).isdigit() else order_no,
+                              "FnoIsuNo": symbol, "CancQty": qty}}, is_order=True)
+        r = normalize_ls_order_resp(resp, ordno_field="OrdNo")
+        return {"success": r["success"], "message": r["message"], "msg_cd": r["msg_cd"]}
+
+    def _ccld_raw(self, chegb: str) -> dict:
+        return self._post("/futureoption/accno", "t0434",
+                          {"t0434InBlock": {"expcode": "", "chegb": chegb, "sortgb": "1", "cts_ordno": ""}})
+
+    def order_status(self, order_no, symbol=None, hint=None):
+        """체결 인지 — t0434 chegb='0'(전체)로 filled/cancelled 포함 조회(lesson #3).
+        ⚠ G-DF3: status 문자열 실측 전 — '취소' 포함 시 cancelled, 그 외 cheqty/ordrem로 판정."""
+        try:
+            rows = self._ccld_raw("0").get("t0434OutBlock1") or []
+        except Exception as e:
+            log.warning("LS선물 order_status 실패 [%s]: %s", order_no, e)
+            return {"order_no": order_no, "status": "unknown", "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
+        for row in rows:
+            if canonical_odno(row.get("ordno")) != canonical_odno(order_no):
+                continue
+            che = int(float(row.get("cheqty") or 0))
+            rem = int(float(row.get("ordrem") or 0))
+            status = str(row.get("status") or "")
+            if "취소" in status:
+                st = "cancelled"
+            elif rem == 0 and che > 0:
+                st = "filled"
+            elif che > 0:
+                st = "partial"
+            else:
+                st = "submitted"
+            return {"order_no": order_no, "status": st, "filled_qty": che, "remain_qty": rem,
+                    "fill_price": float(row.get("cheprice") or row.get("price") or 0)}
+        return {"order_no": order_no, "status": "unknown", "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
+
+    def pending_orders(self):
+        try:
+            rows = self._ccld_raw("2").get("t0434OutBlock1") or []
+        except Exception as e:
+            log.warning("LS선물 pending 실패: %s", e)
+            return []
+        out = []
+        for row in rows:
+            if str(row.get("orgordno") or "0") not in ("0", "", "00000000000"):   # 정정/취소행 제외(lesson #7)
+                continue
+            rem = int(float(row.get("ordrem") or 0))
+            if rem <= 0:
+                continue
+            out.append({"order_no": str(row.get("ordno") or ""), "symbol": str(row.get("expcode") or "").strip(),
+                        "side": "buy" if str(row.get("medosu") or "") == "매수" else "sell",
+                        "qty": int(float(row.get("qty") or 0)), "remain_qty": rem,
+                        "limit_price": float(row.get("price") or 0),
+                        "market": "DOMESTIC", "currency": "KRW", "asset_class": "futures"})
+        return out
+
+    def orderable_qty(self, symbol, price, side="buy"):
+        body = self._post("/futureoption/accno", "CFOAQ10100",
+                          {"CFOAQ10100InBlock1": {"RecCnt": 1, "QryTp": "1", "FnoIsuNo": symbol,
+                                                  "BnsTpCode": "2" if side == "buy" else "1",
+                                                  "FnoOrdPrc": float(price), "FnoOrdprcPtnCode": "00",
+                                                  "OrdAmt": 0, "RatVal": 0}})
+        return int(float((body.get("CFOAQ10100OutBlock2") or {}).get("NewOrdAbleQty") or 0))

@@ -110,3 +110,47 @@ def test_resv_not_implemented():
         b.buy_resv_limit("101V6000", 1, 342.0)
     with pytest.raises(NotImplementedError):
         b.sell_resv_limit("101V6000", 1, 342.0)
+
+
+def test_order_status_filled_from_t0434(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_ccld_raw", lambda chegb: {"t0434OutBlock1": [
+        {"ordno": "777", "orgordno": "0", "qty": "1", "cheqty": "1", "ordrem": "0",
+         "cheprice": "343.10", "status": "완료"}]}, raising=False)
+    st = b.order_status("777", symbol="101V6000")
+    assert st["status"] == "filled" and st["filled_qty"] == 1 and st["fill_price"] == 343.10
+
+
+def test_order_status_cancelled(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_ccld_raw", lambda chegb: {"t0434OutBlock1": [
+        {"ordno": "5", "orgordno": "0", "qty": "1", "cheqty": "0", "ordrem": "0", "status": "취소완료"}]}, raising=False)
+    assert b.order_status("5", symbol="101V6000")["status"] == "cancelled"
+
+
+def test_order_status_unknown_when_absent(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_ccld_raw", lambda chegb: {"t0434OutBlock1": []}, raising=False)
+    assert b.order_status("999", symbol="101V6000")["status"] == "unknown"
+
+
+def test_pending_excludes_modify_cancel_rows(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_ccld_raw", lambda chegb: {"t0434OutBlock1": [
+        {"ordno": "10", "orgordno": "0", "qty": "2", "cheqty": "0", "ordrem": "2", "medosu": "매수", "price": "342.0", "expcode": "101V6000"},
+        {"ordno": "11", "orgordno": "10", "qty": "2", "cheqty": "0", "ordrem": "2", "medosu": "매수", "price": "342.0", "expcode": "101V6000"}]}, raising=False)
+    pend = b.pending_orders()
+    assert len(pend) == 1 and pend[0]["order_no"] == "10" and pend[0]["side"] == "buy"
+
+
+def test_cancel_normalizes(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_post", lambda p, t, body, **k: {"CFOAT00300OutBlock2": {"OrdNo": "99"}}, raising=False)
+    r = b.cancel("10", "101V6000", 2)
+    assert r["success"] is True and "order_no" not in r
+
+
+def test_orderable_qty(monkeypatch):
+    b = _broker()
+    monkeypatch.setattr(b, "_post", lambda p, t, body, **k: {"CFOAQ10100OutBlock2": {"NewOrdAbleQty": "3"}}, raising=False)
+    assert b.orderable_qty("101V6000", 342.0) == 3
