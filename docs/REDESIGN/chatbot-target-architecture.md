@@ -155,7 +155,12 @@ seam 정비는 이 레지스트리 패턴을 verb/result/render에 복제한다.
   reutersCode resolve→worldstock)·크립토(비트코인→Binance 24hr) 자동 분류·라우팅. `_fx`(원/달러)는 market_snapshot
   합류. context는 KR전용 `_naver_quotes`→`quotes_for` 통합(describe/select가 US·크립토도 시세 표시)·quote 형상
   {close}→{price} 일원화. 라이브검증(삼성354000·AAPL298·비트코인64255·원달러1533).
-  **잔여(동일 모듈):** 선물 준실시간(KIS=실시간이나 로컬전용 경계 / naver 선물 코드 미확정)·상품(naver 코드 미확정).
+  **확장 ✅ 선물·상품** (커밋 3760794): 해외 선물·상품=**Yahoo v8 chart**(무인증·~10분 지연·엔진 yfinance와 동일 소스:
+  원유CL=F·금GC=F·천연가스NG=F·나스닥선물NQ=F·은선물SI=F·S&P선물) · 국내 **코스피200선물**=네이버 `domestic/index/FUT`
+  (실시간). `quotes_for`가 엔진 자산명(원유선물·금선물·코스피200선물…)으로 자동 분류. 라이브검증(원유76.54·금4172.9·
+  코스피200선물1476.5). → **거래자산 현재가 전 범주 커버**(주식·지수·선물·상품·환율·VIX·크립토).
+  **잔여:** 해외선물 **true-tick 실시간**(Yahoo는 ~10분 지연)=KIS 해외선물(로컬 전용 경계)·paid 피드뿐. 발표/계산
+  통계(거시·신용·심리·펀더·컨센서스·수급)는 "현재가" 개념 부적용(정상).
 
 ### Phase 5 — 프런티어 ✅ **완료** (브랜치 feat/chat-frontier)
 - 5a. ✅ 상관 `relation_kind="correlation"` → `CorrelationHeatmap`(±상관 빨강/파랑). Q4 전반.
