@@ -454,7 +454,7 @@ export interface IrStrategyResult extends BacktestResult {
   shape?: string;
   // P4 context 사이드카 — 서버가 엔진 밖에서 붙인 준실시간 시세·뉴스·시장스냅샷(골든 무누출·표시 전용).
   context?: {
-    quotes?: Record<string, { close: number | null; chg: number | null }>;
+    quotes?: Record<string, { price: number | null; chg: number | null; change?: number | null }>;
     news?: { title: string; link: string; desc?: string; pub?: string }[];
     market?: Record<string, { price: number | null; chg: number | null; change?: number | null }>;
     source?: string;

@@ -2,24 +2,19 @@
 
 골든 불변식 보호: 엔진(strategy_from_spec)이 결과를 낸 **뒤** 서버 엣지에서만 붙는다 —
 dataset·백테스트엔 미누출(시세·뉴스는 라이브 네트워크·키 의존이라 결정성 밖). 모델 해석
-요약(summarize)·웹 맥락 카드 전용. 시세=네이버 준실시간(_naver_quotes 재사용, 공개 시세
-조회라 KIS 보안경계 밖)·뉴스=news_kr(단일종목 '왜 움직였나'). 실패는 graceful(context
-없음) — 부가 정보가 정상 결과를 깨지 않는다(_attach_symbol_news 패턴의 다대상·다모달 일반화).
+요약(summarize)·웹 맥락 카드 전용. 시세=live_quote 통합(네이버 KR/US 주식·지수·환율·VIX +
+Binance 크립토, 공개 조회라 KIS 보안경계 밖)·뉴스=news_kr(단일종목 '왜 움직였나'). 실패는
+graceful(context 없음) — 부가 정보가 정상 결과를 깨지 않는다(_attach_symbol_news 일반화).
 """
 from __future__ import annotations
-
-import re
 
 from quant_core.data.feeds import news_kr
 
 from .. import kis_master_cache, live_quote
-from ..industry import _bucket, _naver_quotes
-
-_KR_CODE = re.compile(r"^\d{6}$")
 
 
 def _target_symbols(result: dict) -> list[str]:
-    """결과 형상별 '대표 종목' — 준실시간 시세를 붙일 대상(KR 6자리 코드만; 네이버 국내 시세)."""
+    """결과 형상별 '대표 종목' — 준실시간 시세 대상. 분류·라우팅(KR/US/크립토)은 live_quote.quotes_for가 담당."""
     shape = result.get("shape")
     syms: list[str] = []
     if shape == "describe_single":
@@ -29,7 +24,7 @@ def _target_symbols(result: dict) -> list[str]:
     elif shape == "describe_portfolio":
         syms = [str(h.get("symbol") or "") for h in (result.get("holdings") or [])
                 if isinstance(h, dict)]
-    return [s for s in syms if _KR_CODE.match(s)]
+    return [s for s in syms if s]
 
 
 def attach_context(result: dict) -> dict:
@@ -45,7 +40,7 @@ def attach_context(result: dict) -> dict:
     syms = _target_symbols(result)
     if syms:
         try:
-            quotes = _naver_quotes(tuple(syms), _bucket())   # {code: {close, chg}} 준실시간(~90초)
+            quotes = live_quote.quotes_for(tuple(syms))   # KR·US·크립토 자동 분류 {sym:{price,chg,change}}
             if quotes:
                 ctx["quotes"] = quotes
         except Exception:   # noqa: BLE001 — 부가 시세 실패가 결과를 깨지 않게

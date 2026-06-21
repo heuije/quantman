@@ -106,7 +106,7 @@ def _context_block(result: Any) -> str:
         return ""
     parts: list[str] = []
     quotes = ctx.get("quotes") or {}
-    qs = ", ".join(f"{c} {_f(v.get('close'), 0)}({_f(v.get('chg'))}%)"
+    qs = ", ".join(f"{c} {_f(v.get('price'), 0)}({_f(v.get('chg'))}%)"
                    for c, v in list(quotes.items())[:6] if isinstance(v, dict))
     if qs:
         parts.append(f"준실시간 시세 {qs}")

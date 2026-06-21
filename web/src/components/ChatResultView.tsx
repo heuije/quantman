@@ -294,7 +294,7 @@ function ContextCard({ context }: { context?: IrStrategyResult["context"] }) {
           <span className="chat-context-label">준실시간</span>
           {quotes.slice(0, 8).map(([code, q]) => (
             <span key={code} className="chat-context-quote">
-              {code} {q.close != null ? q.close.toLocaleString() : "—"}
+              {code} {q.price != null ? q.price.toLocaleString() : "—"}
               {q.chg != null && (
                 <span className={q.chg >= 0 ? "pos" : "neg"}>
                   {" "}{q.chg >= 0 ? "+" : ""}{q.chg.toFixed(2)}%
