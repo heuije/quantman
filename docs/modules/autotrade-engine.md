@@ -29,6 +29,12 @@
 
 - **2번째 브로커 = Broker Protocol 구현체 1개 + `make_broker` 분기로 끝 — 전략/백테스트/데이터 무변경.** LS증권을 KIS에 이어 추가(`ls_broker.py`). 선택=`secrets_store.active_broker` SSOT("kis"|"ls", 기본 kis→KIS byte-identical). **신규 브로커는 KIS 라이브 레슨을 day-1 이식**(주문응답 정규화·부분조회 실패 `fetch_failed` 마커·토큰 계정지문 캐시). **미검증 외부필드는 ⚠ 초안 + 테스트는 우리 계약(출력형)만 잠그고 입력 fixture는 가정** → 키 도착 시 fixture 교체(완료선언은 모의 E2E 후). ⚠ **`load_kis()`/`if kis:`로 브로커 동작을 게이트하는 사이트는 부류** — 신규 브로커 추가 시 `active_cred_ok()`류로 전수 치환(cycle·web명령·잔고·wizard·하드와이어 `KisBroker()`). 〔작성: 조대표〕
 
+- **브로커 자산군 확장 = 자산군별 *단일 파일* 스코프 → KIS/공유파일 무변경이면 byte-identical이 자동(diff 노력 불요).** LS 4자산군 확장(국내주식·국내선물·해외주식·해외선물)에서 각 자산군은 **하나의 LS 파일만** 건드린다: 해외주식=`ls_broker.py`에 시장판정 내부분기(`_detect_market`로 국내/미국), 선물=`ls_futures_broker.py`. **시장판정은 브로커 무관 `market_index`(심볼→거래소) 재사용** — LS 전용 거래소코드(82/81)만 LS 파일에 둔다. `broker_router.py`는 이미 선물 CME→`overseas_*` 라우팅·CME price=0.0(dataset fallback)·CME cancel=NotImplemented를 갖춰 **무변경**. 〔작성: 조대표〕
+- **해외(USD) 자산군은 브로커가 *KRW 환산* equity를 제공해야 — killswitch는 통화무인지(`_unified_equity_krw`가 단일 합산점).** 해외주식=`foreign_eval_krw=(usd_cash+Σqty·eval)×fx` 직접계산·해외선물=`equity=EvalAssetAmt(USD)×Xchrat`. **환율 미수신(fx/Xchrat≤0) 시 raise → 라우터가 `fetch_failed` 표식 → killswitch 보류**; *절대 0 반환 금지*(보유분을 평가금0으로 읽어 −98% 거짓청산 재발하는 부류). KIS 해외선물은 `CRCY_CD=TKR`로 서버가 KRW 직접 환산하지만 LS는 USD라 클라이언트 환산이 정답. 〔작성: 조대표〕
+- **선물 듀얼 인증: 해외선물 계좌는 별도 토큰 컨텍스트.** `KisFuturesBroker`가 도메스틱(`load_kis_futures`)+해외(`load_kis_overseas_futures`) 자격증명을 둘 다 읽고 `_ov_token` 별도 보유하듯, `LsFuturesBroker`도 `self._post`=도메스틱(_LsAuth 상속) + `self._ov=_LsAuth(해외자격증명)` 별도 컨텍스트. 같은 appkey면 토큰캐시 공유·다른 appkey면 별도 — 계좌단위 API(AcntNo 토큰귀속 vs body)의 불확실성에 robust. 〔작성: 조대표〕
+- **라우터가 호출 안 하는 브로커 메서드는 추가 금지(4원칙#2).** 해외선물 `overseas_price`/`overseas_pending_orders`/`overseas_orderable_qty`는 라우터가 CME에 0.0/stock위임/미사용이라 LS 미구현(추가 시 dead surface). 같은 이유로 안 쓰는 함수 인자(예: `_ov_ccld_raw(only_unfilled)` — pending 미포팅이라 무호출)는 제거. 최종 종합리뷰가 이런 dead surface를 포착하는 마지막 게이트. 〔작성: 조대표〕
+- **미검증 외부필드 부류는 ⚠+gap-id+*안전 실패*로 봉인 → 모의 E2E서 일괄 실측.** 신규 증권사 응답필드·심볼 마스터는 키 없이 100% 확정 불가. 코드는 안전쪽으로: 심볼 resolve 실패→None→발주 skip(오발주 0)·조회 실패→raise→fetch_failed(보류). 단위테스트는 *출력 계약*만 잠그고 입력 fixture는 research 가정. 완료선언은 모의 E2E 후(4원칙#4). 〔작성: 조대표〕
+
 ## 현재 구조 (안정)
 
 **기능.** 웹에서 만든 전략을 **사용자 PC의 로컬앱**이 KIS API로 모의/실전 자동 실행. 국내주식·국내선물·해외선물 지원. 백테스트와 **동일 IR**로 돌아 backtest=live 일치 보장.
