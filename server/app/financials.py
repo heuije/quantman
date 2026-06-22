@@ -149,7 +149,7 @@ def _add_pl_metrics(period: dict) -> None:
     dep = find(cf, lambda a: "감가상각" in a and "대손" not in a)
     amo = find(cf, lambda a: "무형자산" in a and "상각" in a and "대손" not in a)
     ebitda = None
-    if op:
+    if op and (dep or amo):     # D&A를 못 찾으면(예: DART 표준 CF) EBITDA=영업이익 오해 방지 → 생략
         def at(row, i):
             return row["values"][i] if (row and i < len(row["values"])) else None
         ev = []
@@ -176,6 +176,39 @@ def _add_pl_metrics(period: dict) -> None:
     pl["rows"] = new
 
 
+def _graft_sga(fg_pl: dict | None, dart_pl: dict | None) -> None:
+    """FnGuide 연간 PL의 판관비 상세(인건비·연구개발비·판매비·관리비 등)를 DART 연간 PL의
+    '판매비와관리비' 바로 아래에 이식. DART CIS는 판관비를 단일행으로만 줘 상세가 없다(분기는 FnGuide라 있음)."""
+    if not fg_pl or not dart_pl:
+        return
+    fg_rows = fg_pl.get("rows") or []
+    fg_periods = fg_pl.get("periods") or []
+    norm = lambda s: (s or "").replace(" ", "")
+    names = [norm(r.get("account")) for r in fg_rows]
+    if "판매비와관리비" not in names:
+        return
+    i_sga = names.index("판매비와관리비")
+    i_op = next((i for i in range(i_sga + 1, len(names)) if names[i] in ("영업이익", "영업이익(손실)")), len(fg_rows))
+    subs = [r for r in fg_rows[i_sga + 1:i_op] if not r.get("pct")]
+    d_rows = dart_pl.get("rows") or []
+    d_periods = dart_pl.get("periods") or []
+    j = next((i for i, r in enumerate(d_rows) if norm(r.get("account")) == "판매비와관리비"), None)
+    if j is None or not subs:
+        return
+    fp_idx = {p: i for i, p in enumerate(fg_periods)}
+    grafted = []
+    for r in subs:
+        rv = r.get("values") or []
+        vals = [(rv[fp_idx[p]] if (p in fp_idx and fp_idx[p] < len(rv)) else None) for p in d_periods]
+        if all(v is None for v in vals):
+            continue
+        grafted.append({"account": r.get("account", ""), "values": vals,
+                        "change": [None] * len(vals), "bold": False,
+                        "parent": False, "child": True, "group": "판매비와관리비"})
+    if grafted:
+        dart_pl["rows"] = d_rows[:j + 1] + grafted + d_rows[j + 1:]
+
+
 def _fetch(code: str) -> dict:
     r = requests.get("https://comp.fnguide.com/SVO2/ASP/SVD_Finance.asp",
                      params={"pGB": 1, "gicode": f"A{code}"}, headers=_UA, timeout=20)
@@ -188,6 +221,22 @@ def _fetch(code: str) -> dict:
         quarterly[key] = _with_change(_parse_div(soup, div_q, annual=False))
     _add_pl_metrics(annual)      # 이익률·EBITDA 하위행 1회 계산·삽입(저장본에 포함)
     _add_pl_metrics(quarterly)
+    # 연간은 DART 전자공시 5개년으로 교체(키 있고 성공 시). 분기는 FnGuide 유지.
+    try:
+        from .config import settings
+        if settings.OPENDART_API_KEY:
+            from . import dart
+            draw = dart.fetch(code)
+            if draw and (draw.get("annual") or {}).get("PL"):
+                d_annual = draw["annual"]
+                for k in ("PL", "BS", "CF"):
+                    if d_annual.get(k):
+                        _with_change(d_annual[k])
+                _add_pl_metrics(d_annual)
+                _graft_sga(annual.get("PL"), d_annual.get("PL"))   # FnGuide 판관비 상세 → DART 연간 이식
+                annual = d_annual    # 5개년 DART 연간으로 교체
+    except Exception:
+        _log.exception("DART 5개년 연간 병합 실패 — FnGuide 연간 유지 %s", code)
     return {"fetched": date.today().isoformat(), "annual": annual, "quarterly": quarterly}
 
 
@@ -254,20 +303,49 @@ def clear_cache() -> None:
 
 
 def to_xlsx(code: str) -> bytes:
-    """재무제표 전체(연간·분기 × 손익/재무/현금)를 .xlsx 바이트로 — 사용자 다운로드용.
+    """재무제표(연간·분기 × 손익/재무/현금) .xlsx — 사용자 다운로드용.
 
-    시트 = '연간_손익계산서' 등 6개. 각 시트: 계정 × 기간 값 표 + 증감률(YoY/QoQ) 행.
-    파생/비율 행(이익률·EBITDA 등)도 저장본 그대로 포함. 값 없으면 빈 칸."""
+    양식(사용자 수정본 기준): A열 여백·B열부터 / B1 로고·헤더 = 네이비(#0F243E)+흰 글자 / 한글 맑은 고딕·
+    숫자 Arial / 제목 외 9pt / 눈금선 제거 / 금액=백만원·정수표시(#,##0)이되 셀 값은 소수 풀정밀도 보존 /
+    FY헤더·숫자 우측정렬 / yoy(%)·이익률은 표 하단 별도 섹션(전년대비 증감 / Margins)으로 모음."""
     import io
     from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment
+    from openpyxl.styles import Font, Alignment, PatternFill
     from openpyxl.utils import get_column_letter
 
+    NAVY = "FF0F243E"   # 로고·헤더 셀색(사용자 수정본과 동일)
+    GRAY = "FF646464"
+    DARK = "FF222222"
+    WHITE = "FFFFFFFF"
+    AMT_FMT = "#,##0;(#,##0);-"   # 정수 표시(수정본 동일) — 셀 값은 소수 풀정밀도 보존
+    PCT_FMT = '0.0"%"'            # 이익률(값이 이미 %)
+    YOY_FMT = "0.0%;(0.0%);-"     # RATE 결과(소수) → %
+    head_fill = PatternFill("solid", fgColor=NAVY)
+
+    def fname(text):
+        return "Arial" if str(text if text is not None else "").isascii() else "맑은 고딕"
+
+    def plabel(p, quarterly):
+        try:
+            y, m = p.split("/")
+        except ValueError:
+            return p
+        if quarterly:
+            return f"{({'03': 1, '06': 2, '09': 3, '12': 4}).get(m, m)}Q{y[2:]}"
+        return f"FY{y[2:]}"
+
     data = financials(code)
+    try:
+        from . import kis_master_cache
+        name = kis_master_cache.get_name(str(code).strip()) or str(code)
+    except Exception:
+        name = str(code)
     labels = {"PL": "손익계산서", "BS": "재무상태표", "CF": "현금흐름표"}
     wb = Workbook()
     wb.remove(wb.active)
-    for pdata, tag in [(data.get("annual") or {}, "연간"), (data.get("quarterly") or {}, "분기")]:
+
+    for pdata, tag, quarterly in [((data.get("annual") or {}), "연간", False),
+                                  ((data.get("quarterly") or {}), "분기", True)]:
         for key in ("PL", "BS", "CF"):
             st = pdata.get(key) or {}
             periods = st.get("periods") or []
@@ -275,23 +353,83 @@ def to_xlsx(code: str) -> bytes:
             if not periods or not rows:
                 continue
             ws = wb.create_sheet(f"{tag}_{labels[key]}"[:31])
-            ws.append(["계정"] + list(periods))
-            for c in ws[1]:
-                c.font = Font(bold=True)
-                c.alignment = Alignment(horizontal="center")
+            ws.sheet_view.showGridLines = False
+            np_ = len(periods)
+            c0, v0 = 2, 3                       # 계정=B, 첫 값=C (A는 여백)
+            last = get_column_letter(v0 + np_ - 1)
+
+            def put(r, c, val, *, font_name=None, bold=False, color=GRAY, size=9,
+                    align="left", indent=0, fmt=None, fill=None):
+                cell = ws.cell(row=r, column=c, value=val)
+                cell.font = Font(name=font_name or fname(val), bold=bold, size=size, color=color)
+                cell.alignment = Alignment(horizontal=align, vertical="center", indent=indent)
+                if fmt:
+                    cell.number_format = fmt
+                if fill:
+                    cell.fill = fill
+
+            # B1 로고 / B2 종목 / B3 단위
+            ws.merge_cells(f"B1:{last}1")
+            put(1, c0, "MYSTOCK", font_name="Arial", bold=True, color=NAVY, size=20)
+            ws.row_dimensions[1].height = 30
+            ws.merge_cells(f"B2:{last}2")
+            put(2, c0, f"{name} - {code}", bold=True, color=DARK, size=14)
+            ws.merge_cells(f"B3:{last}3")
+            put(3, c0, f"{tag} {labels[key]}  (단위: 백만원, 비율: %)", color=GRAY, size=9)
+
+            # 4행 헤더(퍼플 + 흰 글자)
+            put(4, c0, "계정", bold=True, color=WHITE, fill=head_fill)
+            for j, p in enumerate(periods):
+                put(4, v0 + j, plabel(p, quarterly), font_name="Arial", bold=True,
+                    color=WHITE, align="right", fill=head_fill)
+
+            # 데이터 — 금액 계정(값만). yoy·이익률은 하단 섹션으로 모음.
+            ri = 5
+            margins = []
+            accs = []   # (계정명, 엑셀행, bold) — 하단 YoY 섹션용
             for r in rows:
-                is_pct = bool(r.get("pct"))
+                if r.get("pct"):
+                    margins.append(r)
+                    continue
+                bold = bool(r.get("bold"))
                 vals = r.get("values") or []
-                ws.append([r.get("account", "")] + [(v if v is not None else None) for v in vals])
-                row_i = ws.max_row
-                for j in range(len(vals)):
-                    cell = ws.cell(row=row_i, column=2 + j)
-                    cell.number_format = "0.0" if is_pct else "#,##0;(#,##0);-"
-                    cell.alignment = Alignment(horizontal="right")
-            ws.column_dimensions["A"].width = 30
-            for i in range(len(periods)):
-                ws.column_dimensions[get_column_letter(2 + i)].width = 14
-            ws.freeze_panes = "B2"
+                put(ri, c0, r.get("account", ""), bold=bold, color=GRAY, indent=0 if bold else 1)
+                for j, v in enumerate(vals):
+                    put(ri, v0 + j, (None if v is None else v * 100), font_name="Arial",
+                        bold=bold, color=GRAY, align="right", fmt=AMT_FMT)
+                accs.append((r.get("account", ""), ri, bold))
+                ri += 1
+
+            # 하단 ① 전년대비 증감(YoY %) — 전 계정 모아서. RATE(1,0,-전기,당기)=당기/전기-1.
+            if accs:
+                ri += 1
+                put(ri, c0, "전년대비 증감 (YoY %)", bold=True, color=DARK)
+                ri += 1
+                for nm, arow, bold in accs:
+                    put(ri, c0, nm, bold=bold, color=GRAY, indent=0 if bold else 1)
+                    for j in range(1, np_):
+                        pcol, ccol = get_column_letter(v0 + j - 1), get_column_letter(v0 + j)
+                        put(ri, v0 + j, f'=IFERROR(RATE(1,0,-{pcol}{arow},{ccol}{arow}),"n/a")',
+                            font_name="Arial", color=GRAY, align="right", fmt=YOY_FMT)
+                    ri += 1
+
+            # 하단 ② Margins(손익 — 이익률 %)
+            if margins:
+                ri += 1
+                put(ri, c0, "Margins", bold=True, color=DARK)
+                ri += 1
+                for r in margins:
+                    put(ri, c0, r.get("account", ""), color=GRAY, indent=1)
+                    for j, v in enumerate(r.get("values") or []):
+                        put(ri, v0 + j, (None if v is None else v), font_name="Arial",
+                            color=GRAY, align="right", fmt=PCT_FMT)
+                    ri += 1
+
+            ws.column_dimensions["A"].width = 2.4
+            ws.column_dimensions["B"].width = 34
+            for i in range(np_):
+                ws.column_dimensions[get_column_letter(v0 + i)].width = 18
+            ws.freeze_panes = "C5"
     if not wb.sheetnames:
         wb.create_sheet("재무제표").append(["재무 데이터가 없습니다."])
     buf = io.BytesIO()

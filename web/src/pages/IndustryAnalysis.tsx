@@ -19,6 +19,9 @@ const eok = (v: number | null) => v == null ? "—" : `${Math.round(v / 1e8).toL
 
 // 등락률 → 색 (Finviz 맵 팔레트): 보합·결측=회색, 상승=초록 / 하락=빨강, ±3%에서 최대 채도.
 const FRAME = "#363c45";   // 대분류(구분/단계) 헤더 띠 = 진회색
+// 스트림(구분)별 프레임 색 — 동일 색조에서 명도/채도 차등(Mid=기준, Up=옅게, Down으로 갈수록 진하게).
+const STREAM_FRAME: Record<string, string> = { Upstream: "#4a525f", Midstream: "#363c45", Downstream: "#222730" };
+const frameOf = (gu: string) => STREAM_FRAME[gu] || FRAME;
 function colorByChg(chg: number | null): string {
   if (chg == null) return "#2b2f38";
   const t = Math.max(-1, Math.min(1, chg / 3));
@@ -31,27 +34,37 @@ function colorByChg(chg: number | null): string {
 
 const GU_ORDER = ["Upstream", "Midstream", "Downstream"];
 const ROOT_ID = "2차전지";
-// 산업 탭 상위 구분 — 한국 증시 표준 섹터분류 WICS 10개 대분류. 현재 없는 대분류도 '쭉' 깔아
-// 전체 산업 지도를 보여주고(준비 중), 기존 산업을 해당 대분류에 매핑. (출처: WICS/FnGuide)
-const INDUSTRY_GROUPS: { label: string; items: string[] }[] = [
-  { label: "에너지", items: [] },
-  { label: "소재", items: ["석유화학", "2차전지"] },
+// 산업 탭 상위 구분 — WICS 대분류 기반, 사용자 요청 반영. 석유화학·2차전지는 상위탭 분리,
+// 소비재(필수/경기)는 한 대분류로 묶고 하위 분류로 표시. 없는 대분류도 '준비 중'으로 노출.
+// 대분류는 items(직접 산업) 또는 subgroups(하위분류별 산업) 중 하나를 가짐.
+type IndustryGroup = { label: string; items?: string[]; subgroups?: { label: string; items: string[] }[] };
+const INDUSTRY_GROUPS: IndustryGroup[] = [
+  { label: "석유화학", items: ["석유화학"] },
+  { label: "2차전지", items: ["2차전지"] },
+  { label: "반도체.IT", items: ["반도체", "전자부품"] },
   { label: "산업재", items: ["건설"] },
-  { label: "경기소비재", items: ["화장품"] },
-  { label: "필수소비재", items: [] },
-  { label: "건강관리", items: [] },
+  { label: "소비재", subgroups: [
+    { label: "필수소비재", items: ["화장품"] },
+    { label: "경기소비재", items: ["교육출판업"] },
+  ] },
   { label: "금융", items: ["금융"] },
-  { label: "IT", items: ["반도체", "전자부품"] },
-  { label: "커뮤니케이션서비스", items: [] },
+  { label: "건강기능식품", items: [] },
+  { label: "미디어 엔터테인먼트", items: ["미디어엔터테인먼트"] },
+  { label: "에너지", items: [] },
+  { label: "소재", items: [] },
   { label: "유틸리티", items: [] },
 ];
+// 대분류가 직접/하위 통틀어 보유한 산업 목록(평탄화).
+const groupIndustries = (g: IndustryGroup): string[] =>
+  g.items ?? (g.subgroups ?? []).flatMap((s) => s.items);
 // 트리맵 타일 표시 크기 보정 — 초대형주가 화면을 가려 다른 종목이 안 보이는 문제 방지.
 // 표시 크기만 줄이고 툴팁·시총·M/S는 실제값 유지. ref="maxOther"=보정대상 제외 최대 시총,
 // ref=티커=그 종목 시총. 보정 표시값 = 기준 × factor (시총이 변해도 데이터에서 자동 계산).
 const TM_CAP: Record<string, { ref: string; factor: number }> = {
   "005930": { ref: "maxOther", factor: 1.2 },  // 삼성전자 = 최대 비초대형주 × 1.2
   "000660": { ref: "maxOther", factor: 1.2 },  // SK하이닉스 = 최대 비초대형주 × 1.2
-  "009150": { ref: "011070", factor: 2.0 },    // 삼성전기 = LG이노텍 × 2
+  "009150": { ref: "maxOther", factor: 1.3 },  // 삼성전기 = 최대 비초대형주 × 1.3 (반도체 삼성전자 수준 보정)
+  "011070": { ref: "maxOther", factor: 1.15 }, // LG이노텍 = 최대 비초대형주 × 1.15
 };
 
 type PlotlyEvt = { points?: { id?: string; customdata?: (string | number)[] }[]; event?: MouseEvent };
@@ -107,14 +120,14 @@ function IndustryTreemap({ companies, onPick, rootId = ROOT_ID }:
       const inGu = valid.filter((c) => c.gu === gu);
       if (!inGu.length) continue;
       const gid = `${rootId}/${gu}`;
-      add(gid, gu, rootId, 0, FRAME, "", [sumT(inGu), "", "", ""]);
+      add(gid, gu, rootId, 0, frameOf(gu), "", [sumT(inGu), "", "", ""]);
       // 단계는 산업마다 달라 하드코딩 목록 대신 **데이터에서** 추출(백엔드가 이미 단계순 정렬).
       const stagesInGu = [...new Set(inGu.map((c) => c.stage))];
       for (const dan of stagesInGu) {
         const inDan = inGu.filter((c) => c.stage === dan);
         if (!inDan.length) continue;
         const did = `${gid}/${dan}`;
-        add(did, dan, gid, 0, FRAME, "", [sumT(inDan), "", "", ""]);
+        add(did, dan, gid, 0, frameOf(gu), "", [sumT(inDan), "", "", ""]);
         for (const det of [...new Set(inDan.map((c) => c.detail))]) {
           const inDet = inDan.filter((c) => c.detail === det);
           const dtid = `${did}/${det}`;
@@ -214,8 +227,25 @@ function IndustryTreemap({ companies, onPick, rootId = ROOT_ID }:
 
   useEffect(() => () => { const el = ref.current; if (el) Plotly.purge(el); }, []);
 
+  // 트리맵 고화질 PNG 저장(Plotly downloadImage — scale로 해상도 2배).
+  const saveImage = () => {
+    if (!ref.current) return;
+    (Plotly as unknown as { downloadImage: (el: HTMLElement, o: object) => void })
+      .downloadImage(ref.current, { format: "png", filename: `${rootId}_트리맵`, width: 2400, height: 1500, scale: 2 });
+  };
+
   return (
-    <div>
+    <div style={{ position: "relative" }}>
+      <button type="button" className="ghost sm" onClick={saveImage}
+        title="트리맵을 고화질 PNG 이미지로 저장"
+        style={{ position: "absolute", top: 8, right: 8, zIndex: 6, display: "inline-flex", alignItems: "center",
+          gap: 6, fontSize: 12, padding: "5px 11px" }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        이미지 저장
+      </button>
       <div ref={ref} style={{ width: "100%", minHeight: 900, background: "#0c0f15", borderRadius: 6 }} />
       {hover && (() => {
         const peers = companies.filter((c) => c.stage === hover.stage && c.detail === hover.detail)
@@ -291,7 +321,17 @@ const TIP = { contentStyle: { fontSize: 12, padding: "8px 11px", borderRadius: 8
   labelStyle: { fontSize: 12, fontWeight: 700, marginBottom: 5 }, itemStyle: { fontSize: 12, padding: "1px 0" } };
 
 // 선택 종목의 추정 실적 + 애널리스트 리포트 — 개별종목분석(KrSections)의 표를 그대로 재사용.
-export function CompanyReport({ ticker, company }: { ticker: string; company?: IndustryCompany }) {
+// 투자의견 — 상승여력 기준. Strong Buy(≥+30%)·Buy(+10~30%)·Trading Buy(0~+10%)·Sell(<0%).
+const RATING_RULE = "투자의견 = 상승여력 기준: Strong Buy(≥ +30%) · Buy(+10~30%) · Trading Buy(0~+10%) · Sell(< 0%)";
+function ratingOf(up: number | null): { label: string; color: string; bg: string } | null {
+  if (up == null) return null;
+  if (up >= 30) return { label: "Strong Buy", color: "#1f9d57", bg: "rgba(31,157,87,0.18)" };
+  if (up >= 10) return { label: "Buy", color: "#2ea65a", bg: "rgba(46,166,90,0.16)" };
+  if (up > 0) return { label: "Trading Buy", color: "#2f6fb5", bg: "rgba(47,111,181,0.16)" };
+  return { label: "Sell", color: "#e0504f", bg: "rgba(224,80,79,0.16)" };
+}
+
+export function CompanyReport({ ticker, company, name }: { ticker: string; company?: IndustryCompany; name?: string }) {
   const [kr, setKr] = useState<KrExtras | null>(null);
   const [cur, setCur] = useState<number | null>(null);   // 현재가(상승여력 계산용)
   const [busy, setBusy] = useState(false);
@@ -364,31 +404,17 @@ export function CompanyReport({ ticker, company }: { ticker: string; company?: I
 
   if (busy) return <p style={{ color: "var(--muted)", fontSize: 13 }}>리포트 불러오는 중…</p>;
 
+  // 좌측 박스 = 컨센서스(목표주가·추정실적·멀티플, 고정) / 우측 박스 = 애널리스트 리포트(스크롤).
+  const rating = ratingOf(tUpside);
   return (
-    <>
-      {/* #5 컨센서스 목표주가 — 추정실적 상단. 가격 + 현재가 대비 상승여력(±%) */}
-      {avgTarget != null && (
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap",
-          marginBottom: 12, padding: "10px 14px", background: "var(--accent-soft)",
-          border: "1px solid var(--border)", borderRadius: 8 }}>
-          <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 700 }}>
-            컨센서스 {cTargets.length ? "평균 목표주가" : "목표주가"}</span>
-          <span style={{ fontSize: 20, fontWeight: 800 }}>{avgTarget.toLocaleString()}원</span>
-          {tUpside != null && (
-            <span style={{ fontSize: 14, fontWeight: 700, color: tUpside >= 0 ? UP : DOWN }}>
-              {tUpside >= 0 ? "▲" : "▼"} {tUpside >= 0 ? "+" : ""}{tUpside.toFixed(1)}%
-            </span>
-          )}
-          {cur != null && (
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>현재 {cur.toLocaleString()}원</span>
-          )}
-          <span style={{ fontSize: 11, color: "var(--muted)" }}>· {tList.length}개 증권사 기준</span>
-        </div>
-      )}
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 18, alignItems: "stretch" }}>
+      {/* 추정실적 박스 = order 2(우측). 고정 높이 + 골드 스크롤(초기 세팅). */}
+      <div className="panel scroll-gold" style={{ minWidth: 0, marginBottom: 0, order: 2, maxHeight: 560, overflowY: "auto" }}>
+      <h3 style={{ marginTop: 0 }}>{name ? `${name} ` : ""}추정 실적</h3>
       {/* 추정 실적 — 개별종목분석과 동일 */}
       {hasEarnings ? (
         <div style={{ overflowX: "auto" }}>
-          <h3 style={{ margin: "0 0 6px" }}>추정 실적 <span style={{ fontWeight: 400, fontSize: 12, color: "var(--muted)" }}>(연결 · 단위 억원)</span></h3>
+          <h3 style={{ margin: "0 0 6px", fontWeight: 400, fontSize: 12, color: "var(--muted)" }}>(연결 · 단위 억원)</h3>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: "2px solid #e3e8ef" }}>
@@ -469,6 +495,7 @@ export function CompanyReport({ ticker, company }: { ticker: string; company?: I
           </table>
           <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 2px 0" }}>
             Source: FnGuide Financial Highlight
+            <br />{RATING_RULE}
             {capEok != null && daEok != null && (
               <><br />EV/EBITDA = 시가총액 / (영업이익 + 감가상각비·무형자산상각비) · 순차입금 미반영(EV≈시총)</>
             )}
@@ -477,9 +504,29 @@ export function CompanyReport({ ticker, company }: { ticker: string; company?: I
       ) : (
         <p style={{ color: "var(--muted)", fontSize: 13 }}>추정 실적 데이터가 없습니다.</p>
       )}
-
-      {/* 애널리스트 리포트 — 제목 클릭 시 원문(PDF·네이버) 다운로드. 소제목·본문 크기 컨센서스와 통일 */}
-      <h3 style={{ margin: "16px 0 6px" }}>애널리스트 리포트</h3>
+      </div>
+      <div className="panel scroll-gold" style={{ minWidth: 0, marginBottom: 0, order: 1, maxHeight: 560, overflowY: "auto" }}>
+      {/* 컨센서스 박스 = order 1(좌측). 고정 높이 + 골드 스크롤(초기 세팅). 띠 + 리포트. */}
+      <h3 style={{ marginTop: 0 }}>{name ? `${name} ` : ""}컨센서스</h3>
+      {/* 띠 — 투자의견(좌) · Target Price · 목표주가(+증감%) */}
+      {avgTarget != null && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+          marginBottom: 12, padding: "10px 14px", background: "var(--accent-soft)",
+          border: "1px solid var(--border)", borderRadius: 8 }}>
+          {rating && (
+            <span style={{ fontSize: "13pt", fontWeight: 800, padding: "2px 12px", borderRadius: 999,
+              color: rating.color, background: rating.bg }}>{rating.label}</span>
+          )}
+          <span style={{ fontSize: "12pt", color: "var(--muted)", fontWeight: 700 }}>Target Price :</span>
+          <span style={{ fontSize: "18pt", fontWeight: 800 }}>{avgTarget.toLocaleString()}원
+            {tUpside != null && (
+              <span style={{ fontSize: "14pt", fontWeight: 700, marginLeft: 6, color: tUpside >= 0 ? UP : DOWN }}>
+                ({tUpside >= 0 ? "+" : ""}{tUpside.toFixed(1)}%)</span>
+            )}
+          </span>
+        </div>
+      )}
+      <div>
       {reports.length > 0 ? (<>
         <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
           {reports.map((r, i) => {
@@ -504,7 +551,9 @@ export function CompanyReport({ ticker, company }: { ticker: string; company?: I
           제목을 클릭하면 원문(PDF·네이버 리포트)이 열립니다. 목표주가는 해당 증권사 최신 컨센서스 기준.
         </p>
       </>) : <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 0 }}>최근 리포트가 없습니다.</p>}
-    </>
+      </div>
+      </div>
+    </div>
   );
 }
 
@@ -825,23 +874,76 @@ export function RatingsSummary({ ticker, name, onOpen }:
 }
 
 // 섹터 키워드 뉴스 (Google News RSS — 국내/해외). 클릭 시 원문.
-const SECTOR_NEWS_KW = {
-  kr: ["2차전지", "양극재", "음극재", "배터리", "ESS", "분리막", "동박", "전지박", "폐배터리", "전고체", "데이터센터"],
-  glob: ["EV battery", "cathode", "battery recycling", "solid-state battery"],
+// 산업별 뉴스 검색 키워드(국내 30+·해외). 종목이 속한 산업을 인식해 동적으로 적용한다.
+const INDUSTRY_NEWS_KW: Record<string, { kr: string[]; glob: string[] }> = {
+  "2차전지": {
+    kr: ["2차전지", "양극재", "음극재", "배터리", "ESS", "분리막", "동박", "전지박", "폐배터리", "전고체",
+      "리튬", "니켈", "코발트", "전해질", "전구체", "양극활물질", "NCM", "LFP", "전기차 배터리", "배터리 셀",
+      "배터리 소재", "배터리 수주", "캐즘", "IRA", "각형 배터리", "파우치", "원통형", "리튬가격", "배터리 화재", "충전"],
+    glob: ["EV battery", "cathode", "battery recycling", "solid-state battery", "lithium price", "gigafactory"],
+  },
+  "반도체": {
+    kr: ["반도체", "HBM", "D램", "낸드", "파운드리", "메모리", "시스템반도체", "웨이퍼", "EUV", "팹리스",
+      "AI 반도체", "패키징", "후공정", "전공정", "DDR5", "CXL", "온디바이스 AI", "감산", "반도체 수출",
+      "반도체 장비", "소부장", "반도체 업황", "메모리 가격", "TSMC", "엔비디아", "GPU", "칩", "파운드리 수주", "HBM4"],
+    glob: ["HBM", "semiconductor", "foundry", "AI chip", "DRAM", "Nvidia"],
+  },
+  "전자부품": {
+    kr: ["전자부품", "MLCC", "카메라모듈", "기판", "FPCB", "PCB", "적층세라믹콘덴서", "수동부품", "패키지기판",
+      "디스플레이", "OLED", "폴더블", "스마트폰 부품", "전장부품", "전장", "액추에이터", "인덕터", "안테나",
+      "부품 수주", "반도체기판", "FC-BGA", "온디바이스 AI", "갤럭시", "아이폰", "부품 단가"],
+    glob: ["MLCC", "camera module", "OLED", "foldable", "electronic components"],
+  },
+  "건설": {
+    kr: ["건설", "건설사", "분양", "재건축", "재개발", "정비사업", "주택", "부동산 PF", "미분양", "수주",
+      "해외수주", "플랜트", "토목", "SOC", "건설경기", "시공능력", "청약", "분양가", "부동산 규제", "건자재",
+      "시멘트", "철근", "아파트", "도시정비", "원자잿값", "PF 부실", "리츠"],
+    glob: ["construction", "real estate", "infrastructure"],
+  },
+  "금융": {
+    kr: ["금융", "은행", "증권", "보험", "금리", "기준금리", "대출", "예대마진", "NIM", "충당금",
+      "배당", "자사주", "밸류업", "핀테크", "가계부채", "연체율", "BIS비율", "금융지주", "순이익", "ROE",
+      "금융당국", "자본비율", "주주환원", "스트레스 완충자본", "예금금리"],
+    glob: ["interest rate", "bank earnings", "dividend", "Korea valuation"],
+  },
+  "석유화학": {
+    kr: ["석유화학", "정유", "나프타", "에틸렌", "프로필렌", "정제마진", "스프레드", "NCC", "화학", "합성수지",
+      "폴리에틸렌", "PE", "PP", "PVC", "ABS", "정유사", "윤활유", "벤젠", "부타디엔", "화학제품",
+      "유가", "원유", "정제설비", "가동률", "중국 수요", "범용 화학", "친환경 소재", "수소"],
+    glob: ["petrochemical", "refining margin", "ethylene", "crude oil"],
+  },
+  "화장품": {
+    kr: ["화장품", "K뷰티", "뷰티", "색조", "기초화장품", "스킨케어", "선크림", "마스크팩", "ODM", "OEM",
+      "인디브랜드", "면세점", "따이공", "중국 소비", "더마", "화장품 수출", "미국 수출", "일본 수출",
+      "클린뷰티", "리들샷", "뷰티 디바이스", "브랜드", "올리브영", "아마존", "역직구"],
+    glob: ["K-beauty", "cosmetics", "skincare", "beauty"],
+  },
 };
-export function SectorNewsPanel() {
+const DEFAULT_NEWS_KW = { kr: ["증시", "코스피", "코스닥", "실적", "공시"], glob: ["Korea stocks", "KOSPI"] };
+
+export function SectorNewsPanel({ ticker, name }: { ticker?: string; name?: string }) {
   const [news, setNews] = useState<SectorNews | null>(null);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"kr" | "global">("kr");
   useEffect(() => {
-    let alive = true; setBusy(true);
-    // 검색은 토픽 키워드(+산업 기업명) 기준이되, 해시태그 문자열은 화면에 노출하지 않는다.
-    api.sectorNews(SECTOR_NEWS_KW.kr, SECTOR_NEWS_KW.glob)
-      .then((d) => { if (alive) setNews(d); })
-      .catch(() => { /* 무시 */ })
-      .finally(() => { if (alive) setBusy(false); });
+    let alive = true; setBusy(true); setNews(null);
+    // 종목이 속한 산업을 인식 → 산업별 키워드 + 종목명으로 동적 검색(해시태그는 화면 비노출).
+    const run = (kw: { kr: string[]; glob: string[] }) => {
+      const kr = name ? [name, ...kw.kr] : kw.kr;
+      return api.sectorNews(kr, kw.glob)
+        .then((d) => { if (alive) setNews(d); })
+        .catch(() => { /* 무시 */ })
+        .finally(() => { if (alive) setBusy(false); });
+    };
+    if (ticker) {
+      api.industryOf(ticker)
+        .then((r) => run(INDUSTRY_NEWS_KW[r.industry || ""] || DEFAULT_NEWS_KW))
+        .catch(() => run(DEFAULT_NEWS_KW));
+    } else {
+      run(INDUSTRY_NEWS_KW["2차전지"]);   // 산업분석 페이지 등 종목 미지정 시
+    }
     return () => { alive = false; };
-  }, []);
+  }, [ticker, name]);
   const items = tab === "kr" ? (news?.kr || []) : (news?.global || []);
   const tabBtn = (k: "kr" | "global", label: string) => (
     <button type="button" onClick={() => setTab(k)}
@@ -983,6 +1085,7 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
   const [companies, setCompanies] = useState<IndustryCompany[]>([]);
   const [indName, setIndName] = useState<string | null>(null);   // 현재 종목이 속한 산업명
   const [busy, setBusy] = useState(false);
+  const [ebitdaBusy, setEbitdaBusy] = useState(false);   // EBITDA 비차단 후속 계산 진행중
   const [fStage, setFStage] = useState<string | null>(null);
   const [fDetail, setFDetail] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<string>("cap");
@@ -1007,9 +1110,11 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
           .then((d) => {
             if (!alive) return;
             setCompanies(d.companies || []);
+            setEbitdaBusy(true);   // EBITDA·EBITDA Margin은 별도 계산(비차단) — 표는 즉시, 값은 채워짐
             api.industryEbitda(nm)
               .then((m) => { if (alive) setCompanies((cur) => cur.map((c) => m[c.ticker] ? { ...c, ...m[c.ticker] } : c)); })
-              .catch(() => { /* 무시 */ });
+              .catch(() => { /* 무시 */ })
+              .finally(() => { if (alive) setEbitdaBusy(false); });
           })
           .catch(() => { /* 무시 */ })
           .finally(() => { if (alive) setBusy(false); });
@@ -1159,8 +1264,10 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
                 <td style={{ padding: "6px", textAlign: "right" }}>{eok(c.revenue)}</td>
                 <td style={{ padding: "6px", textAlign: "right", color: c.op != null && c.op < 0 ? DOWN : "inherit" }}>{eok(c.op)}</td>
                 <td style={{ padding: "6px", textAlign: "right", color: c.op_margin != null && c.op_margin < 0 ? DOWN : "inherit" }}>{c.op_margin != null ? `${c.op_margin.toFixed(1)}%` : "—"}</td>
-                <td style={{ padding: "6px", textAlign: "right", color: c.ebitda != null && c.ebitda < 0 ? DOWN : "inherit" }}>{eok(c.ebitda)}</td>
-                <td style={{ padding: "6px", textAlign: "right", color: c.ebitda_margin != null && c.ebitda_margin < 0 ? DOWN : "inherit" }}>{c.ebitda_margin != null ? `${c.ebitda_margin.toFixed(1)}%` : "—"}</td>
+                <td style={{ padding: "6px", textAlign: "right", color: c.ebitda != null && c.ebitda < 0 ? DOWN : "inherit" }}>
+                  {c.ebitda == null && ebitdaBusy ? <span style={{ color: "var(--muted)", fontSize: 11 }}>계산 중…</span> : eok(c.ebitda)}</td>
+                <td style={{ padding: "6px", textAlign: "right", color: c.ebitda_margin != null && c.ebitda_margin < 0 ? DOWN : "inherit" }}>
+                  {c.ebitda_margin == null && ebitdaBusy ? <span style={{ color: "var(--muted)", fontSize: 11 }}>계산 중…</span> : (c.ebitda_margin != null ? `${c.ebitda_margin.toFixed(1)}%` : "—")}</td>
               </tr>
               );
             })}
@@ -1171,13 +1278,223 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
   );
 }
 
+// Stream(Up/Mid/Down)별 시총가중 누적수익률 — 딱 3개 선. 주가추이와 동일한 시계열·기간선택 UX.
+// 스트림 색 — Up=MyStock 기본 네이비 / Mid=하이라이트 골드 / Down=초록
+const STREAM_COLOR: Record<string, string> = { Upstream: "#2f5390", Midstream: "#d4a738", Downstream: "#2ea65a" };
+const STREAM_ORDER = ["Upstream", "Midstream", "Downstream"];
+const SIDX_PERIODS: [string, number | "all"][] = [
+  ["1개월", 1], ["3개월", 3], ["6개월", 6], ["1년", 12], ["2년", 24], ["전체", "all"],
+];
+export function StreamReturnsChart({ industry }: { industry: string }) {
+  const [raw, setRaw] = useState<{ dates: string[]; streams: Record<string, number[]> } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [period, setPeriod] = useState<number | "all">(12);   // 기본 1년
+  useEffect(() => {
+    let alive = true; setBusy(true); setRaw(null); setPeriod(12);
+    api.industryStreamIndex(industry)
+      .then((d) => { if (alive) setRaw(d); })
+      .catch(() => { if (alive) setRaw(null); })
+      .finally(() => { if (alive) setBusy(false); });
+    return () => { alive = false; };
+  }, [industry]);
+
+  if (busy) return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>스트림 수익률 불러오는 중…</p>;
+  const dates = raw?.dates || [];
+  const sAll = raw?.streams || {};
+  const streams = STREAM_ORDER.filter((s) => (sAll[s]?.length || 0) > 0);
+  if (!dates.length || !streams.length)
+    return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>표시할 스트림 수익률 데이터가 없습니다.</p>;
+
+  // 기간 윈도우 — 최근일 기준 개월 역산(주가추이와 동일). 윈도우 시작점 기준으로 누적수익률 재정규화.
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const dMax = dates[dates.length - 1];
+  const startDate = period === "all" ? dates[0] : (() => {
+    const d = new Date(dMax); d.setMonth(d.getMonth() - period);
+    const s = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    return s < dates[0] ? dates[0] : s;
+  })();
+  const base0 = Math.max(dates.findIndex((dt) => dt >= startDate), 0);
+  const reb = (arr: number[], i: number) => ((1 + arr[i] / 100) / (1 + arr[base0] / 100) - 1) * 100;
+  const data = dates.slice(base0).map((dt, k) => {
+    const i = base0 + k;
+    const row: Record<string, number | string | null> = { date: dt };
+    streams.forEach((s) => { const a = sAll[s]; row[s] = (a && a[i] != null && a[base0] != null) ? Math.round(reb(a, i) * 10) / 10 : null; });
+    return row;
+  });
+  const xfmt = (dt: string) => (dt || "").slice(2, 7).replace("-", ".");   // YY.MM
+  const tip = (o: { active?: boolean; label?: string; payload?: { dataKey: string; value: number | null }[] }) => {
+    if (!o.active || !o.payload?.length) return null;
+    return (
+      <div style={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 6, padding: "8px 11px", fontSize: 12, lineHeight: 1.6 }}>
+        <div style={{ color: "var(--muted)", marginBottom: 3 }}>{o.label}</div>
+        {streams.map((s) => {
+          const v = o.payload!.find((p) => p.dataKey === s)?.value;
+          return (
+            <div key={s} style={{ color: STREAM_COLOR[s], fontWeight: 700 }}>
+              {s}: {v == null ? "—" : `${(v as number) >= 0 ? "+" : ""}${(v as number).toFixed(1)}%`}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+  const pBtn = (label: string, p: number | "all") => (
+    <button key={label} type="button" onClick={() => setPeriod(p)}
+      style={{ fontSize: 12, fontWeight: period === p ? 700 : 400, padding: "4px 11px", borderRadius: 8, cursor: "pointer",
+        border: `1px solid ${period === p ? "#4f8ff5" : "var(--border)"}`,
+        background: period === p ? "rgba(79,143,245,0.16)" : "transparent",
+        color: period === p ? "#4f8ff5" : "var(--muted)" }}>{label}</button>
+  );
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+        {SIDX_PERIODS.map(([l, p]) => pBtn(l, p))}
+      </div>
+      <ResponsiveContainer width="100%" height={340}>
+        <ComposedChart data={data} margin={{ top: 10, right: 16, bottom: 0, left: 0 }}>
+          <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+          <XAxis dataKey="date" tickFormatter={xfmt} tick={{ fontSize: 12 }} minTickGap={28} />
+          <YAxis tick={{ fontSize: 12 }} width={46} tickFormatter={(n) => `${n}%`} />
+          <Tooltip content={tip as never} />
+          {streams.map((s) => (
+            <Line key={s} dataKey={s} stroke={STREAM_COLOR[s]} strokeWidth={2}
+              dot={false} isAnimationActive={false} connectNulls />
+          ))}
+        </ComposedChart>
+      </ResponsiveContainer>
+      {/* 색 구분자 — 그래프 하단 */}
+      <div style={{ display: "flex", justifyContent: "center", gap: 18, marginTop: 8, fontSize: 12 }}>
+        {streams.map((s) => (
+          <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--muted)" }}>
+            <span style={{ width: 18, height: 3, background: STREAM_COLOR[s], borderRadius: 2 }} />{s}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// 기업별 수익률 표 — STREAM별 그룹(상위↔하위 정렬) + 시총가중 평균 대비 상회/하회. 종목 검색 지원.
+const CRT_PERIODS: [string, "d5" | "d20" | "d60" | "d120" | "d240"][] = [
+  ["5일", "d5"], ["1개월", "d20"], ["3개월", "d60"], ["6개월", "d120"], ["1년", "d240"],
+];
+const CRT_STREAMS = ["Upstream", "Midstream", "Downstream"];
+function CompanyReturnsTable({ industry, companies }: { industry: string; companies: IndustryCompany[] }) {
+  const navigate = useNavigate();
+  const [ret, setRet] = useState<Record<string, Record<string, number | null> | null>>({});
+  const [busy, setBusy] = useState(false);
+  const [period, setPeriod] = useState<"d5" | "d20" | "d60" | "d120" | "d240">("d20");
+  const [q, setQ] = useState("");
+  const [sorts, setSorts] = useState<Record<string, { key: "ret" | "avg"; dir: "desc" | "asc" }>>({});   // 스트림별 정렬 컬럼·방향
+  useEffect(() => {
+    let alive = true; setBusy(true); setRet({});
+    api.industryReturns(industry)
+      .then((d) => { if (alive) setRet(d as Record<string, Record<string, number | null> | null>); })
+      .catch(() => { if (alive) setRet({}); })
+      .finally(() => { if (alive) setBusy(false); });
+    return () => { alive = false; };
+  }, [industry]);
+
+  // 스트림별: 수익률 보유 종목을 상위→하위 정렬 + 시총가중 평균(차트와 동일 방식). 검색 시 매칭만.
+  const sections = CRT_STREAMS.map((s) => {
+    const all = (companies.filter((c) => c.gu === s)
+      .map((c) => ({ c, v: ret[c.ticker]?.[period] ?? null }))
+      .filter((x) => x.v != null)) as { c: IndustryCompany; v: number }[];
+    const wsum = all.reduce((a, x) => a + (x.c.cap || 0), 0);
+    const avg = all.length === 0 ? null
+      : wsum > 0 ? all.reduce((a, x) => a + x.v * (x.c.cap || 0), 0) / wsum
+        : all.reduce((a, x) => a + x.v, 0) / all.length;
+    const shown = q ? all.filter((x) => x.c.name.includes(q) || x.c.ticker.includes(q)) : all;
+    return { s, avg, shown, n: all.length };
+  }).filter((sec) => sec.shown.length > 0);
+
+  const pBtn = (label: string, p: typeof period) => (
+    <button key={label} type="button" onClick={() => setPeriod(p)}
+      style={{ fontSize: 12, fontWeight: period === p ? 700 : 400, padding: "3px 10px", borderRadius: 7, cursor: "pointer",
+        border: `1px solid ${period === p ? "#4f8ff5" : "var(--border)"}`,
+        background: period === p ? "rgba(79,143,245,0.16)" : "transparent",
+        color: period === p ? "#4f8ff5" : "var(--muted)" }}>{label}</button>
+  );
+  const pctTxt = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="종목 검색 (이름·코드)"
+          style={{ flex: "1 1 140px", minWidth: 110, fontSize: 13, padding: "6px 10px" }} />
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{CRT_PERIODS.map(([l, p]) => pBtn(l, p))}</div>
+      </div>
+      {busy ? (
+        <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>수익률 불러오는 중…</p>
+      ) : sections.length === 0 ? (
+        <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>{q ? "검색 결과가 없습니다." : "수익률 데이터가 없습니다."}</p>
+      ) : (
+        <div className="scroll-gold" style={{ maxHeight: 380, overflowY: "auto" }}>
+          {sections.map(({ s, avg, shown, n }) => {
+            const col = STREAM_COLOR[s] || "#7f8aa0";
+            const so = sorts[s] || { key: "ret", dir: "desc" };
+            const setSort = (k: "ret" | "avg") => setSorts((m) => {
+              const cur = m[s] || { key: "ret", dir: "desc" };
+              return { ...m, [s]: { key: k, dir: cur.key === k ? (cur.dir === "desc" ? "asc" : "desc") : "desc" } };
+            });
+            const ind = (k: "ret" | "avg") => (so.key === k ? (so.dir === "desc" ? " ▼" : " ▲") : "");
+            const keyv = (x: { v: number }) => (so.key === "avg" ? (avg == null ? 0 : x.v - avg) : x.v);
+            const ordered = shown.slice().sort((a, b) => (so.dir === "desc" ? keyv(b) - keyv(a) : keyv(a) - keyv(b)));
+            const hbtn = (k: "ret" | "avg", label: string) => (
+              <button type="button" onClick={() => setSort(k)}
+                style={{ fontSize: 13, fontWeight: 700, padding: 0, cursor: "pointer", background: "transparent",
+                  border: 0, color: "#fff" }}>{label}{ind(k)}</button>
+            );
+            return (
+              <div key={s} style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${col}`,
+                borderRadius: 6, overflow: "hidden", marginBottom: 14 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, whiteSpace: "nowrap" }}>
+                  <thead>
+                    {/* 구분자 박스 행 — 스트림명·평균(좌) + 수익률(%)·Avg.(우) 동일 행 */}
+                    <tr style={{ background: `${col}1f`, borderBottom: "1px solid var(--border)" }}>
+                      <th style={{ textAlign: "left", padding: "6px 8px" }}>
+                        <span style={{ fontSize: 13, fontWeight: 800, color: col }}>{s}({n}종목)</span>
+                        <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)", marginLeft: 8 }}>시총가중 평균
+                          <b style={{ color: avg == null ? "var(--muted)" : avg >= 0 ? UP : DOWN, marginLeft: 4 }}>
+                            {avg == null ? "—" : pctTxt(avg)}</b></span>
+                      </th>
+                      <th style={{ textAlign: "right", padding: "6px 8px", width: 84 }}>{hbtn("ret", "수익률(%)")}</th>
+                      <th style={{ textAlign: "right", padding: "6px 8px", width: 92 }}>{hbtn("avg", "Avg.")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ordered.map(({ c, v }) => {
+                      const d = avg == null ? null : v - avg;   // 평균대비(%p)
+                      return (
+                        <tr key={c.ticker} onClick={() => navigate(`/dashboard?symbol=${c.ticker}`)}
+                          style={{ borderBottom: "1px solid var(--border)", cursor: "pointer" }}>
+                          <td style={{ padding: "5px 8px", fontWeight: 600 }}>{c.name}
+                            <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {c.ticker}</span></td>
+                          <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700,
+                            color: v >= 0 ? UP : DOWN }}>{pctTxt(v)}</td>
+                          <td style={{ padding: "5px 8px", textAlign: "right",
+                            color: d == null ? "var(--muted)" : d >= 0 ? UP : DOWN }}>
+                            {d == null ? "—" : `${d >= 0 ? "+" : ""}${d.toFixed(1)}%p`}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function IndustryAnalysis() {
   const navigate = useNavigate();
   const [data, setData] = useState<IndustryData | null>(null);
   const [root, setRoot] = useState("2차전지");   // 선택된 산업(소분류)
   // 펼쳐진 대분류(WICS 섹터) — 클릭 시 그 소분류만 표시. 기본=현재 산업이 속한 대분류.
   const [openSector, setOpenSector] = useState<string>(
-    () => INDUSTRY_GROUPS.find((g) => g.items.includes("2차전지"))?.label || "소재");
+    () => INDUSTRY_GROUPS.find((g) => groupIndustries(g).includes("2차전지"))?.label || "2차전지");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [asOfReq, setAsOfReq] = useState("");   // 트리맵 기준일(yyyy-mm-dd, ""=최신 거래일)
@@ -1258,37 +1575,39 @@ export default function IndustryAnalysis() {
           대분류는 버튼형이되 소분류와 다른 디자인. 없는 대분류는 흐리게 + 클릭 시 '준비 중'. */}
       {(() => {
         const avail = data?.available || ["2차전지", "반도체", "전자부품", "건설", "금융", "석유화학", "화장품"];
-        const grouped = new Set(INDUSTRY_GROUPS.flatMap((g) => g.items));
-        const groups = [...INDUSTRY_GROUPS.map((g) => ({ label: g.label, items: g.items.filter((nm) => avail.includes(nm)) }))];
-        const extras = avail.filter((nm) => !grouped.has(nm));
+        const allGrouped = new Set(INDUSTRY_GROUPS.flatMap(groupIndustries));
+        const groups: IndustryGroup[] = INDUSTRY_GROUPS.map((g) =>
+          g.subgroups
+            ? { label: g.label, subgroups: g.subgroups.map((s) => ({ label: s.label, items: s.items.filter((nm) => avail.includes(nm)) })) }
+            : { label: g.label, items: (g.items ?? []).filter((nm) => avail.includes(nm)) });
+        const extras = avail.filter((nm) => !allGrouped.has(nm));
         if (extras.length) groups.push({ label: "기타", items: extras });
-        const cur = groups.find((g) => g.label === openSector) || groups.find((g) => g.items.length) || groups[0];
-        const sub = cur ? cur.items : [];
-        // 대분류 버튼(골드·라운드) — 소분류와 다른 디자인. 클릭 시 펼침.
+        const cur = groups.find((g) => g.label === openSector) || groups.find((g) => groupIndustries(g).length) || groups[0];
         // 그레이 네이비 팔레트 — 대분류 탭/패널 공용(활성 탭이 패널과 같은 색으로 '연결')
-        const GN_BG = "#1a2436";   // 그레이 네이비 패널·활성 탭 배경(불투명 → 탭-패널 경계 자연 결합)
-        const GN_BD = "#33425e";   // 그레이 네이비 테두리
-        const secBtn = (g: { label: string; items: string[] }) => {
+        const GN_BG = "#1a2436", GN_BD = "#33425e";
+        // 대분류 = 그레이 네이비 직사각형 탭. 클릭 시 펼침 + 단일 산업이면 바로 로드.
+        const secBtn = (g: IndustryGroup) => {
           const on = !!cur && g.label === cur.label;
-          const empty = g.items.length === 0;
+          const empty = groupIndustries(g).length === 0;
           return (
-            <button key={g.label} type="button" onClick={() => setOpenSector(g.label)}
+            <button key={g.label} type="button"
+              onClick={() => { setOpenSector(g.label); const inds = groupIndustries(g); if (inds.length === 1 && inds[0] !== root) { setRoot(inds[0]); setAsOfReq(""); } }}
               onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = "rgba(51,66,94,0.30)"; }}
               onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = "transparent"; }}
               style={{ fontSize: "13.5pt", fontWeight: 800, padding: "8px 18px", cursor: "pointer",
-                borderRadius: "6px 6px 0 0", marginBottom: -1,   // 위만 둥근 직사각형 + 패널 상단선과 겹침
+                borderRadius: "6px 6px 0 0", marginBottom: -1,
                 transition: "background .12s ease",
                 background: on ? GN_BG : "transparent",
                 borderTop: `1px solid ${on ? GN_BD : "transparent"}`,
                 borderLeft: `1px solid ${on ? GN_BD : "transparent"}`,
                 borderRight: `1px solid ${on ? GN_BD : "transparent"}`,
-                borderBottom: `1px solid ${on ? GN_BG : "transparent"}`,   // 활성 하단=패널색 → 경계 지워 연결
+                borderBottom: `1px solid ${on ? GN_BG : "transparent"}`,
                 color: on ? "var(--text)" : "var(--navy-300)", opacity: empty ? 0.5 : 1 }}>
               {g.label}
             </button>
           );
         };
-        // 소분류 버튼(파란·사각)
+        // 소분류 = 파란 사각 버튼
         const tab = (nm: string) => {
           const on = nm === root;
           return (
@@ -1304,20 +1623,29 @@ export default function IndustryAnalysis() {
             </button>
           );
         };
+        const naMsg = (txt: string) => (
+          <span style={{ fontSize: 12, color: "var(--navy-300)", border: "1px dashed var(--border)", borderRadius: 4, padding: "6px 14px" }}>{txt}</span>
+        );
         return (
           <div style={{ margin: "6px 0 14px" }}>
-            {/* 대분류 탭 행 — 하단선이 패널과 이어짐 */}
             <div style={{ display: "flex", gap: 3, flexWrap: "wrap", borderBottom: `1px solid ${GN_BD}` }}>
               {groups.map(secBtn)}
             </div>
-            {/* 선택된 대분류의 소분류 패널 — 활성 탭과 같은 그레이 네이비로 연결 */}
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "12px 14px",
               background: GN_BG, border: `1px solid ${GN_BD}`, borderTop: "none", borderRadius: "0 6px 6px 6px" }}>
-              {sub.length
-                ? sub.map(tab)
-                : <span style={{ fontSize: 12, color: "var(--navy-300)", border: "1px dashed var(--border)", borderRadius: 4, padding: "6px 14px" }}>
-                    {cur?.label} 산업은 준비 중입니다
-                  </span>}
+              {cur?.subgroups ? (
+                // 소비재 등 — 하위분류별로 그룹핑 표시
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>
+                  {cur.subgroups.map((s) => (
+                    <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, fontWeight: 800, color: "var(--navy-300)", minWidth: 76 }}>{s.label}</span>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {s.items.length ? s.items.map(tab) : naMsg("준비 중")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (cur?.items?.length ? cur.items.map(tab) : naMsg(`${cur?.label} 산업은 준비 중입니다`))}
             </div>
           </div>
         );
@@ -1395,6 +1723,21 @@ export default function IndustryAnalysis() {
                 <span key={v} style={{ background: colorByChg(v), color: "#fff",
                   fontSize: 14, fontWeight: 700, padding: "5px 18px" }}>{v > 0 ? "+" : ""}{v}%</span>
               ))}
+            </div>
+          </div>
+          {/* 트리맵 아래 — 좌: 기업별 수익률 표 / 우: Stream 누적수익률 차트. 가로·세로 동일(stretch). */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, alignItems: "stretch" }}>
+            <div className="panel" style={{ marginBottom: 0 }}>
+              <h3 style={{ marginTop: 0 }}>기업별 수익률
+                <span style={{ fontWeight: 400, fontSize: "12pt", color: "var(--muted)" }}> · 기간·정렬 선택</span>
+              </h3>
+              <CompanyReturnsTable industry={root} companies={companies} />
+            </div>
+            <div className="panel" style={{ marginBottom: 0 }}>
+              <h3 style={{ marginTop: 0 }}>Stream별 누적수익률
+                <span style={{ fontWeight: 400, fontSize: "12pt", color: "var(--muted)" }}> · 시가총액 가중평균</span>
+              </h3>
+              <StreamReturnsChart industry={root} />
             </div>
           </div>
         </>

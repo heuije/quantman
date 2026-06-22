@@ -274,6 +274,10 @@ export const api = {
   industryReturns: (name: string) =>
     req<Record<string, { d5: number | null; d20: number | null; d60: number | null; d120: number | null; d240: number | null } | null>>(
       `/market/industry/${encodeURIComponent(name)}/returns`),
+  // Stream(Up/Mid/Down)별 시총가중 누적수익률 지수 시계열 — {dates:[], streams:{Upstream:[%],...}}
+  industryStreamIndex: (name: string) =>
+    req<{ dates: string[]; streams: Record<string, number[]>; stocks?: Record<string, number[]> }>(
+      `/market/industry/${encodeURIComponent(name)}/stream-index`),
   // 섹터 키워드 뉴스 / 기업 개요
   sectorNews: (kr: string[], glob: string[]) =>
     req<SectorNews>(`/market/news?kr=${encodeURIComponent(kr.join(","))}&glob=${encodeURIComponent(glob.join(","))}`),

@@ -493,6 +493,13 @@ def industry_returns(name: str, user: User = Depends(get_current_user)):
     return industry_mod.industry_returns(name)
 
 
+@router.get("/industry/{name}/stream-index")
+def industry_stream_index(name: str, user: User = Depends(get_current_user)):
+    """Stream(Up/Mid/Down)별 시총가중 누적수익률 지수 시계열 — 3선 차트용."""
+    from .. import industry as industry_mod
+    return industry_mod.industry_stream_index(name)
+
+
 @router.get("/news")
 def sector_news(kr: str = "", glob: str = "", user: User = Depends(get_current_user)):
     """섹터 키워드 뉴스 — Google News RSS(키 불필요). kr/glob = 쉼표구분 키워드. 국내·해외 구분 반환."""

@@ -190,6 +190,15 @@ a:hover { text-decoration: underline; }
 @supports (-moz-appearance: none) {
   .mod-std { scrollbar-width: thin; scrollbar-color: rgba(196,152,43,0.55) transparent; }
 }
+/* 재사용 골드 스크롤바 — .mod-std 밖(산업분석 등)·Summary 박스 공용. 위 caveat 동일 적용. */
+.scroll-gold::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-gold::-webkit-scrollbar-track { background: transparent; }
+.scroll-gold::-webkit-scrollbar-thumb { background: rgba(196,152,43,0.55); border-radius: 999px; }
+.scroll-gold::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+.scroll-gold::-webkit-scrollbar-corner { background: transparent; }
+@supports (-moz-appearance: none) {
+  .scroll-gold { scrollbar-width: thin; scrollbar-color: rgba(196,152,43,0.55) transparent; }
+}
 
 /* 리치 에디터 placeholder(빈 상태) + 게시글 인라인 이미지 크기 제한 */
 .rich-ed:empty::before { content: attr(data-ph); color: var(--muted); pointer-events: none; }
