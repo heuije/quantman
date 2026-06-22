@@ -93,3 +93,22 @@ def test_composite_score_runs(monkeypatch):
     # S1(pb 0.5·per 8 = 둘 다 최저분위) → composite 최저 → 저평가 1위
     assert res["results"][0]["code"] == "S1"
     assert res["results"][0]["score"] is not None              # composite 점수 산출됨
+
+
+def test_result_contract_columns_scoring(monkeypatch):
+    """뿌리③ — 결과에 columns(메타)·scoring(산식) 부착."""
+    monkeypatch.setattr(ep, "get_symbol_group", lambda sym, gt="Industry": _SEC.get(sym, "기타"))
+    res = run_query(StrategyIR.model_validate(_ir(top_n=3, display=["pb_ratio"])), _ds())
+    assert res.get("success"), res.get("error")
+    cols = {c["key"]: c for c in res["columns"]}
+    assert {"name", "code", "score", "pb_ratio"} <= set(cols)       # identity+점수+메트릭
+    assert cols["pb_ratio"]["label"] == "PBR" and cols["pb_ratio"]["unit"] == "배"
+    assert res["scoring"]["recipe"]                                 # 산식 문자열(투명)
+    assert res["scoring"]["direction"] == "low_better"             # descending=False
+
+
+def test_column_meta_units():
+    from quant_core.ir_engine.columns import column_meta
+    assert column_meta("market_cap")["unit"] == "백만원" and column_meta("market_cap")["scale"] == 1e6
+    assert column_meta("ev_ebitda")["label"] == "EV/EBITDA"
+    assert column_meta("unknown_x")["label"] == "unknown_x"         # 미등록 폴백

@@ -634,6 +634,7 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
     """
     from .engine import _screener_mask
     from ..expression_parser import get_symbol_group, symbol_name
+    from .columns import score_recipe, select_columns
 
     sel = strategy.select
     if sel is None:
@@ -692,6 +693,8 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
                 "sector": get_symbol_group(sym, "Sector"), "metrics": metrics}
 
     ordered = eligible.sort_values(ascending=not sel.descending)
+    cols = select_columns(list(sel.display))                       # ③ 자기서술 컬럼 메타
+    scoring = score_recipe(strategy.signal.model_dump(), sel.descending)   # ③ 점수 산식(투명)
 
     # group_by: 그룹(섹터 등)별 top_n — 배터리 3 + 반도체 3 (정렬 후 그룹별 앞에서 N개)
     if sel.group_by:
@@ -710,7 +713,8 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
             results.extend(gres)
         return {"success": True, "query": "select", "as_of": str(asof)[:10],
                 "universe_size": len(syms), "eligible_size": eligible_size,
-                "group_by": sel.group_by, "groups": groups, "results": results}
+                "group_by": sel.group_by, "groups": groups, "results": results,
+                "columns": cols, "scoring": scoring}
 
     ranked = ordered
     if sel.top_n is not None:
@@ -721,7 +725,7 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
     results = [_build(sym) for sym in ranked.index]
     return {"success": True, "query": "select", "as_of": str(asof)[:10],
             "universe_size": len(syms), "eligible_size": eligible_size,
-            "results": results}
+            "results": results, "columns": cols, "scoring": scoring}
 
 
 # ── DESCRIBE 대상 확장 (P2 — 단일종목 360 리포트 + 포트폴리오 진단) ───────────
