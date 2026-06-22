@@ -17,6 +17,32 @@ def test_attach_context_describe_single(monkeypatch):
     assert "source" in out["context"]
 
 
+def test_attach_context_estimates(monkeypatch):
+    """describe_single에 forward 추정실적(FnGuide)이 붙는다 — estimate_block 위임(뿌리①)."""
+    monkeypatch.setattr(ctx.live_quote, "quotes_for", lambda s: {})
+    monkeypatch.setattr(ctx.kis_master_cache, "get_name", lambda c: "")
+    monkeypatch.setattr(ctx.estimate_kr, "estimate_block",
+                        lambda code, last_price=None: {"source": "FnGuide 컨센서스",
+                                                       "forward": {"forward_pe": 9.0, "rev_growth": 6.4},
+                                                       "annual": {"years": ["2024/12", "2025/12"]}})
+    out = ctx.attach_context({"success": True, "shape": "describe_single",
+                              "symbol": "005930", "price": {"last": 80000}})
+    assert out["context"]["estimates"]["forward"]["forward_pe"] == 9.0
+    assert out["context"]["estimates"]["source"] == "FnGuide 컨센서스"
+
+
+def test_attach_context_estimates_graceful(monkeypatch):
+    """추정실적 fetch 실패가 결과를 깨지 않는다(graceful)."""
+    monkeypatch.setattr(ctx.live_quote, "quotes_for", lambda s: {})
+    monkeypatch.setattr(ctx.kis_master_cache, "get_name", lambda c: "")
+
+    def boom(*a, **k):
+        raise RuntimeError("net")
+    monkeypatch.setattr(ctx.estimate_kr, "estimate_block", boom)
+    out = ctx.attach_context({"success": True, "shape": "describe_single", "symbol": "005930"})
+    assert out["success"] is True and "estimates" not in out.get("context", {})
+
+
 def test_attach_context_skips_non_describe(monkeypatch):
     """simulate 등 대상 외 형상엔 무변경 — 대상 종목이 없어 시세 조회조차 안 한다."""
     called: list = []

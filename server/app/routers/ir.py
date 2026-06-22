@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 import quant_core as qc
 from quant_core.blocks import DatasetMeta, available_refs, catalog_spec
 from quant_core.blocks.node import Node, referenced_symbols
-from quant_core.data.feeds import news_kr
+from quant_core.data.feeds import estimate_kr, news_kr
 from quant_core.ir_engine import (StrategyIR, backtest_from_spec, build_strategy_excel,
                                   needed_columns, needed_symbols, strategy_from_spec,
                                   validate_strategy)
@@ -211,6 +211,22 @@ def _attach_symbol_news(out: dict) -> dict:
     return out
 
 
+def _attach_symbol_estimates(out: dict) -> dict:
+    """단일 360 리포트에 forward 추정실적 facet(estimate.earnings_kr·FnGuide)을 붙인다.
+
+    추정실적은 라이브 스크래핑 의존이라 결정적 엔진(run_describe_report) 밖, 서버 엣지에서
+    조회한다(골든 불변·describe 함수 미수정). 데이터 없으면 미부착(가짜 0 금지). forward PER=
+    현재가/추정EPS = 현시점 전망(PIT 백테스트 아님). 단일 리포트가 아니면 무변경.
+    """
+    if out.get("report") != "single":
+        return out
+    blk = estimate_kr.estimate_block(str(out.get("symbol") or ""),
+                                     last_price=(out.get("price") or {}).get("last"))
+    if blk:
+        out["estimates"] = blk
+    return out
+
+
 @router.post("/strategy")
 def ir_strategy(body: dict, user: User = Depends(get_current_user),
                 session: Session = Depends(get_session)):
@@ -241,6 +257,7 @@ def ir_strategy(body: dict, user: User = Depends(get_current_user),
     payload, kind = serialize_ir_result(res)
     if kind == "analysis":
         _attach_symbol_news(payload)
+        _attach_symbol_estimates(payload)
     elif kind == "backtest":
         _persist_ir_backtest(session, user, body, payload)
     return payload

@@ -83,6 +83,20 @@ def test_annual_view_empty():
     assert estimate_kr.annual_view(pd.DataFrame()) == {}
 
 
+def test_estimate_block_composes(monkeypatch):
+    df = estimate_kr.to_frame(estimate_kr.parse_highlight(_HTML))
+    monkeypatch.setattr(estimate_kr, "load", lambda code: df)
+    blk = estimate_kr.estimate_block("005930", last_price=80000.0)
+    assert blk["source"] == "FnGuide 컨센서스"
+    assert blk["forward"]["forward_pe"] == round(80000.0 / 6200.0, 2)
+    assert blk["annual"]["years"][-1] == "2026/12"
+
+
+def test_estimate_block_empty_when_no_data(monkeypatch):
+    monkeypatch.setattr(estimate_kr, "load", lambda code: None)
+    assert estimate_kr.estimate_block("000000", last_price=100.0) == {}
+
+
 def test_parse_empty_when_no_div():
     p = estimate_kr.parse_highlight("<html><body>no highlight</body></html>")
     assert p == {"years": [], "is_estimate": [], "metrics": {}}

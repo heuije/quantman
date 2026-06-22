@@ -8,7 +8,7 @@ graceful(context 없음) — 부가 정보가 정상 결과를 깨지 않는다(
 """
 from __future__ import annotations
 
-from quant_core.data.feeds import news_kr
+from quant_core.data.feeds import estimate_kr, news_kr
 
 from .. import kis_master_cache, live_quote
 
@@ -53,6 +53,14 @@ def attach_context(result: dict) -> dict:
             if news:
                 ctx["news"] = news
         except Exception:   # noqa: BLE001 — 부가 뉴스 실패가 결과를 깨지 않게
+            pass
+        try:
+            est = estimate_kr.estimate_block(
+                str(result.get("symbol") or ""),
+                last_price=(result.get("price") or {}).get("last"))
+            if est:
+                ctx["estimates"] = est   # forward 추정실적(FnGuide) — 뿌리① 단일 소스
+        except Exception:   # noqa: BLE001 — 부가 추정실적 실패가 결과를 깨지 않게
             pass
 
     # breadth("시장이 왜")엔 거시 시장 스냅샷(KR·US 지수+VIX) 부착 — 지수 현재가·변동성 맥락.

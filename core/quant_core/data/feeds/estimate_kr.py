@@ -229,3 +229,16 @@ def annual_view(df: pd.DataFrame | None, max_years: int = 6) -> dict:
            "rev": _col("rev"), "op": _col("op"), "ni": _col("ni"),
            "eps": _col("eps"), "op_margin": _col("op_margin")}
     return {k: v for k, v in out.items() if v is not None}
+
+
+def estimate_block(code: str, last_price: float | None = None) -> dict:
+    """종목 코드 → describe/웹 소비용 추정실적 블록(forward 요약 + 다기간 미니표 + 출처).
+
+    저장 스냅샷(load)을 읽어 조립 — 서버 엣지(챗 context·ir 라우터)가 공유 호출(DRY).
+    forward 데이터 없으면 빈 dict(가짜 0 금지·미부착 신호).
+    """
+    df = load(code)
+    fwd = forward_view(df, last_price=last_price)
+    if not fwd:
+        return {}
+    return {"source": "FnGuide 컨센서스", "forward": fwd, "annual": annual_view(df)}
