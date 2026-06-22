@@ -57,6 +57,9 @@ class Settings:
     # 일일 사용량 제한이 걸린 공개 베타 빌더의 기본으로 적합. 더 견고한 컴파일이
     # 필요하면 env로 상향: QP_NL_COMPILE_MODEL=claude-sonnet-4-6.
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    # DART 전자공시 OpenAPI 키 — 재무제표 5개년 연결 수집용(opendart.fss.or.kr 무료 발급).
+    # server/.env에 OPENDART_API_KEY=... 로 넣으면 됨. 없으면 FnGuide(3개년)로 폴백.
+    OPENDART_API_KEY: str = os.getenv("OPENDART_API_KEY", "")
     NL_COMPILE_MODEL: str = os.getenv("QP_NL_COMPILE_MODEL", "claude-haiku-4-5-20251001")
     # 대화형 전략 연구소 챗봇 — agentic tool-use 루프(다중턴 추론·결과 논의). NL 컴파일러보다
     # 추론 부담이 커 Sonnet 기본(env로 교체). 키는 ANTHROPIC_API_KEY 공유.

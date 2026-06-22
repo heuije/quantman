@@ -6,7 +6,7 @@ import {
 import { api } from "../api";
 import type { SymbolListing, CompanyProfile, SymbolDetail, FinancialsData, FinStatement } from "../types";
 import StockDashboard from "./StockDashboard";
-import { CompanyReport, OpinionBoard, RatingsSummary, SectorNewsPanel, CompanyPriceChart, PeerAnalysis } from "./IndustryAnalysis";
+import { CompanyReport, OpinionBoard, SectorNewsPanel, CompanyPriceChart, PeerAnalysis } from "./IndustryAnalysis";
 
 // HOME(개별 기업 분석) — 시킹알파식. 최상단 검색 + 하위탭. 종목 1개 중심.
 const TABS = ["Summary", "Ratings by Mystock", "Stock Price", "Peer Analysis", "Financials", "Valuation & Consensus", "News"] as const;
@@ -108,10 +108,14 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   const SECTIONS: { key: keyof FinancialsData["annual"]; title: string; charts: ChartDef[] }[] = [
     { key: "PL", title: "손익계산서", charts: [
       { t: "매출액", unit: "억원", v: vals(pl, ["매출액"]), yoy: chg(pl, ["매출액"]) },
-      { t: "매출총이익", unit: "억원", v: vals(pl, ["매출총이익"]), yoy: chg(pl, ["매출총이익"]), mg: vals(pl, ["매출총이익률(%)"]) },
-      { t: "영업이익", unit: "억원", v: vals(pl, ["영업이익"]), yoy: chg(pl, ["영업이익"]), mg: vals(pl, ["영업이익률(%)"]) },
-      { t: "당기순이익", unit: "억원", v: vals(pl, ["당기순이익"]), yoy: chg(pl, ["당기순이익"]), mg: vals(pl, ["당기순이익률(%)"]) },
-      { t: "EBITDA", unit: "억원", v: vals(pl, ["EBITDA"]), yoy: chg(pl, ["EBITDA"]), mg: vals(pl, ["EBITDAMargin(%)"]) },
+      { t: "매출총이익", unit: "억원", v: vals(pl, ["매출총이익"]), yoy: chg(pl, ["매출총이익"]) },
+      { t: "매출총이익률", unit: "%", v: vals(pl, ["매출총이익률(%)"]) },
+      { t: "영업이익", unit: "억원", v: vals(pl, ["영업이익"]), yoy: chg(pl, ["영업이익"]) },
+      { t: "영업이익률", unit: "%", v: vals(pl, ["영업이익률(%)"]) },
+      { t: "당기순이익", unit: "억원", v: vals(pl, ["당기순이익"]), yoy: chg(pl, ["당기순이익"]) },
+      { t: "당기순이익률", unit: "%", v: vals(pl, ["당기순이익률(%)"]) },
+      { t: "EBITDA", unit: "억원", v: vals(pl, ["EBITDA"]), yoy: chg(pl, ["EBITDA"]) },
+      { t: "EBITDA Margin", unit: "%", v: vals(pl, ["EBITDAMargin(%)"]) },
     ] },
     { key: "BS", title: "재무상태표", charts: [
       { t: "자산총계", unit: "억원", v: asset, yoy: yoy(asset) },
@@ -133,75 +137,73 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
 
   const lineLbl = quarterly ? "QoQ%" : "YoY%";
   const xLabel = (p: string) => periodLabel(p, quarterly);   // FY23 / 1Q26
+
+  // 선택된 재무제표 탭(stmt)의 섹션만. 표시 기간에 값이 전혀 없는 차트는 제외.
+  const sec = SECTIONS.find((s) => s.key === stmt);
+  const shown = sec ? sec.charts.filter((c) => c.v.some((x, i) => x != null && keep[i])) : [];
+  // 단위 통일 — 섹션 내 금액 차트의 최댓값이 1조(=10,000억) 이상이면 모든 금액 차트를 조원으로 통일.
+  const amtNums = shown.filter((c) => c.unit !== "%")
+    .flatMap((c) => c.v.filter((x, i): x is number => x != null && keep[i]).map(Math.abs));
+  const useJo = amtNums.length > 0 && Math.max(...amtNums) >= 10000;
+
+  // 한 차트 = 한 단위. 금액=막대(네이비) / 비율(%)=선(네이비). 이중축·단위 혼합 없음.
   const renderChart = (c: ChartDef) => {
     const isPct = c.unit === "%";
-    // 선은 "수준 지표"(마진%)에만 — YoY/QoQ는 절대값과 방향이 반대로 갈 수 있어(값↓인데 감소율
-    // 완화로 선↑) 오해를 준다. 그래서 선으로 겹치지 않고, 증감률은 툴팁 + 표의 증감률 행으로 제공.
-    // 막대=금액(항상 값의 방향과 일치). 마진 있으면 우축에 마진% 선만 추가.
-    const showMg = !isPct && !!c.mg;
-    const hasLine = showMg;   // 우측 % 축은 마진 선이 있을 때만
-    // 차트 내 단위 일관화 — 1조(=10,000억) 이상이면 조, 미만이면 억. 축·라벨·툴팁·헤더 모두 동일 단위.
-    const nums = c.v.filter((x, i): x is number => x != null && keep[i]).map(Math.abs);   // 단위는 표시 기간 기준
-    const useJo = !isPct && nums.length > 0 && Math.max(...nums) >= 10000;
-    const div = useJo ? 10000 : 1;
+    const div = (!isPct && useJo) ? 10000 : 1;
     const unit = isPct ? "%" : useJo ? "조원" : "억원";
     const uTip = isPct ? "%" : useJo ? "조" : "억";
     const data = periods.map((p, i) => ({ x: xLabel(p),
-      v: c.v[i] == null ? null : (c.v[i] as number) / div, yoy: c.yoy?.[i] ?? null, mg: c.mg?.[i] ?? null }))
+      v: c.v[i] == null ? null : (c.v[i] as number) / div, yoy: c.yoy?.[i] ?? null }))
       .filter((_, i) => keep[i]);   // #3 사용자 지정 기간만
     const axisFmt = isPct ? (n: number) => `${n}%` : useJo ? (n: number) => n.toFixed(1) : (n: number) => Math.round(n).toLocaleString();
-    const lblFmt = (n: unknown) => n == null ? "" : useJo
-      ? Number(n).toFixed(1) : Number(n).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    const lblFmt = (n: unknown) => n == null ? "" : isPct
+      ? `${n}%` : useJo ? Number(n).toFixed(1) : Number(n).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
     const fmtVal = (n: number) => isPct ? `${n}%` : `${Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 })}${uTip}`;
     return (
       <div key={c.t} className="panel" style={{ marginBottom: 0, padding: "10px 8px 4px" }}>
         <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
           <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {unit}</span></div>
         <ResponsiveContainer width="100%" height={230}>
-          {/* #3 글자·숫자 본문 크기로 확대(12) + barCategoryGap로 막대폭 절반 수준 축소 */}
-          <ComposedChart data={data} margin={{ top: 22, right: hasLine ? 4 : 6, bottom: 0, left: 0 }} barCategoryGap="50%">
+          {/* 글자·숫자 본문 크기(12) + barCategoryGap로 막대폭 절반 수준 */}
+          <ComposedChart data={data} margin={{ top: 22, right: 6, bottom: 0, left: 0 }} barCategoryGap="50%">
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="x" tick={{ fontSize: 12 }} interval={0} />
             <YAxis yAxisId="v" tick={{ fontSize: 12 }} width={46} tickFormatter={axisFmt} />
-            {hasLine && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 12 }} width={38} tickFormatter={(n) => `${n}%`} />}
             <Tooltip content={(o) => {
               if (!o.active || !o.payload?.length) return null;
-              const d = o.payload[0].payload as { x: string; v: number | null; yoy: number | null; mg: number | null };
+              const d = o.payload[0].payload as { x: string; v: number | null; yoy: number | null };
               return (
                 <div style={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 9px", fontSize: 12, lineHeight: 1.55 }}>
                   <div style={{ color: "var(--muted)" }}>{d.x}</div>
                   <div style={{ fontWeight: 700 }}>{d.v == null ? "-" : fmtVal(d.v)}</div>
-                  {showMg && d.mg != null && <div style={{ color: CHART_GOLD }}>마진 {d.mg}%</div>}
-                  {!isPct && !showMg && d.yoy != null && <div style={{ color: CHART_GOLD }}>{lineLbl} {d.yoy}%</div>}
+                  {!isPct && d.yoy != null && <div style={{ color: CHART_GOLD }}>{lineLbl} {d.yoy}%</div>}
                 </div>
               );
             }} />
             {isPct ? (
-              // %만 있는 지표(ROE·부채비율 등)는 막대가 아닌 선그래프 — 추세 비교용.
+              // 비율(%)만 선그래프 — 추세 비교용.
               <Line yAxisId="v" dataKey="v" stroke={CHART_NAVY} strokeWidth={2} dot name={c.t} isAnimationActive={false} connectNulls>
                 <LabelList dataKey="v" position="top" formatter={lblFmt} style={{ fontSize: 12, fill: CHART_NAVY, fontWeight: 700 }} />
               </Line>
             ) : (
+              // 금액은 막대그래프.
               <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} name={c.t} isAnimationActive={false}>
                 <LabelList dataKey="v" position="top" formatter={lblFmt} style={{ fontSize: 12, fill: CHART_NAVY, fontWeight: 700 }} />
               </Bar>
             )}
-            {showMg && <Line yAxisId="r" dataKey="mg" stroke={CHART_GOLD} strokeWidth={1.5} dot name="마진%" isAnimationActive={false} connectNulls />}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
     );
   };
 
-  // 선택된 재무제표 탭(stmt)의 섹션만 렌더 — 손익 탭엔 손익 차트만.
-  const sec = SECTIONS.find((s) => s.key === stmt);
   if (!sec) return null;
   return (
     <div style={{ marginBottom: 14 }}>
-      <div style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px" }}>막대=금액 · 선=비율·마진(%) · {lineLbl}는 막대에 마우스를 올리면 표시</div>
-      {/* 섹션 차트 개수만큼 열 생성 → 한 행 폭을 꽉 채우고, 탭별 개수에 따라 폭 자동 조정 */}
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${sec.charts.length}, minmax(0, 1fr))`, gap: 10 }}>
-        {sec.charts.map(renderChart)}
+      <div style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px" }}>막대=금액({useJo ? "조원" : "억원"}) · 선=비율(%) · {lineLbl}는 막대에 마우스를 올리면 표시</div>
+      {/* 차트 폭 자동 — 넘치면 다음 행으로 wrap(금액·비율 차트 모두 동일 폭) */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+        {shown.map(renderChart)}
       </div>
     </div>
   );
@@ -481,7 +483,7 @@ export default function Home() {
       <div style={{ display: "flex", gap: 2, borderBottom: "2px solid var(--border)", margin: "8px 0 16px", flexWrap: "wrap" }}>
         {TABS.map((t) => (
           <button key={t} type="button" onClick={() => setTab(t)}
-            style={{ fontSize: 14, fontWeight: tab === t ? 700 : 400, padding: "8px 14px", border: 0,
+            style={{ fontSize: 20, fontWeight: tab === t ? 700 : 400, padding: "11px 20px", border: 0,
               background: "transparent", cursor: "pointer", color: tab === t ? "#4f8ff5" : "var(--muted)",
               borderBottom: tab === t ? "2px solid #4f8ff5" : "2px solid transparent", marginBottom: -2 }}>{t}</button>
         ))}
@@ -501,25 +503,18 @@ export default function Home() {
               <CompanyPriceChart ticker={sym} />
             </div>
           </div>
-          {/* 컨센서스(좌) | Ratings(우) */}
-          <div className="ca-grid2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "stretch", marginBottom: 18 }}>
-            <div className="panel" style={{ marginBottom: 0, overflowY: "auto", maxHeight: 520 }}>
-              <h3 style={{ marginTop: 0 }}>{name} 컨센서스·기업분석 리포트 요약</h3>
-              <CompanyReport ticker={sym} />
-            </div>
-            <div className="panel" style={{ marginBottom: 0, overflowY: "auto", maxHeight: 520 }}>
-              <h3 style={{ marginTop: 0 }}>Ratings by Mystock <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>요약 · 클릭 시 전체</span></h3>
-              <RatingsSummary ticker={sym} name={name} onOpen={() => setTab("Ratings by Mystock")} />
-            </div>
+          {/* 좌측=컨센서스만 (전체폭). Ratings by Mystock 요약 패널은 제거(추후 업데이트 예정). */}
+          <div style={{ marginBottom: 18 }}>
+            <CompanyReport ticker={sym} name={name} />
           </div>
-          <Panel title="실시간 뉴스"><SectorNewsPanel /></Panel>
+          <Panel title="실시간 뉴스"><SectorNewsPanel ticker={sym} name={name} /></Panel>
         </>
       )}
 
       {tab === "Ratings by Mystock" && <Panel title={`Ratings by Mystock · ${name} (${sym})`}><OpinionBoard ticker={sym} name={name} /></Panel>}
       {tab === "Peer Analysis" && <Panel title="경쟁사 비교 (Peer Analysis)"><PeerAnalysis ticker={sym} /></Panel>}
-      {tab === "Valuation & Consensus" && <Panel title={`${name} 컨센서스`}><CompanyReport ticker={sym} /></Panel>}
-      {tab === "News" && <Panel title="뉴스"><SectorNewsPanel /></Panel>}
+      {tab === "Valuation & Consensus" && <CompanyReport ticker={sym} name={name} />}
+      {tab === "News" && <Panel title="뉴스"><SectorNewsPanel ticker={sym} name={name} /></Panel>}
       {tab === "Stock Price" && <StockDashboard symbol={sym} hideSearch />}
       {tab === "Financials" && <Panel title="Financials"><FinancialsTab ticker={sym} name={name} /></Panel>}
     </div>
