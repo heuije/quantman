@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 
 from sqlmodel import Session, select
@@ -152,6 +153,36 @@ def _persist_turn_metric(session: Session, conversation_id: int, model: str,
         session.rollback()
 
 
+def _load_cc_backend():
+    """scripts/chat_eval의 검증된 claude -p 구독 백엔드(ClaudeCodeBackend) 단일 출처 로드.
+    로컬 전용 — 프로덕션에선 호출되지 않는다(_default_chat_client 플래그 가드)."""
+    import sys
+    from pathlib import Path
+    be = str(Path(__file__).resolve().parents[3] / "scripts" / "chat_eval")
+    if be not in sys.path:
+        sys.path.insert(0, be)
+    from backend import ClaudeCodeBackend
+    return ClaudeCodeBackend
+
+
+def _default_chat_client():
+    """챗 턴의 기본 LLM 클라이언트. 기본 = 프로덕션 Anthropic API(키).
+
+    로컬 전용 구독 모드(env QP_CHAT_LOCAL_SUBSCRIPTION=1)면 claude -p 구독 백엔드($0)를 끼운다:
+      · 오케스트레이터 루프          = 반환한 ClaudeCodeBackend()
+      · NL→IR 컴파일·뉴스 다이제스트 = anthropic.Anthropic 몽키패치(그쪽이 자기 클라이언트 생성)
+    둘 다 본인 Pro/Max 구독 쿼터(API 비용 0) — `claude setup-token`의 CLAUDE_CODE_OAUTH_TOKEN 필요.
+    ⚠ 로컬 개발 전용. 프로덕션(Railway)은 플래그 미설정 → 항상 API 키 경로(동작 byte-identical)."""
+    from ..config import settings
+    if os.environ.get("QP_CHAT_LOCAL_SUBSCRIPTION") == "1":
+        ccb = _load_cc_backend()
+        import anthropic
+        anthropic.Anthropic = ccb            # compile_nl·뉴스 다이제스트도 구독 경유($0)
+        return ccb()
+    import anthropic
+    return anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+
 def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                      *, client=None, model: str | None = None):
     """한 사용자 메시지에 대해 agent 루프를 **스트리밍**으로 실행하는 제너레이터(단일 소스).
@@ -166,8 +197,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
     """
     from ..config import settings
     if client is None:
-        import anthropic
-        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        client = _default_chat_client()      # 기본=API키 · 로컬 구독 모드면 claude -p($0)
     model = model or settings.CHAT_MODEL
     system = [{"type": "text", "text": chat_system_prompt(),
                "cache_control": {"type": "ephemeral"}}]
