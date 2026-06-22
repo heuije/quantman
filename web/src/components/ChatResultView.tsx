@@ -401,9 +401,13 @@ const RENDERERS: Record<string, (result: Record<string, unknown>) => ReactElemen
       </div>
     );
   },
-  describe_single: (result) => (
-    <div className="chat-result"><ReportCards r={result as unknown as IrSingleReport} /></div>
-  ),
+  describe_single: (result) => {
+    // 추정실적은 웹 직접 경로=top-level(r.estimates), 챗 경로=사이드카(context.estimates).
+    // 둘 중 있는 것을 ReportCards에 합쳐 360 리포트 안에서 표면화(뿌리①).
+    const r = result as unknown as IrSingleReport;
+    const est = r.estimates ?? (result as unknown as IrStrategyResult).context?.estimates;
+    return <div className="chat-result"><ReportCards r={est ? { ...r, estimates: est } : r} /></div>;
+  },
   describe_portfolio: (result) => (
     <div className="chat-result"><DiagnosisPanel r={result as unknown as IrPortfolioDiagnosis} /></div>
   ),

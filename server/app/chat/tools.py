@@ -81,7 +81,8 @@ SAVE_STRATEGY_TOOL = {
 DESCRIBE_TOOL = {
     "name": "describe",
     "description": ("단일 종목의 종합 리포트(360) — 가격·52주 레인지·기간수익(1·3·6·12개월)·변동성·"
-                    "최대낙폭·밸류에이션(PBR/PER/EV-EBITDA)·뉴스 헤드라인. '○○ 어때?' 같은 "
+                    "최대낙폭·밸류에이션(PBR/PER/EV-EBITDA)·뉴스 헤드라인·추정실적(다음 회계연도 추정 "
+                    "매출·영업이익·EPS·forward PER, KR). '○○ 어때?'·'전망/추정실적' 같은 "
                     "단일종목 요약 질문에 사용. symbol(코드)만 필요."),
     "input_schema": {
         "type": "object",

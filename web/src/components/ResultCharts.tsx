@@ -4,7 +4,7 @@ import {
   Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
 } from "recharts";
 import type {
-  BreadthResult, IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
+  BreadthResult, Estimates, IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
   IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrSweepBucket, NewsDigestResult,
   PrescribeResult,
 } from "../types";
@@ -601,7 +601,76 @@ export function ReportCards({ r }: { r: IrSingleReport }) {
           </Card>
         </div>
       )}
+
+      {/* ⑦ 추정실적 — forward 컨센서스(FnGuide·뿌리①). 데이터 있을 때만(가짜 채움 금지). */}
+      {r.estimates && (
+        <div style={{ marginTop: 10 }}>
+          <EstimatesView est={r.estimates} />
+        </div>
+      )}
     </Box>
+  );
+}
+
+// ── EstimatesView (forward 추정실적 — describe facet, 뿌리①·FnGuide 컨센서스) ─────
+export function EstimatesView({ est }: { est: Estimates }) {
+  const f = est.forward ?? {};
+  const a = est.annual;
+  const g = (v?: number | null) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`);
+  const hasFwd = f.rev_growth != null || f.op_growth != null || f.ni_growth != null
+    || f.forward_pe != null || f.roe_forward != null;
+  if (!hasFwd && !(a && a.years && a.years.length)) return null;
+  return (
+    <Card title={`추정실적${f.fiscal_forward ? ` · ${f.fiscal_forward}(E) 전망` : ""} · ${est.source ?? "컨센서스"}`}>
+      {hasFwd && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: a ? 10 : 0 }}>
+          {f.rev_growth != null && <Badge tone={f.rev_growth >= 0 ? "up" : "down"}>매출 {g(f.rev_growth)}</Badge>}
+          {f.op_growth != null && <Badge tone={f.op_growth >= 0 ? "up" : "down"}>영업이익 {g(f.op_growth)}</Badge>}
+          {f.ni_growth != null && <Badge tone={f.ni_growth >= 0 ? "up" : "down"}>순이익 {g(f.ni_growth)}</Badge>}
+          {f.forward_pe != null && <Badge tone="accent">forward PER {f.forward_pe.toFixed(1)}</Badge>}
+          {f.roe_forward != null && <Badge tone="muted">추정 ROE {f.roe_forward.toFixed(1)}%</Badge>}
+        </div>
+      )}
+      {a && a.years && a.years.length > 0 && <EstimatesAnnualTable a={a} />}
+    </Card>
+  );
+}
+
+// 추정실적 다기간 미니표 — 연도 컬럼(확정/추정 색 구분) × 손익 행. 단위는 행 라벨에.
+function EstimatesAnnualTable({ a }: { a: NonNullable<Estimates["annual"]> }) {
+  const won = (v: number | null) => (v == null ? "—" : Math.round(v).toLocaleString());
+  const rows: [string, (number | null)[] | undefined][] = [
+    ["매출(억)", a.rev], ["영업이익(억)", a.op], ["순이익(억)", a.ni], ["EPS(원)", a.eps],
+  ];
+  const cell: React.CSSProperties = {
+    padding: "3px 8px", fontSize: 12, textAlign: "right", fontVariantNumeric: "tabular-nums",
+  };
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <thead>
+          <tr>
+            <th style={{ ...cell, textAlign: "left", color: C.muted, fontWeight: 600 }}>항목</th>
+            {a.years.map((y, i) => (
+              <th key={y} style={{ ...cell, fontWeight: 600,
+                color: a.is_estimate[i] ? C.accent : C.muted }}>
+                {y}{a.is_estimate[i] ? "(E)" : ""}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.filter((row) => row[1]).map(([label, vals]) => (
+            <tr key={label}>
+              <td style={{ ...cell, textAlign: "left", color: C.muted }}>{label}</td>
+              {(vals as (number | null)[]).map((v, i) => (
+                <td key={i} style={{ ...cell, color: a.is_estimate[i] ? C.accent : C.text }}>{won(v)}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

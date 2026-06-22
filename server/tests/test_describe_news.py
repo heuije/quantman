@@ -38,6 +38,35 @@ def test_non_single_report_unchanged(monkeypatch):
     assert "news" not in out
 
 
+def test_single_report_attaches_estimates(monkeypatch):
+    """단일 360 리포트 → forward 추정실적(FnGuide·estimate_block 위임)이 붙는다(뿌리①)."""
+    seen = {}
+    monkeypatch.setattr(ir.estimate_kr, "estimate_block",
+                        lambda code, last_price=None: (seen.update(code=code, price=last_price),
+                                                       {"source": "FnGuide 컨센서스",
+                                                        "forward": {"forward_pe": 9.0}})[1])
+    out = {"report": "single", "symbol": "005930", "price": {"last": 80000}}
+    ir._attach_symbol_estimates(out)
+    assert seen == {"code": "005930", "price": 80000}      # 코드·현재가 전달(forward PER용)
+    assert out["estimates"]["forward"]["forward_pe"] == 9.0
+
+
+def test_non_single_report_no_estimates(monkeypatch):
+    """단일 리포트가 아니면 추정실적을 붙이지 않는다."""
+    monkeypatch.setattr(ir.estimate_kr, "estimate_block", lambda *a, **k: {"forward": {"x": 1}})
+    out = {"report": "portfolio"}
+    ir._attach_symbol_estimates(out)
+    assert "estimates" not in out
+
+
+def test_single_report_no_estimate_data(monkeypatch):
+    """추정실적 데이터 없으면 미부착(가짜 0 금지)."""
+    monkeypatch.setattr(ir.estimate_kr, "estimate_block", lambda *a, **k: {})
+    out = {"report": "single", "symbol": "999999", "price": {"last": 100}}
+    ir._attach_symbol_estimates(out)
+    assert "estimates" not in out
+
+
 def test_single_report_no_name_empty_news(monkeypatch):
     """마스터에 종목명이 없으면 빈 리스트(가짜 채움 0) — 네이버 호출도 안 한다."""
     monkeypatch.setattr(ir.kis_master_cache, "get_name", lambda c: "")

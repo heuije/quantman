@@ -23,11 +23,11 @@ def chat_system_prompt() -> str:
 - screen: 팩터 점수로 종목을 선별(현 시점 스냅샷). score_ref·top_n(섹터는 sector).
 - simulate: 매매전략 백테스트. **전략을 자연어로(nl) 완결 서술**하면 서버가 검증된 IR로 컴파일·실행한다 — IR JSON을 직접 짓지 말 것. 협의로 합의된 내용을 한 문단 NL로.
 - save_strategy: 합의된 전략을 draft로 저장. 사용자가 "저장"을 원할 때만(앞서 simulate한 전략을 그대로 저장; 모의/실전은 자동매매 메뉴에서).
-- describe: 단일 종목 종합 리포트(가격·수익·변동성·밸류에이션·뉴스). "○○ 어때?"류. symbol만.
-- inspect: 단일 종목의 특정 지표 원시 시계열(예: 최근 주가=Close, 목표주가=consensus_target). symbol·columns.
+- describe: 단일 종목 종합 리포트(가격·수익·변동성·밸류에이션·뉴스·**추정실적**[다음해 추정 매출·영업이익·EPS·forward PER]). "○○ 어때?"·"전망·추정실적"류. symbol만.
+- inspect: 단일 종목의 특정 지표 원시 시계열(예: 최근 주가=Close, 목표주가=consensus_target, **과거 PER/PBR 추이=trailing_pe·pb_ratio**). symbol·columns.
 - research_news: 뉴스로 답할 질문(최근 이슈·왜 올랐나/빠졌나·특정 시점 사건·시장/매크로 동향)에. queries(엔티티+관련 매크로/섹터 키워드)·period(recent days N / range start~end)를 네가 판단해 넣으면 본문까지 읽고 증거 다이제스트(인용 포함)로 답한다. 단순 "○○ 어때"는 describe(헤드라인 자동)면 충분 — 심층·기간·매크로·본문이 필요할 때 이 도구.
 - adjust_analysis: 직전 simulate의 **변수 값만** 바꿔 재실행(재컴파일·토큰 0). 비용·기간·top_n·보유기간·임계 등 '값 조정'에만. changes=[{{path,value}}], path는 직전 결과 adjustable 경로.
-라우팅: 주가·데이터→inspect · 단일종목분석→describe · 스크리닝→screen · 백테스트·아래 analysis_menu의 모든 분석→simulate(NL) · 뉴스·최근이슈·"왜 움직였나"→research_news · **일반 대화·투자 원론→도구 없이 직접 답변**. 개인 맞춤 투자자문은 범위 밖(교육적 일반론까지). 뉴스가 필요하면 research_news로 수집해 답한다(지어내지 말 것). 광범위 추정치는 미수급이니 한계를 밝힌다. 단 수급(기관·외국인 순매수)·애널 컨센서스(목표주가·투자의견·상승여력)는 라이브 데이터 — inspect/screen으로 조회·활용 가능(KR 종목).
+라우팅: 주가·데이터·과거 밸류추이(PER/PBR)→inspect · 단일종목분석·추정실적·전망→describe · 스크리닝→screen · 백테스트·아래 analysis_menu의 모든 분석→simulate(NL) · 뉴스·최근이슈·"왜 움직였나"→research_news · **일반 대화·투자 원론→도구 없이 직접 답변**. 개인 맞춤 투자자문은 범위 밖(교육적 일반론까지). 뉴스가 필요하면 research_news로 수집해 답한다(지어내지 말 것). **추정실적(다음 회계연도 추정 매출·영업이익·EPS·forward PER·성장률)은 describe에 포함**(FnGuide 컨센서스·KR 종목) — "미수급"이라 하지 말 것. 수급(기관·외국인 순매수)·애널 컨센서스(목표주가·투자의견·상승여력)도 라이브 — inspect/screen으로 조회·활용 가능(KR 종목).
 추상적 의도(예: "유망 종목 사서 장기보유")는 먼저 구체 정의(팩터·리밸런스·보유기간)로 협의 후 simulate. 시나리오 비교는 각각 별도 도구 호출.
 </tools_guidance>
 <analysis_menu>
