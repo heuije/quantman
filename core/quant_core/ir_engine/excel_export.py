@@ -777,34 +777,57 @@ def _save(wb) -> bytes:
     return buf.getvalue()
 
 
+def _select_cell(row: dict, key: str):
+    """columns 계약 key → 행 값. identity/섹터=문자, score=점수, 그 외=metrics 값."""
+    if key in ("name", "code", "symbol", "sector"):
+        return str(row.get(key, ""))
+    if key == "score":
+        return row.get("score")
+    return (row.get("metrics") or {}).get(key)
+
+
+def _select_fallback_columns(results: list) -> list:
+    """columns 계약이 없는(구) 결과용 폴백 — 이름·코드·점수·섹터 + metrics."""
+    cols = [{"key": "name", "label": "종목"}, {"key": "code", "label": "코드"},
+            {"key": "score", "label": "점수", "format": "#,##0.0000"},
+            {"key": "sector", "label": "섹터"}]
+    keys = list((results[0].get("metrics") or {}).keys()) if results else []
+    return cols + [{"key": k, "label": k, "format": "#,##0.0000"} for k in keys]
+
+
 def _build_select(ir, dataset, result, disp: str) -> bytes:
-    """SELECT(스크리닝 랭킹) — as-of 스냅샷 순위표(값)."""
+    """SELECT(스크리닝 랭킹) — as-of 스냅샷 순위표. 자기서술 columns 계약으로 라벨·단위·배율·이름 표시."""
     S = _styles()
     wb = Workbook()
     ws = wb.active
     ws.title = "스크리닝결과"
     _title(ws, f"{disp} — 스크리닝 결과 (as-of {result.get('as_of', '')})", S)
+    scoring = result.get("scoring") or {}
     ws.cell(2, 1, f"유니버스 {result.get('universe_size', '?')}종목 · 자격통과 "
-                  f"{result.get('eligible_size', '?')}종목 · 상위 {len(result.get('results', []))} 표시").font = S["italic"]
+                  f"{result.get('eligible_size', '?')}종목 · 점수: {scoring.get('recipe', '엔진 산출')}"
+            ).font = S["italic"]
     results = result.get("results", []) or []
-    disp_cols = list((results[0].get("metrics") or {}).keys()) if results else []
-    _header(ws, 4, ["순위", "종목", "점수(score)", "섹터"] + disp_cols, S)
+    columns = result.get("columns") or _select_fallback_columns(results)
+    _header(ws, 4, ["순위"] + [c.get("label", c["key"]) for c in columns], S)
     r = 5
     for i, row in enumerate(results, 1):
         ws.cell(r, 1, i)
-        ws.cell(r, 2, str(row.get("symbol", "")))
-        ws.cell(r, 3, _num(row.get("score"))).number_format = "#,##0.0000"
-        ws.cell(r, 4, str(row.get("sector", "")))
-        for j, c in enumerate(disp_cols):
-            ws.cell(r, 5 + j, _num((row.get("metrics") or {}).get(c))).number_format = "#,##0.0000"
+        for j, c in enumerate(columns):
+            v = _select_cell(row, c["key"])
+            if isinstance(v, (int, float)) and c.get("scale"):    # 단위 배율(예: 시총 백만원)
+                v = v / float(c["scale"])
+            cell = ws.cell(r, 2 + j, _num(v) if isinstance(v, (int, float)) else v)
+            if isinstance(v, (int, float)) and c.get("format"):
+                cell.number_format = c["format"]
         r += 1
-    for col, w in zip("ABCD", (6, 12, 14, 12)):
+    for col, w in zip("ABCDE", (6, 16, 10, 10, 12)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A5"
     _methodology(wb, ir, f"{disp} — 스크리닝 방법론", [
-        ("점수(score)", "신호 블록의 as-of(기준일) 횡단 값. descending=참이면 큰 순, 거짓이면 작은 순(예: 저PBR)."),
-        ("선별", f"top_n/top_pct 상위만 표시. as-of={result.get('as_of', '')} 단면 스냅샷(시계열 아님)."),
-        ("값 정직성", "점수·표시지표는 엔진이 산출한 그 시점 값. 팩터 산식 자체는 IR signal 트리(설명 시트) 참조."),
+        ("점수 산식", scoring.get("recipe", "신호 블록 as-of 횡단 값")),
+        ("선별", f"top_n/top_pct 상위{' (그룹별)' if result.get('group_by') else ''} 표시. "
+                 f"as-of={result.get('as_of', '')} 단면 스냅샷(시계열 아님)."),
+        ("단위·라벨", "각 열의 라벨·단위·배율은 결과 columns 계약 단일출처(예: 시가총액=백만원)."),
     ], S, result=result)
     return _save(wb)
 

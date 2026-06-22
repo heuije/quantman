@@ -33,6 +33,22 @@ SCENARIOS: list[dict] = [
                 "judge_focus": "랭킹 표/차트가 이미 뜬다 — 답변이 종목 표를 텍스트로 길게 중복하지 않는가. "
                                "저PBR=오름차순 선별 의도를 맞게 잡았나."}},
 
+    {"name": "screen_undervalued_composite",
+     # 뿌리② — 단일 raw 팩터 아닌 다밸류 정규화 composite로 저평가 선별
+     "turns": ["밸류에이션 지표들을 종합해서 저평가된 종목 10개를 골라줘"],
+     "expect": {"tools": ["screen"],
+                "judge_focus": "단일 raw 지표 정렬이 아니라 여러 밸류 지표(PBR·PER·EV/EBITDA) composite로 "
+                               "선별했나(score_refs). 점수 산식(scoring.recipe)이 답변/카드에 투명한가. "
+                               "종목명+코드가 보이고 시각화중복(표 재현) 없이 해석 중심인가."}},
+
+    {"name": "screen_by_sector",
+     # 뿌리② — 섹터별 그룹 top-N(반도체만 쏠림 아닌 섹터별 균형) + 멀티섹터
+     "turns": ["배터리와 반도체 산업에서 저평가된 종목을 섹터별로 3종목씩 추천해줘"],
+     "expect": {"tools": ["screen"],
+                "ir": {"select.group_by": "Sector"},
+                "judge_focus": "두 섹터(배터리·반도체) 각각 3종목씩(반도체 쏠림 아님)·group_by 사용. "
+                               "섹터별 비교표 형태로 종목명·밸류지표를 제시했나."}},
+
     {"name": "inspect_target_price",
      "turns": ["삼성전자 최근 목표주가랑 종가 추이 보여줘"],
      "expect": {"tools": ["inspect"],

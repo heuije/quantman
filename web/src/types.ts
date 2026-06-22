@@ -526,12 +526,25 @@ export interface IrStrategyResult extends BacktestResult {
   query?: "select" | "describe" | "relate" | "simulate";   // 동사
   report?: "single" | "portfolio";                         // describe 대상 분기
   reduction?: string;                                       // "extremize" 등 환원 식별
-  // select(as-of 스냅샷 횡단 랭킹) 본문 + 헤더 메타
-  results?: { symbol: string; score: number | null; sector: string;
-              metrics: Record<string, number | null> }[];
+  // select(as-of 스냅샷 횡단 랭킹) 본문 + 자기서술 계약(뿌리③)
+  results?: SelectRow[];
+  columns?: SelectColumn[];        // 필드 메타(라벨·단위·배율·포맷·방향) — 표 렌더 단일출처
+  scoring?: { recipe?: string; factors?: string[]; normalization?: string;
+              sector_relative?: boolean; direction?: string };   // 점수 산식(투명)
+  group_by?: string;
+  groups?: { group: string; results: SelectRow[] }[];            // 섹터별 묶음(비교표)
   as_of?: string;
   universe_size?: number;
   eligible_size?: number;
+}
+
+export interface SelectRow {
+  symbol: string; code?: string; name?: string;
+  score: number | null; sector: string; metrics: Record<string, number | null>;
+}
+export interface SelectColumn {
+  key: string; label: string; kind?: string;
+  unit?: string; scale?: number; format?: string; direction?: string;
 }
 
 export interface BacktestRunSummary {

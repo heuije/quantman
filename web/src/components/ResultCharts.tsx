@@ -352,20 +352,6 @@ const tipBox: React.CSSProperties = {
   background: C.panel, border: `1px solid ${C.grid}`, borderRadius: 8,
   padding: "8px 10px", fontSize: 12, color: C.muted,
 };
-function RankedTip({ active, payload }: {
-  active?: boolean;
-  payload?: { payload: { symbol: string; score: number | null; sector: string } }[];
-}) {
-  if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
-  return (
-    <div style={tipBox}>
-      <div style={{ fontWeight: 600, color: C.text }}>{d.symbol}</div>
-      <div>섹터 {d.sector || "—"}</div>
-      <div>점수 {f2(d.score)}</div>
-    </div>
-  );
-}
 function SectorPieTip({ active, payload }: {
   active?: boolean; payload?: { payload: { name: string; value: number } }[];
 }) {
@@ -394,67 +380,95 @@ function RegressionTip({ active, payload }: {
   );
 }
 
-// ── RankedListChart (select) ──────────────────────────────────────────────────
-export function RankedListChart({ results, as_of, universe_size, eligible_size }: {
-  results: { symbol: string; score: number | null; sector: string;
-             metrics: Record<string, number | null> }[];
+// ── RankedListChart (select) — 자기서술 columns 계약 소비·표 우선(랭킹 그래프 제거) ─────────
+type SelCol = { key: string; label: string; kind?: string; unit?: string;
+                scale?: number; format?: string };
+type SelRow = { symbol: string; code?: string; name?: string; score: number | null;
+                sector: string; metrics: Record<string, number | null> };
+
+function _selVal(row: SelRow, key: string): unknown {
+  if (key === "name") return row.name ?? row.symbol;
+  if (key === "code" || key === "symbol") return row.code ?? row.symbol;
+  if (key === "sector") return row.sector;
+  if (key === "score") return row.score;
+  return row.metrics?.[key];
+}
+function _selFmt(v: unknown, col: SelCol): string {
+  if (v == null || v === "") return "—";
+  if (typeof v === "string") return v;
+  let n = Number(v);
+  if (!isFinite(n)) return "—";
+  if (col.scale) n = n / col.scale;
+  const fs = col.format ?? "";
+  const dec = fs.includes("0.000") ? 3 : fs.includes("0.00") ? 2 : fs.includes("0.0") ? 1 : 0;
+  const s = n.toLocaleString("ko-KR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  return col.unit ? (col.unit === "%" ? `${s}%` : `${s} ${col.unit}`) : s;
+}
+const _selLeft = (key: string) => key === "name" || key === "code" || key === "sector" || key === "symbol";
+
+export function RankedListChart({ results, columns, scoring, groups, as_of, universe_size, eligible_size }: {
+  results: SelRow[]; columns?: SelCol[]; scoring?: { recipe?: string };
+  groups?: { group: string; results: SelRow[] }[];
   as_of?: string; universe_size?: number; eligible_size?: number;
 }) {
   const rows = results ?? [];
   if (!rows.length) {
-    return <Box title="랭킹 선별" sub="조건을 만족하는 종목이 없습니다."><div /></Box>;
+    return <Box title="저평가 선별" sub="조건을 만족하는 종목이 없습니다."><div /></Box>;
   }
-  // metric 컬럼 합집합(순서 보존) — 표 헤더.
-  const metricKeys: string[] = [];
-  for (const r of rows) {
-    for (const k of Object.keys(r.metrics ?? {})) if (!metricKeys.includes(k)) metricKeys.push(k);
-  }
-  const data = rows.map((r) => ({ symbol: r.symbol, score: r.score ?? null, sector: r.sector }));
-  const cap = `${as_of ?? "—"} 기준 · 전체 ${universe_size ?? "—"} 중 자격 ${eligible_size ?? "—"}`
-    + ` → 상위 ${rows.length}`;
-  return (
-    <Box title="랭킹 선별" sub={cap}>
-      <ResponsiveContainer width="100%" height={Math.max(160, rows.length * 30 + 30)}>
-        <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
-          <CartesianGrid stroke={C.grid} horizontal={false} />
-          <XAxis type="number" tick={{ fontSize: 11 }} />
-          <YAxis type="category" dataKey="symbol" tick={{ fontSize: 11 }} width={88}
-            interval={0} />
-          <Tooltip content={<RankedTip />} cursor={{ fill: C.accent + "14" }} />
-          <Bar dataKey="score" isAnimationActive={false}>
-            {data.map((d, i) => <Cell key={i} fill={sectorColor(d.sector)} />)}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-      <div style={{ overflowX: "auto", marginTop: 8 }}>
+  // 계약 columns 우선, 없으면 폴백(이름·코드·섹터·점수 + metric 합집합).
+  const cols: SelCol[] = columns?.length ? columns : (() => {
+    const mk: string[] = [];
+    for (const r of rows) for (const k of Object.keys(r.metrics ?? {})) if (!mk.includes(k)) mk.push(k);
+    return [{ key: "name", label: "종목" }, { key: "code", label: "코드" },
+            { key: "sector", label: "섹터" }, { key: "score", label: "점수" },
+            ...mk.map((k) => ({ key: k, label: mlabel(k) }))];
+  })();
+  const cap = `${as_of ?? "—"} 기준 · 전체 ${universe_size ?? "—"} 중 자격 ${eligible_size ?? "—"} → 상위 ${rows.length}`
+    + (scoring?.recipe ? ` · 점수: ${scoring.recipe}` : "");
+
+  const Tbl = ({ rs, hideSector }: { rs: SelRow[]; hideSector?: boolean }) => {
+    const cs = hideSector ? cols.filter((c) => c.key !== "sector") : cols;
+    return (
+      <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
           <thead><tr>
-            <th style={thStyle}>종목</th><th style={thStyle}>섹터</th>
-            <th style={{ ...thStyle, textAlign: "right" }}>점수</th>
-            {metricKeys.map((k) => (
-              <th key={k} style={{ ...thStyle, textAlign: "right" }}>{mlabel(k)}</th>
+            <th style={thStyle}>순위</th>
+            {cs.map((c) => (
+              <th key={c.key} style={{ ...thStyle, textAlign: _selLeft(c.key) ? "left" : "right" }}>{c.label}</th>
             ))}
           </tr></thead>
           <tbody>
-            {rows.map((r, i) => (
+            {rs.map((r, i) => (
               <tr key={i}>
-                <td style={tdStyle}>{r.symbol}</td>
-                <td style={tdStyle}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                    <span style={{ width: 9, height: 9, borderRadius: 2,
-                      background: sectorColor(r.sector), display: "inline-block" }} />
-                    {r.sector || "—"}
-                  </span>
-                </td>
-                <td style={{ ...tdStyle, textAlign: "right" }}>{f2(r.score)}</td>
-                {metricKeys.map((k) => (
-                  <td key={k} style={{ ...tdStyle, textAlign: "right" }}>{f2(r.metrics?.[k])}</td>
+                <td style={tdStyle}>{i + 1}</td>
+                {cs.map((c) => (
+                  <td key={c.key} style={{ ...tdStyle, textAlign: _selLeft(c.key) ? "left" : "right" }}>
+                    {_selFmt(_selVal(r, c.key), c)}
+                  </td>
                 ))}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+    );
+  };
+
+  return (
+    <Box title="저평가 선별" sub={cap}>
+      {groups?.length
+        ? groups.map((g) => (
+            <div key={g.group} style={{ marginBottom: 14 }}>
+              <div style={{ fontWeight: 600, margin: "4px 0", display: "inline-flex",
+                            alignItems: "center", gap: 5 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 2,
+                               background: sectorColor(g.group), display: "inline-block" }} />
+                {g.group} <span style={{ color: C.muted, fontWeight: 400 }}>· {g.results.length}종목</span>
+              </div>
+              <Tbl rs={g.results} hideSector />
+            </div>
+          ))
+        : <Tbl rs={rows} />}
     </Box>
   );
 }

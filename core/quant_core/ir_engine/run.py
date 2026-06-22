@@ -633,7 +633,8 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
     자격 마스크(PIT), select.display는 결과에 붙일 지표 컬럼. 미래행 미참조(PIT).
     """
     from .engine import _screener_mask
-    from ..expression_parser import get_symbol_group
+    from ..expression_parser import get_symbol_group, symbol_name
+    from .columns import score_recipe, select_columns
 
     sel = strategy.select
     if sel is None:
@@ -679,30 +680,52 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
     eligible = row.dropna()
     eligible_size = int(eligible.shape[0])
 
-    ranked = eligible.sort_values(ascending=not sel.descending)
-    if sel.top_n is not None:
-        ranked = ranked.head(int(sel.top_n))
-    elif sel.top_pct is not None:
-        k = max(1, int(round(eligible_size * float(sel.top_pct) / 100.0)))
-        ranked = ranked.head(k)
-
-    results = []
-    for sym in ranked.index:
+    def _build(sym: str) -> dict:
         df = dataset.get(sym)
         metrics = {}
         for col in sel.display:
             if df is not None and col in df.columns:
                 sub = df.loc[df.index <= asof, col].dropna()
                 metrics[col] = float(sub.iloc[-1]) if len(sub) else None
-        results.append({
-            "symbol": sym,
-            "score": (float(ranked[sym]) if pd.notna(ranked[sym]) else None),
-            "sector": get_symbol_group(sym, "Sector"),
-            "metrics": metrics,
-        })
+        sc = eligible.get(sym)
+        return {"symbol": sym, "code": sym, "name": symbol_name(sym),   # ③ 티커→이름+코드
+                "score": (float(sc) if sc is not None and pd.notna(sc) else None),
+                "sector": get_symbol_group(sym, "Sector"), "metrics": metrics}
+
+    ordered = eligible.sort_values(ascending=not sel.descending)
+    cols = select_columns(list(sel.display))                       # ③ 자기서술 컬럼 메타
+    scoring = score_recipe(strategy.signal.model_dump(), sel.descending)   # ③ 점수 산식(투명)
+
+    # group_by: 그룹(섹터 등)별 top_n — 배터리 3 + 반도체 3 (정렬 후 그룹별 앞에서 N개)
+    if sel.group_by:
+        from collections import OrderedDict
+        buckets: "OrderedDict[str, list]" = OrderedDict()
+        cap = int(sel.top_n) if sel.top_n is not None else None
+        for sym in ordered.index:
+            g = get_symbol_group(sym, sel.group_by) or "기타"
+            b = buckets.setdefault(g, [])
+            if cap is None or len(b) < cap:
+                b.append(sym)
+        groups, results = [], []
+        for g, gsyms in buckets.items():
+            gres = [_build(s) for s in gsyms]
+            groups.append({"group": g, "results": gres})
+            results.extend(gres)
+        return {"success": True, "query": "select", "as_of": str(asof)[:10],
+                "universe_size": len(syms), "eligible_size": eligible_size,
+                "group_by": sel.group_by, "groups": groups, "results": results,
+                "columns": cols, "scoring": scoring}
+
+    ranked = ordered
+    if sel.top_n is not None:
+        ranked = ranked.head(int(sel.top_n))
+    elif sel.top_pct is not None:
+        k = max(1, int(round(eligible_size * float(sel.top_pct) / 100.0)))
+        ranked = ranked.head(k)
+    results = [_build(sym) for sym in ranked.index]
     return {"success": True, "query": "select", "as_of": str(asof)[:10],
             "universe_size": len(syms), "eligible_size": eligible_size,
-            "results": results}
+            "results": results, "columns": cols, "scoring": scoring}
 
 
 # ── DESCRIBE 대상 확장 (P2 — 단일종목 360 리포트 + 포트폴리오 진단) ───────────

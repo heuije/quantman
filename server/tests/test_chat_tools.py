@@ -30,6 +30,20 @@ def test_assemble_screen_no_symbols_uses_all():
     assert s.universe.kind == "all"
 
 
+def test_assemble_screen_composite_grouped():
+    """저평가 = 다밸류 지표 백분위 합 composite + 섹터별 top-N + 다섹터(P2)."""
+    ir = assemble_ir("screen", {
+        "score_refs": ["__SELF__.pb_ratio", "__SELF__.trailing_pe", "__SELF__.ev_ebitda"],
+        "sectors": ["반도체", "배터리"], "group_by": "Sector", "top_n": 3})
+    s = StrategyIR.model_validate(ir)                 # composite IR 유효(예외 없음)
+    assert s.query == "select"
+    assert s.select.group_by == "Sector" and s.select.top_n == 3
+    assert s.select.descending is False              # 백분위 합 낮을수록 저평가
+    assert s.signal.op == "binary"                   # composite = rank 합 트리
+    assert {"pb_ratio", "trailing_pe", "ev_ebitda"} <= set(s.select.display)  # 팩터 표시(투명)
+    assert ir["universe"]["screener"]["condition"]["params"]["values"] == ["반도체", "배터리"]
+
+
 def test_assemble_simulate_raises_not_assembled():
     # simulate는 assemble_ir 경로를 거치지 않는다 — run_simulate가 compile_strategy로 IR을 만든다.
     import pytest
