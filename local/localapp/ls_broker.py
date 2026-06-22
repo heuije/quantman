@@ -128,14 +128,12 @@ class _LsAuth:
 
     def _post(self, path: str, tr_cd: str, body: dict, *,
               is_order: bool = False, timeout: int = 10, tries: int = 4) -> dict:
-        """LS POST. read 조회는 일시 5xx/rate-limit 재시도, order는 멱등 아님 →
-        rate-limit 접수전 거부에만 재시도(이중 발주 차단).
-
-        ⚠ LS rate-limit 응답 형식 미확인 — 현재 HTTP 429/5xx만 재시도 대상. 만약 LS가
-        rate-limit을 HTTP 200 + body(rsp_cd≠"00000")로 인코딩하면(KIS는 HTTP 500 +
-        EGW00201) 아래 200 분기가 에러 body를 정상 반환으로 넘긴다 — 주문 경로는
-        normalize_ls_order_resp(B6)가 rsp_cd로 거부 판정하므로 오체결은 없으나 rate-limit
-        재시도는 누락된다. 정확 형식은 키 발급 후 docs/ls-api 확정(GOTCHAS)."""
+        """LS POST. **LS는 오류를 HTTP 500 + 본문 rsp_cd로 담는다**(실측 2026-06-22):
+          · IGW40014 = 요청필드 오류(예: RecCnt를 int로 보냄) — 재시도·재인증 무의미 → 즉시 실패.
+          · IGW00201 = 호출한도 초과(rate limit) — **재인증 금지**(토큰 발급이 한도를 더 악화) → backoff 재시도만.
+          · 그 외 500 = 토큰 무효화 추정(모의 중복로그인 등, 만료 전 무효화) — read는 새 토큰 1회 재인증해 자가복구.
+        order는 5xx에 재시도·재인증 안 함 — 주문이 이미 접수됐을 수 있어 이중 발주 차단
+        (사이클은 주문 전 read[잔고]가 토큰을 먼저 갱신하므로 주문은 새 토큰을 쓴다)."""
         last = None
         force_token = False
         reauthed = False
@@ -146,14 +144,15 @@ class _LsAuth:
             force_token = False        # one-shot — 재인증 후엔 새 토큰이 캐시돼 일반 경로
             if r.status_code == 200:
                 return r.json()
-            # 토큰 무효화 자가복구: 서버가 *만료 전* 토큰을 무효화(모의 중복로그인 등)하면 데이터
-            # endpoint가 500을 반환한다(실측 2026-06-22: 캐시 토큰 500, 새 토큰 200). read는 새 토큰으로
-            # 1회 재인증 후 재시도해 자가복구한다. order는 재인증·재시도 안 함 — 5xx는 주문이 이미
-            # 접수됐을 수 있어 이중 발주 차단(사이클은 주문 전 read[잔고]가 토큰을 먼저 갱신한다).
-            if r.status_code == 500 and not is_order and not reauthed:
-                reauthed = True
-                force_token = True
-                continue
+            if r.status_code == 500 and not is_order:
+                emsg = r.text or ""
+                if "IGW40014" in emsg or "is neither a decimal" in emsg:
+                    r.raise_for_status()             # 요청 필드 오류 — 재시도·재인증 무의미, 즉시 실패
+                if "IGW00201" not in emsg and not reauthed:
+                    reauthed = True                  # 토큰 무효화 추정 → 새 토큰 1회 재인증
+                    force_token = True
+                    continue
+                # IGW00201(rate limit) 또는 재인증 후 실패 → 재인증 않고 backoff 재시도
             # read는 일시 5xx/429 재시도; order는 429(접수전 거부)에만.
             retryable = r.status_code in (429, 500, 502, 503)
             if retryable and i < tries - 1 and (not is_order or r.status_code == 429):
@@ -509,8 +508,8 @@ class LsBroker(_LsAuth):
 
     def _overseas_ccld_raw(self, exec_yn: str) -> dict:
         """COSAQ00102 계좌주문체결내역 — ExecYn 0전체/1체결/2미체결. OrdDt=당일."""
-        return self._post("/overseas-stock/accno", "COSAQ00102",
-                          {"COSAQ00102InBlock1": {"OrdDt": datetime.now().strftime("%Y%m%d"),
+        return self._post("/overseas-stock/accno", "COSAQ00102",  # RecCnt "1" 문자열(IGW 고정폭·COSOQ00201 동일 부류)
+                          {"COSAQ00102InBlock1": {"RecCnt": "1", "OrdDt": datetime.now().strftime("%Y%m%d"),
                                                   "ExecYn": exec_yn, "SrtOrdNo": "999999999", "IsuNo": ""}})
 
     def _overseas_order_status(self, order_no: str, symbol: str) -> dict:
@@ -695,8 +694,10 @@ class LsBroker(_LsAuth):
     def _overseas_balance_raw(self) -> dict:
         """COSOQ00201 해외 종합잔고평가 — 통화별(OB3)·종목별(OB4). BaseDt=당일."""
         from datetime import datetime
+        # ⚠ RecCnt는 *문자열* "1" 필수 — LS IGW 게이트웨이가 레코드갯수를 고정폭 파싱하는데
+        #   int(1)이면 필드 정렬이 깨져 IGW40014("Character U is neither a decimal digit") 거부(실측 2026-06-22).
         return self._post("/overseas-stock/accno", "COSOQ00201",
-                          {"COSOQ00201InBlock1": {"BaseDt": datetime.now().strftime("%Y%m%d"),
+                          {"COSOQ00201InBlock1": {"RecCnt": "1", "BaseDt": datetime.now().strftime("%Y%m%d"),
                                                   "CrcyCode": "USD", "AstkBalTpCode": "00"}})
 
     def overseas_snapshot(self) -> dict:

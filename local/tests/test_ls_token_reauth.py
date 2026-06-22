@@ -15,9 +15,10 @@ from localapp import ls_broker as lb  # noqa: E402
 
 
 class _Resp:
-    def __init__(self, status, payload=None):
+    def __init__(self, status, payload=None, text=""):
         self.status_code = status
         self._p = payload or {}
+        self.text = text          # LS 500 본문(rsp_cd 분기용)
 
     def json(self):
         return self._p
@@ -89,3 +90,36 @@ def test_post_reauth_once_then_real_500_raises(monkeypatch):
     with pytest.raises(Exception):
         b._post("/stock/accno", "t0424", {"x": 1})
     assert forces.count(True) == 1            # 재인증은 정확히 1회(무한 루프 아님)
+
+
+def test_post_no_reauth_on_ratelimit_500(monkeypatch):
+    """호출한도 500(IGW00201)은 재인증 안 함(토큰 발급이 한도 악화) — backoff 재시도만."""
+    b, forces = _make(monkeypatch)
+    monkeypatch.setattr(lb.time, "sleep", lambda *a: None, raising=False)
+    posts = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        posts.append(headers["authorization"])
+        return _Resp(500, text='{"rsp_cd":"IGW00201","rsp_msg":"호출 거래건수를 초과하였습니다."}')
+
+    monkeypatch.setattr(lb.requests, "post", fake_post, raising=False)
+    with pytest.raises(Exception):
+        b._post("/overseas-stock/accno", "COSOQ00201", {"x": 1})
+    assert True not in forces                 # 재인증 없음(한도초과)
+    assert len(posts) >= 2                     # backoff 재시도는 함
+
+
+def test_post_field_error_raises_immediately(monkeypatch):
+    """필드오류 500(IGW40014)은 즉시 실패 — 재시도·재인증 무의미(요청이 잘못됨)."""
+    b, forces = _make(monkeypatch)
+    posts = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        posts.append(1)
+        return _Resp(500, text='{"rsp_cd":"IGW40014","rsp_msg":"... Character U is neither a decimal ..."}')
+
+    monkeypatch.setattr(lb.requests, "post", fake_post, raising=False)
+    with pytest.raises(Exception):
+        b._post("/overseas-stock/accno", "COSOQ00201", {"x": 1})
+    assert len(posts) == 1                     # 단 1회(즉시 실패, 재시도 없음)
+    assert True not in forces                  # 재인증 없음
