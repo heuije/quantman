@@ -12,6 +12,7 @@ in-process라 invalidate()로 즉시 무효화되지만, manage·백필 등 **�
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
@@ -21,6 +22,7 @@ from quant_core import data_fetcher
 from quant_core.indicators import (FUND_INDICATOR_COLS, CONSENSUS_INDICATOR_COLS,
                                     FLOW_INDICATOR_COLS, compute_columns)
 
+_log = logging.getLogger("app.data_cache")
 _lock = threading.Lock()
 _dataset: dict[str, pd.DataFrame] | None = None
 # 원시 OHLCV 캐시(지표 계산 0) — 컬럼 프로젝션의 공유 입력. full _dataset(45컬럼,
@@ -111,7 +113,9 @@ def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataF
     ⚠ 잘린 tail의 *앞쪽* 행은 룩백 부족으로 full과 다를 수 있어, 최신 단면만 쓰는 SELECT
     전용이다(백테스트·분포 등 전체이력이 필요한 경로엔 recent_days 금지).
     """
+    _t0 = time.monotonic()
     raw = get_raw_dataset()
+    _t_raw = time.monotonic()
     cols = set(columns)
     want_fund = bool(cols & set(FUND_INDICATOR_COLS))
     want_cons = bool(cols & set(CONSENSUS_INDICATOR_COLS))
@@ -119,6 +123,7 @@ def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataF
     funds = data_fetcher.load_fund_all() if want_fund else {}
     cons = data_fetcher.load_consensus_all() if want_cons else {}
     flow = data_fetcher.load_flow_all() if want_flow else {}
+    _t_aux = time.monotonic()
     keys = list(raw.keys()) if symbols is None else [s for s in symbols if s in raw]
     out: dict[str, pd.DataFrame] = {}
     for s in keys:
@@ -134,6 +139,10 @@ def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataF
                                  fd if (fd is not None and not fd.empty) else None,
                                  cd if (cd is not None and not cd.empty) else None,
                                  fl if (fl is not None and not fl.empty) else None)
+    # 계측(뿌리④) — 스크리닝 3-10분 병목이 raw 콜드로드/보조데이터/compute 중 어디인지 분해.
+    _end = time.monotonic()
+    _log.info("get_projected: n=%d cols=%d recent_days=%s raw=%.2fs aux=%.2fs compute=%.2fs total=%.2fs",
+              len(out), len(cols), recent_days, _t_raw - _t0, _t_aux - _t_raw, _end - _t_aux, _end - _t0)
     return out
 
 

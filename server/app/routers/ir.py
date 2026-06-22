@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Optional
 from urllib.parse import quote
 
@@ -31,6 +33,7 @@ from ..serialize import serialize_backtest, serialize_ir_result
 
 router = APIRouter(prefix="/ir", tags=["ir"])
 
+_log = logging.getLogger("app.routers.ir")
 _XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -272,22 +275,40 @@ def ir_strategy_export(body: dict, user: User = Depends(get_current_user),
     어떤 연산으로' 산출했는지 엑셀로 증빙한다(선물 export 취지). **전 분석유형 지원** —
     build_strategy_excel이 결과 형상(simulate·sweep·period·extremize·select·describe·
     relate·event·signal)별로 전용 시트 구성으로 직렬화한다(메타분석은 감사표).
+
+    뿌리④ 계측: 무거운 동기 경로(데이터 로드·spec 실행·excel 빌드)의 단계별 소요를 INFO로
+    남기고, 500 크래시 시 실제 예외·단계·컨텍스트를 ERROR(exc_info)로 캡처한다 — 드물게
+    트리거되는 export 크래시의 근본을 다음 발생 시 즉시 특정(추측 수정 회피·Iron Law).
     """
-    dataset, manifest = _load_ir_dataset(body)
-    res = strategy_from_spec(
-        body, dataset, valid_refs=available_refs(dataset),
-        manifest=manifest, strict=bool(body.get("strict", False)),
-        strategy_resolver=_make_strategy_resolver(session, user))
-    if not res.get("success"):
-        raise HTTPException(status_code=400, detail=res.get("error") or "분석 실행 실패")
+    _t0 = time.monotonic()
+    q = str(body.get("query") or "simulate")
     try:
-        sir = StrategyIR.model_validate(body)
-    except ValidationError as e:
-        raise HTTPException(status_code=400, detail=f"전략 정의 오류: {e.errors()[0]['msg']}")
-    try:
-        xlsx = build_strategy_excel(sir, dataset, res)   # 형상별 디스패치(P2 — 전 분석유형)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"엑셀 내보내기 미지원 형상: {e}")
+        dataset, manifest = _load_ir_dataset(body)
+        _t_load = time.monotonic()
+        res = strategy_from_spec(
+            body, dataset, valid_refs=available_refs(dataset),
+            manifest=manifest, strict=bool(body.get("strict", False)),
+            strategy_resolver=_make_strategy_resolver(session, user))
+        if not res.get("success"):
+            raise HTTPException(status_code=400, detail=res.get("error") or "분석 실행 실패")
+        _t_run = time.monotonic()
+        try:
+            sir = StrategyIR.model_validate(body)
+        except ValidationError as e:
+            raise HTTPException(status_code=400, detail=f"전략 정의 오류: {e.errors()[0]['msg']}")
+        try:
+            xlsx = build_strategy_excel(sir, dataset, res)   # 형상별 디스패치(P2 — 전 분석유형)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"엑셀 내보내기 미지원 형상: {e}")
+        _end = time.monotonic()
+        _log.info("xlsx export ok: query=%s syms=%d load=%.1fs run=%.1fs build=%.1fs total=%.1fs",
+                  q, len(dataset), _t_load - _t0, _t_run - _t_load, _end - _t_run, _end - _t0)
+    except HTTPException:
+        raise   # 400류(검증·미지원 형상)는 정상 흐름 — 크래시 로깅 대상 아님
+    except Exception:   # noqa: BLE001 — 500 크래시 근본 진단용 캡처 후 재전파(상태코드 불변)
+        _log.error("xlsx export 500 실패: query=%s elapsed=%.1fs",
+                   q, time.monotonic() - _t0, exc_info=True)
+        raise
     # 한글 전략명은 RFC 5987 filename*(UTF-8)로, 호환 위해 ASCII filename 폴백 병기.
     fname = quote(f"{sir.name or 'backtest'}.xlsx")
     return Response(
