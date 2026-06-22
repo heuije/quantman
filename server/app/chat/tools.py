@@ -45,7 +45,9 @@ SCREEN_TOOL = {
             "sectors": {"type": "array", "items": {"type": "string"},
                         "description": "여러 섹터(예: ['반도체','배터리'])."},
             "group_by": {"type": "string",
-                         "description": "그룹별 top_n 선별(예: 'Sector' → 섹터별 N개씩). 섹터별 비교에 사용."},
+                         "description": ("섹터별 N개씩 선별 = group_by='Sector'를 sectors·top_n과 함께 "
+                                         "**한 번에** 호출(섹터마다 screen 반복 호출 금지). "
+                                         "예: sectors=['반도체','배터리']+group_by='Sector'+top_n=3 → 각 섹터 3종목.")},
         },
         "required": ["top_n"],
     },
