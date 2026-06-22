@@ -67,3 +67,37 @@ def serialize_backtest(result: dict) -> dict:
         "benchmark": _series_points(result["benchmark"]),
         "trades": trades,
     }
+
+
+def serialize_ir_result(res: dict) -> tuple[dict, str]:
+    """IR 엔진 결과 → (JSON-안전 dict, kind). 직렬화 정책 단일 출처 — /ir/strategy 라우터와
+    챗 도구(run_simulate·run_adjust)가 공유한다(DRY). kind ∈ {error, analysis, axis, backtest}로
+    호출측이 부가처리(라우터: analysis→뉴스 facet, backtest→DB persist)를 분기한다.
+
+    · analysis(select·describe·report·extremize): pandas 키 제거 후 clean_json(분석 dict엔 pandas 없음).
+    · axis(펼침 resultset): equity Series 등은 비호환 → 선별 키만 clean_json.
+    · backtest(1회): serialize_backtest로 equity/benchmark→points·trades→records.
+    챗 렌더·웹 모두 shape로 분기하므로 전 경로에서 shape를 보존한다.
+    """
+    if not res.get("success"):
+        return {"success": False, "error": res.get("error"), "issues": res.get("issues", [])}, "error"
+    # (1) 1회 백테스트만 pandas 직렬화 — trades DataFrame로 확정 감지(query명·mock 비의존).
+    if isinstance(res.get("trades"), pd.DataFrame) and not res.get("axis"):
+        payload = serialize_backtest(res)
+        payload["warnings"] = res.get("warnings", [])
+        if res.get("shape"):
+            payload["shape"] = res["shape"]
+        return payload, "backtest"
+    # (2) 펼침(axis) resultset — top-level equity Series 등 JSON 비호환 → 화이트리스트 키만.
+    #     extremize는 best/oos 등 키 보존이 필요해 (3) 통과 분기로(구 라우터 동작 보존).
+    if res.get("axis") and res.get("reduction") != "extremize":
+        out = {"success": True, "axis": res["axis"], "warnings": res.get("warnings", [])}
+        for k in ("buckets", "overall", "axes", "metrics", "compare", "consistency", "windows",
+                  "by_regime", "n_events", "basis", "by_window", "relation", "factor_names", "shape"):
+            if k in res and res[k] is not None:
+                out[k] = res[k]
+        return clean_json(out), "axis"
+    # (3) 그 외 전 분석형상(select·describe·relate·prescribe·breadth·extremize·report) —
+    #     분석 dict엔 pandas가 없어 pandas 키만 제거하고 통과(전 키 보존·clean_json).
+    out = {k: v for k, v in res.items() if k not in ("equity", "benchmark", "trades", "weight")}
+    return clean_json(out), "analysis"

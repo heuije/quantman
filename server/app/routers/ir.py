@@ -27,7 +27,7 @@ from ..data_manifest import build_dataset_manifest
 from ..db import get_session
 from ..deps import get_current_user
 from ..models import BacktestRun, Strategy, StrategyVersion, User
-from ..serialize import clean_json, serialize_backtest
+from ..serialize import serialize_backtest, serialize_ir_result
 
 router = APIRouter(prefix="/ir", tags=["ir"])
 
@@ -236,26 +236,13 @@ def ir_strategy(body: dict, user: User = Depends(get_current_user),
     if not res.get("success"):
         return {"success": False, "error": res.get("error"),
                 "issues": res.get("issues", [])}
-    # 리서치 질의(select·describe 리포트/진단·extremize) — equity/trades 없는 분석 결과.
-    # serialize_backtest는 result["trades"]를 요구해 KeyError로 500을 낸다(프로덕션 /ir/strategy
-    # 500 근본원인). 분석 결과 dict는 pandas 객체가 없으므로 전 키를 JSON-안전하게 통과시킨다.
-    if (res.get("query") in ("select", "describe") or res.get("report")
-            or res.get("reduction") == "extremize"):
-        out = {k: v for k, v in res.items()
-               if k not in ("equity", "benchmark", "trades", "weight")}
-        _attach_symbol_news(out)         # 단일 360 리포트 '왜 움직였나' 뉴스 facet(서버 엣지)
-        return clean_json(out)
-    if res.get("axis"):   # 펼침 resultset (equity Series는 JSON 비호환이라 제외)
-        out = {"success": True, "axis": res["axis"], "warnings": res.get("warnings", [])}
-        for k in ("buckets", "overall", "axes", "metrics", "compare", "consistency",
-                  "windows", "by_regime", "n_events", "basis", "by_window", "relation",
-                  "factor_names"):
-            if k in res and res[k] is not None:
-                out[k] = res[k]
-        return clean_json(out)   # NaN/inf→None (allow_nan=False JSONResponse 호환)
-    payload = serialize_backtest(res)          # 1회 백테스트
-    payload["warnings"] = res.get("warnings", [])
-    _persist_ir_backtest(session, user, body, payload)
+    # 직렬화 정책은 serialize_ir_result(단일 출처·챗 도구와 공유). 라우터 고유 부가처리만 분기:
+    # analysis→단일 360 '왜 움직였나' 뉴스 facet, backtest→DB persist.
+    payload, kind = serialize_ir_result(res)
+    if kind == "analysis":
+        _attach_symbol_news(payload)
+    elif kind == "backtest":
+        _persist_ir_backtest(session, user, body, payload)
     return payload
 
 
