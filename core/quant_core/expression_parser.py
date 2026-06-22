@@ -25,6 +25,36 @@ def get_symbol_group(sym: str, group_type: str = "Industry") -> str:
     return "기타" if sym.split(".")[0].isdigit() else "Other"
 
 
+_NAME_CACHE: dict | None = None
+
+
+def symbol_name(sym: str) -> str:
+    """티커 코드 → 종목명. ticker_db.json(코어 metadata)의 한글명 k(없으면 영문 e), 미수급은 코드 폴백.
+
+    결과 표시용(자기서술 결과 계약) — 코드만 보이던 결과에 이름을 붙인다. ticker_db 형식
+    [{"t":"005930.KS","k":"삼성전자","e":...}] → {코드: 이름} 맵 1회 캐시.
+    """
+    global _NAME_CACHE
+    if _NAME_CACHE is None:
+        import json
+        import os
+        from pathlib import Path
+        p = (Path(os.getenv("QP_CORE_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
+             / "ticker_db.json")
+        m: dict[str, str] = {}
+        if p.exists():
+            try:
+                for r in json.loads(p.read_text(encoding="utf-8")):
+                    code = str(r.get("t", "")).split(".")[0]
+                    nm = (r.get("k") or r.get("e") or "").strip()
+                    if code and nm:
+                        m.setdefault(code, nm)
+            except (ValueError, OSError):
+                pass
+        _NAME_CACHE = m
+    return _NAME_CACHE.get(sym.split(".")[0], sym)
+
+
 # ── 시계열 및 횡단면 연산 함수군 ───────────────────────────────────────────────
 
 def ts_mean(x: pd.DataFrame, d: int) -> pd.DataFrame:

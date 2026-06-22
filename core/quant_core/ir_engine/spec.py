@@ -212,6 +212,8 @@ class SelectSpec(BaseModel):
     top_pct: Optional[float] = None     # 또는 상위 %(0<pct<=100)
     descending: bool = True             # score 큰 순(False=작은 순 — 예: 저PER)
     display: list[str] = Field(default_factory=list)   # 결과에 붙일 지표 컬럼(pb_ratio 등)
+    group_by: Optional[str] = None      # 설정 시 그룹(예: "Sector"/"Industry")별로 top_n 선별
+                                        # (예: 섹터별 3종목 = group_by="Sector", top_n=3)
 
 
 # ── 처방 (PRESCRIBE 동사 — 포트폴리오 비중 최적화·추천) ───────────────────────
