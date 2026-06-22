@@ -43,9 +43,10 @@ class LsFuturesBroker(_LsAuth):
         return body.get("o3101OutBlock") or []
 
     def _acct_summary_raw(self) -> dict:
-        # ⚠ RecCnt는 *문자열* "1" 필수(int면 IGW40014 거부 — 해외주식 COSOQ00201 실측 2026-06-22과 동일 부류).
+        # RecCnt=int (LsApiHelper 스펙 — 해외주식 COSOQ00201 RecCnt int 확인과 동일 패턴).
+        # ⚠ 국내선물 모의계좌 creds 등록 후 실측 확정(InBlock 필드 완전성 포함).
         return self._post("/futureoption/accno", "CFOAQ50600",
-                          {"CFOAQ50600InBlock1": {"RecCnt": "1", "BalEvalTp": "1",
+                          {"CFOAQ50600InBlock1": {"RecCnt": 1, "BalEvalTp": "1",
                                                   "FutsPrcEvalTp": "1", "LqtQtyQryTp": "1"}})
 
     def _positions_raw(self) -> dict:

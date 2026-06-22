@@ -508,9 +508,14 @@ class LsBroker(_LsAuth):
 
     def _overseas_ccld_raw(self, exec_yn: str) -> dict:
         """COSAQ00102 계좌주문체결내역 — ExecYn 0전체/1체결/2미체결. OrdDt=당일."""
-        return self._post("/overseas-stock/accno", "COSAQ00102",  # RecCnt "1" 문자열(IGW 고정폭·COSOQ00201 동일 부류)
-                          {"COSAQ00102InBlock1": {"RecCnt": "1", "OrdDt": datetime.now().strftime("%Y%m%d"),
-                                                  "ExecYn": exec_yn, "SrtOrdNo": "999999999", "IsuNo": ""}})
+        # COSAQ00102InBlock1 — LsApiHelper 스펙: 12필드 전부 필수(research 4필드는 불완전). RecCnt·SrtOrdNo=int.
+        # ⚠ OrdMktCode/CrcyCode 전체조회 값("00"/"000")은 모의 실측 확정 필요(비치명: 실패해도 order_status=unknown).
+        return self._post("/overseas-stock/accno", "COSAQ00102",
+                          {"COSAQ00102InBlock1": {
+                              "RecCnt": 1, "QryTpCode": "1", "BkseqTpCode": "1", "OrdMktCode": "00",
+                              "BnsTpCode": "0", "IsuNo": "", "SrtOrdNo": 999999999,
+                              "OrdDt": datetime.now().strftime("%Y%m%d"), "ExecYn": exec_yn,
+                              "CrcyCode": "000", "ThdayBnsAppYn": "0", "LoanBalHldYn": "0"}})
 
     def _overseas_order_status(self, order_no: str, symbol: str) -> dict:
         """COSAQ00102(ExecYn='0') OrdNo 매칭 → filled/partial/cancelled/submitted.
@@ -694,11 +699,11 @@ class LsBroker(_LsAuth):
     def _overseas_balance_raw(self) -> dict:
         """COSOQ00201 해외 종합잔고평가 — 통화별(OB3)·종목별(OB4). BaseDt=당일."""
         from datetime import datetime
-        # ⚠ RecCnt는 *문자열* "1" 필수 — LS IGW 게이트웨이가 레코드갯수를 고정폭 파싱하는데
-        #   int(1)이면 필드 정렬이 깨져 IGW40014("Character U is neither a decimal digit") 거부(실측 2026-06-22).
+        # COSOQ00201InBlock1 — LsApiHelper 스펙(LS 공식문서 스크래핑): RecCnt=int·BaseDt(str8)·
+        #   CrcyCode(str3, "ALL"=전통화)·AstkBalTpCode(str2). RecCnt는 int(문자열 아님).
         return self._post("/overseas-stock/accno", "COSOQ00201",
-                          {"COSOQ00201InBlock1": {"RecCnt": "1", "BaseDt": datetime.now().strftime("%Y%m%d"),
-                                                  "CrcyCode": "USD", "AstkBalTpCode": "00"}})
+                          {"COSOQ00201InBlock1": {"RecCnt": 1, "BaseDt": datetime.now().strftime("%Y%m%d"),
+                                                  "CrcyCode": "ALL", "AstkBalTpCode": "00"}})
 
     def overseas_snapshot(self) -> dict:
         """미국 USD 예수금+환율+보유종목. foreign_eval_krw는 직접계산(벤더 환산필드 불일치 회피·KIS 동일).
