@@ -28,6 +28,8 @@ INDUSTRIES = {
     "금융": "industry_금융.csv",
     "석유화학": "industry_석유화학.csv",
     "화장품": "industry_화장품.csv",
+    "미디어엔터테인먼트": "industry_미디어엔터테인먼트.csv",
+    "교육출판업": "industry_교육출판업.csv",
 }
 
 
@@ -112,6 +114,10 @@ _DAN_ORDER = {
     "도료·잉크": 7, "계면활성제·세제": 8, "비료·농약": 9, "유지·바이오": 10, "기능성소재": 11,
     # 화장품
     "원료": 0, "ODM·OEM": 1, "브랜드": 2,
+    # 미디어엔터테인먼트
+    "제작": 0, "유통·플랫폼": 1, "상영·소비": 2,
+    # 교육출판업
+    "출판": 0, "교재·콘텐츠": 1, "교육서비스": 2,
 }
 
 
@@ -494,6 +500,58 @@ def industry_returns(name: str) -> dict:
     except Exception as e:
         _log.warning("기간수익률 fetch 실패 %s: %s", name, e)
         return {}
+
+
+def industry_stream_index(name: str) -> dict:
+    """Stream(Up/Mid/Down)별 **시총가중 누적수익률 지수** 시계열(~2.2년 일별).
+
+    각 종목 종가를 시작=1로 정규화 → 같은 스트림 안에서 시총가중 평균 → (지수-1)×100 = 누적수익률%.
+    딱 3개의 선(스트림)으로 직관화. 프런트는 선택 기간의 시작점 기준으로 재정규화해 표시(주가추이와 동일 UX)."""
+    try:
+        import pandas as pd
+        from concurrent.futures import ThreadPoolExecutor
+        today = date.today().isoformat()
+        rows = _industry(name, today, "")
+        if not rows:
+            return {"dates": [], "streams": {}}
+        targets = [(r["ticker"], r.get("gu") or "") for r in rows if (r.get("gu") or "") in _GU_ORDER]
+        with ThreadPoolExecutor(max_workers=20) as ex:
+            loaded = dict(ex.map(lambda tk: (tk, _closes(tk, today)), [t for t, _ in targets]))
+        series: dict = {}
+        caps: dict = {}
+        by_gu: dict = {}
+        for tk, gu in targets:
+            c = loaded.get(tk)
+            if c is None or len(c) < 30:
+                continue
+            sh = shares_of(tk)
+            cap = (float(c.iloc[-1]) * sh) if sh else None
+            if not cap:
+                continue
+            series[tk] = c
+            caps[tk] = cap
+            by_gu.setdefault(gu, []).append(tk)
+        if not series:
+            return {"dates": [], "streams": {}}
+        # 모든 종목 종가를 날짜로 정렬·전진보간 후 공통 구간만(전 종목 데이터 존재 시점부터)
+        df = pd.DataFrame(series).sort_index().ffill().dropna()
+        if len(df) < 2:
+            return {"dates": [], "streams": {}}
+        norm = df / df.iloc[0]                        # 종목별 시작=1 정규화
+        streams: dict = {}
+        for gu, tks in by_gu.items():
+            tks = [t for t in tks if t in norm.columns]
+            if not tks:
+                continue
+            tot = sum(caps[t] for t in tks)
+            idx = sum(norm[t] * (caps[t] / tot) for t in tks)   # 시총가중 평균
+            streams[gu] = [round((float(v) - 1) * 100, 2) for v in idx]
+        # 종목별 누적수익률 시계열 — 표가 임의 구간(기간/커스텀)을 직접 산출하도록 제공.
+        stocks = {t: [round((float(v) - 1) * 100, 2) for v in norm[t]] for t in norm.columns}
+        return {"dates": [d.strftime("%Y-%m-%d") for d in df.index], "streams": streams, "stocks": stocks}
+    except Exception as e:
+        _log.warning("스트림 지수 fetch 실패 %s: %s", name, e)
+        return {"dates": [], "streams": {}}
 
 
 def as_of(req: str | None = None) -> str | None:
