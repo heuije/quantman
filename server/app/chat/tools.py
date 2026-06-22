@@ -22,24 +22,32 @@ from ..serialize import serialize_ir_result
 
 SCREEN_TOOL = {
     "name": "screen",
-    "description": ("팩터 점수로 종목을 횡단 랭킹해 상위 종목을 선별(스크리닝). "
-                    "백테스트가 아니라 현 시점(as-of) 스냅샷. score_ref·top_n 필요."),
+    "description": ("팩터 점수로 종목을 횡단 랭킹해 상위 종목을 선별(현 시점 as-of 스냅샷). "
+                    "**저평가**=여러 밸류 지표를 score_refs로(백분위 합 composite·낮을수록 저평가·"
+                    "단일 raw 정렬 금지). **섹터별 N개**=group_by. **여러 섹터**=sectors. top_n 필요."),
     "input_schema": {
         "type": "object",
         "properties": {
             "symbols": {"type": "array", "items": {"type": "string"},
                         "description": "후보 종목 코드. 비우면 전체 유니버스."},
             "score_ref": {"type": "string",
-                          "description": "랭킹 기준 지표 ref (예: __SELF__.pb_ratio, momentum_12_1m)."},
-            "top_n": {"type": "integer", "description": "상위 N 종목."},
+                          "description": "단일 랭킹 지표 ref (예: momentum_12_1m). 복합은 score_refs."},
+            "score_refs": {"type": "array", "items": {"type": "string"},
+                           "description": ("복합 저평가 점수용 밸류 지표 ref 목록 — 백분위 합(낮을수록 저평가). "
+                                           "예: ['__SELF__.pb_ratio','__SELF__.trailing_pe','__SELF__.ev_ebitda']. "
+                                           "낮을수록 저평가인 밸류 지표만(혼합 방향 금지).")},
+            "top_n": {"type": "integer", "description": "상위 N 종목(group_by 시 그룹당 N)."},
             "descending": {"type": "boolean",
-                           "description": "점수 큰 순(true·기본) 또는 작은 순(false, 예: 저PBR)."},
+                           "description": "단일 score_ref일 때만. 큰 순(true·기본)/작은 순(false). composite는 자동."},
             "display": {"type": "array", "items": {"type": "string"},
-                        "description": "결과에 함께 표시할 지표 컬럼."},
-            "sector": {"type": "string",
-                       "description": "업종/섹터명으로 후보를 거름(예: 반도체). symbols 대신 사용."},
+                        "description": "결과에 함께 표시할 지표 컬럼(composite 팩터는 자동 포함)."},
+            "sector": {"type": "string", "description": "단일 섹터(예: 반도체). 여러 개는 sectors."},
+            "sectors": {"type": "array", "items": {"type": "string"},
+                        "description": "여러 섹터(예: ['반도체','배터리'])."},
+            "group_by": {"type": "string",
+                         "description": "그룹별 top_n 선별(예: 'Sector' → 섹터별 N개씩). 섹터별 비교에 사용."},
         },
-        "required": ["score_ref", "top_n"],
+        "required": ["top_n"],
     },
 }
 
@@ -162,29 +170,44 @@ TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, I
 def assemble_ir(tool_name: str, tool_input: dict) -> dict:
     """도구 입력 → StrategyIR dict. screen은 부분집합→select IR, describe는 단일종목 360 IR."""
     if tool_name == "screen":
-        sector = str(tool_input.get("sector") or "").strip()
         symbols = list(tool_input.get("symbols") or [])
-        if sector:
-            # 모델이 종목 universe를 추측하지 않도록 — 섹터를 screener(부분일치)로 결정적 빌드.
-            # contains: 분류 데이터가 KSIC 자유서술("반도체 제조업")이라 정확매칭은 0건.
-            # attribute(Industry)는 종목 정적 분류 라벨 — projected 컬럼이 아니라 엔진이 심볼
-            # 메타데이터(classification)로 해석한다(needed_columns 미추출은 정상, 결손 아님).
+        # 다섹터 = is_in([반도체,배터리])(부분일치·하위호환 단일 sector). attribute(Industry)는
+        # 엔진이 심볼 메타데이터(classification)로 해석(needed_columns 미추출 정상).
+        sectors = [str(s).strip() for s in (tool_input.get("sectors")
+                   or ([tool_input["sector"]] if tool_input.get("sector") else [])) if str(s).strip()]
+        if sectors:
             universe = {"kind": "all", "screener": {"condition": {
                 "op": "is_in",
                 "inputs": {"signal": {"op": "attribute", "params": {"attr": "Industry"}}},
-                "params": {"values": [sector], "match": "contains"}}}}
+                "params": {"values": sectors, "match": "contains"}}}}
         elif symbols:
             universe = {"kind": "list", "symbols": symbols}
         else:
             universe = {"kind": "all"}
-        return {
-            "universe": universe,
-            "signal": {"op": "data", "params": {"ref": tool_input["score_ref"]}},
-            "query": "select",
-            "select": {"top_n": int(tool_input["top_n"]),
-                       "descending": bool(tool_input.get("descending", True)),
-                       "display": list(tool_input.get("display") or [])},
-        }
+        # 점수: 밸류 지표 여러 개면 백분위 합 composite(낮을수록 저평가·산식 투명), 1개면 raw.
+        refs = [r for r in (tool_input.get("score_refs")
+                or ([tool_input["score_ref"]] if tool_input.get("score_ref") else [])) if r]
+        if not refs:
+            raise KeyError("score_ref/score_refs")
+        if len(refs) > 1:
+            def _rank(ref):     # 횡단 백분위(오름차순 — 낮은 값=낮은 분위=저평가)
+                return {"op": "rank", "params": {"unit": "pct", "descending": False},
+                        "inputs": {"signal": {"op": "data", "params": {"ref": ref}}}}
+            signal = _rank(refs[0])
+            for ref in refs[1:]:
+                signal = {"op": "binary", "params": {"op": "+"},
+                          "inputs": {"a": signal, "b": _rank(ref)}}
+            descending = False                      # 백분위 합 낮을수록 저평가
+        else:
+            signal = {"op": "data", "params": {"ref": refs[0]}}
+            descending = bool(tool_input.get("descending", True))
+        # 근거 투명: composite 구성 팩터를 결과 표시 컬럼에 포함(중복 제거)
+        display = list(dict.fromkeys(list(tool_input.get("display") or [])
+                                     + [r.split(".")[-1] for r in refs]))
+        select = {"top_n": int(tool_input["top_n"]), "descending": descending, "display": display}
+        if tool_input.get("group_by"):
+            select["group_by"] = str(tool_input["group_by"])
+        return {"universe": universe, "signal": signal, "query": "select", "select": select}
     # simulate는 run_simulate가 compile_strategy로 IR을 만든다(assemble 불필요).
     if tool_name == "describe":
         # 단일종목 360 리포트. signal은 리포트가 미사용하나 StrategyIR 스키마 충족용 placeholder.

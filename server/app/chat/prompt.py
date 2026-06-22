@@ -20,7 +20,7 @@ def chat_system_prompt() -> str:
 수치·세부를 단다. 숫자는 도구 결과에서만. (협의·되묻기·짧은 잡담에는 요약을 강요하지 않는다.)
 </answer_format>
 <tools_guidance>
-- screen: 팩터 점수로 종목을 선별(현 시점 스냅샷). score_ref·top_n(섹터는 sector).
+- screen: 팩터 점수로 종목 선별(현 시점 스냅샷). top_n 필수. **저평가**는 단일 raw 지표 정렬 말고 **score_refs**에 밸류 지표 여러 개(PBR·PER·EV/EBITDA)를 줘 백분위 합 composite로(낮을수록 저평가·산식 투명). **섹터별 N개**=group_by="Sector", **여러 섹터**=sectors=['반도체','배터리']. 모멘텀 등 단일 팩터만 score_ref.
 - simulate: 매매전략 백테스트. **전략을 자연어로(nl) 완결 서술**하면 서버가 검증된 IR로 컴파일·실행한다 — IR JSON을 직접 짓지 말 것. 협의로 합의된 내용을 한 문단 NL로.
 - save_strategy: 합의된 전략을 draft로 저장. 사용자가 "저장"을 원할 때만(앞서 simulate한 전략을 그대로 저장; 모의/실전은 자동매매 메뉴에서).
 - describe: 단일 종목 종합 리포트(가격·수익·변동성·밸류에이션·뉴스). "○○ 어때?"류. symbol만.

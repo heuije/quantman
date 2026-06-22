@@ -61,3 +61,35 @@ def test_symbol_name_real_ticker():
     from quant_core.expression_parser import symbol_name
     assert symbol_name("005930") == "삼성전자"      # ticker_db.json(코어 metadata)
     assert symbol_name("999999") == "999999"       # 미수급 → 코드 폴백
+
+
+_PER = {"S1": 8, "S2": 20, "S3": 30, "S4": 10, "S5": 25, "S6": 35}
+
+
+def _ds2() -> dict:
+    out = {}
+    idx = pd.date_range("2022-01-03", periods=60, freq="B")
+    close = np.full(60, 100.0)
+    for s in _SEC:
+        out[s] = pd.DataFrame({"Open": close, "High": close * 1.01, "Low": close * 0.99,
+                               "Close": close, "Volume": 1e6,
+                               "pb_ratio": _PB[s], "trailing_pe": _PER[s]}, index=idx)
+    return out
+
+
+def test_composite_score_runs(monkeypatch):
+    """저평가 composite(백분위 합)이 run_select에서 평가·랭킹되는지 — assemble_ir이 만드는 신호 구조."""
+    monkeypatch.setattr(ep, "get_symbol_group", lambda sym, gt="Industry": _SEC.get(sym, "기타"))
+
+    def _rank(ref):
+        return {"op": "rank", "params": {"unit": "pct", "descending": False},
+                "inputs": {"signal": {"op": "data", "params": {"ref": ref}}}}
+    sig = {"op": "binary", "params": {"op": "+"},
+           "inputs": {"a": _rank("__SELF__.pb_ratio"), "b": _rank("__SELF__.trailing_pe")}}
+    ir = {"universe": {"kind": "list", "symbols": list(_SEC)},
+          "signal": sig, "query": "select", "select": {"descending": False, "top_n": 2}}
+    res = run_query(StrategyIR.model_validate(ir), _ds2())
+    assert res.get("success"), res.get("error")
+    # S1(pb 0.5·per 8 = 둘 다 최저분위) → composite 최저 → 저평가 1위
+    assert res["results"][0]["code"] == "S1"
+    assert res["results"][0]["score"] is not None              # composite 점수 산출됨
