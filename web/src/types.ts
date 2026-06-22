@@ -320,6 +320,22 @@ export interface NewsItem {
   title: string; link: string; desc: string; pub: string | null;
 }
 
+// forward 추정실적(estimate.earnings_kr·FnGuide) — 서버 엣지 enrich(뿌리①). 데이터 없으면 미부착.
+export interface Estimates {
+  source?: string;
+  forward?: {
+    fiscal_actual?: string; fiscal_forward?: string;
+    rev_growth?: number | null; op_growth?: number | null; ni_growth?: number | null;
+    eps_forward?: number | null; forward_pe?: number | null;
+    op_margin_forward?: number | null; roe_forward?: number | null;
+  };
+  annual?: {
+    years: string[]; is_estimate: boolean[];
+    rev?: (number | null)[]; op?: (number | null)[]; ni?: (number | null)[];
+    eps?: (number | null)[]; op_margin?: (number | null)[];
+  };
+}
+
 export interface IrSingleReport {
   success: boolean; query: "describe"; report: "single";
   symbol: string; sector: string; as_of: string; data_points: number;
@@ -340,6 +356,7 @@ export interface IrSingleReport {
     foreign_net_buy: number | null; foreign_net_buy_20d: number | null;
   };
   news?: NewsItem[];   // 서버 엣지 enrich(키 미설정·이름 미해석이면 빈 배열)
+  estimates?: Estimates;   // forward 추정실적(FnGuide·웹 직접 /ir/strategy 경로)
 }
 
 // query="describe" + universe.kind="portfolio" — 포트폴리오 진단 결과.
@@ -466,6 +483,7 @@ export interface IrStrategyResult extends BacktestResult {
     quotes?: Record<string, { price: number | null; chg: number | null; change?: number | null }>;
     news?: { title: string; link: string; desc?: string; pub?: string }[];
     market?: Record<string, { price: number | null; chg: number | null; change?: number | null }>;
+    estimates?: Estimates;   // forward 추정실적(FnGuide·챗 경로) — ContextCard 렌더
     source?: string;
   };
   // P5a 상관행렬 (relation="correlation") — symbols 순서의 대칭 행렬 + 요약 쌍.
