@@ -18,6 +18,14 @@ SCENARIOS: list[dict] = [
                 "judge_focus": "describe 카드(가격·수익·밸류·시세)가 이미 차트로 뜬다 — 답변이 그 표를 "
                                "텍스트로 중복 재현하지 않고 해석·시사점 중심인가. 쉬운말 요약으로 시작했나."}},
 
+    {"name": "describe_estimates",
+     # 뿌리① — describe가 forward 추정실적(FnGuide)을 표면화하나(예전 "추정치 미수급" 거부 금지)
+     "turns": ["삼성전자 내년 실적 전망이랑 추정 영업이익 어때?"],
+     "expect": {"tools": ["describe"],
+                "judge_focus": "추정실적을 '미수급'이라 거부하지 않고 describe로 답하나. 결과 estimates에서 "
+                               "다음 회계연도 추정 매출/영업이익/EPS·forward PER·성장률을 인용하나. "
+                               "백테스트 아닌 현시점 컨센서스 전망임을 흐리지 않나(예측 단정 회피)."}},
+
     {"name": "screen_low_pbr",
      "turns": ["저PBR 가치주 상위 10개만 골라줘"],
      "expect": {"tools": ["screen"],

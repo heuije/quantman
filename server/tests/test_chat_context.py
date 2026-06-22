@@ -11,6 +11,7 @@ def test_attach_context_describe_single(monkeypatch):
     monkeypatch.setattr(ctx.live_quote, "quotes_for", lambda s: {"005930": {"price": 71500, "chg": 2.1}})
     monkeypatch.setattr(ctx.kis_master_cache, "get_name", lambda c: "삼성전자")
     monkeypatch.setattr(ctx.news_kr, "fetch_news", lambda q, display=5: [{"title": "뉴스1", "link": "x"}])
+    monkeypatch.setattr(ctx.estimate_kr, "estimate_block", lambda c, last_price=None: {})  # 네트워크 차단
     out = ctx.attach_context({"success": True, "shape": "describe_single", "symbol": "005930"})
     assert out["context"]["quotes"]["005930"]["price"] == 71500
     assert out["context"]["news"][0]["title"] == "뉴스1"
@@ -52,12 +53,13 @@ def test_attach_context_skips_non_describe(monkeypatch):
 
 
 def test_attach_context_graceful_on_network_fail(monkeypatch):
-    """시세·뉴스 실패가 결과를 깨지 않는다(graceful) — context 없이 원결과 반환."""
+    """시세·뉴스·추정실적 실패가 결과를 깨지 않는다(graceful) — context 없이 원결과 반환."""
     def boom(*a, **k):
         raise RuntimeError("network")
     monkeypatch.setattr(ctx.live_quote, "quotes_for", boom)
     monkeypatch.setattr(ctx.kis_master_cache, "get_name", lambda c: "삼성전자")
     monkeypatch.setattr(ctx.news_kr, "fetch_news", boom)
+    monkeypatch.setattr(ctx.estimate_kr, "estimate_block", boom)
     out = ctx.attach_context({"success": True, "shape": "describe_single", "symbol": "005930"})
     assert out["success"] is True and "context" not in out
 
