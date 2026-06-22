@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 _SERVER = Path(__file__).resolve().parents[1]
 if str(_SERVER) not in sys.path:
     sys.path.insert(0, str(_SERVER))
@@ -41,3 +43,18 @@ def test_default_client_on_uses_subscription(monkeypatch):
         assert anthropic.Anthropic is ClaudeCodeBackend  # compile_nl·뉴스도 구독 경유
     finally:
         anthropic.Anthropic = orig                       # 몽키패치 복원(다른 테스트 보호)
+
+
+def test_chat_llm_guard_allows_subscription_mode(monkeypatch):
+    """503 가드: API 키 없어도 로컬 구독 모드면 통과(Mode B), 둘 다 없으면 503."""
+    from fastapi import HTTPException
+
+    from app.routers import chat as chat_router
+
+    monkeypatch.setattr(chat_router.settings, "ANTHROPIC_API_KEY", "", raising=False)
+    monkeypatch.delenv("QP_CHAT_LOCAL_SUBSCRIPTION", raising=False)
+    with pytest.raises(HTTPException) as ei:              # 키·플래그 둘 다 없음 → 503
+        chat_router._require_chat_llm()
+    assert ei.value.status_code == 503
+    monkeypatch.setenv("QP_CHAT_LOCAL_SUBSCRIPTION", "1")
+    chat_router._require_chat_llm()                       # 구독 모드 → 통과(예외 없음)

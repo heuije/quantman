@@ -7,6 +7,7 @@ JSON parts를 돌려주고, /chat/stream은 같은 agent 루프를 SSE 이벤트
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -110,7 +111,9 @@ def _rate_limited(quota: dict) -> JSONResponse:
 def create_conversation(user: User = Depends(get_current_user),
                         session: Session = Depends(get_session)):
     conv = Conversation(user_id=user.id)
-    session.add(conv); session.commit(); session.refresh(conv)
+    session.add(conv)
+    session.commit()
+    session.refresh(conv)
     return {"id": conv.id, "title": conv.title}
 
 
@@ -172,12 +175,18 @@ def chat_quota(body: QuotaIn, user: User = Depends(get_current_user),
     return _chat_quota(session, user.id, body.admin_password)
 
 
+def _require_chat_llm() -> None:
+    """챗 LLM 접근 구성 가드 — 프로덕션=ANTHROPIC_API_KEY, 로컬 구독 모드=QP_CHAT_LOCAL_SUBSCRIPTION(claude -p·$0)."""
+    if settings.ANTHROPIC_API_KEY or os.environ.get("QP_CHAT_LOCAL_SUBSCRIPTION") == "1":
+        return
+    raise HTTPException(status_code=503,
+                        detail="챗봇이 아직 설정되지 않았습니다(ANTHROPIC_API_KEY 미설정).")
+
+
 @router.post("/message")
 def post_message(body: MessageIn, user: User = Depends(get_current_user),
                  session: Session = Depends(get_session)):
-    if not settings.ANTHROPIC_API_KEY:
-        raise HTTPException(status_code=503,
-                            detail="챗봇이 아직 설정되지 않았습니다(ANTHROPIC_API_KEY 미설정).")
+    _require_chat_llm()
     conv = _owned(session, user, body.conversation_id)
     quota = _chat_quota(session, user.id, body.admin_password)
     if quota["remaining"] <= 0:                       # 서버 강제 — LLM 호출 전 차단(비용·악용 통제)
@@ -196,9 +205,7 @@ def _sse(event: str, data: dict) -> str:
 def post_message_stream(body: MessageIn, user: User = Depends(get_current_user),
                         session: Session = Depends(get_session)):
     """같은 agent 루프를 SSE로 스트리밍. 503·404·429는 스트림 시작 전 동기 검사라 일반 JSON 에러."""
-    if not settings.ANTHROPIC_API_KEY:
-        raise HTTPException(status_code=503,
-                            detail="챗봇이 아직 설정되지 않았습니다(ANTHROPIC_API_KEY 미설정).")
+    _require_chat_llm()
     conv = _owned(session, user, body.conversation_id)
     quota = _chat_quota(session, user.id, body.admin_password)
     if quota["remaining"] <= 0:                       # 스트림 시작 전 동기 차단(서버 강제)
