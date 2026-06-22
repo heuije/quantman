@@ -47,19 +47,19 @@ SCENARIOS: list[dict] = [
                                "'엔진이 연도별 못 준다'고 잘못 말하지 않았나."}},
 
     {"name": "simulate_sweep",
-     "turns": ["이동평균 기간을 10·20·60일로 바꿔가며 성과를 비교해줘"],
+     "turns": ["삼성전자 20일선 돌파 매수 전략에서 이동평균 기간을 10·20·60일로 바꿔가며 성과를 비교해줘"],
      "expect": {"tools": ["simulate"],
                 "ir": {"study.axis": "parameter"},
                 "judge_focus": "파라미터 격자 비교가 뜬다 — 답변이 민감도 패턴을 해석하는가(표 단순 재현 아님)."}},
 
     {"name": "simulate_extremize",
-     "turns": ["보유기간을 바꿔가며 샤프지수를 최대화하는 값을 찾아줘"],
+     "turns": ["삼성전자 20일선 돌파 전략의 보유기간을 바꿔가며 샤프지수를 최대화하는 값을 찾아줘"],
      "expect": {"tools": ["simulate"],
                 "ir": {"study.reduction": "extremize"},
                 "judge_focus": "최적값+과최적화(OOS) 경고를 해석하는가. 최적값을 미래 보장처럼 말하지 않았나."}},
 
     {"name": "simulate_regime",
-     "turns": ["이 전략이 상승장과 하락장에서 성과가 어떻게 다른지 비교해줘"],
+     "turns": ["삼성전자 20일선 돌파 전략이 상승장과 하락장에서 성과가 어떻게 다른지 비교해줘"],
      "expect": {"tools": ["simulate"],
                 "ir": {"study.axis": "label"},
                 "judge_focus": "국면 분할 비교를 해석하는가. 차이의 유의성을 과대해석하지 않았나."}},

@@ -55,7 +55,14 @@ def _synth_df(sym: str, i: int):
              "momentum_12_1m": round(0.5 + (i % 4) * 0.4, 2)}
     df = AC._ohlc(close, extra)
     df["sector"] = _SECTORS[i % len(_SECTORS)]
+    consensus = close * (1.05 + 0.03 * (i % 4))   # 컨센서스 목표주가(종가 위 5~14%) — inspect/컨센서스용
+    df["consensus_target"] = consensus
+    df["target_upside"] = (consensus / close - 1.0) * 100.0
     return df
+
+
+def _synth_for_symbols(symbols) -> dict:
+    return {s: _synth_df(s, i) for i, s in enumerate(list(symbols))}
 
 
 def synth_load_dataset(ir: dict) -> dict:
@@ -66,7 +73,7 @@ def synth_load_dataset(ir: dict) -> dict:
     except Exception:                             # noqa: BLE001 — 파싱불가는 엔진 검증경로가 처리
         return {}
     syms = needed_symbols(sir) or _SYNTH_UNIVERSE
-    return {s: _synth_df(s, i) for i, s in enumerate(syms)}
+    return _synth_for_symbols(syms)
 
 
 # ── 세션·시나리오 실행 ────────────────────────────────────────────────────────
@@ -110,7 +117,9 @@ def run_all(scenarios: list[dict]) -> list[Path]:
     from sqlmodel import Session, SQLModel
 
     anthropic.Anthropic = ClaudeCodeBackend        # compile_nl·news 다이제스트 seam
-    tools._load_dataset = synth_load_dataset       # 데이터 seam(합성 주입)
+    tools._load_dataset = synth_load_dataset       # 데이터 seam(screen/describe/simulate)
+    import quant_core as qc                         # run_inspect는 qc.load_dataset_for 직접 호출(_load_dataset 밖)
+    qc.load_dataset_for = lambda symbols, **kw: _synth_for_symbols(symbols)   # inspect도 합성 데이터
 
     from app.db import engine                       # 서버와 동일 DB(로컬 SQLite) → §8 viewing 공유
     SQLModel.metadata.create_all(engine)

@@ -268,21 +268,33 @@ class ClaudeCodeBackend:
             env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": token}
             env.pop("ANTHROPIC_API_KEY", None)
             env.pop("ANTHROPIC_AUTH_TOKEN", None)
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 [_CLAUDE_BIN, "-p", "--model", model, "--system-prompt-file", sys_file,
                  "--max-turns", "1", "--allowedTools", "", "--output-format", "json"],
-                input=prompt, capture_output=True, text=True, encoding="utf-8",
-                env=env, timeout=_TIMEOUT)
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", env=env)
+            try:
+                out, errout = proc.communicate(input=prompt, timeout=_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                # Windows: proc.kill()은 claude.CMD만 죽이고 손자(node)가 남아 communicate가
+                # 무한블록(6h hang 근본원인) → taskkill /T로 프로세스 트리 전체 강제 종료.
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                   capture_output=True)
+                else:
+                    proc.kill()
+                proc.wait()
+                raise RuntimeError(f"claude -p 타임아웃({_TIMEOUT}s) — 프로세스 트리 종료함")
         finally:
             os.unlink(sys_file)
         try:
-            env_out = json.loads(proc.stdout)
+            env_out = json.loads(out)
         except (ValueError, TypeError):
             raise RuntimeError(f"claude -p 출력 파싱 실패(rc={proc.returncode}): "
-                               f"stdout={proc.stdout[:400]!r} / stderr={proc.stderr[:300]!r}")
+                               f"stdout={out[:400]!r} / stderr={errout[:300]!r}")
         if env_out.get("is_error"):
             raise RuntimeError(f"claude -p 오류({env_out.get('api_error_status')}): "
-                               f"{env_out.get('result')} / stderr={proc.stderr[:200]!r}")
+                               f"{env_out.get('result')} / stderr={errout[:200]!r}")
         u = env_out.get("usage") or {}
         usage = _Usage(
             input_tokens=u.get("input_tokens", 0) or 0,
