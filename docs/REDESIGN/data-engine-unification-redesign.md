@@ -45,9 +45,9 @@
 - 신뢰성: 키리스, 실패→빈결과(가짜0 금지). consensus_kr·flow_kr와 동일 마커/신선도 패턴.
 - **명명 주의**: `estimate_kr`=forward **이익 추정**(FnGuide) vs 기존 `consensus_kr`=목표**주가** 컨센서스(한경). 별개 데이터·상보적.
 
-### 3.2 수집 트리거 (server `main.py` cron)
-- `_refresh_estimates()` + `_backfill_estimates_chunk()`(10분 스태거·예산 청크) — consensus/flow 백필과 동형. 부팅 초기 1회 fetch 등록.
-- ⚠️ `main.py`는 희제 #199 변경목록에 **없음** → 충돌 없음. (만약 머지 타이밍 겹치면 cron 등록부는 작은 hunk라 리베이스 용이.)
+### 3.2 수집 = on-demand 심볼뷰 (`estimate_kr.get`, **bulk cron 불필요**)
+- `get(code)` = load-or-fetch(7일 신선도) — data_engine 설계의 `symbol` 뷰("없으면 즉시 수집→적재→서빙") 패턴. describe가 **본 종목만 lazy 수집**(2700종목 bulk cron은 대부분 미열람이라 Over-engineering·원칙2 — Phase 2 screen이 bulk 추정을 필요로 하면 그때 cron 추가).
+- 결과: **`main.py` 미수정** = 희제 #199와 충돌면이 더 줄어듦. fetch 실패면 stale 저장본 graceful(외부 FnGuide 일시장애).
 
 ### 3.3 describe 표면화 — 서버 엣지 enrich (골든 불변·희제 함수 미수정)
 - `server/app/routers/ir.py`에 `_attach_symbol_estimates(result, symbol)` 추가 — **`_attach_symbol_news`와 동일 패턴**(엔진 결정성 밖, 라이브/단일종목 데이터를 엣지서 보강).
@@ -73,7 +73,7 @@
 |---|---|---|
 | 엔진(데이터) | `estimate_kr` feed 신규 + 저장 | 조대표 데이터엔진·신규파일 무충돌 |
 | 엔진(인사이트) | inspect 컬럼/capability에 밸류추이·estimate 노출 | 조대표 |
-| 수집 | `main.py` cron(`_refresh_estimates`) | 조대표·#199 무충돌 |
+| 수집 | `estimate_kr.get` on-demand 심볼뷰(cron 없음) | 조대표·`main.py` 미수정 |
 | serialize/계약 | `ir.py` `_attach_symbol_estimates`(엣지 enrich) | 조대표(챗 라우터)·`run_describe_report` 미수정 |
 | NL | 라우팅 idiom(추정실적→describe·밸류추이→inspect) | 조대표 |
 | 웹/엑셀 | 챗 describe 렌더러 추정실적 카드 | 조대표 공통 viz(HOME 미터치) |
@@ -92,7 +92,7 @@
 
 ## 7. 구현 단계 (Phase 1)
 - **P1a** `estimate_kr` feed(파싱·저장·테스트).
-- **P1b** `main.py` cron(refresh+backfill+부팅).
+- **P1b** on-demand 심볼뷰 `get`(load-or-fetch·bulk cron 없음·main.py 미수정).
 - **P1c** `ir.py` `_attach_symbol_estimates`(describe estimates 블록)+단위테스트.
 - **P1d** capability/NL(추정실적→describe·밸류추이→inspect)+하니스 시나리오.
 - **P1e** 웹 챗 describe 추정실적 카드.

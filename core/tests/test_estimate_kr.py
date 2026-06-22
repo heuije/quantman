@@ -85,7 +85,7 @@ def test_annual_view_empty():
 
 def test_estimate_block_composes(monkeypatch):
     df = estimate_kr.to_frame(estimate_kr.parse_highlight(_HTML))
-    monkeypatch.setattr(estimate_kr, "load", lambda code: df)
+    monkeypatch.setattr(estimate_kr, "get", lambda code: df)   # on-demand 심볼뷰 위임
     blk = estimate_kr.estimate_block("005930", last_price=80000.0)
     assert blk["source"] == "FnGuide 컨센서스"
     assert blk["forward"]["forward_pe"] == round(80000.0 / 6200.0, 2)
@@ -93,8 +93,30 @@ def test_estimate_block_composes(monkeypatch):
 
 
 def test_estimate_block_empty_when_no_data(monkeypatch):
-    monkeypatch.setattr(estimate_kr, "load", lambda code: None)
+    monkeypatch.setattr(estimate_kr, "get", lambda code: None)
     assert estimate_kr.estimate_block("000000", last_price=100.0) == {}
+
+
+def test_get_uses_fresh_cache(monkeypatch, tmp_path):
+    """신선 저장본이 있으면 fetch 없이 캐시 반환(on-demand 심볼뷰)."""
+    df = estimate_kr.to_frame(estimate_kr.parse_highlight(_HTML))
+    p = tmp_path / "005930.parquet"
+    df.to_parquet(p)
+    monkeypatch.setattr(estimate_kr, "_path", lambda code: p)
+    called = {"n": 0}
+    monkeypatch.setattr(estimate_kr, "refresh", lambda c: called.__setitem__("n", called["n"] + 1) or pd.DataFrame())
+    got = estimate_kr.get("005930")
+    assert got is not None and not got.empty
+    assert called["n"] == 0                     # 신선 캐시 → fetch 건너뜀
+
+
+def test_get_fetches_when_missing(monkeypatch, tmp_path):
+    """저장본 없으면 fetch(refresh)로 즉시 수집."""
+    monkeypatch.setattr(estimate_kr, "_path", lambda code: tmp_path / "999999.parquet")
+    df = estimate_kr.to_frame(estimate_kr.parse_highlight(_HTML))
+    monkeypatch.setattr(estimate_kr, "refresh", lambda c: df)
+    got = estimate_kr.get("999999")
+    assert got is not None and not got.empty
 
 
 def test_parse_empty_when_no_div():

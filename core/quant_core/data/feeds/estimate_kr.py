@@ -147,31 +147,21 @@ def refresh(code: str) -> pd.DataFrame:
     return df
 
 
-def _attempted_mtime(code: str) -> float:
-    p = _path(code)
-    return p.stat().st_mtime if p.exists() else 0.0
+def get(code: str, fresh_days: int = 7) -> pd.DataFrame | None:
+    """on-demand 심볼뷰 — 신선한 저장본이 있으면 반환, 없거나 오래되면 fetch→저장→반환.
 
-
-def fetch(codes: list[str], budget_symbols: int = 200, fresh_days: int = 7) -> dict:
-    """추정실적 증분 갱신 — 미수집·오래된 종목 우선, 종목 예산 내. 분기 갱신이라 7일 신선도면 충분.
-
-    cron(server)이 호출. 백필=전 종목 점진 적재, 증분=신선도 지난 종목만. 가격 같은 FDR 무관.
+    data_engine 설계의 `symbol` 뷰("없으면 즉시 수집→적재→서빙") 패턴. describe 등 단일종목
+    소비가 호출 — 본 종목만 lazy 수집(전종목 bulk cron 불필요). 추정은 분기 갱신이라 7일 신선도면
+    충분. fetch 실패면 기존 저장본(있으면)으로 graceful — 외부(FnGuide) 일시 장애가 결과를 비우지
+    않게(가짜 0은 여전히 금지: 저장본도 없으면 None).
     """
-    now = time.time()
-    n_ok = n_empty = n_done = 0
-    for c in sorted(codes, key=_attempted_mtime):       # 미시도(0)·오래된 시도 우선
-        at = _attempted_mtime(c)
-        if at and (now - at) < fresh_days * 86400:
-            continue
-        df = refresh(c)
-        if df is not None and not df.empty:
-            n_ok += 1
-        else:
-            n_empty += 1
-        n_done += 1
-        if n_done >= budget_symbols:
-            break
-    return {"ok": n_ok, "empty": n_empty, "symbols": n_done}
+    p = _path(code)
+    if p.exists() and (time.time() - p.stat().st_mtime) < fresh_days * 86400:
+        return load(code)
+    df = refresh(code)                       # fetch + 저장(빈결과면 미기록)
+    if df is not None and not df.empty:
+        return df
+    return load(code)                        # fetch 실패 → 기존(stale) 저장본 fallback
 
 
 def forward_view(df: pd.DataFrame | None, last_price: float | None = None) -> dict:
@@ -234,10 +224,10 @@ def annual_view(df: pd.DataFrame | None, max_years: int = 6) -> dict:
 def estimate_block(code: str, last_price: float | None = None) -> dict:
     """종목 코드 → describe/웹 소비용 추정실적 블록(forward 요약 + 다기간 미니표 + 출처).
 
-    저장 스냅샷(load)을 읽어 조립 — 서버 엣지(챗 context·ir 라우터)가 공유 호출(DRY).
-    forward 데이터 없으면 빈 dict(가짜 0 금지·미부착 신호).
+    on-demand 심볼뷰(get=load-or-fetch)로 스냅샷을 얻어 조립 — 서버 엣지(챗 context·ir
+    라우터)가 공유 호출(DRY). forward 데이터 없으면 빈 dict(가짜 0 금지·미부착 신호).
     """
-    df = load(code)
+    df = get(code)
     fwd = forward_view(df, last_price=last_price)
     if not fwd:
         return {}
