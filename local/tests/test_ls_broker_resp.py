@@ -198,8 +198,8 @@ def _broker_with_fakes(monkeypatch, payload):
     b.virtual = True
     b.base = "https://openapi.ls-sec.co.kr:8080"
     b._token_fp = "deadbeef"
-    # _token()이 실제 network 시도하지 않도록 패치
-    monkeypatch.setattr(b, "_token", lambda: "FAKE_TOKEN", raising=False)
+    # _token()이 실제 network 시도하지 않도록 패치 (force= 인자 수용 — 토큰무효화 자가복구 경로)
+    monkeypatch.setattr(b, "_token", lambda force=False: "FAKE_TOKEN", raising=False)
     monkeypatch.setattr(ls_broker.requests, "post", lambda *a, **k: _Resp(payload))
     return b
 

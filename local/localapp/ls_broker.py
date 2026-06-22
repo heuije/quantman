@@ -86,14 +86,18 @@ class _LsAuth:
         except Exception:
             return {}
 
-    def _token(self) -> str:
+    def _token(self, force: bool = False) -> str:
         """access token — (도메인,appkey,virtual) 지문별 캐시. 만료 30분 마진 내 적중.
 
         grant_type=client_credentials. expires_in을 그대로 존중(LS 익일 07:00 만료를
-        expires_in으로 인코딩 — 하드코딩 금지)."""
+        expires_in으로 인코딩 — 하드코딩 금지).
+
+        force=True면 캐시를 건너뛰고 새 토큰을 발급한다 — 서버가 *만료 전* 토큰을
+        무효화(모의 중복로그인 제한 등)해 데이터 endpoint가 500을 반환할 때 _post가
+        재인증하는 경로(2026-06-22 실측: 만료 전 캐시 토큰 500, 새 토큰 200)."""
         cache = self._read_token_cache()
         ent = cache.get(self._token_fp)
-        if ent and datetime.fromisoformat(ent["expires_at"]) > datetime.now() + timedelta(minutes=30):
+        if not force and ent and datetime.fromisoformat(ent["expires_at"]) > datetime.now() + timedelta(minutes=30):
             return ent["access_token"]
         r = requests.post(
             f"{self.base}/oauth2/token",
@@ -112,11 +116,13 @@ class _LsAuth:
         save_json(_TOKEN_CACHE, cache)   # owner-only ACL + 원자적 저장
         return d["access_token"]
 
-    def _headers(self, tr_cd: str, tr_cont: str = "N") -> dict:
-        """LS REST 헤더 — api-id(tr_cd) + Bearer 토큰 + 연속조회 플래그."""
+    def _headers(self, tr_cd: str, tr_cont: str = "N", force_token: bool = False) -> dict:
+        """LS REST 헤더 — api-id(tr_cd) + Bearer 토큰 + 연속조회 플래그.
+
+        force_token=True면 새 토큰으로 재인증(_post의 토큰무효화 500 자가복구 경로)."""
         return {
             "content-type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {self._token()}",
+            "authorization": f"Bearer {self._token(force=force_token)}",
             "tr_cd": tr_cd, "tr_cont": tr_cont, "tr_cont_key": "",
         }
 
@@ -131,14 +137,24 @@ class _LsAuth:
         normalize_ls_order_resp(B6)가 rsp_cd로 거부 판정하므로 오체결은 없으나 rate-limit
         재시도는 누락된다. 정확 형식은 키 발급 후 docs/ls-api 확정(GOTCHAS)."""
         last = None
+        force_token = False
+        reauthed = False
         for i in range(tries):
             _GLOBAL_THROTTLE.acquire()
-            r = requests.post(f"{self.base}{path}", headers=self._headers(tr_cd),
+            r = requests.post(f"{self.base}{path}", headers=self._headers(tr_cd, force_token=force_token),
                               json=body, timeout=timeout)
+            force_token = False        # one-shot — 재인증 후엔 새 토큰이 캐시돼 일반 경로
             if r.status_code == 200:
                 return r.json()
-            # read는 일시 5xx/429 재시도; order는 429(접수전 거부)에만 — 5xx는 주문이
-            # 이미 접수됐을 수 있어 재시도 금지(이중 발주 차단).
+            # 토큰 무효화 자가복구: 서버가 *만료 전* 토큰을 무효화(모의 중복로그인 등)하면 데이터
+            # endpoint가 500을 반환한다(실측 2026-06-22: 캐시 토큰 500, 새 토큰 200). read는 새 토큰으로
+            # 1회 재인증 후 재시도해 자가복구한다. order는 재인증·재시도 안 함 — 5xx는 주문이 이미
+            # 접수됐을 수 있어 이중 발주 차단(사이클은 주문 전 read[잔고]가 토큰을 먼저 갱신한다).
+            if r.status_code == 500 and not is_order and not reauthed:
+                reauthed = True
+                force_token = True
+                continue
+            # read는 일시 5xx/429 재시도; order는 429(접수전 거부)에만.
             retryable = r.status_code in (429, 500, 502, 503)
             if retryable and i < tries - 1 and (not is_order or r.status_code == 429):
                 last = r
