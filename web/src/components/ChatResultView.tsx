@@ -396,7 +396,8 @@ const RENDERERS: Record<string, (result: Record<string, unknown>) => ReactElemen
     const r = result as unknown as IrStrategyResult;
     return (
       <div className="chat-result">
-        <RankedListChart results={r.results ?? []} as_of={r.as_of}
+        <RankedListChart results={r.results ?? []} columns={r.columns} scoring={r.scoring}
+          groups={r.groups} as_of={r.as_of}
           universe_size={r.universe_size} eligible_size={r.eligible_size} />
       </div>
     );
