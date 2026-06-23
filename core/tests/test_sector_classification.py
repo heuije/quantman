@@ -51,3 +51,35 @@ def test_sector_theme_reverse_index_no_duplicate_industry():
     # 한 KSIC 업종이 두 테마에 중복 매핑되면 역인덱스가 모호 — 큐레이션 무결성 가드.
     flat = [ind for inds in classification._THEME_TO_INDUSTRIES.values() for ind in inds]
     assert len(flat) == len(set(flat))
+
+
+# ── 사용자 섹터어 동의어 정규화 + KSIC 확장 ("반도체 쏠림" 근본수정) ────────────
+
+def test_normalize_theme_synonyms():
+    # 흔한 사용자 표현 → 표준 테마명(테마명≠KSIC 어휘 문제 해소)
+    assert classification.normalize_theme("배터리") == "2차전지"
+    assert classification.normalize_theme("바이오") == "제약·바이오"
+    assert classification.normalize_theme("전기차") == "자동차"
+    assert classification.normalize_theme("게임") == "소프트웨어"
+    assert classification.normalize_theme("반도체") == "반도체"        # 표준 테마명 항등
+    assert classification.normalize_theme("듣보섹터") == "듣보섹터"     # 미상 원문 유지
+
+
+def test_sector_match_values_expands_to_ksic():
+    # 핵심: '배터리'가 KSIC '일차전지 및 이차전지 제조업'으로 확장돼야 섹터 필터가
+    # 빈 결과(반도체만 매칭)가 안 된다 — 쏠림 근본수정.
+    assert classification.sector_match_values(["배터리", "반도체"]) == \
+        ["일차전지 및 이차전지 제조업", "반도체 제조업"]
+
+
+def test_sector_match_values_unknown_word_raw_fallback():
+    # 미상 단어는 원문 유지(raw contains 폴백 — 동작 보존)
+    assert classification.sector_match_values(["반도체 제조업"]) == ["반도체 제조업"]
+    assert classification.sector_match_values(["듣보"]) == ["듣보"]
+    assert classification.sector_match_values([]) == []
+
+
+def test_available_themes_lists_curated():
+    themes = classification.available_themes()
+    assert "반도체" in themes and "2차전지" in themes and "제약·바이오" in themes
+    assert len(themes) == len(classification._THEME_TO_INDUSTRIES)

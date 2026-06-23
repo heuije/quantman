@@ -41,7 +41,9 @@ def test_assemble_screen_composite_grouped():
     assert s.select.descending is False              # 백분위 합 낮을수록 저평가
     assert s.signal.op == "binary"                   # composite = rank 합 트리
     assert {"pb_ratio", "trailing_pe", "ev_ebitda"} <= set(s.select.display)  # 팩터 표시(투명)
-    assert ir["universe"]["screener"]["condition"]["params"]["values"] == ["반도체", "배터리"]
+    # 사용자어("배터리")가 KSIC 업종으로 정규화·확장 — 섹터 필터 빈결과("반도체 쏠림") 방지.
+    assert ir["universe"]["screener"]["condition"]["params"]["values"] == \
+        ["반도체 제조업", "일차전지 및 이차전지 제조업"]
 
 
 def test_assemble_simulate_raises_not_assembled():
@@ -389,7 +391,8 @@ def test_screen_sector_builds_screener():
     # attr=Industry(KSIC) 고정 — Sector(소속부)는 대형주 NaN이라 contains-match가 0건이 되는
     # 회귀 가드(실데이터 검증: 반도체주 Industry="반도체 제조업", Sector는 삼성 등 nan).
     assert sc["inputs"]["signal"]["params"]["attr"] == "Industry"
-    assert sc["params"]["values"] == ["반도체"] and sc["params"]["match"] == "contains"
+    # 사용자어 "반도체" → KSIC 업종 "반도체 제조업"으로 정규화·확장(섹터명≠KSIC 어휘 해소).
+    assert sc["params"]["values"] == ["반도체 제조업"] and sc["params"]["match"] == "contains"
 
 
 def test_screen_without_sector_unchanged():
