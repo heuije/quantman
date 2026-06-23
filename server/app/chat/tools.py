@@ -43,7 +43,8 @@ SCREEN_TOOL = {
                         "description": "결과에 함께 표시할 지표 컬럼(composite 팩터는 자동 포함)."},
             "sector": {"type": "string", "description": "단일 섹터(예: 반도체). 여러 개는 sectors."},
             "sectors": {"type": "array", "items": {"type": "string"},
-                        "description": "여러 섹터(예: ['반도체','배터리'])."},
+                        "description": ("여러 섹터(예: ['반도체','2차전지']). 표준 테마명 권장 — "
+                                        "'배터리'·'바이오' 등 흔한 표현도 서버가 자동 정규화(유효 테마는 시스템 프롬프트).")},
             "group_by": {"type": "string",
                          "description": ("섹터별 N개씩 선별 = group_by='Sector'를 sectors·top_n과 함께 "
                                          "**한 번에** 호출(섹터마다 screen 반복 호출 금지). "
@@ -174,15 +175,18 @@ def assemble_ir(tool_name: str, tool_input: dict) -> dict:
     """도구 입력 → StrategyIR dict. screen은 부분집합→select IR, describe는 단일종목 360 IR."""
     if tool_name == "screen":
         symbols = list(tool_input.get("symbols") or [])
-        # 다섹터 = is_in([반도체,배터리])(부분일치·하위호환 단일 sector). attribute(Industry)는
-        # 엔진이 심볼 메타데이터(classification)로 해석(needed_columns 미추출 정상).
+        # 다섹터 = is_in(Industry, [업종...])(부분일치·하위호환 단일 sector). 사용자 섹터어
+        # (배터리 등)는 sector_match_values로 KSIC 업종 정규화·확장 — 테마명≠KSIC 어휘로 인한
+        # 빈 결과("반도체 쏠림") 방지. 미상 단어는 원문 유지(raw 폴백·동작 보존).
+        from quant_core.data.feeds.classification import sector_match_values
         sectors = [str(s).strip() for s in (tool_input.get("sectors")
                    or ([tool_input["sector"]] if tool_input.get("sector") else [])) if str(s).strip()]
         if sectors:
+            match_values = sector_match_values(sectors) or sectors
             universe = {"kind": "all", "screener": {"condition": {
                 "op": "is_in",
                 "inputs": {"signal": {"op": "attribute", "params": {"attr": "Industry"}}},
-                "params": {"values": sectors, "match": "contains"}}}}
+                "params": {"values": match_values, "match": "contains"}}}}
         elif symbols:
             universe = {"kind": "list", "symbols": symbols}
         else:

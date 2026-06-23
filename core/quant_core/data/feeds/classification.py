@@ -120,3 +120,55 @@ def symbol_group(sym: str, group_type: str = "Industry") -> Optional[str]:
     if group_type == "Sector":
         return _INDUSTRY_TO_THEME.get(industry, industry)   # 테마 정규화, 없으면 업종 폴백
     return industry
+
+
+# ── 사용자 섹터어 → 표준 테마 동의어 (쿼리 정규화) ───────────────────────────────
+# 사용자가 쓰는 흔한 표현이 큐레이션 테마명과 다를 때 정규화한다(예: "배터리"≠테마 "2차전지").
+# 이게 없으면 챗봇이 "배터리"를 KSIC "일차전지 및 이차전지 제조업"에 contains 매칭 못 해
+# 섹터 필터가 침묵의 빈 결과 → "반도체 쏠림"의 진짜 절반. 테마명 자체는 항등, 미상은 원문 유지.
+_THEME_SYNONYMS: dict[str, str] = {
+    "배터리": "2차전지", "이차전지": "2차전지", "2차전지주": "2차전지", "배터리주": "2차전지",
+    "반도체주": "반도체",
+    "바이오": "제약·바이오", "제약": "제약·바이오", "바이오주": "제약·바이오",
+    "제약주": "제약·바이오", "제약바이오": "제약·바이오",
+    "자동차주": "자동차", "완성차": "자동차", "자동차부품": "자동차", "전기차": "자동차",
+    "게임": "소프트웨어", "게임주": "소프트웨어", "소프트웨어주": "소프트웨어", "sw": "소프트웨어",
+    "인터넷주": "인터넷", "플랫폼": "인터넷",
+    "엔터": "미디어·엔터", "엔터테인먼트": "미디어·엔터", "미디어": "미디어·엔터", "방송": "미디어·엔터",
+    "방산": "방산·항공우주", "방위산업": "방산·항공우주", "항공우주": "방산·항공우주", "우주": "방산·항공우주",
+    "철강주": "철강", "화학주": "화학", "은행주": "은행", "보험주": "보험",
+    "통신": "통신서비스", "통신주": "통신서비스", "통신장비주": "통신장비",
+    "전자부품주": "전자부품", "조선주": "조선", "건설주": "건설",
+    "음식료주": "음식료", "의료기기주": "의료기기", "비철금속주": "비철금속",
+}
+
+
+def available_themes() -> list[str]:
+    """챗봇·UI에 노출할 표준 섹터(테마) 목록 — 큐레이션 매핑 키(반도체·2차전지·제약·바이오·…)."""
+    return list(_THEME_TO_INDUSTRIES.keys())
+
+
+def normalize_theme(word: str) -> str:
+    """사용자 섹터어 → 표준 테마명. 이미 테마명이면 항등, 동의어면 정규화, 미상이면 원문(소문자도 시도)."""
+    w = (word or "").strip()
+    if w in _THEME_TO_INDUSTRIES:
+        return w
+    return _THEME_SYNONYMS.get(w) or _THEME_SYNONYMS.get(w.lower(), w)
+
+
+def sector_match_values(words: list[str]) -> list[str]:
+    """사용자 섹터어 목록 → Industry(KSIC) contains 매칭값 목록. 테마/동의어는 KSIC 업종으로
+    확장(예: '배터리'→'일차전지 및 이차전지 제조업'), 미상 단어는 원문 유지(raw 폴백·동작 보존).
+
+    챗봇이 '배터리'라 해도 정확한 KSIC 업종을 잡아 섹터 필터가 빈 결과가 되지 않게 한다 —
+    '반도체 쏠림' 근본수정. 중복 제거·순서 보존."""
+    out: list[str] = []
+    for word in words:
+        w = (word or "").strip()
+        if not w:
+            continue
+        inds = _THEME_TO_INDUSTRIES.get(normalize_theme(w))
+        for v in (inds if inds else [w]):
+            if v not in out:
+                out.append(v)
+    return out
