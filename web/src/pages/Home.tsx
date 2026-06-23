@@ -61,9 +61,10 @@ const FIN_STMTS: [keyof FinancialsData["annual"], string][] =
   [["PL", "손익계산서"], ["BS", "재무상태표"], ["CF", "현금흐름표"]];
 
 // 그래프 색상 — 마이스톡 메인 네이비(진하게) + 하이라이트 골드만(회색 금지).
-const CHART_NAVY = "#264a85", CHART_GOLD = "#d4a738";
+const CHART_NAVY = "#2f5390", CHART_GOLD = "#d4a738";   // 막대=마이스톡 네이비(다크 위 가독)·선=하이라이트 골드
 type SeriesArr = (number | null)[];
-interface ChartDef { t: string; unit: "억원" | "%"; v: SeriesArr; yoy?: SeriesArr; mg?: SeriesArr; }
+// v=금액(억원, 표시는 ×100=백만원) · mg=해당 계정 비율(%) 선 · mgLabel=선 이름(부채비율/ROE/마진 등)
+interface ChartDef { t: string; v: SeriesArr; mg?: SeriesArr; mgLabel?: string; yoy?: SeriesArr; }
 
 // 기간 라벨 — 연간 "2023/12"→FY23, 분기 "2026/03"→1Q26. 차트 x축·기간 드롭다운 공용.
 function periodLabel(p: string, quarterly: boolean): string {
@@ -103,35 +104,30 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   const borrow = sumS(vals(bs, ["단기차입금"]), vals(bs, ["장기차입금"]), vals(bs, ["유동성장기부채"]));
   const netDebt = subS(borrow, vals(bs, ["현금및현금성자산"]));
   const opCf = vals(cf, ["영업활동으로인한현금흐름", "영업활동현금흐름"]);
-  const invCf = vals(cf, ["투자활동으로인한현금흐름"]);
+  const invCf = vals(cf, ["투자활동으로인한현금흐름", "투자활동현금흐름"]);
+  const finCf = vals(cf, ["재무활동으로인한현금흐름", "재무활동현금흐름"]);
 
+  // 차트 = 금액 막대(네이비) + 해당 계정 비율 선(골드, 우축). PL 이익률·BS 부채비율/ROE/차입금비율을 선으로.
   const SECTIONS: { key: keyof FinancialsData["annual"]; title: string; charts: ChartDef[] }[] = [
     { key: "PL", title: "손익계산서", charts: [
-      { t: "매출액", unit: "억원", v: vals(pl, ["매출액"]), yoy: chg(pl, ["매출액"]) },
-      { t: "매출총이익", unit: "억원", v: vals(pl, ["매출총이익"]), yoy: chg(pl, ["매출총이익"]) },
-      { t: "매출총이익률", unit: "%", v: vals(pl, ["매출총이익률(%)"]) },
-      { t: "영업이익", unit: "억원", v: vals(pl, ["영업이익"]), yoy: chg(pl, ["영업이익"]) },
-      { t: "영업이익률", unit: "%", v: vals(pl, ["영업이익률(%)"]) },
-      { t: "당기순이익", unit: "억원", v: vals(pl, ["당기순이익"]), yoy: chg(pl, ["당기순이익"]) },
-      { t: "당기순이익률", unit: "%", v: vals(pl, ["당기순이익률(%)"]) },
-      { t: "EBITDA", unit: "억원", v: vals(pl, ["EBITDA"]), yoy: chg(pl, ["EBITDA"]) },
-      { t: "EBITDA Margin", unit: "%", v: vals(pl, ["EBITDAMargin(%)"]) },
+      { t: "매출액", v: vals(pl, ["매출액"]), yoy: chg(pl, ["매출액"]) },
+      { t: "매출총이익", v: vals(pl, ["매출총이익"]), mg: vals(pl, ["매출총이익률(%)"]), mgLabel: "매출총이익률", yoy: chg(pl, ["매출총이익"]) },
+      { t: "영업이익", v: vals(pl, ["영업이익"]), mg: vals(pl, ["영업이익률(%)"]), mgLabel: "영업이익률", yoy: chg(pl, ["영업이익"]) },
+      { t: "당기순이익", v: vals(pl, ["당기순이익"]), mg: vals(pl, ["당기순이익률(%)"]), mgLabel: "순이익률", yoy: chg(pl, ["당기순이익"]) },
+      { t: "EBITDA", v: vals(pl, ["EBITDA"]), mg: vals(pl, ["EBITDAMargin(%)"]), mgLabel: "EBITDA%", yoy: chg(pl, ["EBITDA"]) },
     ] },
     { key: "BS", title: "재무상태표", charts: [
-      { t: "자산총계", unit: "억원", v: asset, yoy: yoy(asset) },
-      { t: "부채총계", unit: "억원", v: liab, yoy: yoy(liab) },
-      { t: "자본총계", unit: "억원", v: eq, yoy: yoy(eq) },
-      { t: "부채비율", unit: "%", v: ratio(liab, eq) },
-      { t: "차입금비율", unit: "%", v: ratio(borrow, eq) },
-      { t: "Net Debt (순차입금)", unit: "억원", v: netDebt, yoy: yoy(netDebt) },
-      { t: "ROE", unit: "%", v: ratio(vals(pl, ["당기순이익"]), eq) },
+      { t: "자산총계", v: asset, yoy: yoy(asset) },
+      { t: "부채총계", v: liab, mg: ratio(liab, eq), mgLabel: "부채비율", yoy: yoy(liab) },
+      { t: "자본총계", v: eq, mg: ratio(vals(pl, ["당기순이익"]), eq), mgLabel: "ROE", yoy: yoy(eq) },
+      { t: "Net Debt (순차입금)", v: netDebt, mg: ratio(borrow, eq), mgLabel: "차입금비율", yoy: yoy(netDebt) },
     ] },
     { key: "CF", title: "현금흐름표", charts: [
-      { t: "영업활동현금흐름", unit: "억원", v: opCf, yoy: chg(cf, ["영업활동으로인한현금흐름"]) },
-      { t: "투자활동현금흐름", unit: "억원", v: invCf, yoy: yoy(invCf) },
-      { t: "재무활동현금흐름", unit: "억원", v: vals(cf, ["재무활동으로인한현금흐름"]), yoy: yoy(vals(cf, ["재무활동으로인한현금흐름"])) },
-      { t: "잉여현금흐름 (FCF)", unit: "억원", v: sumS(opCf, invCf), yoy: yoy(sumS(opCf, invCf)) },
-      { t: "기말현금", unit: "억원", v: vals(cf, ["기말현금및현금성자산"]), yoy: yoy(vals(cf, ["기말현금및현금성자산"])) },
+      { t: "영업활동현금흐름", v: opCf, yoy: chg(cf, ["영업활동으로인한현금흐름", "영업활동현금흐름"]) },
+      { t: "투자활동현금흐름", v: invCf, yoy: yoy(invCf) },
+      { t: "재무활동현금흐름", v: finCf, yoy: yoy(finCf) },
+      { t: "잉여현금흐름 (FCF)", v: sumS(opCf, invCf), yoy: yoy(sumS(opCf, invCf)) },
+      { t: "기말현금", v: vals(cf, ["기말현금및현금성자산"]), yoy: yoy(vals(cf, ["기말현금및현금성자산"])) },
     ] },
   ];
 
@@ -141,55 +137,43 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   // 선택된 재무제표 탭(stmt)의 섹션만. 표시 기간에 값이 전혀 없는 차트는 제외.
   const sec = SECTIONS.find((s) => s.key === stmt);
   const shown = sec ? sec.charts.filter((c) => c.v.some((x, i) => x != null && keep[i])) : [];
-  // 단위 통일 — 섹션 내 금액 차트의 최댓값이 1조(=10,000억) 이상이면 모든 금액 차트를 조원으로 통일.
-  const amtNums = shown.filter((c) => c.unit !== "%")
-    .flatMap((c) => c.v.filter((x, i): x is number => x != null && keep[i]).map(Math.abs));
-  const useJo = amtNums.length > 0 && Math.max(...amtNums) >= 10000;
 
-  // 한 차트 = 한 단위. 금액=막대(네이비) / 비율(%)=선(네이비). 이중축·단위 혼합 없음.
+  // 금액=막대(네이비, 좌축·백만원) + 비율=선(골드, 우축·%). 막대는 0 기준으로 그려 작은 값도 보이게.
   const renderChart = (c: ChartDef) => {
-    const isPct = c.unit === "%";
-    const div = (!isPct && useJo) ? 10000 : 1;
-    const unit = isPct ? "%" : useJo ? "조원" : "억원";
-    const uTip = isPct ? "%" : useJo ? "조" : "억";
+    const hasMg = !!c.mg && c.mg.some((x, i) => x != null && keep[i]);
     const data = periods.map((p, i) => ({ x: xLabel(p),
-      v: c.v[i] == null ? null : (c.v[i] as number) / div, yoy: c.yoy?.[i] ?? null }))
-      .filter((_, i) => keep[i]);   // #3 사용자 지정 기간만
-    const axisFmt = isPct ? (n: number) => `${n}%` : useJo ? (n: number) => n.toFixed(1) : (n: number) => Math.round(n).toLocaleString();
-    const lblFmt = (n: unknown) => n == null ? "" : isPct
-      ? `${n}%` : useJo ? Number(n).toFixed(1) : Number(n).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-    const fmtVal = (n: number) => isPct ? `${n}%` : `${Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 })}${uTip}`;
+      v: c.v[i] == null ? null : Math.round((c.v[i] as number) * 100),   // 억원 → 백만원
+      mg: c.mg?.[i] ?? null, yoy: c.yoy?.[i] ?? null }))
+      .filter((_, i) => keep[i]);
+    const amtFmt = (n: number) => Math.round(n).toLocaleString();
     return (
       <div key={c.t} className="panel" style={{ marginBottom: 0, padding: "10px 8px 4px" }}>
         <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
-          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {unit}</span></div>
+          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> 백만원{hasMg ? ` · ${c.mgLabel || "비율"} %` : ""}</span></div>
         <ResponsiveContainer width="100%" height={230}>
-          {/* 글자·숫자 본문 크기(12) + barCategoryGap로 막대폭 절반 수준 */}
-          <ComposedChart data={data} margin={{ top: 22, right: 6, bottom: 0, left: 0 }} barCategoryGap="50%">
+          <ComposedChart data={data} margin={{ top: 18, right: hasMg ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="45%">
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="x" tick={{ fontSize: 12 }} interval={0} />
-            <YAxis yAxisId="v" tick={{ fontSize: 12 }} width={46} tickFormatter={axisFmt} />
+            <XAxis dataKey="x" tick={{ fontSize: 11 }} interval={0} />
+            <YAxis yAxisId="v" tick={{ fontSize: 10 }} width={58} tickFormatter={amtFmt}
+              domain={[(min: number) => Math.min(0, min), "auto"]} />
+            {hasMg && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} width={34} tickFormatter={(n) => `${n}%`} />}
             <Tooltip content={(o) => {
               if (!o.active || !o.payload?.length) return null;
-              const d = o.payload[0].payload as { x: string; v: number | null; yoy: number | null };
+              const d = o.payload[0].payload as { x: string; v: number | null; mg: number | null; yoy: number | null };
               return (
                 <div style={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 9px", fontSize: 12, lineHeight: 1.55 }}>
                   <div style={{ color: "var(--muted)" }}>{d.x}</div>
-                  <div style={{ fontWeight: 700 }}>{d.v == null ? "-" : fmtVal(d.v)}</div>
-                  {!isPct && d.yoy != null && <div style={{ color: CHART_GOLD }}>{lineLbl} {d.yoy}%</div>}
+                  <div style={{ fontWeight: 700 }}>{d.v == null ? "-" : `${d.v.toLocaleString()} 백만원`}</div>
+                  {hasMg && d.mg != null && <div style={{ color: CHART_GOLD }}>{c.mgLabel || "비율"} {d.mg}%</div>}
+                  {!hasMg && d.yoy != null && <div style={{ color: CHART_GOLD }}>{lineLbl} {d.yoy}%</div>}
                 </div>
               );
             }} />
-            {isPct ? (
-              // 비율(%)만 선그래프 — 추세 비교용.
-              <Line yAxisId="v" dataKey="v" stroke={CHART_NAVY} strokeWidth={2} dot name={c.t} isAnimationActive={false} connectNulls>
-                <LabelList dataKey="v" position="top" formatter={lblFmt} style={{ fontSize: 12, fill: CHART_NAVY, fontWeight: 700 }} />
+            <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} name={c.t} isAnimationActive={false} />
+            {hasMg && (
+              <Line yAxisId="r" dataKey="mg" stroke={CHART_GOLD} strokeWidth={2} dot name={c.mgLabel || "비율"} isAnimationActive={false} connectNulls>
+                <LabelList dataKey="mg" position="top" formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 10, fill: CHART_GOLD, fontWeight: 700 }} />
               </Line>
-            ) : (
-              // 금액은 막대그래프.
-              <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} name={c.t} isAnimationActive={false}>
-                <LabelList dataKey="v" position="top" formatter={lblFmt} style={{ fontSize: 12, fill: CHART_NAVY, fontWeight: 700 }} />
-              </Bar>
             )}
           </ComposedChart>
         </ResponsiveContainer>
@@ -200,9 +184,9 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   if (!sec) return null;
   return (
     <div style={{ marginBottom: 14 }}>
-      <div style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px" }}>막대=금액({useJo ? "조원" : "억원"}) · 선=비율(%) · {lineLbl}는 막대에 마우스를 올리면 표시</div>
-      {/* 차트 폭 자동 — 넘치면 다음 행으로 wrap(금액·비율 차트 모두 동일 폭) */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+      <div style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px" }}>막대=금액(백만원·네이비) · 선=비율(%·골드, 우축) · {lineLbl}는 막대에 마우스를 올리면 표시</div>
+      {/* 한 행에 3개 */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
         {shown.map(renderChart)}
       </div>
     </div>
