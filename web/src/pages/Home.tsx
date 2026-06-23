@@ -185,8 +185,7 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
       .filter((_, i) => keep[i]);
     const hasLine = data.some((d) => d.ln != null);
     const amtFmt = (n: number) => Math.round(n).toLocaleString();
-    // 좌(금액)·우(%) 축 도메인을 명시 → 막대 끝/선 점의 정규화 높이를 계산해
-    // 두 라벨이 가까우면(겹칠 위험) 막대값=위·%=아래로 강제 분리, 멀면 둘 다 위.
+    // 좌(금액)·우(%) 축 도메인 명시 → 라벨이 잘리지 않게 상하 여백 확보.
     const vVals = data.map((d) => d.v).filter((x): x is number => x != null);
     const lnVals = data.map((d) => d.ln).filter((x): x is number => x != null);
     const vMax = vVals.length ? Math.max(...vVals) : 0;
@@ -199,27 +198,21 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
     const rRange = Math.max(0, rMax) - Math.min(0, rMin) || Math.abs(rMax) || 1;
     const rHi = Math.max(0, rMax) + rRange * 0.22;
     const rLo = Math.min(0, rMin) - (rMin < 0 ? rRange * 0.18 : 0);
-    const place = data.map((d) => {
-      if (d.v == null) return { v: null as null | "top" | "below", ln: "top" as "top" | "bottom" };
-      if (d.v < 0) return { v: "below" as const, ln: "top" as const };       // 적자 막대=아래, %=위
-      if (d.ln == null) return { v: "top" as const, ln: "top" as const };
-      const barNorm = (d.v - vLo) / (vHi - vLo);
-      const lineNorm = (d.ln - rLo) / (rHi - rLo);
-      const close = Math.abs(barNorm - lineNorm) < 0.13;                       // 두 점이 가까우면 분리
-      return { v: "top" as const, ln: close ? ("bottom" as const) : ("top" as const) };
-    });
+    // 라벨은 실제 렌더 좌표만으로 배치(추정 금지). 값=막대 안쪽 상단(흰색),
+    // %=선 위(골드). 값은 항상 막대에, %는 항상 선에 붙어 선이 값을 관통하지 않음.
     const barLabel = (p: any) => {
-      const { x = 0, y = 0, width = 0, height = 0, value, index = 0 } = p;
+      const { x = 0, y = 0, width = 0, height = 0, value } = p;
       if (value == null) return null;
-      const side = place[index]?.v;
-      if (!side) return null;
-      const ty = side === "below" ? y + height + 14 : y - 6;
-      return <text x={x + width / 2} y={ty} textAnchor="middle" fontSize={13} fontWeight={700} fill="#fff">{Math.round(Number(value)).toLocaleString()}</text>;
+      const num = Math.round(Number(value)).toLocaleString();
+      const ty = Number(value) < 0 ? y - 7         // 적자 막대: 0선(y) 위 빈 공간
+        : height >= 16 ? y + 14                     // 막대 안쪽 상단(낮은 선과 분리)
+        : y - 6;                                    // 매우 짧은 막대만 위
+      return <text x={x + width / 2} y={ty} textAnchor="middle" fontSize={13} fontWeight={700} fill="#fff">{num}</text>;
     };
     const pctLabel = (p: any) => {
-      const { x = 0, y = 0, value, index = 0 } = p;
+      const { x = 0, y = 0, value } = p;
       if (value == null) return null;
-      const ty = place[index]?.ln === "bottom" ? y + 17 : y - 8;
+      const ty = y < 22 ? y + 16 : y - 9;           // 선이 상단에 가까우면 아래, 아니면 위
       return <text x={x} y={ty} textAnchor="middle" fontSize={13} fontWeight={700} fill={CHART_GOLD}>{`${value}%`}</text>;
     };
     return (
