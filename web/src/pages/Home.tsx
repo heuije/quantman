@@ -97,9 +97,12 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
     as.reduce<number | null>((s, a) => (s == null || a[i] == null) ? null : s + (a[i] as number), 0));
   const subS = (a: SeriesArr, b: SeriesArr): SeriesArr => a.map((x, i) => (x != null && b[i] != null) ? x - (b[i] as number) : null);
   const ratio = (n: SeriesArr, d: SeriesArr): SeriesArr => n.map((x, i) => (x != null && d[i]) ? Math.round((x / (d[i] as number)) * 1000) / 10 : null);
-  const yoy = (s: SeriesArr): SeriesArr => s.map((v, i) =>
-    (i === 0 || v == null || s[i - 1] == null || s[i - 1] === 0 || ((v < 0) !== ((s[i - 1] as number) < 0)))
-      ? null : Math.round((v / (s[i - 1] as number) - 1) * 1000) / 10);
+  // YoY/QoQ 증감률 — 전기≤0(음수·0) 또는 당기<0이면 % 왜곡(적자전환·적자지속)이라 표시 안 함.
+  const yoy = (s: SeriesArr): SeriesArr => s.map((v, i) => {
+    const p = s[i - 1];
+    return (i === 0 || v == null || p == null || (p as number) <= 0 || (v as number) < 0)
+      ? null : Math.round((v / (p as number) - 1) * 1000) / 10;
+  });
 
   const asset = vals(bs, ["자산", "자산총계"]), liab = vals(bs, ["부채", "부채총계"]), eq = vals(bs, ["자본", "자본총계"]);
   const borrow = sumS(vals(bs, ["단기차입금"]), vals(bs, ["장기차입금"]), vals(bs, ["유동성장기부채"]));
@@ -159,9 +162,9 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
       <div key={c.t} className="panel" style={{ marginBottom: 0, padding: "10px 8px 4px" }}>
         <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
           <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {unitLbl}{hasLine ? ` · ${lnLabel} %` : ""}</span></div>
-        <ResponsiveContainer width="100%" height={230}>
-          {/* 0 기준선 가로 표시 */}
-          <ComposedChart data={data} margin={{ top: 18, right: hasLine ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="24%">
+        <ResponsiveContainer width="100%" height={250}>
+          {/* 0 기준선 + 여유 상단 여백(막대값↔%라벨 겹침 완화) */}
+          <ComposedChart data={data} margin={{ top: 34, right: hasLine ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="24%">
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="x" tick={{ fontSize: 11 }} interval={0} />
             <YAxis yAxisId="v" tick={{ fontSize: 10 }} width={58} tickFormatter={amtFmt}
@@ -180,12 +183,12 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
               );
             }} />
             <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} stroke={CHART_BAR_EDGE} strokeWidth={1} name={c.t} isAnimationActive={false}>
-              <LabelList dataKey="v" position="top" formatter={(n) => (n == null ? "" : Math.round(Number(n)).toLocaleString())}
+              <LabelList dataKey="v" position="top" offset={4} formatter={(n) => (n == null ? "" : Math.round(Number(n)).toLocaleString())}
                 style={{ fontSize: 13, fill: "#fff", fontWeight: 700 }} />
             </Bar>
             {hasLine && (
               <Line yAxisId="r" dataKey="ln" stroke={CHART_GOLD} strokeWidth={2} dot name={lnLabel} isAnimationActive={false} connectNulls>
-                <LabelList dataKey="ln" position="top" formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 14, fill: "#fff", fontWeight: 700 }} />
+                <LabelList dataKey="ln" position="top" offset={16} formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 13, fill: "#fff", fontWeight: 700 }} />
               </Line>
             )}
           </ComposedChart>
@@ -242,7 +245,7 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
   };
 
   const eokN = (v: number | null) => v == null ? "—" : Math.round(v).toLocaleString();
-  const wonN = (v: number | null) => v == null ? "—" : Math.round(v * 1e8).toLocaleString();   // 주당이익 — /1e8 환원해 원으로
+  const wonN = (v: number | null) => v == null ? "—" : Math.round(v * 1e8).toLocaleString() + "원";   // 주당이익 — /1e8 환원해 원으로(억원 헤더와 구분)
   const pctV = (v: number | null) => v == null ? "—" : `${v.toFixed(1)}%`;
   const chgI = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
 
@@ -302,11 +305,15 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
                       <tr style={{ borderBottom: "1px solid var(--border)", background: "rgba(127,127,127,0.10)" }}>
                         <td style={{ padding: "2px 8px", paddingLeft: indent + 12, fontSize: "10pt",
                           fontStyle: "italic", color: "var(--muted)" }}>{kind === "A" ? "YoY %" : "QoQ %"}</td>
-                        {r.change.map((c, ci) => (
+                        {r.change.map((c, ci) => {
+                          // 전기≤0·당기<0이면 %가 왜곡(적자전환·적자지속)이라 표시 안 함
+                          const pv = r.values[ci - 1], cv = r.values[ci];
+                          const bad = c == null || pv == null || (pv as number) <= 0 || (cv as number) < 0;
+                          return (
                           <td key={ci} style={{ padding: "2px 8px", textAlign: "right", fontSize: "10pt", fontStyle: "italic",
-                            color: c == null ? "var(--muted)" : c >= 0 ? FIN_UP : FIN_DOWN }}>
-                            {c == null ? "—" : chgI(c)}</td>
-                        ))}
+                            color: bad ? "var(--muted)" : (c as number) >= 0 ? FIN_UP : FIN_DOWN }}>
+                            {bad ? "—" : chgI(c as number)}</td>);
+                        })}
                       </tr>
                     )}
                   </Fragment>
