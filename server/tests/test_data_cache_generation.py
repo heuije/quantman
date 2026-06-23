@@ -85,3 +85,46 @@ def test_invalidate_bumps_marker_for_cross_process(isolated_cache, monkeypatch):
     data_cache.invalidate()
     assert data_fetcher.data_generation() != before     # 마커 bump → 타 프로세스도 무효화
     assert data_cache._dataset is None                  # 로컬 캐시도 폐기
+
+
+def test_aux_all_caches_until_generation_change(isolated_cache):
+    """보조 패널(펀더/컨센서스/수급)은 한 세대 동안 1회만 로드 — get_projected가 호출마다
+    디스크 전독하던 aux(~18s 병목)를 캐시. 데이터 세대 변경 시 함께 폐기(일관성)."""
+    calls = {"n": 0}
+
+    def fake_loader():
+        calls["n"] += 1
+        return {"AUX": calls["n"]}
+
+    data_cache._aux_cache.clear()
+    try:
+        a = data_cache._aux_all("fund", fake_loader)
+        b = data_cache._aux_all("fund", fake_loader)     # 캐시 히트 — 재로드 없음
+        assert a is b and calls["n"] == 1
+
+        data_fetcher.mark_data_dirty()                    # 별도 프로세스 데이터 변경
+        data_cache._last_check = 0.0                      # throttle 우회
+        c = data_cache._aux_all("fund", fake_loader)
+        assert calls["n"] == 2 and c is not a             # 세대 변경 → 재로드
+    finally:
+        data_cache._aux_cache.clear()
+
+
+def test_get_projected_narrows_to_fund_bearing(monkeypatch):
+    """펀더-only 컬럼·전 유니버스 요청 → 펀더 보유 종목만 계산(나머지는 어차피 NaN으로 랭킹
+    제외 = 의미 불변). 크립토·FRED 등 수천 종목 헛계산 제거(SELECT 3분 병목 근본·뿌리④)."""
+    import pandas as pd
+    raw = {"A": pd.DataFrame({"Close": [1.0, 2.0]}),       # 펀더 보유
+           "B": pd.DataFrame({"Close": [1.0, 2.0]}),       # 펀더 없음
+           "FRED:X": pd.DataFrame({"Close": [1.0, 2.0]})}  # 보조 없음
+    monkeypatch.setattr(data_cache, "get_raw_dataset", lambda: raw)
+    monkeypatch.setattr(data_cache.data_fetcher, "load_fund_all",
+                        lambda: {"A": pd.DataFrame({"pb_ratio": [1.0, 1.1]})})
+    monkeypatch.setattr(data_cache, "compute_columns",
+                        lambda df, c, fd, cd, fl: df.assign(pb_ratio=1.0))
+    data_cache._aux_cache.clear()
+    try:
+        out = data_cache.get_projected(["pb_ratio"], symbols=None)
+        assert set(out.keys()) == {"A"}                   # 펀더 보유 A만 — B·FRED는 narrow 제외
+    finally:
+        data_cache._aux_cache.clear()

@@ -38,6 +38,9 @@ _version: int = 0
 _built_generation: int | None = None
 _last_check: float = 0.0
 _CHECK_INTERVAL = 10.0          # 세대 확인 최소 간격(초) — 읽기당 파일 stat 1회로 제한
+# 보조 패널(펀더/컨센서스/수급) 전체 캐시 — get_projected가 호출마다 디스크 전독하던 aux(~18s)를
+# 프로세스당 1회로. 가격 raw·dataset과 같은 생성 세대로 무효화(_clear_locked·_maybe_reload).
+_aux_cache: dict[str, dict] = {}
 
 
 def _clear_locked() -> None:
@@ -49,6 +52,7 @@ def _clear_locked() -> None:
     _symbol_index = None
     _version += 1
     _built_generation = None
+    _aux_cache.clear()
 
 
 def _maybe_reload() -> None:
@@ -56,7 +60,7 @@ def _maybe_reload() -> None:
     (별도 프로세스)이나 수동 변경이 바꾼 데이터를 라이브 서버가 자가 감지해 리로드한다."""
     global _last_check
     if (_dataset is None and _raw is None and _manifest is None
-            and _symbol_index is None):
+            and _symbol_index is None and not _aux_cache):
         return                  # 빌드된 캐시 없음 — 검증 불필요
     now = time.monotonic()
     if now - _last_check < _CHECK_INTERVAL:
@@ -99,6 +103,22 @@ def get_raw_dataset() -> dict[str, pd.DataFrame]:
     return _raw
 
 
+def _aux_all(kind: str, loader) -> dict:
+    """보조 패널(펀더/컨센서스/수급) 전체를 생성 세대 캐시 — get_projected가 호출마다 디스크
+    전독하던 aux(~18s)를 프로세스당 1회로. _clear_locked가 데이터 변경 시 함께 폐기.
+
+    반환 dict는 읽기 전용으로 공유한다(get_projected는 .get만 — 변형 없음)."""
+    global _built_generation
+    _maybe_reload()
+    if kind not in _aux_cache:
+        with _lock:
+            if kind not in _aux_cache:
+                if _built_generation is None:
+                    _built_generation = data_fetcher.data_generation()
+                _aux_cache[kind] = loader()
+    return _aux_cache[kind]
+
+
 def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataFrame]:
     """요청 지표 컬럼만 계산한 dataset(컬럼 프로젝션). symbols=None이면 전 유니버스.
 
@@ -120,11 +140,21 @@ def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataF
     want_fund = bool(cols & set(FUND_INDICATOR_COLS))
     want_cons = bool(cols & set(CONSENSUS_INDICATOR_COLS))
     want_flow = bool(cols & set(FLOW_INDICATOR_COLS))
-    funds = data_fetcher.load_fund_all() if want_fund else {}
-    cons = data_fetcher.load_consensus_all() if want_cons else {}
-    flow = data_fetcher.load_flow_all() if want_flow else {}
+    funds = _aux_all("fund", data_fetcher.load_fund_all) if want_fund else {}
+    cons = _aux_all("cons", data_fetcher.load_consensus_all) if want_cons else {}
+    flow = _aux_all("flow", data_fetcher.load_flow_all) if want_flow else {}
     _t_aux = time.monotonic()
     keys = list(raw.keys()) if symbols is None else [s for s in symbols if s in raw]
+    # 전 유니버스 요청이고 모든 컬럼이 보조 지표(펀더/컨센서스/수급)면, 그 데이터가 *있는* 종목만
+    # 계산한다 — 보조데이터 없는 종목(크립토·FRED·선물·지수 등 수천 개)은 그 컬럼이 전부 NaN이라
+    # 횡단 랭킹·표시에서 자동 제외(run_select가 dropna)되므로 **결과 불변**이면서, 전 유니버스
+    # 헛계산(SELECT compute 24~44s 병목)을 없앤다(뿌리④). 가격·기술 컬럼이 섞이면 narrow 안 함
+    # (그 컬럼은 전 종목 유효 — 펀더 없는 종목도 랭킹 대상).
+    if symbols is None and cols and cols <= (set(FUND_INDICATOR_COLS)
+            | set(CONSENSUS_INDICATOR_COLS) | set(FLOW_INDICATOR_COLS)):
+        have = ((set(funds) if want_fund else set()) | (set(cons) if want_cons else set())
+                | (set(flow) if want_flow else set()))
+        keys = [s for s in keys if s in have]
     out: dict[str, pd.DataFrame] = {}
     for s in keys:
         df = raw[s]
