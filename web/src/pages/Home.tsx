@@ -185,18 +185,54 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
       .filter((_, i) => keep[i]);
     const hasLine = data.some((d) => d.ln != null);
     const amtFmt = (n: number) => Math.round(n).toLocaleString();
+    // 좌(금액)·우(%) 축 도메인을 명시 → 막대 끝/선 점의 정규화 높이를 계산해
+    // 두 라벨이 가까우면(겹칠 위험) 막대값=위·%=아래로 강제 분리, 멀면 둘 다 위.
+    const vVals = data.map((d) => d.v).filter((x): x is number => x != null);
+    const lnVals = data.map((d) => d.ln).filter((x): x is number => x != null);
+    const vMax = vVals.length ? Math.max(...vVals) : 0;
+    const vMin = vVals.length ? Math.min(...vVals) : 0;
+    const vRange = Math.max(0, vMax) - Math.min(0, vMin) || Math.abs(vMax) || 1;
+    const vHi = Math.max(0, vMax) + vRange * 0.18;
+    const vLo = Math.min(0, vMin) - (vMin < 0 ? vRange * 0.12 : 0);
+    const rMax = lnVals.length ? Math.max(...lnVals) : 0;
+    const rMin = lnVals.length ? Math.min(...lnVals) : 0;
+    const rRange = Math.max(0, rMax) - Math.min(0, rMin) || Math.abs(rMax) || 1;
+    const rHi = Math.max(0, rMax) + rRange * 0.22;
+    const rLo = Math.min(0, rMin) - (rMin < 0 ? rRange * 0.18 : 0);
+    const place = data.map((d) => {
+      if (d.v == null) return { v: null as null | "top" | "below", ln: "top" as "top" | "bottom" };
+      if (d.v < 0) return { v: "below" as const, ln: "top" as const };       // 적자 막대=아래, %=위
+      if (d.ln == null) return { v: "top" as const, ln: "top" as const };
+      const barNorm = (d.v - vLo) / (vHi - vLo);
+      const lineNorm = (d.ln - rLo) / (rHi - rLo);
+      const close = Math.abs(barNorm - lineNorm) < 0.13;                       // 두 점이 가까우면 분리
+      return { v: "top" as const, ln: close ? ("bottom" as const) : ("top" as const) };
+    });
+    const barLabel = (p: any) => {
+      const { x = 0, y = 0, width = 0, height = 0, value, index = 0 } = p;
+      if (value == null) return null;
+      const side = place[index]?.v;
+      if (!side) return null;
+      const ty = side === "below" ? y + height + 14 : y - 6;
+      return <text x={x + width / 2} y={ty} textAnchor="middle" fontSize={13} fontWeight={700} fill="#fff">{Math.round(Number(value)).toLocaleString()}</text>;
+    };
+    const pctLabel = (p: any) => {
+      const { x = 0, y = 0, value, index = 0 } = p;
+      if (value == null) return null;
+      const ty = place[index]?.ln === "bottom" ? y + 17 : y - 8;
+      return <text x={x} y={ty} textAnchor="middle" fontSize={13} fontWeight={700} fill={CHART_GOLD}>{`${value}%`}</text>;
+    };
     return (
       <div key={c.t} className="panel" style={{ marginBottom: 0, padding: "10px 8px 4px" }}>
         <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
           <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {unitLbl}{hasLine ? ` · ${lnLabel} %` : ""}</span></div>
         <ResponsiveContainer width="100%" height={250}>
           {/* 0 기준선 + 여유 상단 여백(막대값↔%라벨 겹침 완화) */}
-          <ComposedChart data={data} margin={{ top: 34, right: hasLine ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="24%">
+          <ComposedChart data={data} margin={{ top: 34, right: hasLine ? 2 : 6, bottom: 4, left: 0 }} barCategoryGap="24%">
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="x" tick={{ fontSize: 11 }} interval={0} />
-            <YAxis yAxisId="v" tick={{ fontSize: 10 }} width={58} tickFormatter={amtFmt}
-              domain={[(min: number) => Math.min(0, min), "auto"]} />
-            {hasLine && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} width={34} tickFormatter={(n) => `${n}%`} />}
+            <YAxis yAxisId="v" tick={{ fontSize: 10 }} width={58} tickFormatter={amtFmt} domain={[vLo, vHi]} />
+            {hasLine && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} width={34} tickFormatter={(n) => `${n}%`} domain={[rLo, rHi]} />}
             <ReferenceLine yAxisId="v" y={0} stroke="var(--muted)" strokeWidth={0.5} />
             <Tooltip content={(o) => {
               if (!o.active || !o.payload?.length) return null;
@@ -211,13 +247,12 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
             }} />
             <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} stroke={CHART_BAR_EDGE} strokeWidth={1}
               minPointSize={3} name={c.t} isAnimationActive={false}>
-              <LabelList dataKey="v" position="top" offset={4} formatter={(n) => (n == null ? "" : Math.round(Number(n)).toLocaleString())}
-                style={{ fontSize: 13, fill: "#fff", fontWeight: 700 }} />
+              <LabelList dataKey="v" content={barLabel} />
             </Bar>
             {hasLine && (
               <Line yAxisId="r" dataKey="ln" stroke={CHART_GOLD} strokeWidth={2} dot name={lnLabel} isAnimationActive={false} connectNulls>
-                {/* % 라벨은 선 아래쪽 — 막대 값 라벨(막대 위)과 상하 분리(겹침 방지) */}
-                <LabelList dataKey="ln" position="bottom" offset={8} formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 13, fill: "#fff", fontWeight: 700 }} />
+                {/* %=골드. 막대값과 가까운 기간은 선 아래로 내려 겹침 방지(place[]) */}
+                <LabelList dataKey="ln" content={pctLabel} />
               </Line>
             )}
           </ComposedChart>
@@ -279,7 +314,7 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
               <Line yAxisId={l2pct ? "r" : "v"} dataKey="ln2" stroke={CHART_GOLD} strokeWidth={2} dot name={l2!.label} isAnimationActive={false} connectNulls>
                 <LabelList dataKey="ln2" position="top" offset={16}
                   formatter={(n) => (n == null ? "" : l2pct ? `${n}%` : Number(n).toLocaleString())}
-                  style={{ fontSize: 12, fill: "#fff", fontWeight: 700 }} />
+                  style={{ fontSize: 12, fill: l2pct ? CHART_GOLD : "#fff", fontWeight: 700 }} />
               </Line>
             )}
           </ComposedChart>
