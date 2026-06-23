@@ -221,7 +221,7 @@ def _fetch(code: str) -> dict:
         quarterly[key] = _with_change(_parse_div(soup, div_q, annual=False))
     _add_pl_metrics(annual)      # 이익률·EBITDA 하위행 1회 계산·삽입(저장본에 포함)
     _add_pl_metrics(quarterly)
-    # 연간은 DART 전자공시 5개년으로 교체(키 있고 성공 시). 분기는 FnGuide 유지.
+    # 연간(5개년)·분기 모두 DART 전자공시로 교체(키 있고 성공 시). FnGuide는 폴백.
     try:
         from .config import settings
         if settings.OPENDART_API_KEY:
@@ -235,8 +235,15 @@ def _fetch(code: str) -> dict:
                 _add_pl_metrics(d_annual)
                 _graft_sga(annual.get("PL"), d_annual.get("PL"))   # FnGuide 판관비 상세 → DART 연간 이식
                 annual = d_annual    # 5개년 DART 연간으로 교체
+            d_quarterly = (draw or {}).get("quarterly")
+            if d_quarterly and d_quarterly.get("PL"):
+                for k in ("PL", "BS", "CF"):
+                    if d_quarterly.get(k):
+                        _with_change(d_quarterly[k])
+                _add_pl_metrics(d_quarterly)   # 이익률 부여(EBITDA는 DART CF에 D&A 없어 자동 생략)
+                quarterly = d_quarterly    # 분기도 DART 전자공시 단일분기로 교체
     except Exception:
-        _log.exception("DART 5개년 연간 병합 실패 — FnGuide 연간 유지 %s", code)
+        _log.exception("DART 전자공시 병합 실패 — FnGuide 유지 %s", code)
     return {"fetched": date.today().isoformat(), "annual": annual, "quarterly": quarterly}
 
 
