@@ -35,7 +35,8 @@ def test_initial_refresh_swallows_exception(monkeypatch):
 
 
 def test_backfill_chunk_budget_and_years_no_invalidate(monkeypatch):
-    """청크는 최근 2년·budget 1500으로 fetch하고 **invalidate는 하지 않는다**(재빌드 폭주 방지).
+    """청크는 10년(과거 PER/밸류 이력 백필)·budget 1500으로 fetch하고 **invalidate는 하지
+    않는다**(재빌드 폭주 방지).
 
     한 방 18000 대신 작은 청크. 10분마다 144회 invalidate는 비싼 dataset 재빌드 폭주라,
     attach는 일일 앵커(17:30)·dataset_kr(18:15)에 맡긴다."""
@@ -55,7 +56,7 @@ def test_backfill_chunk_budget_and_years_no_invalidate(monkeypatch):
     main._backfill_kr_fundamentals_chunk()
 
     yr = datetime.now().year
-    assert cap["years"] == [yr - 1, yr]            # 최근 2년(현재 TTM)
+    assert cap["years"] == list(range(yr - 10, yr + 1))   # 10년 백필(2016~·과거 PER/밸류 이력)
     assert cap["budget"] == 1500                   # 청크 예산
     assert inval == []                              # 청크는 invalidate 안 함
 

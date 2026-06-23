@@ -242,7 +242,11 @@ def _backfill_kr_fundamentals_chunk() -> None:
     from quant_core.data.feeds import fundamental_kr
     codes = data_fetcher.load_managed_kr_codes()
     yr = datetime.now().year
-    res = fundamental_kr.fetch(codes, [yr - 1, yr], budget_calls=1500)
+    # 과거 PER/밸류 이력 백필 — 10년치(2016~·한 경기순환 포함). fetch_one이 종목 parquet을
+    # 덮어쓰므로 전체 범위를 한 번에 받아 이력을 보존한다(과거엔 [yr-1,yr]만 받아 2년치로 잘려
+    # 과거 PER이 ~2년 전부터만 = 데이터 분열 뿌리①의 한 증상). fresh_days=80·종목별 원자기록·
+    # OpenDART 한도(020) 자동스로틀로 한도(~20k콜/일) 내에서 ~2주에 걸쳐 점진 채움.
+    res = fundamental_kr.fetch(codes, list(range(yr - 10, yr + 1)), budget_calls=1500)
     if res.get("ok") or res.get("empty") or res.get("rate_limited"):   # 진행/한도 있을 때만 로그(무작업 폴 침묵)
         _log.info("KR 펀더멘털 백필 청크(OpenDART): %s", res)
 

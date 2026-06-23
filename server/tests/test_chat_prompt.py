@@ -30,6 +30,16 @@ def test_chat_prompt_requires_reading_fold_and_cost_results():
     assert "재실행" in p               # 재실행 시 ir 대조(귀인 오류 차단)
 
 
+def test_chat_prompt_includes_data_provenance():
+    """데이터 출처 메타인지 — 챗봇이 출처를 추측("PER=FnGuide")하지 않도록 계보 표가 프롬프트에
+    실제 노출돼야. trailing 밸류=전자공시(OpenDART) vs 추정실적=FnGuide 구분이 핵심."""
+    p = cp.chat_system_prompt()
+    assert "data_provenance" in p
+    assert "OpenDART" in p and "전자공시" in p     # trailing 밸류 정답 출처
+    assert "FnGuide" in p                            # 추정실적(별개)
+    assert "추측하지 말" in p                         # 출처 지어내기 금지 가드
+
+
 def test_chat_prompt_surfaces_advanced_analyses():
     """엔진에 이미 있는 고급 분석을 에이전트가 알도록 analysis_menu가 노출돼야(반복 미사용 부류 차단).
     simulate(nl)로 도달 가능한 sweep/extremize/regime/regression/portfolio/연도별을 프롬프트가 명시."""
