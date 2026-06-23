@@ -13,16 +13,17 @@ from typing import Any, Callable
 # ── 그룹 융합 헬퍼 ────────────────────────────────────────────────────────────
 
 def get_symbol_group(sym: str, group_type: str = "Industry") -> str:
-    """티커 심볼의 그룹(업종/섹터)명. static.classification 사이드카(FDR KRX-DESC) 조회.
+    """티커 심볼의 그룹(업종/섹터)명. static.classification 사이드카 조회
+    (KR=FDR KRX-DESC KSIC 업종, US=FDR S&P500 GICS 섹터/서브산업).
 
-    미수급 종목(US 또는 사이드카 미적재)은 폴백 — KR은 '기타', 그 외 'Other'.
+    사이드카 미적재 종목(S&P500 밖 US·미수집 KR)은 폴백 — KR(숫자코드)은 '기타', 그 외 'Other'.
     폴백은 빈 그룹을 안 만들도록 일관된 값을 준다(그룹 연산 안전).
     """
     from .data.feeds.classification import symbol_group
     g = symbol_group(sym, group_type)
     if g:
         return g
-    return "기타" if sym.split(".")[0].isdigit() else "Other"
+    return "기타" if sym.split(".")[0][:1].isdigit() else "Other"   # KR 코드는 숫자로 시작(우선주 00104K 등 포함)
 
 
 _NAME_CACHE: dict | None = None
