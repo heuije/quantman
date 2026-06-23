@@ -120,6 +120,21 @@ def _context_block(result: Any) -> str:
                        if isinstance(n, dict) and n.get("title"))
     if heads:
         parts.append(f"최근뉴스(왜 움직였나): {heads}")
+    # 추정실적(FnGuide) — 연도별 추정 EPS를 모델 식단에 표면화한다. 웹 카드엔 다년도(확정+추정 E)가
+    # 뜨는데 이 블록이 빠지면 모델은 추정치를 프롬프트 설명으로만 알아 "다음해만/범위 초과"라 잘못
+    # 거절한다(데이터엔 forward E연도가 있는데). E연도 라벨로 줘 모델이 그대로 읽어 답하게 한다.
+    est = ctx.get("estimates") or {}
+    ann, fwd = est.get("annual") or {}, est.get("forward") or {}
+    eps_seq = [f"{str(y).split('/')[0]}{'E' if e else ''} {_f(v)}"
+               for y, e, v in zip(ann.get("years") or [], ann.get("is_estimate") or [],
+                                  ann.get("eps") or []) if v is not None]
+    if eps_seq:
+        tail = [s for s in (
+            f"추정매출성장 {_f(fwd['rev_growth'])}%" if fwd.get("rev_growth") is not None else "",
+            f"추정영업이익성장 {_f(fwd['op_growth'])}%" if fwd.get("op_growth") is not None else "",
+            f"forward PER {_f(fwd['forward_pe'])}" if fwd.get("forward_pe") is not None else "") if s]
+        parts.append("추정실적(FnGuide·E=추정) 연도별EPS(원): " + " · ".join(eps_seq)
+                     + (" · " + " · ".join(tail) if tail else ""))
     if not parts:
         return ""
     return ("\n[맥락·준실시간] " + " · ".join(parts)

@@ -63,6 +63,16 @@ def test_symbol_name_real_ticker():
     assert symbol_name("999999") == "999999"       # 미수급 → 코드 폴백
 
 
+def test_symbol_name_reads_bundled_db_ignoring_runtime_dir(monkeypatch, tmp_path):
+    """프로덕션 회귀: QP_CORE_DATA_DIR가 런타임 데이터 볼륨(prod=/srv/data, ticker_db 없음)을
+    가리켜도 종목명은 번들 metadata(core/data)에서 읽어야 한다. 안 그러면 lookup이 빈 맵→전
+    종목이 코드로 폴백돼 '종목명=코드'로 뜬다(실제 프로덕션 버그였음)."""
+    import quant_core.expression_parser as ep
+    monkeypatch.setenv("QP_CORE_DATA_DIR", str(tmp_path))   # ticker_db 없는 빈 디렉터리
+    monkeypatch.setattr(ep, "_NAME_CACHE", None)            # 캐시 리셋(teardown이 restore)
+    assert ep.symbol_name("005930") == "삼성전자"           # env 무시·번들에서 이름 해석
+
+
 _PER = {"S1": 8, "S2": 20, "S3": 30, "S4": 10, "S5": 25, "S6": 35}
 
 

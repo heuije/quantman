@@ -37,10 +37,12 @@ def symbol_name(sym: str) -> str:
     global _NAME_CACHE
     if _NAME_CACHE is None:
         import json
-        import os
         from pathlib import Path
-        p = (Path(os.getenv("QP_CORE_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
-             / "ticker_db.json")
+        # ticker_db.json은 git-tracked 정적 metadata(코드와 함께 번들 · ticker_db.py가 이 위치에 기록).
+        # 시세처럼 수집되는 런타임 데이터가 아니므로 **항상 모듈 인접(core/data)에서 읽는다**.
+        # QP_CORE_DATA_DIR(prod=/srv/data 가격 parquet 볼륨)로 찾으면 거기엔 이 파일이 없어
+        # 빈 맵→전 종목 코드 폴백된다(프로덕션 "종목명=코드" 버그의 근본).
+        p = Path(__file__).resolve().parent.parent / "data" / "ticker_db.json"
         m: dict[str, str] = {}
         if p.exists():
             try:

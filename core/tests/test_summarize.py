@@ -164,6 +164,24 @@ def test_context_block_surfaces_quotes_and_news():
     assert "삼성전자 신고가 경신" in s              # 뉴스 헤드라인('왜 움직였나')
 
 
+def test_context_block_surfaces_multiyear_estimates():
+    """추정실적: 연도별 추정 EPS(확정+E)가 모델 요약에 표면화 — 데이터에 forward E연도(2028E)가
+    있는데도 모델이 '다음해만/범위 초과'라 거절하던 버그의 회귀. 웹 카드만 보던 다년도를 모델도 읽게."""
+    res = {"success": True, "shape": "describe_single", "report": "single",
+           "symbol": "005930", "price": {"last": 70000}, "risk": {}, "fundamentals": {},
+           "context": {"estimates": {
+               "source": "FnGuide 컨센서스",
+               "forward": {"rev_growth": 8.0, "op_growth": 12.0, "forward_pe": 9.0},
+               "annual": {"years": ["2025/12", "2026/12", "2027/12", "2028/12"],
+                          "is_estimate": [False, True, True, True],
+                          "eps": [5000.0, 5500.0, 6000.0, 6500.0]}}}}
+    s = summarize_result(res)
+    assert "추정실적" in s
+    assert "2028E 6500.00" in s        # forward 추정 연도(2028E)가 모델 식단에 — 거절 못 하게
+    assert "2025 5000.00" in s         # 확정 연도는 E 라벨 없음
+    assert "forward PER 9.00" in s
+
+
 def test_context_block_absent_when_no_context():
     """context 없는 결과는 맥락 블록 미부착(엔진 단독 실행·다른 형상)."""
     res = {"success": True, "shape": "describe_single", "report": "single", "symbol": "005930",
