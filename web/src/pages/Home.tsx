@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList,
+  ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList, ReferenceLine,
 } from "recharts";
 import { api } from "../api";
 import type { SymbolListing, CompanyProfile, SymbolDetail, FinancialsData, FinStatement } from "../types";
@@ -61,9 +61,16 @@ const FIN_STMTS: [keyof FinancialsData["annual"], string][] =
   [["PL", "손익계산서"], ["BS", "재무상태표"], ["CF", "현금흐름표"]];
 
 // 그래프 색상 — 마이스톡 메인 네이비(진하게) + 하이라이트 골드만(회색 금지).
-const CHART_NAVY = "#264a85", CHART_GOLD = "#d4a738";
+const CHART_NAVY = "#123257", CHART_GOLD = "#d4a738";   // 막대=딥 네이비(살짝 연하게)·선=하이라이트 골드
+const CHART_BAR_EDGE = "#3a5283";                        // 다크 카드 위 막대 외곽선(가시성 유지)
 type SeriesArr = (number | null)[];
-interface ChartDef { t: string; unit: "억원" | "%"; v: SeriesArr; yoy?: SeriesArr; mg?: SeriesArr; }
+// v=금액(억원, 표시는 ×100=백만원) · mg=해당 계정 비율(%) 선 · mgLabel=선 이름(부채비율/ROE/마진 등)
+interface ChartDef {
+  t: string; v?: SeriesArr; mg?: SeriesArr; mgLabel?: string; yoy?: SeriesArr; won?: boolean;
+  // 다중 막대(유동자산/부채 그룹, NWC 스택) + 추가 골드 선(유동비율·NWC 등)
+  bars?: { key: string; label: string; color: string; series: SeriesArr; stackId?: string }[];
+  line2?: { label: string; series: SeriesArr; pct?: boolean };
+}
 
 // 기간 라벨 — 연간 "2023/12"→FY23, 분기 "2026/03"→1Q26. 차트 x축·기간 드롭다운 공용.
 function periodLabel(p: string, quarterly: boolean): string {
@@ -95,101 +102,213 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
     as.reduce<number | null>((s, a) => (s == null || a[i] == null) ? null : s + (a[i] as number), 0));
   const subS = (a: SeriesArr, b: SeriesArr): SeriesArr => a.map((x, i) => (x != null && b[i] != null) ? x - (b[i] as number) : null);
   const ratio = (n: SeriesArr, d: SeriesArr): SeriesArr => n.map((x, i) => (x != null && d[i]) ? Math.round((x / (d[i] as number)) * 1000) / 10 : null);
-  const yoy = (s: SeriesArr): SeriesArr => s.map((v, i) =>
-    (i === 0 || v == null || s[i - 1] == null || s[i - 1] === 0 || ((v < 0) !== ((s[i - 1] as number) < 0)))
-      ? null : Math.round((v / (s[i - 1] as number) - 1) * 1000) / 10);
+  // YoY/QoQ 증감률 — 전기≤0(음수·0) 또는 당기<0이면 % 왜곡(적자전환·적자지속)이라 표시 안 함.
+  const yoy = (s: SeriesArr): SeriesArr => s.map((v, i) => {
+    const p = s[i - 1];
+    return (i === 0 || v == null || p == null || (p as number) <= 0 || (v as number) < 0)
+      ? null : Math.round((v / (p as number) - 1) * 1000) / 10;
+  });
 
   const asset = vals(bs, ["자산", "자산총계"]), liab = vals(bs, ["부채", "부채총계"]), eq = vals(bs, ["자본", "자본총계"]);
-  const borrow = sumS(vals(bs, ["단기차입금"]), vals(bs, ["장기차입금"]), vals(bs, ["유동성장기부채"]));
+  const curAsset = vals(bs, ["유동자산"]), curLiab = vals(bs, ["유동부채"]);
+  const ar = vals(bs, ["매출채권및기타유동채권", "매출채권"]);
+  const inv = vals(bs, ["재고자산"]);
+  const ap = vals(bs, ["매입채무및기타유동채무", "매입채무"]);
+  const apNeg = ap.map((x) => (x == null ? null : -x));                 // 매입채무 음수(0선 하단)
+  const nwc = periods.map((_, i) =>                                     // NWC = 매출채권 + 재고 − 매입채무
+    (ar[i] == null && inv[i] == null && ap[i] == null) ? null : (ar[i] || 0) + (inv[i] || 0) - (ap[i] || 0));
+  // 차입금 = 단기 + 장기 + 유동성장기차입금(장기→단기 대체분). DART 계정명은 '유동성장기차입금'.
+  const borrow = sumS(vals(bs, ["단기차입금"]), vals(bs, ["장기차입금"]),
+    vals(bs, ["유동성장기차입금", "유동성장기부채", "유동성사채"]));
   const netDebt = subS(borrow, vals(bs, ["현금및현금성자산"]));
   const opCf = vals(cf, ["영업활동으로인한현금흐름", "영업활동현금흐름"]);
-  const invCf = vals(cf, ["투자활동으로인한현금흐름"]);
+  const invCf = vals(cf, ["투자활동으로인한현금흐름", "투자활동현금흐름"]);
+  const finCf = vals(cf, ["재무활동으로인한현금흐름", "재무활동현금흐름"]);
+  const ctrlNi = vals(pl, ["지배기업소유주지분", "지배주주순이익"]);   // 지배기업 소유주지분(=지배기업순이익)
+  const eps = vals(pl, ["기본주당순이익(원)", "기본주당순이익", "EPS"]).map((x) => (x == null ? null : x * 1e8));   // /1e8 환원 → 원
 
+  // 차트 = 금액 막대(네이비) + 해당 계정 비율 선(골드, 우축). PL 이익률·BS 부채비율/ROE/차입금비율을 선으로.
   const SECTIONS: { key: keyof FinancialsData["annual"]; title: string; charts: ChartDef[] }[] = [
     { key: "PL", title: "손익계산서", charts: [
-      { t: "매출액", unit: "억원", v: vals(pl, ["매출액"]), yoy: chg(pl, ["매출액"]) },
-      { t: "매출총이익", unit: "억원", v: vals(pl, ["매출총이익"]), yoy: chg(pl, ["매출총이익"]) },
-      { t: "매출총이익률", unit: "%", v: vals(pl, ["매출총이익률(%)"]) },
-      { t: "영업이익", unit: "억원", v: vals(pl, ["영업이익"]), yoy: chg(pl, ["영업이익"]) },
-      { t: "영업이익률", unit: "%", v: vals(pl, ["영업이익률(%)"]) },
-      { t: "당기순이익", unit: "억원", v: vals(pl, ["당기순이익"]), yoy: chg(pl, ["당기순이익"]) },
-      { t: "당기순이익률", unit: "%", v: vals(pl, ["당기순이익률(%)"]) },
-      { t: "EBITDA", unit: "억원", v: vals(pl, ["EBITDA"]), yoy: chg(pl, ["EBITDA"]) },
-      { t: "EBITDA Margin", unit: "%", v: vals(pl, ["EBITDAMargin(%)"]) },
+      { t: "매출액", v: vals(pl, ["매출액"]), yoy: chg(pl, ["매출액"]) },
+      { t: "매출총이익", v: vals(pl, ["매출총이익"]), mg: vals(pl, ["매출총이익률(%)"]), mgLabel: "매출총이익률", yoy: chg(pl, ["매출총이익"]) },
+      { t: "영업이익", v: vals(pl, ["영업이익"]), mg: vals(pl, ["영업이익률(%)"]), mgLabel: "영업이익률", yoy: chg(pl, ["영업이익"]) },
+      { t: "당기순이익", v: vals(pl, ["당기순이익"]), mg: vals(pl, ["당기순이익률(%)"]), mgLabel: "순이익률", yoy: chg(pl, ["당기순이익"]) },
+      { t: "EBITDA", v: vals(pl, ["EBITDA"]), mg: vals(pl, ["EBITDAMargin(%)"]), mgLabel: "EBITDA%", yoy: chg(pl, ["EBITDA"]) },
+      { t: "지배기업순이익", v: ctrlNi, yoy: yoy(ctrlNi) },
+      { t: "EPS (주당순이익)", v: eps, won: true, yoy: yoy(eps) },
     ] },
     { key: "BS", title: "재무상태표", charts: [
-      { t: "자산총계", unit: "억원", v: asset, yoy: yoy(asset) },
-      { t: "부채총계", unit: "억원", v: liab, yoy: yoy(liab) },
-      { t: "자본총계", unit: "억원", v: eq, yoy: yoy(eq) },
-      { t: "부채비율", unit: "%", v: ratio(liab, eq) },
-      { t: "차입금비율", unit: "%", v: ratio(borrow, eq) },
-      { t: "Net Debt (순차입금)", unit: "억원", v: netDebt, yoy: yoy(netDebt) },
-      { t: "ROE", unit: "%", v: ratio(vals(pl, ["당기순이익"]), eq) },
+      { t: "자산총계", v: asset, yoy: yoy(asset) },
+      { t: "부채총계", v: liab, mg: ratio(liab, eq), mgLabel: "부채비율", yoy: yoy(liab) },
+      { t: "자본총계", v: eq, mg: ratio(vals(pl, ["당기순이익"]), eq), mgLabel: "ROE", yoy: yoy(eq) },
+      { t: "유동자산·유동부채", bars: [
+          { key: "ca", label: "유동자산", color: CHART_NAVY, series: curAsset },
+          { key: "cl", label: "유동부채", color: CHART_BAR_EDGE, series: curLiab },
+        ], line2: { label: "유동비율", series: ratio(curAsset, curLiab), pct: true } },
+      { t: "NWC (운전자본·CCC)", bars: [
+          { key: "ar", label: "매출채권", color: CHART_NAVY, series: ar, stackId: "nwc" },
+          { key: "inv", label: "재고자산", color: CHART_BAR_EDGE, series: inv, stackId: "nwc" },
+          { key: "ap", label: "매입채무(−)", color: "#c0504d", series: apNeg, stackId: "nwc" },
+        ], line2: { label: "NWC", series: nwc } },
+      { t: "Net Debt (순차입금)", v: netDebt, mg: ratio(borrow, eq), mgLabel: "차입금비율", yoy: yoy(netDebt) },
     ] },
     { key: "CF", title: "현금흐름표", charts: [
-      { t: "영업활동현금흐름", unit: "억원", v: opCf, yoy: chg(cf, ["영업활동으로인한현금흐름"]) },
-      { t: "투자활동현금흐름", unit: "억원", v: invCf, yoy: yoy(invCf) },
-      { t: "재무활동현금흐름", unit: "억원", v: vals(cf, ["재무활동으로인한현금흐름"]), yoy: yoy(vals(cf, ["재무활동으로인한현금흐름"])) },
-      { t: "잉여현금흐름 (FCF)", unit: "억원", v: sumS(opCf, invCf), yoy: yoy(sumS(opCf, invCf)) },
-      { t: "기말현금", unit: "억원", v: vals(cf, ["기말현금및현금성자산"]), yoy: yoy(vals(cf, ["기말현금및현금성자산"])) },
+      { t: "영업활동현금흐름", v: opCf, yoy: chg(cf, ["영업활동으로인한현금흐름", "영업활동현금흐름"]) },
+      { t: "투자활동현금흐름", v: invCf, yoy: yoy(invCf) },
+      { t: "재무활동현금흐름", v: finCf, yoy: yoy(finCf) },
+      { t: "잉여현금흐름 (FCF)", v: sumS(opCf, invCf), yoy: yoy(sumS(opCf, invCf)) },
+      { t: "기말현금", v: vals(cf, ["기말현금및현금성자산"]), yoy: yoy(vals(cf, ["기말현금및현금성자산"])) },
     ] },
   ];
 
   const lineLbl = quarterly ? "QoQ%" : "YoY%";
   const xLabel = (p: string) => periodLabel(p, quarterly);   // FY23 / 1Q26
 
-  // 선택된 재무제표 탭(stmt)의 섹션만. 표시 기간에 값이 전혀 없는 차트는 제외.
+  // 선택된 재무제표 탭(stmt)의 섹션만. 표시 기간에 값이 전혀 없는 차트는 제외(단일 v 또는 다중 bars).
   const sec = SECTIONS.find((s) => s.key === stmt);
-  const shown = sec ? sec.charts.filter((c) => c.v.some((x, i) => x != null && keep[i])) : [];
-  // 단위 통일 — 섹션 내 금액 차트의 최댓값이 1조(=10,000억) 이상이면 모든 금액 차트를 조원으로 통일.
-  const amtNums = shown.filter((c) => c.unit !== "%")
-    .flatMap((c) => c.v.filter((x, i): x is number => x != null && keep[i]).map(Math.abs));
-  const useJo = amtNums.length > 0 && Math.max(...amtNums) >= 10000;
+  const hasData = (c: ChartDef) =>
+    (!!c.v && c.v.some((x, i) => x != null && keep[i])) ||
+    (!!c.bars && c.bars.some((b) => b.series.some((x, i) => x != null && keep[i])));
+  const shown = sec ? sec.charts.filter(hasData) : [];
 
-  // 한 차트 = 한 단위. 금액=막대(네이비) / 비율(%)=선(네이비). 이중축·단위 혼합 없음.
+  // 금액=막대(네이비, 좌축·백만원) + 골드 선(우축): 이익률 있으면 마진%, 없으면 YoY/QoQ 증감률. 막대는 0 기준.
   const renderChart = (c: ChartDef) => {
-    const isPct = c.unit === "%";
-    const div = (!isPct && useJo) ? 10000 : 1;
-    const unit = isPct ? "%" : useJo ? "조원" : "억원";
-    const uTip = isPct ? "%" : useJo ? "조" : "억";
+    const useMg = !!c.mg && c.mg.some((x, i) => x != null && keep[i]);   // 이익률/비율 보유
+    const lnLabel = useMg ? (c.mgLabel || "비율") : lineLbl;             // 마진% 또는 YoY%/QoQ%
+    const mult = c.won ? 1 : 100;            // 일반=억원→백만원(×100), 주당이익=원(×1)
+    const unitLbl = c.won ? "원" : "백만원";
+    const vSer = c.v ?? [];
     const data = periods.map((p, i) => ({ x: xLabel(p),
-      v: c.v[i] == null ? null : (c.v[i] as number) / div, yoy: c.yoy?.[i] ?? null }))
-      .filter((_, i) => keep[i]);   // #3 사용자 지정 기간만
-    const axisFmt = isPct ? (n: number) => `${n}%` : useJo ? (n: number) => n.toFixed(1) : (n: number) => Math.round(n).toLocaleString();
-    const lblFmt = (n: unknown) => n == null ? "" : isPct
-      ? `${n}%` : useJo ? Number(n).toFixed(1) : Number(n).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-    const fmtVal = (n: number) => isPct ? `${n}%` : `${Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 })}${uTip}`;
+      v: vSer[i] == null ? null : Math.round((vSer[i] as number) * mult),
+      ln: (useMg ? c.mg?.[i] : c.yoy?.[i]) ?? null }))
+      .filter((_, i) => keep[i]);
+    const hasLine = data.some((d) => d.ln != null);
+    const amtFmt = (n: number) => Math.round(n).toLocaleString();
+    // 좌(금액)·우(%) 축 도메인 명시 → 라벨이 잘리지 않게 상하 여백 확보.
+    const vVals = data.map((d) => d.v).filter((x): x is number => x != null);
+    const lnVals = data.map((d) => d.ln).filter((x): x is number => x != null);
+    const vMax = vVals.length ? Math.max(...vVals) : 0;
+    const vMin = vVals.length ? Math.min(...vVals) : 0;
+    const vRange = Math.max(0, vMax) - Math.min(0, vMin) || Math.abs(vMax) || 1;
+    const vHi = Math.max(0, vMax) + vRange * 0.18;
+    const vLo = Math.min(0, vMin) - (vMin < 0 ? vRange * 0.12 : 0);
+    const rMax = lnVals.length ? Math.max(...lnVals) : 0;
+    const rMin = lnVals.length ? Math.min(...lnVals) : 0;
+    const rRange = Math.max(0, rMax) - Math.min(0, rMin) || Math.abs(rMax) || 1;
+    const rHi = Math.max(0, rMax) + rRange * 0.22;
+    const rLo = Math.min(0, rMin) - (rMin < 0 ? rRange * 0.18 : 0);
+    // 라벨은 실제 렌더 좌표만으로 배치(추정 금지). 값=막대 안쪽 상단(흰색),
+    // %=선 위(골드). 값은 항상 막대에, %는 항상 선에 붙어 선이 값을 관통하지 않음.
+    const barLabel = (p: any) => {
+      const { x = 0, y = 0, width = 0, height = 0, value } = p;
+      if (value == null) return null;
+      const num = Math.round(Number(value)).toLocaleString();
+      const ty = Number(value) < 0 ? y - 7         // 적자 막대: 0선(y) 위 빈 공간
+        : height >= 16 ? y + 14                     // 막대 안쪽 상단(낮은 선과 분리)
+        : y - 6;                                    // 매우 짧은 막대만 위
+      return <text x={x + width / 2} y={ty} textAnchor="middle" fontSize={13} fontWeight={700} fill="#fff">{num}</text>;
+    };
+    const pctLabel = (p: any) => {
+      const { x = 0, y = 0, value } = p;
+      if (value == null) return null;
+      const ty = y < 22 ? y + 16 : y - 9;           // 선이 상단에 가까우면 아래, 아니면 위
+      return <text x={x} y={ty} textAnchor="middle" fontSize={13} fontWeight={700} fill={CHART_GOLD}>{`${value}%`}</text>;
+    };
     return (
       <div key={c.t} className="panel" style={{ marginBottom: 0, padding: "10px 8px 4px" }}>
         <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
-          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {unit}</span></div>
-        <ResponsiveContainer width="100%" height={230}>
-          {/* 글자·숫자 본문 크기(12) + barCategoryGap로 막대폭 절반 수준 */}
-          <ComposedChart data={data} margin={{ top: 22, right: 6, bottom: 0, left: 0 }} barCategoryGap="50%">
+          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {unitLbl}{hasLine ? ` · ${lnLabel} %` : ""}</span></div>
+        <ResponsiveContainer width="100%" height={250}>
+          {/* 0 기준선 + 여유 상단 여백(막대값↔%라벨 겹침 완화) */}
+          <ComposedChart data={data} margin={{ top: 34, right: hasLine ? 2 : 6, bottom: 4, left: 0 }} barCategoryGap="24%">
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="x" tick={{ fontSize: 12 }} interval={0} />
-            <YAxis yAxisId="v" tick={{ fontSize: 12 }} width={46} tickFormatter={axisFmt} />
+            <XAxis dataKey="x" tick={{ fontSize: 11 }} interval={0} />
+            <YAxis yAxisId="v" tick={{ fontSize: 10 }} width={58} tickFormatter={amtFmt} domain={[vLo, vHi]} />
+            {hasLine && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} width={34} tickFormatter={(n) => `${n}%`} domain={[rLo, rHi]} />}
+            <ReferenceLine yAxisId="v" y={0} stroke="var(--muted)" strokeWidth={0.5} />
             <Tooltip content={(o) => {
               if (!o.active || !o.payload?.length) return null;
-              const d = o.payload[0].payload as { x: string; v: number | null; yoy: number | null };
+              const d = o.payload[0].payload as { x: string; v: number | null; ln: number | null };
               return (
                 <div style={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 9px", fontSize: 12, lineHeight: 1.55 }}>
                   <div style={{ color: "var(--muted)" }}>{d.x}</div>
-                  <div style={{ fontWeight: 700 }}>{d.v == null ? "-" : fmtVal(d.v)}</div>
-                  {!isPct && d.yoy != null && <div style={{ color: CHART_GOLD }}>{lineLbl} {d.yoy}%</div>}
+                  <div style={{ fontWeight: 700 }}>{d.v == null ? "-" : `${d.v.toLocaleString()} ${unitLbl}`}</div>
+                  {d.ln != null && <div style={{ color: CHART_GOLD }}>{lnLabel} {d.ln}%</div>}
                 </div>
               );
             }} />
-            {isPct ? (
-              // 비율(%)만 선그래프 — 추세 비교용.
-              <Line yAxisId="v" dataKey="v" stroke={CHART_NAVY} strokeWidth={2} dot name={c.t} isAnimationActive={false} connectNulls>
-                <LabelList dataKey="v" position="top" formatter={lblFmt} style={{ fontSize: 12, fill: CHART_NAVY, fontWeight: 700 }} />
+            <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} stroke={CHART_BAR_EDGE} strokeWidth={1}
+              minPointSize={3} name={c.t} isAnimationActive={false}>
+              <LabelList dataKey="v" content={barLabel} />
+            </Bar>
+            {hasLine && (
+              <Line yAxisId="r" dataKey="ln" stroke={CHART_GOLD} strokeWidth={2} dot name={lnLabel} isAnimationActive={false} connectNulls>
+                {/* %=골드. 막대값과 가까운 기간은 선 아래로 내려 겹침 방지(place[]) */}
+                <LabelList dataKey="ln" content={pctLabel} />
               </Line>
-            ) : (
-              // 금액은 막대그래프.
-              <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} name={c.t} isAnimationActive={false}>
-                <LabelList dataKey="v" position="top" formatter={lblFmt} style={{ fontSize: 12, fill: CHART_NAVY, fontWeight: 700 }} />
-              </Bar>
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  };
+
+  // 다중 막대(그룹/스택) + 선 — 유동자산·부채(+유동비율), NWC 스택(매출채권·재고 ↑ / 매입채무 ↓ + NWC선)
+  const renderMulti = (c: ChartDef) => {
+    const bars = c.bars || [];
+    const l2 = c.line2;
+    const l2pct = !!l2?.pct;
+    const data = periods.map((p, i) => {
+      const row: Record<string, number | string | null> = { x: xLabel(p) };
+      bars.forEach((b) => { row[b.key] = b.series[i] == null ? null : Math.round((b.series[i] as number) * 100); });
+      if (l2) row.ln2 = l2.series[i] == null ? null : (l2pct ? l2.series[i] : Math.round((l2.series[i] as number) * 100));
+      return row;
+    }).filter((_, i) => keep[i]);
+    const hasLn = !!l2 && data.some((d) => d.ln2 != null);
+    const amtFmt = (n: number) => Math.round(n).toLocaleString();
+    return (
+      <div key={c.t} className="panel" style={{ marginBottom: 0, padding: "10px 8px 4px" }}>
+        <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
+          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> 백만원{hasLn ? ` · ${l2!.label}${l2pct ? " %" : ""}` : ""}</span></div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "0 0 2px 2px" }}>
+          {bars.map((b) => (
+            <span key={b.key} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--muted)" }}>
+              <span style={{ width: 9, height: 9, borderRadius: 2, background: b.color }} />{b.label}</span>
+          ))}
+          {hasLn && <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--muted)" }}>
+            <span style={{ width: 12, height: 2, background: CHART_GOLD }} />{l2!.label}</span>}
+        </div>
+        <ResponsiveContainer width="100%" height={250}>
+          <ComposedChart data={data} margin={{ top: 30, right: hasLn && l2pct ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="24%">
+            <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="x" tick={{ fontSize: 11 }} interval={0} />
+            <YAxis yAxisId="v" tick={{ fontSize: 10 }} width={58} tickFormatter={amtFmt}
+              domain={[(min: number) => Math.min(0, min), "auto"]} />
+            {hasLn && l2pct && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} width={34} tickFormatter={(n) => `${n}%`} />}
+            <ReferenceLine yAxisId="v" y={0} stroke="var(--muted)" strokeWidth={0.5} />
+            <Tooltip content={(o) => {
+              if (!o.active || !o.payload?.length) return null;
+              const d = o.payload[0].payload as Record<string, number | string | null>;
+              return (
+                <div style={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 9px", fontSize: 12, lineHeight: 1.55 }}>
+                  <div style={{ color: "var(--muted)" }}>{d.x}</div>
+                  {bars.map((b) => (
+                    <div key={b.key} style={{ color: b.color }}>{b.label} {d[b.key] == null ? "-" : `${Number(d[b.key]).toLocaleString()} 백만원`}</div>
+                  ))}
+                  {hasLn && d.ln2 != null && <div style={{ color: CHART_GOLD }}>{l2!.label} {l2pct ? `${d.ln2}%` : `${Number(d.ln2).toLocaleString()} 백만원`}</div>}
+                </div>
+              );
+            }} />
+            {bars.map((b) => (
+              <Bar key={b.key} yAxisId="v" dataKey={b.key} fill={b.color} stackId={b.stackId} minPointSize={3} name={b.label} isAnimationActive={false} />
+            ))}
+            {hasLn && (
+              <Line yAxisId={l2pct ? "r" : "v"} dataKey="ln2" stroke={CHART_GOLD} strokeWidth={2} dot name={l2!.label} isAnimationActive={false} connectNulls>
+                <LabelList dataKey="ln2" position="top" offset={16}
+                  formatter={(n) => (n == null ? "" : l2pct ? `${n}%` : Number(n).toLocaleString())}
+                  style={{ fontSize: 12, fill: l2pct ? CHART_GOLD : "#fff", fontWeight: 700 }} />
+              </Line>
             )}
           </ComposedChart>
         </ResponsiveContainer>
@@ -200,10 +319,10 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   if (!sec) return null;
   return (
     <div style={{ marginBottom: 14 }}>
-      <div style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px" }}>막대=금액({useJo ? "조원" : "억원"}) · 선=비율(%) · {lineLbl}는 막대에 마우스를 올리면 표시</div>
-      {/* 차트 폭 자동 — 넘치면 다음 행으로 wrap(금액·비율 차트 모두 동일 폭) */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-        {shown.map(renderChart)}
+      <div style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px" }}>막대=금액(백만원·네이비) · 골드 선=비율(이익률 등) 또는 {lineLbl} 증감률(우축)</div>
+      {/* 한 행에 3개 */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+        {shown.map((c) => (c.bars ? renderMulti(c) : renderChart(c)))}
       </div>
     </div>
   );
@@ -244,7 +363,8 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
     api.financialsExcel(ticker).catch(() => { /* 무시 */ }).finally(() => setXlBusy(false));
   };
 
-  const eokN = (v: number | null) => v == null ? "—" : Math.round(v).toLocaleString();
+  const mwonN = (v: number | null) => v == null ? "—" : Math.round(v * 100).toLocaleString();   // 억원→백만원(×100), 차트와 동일 단위
+  const wonN = (v: number | null) => v == null ? "—" : Math.round(v * 1e8).toLocaleString() + "원";   // 주당이익 — /1e8 환원해 원으로(백만원 헤더와 구분)
   const pctV = (v: number | null) => v == null ? "—" : `${v.toFixed(1)}%`;
   const chgI = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
 
@@ -262,7 +382,7 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
             </colgroup>
             <thead>
               <tr style={{ borderBottom: "2px solid var(--border)" }}>
-                <th style={{ textAlign: "left", padding: "6px 8px" }}>계정 <span style={{ fontWeight: 400, color: "var(--muted)" }}>(억원)</span></th>
+                <th style={{ textAlign: "left", padding: "6px 8px" }}>계정 <span style={{ fontWeight: 400, color: "var(--muted)" }}>(백만원)</span></th>
                 {st.periods.map((p) => <th key={p} style={{ textAlign: "right", padding: "6px 8px" }}>{p}</th>)}
               </tr>
             </thead>
@@ -274,6 +394,7 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
                 const indent = r.child ? 26 : r.derived ? 22 : 8;   // 자식·파생(이익률/EBITDA) 들여쓰기
                 const hasChg = !r.pct && r.change.some((c) => c != null);   // 증감률 행 표시 대상
                 const showRow = showChg && hasChg;
+                const isEps = r.account.replace(/\s/g, "").includes("주당");   // 주당이익=원 단위
                 return (
                   <Fragment key={ri}>
                     <tr style={{ borderBottom: showRow ? "none" : "1px solid var(--border)",
@@ -294,7 +415,7 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
                       {r.values.map((v, ci) => (
                         <td key={ci} style={{ padding: "5px 8px", textAlign: "right", whiteSpace: "nowrap",
                           color: r.derived ? "var(--muted)" : "inherit", fontStyle: r.pct ? "italic" : "normal" }}>
-                          {r.pct ? pctV(v) : eokN(v)}
+                          {r.pct ? pctV(v) : isEps ? wonN(v) : mwonN(v)}
                         </td>
                       ))}
                     </tr>
@@ -303,11 +424,15 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
                       <tr style={{ borderBottom: "1px solid var(--border)", background: "rgba(127,127,127,0.10)" }}>
                         <td style={{ padding: "2px 8px", paddingLeft: indent + 12, fontSize: "10pt",
                           fontStyle: "italic", color: "var(--muted)" }}>{kind === "A" ? "YoY %" : "QoQ %"}</td>
-                        {r.change.map((c, ci) => (
+                        {r.change.map((c, ci) => {
+                          // 전기≤0·당기<0이면 %가 왜곡(적자전환·적자지속)이라 표시 안 함
+                          const pv = r.values[ci - 1], cv = r.values[ci];
+                          const bad = c == null || pv == null || (pv as number) <= 0 || (cv as number) < 0;
+                          return (
                           <td key={ci} style={{ padding: "2px 8px", textAlign: "right", fontSize: "10pt", fontStyle: "italic",
-                            color: c == null ? "var(--muted)" : c >= 0 ? FIN_UP : FIN_DOWN }}>
-                            {c == null ? "—" : chgI(c)}</td>
-                        ))}
+                            color: bad ? "var(--muted)" : (c as number) >= 0 ? FIN_UP : FIN_DOWN }}>
+                            {bad ? "—" : chgI(c as number)}</td>);
+                        })}
                       </tr>
                     )}
                   </Fragment>
