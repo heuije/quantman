@@ -115,7 +115,9 @@ INSPECT_TOOL = {
             "symbol": {"type": "string", "description": "종목 코드(예: 005930)."},
             "columns": {"type": "array", "items": {"type": "string"},
                         "description": "조회할 컬럼명(예: ['consensus_target','Close'])."},
-            "window": {"type": "integer", "description": "최근 거래일 수(기본 120)."},
+            "window": {"type": "integer", "description": "조회할 최근 거래일 수(기본 120). "
+                       "**과거 장기 추이·여러 해를 보려면 크게 줄 것** — 1년≈250·3년≈750·5년≈1250·10년≈2500. "
+                       "'과거 PER 추이'처럼 장기 흐름이면 250 이상."},
         },
         "required": ["symbol", "columns"],
     },

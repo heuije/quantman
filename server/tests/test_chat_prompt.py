@@ -40,6 +40,12 @@ def test_chat_prompt_includes_data_provenance():
     assert "추측하지 말" in p                         # 출처 지어내기 금지 가드
 
 
+def test_chat_prompt_inspect_longterm_window():
+    """과거 장기 추이('과거 PER 추이')엔 inspect window를 크게 쓰라는 가이드 노출 — 기본
+    120거래일(~5.5개월)이라 장기 흐름이 잘려 보이던 것 방지(데이터는 있어도 표시 부족)."""
+    assert "window를 크게" in cp.chat_system_prompt()
+
+
 def test_chat_prompt_surfaces_advanced_analyses():
     """엔진에 이미 있는 고급 분석을 에이전트가 알도록 analysis_menu가 노출돼야(반복 미사용 부류 차단).
     simulate(nl)로 도달 가능한 sweep/extremize/regime/regression/portfolio/연도별을 프롬프트가 명시."""
