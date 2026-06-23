@@ -61,7 +61,8 @@ const FIN_STMTS: [keyof FinancialsData["annual"], string][] =
   [["PL", "손익계산서"], ["BS", "재무상태표"], ["CF", "현금흐름표"]];
 
 // 그래프 색상 — 마이스톡 메인 네이비(진하게) + 하이라이트 골드만(회색 금지).
-const CHART_NAVY = "#2f5390", CHART_GOLD = "#d4a738";   // 막대=마이스톡 네이비(다크 위 가독)·선=하이라이트 골드
+const CHART_NAVY = "#0a1a30", CHART_GOLD = "#d4a738";   // 막대=웹앱 최상단 딥 네이비(--navy-950)·선=하이라이트 골드
+const CHART_BAR_EDGE = "#3a5283";                        // 다크 카드 위 막대 외곽선(가시성 유지)
 type SeriesArr = (number | null)[];
 // v=금액(억원, 표시는 ×100=백만원) · mg=해당 계정 비율(%) 선 · mgLabel=선 이름(부채비율/ROE/마진 등)
 interface ChartDef { t: string; v: SeriesArr; mg?: SeriesArr; mgLabel?: string; yoy?: SeriesArr; }
@@ -171,7 +172,7 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
                 </div>
               );
             }} />
-            <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} name={c.t} isAnimationActive={false}>
+            <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} stroke={CHART_BAR_EDGE} strokeWidth={1} name={c.t} isAnimationActive={false}>
               <LabelList dataKey="v" position="top" formatter={(n) => (n == null ? "" : Math.round(Number(n)).toLocaleString())}
                 style={{ fontSize: 13, fill: "#fff", fontWeight: 700 }} />
             </Bar>
