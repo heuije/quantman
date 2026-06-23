@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from contextlib import asynccontextmanager
 import time
@@ -32,6 +33,20 @@ from .routers import (admin as admin_router, auth, backtest,
                        trading as trading_router)
 
 _log = logging.getLogger("app.main")
+
+# ── 로깅 — app.* INFO를 stdout으로(Railway 캡처) ─────────────────────────────
+# 미설정 시 Python 기본(lastResort)이 WARNING+만 stderr로 내보내 INFO 진단이 통째로 안
+# 보인다 — get_projected 단계타이밍·xlsx export 단계(load/run/build)·chat usage 등
+# #203/#159 계측이 프로덕션에서 장님이 됨(뿌리④ 3분 export의 병목을 못 짚는 직접 원인).
+# app 로거에 stdout 핸들러 1개 + INFO 레벨을 명시(import당 1회 idempotent). propagate는
+# 기본(True) 유지 — 프로덕션 root엔 핸들러가 없어(app WARNING이 lastResort로 나왔던 게 증거)
+# 중복이 안 생기고, pytest caplog(root 전파 캡처)도 보존된다.
+_app_log = logging.getLogger("app")
+if not _app_log.handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    _app_log.addHandler(_h)
+    _app_log.setLevel(logging.INFO)
 
 # ── Fetch 재시도 헬퍼 ────────────────────────────────────────────────────────
 #
