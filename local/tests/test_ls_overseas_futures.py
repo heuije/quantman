@@ -110,15 +110,37 @@ def test_overseas_account_snapshot_short():
     assert b.overseas_account_snapshot()["positions"][0]["side"] == "short"
 
 
-def test_overseas_account_snapshot_raises_on_zero_xchrat():
-    import pytest
+def test_overseas_account_snapshot_zero_xchrat_uses_fallback():
+    """Xchrat=0 응답 → raise 아닌 fallback FX로 스냅샷 반환. equity는 0이 아님."""
     b = _ovb({
         "CIDBQ03000": {"CIDBQ03000OutBlock2": [{"EvalAssetAmt": "10000", "AbrdFutsOrdAbleAmt": "8000"}]},
         "CIDBQ05300": {"CIDBQ05300OutBlock2": [{"CrcyCode": "USD", "Xchrat": "0"}]},
         "CIDBQ01500": {"CIDBQ01500OutBlock2": []},
     })
-    with pytest.raises(Exception):
-        b.overseas_account_snapshot()
+    snap = b.overseas_account_snapshot()
+    assert snap["account"]["equity"] == 10000 * lfb._FX_FALLBACK_USDKRW
+    assert snap["account"]["equity"] > 0
+
+
+def test_overseas_account_snapshot_cidbq05300_failure_uses_fallback():
+    """CIDBQ05300 자체 예외(IGW40013 빈 모의계좌) → raise 아닌 fallback FX로 스냅샷 반환.
+    빈 계좌라 equity_usd≈0이지만 fallback FX가 설정되고 0 equity가 아님을 확인."""
+    class _RaisingDouble(_OvDouble):
+        def _post(self, path, tr, body, **k):
+            if tr == "CIDBQ05300":
+                raise RuntimeError("IGW40013 데이터 없음")
+            return self.resp_map.get(tr, self.resp or {})
+
+    b = object.__new__(lfb.LsFuturesBroker)
+    b._ov = _RaisingDouble(resp_map={
+        "CIDBQ03000": {"CIDBQ03000OutBlock2": [{"EvalAssetAmt": "5000", "AbrdFutsOrdAbleAmt": "3000"}]},
+        "CIDBQ01500": {"CIDBQ01500OutBlock2": []},
+    })
+    snap = b.overseas_account_snapshot()
+    # fallback FX 적용 — equity는 5000 * _FX_FALLBACK_USDKRW
+    assert snap["account"]["fx_usdkrw"] == lfb._FX_FALLBACK_USDKRW
+    assert snap["account"]["equity"] == 5000 * lfb._FX_FALLBACK_USDKRW
+    assert snap["account"]["equity"] > 0   # 0 위장 금지
 
 
 def test_overseas_buy_market():

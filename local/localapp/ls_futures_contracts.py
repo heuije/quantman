@@ -1,7 +1,7 @@
-"""데이터셋 심볼(한글)↔LS 선물 계약코드(101V6000). t8432 마스터 1일 캐시.
+"""데이터셋 심볼(한글)↔LS 선물 계약코드(A0169000). t8467 마스터 1일 캐시.
 
-KIS ContractResolver 대칭이나 마스터 소스가 KIS 정적파일이 아니라 LS API(t8432)다.
-근월물 선택은 hname의 YYYYMM 파싱(roll lead 적용). BrokerRouter에 resolve/dataset_for_code 주입.
+KIS ContractResolver 대칭이나 마스터 소스가 KIS 정적파일이 아니라 LS API(t8467)다.
+근월물 선택은 hname의 YYMM 파싱(roll lead 적용). BrokerRouter에 resolve/dataset_for_code 주입.
 """
 from __future__ import annotations
 
@@ -44,10 +44,15 @@ def _pick_front_overseas(master, root, today):
             cands.append(((yr, mo), sym))
     cands.sort()
     return cands[0][1] if cands else None
-# ⚠ G-DF9: t8432 hname 형식 미확정 — t9943 예시는 "F 2406"(YYMM 4자리)인데 본 정규식은
-# "F 202406"(YYYYMM 6자리)를 가정한다. t8432가 YYMM이면 매치 실패 → resolve None → 발주 skip
-# (안전, 오발주는 없음) → 단 거래 불가. 모의 t8432 실측으로 형식 확정 후 정규식 교정(Phase D-C).
-_HNAME_YM = re.compile(r"(\d{4})(\d{2})")   # YYYYMM 가정 (예 "F 202406")
+# t8467 hname은 YYMM 4자리("F 2609" = 2026-09) — 2026-06-22 모의 실측 확정(G-DF9 해소).
+# 과거 가정 YYYYMM("F 202406")은 t8467 미일치 → 전 계약 제외 → resolve None이던 결함.
+_HNAME_YM = re.compile(r"(\d{2})(\d{2})")   # YYMM (예 "F 2609" → 26·09)
+
+
+def _parse_ym(hname: str) -> tuple[int, int] | None:
+    """hname "F 2609" → (2026, 9). 미매치 → None."""
+    m = _HNAME_YM.search(hname or "")
+    return (2000 + int(m.group(1)), int(m.group(2))) if m else None
 
 
 def _second_thursday(y: int, m: int) -> datetime.date:
@@ -58,20 +63,20 @@ def _second_thursday(y: int, m: int) -> datetime.date:
 
 
 def _pick_front_kospi200(master: list[dict], today: datetime.date) -> str | None:
-    """t8432 마스터에서 KOSPI200 근월물 shcode. 스프레드(SP)·만기경과 제외, roll lead 반영."""
+    """t8467 마스터에서 KOSPI200 근월물 shcode. 스프레드(SP)·만기경과 제외, roll lead 반영.
+    아웃라이트 KOSPI200 선물 shcode="A01…"(예 A0169000=F2609), 스프레드="D01…"(F SP …·SP로 제외)."""
     lead = roll_lead_days(instrument_spec(_KOSPI200).default_roll)
     cands = []
     for row in master:
         h = str(row.get("hname") or "")
         sh = str(row.get("shcode") or "")
-        if "SP" in h or not sh.startswith("101"):   # 스프레드·비KOSPI200 정규선물 제외
+        if "SP" in h or not sh.startswith("A01"):   # 스프레드·비KOSPI200 정규선물 제외
             continue
-        m = _HNAME_YM.search(h)
-        if not m:
+        ym = _parse_ym(h)
+        if not ym:
             continue
-        y, mo = int(m.group(1)), int(m.group(2))
         # 만기 ≈ 2번째 목요일. lead 전이면 다음 월물로 롤.
-        exp = _second_thursday(y, mo)
+        exp = _second_thursday(*ym)
         if exp - datetime.timedelta(days=lead) >= today:
             cands.append((exp, sh))
     cands.sort()
@@ -79,7 +84,7 @@ def _pick_front_kospi200(master: list[dict], today: datetime.date) -> str | None
 
 
 class LsContractResolver:
-    """심볼→LS 계약코드(101V6000). 마스터 1일 캐시(선물 브로커 토큰으로 t8432 fetch)."""
+    """심볼→LS 계약코드(A0169000). 마스터 1일 캐시(선물 브로커 토큰으로 t8467 fetch)."""
 
     def __init__(self, futures_broker):
         self.broker = futures_broker
@@ -126,16 +131,16 @@ class LsContractResolver:
         code = self.resolve(symbol)
         if not code or symbol != _KOSPI200:
             return None, None
-        m = _HNAME_YM.search(next(
-            (r["hname"] for r in (self._master or []) if r.get("shcode") == code), "") or "")
-        if not m:
+        ym = _parse_ym(next(
+            (r["hname"] for r in (self._master or []) if r.get("shcode") == code), ""))
+        if not ym:
             return code, None
-        return code, _second_thursday(int(m.group(1)), int(m.group(2)))
+        return code, _second_thursday(*ym)
 
     @staticmethod
     def dataset_for_code_static(code: str) -> str | None:
-        """LS 계약코드 → 데이터셋 심볼(역매핑). 국내선물 101… → 코스피200선물. 주식/미등록 → None."""
-        if code and code.startswith("101"):
+        """LS 계약코드 → 데이터셋 심볼(역매핑). 국내선물 A01… → 코스피200선물. 주식/미등록 → None."""
+        if code and code.startswith("A01"):
             return _KOSPI200
         for sym, root in OVERSEAS_ROOTS.items():
             if code and code.startswith(root) and len(code) >= len(root) + 3 \

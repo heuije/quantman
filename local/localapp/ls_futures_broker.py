@@ -10,6 +10,11 @@ from .secrets_store import load_ls_futures, load_ls_overseas_futures
 
 log = logging.getLogger("localapp.ls_futures_broker")
 
+# 빈 모의 해외선물 계좌는 CIDBQ05300(예탁자산 환율)이 IGW40013(데이터 없음)으로 실패한다(LS 모의 한계).
+# KRW 환산(킬스위치 통합자산)용 fallback — 사이징은 USD(order_cash_usd)로 직접하므로 영향 없고,
+# 빈 계좌는 equity_usd≈0이라 FX 값이 결과를 거의 안 바꾼다. 계좌에 데이터 생기면 실 Xchrat 사용.
+_FX_FALLBACK_USDKRW = 1380.0
+
 
 class LsFuturesBroker(_LsAuth):
     def __init__(self):
@@ -33,9 +38,9 @@ class LsFuturesBroker(_LsAuth):
         return self._ov is not None
 
     def index_futures_master(self) -> list[dict]:
-        """t8432 지수선물 마스터 — shcode/expcode/hname. resolver가 1일 캐시."""
-        body = self._post("/futureoption/market-data", "t8432", {"t8432InBlock": {"gubun": "0"}})
-        return body.get("t8432OutBlock") or []
+        """t8467 지수선물 마스터 — shcode/expcode/hname. resolver가 1일 캐시."""
+        body = self._post("/futureoption/market-data", "t8467", {"t8467InBlock": {"gubun": ""}})
+        return body.get("t8467OutBlock") or []
 
     def overseas_futures_master(self) -> list[dict]:
         """o3101 해외선물 종목마스터 — Symbol(ADM23)·BscGdsCd·CtrtPrAmt. resolver가 1일 캐시."""
@@ -43,23 +48,50 @@ class LsFuturesBroker(_LsAuth):
         return body.get("o3101OutBlock") or []
 
     def _acct_summary_raw(self) -> dict:
-        # RecCnt=int (LsApiHelper 스펙 — 해외주식 COSOQ00201 RecCnt int 확인과 동일 패턴).
-        # ⚠ 국내선물 모의계좌 creds 등록 후 실측 확정(InBlock 필드 완전성 포함).
+        from datetime import datetime
         return self._post("/futureoption/accno", "CFOAQ50600",
-                          {"CFOAQ50600InBlock1": {"RecCnt": 1, "BalEvalTp": "1",
+                          {"CFOAQ50600InBlock1": {"RecCnt": 1,
+                                                  "OrdDt": datetime.now().strftime("%Y%m%d"),
+                                                  "BalEvalTp": "1",
                                                   "FutsPrcEvalTp": "1", "LqtQtyQryTp": "1"}})
 
     def _positions_raw(self) -> dict:
         return self._post("/futureoption/accno", "t0441",
                           {"t0441InBlock": {"cts_expcode": "", "cts_medocd": ""}})
 
+    def _orderable_amt_krw(self) -> int:
+        """CFOAQ10100 선물 주문가능금액(OrdAbleAmt) — CFOAQ50600(평가)이 모의 미제공이라 대체.
+        근월 코스피200선물 기준(가용증거금은 계좌 단위 ≈ 계약 무관). 2026-06-23 모의 실측:
+        CFOAQ50600=01900 미제공 vs CFOAQ10100 OrdAbleAmt=5억. 실패/미해석 → 0."""
+        try:
+            import datetime
+            from .ls_futures_contracts import _pick_front_kospi200
+            code = _pick_front_kospi200(self.index_futures_master(), datetime.date.today())
+            if not code:
+                return 0
+            r = self._post("/futureoption/accno", "CFOAQ10100",
+                           {"CFOAQ10100InBlock1": {"RecCnt": 1, "QryTp": "1", "OrdAmt": 0,
+                                                   "RatVal": 0.0, "FnoIsuNo": code, "BnsTpCode": "2",
+                                                   "FnoOrdPrc": 0.0, "FnoOrdprcPtnCode": "00"}})
+            return int(float((r.get("CFOAQ10100OutBlock2") or {}).get("OrdAbleAmt") or 0))
+        except Exception as e:
+            log.warning("CFOAQ10100 선물 주문가능 조회 실패: %s", e)
+            return 0
+
     def account_snapshot(self) -> dict:
         """국내선물 잔고 — {account, positions}. 2-TR 중 실패는 raise(라우터가 fetch_failed).
         ⚠ 필드명(EvalDpsamtTotamt/MnyOrdAbleAmt/jqty/medosu 등) research 기반 — Phase D-C 실측 확정."""
         summary = (self._acct_summary_raw().get("CFOAQ50600OutBlock2") or {})
+        # CFOAQ50600(평가)이 모의 미제공(01900)이면 전 필드 0 → CFOAQ10100 주문가능금액으로 보강.
+        # 실전은 CFOAQ50600 제공되니 그 값 우선·미제공 시만 폴백. 무포지션 모의서 예탁≈주문가능.
+        equity = int(float(summary.get("EvalDpsamtTotamt") or 0))
+        order_cash = int(float(summary.get("MnyOrdAbleAmt") or 0))
+        if not order_cash:                        # 모의 미제공 → CFOAQ10100 주문가능
+            order_cash = self._orderable_amt_krw()
+            equity = equity or order_cash          # 평가 미제공 시 주문가능으로 근사(킬스위치)
         account = {
-            "equity": int(float(summary.get("EvalDpsamtTotamt") or 0)),       # 추정예탁자산(킬스위치)
-            "order_cash": int(float(summary.get("MnyOrdAbleAmt") or 0)),      # 현금주문가능(사이징)
+            "equity": equity,            # 추정예탁자산(킬스위치) — CFOAQ50600 or 주문가능 근사
+            "order_cash": order_cash,    # 현금주문가능(사이징)
             "margin_total": int(float(summary.get("CsgnMgnTotamt") or 0)),
             "eval_pnl": int(float(summary.get("FutsEvalPnlAmt") or 0)),
             "currency": "KRW",
@@ -81,16 +113,16 @@ class LsFuturesBroker(_LsAuth):
         return {"account": account, "positions": positions}
 
     def _quote_raw(self, symbol: str) -> dict:
-        return self._post("/futureoption/market-data", "t2101",
-                          {"t2101InBlock": {"focode": symbol}})
+        return self._post("/futureoption/market-data", "t2111",
+                          {"t2111InBlock": {"focode": symbol}})
 
     def price(self, symbol: str) -> float:
-        return float((self._quote_raw(symbol).get("t2101OutBlock") or {}).get("price") or 0)
+        return float((self._quote_raw(symbol).get("t2111OutBlock") or {}).get("price") or 0)
 
     def today_open(self, symbol: str) -> float:
         """catch-up 시초가. 없으면(개장전·오류) 0.0 → caller가 skip 결정."""
         try:
-            v = (self._quote_raw(symbol).get("t2101OutBlock") or {}).get("open")
+            v = (self._quote_raw(symbol).get("t2111OutBlock") or {}).get("open")
             return float(v) if v not in (None, "", 0, "0") else 0.0
         except Exception:
             return 0.0
@@ -177,19 +209,26 @@ class LsFuturesBroker(_LsAuth):
     def _ov_acct_raw(self) -> dict:
         from datetime import datetime
         return self._ov._post("/overseas-futureoption/accno", "CIDBQ03000",
-                              {"CIDBQ03000InBlock1": {"AcntTpCode": "1", "TrdDt": datetime.now().strftime("%Y%m%d")}})
+                              {"CIDBQ03000InBlock1": {"RecCnt": 1, "AcntTpCode": "1",
+                                                      "TrdDt": datetime.now().strftime("%Y%m%d")}})
 
     def _ov_xchrat_raw(self) -> dict:
         return self._ov._post("/overseas-futureoption/accno", "CIDBQ05300",
-                              {"CIDBQ05300InBlock1": {"CrcyCode": "USD"}})
+                              {"CIDBQ05300InBlock1": {"RecCnt": 1, "OvrsAcntTpCode": "1",
+                                                      "FcmAcntNo": " ", "CrcyCode": "USD"}})
 
     def _ov_positions_raw(self) -> dict:
+        from datetime import datetime
         return self._ov._post("/overseas-futureoption/accno", "CIDBQ01500",
-                              {"CIDBQ01500InBlock1": {"AcntTpCode": "1", "BalTpCode": "1"}})
+                              {"CIDBQ01500InBlock1": {"RecCnt": 1, "AcntTpCode": "1",
+                                                      "FcmAcntNo": " ",
+                                                      "QryDt": datetime.now().strftime("%Y%m%d"),
+                                                      "BalTpCode": "1"}})
 
     def overseas_account_snapshot(self) -> dict:
         """해외선물 잔고 — {account(KRW), positions}. KRW equity = USD × Xchrat(CIDBQ05300).
-        2-3 TR 중 실패·Xchrat<=0은 raise(라우터 fetch_failed). ⚠ 필드명·G-OF5(USD→KRW 경로) research 기반 — 모의 실측."""
+        CIDBQ05300 실패(IGW40013 빈 모의계좌) 시 fallback FX로 스냅샷 반환(raise 안 함).
+        ⚠ 필드명·G-OF5(USD→KRW 경로) research 기반 — 모의 실측."""
         acct_rows = self._ov_acct_raw().get("CIDBQ03000OutBlock2") or []
         acct = {}
         for r in acct_rows:
@@ -200,14 +239,21 @@ class LsFuturesBroker(_LsAuth):
             acct = acct_rows[0]
         equity_usd = float(acct.get("EvalAssetAmt") or 0)
         order_cash_usd = float(acct.get("AbrdFutsOrdAbleAmt") or 0)
-        xrows = self._ov_xchrat_raw().get("CIDBQ05300OutBlock2") or []
         xchrat = 0.0
-        for r in xrows:
-            if str(r.get("CrcyCode") or "") in ("USD", ""):
-                xchrat = float(r.get("Xchrat") or 0)
-                break
+        try:
+            xrows = self._ov_xchrat_raw().get("CIDBQ05300OutBlock2") or []
+            for r in xrows:
+                if str(r.get("CrcyCode") or "") in ("USD", ""):
+                    xchrat = float(r.get("Xchrat") or 0)
+                    break
+        except Exception as _xchrat_err:
+            log.warning("LS 해외선물 환율(CIDBQ05300) 미수신 — fallback FX %s 사용: %s",
+                        _FX_FALLBACK_USDKRW, _xchrat_err)
+            xchrat = _FX_FALLBACK_USDKRW
         if xchrat <= 0:
-            raise RuntimeError(f"LS 해외선물 환율(Xchrat) 미수신({xchrat}) — KRW equity 산출 불가. 보류.")
+            log.warning("LS 해외선물 환율(CIDBQ05300) 0 수신 — fallback FX %s 사용",
+                        _FX_FALLBACK_USDKRW)
+            xchrat = _FX_FALLBACK_USDKRW
         account = {
             "equity": equity_usd * xchrat,
             "order_cash": order_cash_usd * xchrat,
@@ -236,11 +282,19 @@ class LsFuturesBroker(_LsAuth):
         prc = float(unit_price) if ord_ptn == "2" else 0
         resp = self._ov._post("/overseas-futureoption/order", "CIDBT00100",
                               {"CIDBT00100InBlock1": {
+                                  "RecCnt": 1,
                                   "OrdDt": datetime.now().strftime("%Y%m%d"),
+                                  "BrnCode": "100",
                                   "IsuCodeVal": symbol, "FutsOrdTpCode": "1",
                                   "BnsTpCode": "2" if side == "buy" else "1",
-                                  "AbrdFutsOrdPtnCode": ord_ptn, "OvrsDrvtOrdPrc": prc,
-                                  "OrdQty": qty}}, is_order=True)
+                                  "AbrdFutsOrdPtnCode": ord_ptn,
+                                  "CrcyCode": " ",
+                                  "OvrsDrvtOrdPrc": prc,
+                                  "CndiOrdPrc": 0.0,
+                                  "OrdQty": qty,
+                                  "PrdtCode": "000000",
+                                  "DueYymm": "000001",
+                                  "ExchCode": " "}}, is_order=True)
         return normalize_ls_order_resp(resp, ordno_field="OvrsFutsOrdNo")
 
     def overseas_buy(self, symbol, qty): return self._ov_submit(symbol, qty, "buy", "1", 0)
@@ -252,8 +306,11 @@ class LsFuturesBroker(_LsAuth):
         from datetime import datetime
         today = datetime.now().strftime("%Y%m%d")
         return self._ov._post("/overseas-futureoption/accno", "CIDBQ02400",
-                              {"CIDBQ02400InBlock1": {"QrySrtDt": today, "QryEndDt": today,
+                              {"CIDBQ02400InBlock1": {"RecCnt": 1, "IsuCodeVal": "",
+                                                      "QrySrtDt": today, "QryEndDt": today,
                                                       "ThdayTpCode": "1", "OrdStatCode": "0",
+                                                      "BnsTpCode": "0", "QryTpCode": "2",
+                                                      "OrdPtnCode": "00",
                                                       "OvrsDrvtFnoTpCode": "A"}})
 
     def overseas_order_status(self, order_no) -> dict:
@@ -287,8 +344,11 @@ class LsFuturesBroker(_LsAuth):
         라우터 hot-path 아님(CME 취소는 라우터서 NotImplemented·M10 직접배선 대상). 반환 {success,message,msg_cd}."""
         resp = self._ov._post("/overseas-futureoption/order", "CIDBT01000",
                               {"CIDBT01000InBlock1": {
-                                  "OrdDt": str(orgn_ord_dt), "IsuCodeVal": symbol,
-                                  "OvrsFutsOrgOrdNo": str(order_no), "FutsOrdTpCode": "3"}}, is_order=True)
+                                  "RecCnt": 1,
+                                  "OrdDt": str(orgn_ord_dt), "BrnNo": " ",
+                                  "IsuCodeVal": symbol,
+                                  "OvrsFutsOrgOrdNo": str(order_no), "FutsOrdTpCode": "3",
+                                  "PrdtTpCode": " ", "ExchCode": " "}}, is_order=True)
         r = normalize_ls_order_resp(resp, ordno_field="OvrsFutsOrdNo")
         return {"success": r["success"], "message": r["message"], "msg_cd": r["msg_cd"]}
 

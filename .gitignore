@@ -34,6 +34,7 @@ dist_rel/
 build/
 build2/
 build_rel/
+build_tmp/
 Output/
 *.zip
 

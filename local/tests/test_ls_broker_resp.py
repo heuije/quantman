@@ -91,6 +91,7 @@ def test_account_snapshot_tags_fetch_failed_on_error(monkeypatch):
     from localapp import ls_broker
     b = object.__new__(ls_broker.LsBroker)
     b.account_no = "5550123401"
+    b._overseas_unavailable = False
     def _boom(*a, **k): raise RuntimeError("LS 게이트웨이 5xx")
     monkeypatch.setattr(b, "_balance_raw", _boom, raising=False)
     snap = b.account_snapshot()
@@ -105,6 +106,7 @@ def test_account_snapshot_happy_path(monkeypatch):
     from localapp import ls_broker
     b = object.__new__(ls_broker.LsBroker)
     b.account_no = "5550123401"
+    b._overseas_unavailable = False
 
     # LS t0424 fixture — 모의 라이브 실측(2026-06-20) 의미 반영:
     #   sunamt=추정순자산(주식평가 + 예수금 = 총자산) → total_eval, sunamt1=추정D2예수금 → cash.
@@ -170,6 +172,44 @@ def test_account_snapshot_happy_path(monkeypatch):
     assert p["qty"] == 4
     assert p["market"] == "DOMESTIC"
     assert p["currency"] == "KRW"
+
+
+def _balance_fixture(sunamt, sunamt1):
+    return {"rsp_cd": "00000",
+            "t0424OutBlock": {"sunamt": str(sunamt), "sunamt1": str(sunamt1)},
+            "t0424OutBlock1": []}
+
+
+def _ov_empty():
+    return {"usd_cash": 0.0, "fx_usdkrw": 0.0, "foreign_eval_krw": 0.0, "positions": []}
+
+
+def test_account_snapshot_cash_from_orderable(monkeypatch):
+    """cash(매수여력)=CSPAQ22200 현금주문가능금액 — 정산중 매도대금 반영(sunamt1보다 정확).
+    2026-06-23 실측: 180주 매도 후 sunamt1=−26.8M(미수)인데 CSPAQ22200=493M."""
+    from localapp import ls_broker
+    b = object.__new__(ls_broker.LsBroker)
+    b.account_no = "5550123401"
+    b._overseas_unavailable = False
+    monkeypatch.setattr(b, "_balance_raw", lambda: _balance_fixture(470000000, -26795007), raising=False)
+    monkeypatch.setattr(b, "_orderable_cash_krw", lambda: 493130490, raising=False)
+    monkeypatch.setattr(b, "overseas_snapshot", _ov_empty, raising=False)
+    bal = b.account_snapshot(overseas=True)["balance"]
+    assert bal["cash"] == 493130490, "cash는 CSPAQ22200 MnyOrdAbleAmt(정산중 반영)이어야 함"
+    assert bal["total_eval"] == 470000000   # sunamt — 킬스위치 equity
+
+
+def test_account_snapshot_cash_falls_back_to_sunamt1(monkeypatch):
+    """CSPAQ22200 실패(None) → sunamt1 fallback(보수·−98% 위장 0 아님)."""
+    from localapp import ls_broker
+    b = object.__new__(ls_broker.LsBroker)
+    b.account_no = "5550123401"
+    b._overseas_unavailable = False
+    monkeypatch.setattr(b, "_balance_raw", lambda: _balance_fixture(500000000, 8000), raising=False)
+    monkeypatch.setattr(b, "_orderable_cash_krw", lambda: None, raising=False)
+    monkeypatch.setattr(b, "overseas_snapshot", _ov_empty, raising=False)
+    bal = b.account_snapshot(overseas=True)["balance"]
+    assert bal["cash"] == 8000   # sunamt1 fallback
 
 
 # ── 전 주문/취소 메서드가 정규형을 반환하는지 (부류 닫기 — 전수) ──────────────────
@@ -288,13 +328,41 @@ def test_sell_resv_limit_raises_not_implemented():
         b.sell_resv_limit("005930", 1, 80000.0)
 
 
+# ── buying_power_usd (해외주식 매수여력 — COSOQ02701) ────────────────────────
+
+def test_buying_power_usd_parses_cosoq02701(monkeypatch):
+    """COSOQ02701 OutBlock3 USD행에서 주문가능액·환율 추출, max_qty=floor(orderable/ref).
+    trader 사이징(P6)이 소비하는 KIS와 동일 키 계약 — 누락 시 해외주식 매수 전면차단(라이브 실측)."""
+    payload = {
+        "rsp_cd": "00000", "rsp_msg": "조회완료",
+        "COSOQ02701OutBlock3": [
+            {"CrcyCode": "JPY", "FcurrOrdAbleAmt": "100000.0000", "BaseXchrat": "9.1000"},
+            {"CrcyCode": "USD", "FcurrOrdAbleAmt": "3300.0000", "BaseXchrat": "1434.6000"},
+        ],
+    }
+    b = _broker_with_fakes(monkeypatch, payload)
+    bp = b.buying_power_usd("AAPL", 220.0)
+    assert bp["usd_orderable"] == 3300.0       # USD행 선택(JPY 무시)
+    assert bp["fx_usdkrw"] == 1434.6
+    assert bp["max_qty"] == 15                  # floor(3300/220)
+    assert set(bp) == {"usd_orderable", "max_qty", "fx_usdkrw"}   # KIS 동일 키
+
+
+def test_buying_power_usd_zero_when_no_usd_row(monkeypatch):
+    """USD행 없음(빈 예수금) → 0 반환(예외 아님 — trader가 0 사이징으로 skip)."""
+    b = _broker_with_fakes(monkeypatch, {"rsp_cd": "00000", "COSOQ02701OutBlock3": []})
+    assert b.buying_power_usd("AAPL", 220.0) == {
+        "usd_orderable": 0.0, "max_qty": 0, "fx_usdkrw": 0.0}
+
+
 # ── order_status 상태 어휘 + canonical_odno 매칭 ─────────────────────────────
 
 def _t0425_row(ordno, qty, remain, side_str, price=80000, ordtime="112251750",
-               cheprice=None):
-    """t0425OutBlock1 행 fixture — A2 KB 필드명 기반 (⚠ 초안).
+               cheprice=None, status="접수"):
+    """t0425OutBlock1 행 fixture — 가이드 t0425 실측 필드(cheqty 체결수량·status 주문상태).
 
-    cheprice: 체결가격 (M1). 기본값 None = 필드 없음(미체결 상태처럼). 값 주면 포함.
+    cheprice: 체결가격. status: 주문상태("접수"/"취소" 등 — chegb=0 전체조회 인지용).
+    cheqty(체결수량)는 qty-remain으로 도출(전량체결=remain0 → cheqty=qty).
     """
     row = {
         "ordno": ordno,
@@ -303,6 +371,8 @@ def _t0425_row(ordno, qty, remain, side_str, price=80000, ordtime="112251750",
         "qty": qty,
         "price": price,
         "ordrem": remain,
+        "cheqty": qty - remain,   # 체결수량 (chegb=0 전체조회)
+        "status": status,         # 주문상태
         "price1": 81300,
         "orgordno": 0,
         "ordtime": ordtime,
@@ -329,7 +399,7 @@ def test_order_status_vocab(monkeypatch, remain, qty, expected_status):
         "t0425OutBlock": {"cts_ordno": ""},
         "t0425OutBlock1": [_t0425_row("16086", qty, remain, "매수")],
     }
-    monkeypatch.setattr(b, "_pending_raw", lambda: _fixture_resp, raising=False)
+    monkeypatch.setattr(b, "_pending_raw", lambda chegb="0": _fixture_resp, raising=False)
 
     result = b.order_status("16086", "005930")
     assert result["status"] == expected_status, (
@@ -338,6 +408,18 @@ def test_order_status_vocab(monkeypatch, remain, qty, expected_status):
     assert result["order_no"] == "16086"
     assert result["filled_qty"] == qty - remain
     assert result["remain_qty"] == remain
+
+
+def test_order_status_cancelled_via_status_string(monkeypatch):
+    """status에 '취소' 포함 → cancelled (cheqty 0 전량취소를 submitted와 구분).
+    chegb='0' 전체조회로 체결·취소를 인지하는 G10 해소 경로의 취소 분기."""
+    from localapp import ls_broker
+    b = object.__new__(ls_broker.LsBroker)
+    b.account_no = "5550123401"
+    row = _t0425_row("77001", 5, 5, "매수", status="취소")
+    _fixture = {"rsp_cd": "00000", "t0425OutBlock": {}, "t0425OutBlock1": [row]}
+    monkeypatch.setattr(b, "_pending_raw", lambda chegb="0": _fixture, raising=False)
+    assert b.order_status("77001", "005930")["status"] == "cancelled"
 
 
 def test_order_status_leading_zero_canonical_match(monkeypatch):
@@ -350,7 +432,7 @@ def test_order_status_leading_zero_canonical_match(monkeypatch):
         "rsp_cd": "00000",
         "t0425OutBlock1": [_t0425_row("016086", 5, 0, "매수")],
     }
-    monkeypatch.setattr(b, "_pending_raw", lambda: _fixture_resp, raising=False)
+    monkeypatch.setattr(b, "_pending_raw", lambda chegb="0": _fixture_resp, raising=False)
     result = b.order_status("16086", "005930")
     assert result["status"] == "filled"
 
@@ -360,7 +442,7 @@ def test_order_status_unknown_on_query_failure(monkeypatch):
     from localapp import ls_broker
     b = object.__new__(ls_broker.LsBroker)
     b.account_no = "5550123401"
-    monkeypatch.setattr(b, "_pending_raw", lambda: (_ for _ in ()).throw(RuntimeError("5xx")),
+    monkeypatch.setattr(b, "_pending_raw", lambda chegb="0": (_ for _ in ()).throw(RuntimeError("5xx")),
                         raising=False)
     result = b.order_status("16086", "005930")
     assert result["status"] == "unknown"
@@ -376,7 +458,7 @@ def test_order_status_hint_accepted_and_ignored(monkeypatch):
         "rsp_cd": "00000",
         "t0425OutBlock1": [_t0425_row("999", 2, 0, "매도")],
     }
-    monkeypatch.setattr(b, "_pending_raw", lambda: _fixture_resp, raising=False)
+    monkeypatch.setattr(b, "_pending_raw", lambda chegb="0": _fixture_resp, raising=False)
     result = b.order_status("999", hint={"reserved": True, "qty": 2})
     assert result["status"] == "filled"
 
@@ -394,7 +476,7 @@ def test_pending_orders_returns_normalized_list(monkeypatch):
         "t0425OutBlock": {"cts_ordno": ""},
         "t0425OutBlock1": [_t0425_row("16086", 5, 3, "매수")],
     }
-    monkeypatch.setattr(b, "_pending_raw", lambda: _fixture_resp, raising=False)
+    monkeypatch.setattr(b, "_pending_raw", lambda chegb="0": _fixture_resp, raising=False)
 
     orders = b.pending_orders()
     assert isinstance(orders, list)
@@ -479,7 +561,7 @@ def test_order_status_fill_price_uses_cheprice(monkeypatch):
         "t0425OutBlock1": [_t0425_row("77777", 5, 0, "매수",
                                        price=80000, cheprice=81200)],
     }
-    monkeypatch.setattr(b, "_pending_raw", lambda: _fixture_resp, raising=False)
+    monkeypatch.setattr(b, "_pending_raw", lambda chegb="0": _fixture_resp, raising=False)
     result = b.order_status("77777", "005930")
     assert result["fill_price"] == 81200.0, (
         f"fill_price는 cheprice=81200 이어야 함 (got {result['fill_price']})")
@@ -496,7 +578,7 @@ def test_order_status_fill_price_fallback_to_price_when_no_cheprice(monkeypatch)
         "rsp_cd": "00000",
         "t0425OutBlock1": [_t0425_row("88888", 5, 3, "매수", price=80500)],
     }
-    monkeypatch.setattr(b, "_pending_raw", lambda: _fixture_resp, raising=False)
+    monkeypatch.setattr(b, "_pending_raw", lambda chegb="0": _fixture_resp, raising=False)
     result = b.order_status("88888", "005930")
     assert result["fill_price"] == 80500.0
 
@@ -526,3 +608,83 @@ def test_account_snapshot_accepts_overseas_kwarg(monkeypatch):
     assert snap["balance"]["cash"] == 5000
     assert snap["balance"]["total_eval"] == 205000   # sunamt(총자산), tappamt 아님
     assert snap["positions"] == []
+
+
+# ── ⒞ _overseas_unavailable 세션 캐시 ────────────────────────────────────────
+
+def _make_broker_with_domestic(monkeypatch):
+    """LsBroker 인스턴스(초기화 우회). _balance_raw는 최소 성공 픽스처."""
+    from localapp import ls_broker
+    b = object.__new__(ls_broker.LsBroker)
+    b.account_no = "5550123401"
+    b._overseas_unavailable = False
+    monkeypatch.setattr(b, "_balance_raw", lambda: {
+        "t0424OutBlock": {"sunamt1": "1000", "sunamt": "1000"},
+        "t0424OutBlock1": [],
+    }, raising=False)
+    return b
+
+
+def test_overseas_unavailable_flag_set_on_IGW40014(monkeypatch):
+    """IGW40014/002US 시그니처 예외 → _overseas_unavailable=True."""
+    from localapp import ls_broker
+    import requests
+
+    b = _make_broker_with_domestic(monkeypatch)
+
+    class _FakeResp:
+        text = '{"rsp_cd":"01900","rsp_msg":"모의투자에서는 해당업무가 제공되지 않습니다","IGW40014":true}'
+    err = requests.HTTPError("IGW40014 002US")
+    err.response = _FakeResp()
+    monkeypatch.setattr(b, "overseas_snapshot", lambda: (_ for _ in ()).throw(err), raising=False)
+
+    snap = b.account_snapshot(overseas=True)
+    assert b._overseas_unavailable is True
+    assert "overseas" in snap["balance"].get("fetch_failed", [])
+
+
+def test_overseas_unavailable_flag_set_on_rsp_cd_01900(monkeypatch):
+    """rsp_cd 01900 / '모의투자에서는 해당업무가 제공되지 않습니다' 메시지 → _overseas_unavailable=True."""
+    from localapp import ls_broker
+
+    b = _make_broker_with_domestic(monkeypatch)
+    # response.text 없이 오류 메시지 자체에 시그니처 포함
+    monkeypatch.setattr(b, "overseas_snapshot",
+                        lambda: (_ for _ in ()).throw(RuntimeError("01900 모의투자에서는 해당업무가 제공되지 않습니다")),
+                        raising=False)
+
+    snap = b.account_snapshot(overseas=True)
+    assert b._overseas_unavailable is True
+    assert "overseas" in snap["balance"].get("fetch_failed", [])
+
+
+def test_overseas_unavailable_subsequent_calls_skip(monkeypatch):
+    """_overseas_unavailable=True 이후 overseas_snapshot을 호출하지 않는다."""
+    from localapp import ls_broker
+
+    b = _make_broker_with_domestic(monkeypatch)
+    b._overseas_unavailable = True  # 이미 영구 캐시된 상태
+
+    call_count = {"n": 0}
+    def _should_not_be_called():
+        call_count["n"] += 1
+        return {}
+    monkeypatch.setattr(b, "overseas_snapshot", _should_not_be_called, raising=False)
+
+    snap = b.account_snapshot(overseas=True)
+    assert call_count["n"] == 0, "영구 미제공 캐시 후에도 overseas_snapshot을 호출함"
+    assert "overseas" in snap["balance"].get("fetch_failed", [])
+
+
+def test_overseas_transient_failure_does_not_set_flag(monkeypatch):
+    """일시 네트워크 실패 → _overseas_unavailable은 False 유지(재시도 허용)."""
+    from localapp import ls_broker
+
+    b = _make_broker_with_domestic(monkeypatch)
+    monkeypatch.setattr(b, "overseas_snapshot",
+                        lambda: (_ for _ in ()).throw(RuntimeError("ConnectionError 일시오류")),
+                        raising=False)
+
+    snap = b.account_snapshot(overseas=True)
+    assert b._overseas_unavailable is False, "일시 실패가 _overseas_unavailable을 True로 만듦"
+    assert "overseas" in snap["balance"].get("fetch_failed", [])

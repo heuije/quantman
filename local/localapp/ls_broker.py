@@ -173,6 +173,10 @@ class LsBroker(_LsAuth):
 
     def __init__(self):
         super().__init__(load_ls())
+        # 해외주식 모의 미제공(IGW40014/002US 또는 01900/"모의투자에서는 해당업무가 제공되지 않습니다")
+        # 감지 시 True — 이후 overseas 호출을 skip해 매 사이클 500 로그 스팸·rate-limit 낭비 방지.
+        # ⚠ 일시적 실패(네트워크 등)는 이 플래그를 설정하지 않는다 — 영구 시그니처만 캐시.
+        self._overseas_unavailable: bool = False
 
     # ── ⚠ B6 구현 이하 전체 초안 — Phase C 키 발급 후 실측 확정 필요 ──────────────
 
@@ -194,6 +198,21 @@ class LsBroker(_LsAuth):
                 "cts_expcode": "",
             }},
         )
+
+    def _orderable_cash_krw(self):
+        """CSPAQ22200 현금주문가능금액(MnyOrdAbleAmt) — 정산중 매도대금까지 반영한 매수여력.
+
+        t0424 sunamt1(현재 예수금)은 같은날 매도대금을 반영 못해 데이트레이드 자본 재활용이
+        막힌다(2026-06-23 실측: 180주 매도 후 sunamt1=−26.8M[미수] vs CSPAQ22200=493M).
+        실패 시 None → 호출자가 sunamt1 fallback. InBlock BalCreTp="1"(현금기준)."""
+        try:
+            r = self._post("/stock/accno", "CSPAQ22200",
+                           {"CSPAQ22200InBlock1": {"BalCreTp": "1"}})
+            ob2 = r.get("CSPAQ22200OutBlock2") or {}
+            return int(float(ob2.get("MnyOrdAbleAmt") or 0))
+        except Exception as e:
+            log.warning("CSPAQ22200 주문가능금액 조회 실패 — sunamt1 fallback: %s", e)
+            return None
 
     def account_snapshot(self, overseas: bool = True) -> dict:
         """국내+미국 잔고 스냅샷. overseas=True(기본)면 COSOQ00201 해외 잔고도 병합.
@@ -237,13 +256,15 @@ class LsBroker(_LsAuth):
 
         summary = body.get("t0424OutBlock") or {}
         # cash: sunamt1 = 추정D2예수금 (공식문서 대조 확인 2026-06-19)
-        # ⚠ TODO(Phase C): 정확한 주문가능금액은 별도 TR CSPAQ22200 필요.
-        # total_eval: sunamt = 추정순자산(주식 평가 + 예수금 = 총자산). 모의 라이브 실측 확정(2026-06-20):
-        #   tappamt(평가금액)는 보유종목 시가만이라 현금을 제외한다 → 현금 비중 큰/미보유 계좌에서
-        #   total_eval≈0 이 되어 _unified_equity_krw(국내 equity=total_eval)가 거짓 -100%로 킬스위치를
-        #   오발동한다(−98% 부류버그 재발, trader.py:149). KIS tot_evlu_amt(총평가=유가증권+예수금)와
-        #   동일 의미의 LS 필드가 sunamt다. (probe: 보유0·현금5억 → sunamt=5억, tappamt=0)
-        cash = int(float(summary.get("sunamt1") or 0))
+        # cash(매수여력) = CSPAQ22200 현금주문가능금액(MnyOrdAbleAmt) — 정산중 매도대금 반영
+        #   (2026-06-23 실측: sunamt1[현 예수금]은 같은날 매도대금 미반영→데이트레이드 자본 재활용
+        #   막힘. 180주 매도 후 sunamt1=−26.8M vs CSPAQ22200=493M). 조회 실패 시 sunamt1 fallback.
+        # total_eval = sunamt(추정순자산=주식평가+예수금=총자산). 모의 실측 확정(2026-06-20):
+        #   tappamt(평가금액)는 보유 시가만이라 현금 제외 → 미보유 계좌서 total_eval≈0 →
+        #   _unified_equity_krw(국내 equity=total_eval) 거짓 -100% 킬스위치 오발동(−98% 부류버그).
+        #   KIS tot_evlu_amt(총평가=유가증권+예수금)와 동의 LS 필드가 sunamt.
+        orderable = self._orderable_cash_krw()
+        cash = orderable if orderable is not None else int(float(summary.get("sunamt1") or 0))
         total_eval = int(float(summary.get("sunamt") or 0))
 
         positions = []
@@ -265,7 +286,7 @@ class LsBroker(_LsAuth):
             "cash": cash, "total_eval": total_eval,
             "cash_usd": 0.0, "fx_usdkrw": 0.0, "foreign_eval_krw": 0.0,
         }
-        if overseas:
+        if overseas and not self._overseas_unavailable:
             try:
                 ov = self.overseas_snapshot()
                 balance["cash_usd"] = ov["usd_cash"]
@@ -273,16 +294,34 @@ class LsBroker(_LsAuth):
                 balance["foreign_eval_krw"] = ov["foreign_eval_krw"]
                 positions.extend(ov["positions"])
             except Exception as e:
-                # 해외 조회 *예외*(HTTP 에러 등)는 보수적으로 fetch_failed 표식 → 킬스위치 보류.
-                # ⚠ 0으로 degrade 금지: 미국 보유 사용자의 일시적 실패를 평가금 0으로 읽으면
-                #   −98% 거짓 청산 재발(trader.py:149 부류버그). HTTP-200 빈 응답(도메스틱 전용
-                #   계좌=정상 무USD)은 예외가 아니라 overseas_snapshot이 0을 반환 → 여기 안 옴 →
-                #   킬스위치는 국내 equity로 정상 평가. ⚠ OG6: 해외계좌 없는 LS 계좌의 COSOQ00201이
-                #   200-빈응답인지 HTTP-에러인지 미확정 — 후자면 도메스틱 전용 LS 사용자 킬스위치가
-                #   매 사이클 보류된다. 모의 E2E 실측 후, 그때만 '계좌없음' 에러코드 가드 추가
-                #   (일시적 실패는 계속 fetch_failed 유지 — KIS overseas와 동일 보수 정책).
-                log.warning("LS 해외 잔고 조회 실패 — 국내만 반영: %s", e)
+                # 영구 미제공 시그니처: IGW40014/002US — LS 모의 해외주식 미제공(2026-06-23 실측 확정).
+                # 또는 rsp_cd 01900 "모의투자에서는 해당업무가 제공되지 않습니다".
+                # 이 시그니처면 세션 내 이후 호출을 skip해 rate-limit 낭비·로그 스팸 방지.
+                # ⚠ 일시적 실패(네트워크 등)는 절대 영구 비활성화 금지 — 이 조건만 캐시.
+                err_text = str(e)
+                resp_text = ""
+                _resp_obj = getattr(e, "response", None)
+                if _resp_obj is not None:
+                    try:
+                        resp_text = _resp_obj.text or ""
+                    except Exception:
+                        pass
+                combined = err_text + resp_text
+                _permanent = ("IGW40014" in combined or "002US" in combined
+                              or "01900" in combined
+                              or "모의투자에서는 해당업무가 제공되지 않습니다" in combined)
+                if _permanent:
+                    self._overseas_unavailable = True
+                    log.warning("LS 해외주식 모의 미제공(영구) — 이후 overseas 호출 skip: %s", e)
+                else:
+                    # 일시적 실패는 fetch_failed 마커만(다음 사이클 재시도).
+                    # ⚠ 0으로 degrade 금지: 미국 보유 사용자의 일시적 실패를 평가금 0으로 읽으면
+                    #   −98% 거짓 청산 재발(trader.py:149 부류버그).
+                    log.warning("LS 해외 잔고 조회 실패 — 국내만 반영: %s", e)
                 balance["fetch_failed"] = ["overseas"]
+        elif overseas and self._overseas_unavailable:
+            # 영구 미제공 캐시 후 — 호출 skip, fetch_failed 유지(킬스위치 보류 일관).
+            balance["fetch_failed"] = ["overseas"]
         return {"balance": balance, "positions": positions}
 
     # ── 시세 조회 (t1102) ─────────────────────────────────────────────────────
@@ -384,10 +423,11 @@ class LsBroker(_LsAuth):
         ord_ptn = "02" if side == "buy" else "01"
         resp = self._post("/overseas-stock/order", "COSAT00301",
                           {"COSAT00301InBlock1": {
-                              "OrdPtnCode": ord_ptn, "OrgOrdNo": 0,
+                              "RecCnt": 1,
+                              "OrdPtnCode": ord_ptn,
                               "OrdMktCode": self._ls_excd(market), "IsuNo": self._ls_ticker(symbol),
                               "OrdQty": qty, "OvrsOrdPrc": float(unit_price),
-                              "OrdprcPtnCode": "00"}}, is_order=True)
+                              "OrdprcPtnCode": "00", "BrkTpCode": ""}}, is_order=True)
         return normalize_ls_order_resp(resp, ordno_field="OrdNo")
 
     def buy(self, symbol: str, qty: int) -> dict:
@@ -453,10 +493,12 @@ class LsBroker(_LsAuth):
         market = market_index.exchange_of(symbol) or "NAS"
         resp = self._post("/overseas-stock/order", "COSAT00301",
                           {"COSAT00301InBlock1": {
+                              "RecCnt": 1,
                               "OrdPtnCode": "08",
                               "OrgOrdNo": int(order_no) if str(order_no).isdigit() else order_no,
                               "OrdMktCode": self._ls_excd(market), "IsuNo": self._ls_ticker(symbol),
-                              "OrdQty": qty, "OvrsOrdPrc": 0, "OrdprcPtnCode": "00"}}, is_order=True)
+                              "OrdQty": qty, "OvrsOrdPrc": 0, "OrdprcPtnCode": "00",
+                              "BrkTpCode": ""}}, is_order=True)
         r = normalize_ls_order_resp(resp, ordno_field="OrdNo")
         return {"success": r["success"], "message": r["message"], "msg_cd": r["msg_cd"]}
 
@@ -488,18 +530,18 @@ class LsBroker(_LsAuth):
 
     # ── 미체결 조회 (t0425) ───────────────────────────────────────────────────
 
-    def _pending_raw(self) -> dict:
-        """t0425 주식미체결조회 — 전 종목 미체결 주문.
+    def _pending_raw(self, chegb: str = "2") -> dict:
+        """t0425 주식체결/미체결조회 — 전 종목.
 
-        ⚠ PATH "/stock/accno" — A2 KB 가정(t0424와 동일 경로, tr_cd로 구분).
-        ⚠ InBlock 필드(expcode/chegb/medosu/sortgb/cts_ordno) — A2 KB 🟢.
-        chegb="2" → 미체결만 조회.
+        chegb="2" → 미체결만(pending_orders 용), chegb="0" → 전체(체결 포함·order_status 용).
+        PATH "/stock/accno"(t0424와 동일 경로, tr_cd로 구분). OutBlock1에 cheqty(체결수량)·
+        status(주문상태)·cheprice(체결가) 포함 — 2026-06-23 가이드 t0425 실측 확인.
         """
         return self._post(
             "/stock/accno", "t0425",
             {"t0425InBlock": {
                 "expcode": "",      # 전 종목 🟢
-                "chegb": "2",       # 미체결 🟢
+                "chegb": chegb,     # "2" 미체결 / "0" 전체(체결 인지)
                 "medosu": "0",      # 전체(매수+매도) 🟢
                 "sortgb": "1",      # 최신 역순 🟢
                 "cts_ordno": "",
@@ -587,18 +629,16 @@ class LsBroker(_LsAuth):
         hint: Broker 인터페이스 계약 파라미터. 국내주식은 무시(해외 예약주문 전용).
 
         반환 어휘: filled | partial | submitted | cancelled | unknown
-        ⚠ t0425OutBlock1 필드(ordno/qty/ordrem/medosu/price) — A2 KB 🟢.
-        ⚠ **한계(docs/ls-api GOTCHAS G10)**: 국내 t0425를 chegb="2"(미체결만)로 조회하므로
-          전량 체결·취소된 주문은 목록에서 사라져 status="unknown"으로 떨어진다 —
-          즉 폴링으로는 filled/cancelled를 인지하지 못하고, 체결은 15:50 정산
-          reconcile_with_kis(실보유 diff)가 백스톱으로 잡는다. Phase C에서 chegb="0"(전체)
-          또는 일별체결 TR로 전환(filled/cancelled 구분 필드 실측 후). 자금/방향 위험 없음.
+        t0425를 **chegb="0"(전체)**로 조회 — 체결·취소 주문도 목록에 남아 cheqty(체결수량)·
+        status(주문상태)로 filled/partial/cancelled를 인지한다(G10 해소·2026-06-23 가이드 실측).
+        ⚠ 전일 이전 주문은 당일 t0425에서 사라질 수 있어(당일 조회) status="unknown" — 15:50
+          정산 reconcile_with_kis(실보유 diff)가 백스톱.
         """
         if symbol and market_index.is_us(symbol):
             return self._overseas_order_status(order_no, symbol)
 
         try:
-            body = self._pending_raw()
+            body = self._pending_raw(chegb="0")   # 전체조회 — 체결·취소 인지
         except Exception as e:
             log.warning("LS order_status 조회 실패 [%s]: %s", order_no, e)
             return {"order_no": order_no, "status": "unknown",
@@ -607,12 +647,15 @@ class LsBroker(_LsAuth):
         for row in body.get("t0425OutBlock1") or []:
             if canonical_odno(row.get("ordno")) == canonical_odno(order_no):
                 orig_qty = int(float(row.get("qty") or 0))
+                filled_qty = int(float(row.get("cheqty") or 0))    # 체결수량(chegb=0 전체조회라 신뢰)
                 remain_qty = int(float(row.get("ordrem") or 0))
-                filled_qty = max(0, orig_qty - remain_qty)
-                # ⚠ t0425는 체결/취소 구분 필드 미확인 — 현재 qty/ordrem으로만 판정.
-                if remain_qty == 0 and orig_qty > 0:
+                st = str(row.get("status") or "")
+                # cheqty(체결수량)·status로 판정 — 취소는 status에 "취소" 포함(전량체결과 구분).
+                if "취소" in st:
+                    status = "cancelled"
+                elif filled_qty >= orig_qty and orig_qty > 0:
                     status = "filled"
-                elif 0 < remain_qty < orig_qty:
+                elif filled_qty > 0:
                     status = "partial"
                 else:
                     status = "submitted"
@@ -621,11 +664,11 @@ class LsBroker(_LsAuth):
                     "status": status,
                     "filled_qty": filled_qty,
                     "remain_qty": remain_qty,
-                    # cheprice = 체결가격, price = 주문가격 (A2 KB 🟢 공식문서 대조 확인 2026-06-19)
+                    # cheprice = 체결가격, price = 주문가격 (가이드 t0425 🟢)
                     "fill_price": float(row.get("cheprice") or row.get("price") or 0),
                 }
 
-        # 목록에 없으면 unknown (이미 체결 전체 → chegb="2" 에서 사라짐 가능)
+        # 목록에 없으면 unknown (전일 이전 주문은 당일 t0425에서 사라짐)
         return {"order_no": order_no, "status": "unknown",
                 "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
 
@@ -732,6 +775,30 @@ class LsBroker(_LsAuth):
         foreign_eval_krw = (usd_cash + positions_eval_usd) * fx if fx > 0 else 0.0
         return {"usd_cash": usd_cash, "fx_usdkrw": fx,
                 "foreign_eval_krw": foreign_eval_krw, "positions": positions}
+
+    def _overseas_deposit_raw(self) -> dict:
+        """COSOQ02701 해외주식 예수금 — 통화별 OutBlock3(FcurrOrdAbleAmt 외화주문가능·BaseXchrat 환율).
+        COSOQ00201(종합잔고)과 달리 예수금 전용 TR — 해외 매수여력 사이징에 사용.
+        InBlock(RecCnt:int·CrcyCode:"ALL")는 ls_openapi_guide.md COSOQ02701 요청 예시와 일치."""
+        return self._post("/overseas-stock/accno", "COSOQ02701",
+                          {"COSOQ02701InBlock1": {"RecCnt": 1, "CrcyCode": "ALL"}})
+
+    def buying_power_usd(self, symbol: str, ref_price: float) -> dict:
+        """미국 종목 USD 주문가능액·수량·환율 — COSOQ02701 해외 예수금 기준. KIS buying_power_usd 미러.
+
+        반환 {usd_orderable, max_qty, fx_usdkrw} — KIS와 동일 키(trader 사이징 P6이 소비).
+        LS 모의 해외는 현금계좌(통합증거금 없음) → 계좌 USD 주문가능액(FcurrOrdAbleAmt)으로
+        사이징, max_qty=floor(orderable/ref_price). 실패 시 trader가 try/except로 'error' 기록·보류.
+        """
+        body = self._overseas_deposit_raw()
+        usd_orderable = fx = 0.0
+        for row in body.get("COSOQ02701OutBlock3") or []:
+            if str(row.get("CrcyCode") or "") == "USD":
+                usd_orderable = float(row.get("FcurrOrdAbleAmt") or 0)
+                fx = float(row.get("BaseXchrat") or 0)
+                break
+        max_qty = int(usd_orderable / ref_price) if ref_price > 0 else 0
+        return {"usd_orderable": usd_orderable, "max_qty": max_qty, "fx_usdkrw": fx}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

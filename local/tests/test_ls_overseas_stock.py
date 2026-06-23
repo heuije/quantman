@@ -13,6 +13,7 @@ def _broker():
     b = object.__new__(lb.LsBroker)
     b.account_no = "55500000000"
     b.virtual = True
+    b._overseas_unavailable = False
     return b
 
 
