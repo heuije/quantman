@@ -217,12 +217,13 @@ register(DataTypeSpec(
 register(DataTypeSpec(
     key="static.classification", pclass=PClass.STATIC, label="섹터·산업 분류",
     frequency="static", history_rule="시점 변경 가능 → interval 권장(P6 성격)",
-    source="FinanceDataReader(KRX-DESC)", provides=["sector", "industry"],
+    source="FinanceDataReader(KRX-DESC + S&P500)", provides=["sector", "industry"],
     required_meta=["source", "as_of"],
     downstream=["signal.group_rank", "signal.group_aggregate", "signal.group_neutralize"],
     current_status="present",
-    notes="KRX-DESC의 Industry(업종, 그룹 기본축)·Sector(소속부). KR 전종목 사이드카(_classification.json) → "
-          "get_symbol_group 소비. US 섹터는 후속(yfinance .info). 현행 스냅샷(시점 이력 없음).",
+    notes="KR=KRX-DESC의 Industry(KSIC 업종, 그룹 기본축)·Sector(소속부). US=S&P500의 Industry(GICS 서브산업)·"
+          "Sector(GICS 섹터). 한 사이드카(_classification.json·숫자=KR/알파=US) → get_symbol_group 소비. "
+          "현행 스냅샷(시점 이력 없음).",
 ))
 register(DataTypeSpec(
     key="static.market_cap", pclass=PClass.STATIC, label="시가총액·거래대금",
