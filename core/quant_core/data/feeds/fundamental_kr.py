@@ -287,6 +287,35 @@ def _clear_marker(code: str) -> None:
         m.unlink()
 
 
+# deep-백필 버전 — years 수집 범위가 깊어지면(예 2년→10년) 이 값을 올린다. 기존 종목은 이미 얕은
+# parquet이 있어 fresh_days(80일) 스킵에 묶여 새 범위로 재수집되지 않는다(과거 이력 공백의 직접
+# 원인). 마커({code}.deepv)에 이 버전이 없으면 freshness를 무시하고 재수집해 과거를 채운다 —
+# deep 백필된 종목만 이후 fresh_days 주기로 유지된다. parquet 안 읽고 마커만 체크(가벼움).
+_DEEP_VERSION = 1
+
+
+def _deepv_path(code: str):
+    return _fund_path(code).with_suffix(".deepv")
+
+
+def _deepv_done(code: str) -> bool:
+    """이 종목이 현재 deep 버전 이상으로 백필됐나 — 마커에 기록된 버전으로 판정(없으면 False)."""
+    p = _deepv_path(code)
+    if not p.exists():
+        return False
+    try:
+        return int(p.read_text().strip() or "0") >= _DEEP_VERSION
+    except (ValueError, OSError):
+        return False
+
+
+def _write_deepv(code: str) -> None:
+    """deep 백필 시도 완료 표시(성공·확정무데이터 모두) — 현재 버전 기록."""
+    p = _deepv_path(code)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(str(_DEEP_VERSION))
+
+
 def fetch(codes: list[str], years: list[int], budget_calls: int = 9000,
           fresh_days: int = 80) -> dict:
     """KR 분기 펀더멘털 증분 수급 — 미수집·오래된 것 우선, 일일 콜 예산 내(10k/일 준수).
@@ -294,6 +323,10 @@ def fetch(codes: list[str], years: list[int], budget_calls: int = 9000,
     성공 parquet 또는 빈결과 마커 중 최신 시도 mtime을 신선도 신호로 — fresh_days 이내 시도분은
     skip. 종목당 4×len(years)+1 콜. 여러 날 cron이 점진적으로 전 종목·연도를 채운다.
     빈결과(데이터 없음)는 `.empty` 마커를 남겨 매일 재시도로 예산 낭비하지 않게 한다(_marker_path).
+
+    **deep 백필(_deepv_done)**: fresh_days 스킵은 *현재 deep 버전으로 받아진* 종목에만 적용한다.
+    years 범위가 깊어졌는데(2년→10년) 기존 종목이 얕은 parquet으로 fresh_days에 묶여 과거가 안
+    채워지던 문제를 해소 — deepv 마커 없는 종목은 freshness 무시하고 새 범위로 일회성 재수집한다.
     """
     import time
     now = time.time()
@@ -309,8 +342,10 @@ def fetch(codes: list[str], years: list[int], budget_calls: int = 9000,
     calls = n_ok = n_fail = n_empty = n_rl = 0
     for c in sorted(codes, key=_attempted_mtime):     # 미시도(0)·오래된 시도 우선
         at = _attempted_mtime(c)
-        if at and (now - at) < fresh_days * 86400:
-            continue                                   # 최근 시도(성공·빈결과 무관) — skip
+        # fresh_days 스킵은 *이미 deep 백필된* 종목에만 적용 — 아직 얕은(deepv 미완) 종목은
+        # freshness를 무시하고 새 범위로 강제 재수집해 과거 이력을 채운다(2년→10년 일회성 backfill).
+        if at and (now - at) < fresh_days * 86400 and _deepv_done(c):
+            continue                                   # 최근 시도 + deep 완료 — skip
         try:
             df, rate_limited = fetch_one(c, years)
         except Exception:
@@ -327,9 +362,11 @@ def fetch(codes: list[str], years: list[int], budget_calls: int = 9000,
         if df is not None and not df.empty:
             write_parquet_atomic(df, _fund_path(c))   # 원자적 — 중단 시 잘린 파일 안 남김
             _clear_marker(c)                          # 빈결과→데이터 생김 시 마커 정리
+            _write_deepv(c)                           # deep(현 범위) 백필 완료 표시
             n_ok += 1
         else:
             _write_marker(c)                          # 확정 무데이터(013) — genuine 마커
+            _write_deepv(c)                           # 무데이터도 deep 시도 완료(재시도 폭주 방지)
             n_empty += 1
         calls += 5 * len(years)                  # 재무 4분기 + 주식총수 1(연간)
         if calls >= budget_calls:

@@ -91,9 +91,13 @@ def test_success_writes_parquet_and_clears_stale_marker(monkeypatch, tmp_path):
 
 
 def test_fresh_parquet_still_skipped(monkeypatch, tmp_path):
-    """회귀: 최근 수집된 parquet는 그대로 skip(기존 동작 보존)."""
+    """회귀: 최근 수집 + deep 백필 완료된 parquet는 skip(fresh_days 동작 보존).
+
+    deep 미완(deepv 없음)이면 fresh여도 의도적으로 재수집해 과거 이력을 채운다
+    (test_fundamental_kr_deepv 참조) — 여기선 deep 완료 종목의 skip만 고정."""
     _isolate(monkeypatch, tmp_path)
     pd.DataFrame({"pb_ratio": [1.0]}).to_parquet(fk._fund_path("000660"))
+    fk._write_deepv("000660")                        # deep 완료 → fresh로 skip 대상
     called = {"n": 0}
 
     def fake_one(c, y):
