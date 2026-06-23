@@ -1282,15 +1282,65 @@ export function PeerAnalysis({ ticker }: { ticker: string }) {
 // 스트림 색 — Up=MyStock 기본 네이비 / Mid=하이라이트 골드 / Down=초록
 const STREAM_COLOR: Record<string, string> = { Upstream: "#2f5390", Midstream: "#d4a738", Downstream: "#2ea65a" };
 const STREAM_ORDER = ["Upstream", "Midstream", "Downstream"];
-const SIDX_PERIODS: [string, number | "all"][] = [
-  ["1개월", 1], ["3개월", 3], ["6개월", 6], ["1년", 12], ["2년", 24], ["전체", "all"],
+// 공통 기간 선택 — 5일/1개월/3개월/6개월/1년/2년/전체 + 커스텀(시작·종료일). 표·차트 공용.
+type StreamIdx = { dates: string[]; streams: Record<string, number[]>; stocks?: Record<string, number[]> };
+type SrPeriod = "d5" | number | "all" | "custom";
+const SR_PERIODS: [string, "d5" | number | "all"][] = [
+  ["5일", "d5"], ["1개월", 1], ["3개월", 3], ["6개월", 6], ["1년", 12], ["2년", 24], ["전체", "all"],
 ];
+// dates(정렬됨) + 선택 기간 → [시작idx, 종료idx]. 종료=최근일, 시작=기간 역산(커스텀은 입력일).
+function resolveWindow(dates: string[], period: SrPeriod, vs: string, ve: string): [number, number] {
+  const n = dates.length;
+  if (n === 0) return [0, 0];
+  const last = n - 1;
+  if (period === "custom") {
+    let i0 = dates.findIndex((d) => d >= (vs || dates[0]));
+    if (i0 < 0) i0 = 0;
+    let i1 = last;
+    if (ve) { for (let i = last; i >= 0; i--) { if (dates[i] <= ve) { i1 = i; break; } } }
+    return [Math.min(i0, i1), Math.max(i0, i1)];
+  }
+  if (period === "d5") return [Math.max(0, last - 5), last];
+  if (period === "all") return [0, last];
+  const d = new Date(dates[last]); d.setMonth(d.getMonth() - (period as number));
+  const pad = (x: number) => String(x).padStart(2, "0");
+  const lo = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return [Math.max(dates.findIndex((dt) => dt >= lo), 0), last];
+}
+function PeriodPicker({ period, setPeriod, vs, setVs, ve, setVe, dMin, dMax }: {
+  period: SrPeriod; setPeriod: (p: SrPeriod) => void;
+  vs: string; setVs: (s: string) => void; ve: string; setVe: (s: string) => void; dMin: string; dMax: string;
+}) {
+  const btn = (label: string, p: "d5" | number | "all") => (
+    <button key={label} type="button" onClick={() => setPeriod(p)}
+      style={{ fontSize: 11.5, fontWeight: period === p ? 700 : 400, padding: "3px 9px", borderRadius: 7, cursor: "pointer",
+        border: `1px solid ${period === p ? "#4f8ff5" : "var(--border)"}`,
+        background: period === p ? "rgba(79,143,245,0.16)" : "transparent",
+        color: period === p ? "#4f8ff5" : "var(--muted)" }}>{label}</button>
+  );
+  const di = (val: string, set: (s: string) => void) => (
+    <input type="date" value={val} min={dMin} max={dMax}
+      onChange={(e) => { set(e.target.value); setPeriod("custom"); }}
+      style={{ fontSize: 11, padding: "2px 5px", borderRadius: 6, background: "transparent",
+        color: period === "custom" ? "#4f8ff5" : "var(--muted)",
+        border: `1px solid ${period === "custom" ? "#4f8ff5" : "var(--border)"}` }} />
+  );
+  return (
+    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
+      {SR_PERIODS.map(([l, p]) => btn(l, p))}
+      <span style={{ display: "inline-flex", gap: 3, alignItems: "center", marginLeft: 2 }}>
+        {di(vs, setVs)}<span style={{ color: "var(--muted)", fontSize: 11 }}>~</span>{di(ve, setVe)}
+      </span>
+    </div>
+  );
+}
 export function StreamReturnsChart({ industry }: { industry: string }) {
-  const [raw, setRaw] = useState<{ dates: string[]; streams: Record<string, number[]> } | null>(null);
+  const [raw, setRaw] = useState<StreamIdx | null>(null);
   const [busy, setBusy] = useState(false);
-  const [period, setPeriod] = useState<number | "all">(12);   // 기본 1년
+  const [period, setPeriod] = useState<SrPeriod>(12);   // 기본 1년
+  const [vs, setVs] = useState(""); const [ve, setVe] = useState("");
   useEffect(() => {
-    let alive = true; setBusy(true); setRaw(null); setPeriod(12);
+    let alive = true; setBusy(true); setRaw(null); setPeriod(12); setVs(""); setVe("");
     api.industryStreamIndex(industry)
       .then((d) => { if (alive) setRaw(d); })
       .catch(() => { if (alive) setRaw(null); })
@@ -1305,20 +1355,13 @@ export function StreamReturnsChart({ industry }: { industry: string }) {
   if (!dates.length || !streams.length)
     return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>표시할 스트림 수익률 데이터가 없습니다.</p>;
 
-  // 기간 윈도우 — 최근일 기준 개월 역산(주가추이와 동일). 윈도우 시작점 기준으로 누적수익률 재정규화.
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const dMax = dates[dates.length - 1];
-  const startDate = period === "all" ? dates[0] : (() => {
-    const d = new Date(dMax); d.setMonth(d.getMonth() - period);
-    const s = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    return s < dates[0] ? dates[0] : s;
-  })();
-  const base0 = Math.max(dates.findIndex((dt) => dt >= startDate), 0);
-  const reb = (arr: number[], i: number) => ((1 + arr[i] / 100) / (1 + arr[base0] / 100) - 1) * 100;
-  const data = dates.slice(base0).map((dt, k) => {
-    const i = base0 + k;
+  // 선택 윈도우 시작점 기준으로 누적수익률 재정규화.
+  const [i0, i1] = resolveWindow(dates, period, vs, ve);
+  const reb = (arr: number[], i: number) => ((1 + arr[i] / 100) / (1 + arr[i0] / 100) - 1) * 100;
+  const data = dates.slice(i0, i1 + 1).map((dt, k) => {
+    const i = i0 + k;
     const row: Record<string, number | string | null> = { date: dt };
-    streams.forEach((s) => { const a = sAll[s]; row[s] = (a && a[i] != null && a[base0] != null) ? Math.round(reb(a, i) * 10) / 10 : null; });
+    streams.forEach((s) => { const a = sAll[s]; row[s] = (a && a[i] != null && a[i0] != null) ? Math.round(reb(a, i) * 10) / 10 : null; });
     return row;
   });
   const xfmt = (dt: string) => (dt || "").slice(2, 7).replace("-", ".");   // YY.MM
@@ -1338,17 +1381,11 @@ export function StreamReturnsChart({ industry }: { industry: string }) {
       </div>
     );
   };
-  const pBtn = (label: string, p: number | "all") => (
-    <button key={label} type="button" onClick={() => setPeriod(p)}
-      style={{ fontSize: 12, fontWeight: period === p ? 700 : 400, padding: "4px 11px", borderRadius: 8, cursor: "pointer",
-        border: `1px solid ${period === p ? "#4f8ff5" : "var(--border)"}`,
-        background: period === p ? "rgba(79,143,245,0.16)" : "transparent",
-        color: period === p ? "#4f8ff5" : "var(--muted)" }}>{label}</button>
-  );
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "flex-end", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
-        {SIDX_PERIODS.map(([l, p]) => pBtn(l, p))}
+      <div style={{ marginBottom: 6 }}>
+        <PeriodPicker period={period} setPeriod={setPeriod} vs={vs} setVs={setVs} ve={ve} setVe={setVe}
+          dMin={dates[0]} dMax={dates[dates.length - 1]} />
       </div>
       <ResponsiveContainer width="100%" height={340}>
         <ComposedChart data={data} margin={{ top: 10, right: 16, bottom: 0, left: 0 }}>
@@ -1374,31 +1411,38 @@ export function StreamReturnsChart({ industry }: { industry: string }) {
   );
 }
 
-// 기업별 수익률 표 — STREAM별 그룹(상위↔하위 정렬) + 시총가중 평균 대비 상회/하회. 종목 검색 지원.
-const CRT_PERIODS: [string, "d5" | "d20" | "d60" | "d120" | "d240"][] = [
-  ["5일", "d5"], ["1개월", "d20"], ["3개월", "d60"], ["6개월", "d120"], ["1년", "d240"],
-];
+// 기업별 수익률 표 — STREAM별 그룹(상위↔하위 정렬) + 시총가중 평균 대비 상회/하회. 종목 검색 + 기간/커스텀.
 const CRT_STREAMS = ["Upstream", "Midstream", "Downstream"];
 function CompanyReturnsTable({ industry, companies }: { industry: string; companies: IndustryCompany[] }) {
   const navigate = useNavigate();
-  const [ret, setRet] = useState<Record<string, Record<string, number | null> | null>>({});
+  const [idx, setIdx] = useState<StreamIdx | null>(null);
   const [busy, setBusy] = useState(false);
-  const [period, setPeriod] = useState<"d5" | "d20" | "d60" | "d120" | "d240">("d20");
+  const [period, setPeriod] = useState<SrPeriod>(12);   // 기본 1년
+  const [vs, setVs] = useState(""); const [ve, setVe] = useState("");
   const [q, setQ] = useState("");
   const [sorts, setSorts] = useState<Record<string, { key: "ret" | "avg"; dir: "desc" | "asc" }>>({});   // 스트림별 정렬 컬럼·방향
   useEffect(() => {
-    let alive = true; setBusy(true); setRet({});
-    api.industryReturns(industry)
-      .then((d) => { if (alive) setRet(d as Record<string, Record<string, number | null> | null>); })
-      .catch(() => { if (alive) setRet({}); })
+    let alive = true; setBusy(true); setIdx(null); setPeriod(12); setVs(""); setVe("");
+    api.industryStreamIndex(industry)
+      .then((d) => { if (alive) setIdx(d); })
+      .catch(() => { if (alive) setIdx(null); })
       .finally(() => { if (alive) setBusy(false); });
     return () => { alive = false; };
   }, [industry]);
 
-  // 스트림별: 수익률 보유 종목을 상위→하위 정렬 + 시총가중 평균(차트와 동일 방식). 검색 시 매칭만.
+  // 선택 윈도우 [i0,i1]로 종목별 구간수익률 산출(차트와 동일 시계열·기간/커스텀).
+  const dates = idx?.dates || [];
+  const stocks = idx?.stocks || {};
+  const [i0, i1] = resolveWindow(dates, period, vs, ve);
+  const retOf = (tk: string): number | null => {
+    const a = stocks[tk];
+    if (!a || a[i0] == null || a[i1] == null) return null;
+    return ((1 + a[i1] / 100) / (1 + a[i0] / 100) - 1) * 100;
+  };
+  // 스트림별: 구간수익률 보유 종목 + 시총가중 평균(차트와 동일). 검색 시 매칭만.
   const sections = CRT_STREAMS.map((s) => {
     const all = (companies.filter((c) => c.gu === s)
-      .map((c) => ({ c, v: ret[c.ticker]?.[period] ?? null }))
+      .map((c) => ({ c, v: retOf(c.ticker) }))
       .filter((x) => x.v != null)) as { c: IndustryCompany; v: number }[];
     const wsum = all.reduce((a, x) => a + (x.c.cap || 0), 0);
     const avg = all.length === 0 ? null
@@ -1408,20 +1452,14 @@ function CompanyReturnsTable({ industry, companies }: { industry: string; compan
     return { s, avg, shown, n: all.length };
   }).filter((sec) => sec.shown.length > 0);
 
-  const pBtn = (label: string, p: typeof period) => (
-    <button key={label} type="button" onClick={() => setPeriod(p)}
-      style={{ fontSize: 12, fontWeight: period === p ? 700 : 400, padding: "3px 10px", borderRadius: 7, cursor: "pointer",
-        border: `1px solid ${period === p ? "#4f8ff5" : "var(--border)"}`,
-        background: period === p ? "rgba(79,143,245,0.16)" : "transparent",
-        color: period === p ? "#4f8ff5" : "var(--muted)" }}>{label}</button>
-  );
   const pctTxt = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
   return (
     <div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+      <div style={{ marginBottom: 8 }}>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="종목 검색 (이름·코드)"
-          style={{ flex: "1 1 140px", minWidth: 110, fontSize: 13, padding: "6px 10px" }} />
-        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{CRT_PERIODS.map(([l, p]) => pBtn(l, p))}</div>
+          style={{ width: "100%", fontSize: 13, padding: "6px 10px", marginBottom: 6 }} />
+        <PeriodPicker period={period} setPeriod={setPeriod} vs={vs} setVs={setVs} ve={ve} setVe={setVe}
+          dMin={dates[0] || ""} dMax={dates[dates.length - 1] || ""} />
       </div>
       {busy ? (
         <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>수익률 불러오는 중…</p>
