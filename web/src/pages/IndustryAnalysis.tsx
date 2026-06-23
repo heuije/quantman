@@ -414,7 +414,7 @@ export function CompanyReport({ ticker, company, name }: { ticker: string; compa
       {/* 추정 실적 — 개별종목분석과 동일 */}
       {hasEarnings ? (
         <div style={{ overflowX: "auto" }}>
-          <h3 style={{ margin: "0 0 6px", fontWeight: 400, fontSize: 12, color: "var(--muted)" }}>(연결 · 단위 억원)</h3>
+          <div style={{ margin: "0 0 6px", fontWeight: 400, fontSize: 12, color: "var(--muted)" }}>(연결 · 단위 억원)</div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: "2px solid #e3e8ef" }}>
