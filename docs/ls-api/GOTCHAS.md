@@ -5,6 +5,30 @@
 
 ---
 
+## 모의 라이브 실측 (2026-06-20, 키 발급 후) — Phase C C-0 (verify_ls.py 읽기전용)
+
+모의 키(5억 예수금·보유0)로 토큰·t0424·t1102(KOSPI+KOSDAQ)·t0425를 raw 캡처해 확정.
+
+### G22 — total_eval = `sunamt`(총자산), `tappamt` 아님 🔴 CRITICAL 교정 (G15 수정)
+
+- **실측**: 보유0·현금5억 계좌에서 `t0424OutBlock` = `{sunamt:500000000, sunamt1:500000000, tappamt:0, mamt:0, dtsunik:0, tdtsunik:0}`.
+  → `tappamt`(평가금액)는 **보유종목 시가만**이라 보유0이면 0. `sunamt`(추정순자산)는 **주식평가+예수금=총자산** = 5억.
+- **버그(직전 G15/C3)**: `total_eval=tappamt`로 매핑 → `_unified_equity_krw`(trader.py:149는 국내 equity=`total_eval`, 현금 별도 가산 안 함)가 **현금을 누락**. 현금 비중 큰/미보유 계좌에서 equity≈0 → 킬스위치 거짓 -100% 발동(−98% 부류버그 재발).
+- **교정**: `total_eval = sunamt`. KIS의 `tot_evlu_amt`(총평가=유가증권+예수금, 현금 포함)와 **동일 의미**의 LS 필드가 `sunamt`. `cash=sunamt1`은 유지(정확값은 여전히 CSPAQ22200, G16). `ls_broker.account_snapshot` 수정 완료 + 회귀테스트(sunamt=총자산, tappamt/mamt=decoy).
+- ⚠ 보유 시 sunamt가 시가 손실을 반영하는지는 C-1/E2E(포지션 보유)에서 최종 확인.
+
+### G21 해소 — KOSDAQ `exchgubun` 불요 🟢 실측 확정
+
+- **실측**: 카카오(035720, KOSDAQ)를 `exchgubun` 없이 `{shcode:"035720"}`만으로 조회 → 정상(price 37750·hname "카카오"). KOSPI(005930)도 동일. → **현 코드(exchgubun 미전송)가 양 시장 모두 동작**. G21 ⚠ 종결, 코드 변경 불요.
+
+### 블록·필드명 확정 🟢 (draft 가정 → 실측 일치)
+
+- **t0424**: 블록 `t0424OutBlock`(요약 dict)·`t0424OutBlock1`(보유 list, 보유0이면 `[]`) 확정. 쿼리 성공 `rsp_cd="00000"`(G1 조회 성공코드 확정).
+- **t1102**: 경로 `/stock/market-data`·블록 `t1102OutBlock` 확정. `price`(현재가)·`open`(시가)·`high`·`low`·`volume`·`recprice`(전일종가)·**`hname`(종목명, t1102엔 있음)** 확정. `sign`/`change`/`diff` 등 부가필드 다수(미사용).
+- **t0425**: 미체결0이면 응답에 `t0425OutBlock1` 키 **자체가 없음**(빈 list 아님) — 코드 `body.get("t0425OutBlock1") or []`로 안전 처리됨. ⚠ 체결행 status·필드는 **C-1(--order)** 에서 확정.
+
+---
+
 ## 공식문서 대조·KIS패리티 검토 (2026-06-19, 키발급 전 cross-source) — 신규 확정/수정
 
 아래는 공식(openapi.ls-sec.co.kr), teranum/ls-openapi-samples, gobenpark/lssec-go,

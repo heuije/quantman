@@ -5,6 +5,11 @@
 
 > 이 KB는 A2 초안(2026-06-17) + 공식문서 대조 검토(2026-06-19). 국내주식 핵심 6종 + 예수금 TR.
 > 선물·해외주식·조건검색 등은 필요 시 추가.
+>
+> 🧪 **라이브 테스트(Phase C)**: [`PHASE-C-LIVE-TEST.md`](PHASE-C-LIVE-TEST.md) = 단계별 런북 + ⚠필드 실측 체크리스트.
+> 실측 도구 = [`local/verify_ls.py`](../../local/verify_ls.py) (각 TR raw 응답 캡처 — `python verify_ls.py [--kosdaq|--order]`).
+>
+> 📚 **확장 자산군 리서치(Phase D/E/F, 2026-06-22)**: [국내선물](domestic-futures-research.md) · [해외주식](overseas-stock-research.md) · [해외선물](overseas-futures-research.md) — TR 표·Broker 매핑·특화·Gap. **🟢 4자산군 전부 LS 모의투자 지원 확정**(KIS는 해외선물 모의 미지원이었던 것과 대조).
 
 ---
 
@@ -20,14 +25,14 @@
 
 | tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
 |---|---|---|---|---|
-| [`t0424`](endpoints/t0424_주식잔고조회2.md) | 주식잔고조회2 | 보유 포지션 목록 (체결기준). sunamt=순자산·mamt=원가·**tappamt=평가금액(total_eval)**·**sunamt1=추정D2예수금(cash근사)**·dtsunik=실현손익·tdtsunik=평가손익 | `account_snapshot()` (via `_balance_raw`) | 🟢 필드의미 크로스소스 확정 |
+| [`t0424`](endpoints/t0424_주식잔고조회2.md) | 주식잔고조회2 | 보유 포지션 목록 (체결기준). **sunamt=추정순자산=총자산(total_eval)**·tappamt=평가금액(보유 시가만·≠total_eval·현금제외)·mamt=원가·**sunamt1=추정D2예수금(cash)**·dtsunik=실현손익·tdtsunik=평가손익 | `account_snapshot()` (via `_balance_raw`) | 🟢 모의 실측 확정(2026-06-20·G22) |
 | [`t0425`](endpoints/t0425_주식미체결조회.md) | 주식미체결 | chegb="2"=미체결only / chegb="0"=전체(체결·취소 포함). OutBlock1: **cheprice=체결가**·price=주문가·medosu="매수"/"매도"(문자열)·price1=현재가·**status(char10)=체결상태**. hname 없음(종목명 t0424에만) | `pending_orders()`(chegb="2")·`order_status()`(chegb="0"으로 전환 예정) (via `_pending_raw`) | 🟢 필드 크로스소스 / ⚠ status값 키검증 |
 
 ## 국내주식 — 시세 (1 TR)
 
 | tr_cd | 이름 | 용도 | 우리 코드 위치 (LsBroker 메서드) | 검증상태 |
 |---|---|---|---|---|
-| [`t1102`](endpoints/t1102_주식현재가.md) | 주식현재가 | 경로=`POST /stock/market-data`. InBlock: shcode(6자리,A접두사없음)·exchgubun(기본'K'=KOSPI,KOSDAQ='Q'⚠). OutBlock: price=현재가·open=시가·high·low·volume·**recprice=전일종가**(≠pclose) | `price()`·`today_open()` | 🟢 3소스 일치 / ⚠ KOSDAQ exchgubun 키검증 |
+| [`t1102`](endpoints/t1102_주식현재가.md) | 주식현재가 | 경로=`POST /stock/market-data`. InBlock: shcode(6자리,A접두사없음)·**exchgubun 불요**(KOSPI·KOSDAQ 모두 미전송으로 동작). OutBlock: price=현재가·open=시가·high·low·volume·**recprice=전일종가**(≠pclose)·hname=종목명 | `price()`·`today_open()` | 🟢 모의 실측 확정(2026-06-20·G21해소) |
 
 ## 기타 국내주식 (미작성, 색인만)
 

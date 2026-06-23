@@ -34,6 +34,11 @@ def json_loads(s: str):
 
 _LOG_PATH_NAME = "logs/localapp.log"
 
+# LS 계좌 종류 — 자산군별 별도 모의계좌(별도 키)라 secrets_store 저장 슬롯이 분리된다.
+_LS_ACCT_STOCK = "국내주식·해외주식"      # → save_ls (LsBroker 기반 + LS 활성화)
+_LS_ACCT_FUTURES = "국내선물"            # → save_ls_futures
+_LS_ACCT_OV_FUTURES = "해외선물"         # → save_ls_overseas_futures
+
 # 색상 팔레트 — DESIGN.md / web index.css :root 와 동기화 (2026-05-22 정제)
 BG = "#faf9f6"            # 따뜻한 크림 배경
 PANEL = "#ffffff"
@@ -298,7 +303,7 @@ class SettingsApp:
         self.kf.pack(fill="x", **pad)
         self._build_kis_wizard(self.kf)
 
-        # ① LS증권 자격증명 — 단순 입력 폼 (연결 테스트 없음; Phase C에서 추가 예정)
+        # ① LS증권 자격증명 — 입력 폼 + 연결 테스트(토큰 발급, ls_health)
         self.lsf = ttk.LabelFrame(self.setup_expanded, text="① LS증권 자격증명")
         self.lsf.pack(fill="x", **pad)
         self._build_ls_form(self.lsf)
@@ -1416,16 +1421,27 @@ class SettingsApp:
         """LS증권 자격증명 입력 폼 — KIS wizard와 분리된 독립 위젯.
 
         필드: App Key / App Secret / 계좌번호 / 모의투자 여부.
-        저장 버튼 → _ls_save. 연결 테스트 없음 (Phase C에서 실제 토큰 교환 후 추가 예정).
+        [🔌 연결 테스트] → _ls_test_connection (토큰 발급으로 App Key/Secret 검증, 저장 없이).
+        [💾 저장] → _ls_save.
         """
         box = tk.Frame(parent, bg=PANEL)
         box.pack(fill="x", padx=12, pady=8)
 
-        ttk.Label(box, text="LS Open API 마이페이지에서 발급받은 App Key · App Secret · "
-                            "계좌번호를 입력하세요. 연결 테스트는 Phase C(토큰 발급 구현) "
-                            "완료 후 제공됩니다.",
+        ttk.Label(box, text="LS Open API에서 발급받은 App Key · App Secret · 계좌번호를 "
+                            "입력하고 [🔌 연결 테스트]로 키 유효성을 확인한 뒤 저장하세요. "
+                            "(모의투자 OPEN API는 별도 신청·별도 키입니다.)",
                   style="Muted.TLabel", wraplength=560, justify="left",
                   ).pack(anchor="w", pady=(0, 8))
+
+        # 계좌 종류 — 자산군별 별도 모의계좌(별도 키)라 저장 슬롯이 분리된다.
+        #   선택에 따라 _ls_save가 save_ls / save_ls_futures / save_ls_overseas_futures로 분기.
+        self.ls_acct_type = tk.StringVar(value=_LS_ACCT_STOCK)
+        type_row = ttk.Frame(box)
+        type_row.pack(fill="x", pady=4)
+        ttk.Label(type_row, text="계좌 종류", width=22, anchor="w").pack(side="left")
+        ttk.Combobox(type_row, textvariable=self.ls_acct_type, state="readonly",
+                     width=20, values=[_LS_ACCT_STOCK, _LS_ACCT_FUTURES,
+                                       _LS_ACCT_OV_FUTURES]).pack(side="left")
 
         self.ls_e_key = self._make_wizard_entry(box, "App Key")
         self.ls_e_secret = self._make_wizard_entry(box, "App Secret", show="*")
@@ -1449,9 +1465,16 @@ class SettingsApp:
         nav.pack(fill="x", pady=(12, 0))
         ttk.Button(nav, text="💾 저장", style="Accent.TButton",
                    command=self._ls_save).pack(side="right")
+        self._ls_test_btn = ttk.Button(nav, text="🔌 연결 테스트",
+                                        command=self._ls_test_connection)
+        self._ls_test_btn.pack(side="right", padx=(0, 8))
 
-    def _ls_save(self) -> None:
-        """LS 폼 저장 버튼 — 빈 필드 검증 → save_ls → set_active_broker("ls")."""
+    def _ls_test_connection(self) -> None:
+        """LS 자격증명 연결 테스트 — 입력값으로 토큰을 발급해 App Key/Secret 유효성 확인.
+
+        잔고/주문 TR 필드가 Phase C 실측 전까지 초안이라, 확정된 토큰 엔드포인트만으로
+        검증한다(ls_health.test_credentials). 깊은 검증(잔고·체결)은 verify_ls.py.
+        """
         key = self.ls_e_key.get().strip()
         secret = self.ls_e_secret.get().strip()
         acct = self.ls_e_acct.get().strip()
@@ -1460,16 +1483,55 @@ class SettingsApp:
                                       text="App Key · Secret · 계좌번호를 모두 입력하세요.")
             return
         virtual = bool(self.ls_virtual_var.get())
-        secrets_store.save_ls(key, secret, acct, virtual=virtual)
-        secrets_store.set_active_broker("ls")
-        self.broker_choice.set("ls")
+        self._ls_status.configure(fg=MUTED, text="LS 서버에 연결 중...")
+        self._ls_test_btn.configure(state="disabled")
+
+        def work():
+            from . import ls_health
+            return ls_health.test_credentials(key, secret, virtual)
+
+        def done(result, err):
+            self._ls_test_btn.configure(state="normal")
+            if err is not None:
+                self._ls_status.configure(fg=RED, text=f"❌ 테스트 실패: {err}")
+                return
+            if result and result.get("ok"):
+                self._ls_status.configure(fg=GREEN, text=f"✓ {result['msg']} — [저장]을 누르세요.")
+            else:
+                self._ls_status.configure(
+                    fg=RED, text=f"❌ {result.get('msg', '알 수 없는 오류') if result else '알 수 없는 오류'}")
+
+        self._run_bg(work, done)
+
+    def _ls_save(self) -> None:
+        """LS 폼 저장 — 계좌 종류 선택에 따라 save_ls / save_ls_futures /
+        save_ls_overseas_futures 슬롯으로 분기(자산군별 별도 모의계좌·별도 키)."""
+        key = self.ls_e_key.get().strip()
+        secret = self.ls_e_secret.get().strip()
+        acct = self.ls_e_acct.get().strip()
+        if not (key and secret and acct):
+            self._ls_status.configure(fg=AMBER,
+                                      text="App Key · Secret · 계좌번호를 모두 입력하세요.")
+            return
+        virtual = bool(self.ls_virtual_var.get())
+        acct_type = self.ls_acct_type.get()
+        if acct_type == _LS_ACCT_FUTURES:
+            secrets_store.save_ls_futures(key, secret, acct, virtual=virtual)
+        elif acct_type == _LS_ACCT_OV_FUTURES:
+            secrets_store.save_ls_overseas_futures(key, secret, acct, virtual=virtual)
+        else:   # 국내주식·해외주식 — LsBroker 기반 브로커 + LS 활성화
+            secrets_store.save_ls(key, secret, acct, virtual=virtual)
+            secrets_store.set_active_broker("ls")
+            self.broker_choice.set("ls")
         self.ls_e_secret.delete(0, "end")
-        self._ls_status.configure(fg=GREEN, text="저장됨. 키는 이 PC를 떠나지 않습니다.")
+        self._ls_status.configure(fg=GREEN,
+                                  text=f"저장됨 ({acct_type}). 키는 이 PC를 떠나지 않습니다.")
         mode = "모의투자" if virtual else "실전투자"
         self.setup_collapsed = True
         messagebox.showinfo("저장 완료",
-                            f"LS증권 자격증명을 저장했습니다 ({mode}).\n\n"
-                            "다음 단계: ② 플랫폼 계정 연결.")
+                            f"LS증권 {acct_type} 자격증명을 저장했습니다 ({mode}).\n\n"
+                            "선물·해외선물은 [계좌 종류]를 바꿔 각각 추가 등록하세요.\n"
+                            "(자동매매엔 '국내주식·해외주식' 계좌 등록이 기본으로 필요합니다.)")
         self.refresh_status()
 
     # ── KIS 자격증명 wizard ────────────────────────────────────────────────────

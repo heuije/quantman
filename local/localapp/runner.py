@@ -51,8 +51,18 @@ def make_broker() -> Broker:
             raise RuntimeError(
                 "LS 자격증명이 등록되지 않았습니다. setup에서 LS appkey/secret/계좌를 "
                 "등록하세요. (LS 모의투자는 별도 키로 발급됩니다.)")
-        from .ls_broker import LsBroker   # 국내주식 단일. 선물 라우터는 후속 plan.
-        return LsBroker()
+        from .ls_broker import LsBroker
+        stock = LsBroker()
+        from .secrets_store import load_ls_futures, load_ls_overseas_futures
+        if not (load_ls_futures() or load_ls_overseas_futures()):
+            return stock                         # 국내주식만 — 무변경
+        from .ls_futures_broker import LsFuturesBroker
+        from .ls_futures_contracts import LsContractResolver
+        from .broker_router import BrokerRouter
+        r = LsContractResolver(LsFuturesBroker())   # resolver가 선물 토큰으로 master fetch
+        return BrokerRouter(stock, r.broker,
+                            resolve=r.resolve, resolve_expiry=r.resolve_expiry,
+                            dataset_for_code=r.dataset_for_code)
     # ── 기존 KIS 경로 (완전 무변경) ──────────────────────────────────────────
     if load_kis() is None:
         raise RuntimeError(

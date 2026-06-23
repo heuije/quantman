@@ -46,6 +46,10 @@ def test_make_broker_routes_to_ls(monkeypatch):
     from localapp import runner, secrets_store
     monkeypatch.setattr(secrets_store, "get_active_broker", lambda: "ls")
     monkeypatch.setattr(secrets_store, "load_ls", lambda: {"app_key": "x"})
+    # 선물·해외선물 creds 없음으로 격리 — 없으면 실제 keyring을 읽어(개발 PC에 LS 선물 creds가
+    # 등록돼 있으면) make_broker가 BrokerRouter를 반환해 이 plain-LS 경로 단정이 깨진다.
+    monkeypatch.setattr(secrets_store, "load_ls_futures", lambda: None)
+    monkeypatch.setattr(secrets_store, "load_ls_overseas_futures", lambda: None)
     # make_broker가 매 호출 `from .ls_broker import LsBroker`를 재실행하므로, 같은
     # sys.modules 객체(lb)의 LsBroker 속성을 patch하면 그 값을 집어온다(A5 해제 시 그대로 통과).
     import localapp.ls_broker as lb
