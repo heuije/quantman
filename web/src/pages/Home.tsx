@@ -138,41 +138,43 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   const sec = SECTIONS.find((s) => s.key === stmt);
   const shown = sec ? sec.charts.filter((c) => c.v.some((x, i) => x != null && keep[i])) : [];
 
-  // 금액=막대(네이비, 좌축·백만원) + 비율=선(골드, 우축·%). 막대는 0 기준으로 그려 작은 값도 보이게.
+  // 금액=막대(네이비, 좌축·백만원) + 골드 선(우축): 이익률 있으면 마진%, 없으면 YoY/QoQ 증감률. 막대는 0 기준.
   const renderChart = (c: ChartDef) => {
-    const hasMg = !!c.mg && c.mg.some((x, i) => x != null && keep[i]);
+    const useMg = !!c.mg && c.mg.some((x, i) => x != null && keep[i]);   // 이익률/비율 보유
+    const lnLabel = useMg ? (c.mgLabel || "비율") : lineLbl;             // 마진% 또는 YoY%/QoQ%
     const data = periods.map((p, i) => ({ x: xLabel(p),
       v: c.v[i] == null ? null : Math.round((c.v[i] as number) * 100),   // 억원 → 백만원
-      mg: c.mg?.[i] ?? null, yoy: c.yoy?.[i] ?? null }))
+      ln: (useMg ? c.mg?.[i] : c.yoy?.[i]) ?? null }))
       .filter((_, i) => keep[i]);
+    const hasLine = data.some((d) => d.ln != null);
     const amtFmt = (n: number) => Math.round(n).toLocaleString();
     return (
       <div key={c.t} className="panel" style={{ marginBottom: 0, padding: "10px 8px 4px" }}>
         <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
-          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> 백만원{hasMg ? ` · ${c.mgLabel || "비율"} %` : ""}</span></div>
+          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> 백만원{hasLine ? ` · ${lnLabel} %` : ""}</span></div>
         <ResponsiveContainer width="100%" height={230}>
-          <ComposedChart data={data} margin={{ top: 18, right: hasMg ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="45%">
+          {/* barCategoryGap 축소 → 막대 폭 최대(슬롯 거의 채움) */}
+          <ComposedChart data={data} margin={{ top: 18, right: hasLine ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="5%">
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="x" tick={{ fontSize: 11 }} interval={0} />
             <YAxis yAxisId="v" tick={{ fontSize: 10 }} width={58} tickFormatter={amtFmt}
               domain={[(min: number) => Math.min(0, min), "auto"]} />
-            {hasMg && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} width={34} tickFormatter={(n) => `${n}%`} />}
+            {hasLine && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} width={34} tickFormatter={(n) => `${n}%`} />}
             <Tooltip content={(o) => {
               if (!o.active || !o.payload?.length) return null;
-              const d = o.payload[0].payload as { x: string; v: number | null; mg: number | null; yoy: number | null };
+              const d = o.payload[0].payload as { x: string; v: number | null; ln: number | null };
               return (
                 <div style={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 9px", fontSize: 12, lineHeight: 1.55 }}>
                   <div style={{ color: "var(--muted)" }}>{d.x}</div>
                   <div style={{ fontWeight: 700 }}>{d.v == null ? "-" : `${d.v.toLocaleString()} 백만원`}</div>
-                  {hasMg && d.mg != null && <div style={{ color: CHART_GOLD }}>{c.mgLabel || "비율"} {d.mg}%</div>}
-                  {!hasMg && d.yoy != null && <div style={{ color: CHART_GOLD }}>{lineLbl} {d.yoy}%</div>}
+                  {d.ln != null && <div style={{ color: CHART_GOLD }}>{lnLabel} {d.ln}%</div>}
                 </div>
               );
             }} />
             <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} name={c.t} isAnimationActive={false} />
-            {hasMg && (
-              <Line yAxisId="r" dataKey="mg" stroke={CHART_GOLD} strokeWidth={2} dot name={c.mgLabel || "비율"} isAnimationActive={false} connectNulls>
-                <LabelList dataKey="mg" position="top" formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 10, fill: CHART_GOLD, fontWeight: 700 }} />
+            {hasLine && (
+              <Line yAxisId="r" dataKey="ln" stroke={CHART_GOLD} strokeWidth={2} dot name={lnLabel} isAnimationActive={false} connectNulls>
+                <LabelList dataKey="ln" position="top" formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 10, fill: CHART_GOLD, fontWeight: 700 }} />
               </Line>
             )}
           </ComposedChart>
@@ -184,7 +186,7 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   if (!sec) return null;
   return (
     <div style={{ marginBottom: 14 }}>
-      <div style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px" }}>막대=금액(백만원·네이비) · 선=비율(%·골드, 우축) · {lineLbl}는 막대에 마우스를 올리면 표시</div>
+      <div style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px" }}>막대=금액(백만원·네이비) · 골드 선=비율(이익률 등) 또는 {lineLbl} 증감률(우축)</div>
       {/* 한 행에 3개 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
         {shown.map(renderChart)}
