@@ -182,7 +182,8 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
                 </div>
               );
             }} />
-            <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} stroke={CHART_BAR_EDGE} strokeWidth={1} name={c.t} isAnimationActive={false}>
+            <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} stroke={CHART_BAR_EDGE} strokeWidth={1}
+              minPointSize={3} name={c.t} isAnimationActive={false}>
               <LabelList dataKey="v" position="top" offset={4} formatter={(n) => (n == null ? "" : Math.round(Number(n)).toLocaleString())}
                 style={{ fontSize: 13, fill: "#fff", fontWeight: 700 }} />
             </Bar>
