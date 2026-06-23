@@ -370,8 +370,8 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
     api.financialsExcel(ticker).catch(() => { /* 무시 */ }).finally(() => setXlBusy(false));
   };
 
-  const eokN = (v: number | null) => v == null ? "—" : Math.round(v).toLocaleString();
-  const wonN = (v: number | null) => v == null ? "—" : Math.round(v * 1e8).toLocaleString() + "원";   // 주당이익 — /1e8 환원해 원으로(억원 헤더와 구분)
+  const mwonN = (v: number | null) => v == null ? "—" : Math.round(v * 100).toLocaleString();   // 억원→백만원(×100), 차트와 동일 단위
+  const wonN = (v: number | null) => v == null ? "—" : Math.round(v * 1e8).toLocaleString() + "원";   // 주당이익 — /1e8 환원해 원으로(백만원 헤더와 구분)
   const pctV = (v: number | null) => v == null ? "—" : `${v.toFixed(1)}%`;
   const chgI = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
 
@@ -389,7 +389,7 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
             </colgroup>
             <thead>
               <tr style={{ borderBottom: "2px solid var(--border)" }}>
-                <th style={{ textAlign: "left", padding: "6px 8px" }}>계정 <span style={{ fontWeight: 400, color: "var(--muted)" }}>(억원)</span></th>
+                <th style={{ textAlign: "left", padding: "6px 8px" }}>계정 <span style={{ fontWeight: 400, color: "var(--muted)" }}>(백만원)</span></th>
                 {st.periods.map((p) => <th key={p} style={{ textAlign: "right", padding: "6px 8px" }}>{p}</th>)}
               </tr>
             </thead>
@@ -422,7 +422,7 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
                       {r.values.map((v, ci) => (
                         <td key={ci} style={{ padding: "5px 8px", textAlign: "right", whiteSpace: "nowrap",
                           color: r.derived ? "var(--muted)" : "inherit", fontStyle: r.pct ? "italic" : "normal" }}>
-                          {r.pct ? pctV(v) : isEps ? wonN(v) : eokN(v)}
+                          {r.pct ? pctV(v) : isEps ? wonN(v) : mwonN(v)}
                         </td>
                       ))}
                     </tr>
