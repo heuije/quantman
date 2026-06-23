@@ -153,8 +153,8 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
         <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
           <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> 백만원{hasLine ? ` · ${lnLabel} %` : ""}</span></div>
         <ResponsiveContainer width="100%" height={230}>
-          {/* barCategoryGap 축소 → 막대 폭 최대(슬롯 거의 채움) */}
-          <ComposedChart data={data} margin={{ top: 18, right: hasLine ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="5%">
+          {/* barCategoryGap=24% → 막대 폭 ≈ 슬롯 76%(최대폭의 80% 수준) */}
+          <ComposedChart data={data} margin={{ top: 18, right: hasLine ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="24%">
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="x" tick={{ fontSize: 11 }} interval={0} />
             <YAxis yAxisId="v" tick={{ fontSize: 10 }} width={58} tickFormatter={amtFmt}
@@ -173,11 +173,11 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
             }} />
             <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} name={c.t} isAnimationActive={false}>
               <LabelList dataKey="v" position="top" formatter={(n) => (n == null ? "" : Math.round(Number(n)).toLocaleString())}
-                style={{ fontSize: 11, fill: "#fff", fontWeight: 700 }} />
+                style={{ fontSize: 13, fill: "#fff", fontWeight: 700 }} />
             </Bar>
             {hasLine && (
               <Line yAxisId="r" dataKey="ln" stroke={CHART_GOLD} strokeWidth={2} dot name={lnLabel} isAnimationActive={false} connectNulls>
-                <LabelList dataKey="ln" position="top" formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 12.5, fill: "#fff", fontWeight: 700 }} />
+                <LabelList dataKey="ln" position="top" formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 14, fill: "#fff", fontWeight: 700 }} />
               </Line>
             )}
           </ComposedChart>
