@@ -216,7 +216,8 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
             </Bar>
             {hasLine && (
               <Line yAxisId="r" dataKey="ln" stroke={CHART_GOLD} strokeWidth={2} dot name={lnLabel} isAnimationActive={false} connectNulls>
-                <LabelList dataKey="ln" position="top" offset={16} formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 13, fill: "#fff", fontWeight: 700 }} />
+                {/* % 라벨은 선 아래쪽 — 막대 값 라벨(막대 위)과 상하 분리(겹침 방지) */}
+                <LabelList dataKey="ln" position="bottom" offset={8} formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 13, fill: "#fff", fontWeight: 700 }} />
               </Line>
             )}
           </ComposedChart>
