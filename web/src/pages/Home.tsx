@@ -171,10 +171,13 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
                 </div>
               );
             }} />
-            <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} name={c.t} isAnimationActive={false} />
+            <Bar yAxisId="v" dataKey="v" fill={CHART_NAVY} name={c.t} isAnimationActive={false}>
+              <LabelList dataKey="v" position="top" formatter={(n) => (n == null ? "" : Math.round(Number(n)).toLocaleString())}
+                style={{ fontSize: 11, fill: "#fff", fontWeight: 700 }} />
+            </Bar>
             {hasLine && (
               <Line yAxisId="r" dataKey="ln" stroke={CHART_GOLD} strokeWidth={2} dot name={lnLabel} isAnimationActive={false} connectNulls>
-                <LabelList dataKey="ln" position="top" formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 10, fill: CHART_GOLD, fontWeight: 700 }} />
+                <LabelList dataKey="ln" position="top" formatter={(n) => (n == null ? "" : `${n}%`)} style={{ fontSize: 12.5, fill: "#fff", fontWeight: 700 }} />
               </Line>
             )}
           </ComposedChart>
