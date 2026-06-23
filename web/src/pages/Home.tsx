@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList,
+  ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList, ReferenceLine,
 } from "recharts";
 import { api } from "../api";
 import type { SymbolListing, CompanyProfile, SymbolDetail, FinancialsData, FinStatement } from "../types";
@@ -154,13 +154,14 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
         <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
           <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> 백만원{hasLine ? ` · ${lnLabel} %` : ""}</span></div>
         <ResponsiveContainer width="100%" height={230}>
-          {/* barCategoryGap=24% → 막대 폭 ≈ 슬롯 76%(최대폭의 80% 수준) */}
+          {/* 0 기준선 가로 표시 */}
           <ComposedChart data={data} margin={{ top: 18, right: hasLine ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="24%">
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="x" tick={{ fontSize: 11 }} interval={0} />
             <YAxis yAxisId="v" tick={{ fontSize: 10 }} width={58} tickFormatter={amtFmt}
               domain={[(min: number) => Math.min(0, min), "auto"]} />
             {hasLine && <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 10 }} width={34} tickFormatter={(n) => `${n}%`} />}
+            <ReferenceLine yAxisId="v" y={0} stroke="var(--muted)" strokeWidth={1} />
             <Tooltip content={(o) => {
               if (!o.active || !o.payload?.length) return null;
               const d = o.payload[0].payload as { x: string; v: number | null; ln: number | null };
