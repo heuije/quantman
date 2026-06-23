@@ -20,7 +20,8 @@ from quant_core.blocks import DatasetMeta, available_refs, catalog_spec
 from quant_core.blocks.node import Node, referenced_symbols
 from quant_core.data.feeds import estimate_kr, news_kr
 from quant_core.ir_engine import (StrategyIR, backtest_from_spec, build_strategy_excel,
-                                  needed_columns, needed_symbols, strategy_from_spec,
+                                  needed_columns, needed_symbols, select_recent_days,
+                                  strategy_from_spec,
                                   validate_strategy)
 
 from .. import data_cache, kis_master_cache
@@ -57,8 +58,10 @@ def _load_ir_dataset(body: dict):
     if needed is not None:
         dataset = qc.load_dataset_for(needed)
     elif cols is not None:
-        dataset = data_cache.get_projected(cols, symbols=None,
-                                           recent_days=400 if is_select else None)
+        # SELECT는 신호 룩백만큼만 최근 행을 계산(밸류/펀더-only면 65, ts_·가격이면 400) —
+        # 전종목×400행 헛계산을 밸류 스크리닝에서 ~6배 절감(뿌리④). 의미 불변(룩백 충족).
+        rd = select_recent_days(_sir.signal, cols) if is_select else None
+        dataset = data_cache.get_projected(cols, symbols=None, recent_days=rd)
     else:
         dataset = get_dataset()
     manifest = (None if is_select

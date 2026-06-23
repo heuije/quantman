@@ -73,6 +73,19 @@ def test_symbol_name_reads_bundled_db_ignoring_runtime_dir(monkeypatch, tmp_path
     assert ep.symbol_name("005930") == "삼성전자"           # env 무시·번들에서 이름 해석
 
 
+def test_select_recent_days_from_signal_lookback():
+    """SELECT 프로젝션 행수를 신호 룩백에서 도출 — 밸류/펀더-only·시계열연산 無면 65(빠름),
+    가격·ts_ 룩백이면 400 유지(회귀0). SELECT 3분 병목의 compute 절감(뿌리④)."""
+    from quant_core.ir_engine import select_recent_days
+    from quant_core.blocks.node import Node
+    leaf = Node(op="ref", params={"ref": "__SELF__.pb_ratio"})
+    assert select_recent_days(leaf, {"pb_ratio", "trailing_pe", "ev_ebitda"}) == 65
+    assert select_recent_days(leaf, {"pb_ratio", "Close"}) == 400       # 가격 컬럼 섞임
+    ts = Node(op="ts_mean", inputs={"signal": leaf}, params={"window": 20})
+    assert select_recent_days(ts, {"pb_ratio"}) == 400                  # 시계열 룩백
+    assert select_recent_days(leaf, None) == 400                        # 미상 → 안전 폴백
+
+
 _PER = {"S1": 8, "S2": 20, "S3": 30, "S4": 10, "S5": 25, "S6": 35}
 
 

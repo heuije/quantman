@@ -824,3 +824,36 @@ def needed_columns(s: StrategyIR) -> Optional[set[str]]:
     if s.position.exit.trail_atr_mult is not None:
         cols.add("atr_14")
     return cols
+
+
+# ts_* 시계열 블록(룩백 창을 갖는 op) — select_recent_days가 신호에 이들이 있으면 보수적으로
+# 큰 창을 쓴다(롤링 룩백 충족). 모두 params["window"]를 쓰지만, 존재 여부만으로 충분(컬럼
+# 내부 룩백[momentum 252 등]까지 정밀 계산하지 않고, 보조-only가 아니면 400 폴백).
+_TS_LOOKBACK_OPS = frozenset({
+    "ts_mean", "ts_sum", "ts_std", "ts_delta", "ts_delay", "ts_rank", "ts_zscore",
+    "ts_decay", "ts_max", "ts_min", "ts_argmax", "ts_argmin", "ts_percentile",
+})
+
+
+def _has_ts_lookback(node: "Node") -> bool:
+    """신호 트리에 시계열 룩백 연산(ts_*)이 하나라도 있나(재귀)."""
+    if node.op in _TS_LOOKBACK_OPS:
+        return True
+    return any(_has_ts_lookback(c) for c in node.inputs.values())
+
+
+def select_recent_days(signal: "Node", cols: Optional[set[str]]) -> int:
+    """SELECT(as-of 스냅샷) 프로젝션에 필요한 최근 행수 — 신호 룩백에서 도출.
+
+    모든 참조 컬럼이 보조지표(펀더/컨센서스/수급 — 현재 스냅샷·시계열 룩백 0)이고 신호에
+    시계열 연산(ts_*)이 없으면 소수 행으로 충분 → 65(분기·ffill 폴백 여유). 펀더는 add_
+    fundamentals가 fund_df 전체를 ffill로 끌어오므로 가격 tail이 작아도 최신 밸류값은 정확
+    (get_projected: recent_days≥룩백 → 최신행 full 계산과 동일). 그 외(가격·기술 컬럼·ts_
+    연산)는 현행 400 유지 — 모멘텀(252) 등 장기 룩백 보존·회귀 0. SELECT 3분 병목(전종목
+    ×400행 헛계산)을 밸류 스크리닝에서 ~6배 절감(뿌리④)."""
+    from ..indicators import (CONSENSUS_INDICATOR_COLS, FLOW_INDICATOR_COLS,
+                              FUND_INDICATOR_COLS)
+    aux = set(FUND_INDICATOR_COLS) | set(CONSENSUS_INDICATOR_COLS) | set(FLOW_INDICATOR_COLS)
+    if cols and cols <= aux and not _has_ts_lookback(signal):
+        return 65
+    return 400

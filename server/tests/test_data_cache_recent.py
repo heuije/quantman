@@ -39,3 +39,24 @@ def test_recent_days_none_is_full(monkeypatch):
     monkeypatch.setattr(dc.data_fetcher, "load_fund_all", lambda: {})
     out = dc.get_projected(["ma_dev_20d"])
     assert len(out["AAA"]) == 600
+
+
+def test_recent_days_preserves_latest_fundamental(monkeypatch):
+    """밸류 컬럼(pb_ratio)도 작은 창에서 최신값이 full과 동일 — fund_df ffill이 가격 tail 밖
+    과거 공시를 끌어오므로(select_recent_days=65가 밸류 스크리닝에서 안전한 근거·뿌리④)."""
+    raw = _raw()
+    # 분기 공시가 가격 tail 창(마지막 65행) *밖*에만 있어도, reindex(ffill)가 끌어옴.
+    fidx = pd.to_datetime(["2018-03-31", "2019-03-31"])
+    fund = {"AAA": pd.DataFrame({"stockholders_equity": [1e9, 1.1e9],
+                                 "shares_outstanding": [1e7, 1e7]}, index=fidx)}
+    monkeypatch.setattr(dc, "get_raw_dataset", lambda: {"AAA": raw["AAA"]})
+    monkeypatch.setattr(dc.data_fetcher, "load_fund_all", lambda: fund)
+    dc._aux_cache.clear()
+    try:
+        full = dc.get_projected(["pb_ratio"])
+        recent = dc.get_projected(["pb_ratio"], recent_days=65)
+        a = float(full["AAA"]["pb_ratio"].iloc[-1])
+        b = float(recent["AAA"]["pb_ratio"].iloc[-1])
+        assert abs(a - b) < 1e-9 and a > 0      # 최신 pb_ratio 동일(작은 창에도)
+    finally:
+        dc._aux_cache.clear()
