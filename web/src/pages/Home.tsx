@@ -65,7 +65,7 @@ const CHART_NAVY = "#123257", CHART_GOLD = "#d4a738";   // 막대=딥 네이비(
 const CHART_BAR_EDGE = "#3a5283";                        // 다크 카드 위 막대 외곽선(가시성 유지)
 type SeriesArr = (number | null)[];
 // v=금액(억원, 표시는 ×100=백만원) · mg=해당 계정 비율(%) 선 · mgLabel=선 이름(부채비율/ROE/마진 등)
-interface ChartDef { t: string; v: SeriesArr; mg?: SeriesArr; mgLabel?: string; yoy?: SeriesArr; }
+interface ChartDef { t: string; v: SeriesArr; mg?: SeriesArr; mgLabel?: string; yoy?: SeriesArr; won?: boolean; }
 
 // 기간 라벨 — 연간 "2023/12"→FY23, 분기 "2026/03"→1Q26. 차트 x축·기간 드롭다운 공용.
 function periodLabel(p: string, quarterly: boolean): string {
@@ -107,6 +107,8 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   const opCf = vals(cf, ["영업활동으로인한현금흐름", "영업활동현금흐름"]);
   const invCf = vals(cf, ["투자활동으로인한현금흐름", "투자활동현금흐름"]);
   const finCf = vals(cf, ["재무활동으로인한현금흐름", "재무활동현금흐름"]);
+  const ctrlNi = vals(pl, ["지배기업소유주지분", "지배주주순이익"]);   // 지배기업 소유주지분(=지배기업순이익)
+  const eps = vals(pl, ["기본주당순이익(원)", "기본주당순이익", "EPS"]).map((x) => (x == null ? null : x * 1e8));   // /1e8 환원 → 원
 
   // 차트 = 금액 막대(네이비) + 해당 계정 비율 선(골드, 우축). PL 이익률·BS 부채비율/ROE/차입금비율을 선으로.
   const SECTIONS: { key: keyof FinancialsData["annual"]; title: string; charts: ChartDef[] }[] = [
@@ -116,6 +118,8 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
       { t: "영업이익", v: vals(pl, ["영업이익"]), mg: vals(pl, ["영업이익률(%)"]), mgLabel: "영업이익률", yoy: chg(pl, ["영업이익"]) },
       { t: "당기순이익", v: vals(pl, ["당기순이익"]), mg: vals(pl, ["당기순이익률(%)"]), mgLabel: "순이익률", yoy: chg(pl, ["당기순이익"]) },
       { t: "EBITDA", v: vals(pl, ["EBITDA"]), mg: vals(pl, ["EBITDAMargin(%)"]), mgLabel: "EBITDA%", yoy: chg(pl, ["EBITDA"]) },
+      { t: "지배기업순이익", v: ctrlNi, yoy: yoy(ctrlNi) },
+      { t: "EPS (주당순이익)", v: eps, won: true, yoy: yoy(eps) },
     ] },
     { key: "BS", title: "재무상태표", charts: [
       { t: "자산총계", v: asset, yoy: yoy(asset) },
@@ -143,8 +147,10 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   const renderChart = (c: ChartDef) => {
     const useMg = !!c.mg && c.mg.some((x, i) => x != null && keep[i]);   // 이익률/비율 보유
     const lnLabel = useMg ? (c.mgLabel || "비율") : lineLbl;             // 마진% 또는 YoY%/QoQ%
+    const mult = c.won ? 1 : 100;            // 일반=억원→백만원(×100), 주당이익=원(×1)
+    const unitLbl = c.won ? "원" : "백만원";
     const data = periods.map((p, i) => ({ x: xLabel(p),
-      v: c.v[i] == null ? null : Math.round((c.v[i] as number) * 100),   // 억원 → 백만원
+      v: c.v[i] == null ? null : Math.round((c.v[i] as number) * mult),
       ln: (useMg ? c.mg?.[i] : c.yoy?.[i]) ?? null }))
       .filter((_, i) => keep[i]);
     const hasLine = data.some((d) => d.ln != null);
@@ -152,7 +158,7 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
     return (
       <div key={c.t} className="panel" style={{ marginBottom: 0, padding: "10px 8px 4px" }}>
         <div style={{ fontSize: "12pt", fontWeight: 700, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.t}
-          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> 백만원{hasLine ? ` · ${lnLabel} %` : ""}</span></div>
+          <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {unitLbl}{hasLine ? ` · ${lnLabel} %` : ""}</span></div>
         <ResponsiveContainer width="100%" height={230}>
           {/* 0 기준선 가로 표시 */}
           <ComposedChart data={data} margin={{ top: 18, right: hasLine ? 2 : 6, bottom: 0, left: 0 }} barCategoryGap="24%">
@@ -168,7 +174,7 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
               return (
                 <div style={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 9px", fontSize: 12, lineHeight: 1.55 }}>
                   <div style={{ color: "var(--muted)" }}>{d.x}</div>
-                  <div style={{ fontWeight: 700 }}>{d.v == null ? "-" : `${d.v.toLocaleString()} 백만원`}</div>
+                  <div style={{ fontWeight: 700 }}>{d.v == null ? "-" : `${d.v.toLocaleString()} ${unitLbl}`}</div>
                   {d.ln != null && <div style={{ color: CHART_GOLD }}>{lnLabel} {d.ln}%</div>}
                 </div>
               );
@@ -236,6 +242,7 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
   };
 
   const eokN = (v: number | null) => v == null ? "—" : Math.round(v).toLocaleString();
+  const wonN = (v: number | null) => v == null ? "—" : Math.round(v * 1e8).toLocaleString();   // 주당이익 — /1e8 환원해 원으로
   const pctV = (v: number | null) => v == null ? "—" : `${v.toFixed(1)}%`;
   const chgI = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
 
@@ -265,6 +272,7 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
                 const indent = r.child ? 26 : r.derived ? 22 : 8;   // 자식·파생(이익률/EBITDA) 들여쓰기
                 const hasChg = !r.pct && r.change.some((c) => c != null);   // 증감률 행 표시 대상
                 const showRow = showChg && hasChg;
+                const isEps = r.account.replace(/\s/g, "").includes("주당");   // 주당이익=원 단위
                 return (
                   <Fragment key={ri}>
                     <tr style={{ borderBottom: showRow ? "none" : "1px solid var(--border)",
@@ -285,7 +293,7 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
                       {r.values.map((v, ci) => (
                         <td key={ci} style={{ padding: "5px 8px", textAlign: "right", whiteSpace: "nowrap",
                           color: r.derived ? "var(--muted)" : "inherit", fontStyle: r.pct ? "italic" : "normal" }}>
-                          {r.pct ? pctV(v) : eokN(v)}
+                          {r.pct ? pctV(v) : isEps ? wonN(v) : eokN(v)}
                         </td>
                       ))}
                     </tr>
