@@ -5,6 +5,28 @@
 
 ---
 
+## 실시간 WebSocket 사양 (2026-06-25 모의 연결 프로브 실측) — 실시간 WS 배선
+
+LS 모의 WS 연결 프로브(read-only·주문 없음)로 확정. 가이드(§15897 선물·§43641 주식)와 **차이 있음**.
+
+### G-WS1 — 엔드포인트: 단일 bare `/websocket`, 모의=29443 🔴 가이드 오류 교정
+- **실측**: `wss://openapi.ls-sec.co.kr:29443/websocket`(모의)·`:9443/websocket`(실전), **단일 bare 경로**. tr_cd가 stock/futures 라우팅.
+- 가이드의 `/websocket/stock`·`/websocket/futureoption`은 **양 포트 모두 connect timeout** — 不通. bare `/websocket`만 SC1·C01·FC9·S3_ 정상처리.
+- 9443에 모의 토큰 → `rsp_cd 10001 "token 계좌정보와 서버정보(실전,모의)가 일치하지 않습니다"` 거부 → **9443=실전 전용, 29443=모의**.
+
+### G-WS2 — 인증: OAuth access token 재사용 (approval_key·AES 불필요) 🟢
+- 구독: `{"header":{"token":<access_token>,"tr_type":"1"등록/"2"해제},"body":{"tr_cd","tr_key"}}`. 전부 평문 JSON.
+- ack: `{"header":{tr_type,tr_cd,rsp_cd,rsp_msg},"body":null}` (rsp_cd `"00000"`=정상). KIS의 approval_key 발급·AES-CBC 복호화·pipe payload **전부 불필요**.
+
+### G-WS3 — 실시간 TR
+- **체결통보(fill)**: 주식 `SC1`·국내선물 `C01` (tr_key="" = 내 주문 전체). 모의 정상처리 확인.
+  - SC1 body: `ordno`·`shtnIsuno`(A005930)·`execqty`·`execprc`·`exectime`·`gubun`(B=매수). C01 body: `ordno`·`expcode`·`cheprice`·`chevol`·`chetime`·`dosugb`.
+  - SC계열: SC0=접수·**SC1=체결**·SC2=정정·SC3=취소·SC4=거부 (체결만 보려면 SC1).
+- **시세(체결가)**: 주식 `S3_`(KOSPI)·`K3_`(KOSDAQ)·선물 `FC9`(KOSPI200)·`JC0`(주식선물), tr_key=종목/계약코드. body 공통 `price`(체결가). 모의 FC9(A0169000)·SC1·C01 정상처리 확인.
+- ⚠ **데이터(틱) 실제 전달은 장중에만** — 모의 라이브(국장)서 최종 확인 예정. 현재는 connect+구독 ack(`00000`)까지 확정.
+
+---
+
 ## 모의 라이브 실측 (2026-06-20, 키 발급 후) — Phase C C-0 (verify_ls.py 읽기전용)
 
 모의 키(5억 예수금·보유0)로 토큰·t0424·t1102(KOSPI+KOSDAQ)·t0425를 raw 캡처해 확정.
