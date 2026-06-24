@@ -101,14 +101,47 @@ def _canon_account(nm: str) -> str:
     return _CANON.get((nm or "").replace(" ", ""), (nm or "").strip())
 
 
+# account_id → 표준 계정명(정렬·차트매칭용 canon). 회사마다 account_nm이 달라도(영업이익 vs 영업손익,
+# 당기순이익 vs 당기순손익 등) account_id는 IFRS/DART 표준이라 일관 — PL 표시순서·차트매칭을 이걸로 정한다.
+# (표시는 원본 account_nm 그대로. canon은 순서·매칭 전용.)
+_AID_NAME = {
+    "ifrs-full_Revenue": "매출액", "ifrs-full_RevenueFromSaleOfGoods": "매출액", "ifrs-full_RevenueFromRenderingOfServices": "매출액",
+    "ifrs-full_CostOfSales": "매출원가",
+    "ifrs-full_GrossProfit": "매출총이익",
+    "dart_TotalSellingGeneralAdministrativeExpenses": "판매비와관리비",
+    "ifrs-full_SellingGeneralAndAdministrativeExpense": "판매비와관리비",
+    "dart_OperatingIncomeLoss": "영업이익", "ifrs-full_ProfitLossFromOperatingActivities": "영업이익",
+    "ifrs-full_FinanceIncome": "금융수익", "ifrs-full_FinanceCosts": "금융원가",
+    "ifrs-full_OtherIncome": "기타수익", "dart_OtherGains": "기타수익",
+    "ifrs-full_OtherExpenseByNature": "기타비용", "dart_OtherLosses": "기타비용",
+    "ifrs-full_ShareOfProfitLossOfAssociatesAndJointVenturesAccountedForUsingEquityMethod": "지분법손익",
+    "ifrs-full_ProfitLossBeforeTax": "법인세비용차감전순이익",
+    "ifrs-full_IncomeTaxExpenseContinuingOperations": "법인세비용",
+    "ifrs-full_ProfitLossFromContinuingOperations": "계속영업이익",
+    "ifrs-full_ProfitLossFromDiscontinuedOperations": "중단영업이익",
+    "ifrs-full_ProfitLoss": "당기순이익",
+    "ifrs-full_ProfitLossAttributableToOwnersOfParent": "지배기업소유주지분",
+    "ifrs-full_ProfitLossAttributableToNoncontrollingInterests": "비지배지분",
+    "ifrs-full_OtherComprehensiveIncome": "기타포괄손익",
+    "ifrs-full_ComprehensiveIncome": "총포괄손익",
+    "ifrs-full_BasicEarningsLossPerShare": "기본주당순이익(원)",
+    "ifrs-full_DilutedEarningsLossPerShare": "희석주당순이익",
+}
+
+
+def _slot_canon(slot: dict) -> str:
+    """slot의 표준명 — account_id 우선(회사 불문 일관), 없으면 계정명 기반 정규화."""
+    return _AID_NAME.get(slot.get("aid") or "", "") or _canon_account(slot.get("nm") or "")
+
+
 def _ordered_slots(sj: str, slots):
-    """표시 순서 정렬. BS는 DART 문서순서(ord)가 곧 표시순서·계층(소계 바로 아래 하위계정)
-    이라 그대로 — 전자공시 그대로의 구조·합계 일치(유동자산=하위계정 합). PL·CF는 DART ord가
-    XBRL 요소순이라 뒤죽박죽(PL은 매출액이 맨 뒤, CF는 영업활동이 맨 뒤)이므로 표준 표시순서(_ORDER)."""
+    """표시 순서 정렬. BS·CF는 DART 문서순서(ord)가 곧 표시순서·계층(소계 바로 아래 하위계정)
+    이라 그대로 — 전자공시 그대로의 구조·합계 일치(유동자산=하위계정 합, 활동현금흐름=하위계정 합).
+    PL(IS)만 DART ord가 XBRL 요소순이라 뒤죽박죽(매출액이 맨 뒤)이므로 표준 표시순서(_ORDER)."""
     slots = list(slots)
-    if sj == "BS":
+    if sj in ("BS", "CF"):
         return sorted(slots, key=lambda s: s["ord"])
-    return sorted(slots, key=lambda s: (_order_rank(sj, _canon_account(s["nm"])), s["ord"]))
+    return sorted(slots, key=lambda s: (_order_rank(sj, _slot_canon(s)), s["ord"]))
 
 
 def _num(s):
@@ -231,7 +264,7 @@ def _fetch_quarterly(cc: str, y_lo: int, y_cur: int) -> dict:
                 ordn = 0
             nm = (x.get("account_nm") or "").strip()
             slot = store.setdefault(sj, {}).setdefault(
-                key, {"nm": nm, "ord": ordn, "cum": {}, "snap": {}})
+                key, {"nm": nm, "aid": aid, "ord": ordn, "cum": {}, "snap": {}})
             if canon and nm:
                 slot["nm"] = nm                    # 연간 계정명 우선(분기/반기 접두사 정규화)
             if sj == "BS":
@@ -284,7 +317,7 @@ def _fetch_quarterly(cc: str, y_lo: int, y_cur: int) -> dict:
             if all(v is None for v in vals):
                 continue
             raw = s["nm"]
-            canon = _canon_account(raw)
+            canon = _slot_canon(s)
             rows.append({"account": raw, "canon": canon,
                          "bold": canon.replace(" ", "") in _BOLD,
                          "parent": False, "child": False, "group": None, "values": vals})
@@ -336,7 +369,7 @@ def fetch(code: str) -> dict | None:
             except (ValueError, TypeError):
                 ordn = 0
             slot = store.setdefault(sj, {}).setdefault(
-                key, {"nm": (x.get("account_nm") or "").strip(), "ord": ordn, "vals": {}})
+                key, {"nm": (x.get("account_nm") or "").strip(), "aid": aid, "ord": ordn, "vals": {}})
             for fld, yr in (("thstrm_amount", bsns_year), ("frmtrm_amount", bsns_year - 1),
                             ("bfefrmtrm_amount", bsns_year - 2)):
                 v = _num(x.get(fld))
@@ -357,7 +390,7 @@ def fetch(code: str) -> dict | None:
             if all(v is None for v in vals):
                 continue
             raw = s["nm"]                       # 전자공시 원본 계정명 그대로
-            canon = _canon_account(raw)          # 차트·지표 매칭용 표준명(표시는 raw)
+            canon = _slot_canon(s)               # account_id 기반 표준명(표시는 raw)
             rows.append({"account": raw, "canon": canon,
                          "bold": canon.replace(" ", "") in _BOLD,
                          "parent": False, "child": False, "group": None, "values": vals})
