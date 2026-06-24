@@ -3,35 +3,27 @@
 KisOrderWebSocket 대칭. 체결 이벤트를 **KIS H0STCNI0와 동일한 evt dict 키**로
 정규화해 intraday_loop._on_exec_event를 무수정으로 재사용한다(KIS 경로 byte-identical).
 
-비KIS(LS) 활성 시 KIS 체결통보 WS는 skip되고 그동안 REST 폴링이 체결을 *사이클
-경계에서만* 인지해 지연됐다(2026-06-24 실측: 주식 시가매수 체결이 종가청산까지
-6.5h 미인지). 이 WS가 그 갭을 닫는다.
+LS(비KIS) 활성 시 KIS 체결통보 WS는 skip되고 REST 폴백이 체결을 *사이클 경계에서만*
+인지해 지연됐다(2026-06-24 실측: 주식 시가매수 체결이 종가청산까지 6.5h 미인지).
+이 WS가 그 갭을 닫는다.
 
-LS와 KIS 차이:
-  • 인증: OAuth access token 헤더 재사용 (KIS approval_key 발급 불필요)
-  • 메시지: 전부 평문 JSON (KIS의 AES-CBC 복호화·pipe payload 불필요)
-  • 엔드포인트: 단일 bare /websocket, tr_cd가 stock(SC1)/futures(C01) 라우팅
-  • hts_id 불필요 (KIS는 tr_key=hts_id, LS는 tr_key="" = 내 주문 전체)
+공유 플럼빙(연결·재연결·JSON 라우팅·토큰 인증)은 _LsWsBase. 여기선 구독 TR과
+체결 이벤트 정규화만 정의한다.
 
 LS WS spec — 모의 연결 프로브 실측 2026-06-25 (docs/ls-api/GOTCHAS G-WS1~3):
-  URL  wss://openapi.ls-sec.co.kr:{29443 모의|9443 실전}/websocket
   구독 {"header":{"token","tr_type":"1"},"body":{"tr_cd":"SC1"|"C01","tr_key":""}}
   SC1 body: ordno·shtnIsuno(A+코드)·execqty·execprc·exectime·gubun
   C01 body: ordno·expcode·cheprice·chevol·chetime·dosugb
 """
 from __future__ import annotations
 
-import json
 import logging
-import threading
-import time
 from typing import Callable
 
-import websocket as ws_lib
+from .ls_ws_base import _LsWsBase
 
 log = logging.getLogger("localapp.ls_order_ws")
 
-_WS_HOST = "openapi.ls-sec.co.kr"
 # 체결통보 TR: 주식 SC1 · 국내선물 C01. tr_key="" → 내 주문 전체.
 # (KRX 한 시장 창에서 주식+선물 전략이 함께 도는 구조라 둘 다 구독해 양쪽 체결을 받는다.)
 _EXEC_TRS = ("SC1", "C01")
@@ -73,7 +65,7 @@ def _norm_c01(body: dict) -> dict:
 _NORMALIZERS = {"SC1": _norm_sc1, "C01": _norm_c01}
 
 
-class LsOrderWebSocket:
+class LsOrderWebSocket(_LsWsBase):
     """LS 실시간 체결 통보 WebSocket 클라이언트.
 
     사용:
@@ -85,117 +77,25 @@ class LsOrderWebSocket:
     on_exec 콜백 시그니처: (evt: dict) — KIS H0STCNI0 키로 정규화된 dict.
     """
 
+    _tag = "ls-order-ws"
+
     def __init__(self, broker, on_exec: Callable[[dict], None], market: str = "KR"):
+        super().__init__(broker)
         if market not in ("KR", "US"):
             raise ValueError(f"market must be 'KR' or 'US', got {market!r}")
-        self.broker = broker
         self.on_exec = on_exec
         self._market = market
-        self._ws: ws_lib.WebSocketApp | None = None
-        self._thread: threading.Thread | None = None
-        self._stop_flag = False
-        self._connected = threading.Event()
 
-    @property
-    def _ws_url(self) -> str:
-        port = 29443 if getattr(self.broker, "virtual", True) else 9443
-        return f"wss://{_WS_HOST}:{port}/websocket"
-
-    def _sub_msg(self, tr_cd: str, sub: bool = True) -> str:
-        return json.dumps({
-            "header": {"token": self.broker._token(), "tr_type": "1" if sub else "2"},
-            "body": {"tr_cd": tr_cd, "tr_key": ""},
-        })
-
-    # ── 콜백 ──────────────────────────────────────────────────────────────────
-
-    def _on_open(self, ws) -> None:
-        log.info("[ls-order-ws] 연결됨 — 체결통보 구독 (%s)", ",".join(_EXEC_TRS))
-        self._connected.set()
+    def _initial_subs(self, ws) -> None:
         for tr in _EXEC_TRS:
             try:
                 ws.send(self._sub_msg(tr, sub=True))
             except Exception as e:
                 log.warning("[ls-order-ws] 구독 등록 실패 %s: %s", tr, e)
 
-    def _on_message(self, ws, message: str) -> None:
-        """LS WS 메시지: ack(rsp_cd 존재·body=null) 또는 데이터(header.tr_cd+body)."""
-        if not message:
-            return
-        try:
-            d = json.loads(message)
-        except Exception:
-            log.debug("[ls-order-ws] non-json: %s", str(message)[:120])
-            return
-        hdr = d.get("header") or {}
-        rsp_cd = hdr.get("rsp_cd")
-        if rsp_cd is not None:
-            lvl = log.info if rsp_cd == "00000" else log.warning
-            lvl("[ls-order-ws] ack: tr=%s rsp_cd=%s %s",
-                hdr.get("tr_cd"), rsp_cd, hdr.get("rsp_msg", ""))
-            return
-        tr_cd = hdr.get("tr_cd")
-        body = d.get("body")
+    def _on_data(self, tr_cd, tr_key, body: dict) -> None:
         norm = _NORMALIZERS.get(tr_cd)
-        if norm and isinstance(body, dict):
-            evt = norm(body)
-            try:
-                self.on_exec(evt)
-            except Exception as e:
-                log.exception("[ls-order-ws] on_exec 콜백 오류: %s", e)
-        else:
-            log.debug("[ls-order-ws] 미처리 메시지: tr=%s", tr_cd)
-
-    def _on_error(self, ws, error) -> None:
-        log.warning("[ls-order-ws] error: %s", error)
-
-    def _on_close(self, ws, code, msg) -> None:
-        log.info("[ls-order-ws] 연결 종료 (code=%s, msg=%s)", code, msg)
-        self._connected.clear()
-
-    # ── 외부 API ──────────────────────────────────────────────────────────────
-
-    def start(self) -> None:
-        """별 thread에서 WebSocket 시작. 끊기면 자동 재연결(토큰은 _sub_msg에서 매회 갱신)."""
-        if self._thread and self._thread.is_alive():
+        if norm is None:
+            log.debug("[ls-order-ws] 미처리 tr=%s", tr_cd)
             return
-        self._stop_flag = False
-
-        def _runner():
-            backoff = 1
-            while not self._stop_flag:
-                try:
-                    self._ws = ws_lib.WebSocketApp(
-                        self._ws_url,
-                        on_open=self._on_open,
-                        on_message=self._on_message,
-                        on_error=self._on_error,
-                        on_close=self._on_close,
-                    )
-                    self._ws.run_forever(ping_interval=30, ping_timeout=10)
-                except Exception as e:
-                    log.exception("[ls-order-ws] run_forever 예외: %s", e)
-                if self._stop_flag:
-                    break
-                log.info("[ls-order-ws] %d초 후 재연결", backoff)
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 60)
-
-        self._thread = threading.Thread(target=_runner, daemon=True,
-                                         name="ls-order-ws")
-        self._thread.start()
-        self._connected.wait(timeout=10)
-
-    def stop(self) -> None:
-        self._stop_flag = True
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    @property
-    def is_connected(self) -> bool:
-        return self._connected.is_set()
+        self.on_exec(norm(body))
