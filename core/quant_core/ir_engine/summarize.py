@@ -220,8 +220,10 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
     if shape == "select":
         rows = result.get("results") or []
         top = ", ".join(f"{r.get('symbol')}({_f(r.get('score'), 3)})" for r in rows[:max_rows])
+        recipe = (result.get("scoring") or {}).get("recipe")   # 점수 산식 노출(산식 확인 불가 방지)
+        formula = f" · 점수산식: {recipe}" if recipe else ""
         return (f"[스크리닝] 후보 {result.get('universe_size', '?')}개 중 {len(rows)}개 선별 "
-                f"(as-of {result.get('as_of', '?')}): {top}" + _context_block(result))
+                f"(as-of {result.get('as_of', '?')}){formula}: {top}" + _context_block(result))
 
     if shape == "describe_single":
         p = result.get("price") or {}

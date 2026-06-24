@@ -228,3 +228,14 @@ def test_strategy_from_spec_preserves_run_query_warnings(monkeypatch):
     res = service.strategy_from_spec(ir, ds)
     msgs = [w.get("message", "") for w in (res.get("warnings") or [])]
     assert any("무거래" in m for m in msgs), f"run_query 경고 유실: {res.get('warnings')}"
+
+
+def test_select_summary_surfaces_scoring_recipe():
+    """점수 산식(recipe)이 select 요약에 노출돼 '산식 확인 불가'(희제 지적)를 방지."""
+    result = {"query": "select", "success": True, "as_of": "2026-06-19",
+              "universe_size": 100, "eligible_size": 1,
+              "results": [{"symbol": "005930", "score": 1.23}],
+              "scoring": {"recipe": "백분위 합 composite(pb_ratio·trailing_pe) — 낮을수록 저평가"}}
+    assert result_shape(result) == "select"
+    out = summarize_result(result)
+    assert "점수산식" in out and "백분위 합 composite" in out
