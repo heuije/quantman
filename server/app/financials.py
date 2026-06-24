@@ -124,7 +124,8 @@ def _add_pl_metrics(period: dict) -> None:
     pl, cf = period.get("PL"), period.get("CF")
     if not pl or not pl.get("rows"):
         return
-    norm = lambda r: r["account"].replace(" ", "")
+    # canon(표준명) 우선 매칭 — DART 원본명이 변형(당기순이익(손실)·연결당기순이익 등)이어도 인식.
+    norm = lambda r: (r.get("canon") or r.get("account", "")).replace(" ", "")
 
     def find(stmt, pred):
         if not stmt:
@@ -140,7 +141,7 @@ def _add_pl_metrics(period: dict) -> None:
         return [(round(x / d * 100, 1) if (x is not None and d) else None) for x, d in zip(num, rv)]
 
     def mk_pct(label, vals):
-        return {"account": label, "values": vals, "change": [None] * len(vals),
+        return {"account": label, "canon": label, "values": vals, "change": [None] * len(vals),
                 "bold": False, "parent": False, "child": False, "group": None,
                 "pct": True, "derived": True}
 
@@ -167,7 +168,7 @@ def _add_pl_metrics(period: dict) -> None:
         elif a == "영업이익":
             new.append(mk_pct("영업이익률(%)", ratio(r["values"])))
             if ebitda:
-                new.append({"account": "EBITDA", "values": ebitda, "bold": False,
+                new.append({"account": "EBITDA", "canon": "EBITDA", "values": ebitda, "bold": False,
                             "parent": False, "child": False, "group": None, "derived": True,
                             "change": [None] + [_pct(ebitda[i], ebitda[i - 1]) for i in range(1, len(ebitda))]})
                 new.append(mk_pct("EBITDA Margin(%)", ratio(ebitda)))
@@ -221,7 +222,7 @@ def _fetch(code: str) -> dict:
         quarterly[key] = _with_change(_parse_div(soup, div_q, annual=False))
     _add_pl_metrics(annual)      # 이익률·EBITDA 하위행 1회 계산·삽입(저장본에 포함)
     _add_pl_metrics(quarterly)
-    # 연간은 DART 전자공시 5개년으로 교체(키 있고 성공 시). 분기는 FnGuide 유지.
+    # 연간(5개년)·분기 모두 DART 전자공시로 교체(키 있고 성공 시). FnGuide는 폴백.
     try:
         from .config import settings
         if settings.OPENDART_API_KEY:
@@ -235,8 +236,15 @@ def _fetch(code: str) -> dict:
                 _add_pl_metrics(d_annual)
                 _graft_sga(annual.get("PL"), d_annual.get("PL"))   # FnGuide 판관비 상세 → DART 연간 이식
                 annual = d_annual    # 5개년 DART 연간으로 교체
+            d_quarterly = (draw or {}).get("quarterly")
+            if d_quarterly and d_quarterly.get("PL"):
+                for k in ("PL", "BS", "CF"):
+                    if d_quarterly.get(k):
+                        _with_change(d_quarterly[k])
+                _add_pl_metrics(d_quarterly)   # 이익률 부여(EBITDA는 DART CF에 D&A 없어 자동 생략)
+                quarterly = d_quarterly    # 분기도 DART 전자공시 단일분기로 교체
     except Exception:
-        _log.exception("DART 5개년 연간 병합 실패 — FnGuide 연간 유지 %s", code)
+        _log.exception("DART 전자공시 병합 실패 — FnGuide 유지 %s", code)
     return {"fetched": date.today().isoformat(), "annual": annual, "quarterly": quarterly}
 
 
@@ -310,17 +318,24 @@ def to_xlsx(code: str) -> bytes:
     FY헤더·숫자 우측정렬 / yoy(%)·이익률은 표 하단 별도 섹션(전년대비 증감 / Margins)으로 모음."""
     import io
     from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment, PatternFill
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
     from openpyxl.utils import get_column_letter
 
-    NAVY = "FF0F243E"   # 로고·헤더 셀색(사용자 수정본과 동일)
+    # 색(사용자 수정본 기준). 제목바=네이비, 소제목=연회색채움+네이비글자, 볼드계정=아주연한채움, 밑줄=회색.
+    NAVY = "FF0F243E"
     GRAY = "FF646464"
-    DARK = "FF222222"
     WHITE = "FFFFFFFF"
-    AMT_FMT = "#,##0;(#,##0);-"   # 정수 표시(수정본 동일) — 셀 값은 소수 풀정밀도 보존
+    HEAD_BG = "FFD9D9D9"   # 소제목(계정/YoY/Margins) 행 채움
+    BOLD_BG = "FFF2F2F2"   # 볼드 소계 계정 채움
+    LINE = "FFA6A6A6"      # 밑줄 색
+    AMT_FMT = "#,##0;(#,##0);-"   # 금액 정수표시(셀 값은 소수 풀정밀도 보존)
+    WON_FMT = '#,##0"원";(#,##0"원");-'   # 주당이익(EPS 등) — 원 단위(웹 차트와 동일)
     PCT_FMT = '0.0"%"'            # 이익률(값이 이미 %)
     YOY_FMT = "0.0%;(0.0%);-"     # RATE 결과(소수) → %
-    head_fill = PatternFill("solid", fgColor=NAVY)
+    title_fill = PatternFill("solid", fgColor=NAVY)
+    head_fill = PatternFill("solid", fgColor=HEAD_BG)
+    bold_fill = PatternFill("solid", fgColor=BOLD_BG)
+    under = Border(bottom=Side(style="thin", color=LINE))
 
     def fname(text):
         return "Arial" if str(text if text is not None else "").isascii() else "맑은 고딕"
@@ -368,62 +383,114 @@ def to_xlsx(code: str) -> bytes:
                 if fill:
                     cell.fill = fill
 
-            # B1 로고 / B2 종목 / B3 단위
-            ws.merge_cells(f"B1:{last}1")
-            put(1, c0, "MYSTOCK", font_name="Arial", bold=True, color=NAVY, size=20)
-            ws.row_dimensions[1].height = 30
-            ws.merge_cells(f"B2:{last}2")
-            put(2, c0, f"{name} - {code}", bold=True, color=DARK, size=14)
-            ws.merge_cells(f"B3:{last}3")
-            put(3, c0, f"{tag} {labels[key]}  (단위: 백만원, 비율: %)", color=GRAY, size=9)
+            def underline(r):              # 밑줄 = B~끝 하단 thin(회색)
+                for c in range(c0, v0 + np_):
+                    ws.cell(row=r, column=c).border = under
 
-            # 4행 헤더(퍼플 + 흰 글자)
-            put(4, c0, "계정", bold=True, color=WHITE, fill=head_fill)
+            def section(r, title):         # 소제목 행(연회색 채움 B~끝 + 네이비 볼드)
+                put(r, c0, title, bold=True, color=NAVY, fill=head_fill)
+                for c in range(v0, v0 + np_):
+                    put(r, c, None, bold=True, color=NAVY, align="right", fill=head_fill)
+
+            # R1 여백 / R2 제목바(네이비+흰글자) / R3 단위 부제 / R4 소제목 계정헤더
+            ws.row_dimensions[1].height = 11
+            ws.merge_cells(f"B2:{last}2")
+            put(2, c0, f"{name} - {code}", bold=True, color=WHITE, size=20, fill=title_fill)
+            ws.row_dimensions[2].height = 28.5
+            ws.merge_cells(f"B3:{last}3")
+            put(3, c0, f"{tag} {labels[key]}  (단위: 백만원, 비율: %)", bold=True, color=GRAY, size=9)
+            put(4, c0, "계정", bold=True, color=NAVY, fill=head_fill)
             for j, p in enumerate(periods):
                 put(4, v0 + j, plabel(p, quarterly), font_name="Arial", bold=True,
-                    color=WHITE, align="right", fill=head_fill)
+                    color=NAVY, align="right", fill=head_fill)
 
             # 데이터 — 금액 계정(값만). yoy·이익률은 하단 섹션으로 모음.
+            # 볼드 소계=연한 채움 + 직전 행에 밑줄(섹션 첫 행 제외). 자식계정만 들여쓰기. 섹션 끝 밑줄.
             ri = 5
             margins = []
-            accs = []   # (계정명, 엑셀행, bold) — 하단 YoY 섹션용
+            accs = []   # (계정명, 엑셀행, bold, child) — 하단 YoY 섹션용
+            prev = None
             for r in rows:
                 if r.get("pct"):
                     margins.append(r)
                     continue
                 bold = bool(r.get("bold"))
-                vals = r.get("values") or []
-                put(ri, c0, r.get("account", ""), bold=bold, color=GRAY, indent=0 if bold else 1)
-                for j, v in enumerate(vals):
-                    put(ri, v0 + j, (None if v is None else v * 100), font_name="Arial",
-                        bold=bold, color=GRAY, align="right", fmt=AMT_FMT)
-                accs.append((r.get("account", ""), ri, bold))
+                child = bool(r.get("child"))
+                acc = r.get("account", "")
+                # 주당이익(EPS)은 원 단위(DART /1e8 저장 → ×1e8 원 환원, 계정명 '주당' 포함).
+                is_won = "주당" in "".join(acc.split())
+                scale, vfmt = (1e8, WON_FMT) if is_won else (100, AMT_FMT)
+                rfill = bold_fill if bold else None
+                if bold and prev is not None:
+                    underline(prev)
+                put(ri, c0, acc, bold=bold, color=GRAY, indent=1 if child else 0, fill=rfill)
+                for j, v in enumerate(r.get("values") or []):
+                    put(ri, v0 + j, ("-" if v is None else v * scale), font_name="Arial",
+                        bold=bold, color=GRAY, align="right",
+                        fmt=(None if v is None else vfmt), fill=rfill)
+                accs.append((acc, ri, bold, child, (r.get("canon") or acc)))
+                prev = ri
                 ri += 1
+            if prev is not None:
+                underline(prev)
+
+            # BS 소계 자동합계 — 유동자산 등 하위항목 있는 소계는 SUBTOTAL(9,하위계정)로 일치 보장.
+            # (하위계정=소계 바로 다음부터 다음 볼드 소계 직전까지의 비볼드 행. 값은 풀정밀도 보존.)
+            if key == "BS":
+                SUB_PARENTS = {"유동자산", "비유동자산", "유동부채", "비유동부채"}
+                for idx, (a, prow, bold, child, canon) in enumerate(accs):
+                    if canon.replace(" ", "") not in SUB_PARENTS:
+                        continue
+                    kids = []
+                    for (a2, r2, b2, c2, cn2) in accs[idx + 1:]:
+                        if b2:
+                            break
+                        kids.append(r2)
+                    if not kids:
+                        continue
+                    for j in range(np_):
+                        col = get_column_letter(v0 + j)
+                        put(prow, v0 + j, f"=SUBTOTAL(9,{col}{kids[0]}:{col}{kids[-1]})",
+                            font_name="Arial", bold=True, color=GRAY, align="right",
+                            fmt=AMT_FMT, fill=bold_fill)
 
             # 하단 ① 전년대비 증감(YoY %) — 전 계정 모아서. RATE(1,0,-전기,당기)=당기/전기-1.
             if accs:
                 ri += 1
-                put(ri, c0, "전년대비 증감 (YoY %)", bold=True, color=DARK)
+                section(ri, "전년대비 증감 (YoY %)")
                 ri += 1
-                for nm, arow, bold in accs:
-                    put(ri, c0, nm, bold=bold, color=GRAY, indent=0 if bold else 1)
+                prev = None
+                for nm, arow, bold, child, _canon in accs:
+                    rfill = bold_fill if bold else None
+                    if bold and prev is not None:
+                        underline(prev)
+                    put(ri, c0, nm, bold=bold, color=GRAY, indent=1 if child else 0, fill=rfill)
+                    put(ri, v0, None, bold=bold, color=GRAY, align="right", fill=rfill)  # 첫 기간 YoY 없음
                     for j in range(1, np_):
                         pcol, ccol = get_column_letter(v0 + j - 1), get_column_letter(v0 + j)
                         put(ri, v0 + j, f'=IFERROR(RATE(1,0,-{pcol}{arow},{ccol}{arow}),"n/a")',
-                            font_name="Arial", color=GRAY, align="right", fmt=YOY_FMT)
+                            font_name="Arial", bold=bold, color=GRAY, align="right",
+                            fmt=YOY_FMT, fill=rfill)
+                    prev = ri
                     ri += 1
+                if prev is not None:
+                    underline(prev)
 
             # 하단 ② Margins(손익 — 이익률 %)
             if margins:
                 ri += 1
-                put(ri, c0, "Margins", bold=True, color=DARK)
+                section(ri, "Margins")
                 ri += 1
+                prev = None
                 for r in margins:
                     put(ri, c0, r.get("account", ""), color=GRAY, indent=1)
                     for j, v in enumerate(r.get("values") or []):
-                        put(ri, v0 + j, (None if v is None else v), font_name="Arial",
-                            color=GRAY, align="right", fmt=PCT_FMT)
+                        put(ri, v0 + j, ("-" if v is None else v), font_name="Arial",
+                            color=GRAY, align="right", fmt=(None if v is None else PCT_FMT))
+                    prev = ri
                     ri += 1
+                if prev is not None:
+                    underline(prev)
 
             ws.column_dimensions["A"].width = 2.4
             ws.column_dimensions["B"].width = 34

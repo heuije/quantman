@@ -89,7 +89,7 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   { src: FinancialsData["annual"]; quarterly: boolean; stmt: keyof FinancialsData["annual"]; from?: string; to?: string }) {
   const norm = (s: string) => s.replace(/\s/g, "");
   const row = (st: FinStatement | undefined, names: string[]) =>
-    st?.rows.find((r) => names.includes(norm(r.account)));
+    st?.rows.find((r) => names.includes(norm(r.account)) || (!!r.canon && names.includes(norm(r.canon))));
   const pl = src.PL, bs = src.BS, cf = src.CF;
   const periods = pl?.periods || bs?.periods || cf?.periods || [];
   if (periods.length === 0) return null;
