@@ -173,26 +173,34 @@ TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, I
 
 # ── IR 조립 ──────────────────────────────────────────────────────────────────
 
+# 밸류에이션 멀티플 — 분모(이익·EBITDA·자본)가 0 이하면 멀티플이 음수가 돼 '저평가' 신호로
+# 무의미하다(적자기업은 싼 게 아니라 해당없음). 저평가 스크린은 오름차순 정렬이라 이런 음수
+# 종목이 '가장 싼' 1위로 오선별된다 — 자격에서 제외해 근본 차단(희제 라이브 발견).
+_POSITIVE_VALUATION_COLS = frozenset({
+    "trailing_pe", "forward_pe", "ev_ebitda", "ev_sales", "pb_ratio", "peg"})
+
+
+def _gt0(ref: str) -> dict:
+    """밸류 멀티플 ref > 0 자격 조건(compare leaf)."""
+    return {"op": "compare", "params": {"op": ">"},
+            "inputs": {"left": {"op": "data", "params": {"ref": ref}},
+                       "right": {"op": "const", "params": {"value": 0.0}}}}
+
+
+def _and_conds(conds: list) -> dict:
+    """조건 1개면 그대로, 여러 개면 logic AND로 결합."""
+    return conds[0] if len(conds) == 1 else {
+        "op": "logic", "params": {"logic": "AND"},
+        "inputs": {str(i): c for i, c in enumerate(conds)}}
+
+
 def assemble_ir(tool_name: str, tool_input: dict) -> dict:
     """도구 입력 → StrategyIR dict. screen은 부분집합→select IR, describe는 단일종목 360 IR."""
     if tool_name == "screen":
         symbols = list(tool_input.get("symbols") or [])
-        # 다섹터 = is_in(Industry, [업종...])(부분일치·하위호환 단일 sector). 사용자 섹터어
-        # (배터리 등)는 sector_match_values로 KSIC 업종 정규화·확장 — 테마명≠KSIC 어휘로 인한
-        # 빈 결과("반도체 쏠림") 방지. 미상 단어는 원문 유지(raw 폴백·동작 보존).
         from quant_core.data.feeds.classification import sector_match_values
         sectors = [str(s).strip() for s in (tool_input.get("sectors")
                    or ([tool_input["sector"]] if tool_input.get("sector") else [])) if str(s).strip()]
-        if sectors:
-            match_values = sector_match_values(sectors) or sectors
-            universe = {"kind": "all", "screener": {"condition": {
-                "op": "is_in",
-                "inputs": {"signal": {"op": "attribute", "params": {"attr": "Industry"}}},
-                "params": {"values": match_values, "match": "contains"}}}}
-        elif symbols:
-            universe = {"kind": "list", "symbols": symbols}
-        else:
-            universe = {"kind": "all"}
         # 점수: 밸류 지표 여러 개면 백분위 합 composite(낮을수록 저평가·산식 투명), 1개면 raw.
         refs = [r for r in (tool_input.get("score_refs")
                 or ([tool_input["score_ref"]] if tool_input.get("score_ref") else [])) if r]
@@ -210,6 +218,22 @@ def assemble_ir(tool_name: str, tool_input: dict) -> dict:
         else:
             signal = {"op": "data", "params": {"ref": refs[0]}}
             descending = bool(tool_input.get("descending", True))
+        # 자격필터: 밸류 멀티플 score_ref는 >0만(적자·음수 자본 제외) → 음수가 '최저평가'로
+        # 오선별되는 것 차단. 섹터 필터(is_in Industry)와 AND 결합. 사용자 섹터어(배터리 등)는
+        # sector_match_values로 KSIC+GICS 업종 정규화·확장(테마명≠업종 어휘로 인한 빈 결과 방지).
+        val_conds = [_gt0(r) for r in refs if r.split(".")[-1] in _POSITIVE_VALUATION_COLS]
+        if sectors:
+            match_values = sector_match_values(sectors) or sectors
+            sector_cond = {"op": "is_in",
+                           "inputs": {"signal": {"op": "attribute", "params": {"attr": "Industry"}}},
+                           "params": {"values": match_values, "match": "contains"}}
+            universe = {"kind": "all", "screener": {"condition": _and_conds([sector_cond] + val_conds)}}
+        elif symbols:
+            universe = {"kind": "list", "symbols": symbols}   # 명시 종목은 사용자 선택 존중(자격필터 미적용)
+        elif val_conds:
+            universe = {"kind": "all", "screener": {"condition": _and_conds(val_conds)}}
+        else:
+            universe = {"kind": "all"}
         # 근거 투명: composite 구성 팩터를 결과 표시 컬럼에 포함(중복 제거)
         display = list(dict.fromkeys(list(tool_input.get("display") or [])
                                      + [r.split(".")[-1] for r in refs]))

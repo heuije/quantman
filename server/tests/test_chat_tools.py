@@ -31,7 +31,7 @@ def test_assemble_screen_no_symbols_uses_all():
 
 
 def test_assemble_screen_composite_grouped():
-    """저평가 = 다밸류 지표 백분위 합 composite + 섹터별 top-N + 다섹터(P2)."""
+    """저평가 = 다밸류 지표 백분위 합 composite + 섹터별 top-N + 다섹터(P2) + 밸류>0 자격."""
     ir = assemble_ir("screen", {
         "score_refs": ["__SELF__.pb_ratio", "__SELF__.trailing_pe", "__SELF__.ev_ebitda"],
         "sectors": ["반도체", "배터리"], "group_by": "Sector", "top_n": 3})
@@ -41,11 +41,20 @@ def test_assemble_screen_composite_grouped():
     assert s.select.descending is False              # 백분위 합 낮을수록 저평가
     assert s.signal.op == "binary"                   # composite = rank 합 트리
     assert {"pb_ratio", "trailing_pe", "ev_ebitda"} <= set(s.select.display)  # 팩터 표시(투명)
-    # 사용자어("배터리")가 업종으로 정규화·확장 — 섹터 필터 빈결과("반도체 쏠림") 방지.
-    # 반도체는 KSIC(KR)+GICS(US) 둘 다, 2차전지는 KSIC만(S&P500 대응 GICS 없음).
-    assert ir["universe"]["screener"]["condition"]["params"]["values"] == \
+    # 자격 = 섹터 필터(is_in) + 밸류 멀티플 각각 >0(적자·음수 제외)을 AND 결합.
+    cond = ir["universe"]["screener"]["condition"]
+    assert cond["op"] == "logic" and cond["params"]["logic"] == "AND"
+    sub = list(cond["inputs"].values())
+    # 사용자어("배터리")가 업종으로 정규화·확장 — 반도체=KSIC(KR)+GICS(US), 2차전지=KSIC만.
+    sector_c = next(c for c in sub if c["op"] == "is_in")
+    assert sector_c["params"]["values"] == \
         ["반도체 제조업", "Semiconductors", "Semiconductor Materials & Equipment",
          "일차전지 및 이차전지 제조업"]
+    # 3개 밸류 멀티플 각각 >0 자격 — 음수(적자) 종목이 '최저평가'로 오선별되는 것 차단.
+    pos_refs = {c["inputs"]["left"]["params"]["ref"] for c in sub if c["op"] == "compare"}
+    assert pos_refs == {"__SELF__.pb_ratio", "__SELF__.trailing_pe", "__SELF__.ev_ebitda"}
+    assert all(c["params"]["op"] == ">" and c["inputs"]["right"]["params"]["value"] == 0.0
+               for c in sub if c["op"] == "compare")
 
 
 def test_assemble_simulate_raises_not_assembled():
@@ -387,22 +396,45 @@ def test_screen_sector_builds_screener():
     from app.chat.tools import assemble_ir
     ir = assemble_ir("screen", {"score_ref": "__SELF__.pb_ratio", "top_n": 3,
                                  "descending": False, "sector": "반도체"})
-    sc = ir["universe"]["screener"]["condition"]
-    assert sc["op"] == "is_in"
-    assert sc["inputs"]["signal"]["op"] == "attribute"
-    # attr=Industry(KSIC) 고정 — Sector(소속부)는 대형주 NaN이라 contains-match가 0건이 되는
-    # 회귀 가드(실데이터 검증: 반도체주 Industry="반도체 제조업", Sector는 삼성 등 nan).
-    assert sc["inputs"]["signal"]["params"]["attr"] == "Industry"
-    # 사용자어 "반도체" → 업종으로 정규화·확장: KSIC(KR)+GICS(US) 둘 다 → 한 values로 양 시장 매칭.
-    assert sc["params"]["values"] == \
+    cond = ir["universe"]["screener"]["condition"]
+    # 섹터 필터(is_in) + 밸류 멀티플>0 자격을 AND 결합(pb_ratio는 밸류 멀티플).
+    assert cond["op"] == "logic" and cond["params"]["logic"] == "AND"
+    sub = list(cond["inputs"].values())
+    sector_c = next(c for c in sub if c["op"] == "is_in")
+    # attr=Industry(KSIC) 고정 — Sector(소속부)는 대형주 NaN이라 contains-match 0건 회귀 가드.
+    assert sector_c["inputs"]["signal"]["params"]["attr"] == "Industry"
+    # 사용자어 "반도체" → 업종 정규화·확장: KSIC(KR)+GICS(US) 둘 다.
+    assert sector_c["params"]["values"] == \
         ["반도체 제조업", "Semiconductors", "Semiconductor Materials & Equipment"]
-    assert sc["params"]["match"] == "contains"
+    assert sector_c["params"]["match"] == "contains"
+    # pb_ratio>0 자격 — 음수 자본(적자) 종목이 '최저평가'로 오선별되는 것 차단.
+    pos = next(c for c in sub if c["op"] == "compare")
+    assert pos["params"]["op"] == ">" and pos["inputs"]["left"]["params"]["ref"] == "__SELF__.pb_ratio"
+    assert pos["inputs"]["right"]["params"]["value"] == 0.0
 
 
 def test_screen_without_sector_unchanged():
     from app.chat.tools import assemble_ir
     ir = assemble_ir("screen", {"score_ref": "__SELF__.pb_ratio", "top_n": 3, "symbols": ["005930"]})
+    # 명시 종목 리스트는 사용자 선택 존중 — 밸류 멀티플이어도 자격필터 미적용.
     assert ir["universe"] == {"kind": "list", "symbols": ["005930"]}
+
+
+def test_screen_valuation_single_ref_positivity_guard():
+    """밸류 멀티플 단일 ref(섹터 없음) — >0 자격이 붙어 음수(적자) EV/EBITDA가 제외된다."""
+    from app.chat.tools import assemble_ir
+    ir = assemble_ir("screen", {"score_ref": "__SELF__.ev_ebitda", "top_n": 5, "descending": False})
+    cond = ir["universe"]["screener"]["condition"]
+    assert cond["op"] == "compare" and cond["params"]["op"] == ">"
+    assert cond["inputs"]["left"]["params"]["ref"] == "__SELF__.ev_ebitda"
+    assert cond["inputs"]["right"]["params"]["value"] == 0.0
+
+
+def test_screen_non_valuation_ref_no_positivity_guard():
+    """밸류 멀티플이 아닌 지표(모멘텀)는 >0 자격을 붙이지 않는다(음수 모멘텀 정상)."""
+    from app.chat.tools import assemble_ir
+    ir = assemble_ir("screen", {"score_ref": "__SELF__.momentum_12_1m", "top_n": 5})
+    assert "screener" not in ir["universe"]   # 자격 조건 없음 → 순수 all
     assert "screener" not in ir["universe"]
 
 
