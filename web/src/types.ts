@@ -1118,7 +1118,8 @@ export interface CompanyProfile { established: string; homepage: string; ceo: st
 
 // ── 재무제표(Financials) — /market/financials ──
 export interface FinRow {
-  account: string;
+  account: string;          // 전자공시 원본 계정명(표시용)
+  canon?: string;           // 표준명(차트·지표 매칭용) — 원본명이 변형이어도 인식
   bold: boolean;            // 섹션 헤더(굵게)
   parent: boolean;          // 펼침 가능한 부모 계정
   child: boolean;           // 기본 숨김 상세(부모 펼칠 때 표시)

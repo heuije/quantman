@@ -101,6 +101,16 @@ def _canon_account(nm: str) -> str:
     return _CANON.get((nm or "").replace(" ", ""), (nm or "").strip())
 
 
+def _ordered_slots(sj: str, slots):
+    """표시 순서 정렬. BS는 DART 문서순서(ord)가 곧 표시순서·계층(소계 바로 아래 하위계정)
+    이라 그대로 — 전자공시 그대로의 구조·합계 일치(유동자산=하위계정 합). PL·CF는 DART ord가
+    XBRL 요소순이라 뒤죽박죽(PL은 매출액이 맨 뒤, CF는 영업활동이 맨 뒤)이므로 표준 표시순서(_ORDER)."""
+    slots = list(slots)
+    if sj == "BS":
+        return sorted(slots, key=lambda s: s["ord"])
+    return sorted(slots, key=lambda s: (_order_rank(sj, _canon_account(s["nm"])), s["ord"]))
+
+
 def _num(s):
     s = str(s or "").replace(",", "").strip()
     if not s or s in ("-", "N/A"):
@@ -264,7 +274,7 @@ def _fetch_quarterly(cc: str, y_lo: int, y_cur: int) -> dict:
 
     quarterly: dict = {}
     for sj in ("PL", "BS", "CF"):
-        slots = sorted(store.get(sj, {}).values(), key=lambda s: (_order_rank(sj, _canon_account(s["nm"])), s["ord"]))
+        slots = _ordered_slots(sj, store.get(sj, {}).values())
         rows = []
         for s in slots:
             vals = []
@@ -273,8 +283,10 @@ def _fetch_quarterly(cc: str, y_lo: int, y_cur: int) -> dict:
                 vals.append(v / 1e8 if v is not None else None)
             if all(v is None for v in vals):
                 continue
-            name = _canon_account(s["nm"])
-            rows.append({"account": name, "bold": name.replace(" ", "") in _BOLD,
+            raw = s["nm"]
+            canon = _canon_account(raw)
+            rows.append({"account": raw, "canon": canon,
+                         "bold": canon.replace(" ", "") in _BOLD,
                          "parent": False, "child": False, "group": None, "values": vals})
         if rows:
             quarterly[sj] = {"periods": periods, "rows": rows}
@@ -338,15 +350,16 @@ def fetch(code: str) -> dict | None:
     periods = [f"{y}/12" for y in years]
     annual: dict = {}
     for sj in ("PL", "BS", "CF"):
-        slots = sorted(store.get(sj, {}).values(), key=lambda s: (_order_rank(sj, _canon_account(s["nm"])), s["ord"]))
+        slots = _ordered_slots(sj, store.get(sj, {}).values())
         rows = []
         for s in slots:
             vals = [(s["vals"].get(y) / 1e8 if s["vals"].get(y) is not None else None) for y in years]
             if all(v is None for v in vals):
                 continue
-            name = _canon_account(s["nm"])
-            rows.append({"account": name,
-                         "bold": name.replace(" ", "") in _BOLD,
+            raw = s["nm"]                       # 전자공시 원본 계정명 그대로
+            canon = _canon_account(raw)          # 차트·지표 매칭용 표준명(표시는 raw)
+            rows.append({"account": raw, "canon": canon,
+                         "bold": canon.replace(" ", "") in _BOLD,
                          "parent": False, "child": False, "group": None, "values": vals})
         if rows:
             annual[sj] = {"periods": periods, "rows": rows}

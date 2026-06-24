@@ -124,7 +124,8 @@ def _add_pl_metrics(period: dict) -> None:
     pl, cf = period.get("PL"), period.get("CF")
     if not pl or not pl.get("rows"):
         return
-    norm = lambda r: r["account"].replace(" ", "")
+    # canon(표준명) 우선 매칭 — DART 원본명이 변형(당기순이익(손실)·연결당기순이익 등)이어도 인식.
+    norm = lambda r: (r.get("canon") or r.get("account", "")).replace(" ", "")
 
     def find(stmt, pred):
         if not stmt:
@@ -140,7 +141,7 @@ def _add_pl_metrics(period: dict) -> None:
         return [(round(x / d * 100, 1) if (x is not None and d) else None) for x, d in zip(num, rv)]
 
     def mk_pct(label, vals):
-        return {"account": label, "values": vals, "change": [None] * len(vals),
+        return {"account": label, "canon": label, "values": vals, "change": [None] * len(vals),
                 "bold": False, "parent": False, "child": False, "group": None,
                 "pct": True, "derived": True}
 
@@ -167,7 +168,7 @@ def _add_pl_metrics(period: dict) -> None:
         elif a == "영업이익":
             new.append(mk_pct("영업이익률(%)", ratio(r["values"])))
             if ebitda:
-                new.append({"account": "EBITDA", "values": ebitda, "bold": False,
+                new.append({"account": "EBITDA", "canon": "EBITDA", "values": ebitda, "bold": False,
                             "parent": False, "child": False, "group": None, "derived": True,
                             "change": [None] + [_pct(ebitda[i], ebitda[i - 1]) for i in range(1, len(ebitda))]})
                 new.append(mk_pct("EBITDA Margin(%)", ratio(ebitda)))
@@ -427,11 +428,31 @@ def to_xlsx(code: str) -> bytes:
                     put(ri, v0 + j, ("-" if v is None else v * scale), font_name="Arial",
                         bold=bold, color=GRAY, align="right",
                         fmt=(None if v is None else vfmt), fill=rfill)
-                accs.append((acc, ri, bold, child))
+                accs.append((acc, ri, bold, child, (r.get("canon") or acc)))
                 prev = ri
                 ri += 1
             if prev is not None:
                 underline(prev)
+
+            # BS 소계 자동합계 — 유동자산 등 하위항목 있는 소계는 SUBTOTAL(9,하위계정)로 일치 보장.
+            # (하위계정=소계 바로 다음부터 다음 볼드 소계 직전까지의 비볼드 행. 값은 풀정밀도 보존.)
+            if key == "BS":
+                SUB_PARENTS = {"유동자산", "비유동자산", "유동부채", "비유동부채"}
+                for idx, (a, prow, bold, child, canon) in enumerate(accs):
+                    if canon.replace(" ", "") not in SUB_PARENTS:
+                        continue
+                    kids = []
+                    for (a2, r2, b2, c2, cn2) in accs[idx + 1:]:
+                        if b2:
+                            break
+                        kids.append(r2)
+                    if not kids:
+                        continue
+                    for j in range(np_):
+                        col = get_column_letter(v0 + j)
+                        put(prow, v0 + j, f"=SUBTOTAL(9,{col}{kids[0]}:{col}{kids[-1]})",
+                            font_name="Arial", bold=True, color=GRAY, align="right",
+                            fmt=AMT_FMT, fill=bold_fill)
 
             # 하단 ① 전년대비 증감(YoY %) — 전 계정 모아서. RATE(1,0,-전기,당기)=당기/전기-1.
             if accs:
@@ -439,7 +460,7 @@ def to_xlsx(code: str) -> bytes:
                 section(ri, "전년대비 증감 (YoY %)")
                 ri += 1
                 prev = None
-                for nm, arow, bold, child in accs:
+                for nm, arow, bold, child, _canon in accs:
                     rfill = bold_fill if bold else None
                     if bold and prev is not None:
                         underline(prev)
