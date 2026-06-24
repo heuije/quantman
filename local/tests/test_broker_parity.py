@@ -2,7 +2,7 @@
 
 P1 — Broker Protocol의 account_snapshot 시그니처가 실제 구현과 일치
 P3 — reconcile_submitting이 _daily_ccld 없는 브로커에서 AttributeError 없이 graceful skip
-P4 — _should_start_kis_ws 헬퍼가 브로커 종류에 따라 올바른 값을 반환
+P4 — make_quote_ws/make_order_ws 팩토리가 브로커별 WS(kis/ls)를 선택
 """
 from __future__ import annotations
 
@@ -129,56 +129,68 @@ def test_p3_kis_path_unchanged(tmp_path):
     broker._daily_ccld.assert_called_once()
 
 
-# ── P4: _should_start_kis_ws 헬퍼 ─────────────────────────────────────────────
+# ── P4: 브로커별 WS 팩토리 (make_quote_ws / make_order_ws) ──────────────────
+# 구 _should_start_kis_ws 게이트가 팩토리로 일반화됨 — KIS는 기존 KisWebSocket/
+# KisOrderWebSocket을 그대로 받고(byte-identical), LS도 전용 WS를 start한다.
 
-def test_p4_helper_returns_false_for_ls(monkeypatch):
-    """LS 활성 시 _should_start_kis_ws()는 False."""
+
+class _FakeWsBroker:
+    """WS 팩토리 구성용 최소 브로커 — 네트워크 호출 없음."""
+
+    virtual = True
+
+    def _token(self):
+        return "TOK"
+
+
+def _patch_active_broker(monkeypatch, kind):
     from localapp import intraday_loop, secrets_store as s
-    monkeypatch.setattr(s, "get_active_broker", lambda: "ls")
+    monkeypatch.setattr(s, "get_active_broker", lambda: kind)
     # intraday_loop도 같은 함수 참조를 사용하므로 모듈 속성도 패치
-    monkeypatch.setattr(intraday_loop, "get_active_broker", lambda: "ls")
-    assert intraday_loop._should_start_kis_ws() is False
+    monkeypatch.setattr(intraday_loop, "get_active_broker", lambda: kind)
 
 
-def test_p4_helper_returns_true_for_kis(monkeypatch):
-    """KIS 활성 시 _should_start_kis_ws()는 True."""
-    from localapp import intraday_loop, secrets_store as s
-    monkeypatch.setattr(s, "get_active_broker", lambda: "kis")
-    monkeypatch.setattr(intraday_loop, "get_active_broker", lambda: "kis")
-    assert intraday_loop._should_start_kis_ws() is True
+def test_p4_quote_ws_ls_is_ls_websocket(monkeypatch):
+    """LS 활성 → make_quote_ws가 LsWebSocket을 만든다(이전엔 시세 WS skip)."""
+    from localapp import intraday_loop
+    from localapp.ls_websocket import LsWebSocket
+    _patch_active_broker(monkeypatch, "ls")
+    ws = intraday_loop.make_quote_ws(_FakeWsBroker(), lambda s, p: None)
+    assert isinstance(ws, LsWebSocket)
 
 
-def test_p4_ws_start_not_called_for_ls(monkeypatch):
-    """LS 활성 시 KisWebSocket.start()가 호출되지 않는다 — 소스 레벨 검증."""
-    # intraday_loop의 ws.start() 호출 블록이 _should_start_kis_ws() 게이트로
-    # 감싸져 있는지 소스 텍스트로 확인.
-    loop_path = _LOCAL / "localapp" / "intraday_loop.py"
-    source = loop_path.read_text(encoding="utf-8")
-
-    # _should_start_kis_ws가 ws.start() 상위 레벨에서 사용되어야 함
-    assert "_should_start_kis_ws()" in source, (
-        "intraday_loop.py에 _should_start_kis_ws() 게이트가 없습니다"
-    )
-
-    # ws.start() 직전에 _should_start_kis_ws 게이트가 있어야 함
-    ws_start_pos = source.find("ws.start()")
-    assert ws_start_pos != -1, "ws.start() 호출을 찾을 수 없습니다"
-
-    # ws.start()가 있는 블록 앞에 _should_start_kis_ws가 있어야 함
-    guard_pos = source.rfind("_should_start_kis_ws()", 0, ws_start_pos)
-    assert guard_pos != -1, (
-        "ws.start() 이전에 _should_start_kis_ws() 게이트가 없습니다"
-    )
+def test_p4_quote_ws_kis_is_kis_websocket(monkeypatch):
+    """KIS 활성 → make_quote_ws가 KisWebSocket을 만든다(기존 경로 불변)."""
+    from localapp import intraday_loop
+    from localapp.kis_websocket import KisWebSocket
+    _patch_active_broker(monkeypatch, "kis")
+    ws = intraday_loop.make_quote_ws(_FakeWsBroker(), lambda s, p: None)
+    assert isinstance(ws, KisWebSocket)
 
 
-def test_p4_order_ws_also_uses_helper(monkeypatch):
-    """체결통보 WS 게이트도 _should_start_kis_ws()를 사용한다 — 두 게이트 일치."""
-    loop_path = _LOCAL / "localapp" / "intraday_loop.py"
-    source = loop_path.read_text(encoding="utf-8")
+def test_p4_order_ws_ls_is_ls_order_websocket(monkeypatch):
+    """LS 활성 → make_order_ws가 LsOrderWebSocket(hts_id 불요)."""
+    from localapp import intraday_loop
+    from localapp.ls_order_websocket import LsOrderWebSocket
+    _patch_active_broker(monkeypatch, "ls")
+    ws = intraday_loop.make_order_ws(_FakeWsBroker(), lambda e: None, "KR")
+    assert isinstance(ws, LsOrderWebSocket)
 
-    # _should_start_kis_ws() 사용 횟수 — price-WS + order-WS = 최소 2회
-    count = source.count("_should_start_kis_ws()")
-    assert count >= 2, (
-        f"_should_start_kis_ws() 사용이 {count}회입니다. "
-        "price-WS와 order-WS 양쪽에서 사용해야 합니다(최소 2회)."
-    )
+
+def test_p4_order_ws_kis_with_hts_is_kis_order_websocket(monkeypatch):
+    """KIS 활성 + hts_id → KisOrderWebSocket(기존 경로 불변)."""
+    from localapp import intraday_loop
+    from localapp.kis_order_websocket import KisOrderWebSocket
+    _patch_active_broker(monkeypatch, "kis")
+    monkeypatch.setattr(intraday_loop, "load_kis", lambda: {"hts_id": "myhts"})
+    ws = intraday_loop.make_order_ws(_FakeWsBroker(), lambda e: None, "KR")
+    assert isinstance(ws, KisOrderWebSocket)
+
+
+def test_p4_order_ws_kis_no_hts_returns_none(monkeypatch):
+    """KIS 활성 + hts_id 없음 → None(REST 폴링이 체결 인지 fallback) — 기존 동작 불변."""
+    from localapp import intraday_loop
+    _patch_active_broker(monkeypatch, "kis")
+    monkeypatch.setattr(intraday_loop, "load_kis", lambda: {})
+    ws = intraday_loop.make_order_ws(_FakeWsBroker(), lambda e: None, "KR")
+    assert ws is None

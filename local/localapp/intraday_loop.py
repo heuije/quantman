@@ -22,6 +22,8 @@ from .kis_broker import canonical_odno
 from .intraday_stop import IntradayStopManager
 from .kis_order_websocket import KisOrderWebSocket
 from .kis_websocket import KisWebSocket
+from .ls_order_websocket import LsOrderWebSocket
+from .ls_websocket import LsWebSocket
 from .runner import make_broker
 from .secrets_store import load_kis, get_active_broker
 from .sync_client import pull_risk_limits, push_snapshot
@@ -30,13 +32,31 @@ from .trader import Trader
 log = logging.getLogger("localapp.intraday_loop")
 
 
-def _should_start_kis_ws() -> bool:
-    """KIS 전용 WebSocket(시세·체결)을 시작해야 하면 True.
+def make_quote_ws(broker, on_tick):
+    """active broker에 맞는 실시간 시세 WS — kis→KisWebSocket, ls→LsWebSocket.
 
-    비KIS(LS 등) 활성 시 False — WS 대신 REST 폴링 fallback이 사용된다.
-    order-WS 게이트(~459)와 price-WS 게이트(~433)가 같은 조건을 공유한다.
+    둘 다 (broker, on_tick) 동일 인터페이스(start/subscribe/sync_subscriptions/
+    is_connected). WS 시작 실패·미연결이어도 REST 폴링 fallback이 ws.is_connected를
+    보고 stop-loss를 평가하므로 안전. KIS는 기존과 동일한 KisWebSocket을 받는다.
     """
-    return get_active_broker() == "kis"
+    if get_active_broker() == "ls":
+        return LsWebSocket(broker, on_tick=on_tick)
+    return KisWebSocket(broker, on_tick=on_tick)
+
+
+def make_order_ws(broker, on_exec, market):
+    """active broker에 맞는 실시간 체결통보 WS. None이면 REST 폴링이 체결 인지 fallback.
+
+    kis: hts_id 설정 시에만 KisOrderWebSocket(미설정이면 None — 기존 동작 불변). ls:
+    LsOrderWebSocket(token 인증·hts_id 불요). 둘 다 on_exec(evt)는 KIS H0STCNI0 키로
+    정규화된 dict를 받아 동일한 _on_exec_event를 공유한다.
+    """
+    if get_active_broker() == "ls":
+        return LsOrderWebSocket(broker, on_exec=on_exec, market=market)
+    hts_id = (load_kis() or {}).get("hts_id", "")
+    if not hts_id:
+        return None
+    return KisOrderWebSocket(broker, hts_id, on_exec=on_exec, market=market)
 
 # 모듈 전역 상태 — scheduler가 start/stop 호출
 _state = {
@@ -436,22 +456,19 @@ def start(market: str = "KRX") -> dict:
                     _state["last_overseas_tick"] = time.time()
             manager.on_tick(sym, price)
 
-        ws = KisWebSocket(broker, on_tick=_on_tick_detect)
+        # active broker에 맞는 시세 WS (kis→KisWebSocket, ls→LsWebSocket). KIS는
+        # 기존과 동일하게 KisWebSocket이 만들어져 start된다(byte-identical). LS는
+        # 이전엔 시세 WS가 skip돼 REST 폴링만 했으나 이제 LsWebSocket이 start된다.
+        ws = make_quote_ws(broker, _on_tick_detect)
         ws_started = False
-        if not _should_start_kis_ws():
-            # 비KIS 브로커(LS 등): 시세 WS skip — REST 폴링 fallback이 stop loss 평가.
-            # ws.is_connected는 False로 유지돼 폴링 thread가 자동 활성화된다.
-            log.info("[%s] 비KIS 브로커 — 실시간 시세 WS skip (REST 폴링으로 stop loss 평가)",
-                     market)
-        else:
-            try:
-                ws.start()
-                ws_started = True
-            except Exception as e:
-                # Q3: WebSocket 시작 자체 실패해도 loop 중단하지 않음. REST 폴링 fallback
-                # thread가 ws.is_connected를 보고 폴링으로 stop loss 평가 유지.
-                log.error("[%s] WebSocket 시작 실패 — REST 폴링 fallback만으로 동작: %s",
-                           market, e)
+        try:
+            ws.start()
+            ws_started = True
+        except Exception as e:
+            # Q3: WebSocket 시작 자체 실패해도 loop 중단하지 않음. REST 폴링 fallback
+            # thread가 ws.is_connected(False)를 보고 폴링으로 stop loss 평가 유지.
+            log.error("[%s] 시세 WS 시작 실패 — REST 폴링 fallback만으로 동작: %s",
+                       market, e)
 
         # 초기 구독: 이번 시장의 보유 종목만 (WebSocket 미동작이면 skip)
         held = [s for s in manager.held_symbols() if _in_market(s)]
@@ -468,30 +485,21 @@ def start(market: str = "KRX") -> dict:
         # 옛 v0.9.11까지 KR만 spawn해서 해외 매수 fill 이벤트를 못 받아 orders.jsonl·
         # pending_orders 갱신 안 되던 결함 fix. intraday_loop은 한 시장씩 가동 (KRX
         # 09:00~15:30 vs US 22:30~05:00 — 시간 겹치지 않음)이라 한 인스턴스로 충분.
-        order_ws = None
-        # (b) KIS 전용: 체결통보 WebSocket은 KIS만 — 비KIS(LS) 활성 시 skip. LS WS는
-        # Phase 3 후속이고 REST 폴링이 체결 인지 fallback. runner._wait_for_order_ws와 동일 게이트.
-        if not _should_start_kis_ws():
-            log.info("[%s] 비KIS 브로커 활성 — KIS 체결통보 WebSocket skip (REST 폴링 fallback)",
-                      market)
+        # active broker에 맞는 체결통보 WS. kis(hts_id 필요)→KisOrderWebSocket,
+        # ls→LsOrderWebSocket. None이면 REST 폴링이 체결 인지 fallback(기존 동작).
+        order_ws = make_order_ws(
+            broker, lambda evt: _on_exec_event(trader, broker, evt), market)
+        if order_ws is not None:
+            try:
+                order_ws.start()
+                log.info("[%s] 체결 통보 WebSocket 시작 (%s)",
+                          market, type(order_ws).__name__)
+            except Exception as e:
+                log.warning("[%s] 체결 통보 WebSocket 시작 실패: %s", market, e)
+                order_ws = None
         else:
-            kis_creds = load_kis() or {}
-            hts_id = kis_creds.get("hts_id", "")
-            if hts_id:
-                try:
-                    order_ws = KisOrderWebSocket(
-                        broker, hts_id,
-                        on_exec=lambda evt: _on_exec_event(trader, broker, evt),
-                        market=market)
-                    order_ws.start()
-                    log.info("[%s] 체결 통보 WebSocket 시작 (tr=%s, HTS ID=%s)",
-                              market, order_ws._tr_id, hts_id)
-                except Exception as e:
-                    log.warning("[%s] 체결 통보 WebSocket 시작 실패: %s", market, e)
-                    order_ws = None
-            else:
-                log.info("HTS ID 미설정 — 체결 통보 WebSocket skip "
-                          "(setup으로 hts_id 등록 시 활성)")
+            log.info("[%s] 체결 통보 WebSocket 없음 (KIS hts_id 미설정 등) — "
+                      "REST 폴링이 체결 인지 fallback", market)
 
         # 매도 발주 시 push hook
         original_submit = trader._submit_sell
