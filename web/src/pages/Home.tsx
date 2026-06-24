@@ -608,7 +608,7 @@ export default function Home() {
       <div style={{ display: "flex", gap: 2, borderBottom: "2px solid var(--border)", margin: "8px 0 16px", flexWrap: "wrap" }}>
         {TABS.map((t) => (
           <button key={t} type="button" onClick={() => setTab(t)}
-            style={{ fontSize: 20, fontWeight: tab === t ? 700 : 400, padding: "11px 20px", border: 0,
+            style={{ fontSize: 18, fontWeight: 700, padding: "11px 20px", border: 0,
               background: "transparent", cursor: "pointer", color: tab === t ? "#4f8ff5" : "var(--muted)",
               borderBottom: tab === t ? "2px solid #4f8ff5" : "2px solid transparent", marginBottom: -2 }}>{t}</button>
         ))}
