@@ -152,16 +152,23 @@ def corp_code(ticker: str):
 
 
 def _fetch_report(cc: str, year: int, reprt_code: str):
-    """fnlttSinglAcntAll 연결(CFS) 1콜. reprt_code: 11013(1Q)·11012(반기)·11014(3Q)·11011(사업)."""
-    try:
-        r = requests.get(f"{_BASE}/fnlttSinglAcntAll.json", params={
-            "crtfc_key": _key(), "corp_code": cc, "bsns_year": str(year),
-            "reprt_code": reprt_code, "fs_div": "CFS"}, headers=_UA, timeout=20)
-        d = r.json()
-        return d.get("list", []) if d.get("status") == "000" else None
-    except Exception as e:
-        _log.warning("DART fnlttSinglAcntAll 실패 %s/%s/%s: %s", cc, year, reprt_code, e)
-        return None
+    """fnlttSinglAcntAll 연결(CFS) 1콜. reprt_code: 11013(1Q)·11012(반기)·11014(3Q)·11011(사업).
+
+    일시적 연결 리셋(ConnectionError)은 1회 재시도 — 연도×보고서 다회 호출 시 끊김 대비."""
+    import time
+    for attempt in range(2):
+        try:
+            r = requests.get(f"{_BASE}/fnlttSinglAcntAll.json", params={
+                "crtfc_key": _key(), "corp_code": cc, "bsns_year": str(year),
+                "reprt_code": reprt_code, "fs_div": "CFS"}, headers=_UA, timeout=20)
+            d = r.json()
+            return d.get("list", []) if d.get("status") == "000" else None
+        except requests.exceptions.RequestException as e:
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+            _log.warning("DART fnlttSinglAcntAll 실패 %s/%s/%s: %s", cc, year, reprt_code, e)
+            return None
 
 
 def _fetch_year(cc: str, year: int):
@@ -174,15 +181,14 @@ _Q_CODE = {"11013": 1, "11012": 2, "11014": 3, "11011": 4}
 _Q_MONTH = {1: "03", 2: "06", 3: "09", 4: "12"}
 
 
-def _fetch_quarterly(cc: str, n_quarters: int = 8) -> dict:
-    """분기 연결재무제표(억원, 단일분기). 최근 n분기.
+def _fetch_quarterly(cc: str, y_lo: int, y_cur: int) -> dict:
+    """분기 연결재무제표(억원, 단일분기). y_lo년 1분기 ~ 가용 최신분기(연간 연도범위 전체 커버).
 
     DART 분기보고서는 PL/CF를 '누적'으로 준다(반기=1~6월). 단일분기 = 누적[q] − 누적[q-1]
     (q1은 그대로). 값이 정수(원)라 차감 오차 없음. BS는 분기말 잔액 스냅샷이라 차감 없이 그대로.
     PL 누적은 thstrm_add_amount(없으면 thstrm_amount), CF·사업보고서는 thstrm_amount.
     """
-    cur = date.today().year
-    years = [cur - 2, cur - 1, cur]
+    years = list(range(y_lo, y_cur + 1))
     # store[sj][key] = {nm, ord, cum:{(y,q):원}, snap:{(y,q):원}}
     store: dict = {}
 
@@ -241,9 +247,9 @@ def _fetch_quarterly(cc: str, n_quarters: int = 8) -> dict:
 
     allqs = sorted({yq for sec in store.values() for slot in sec.values()
                     for yq in list(slot["cum"]) + list(slot["snap"])})
-    if not allqs:
+    sel = [yq for yq in allqs if yq[0] >= y_lo]    # 연간 연도범위(y_lo~) 전체 분기
+    if not sel:
         return {}
-    sel = allqs[-n_quarters:]
     periods = [f"{y}/{_Q_MONTH[q]}" for (y, q) in sel]
 
     def disc(slot, y, q):
@@ -346,5 +352,6 @@ def fetch(code: str) -> dict | None:
             annual[sj] = {"periods": periods, "rows": rows}
     if not annual.get("PL") and not annual.get("BS"):
         return None
-    quarterly = _fetch_quarterly(cc)
+    # 분기는 연간이 보여주는 연도범위(years[0]~) 전체를 단일분기로 — 가용 최신분기까지.
+    quarterly = _fetch_quarterly(cc, years[0], date.today().year)
     return {"fetched": date.today().isoformat(), "annual": annual, "quarterly": quarterly}
