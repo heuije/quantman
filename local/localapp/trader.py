@@ -1862,14 +1862,20 @@ class Trader:
             broker_pending = []
 
         n_bought_now = sum(1 for d in decisions if d["action"] == "bought")
-        # A안(서버 타임라인 '자동매매 시작 N건 매수'가 그날 실제 매수를 반영):
-        # 시가매수 주문은 09:00 단일가 체결 전이라 08:55 사이클 시점엔 n_bought(인사이클
-        # 체결)에 안 잡히고 pending에 남는다 → n_bought + 매수 체결대기를 합산해 발주
-        # 완료 매수분을 기록한다. side=buy만 세어 양방향 선물 아침 숏(매도)은 제외(오집계
-        # 방지). DAY 주문이라 다음 아침으로 이월 잔존 없음 → 당일 이 사이클 매수분.
+        n_sold_now = sum(1 for d in decisions if d["action"] == "sold")
+        # A안(서버 타임라인 '자동매매 시작'이 그날 실제 진입을 반영): 시가 진입 주문은
+        # 09:00 개장 단일가 체결 전이라 08:55 사이클 시점엔 n_bought/n_sold(인사이클 체결)에
+        # 안 잡히고 pending에 남는다 → 발주 완료분(체결+체결대기)을 side별로 기록한다.
+        # 매수=롱 진입(n_buy_placed), 매도=숏 진입(n_sell_placed·양방향 선물)을 각각 정확히
+        # 표면화한다(side 분리로 오집계 방지). DAY 주문이라 다음 아침 이월 잔존 없음 →
+        # 당일 이 사이클 진입분.
         n_buy_pending = sum(
             1 for p in self.pending.values()
             if p.get("side") == "buy"
+            and _market_group_safe(p.get("symbol", "")) == market)
+        n_sell_pending = sum(
+            1 for p in self.pending.values()
+            if p.get("side") == "sell"
             and _market_group_safe(p.get("symbol", "")) == market)
 
         cycle_summary = {
@@ -1880,7 +1886,8 @@ class Trader:
             "n_strategies": len(strategies),
             "n_bought": n_bought_now,
             "n_buy_placed": n_bought_now + n_buy_pending,
-            "n_sold": sum(1 for d in decisions if d["action"] == "sold"),
+            "n_sold": n_sold_now,
+            "n_sell_placed": n_sold_now + n_sell_pending,
             "n_skip_held": sum(1 for d in decisions if d["action"] == "skip_held"),
             "n_rejected": sum(1 for d in decisions if d["action"] == "rejected"),
             "n_unfilled": sum(1 for d in decisions if d["action"] == "unfilled"),
