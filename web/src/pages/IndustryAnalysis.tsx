@@ -49,8 +49,6 @@ const INDUSTRY_GROUPS: IndustryGroup[] = [
   ] },
   { label: "금융", items: ["금융"] },
   { label: "미디어 엔터테인먼트", items: ["미디어엔터테인먼트"] },
-  { label: "에너지", items: [] },
-  { label: "소재", items: [] },
   { label: "유틸리티", items: ["유틸리티"] },
 ];
 // 대분류가 직접/하위 통틀어 보유한 산업 목록(평탄화).
