@@ -505,13 +505,18 @@ class SettingsApp:
             self.timeline_body.pack(fill="x", padx=12, pady=(0, 8))
             self.timeline_chevron.config(text="▾")
 
+    # ⚠ 서버 타임라인 kind 전체를 덮어야 한다(누락 시 _row가 raw 코드를 그대로 표시).
+    # 웹 TradingTimeline.tsx KIND_LABEL와 동일 라벨·동일 집합으로 동기화.
     KIND_LABEL = {
-        "krx_preview":    "국장 매매 후보 결정",
-        "krx_cycle":      "국장 자동매매 시작",
-        "krx_settlement": "국장 자동매매 종료",
-        "us_preview":     "미장 매매 후보 결정",
-        "us_cycle":       "미장 자동매매 시작",
-        "us_settlement":  "미장 자동매매 종료",
+        "krx_preview":       "국장 매매 후보 결정",
+        "krx_cycle":         "국장 자동매매 시작",
+        "krx_close_stock":   "국장 종가 청산 (주식)",
+        "krx_close_futures": "국장 종가 청산 (선물)",
+        "krx_settlement":    "국장 자동매매 종료",
+        "us_preview":        "미장 매매 후보 결정",
+        "us_cycle":          "미장 자동매매 시작",
+        "us_close":          "미장 종가 청산",
+        "us_settlement":     "미장 자동매매 종료",
     }
     STATUS_ICON = {
         "done": "✓", "scheduled": "⏳", "missed": "✗", "holiday": "—",
