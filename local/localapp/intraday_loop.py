@@ -50,9 +50,16 @@ def make_order_ws(broker, on_exec, market):
     kis: hts_id 설정 시에만 KisOrderWebSocket(미설정이면 None — 기존 동작 불변). ls:
     LsOrderWebSocket(token 인증·hts_id 불요). 둘 다 on_exec(evt)는 KIS H0STCNI0 키로
     정규화된 dict를 받아 동일한 _on_exec_event를 공유한다.
+
+    ⚠ intraday_loop의 market은 "KRX"/"US"(시장그룹)지만 체결통보 WS의 tr_id 구분은
+    "KR"/"US"다 → LS는 "KR"로 정규화한다(안 하면 LsOrderWebSocket 생성서 ValueError로
+    loop-start 크래시 — 2026-06-25 라이브 실측 회귀). KIS는 기존 동작 보존 위해 market을
+    그대로 넘긴다(KIS 국내 WS의 "KRX" 미정규화는 별개의 기존 잠복이슈 — 호출부 try가
+    삼켜 REST 폴백으로 안전, 본 변경 범위 밖).
     """
     if get_active_broker() == "ls":
-        return LsOrderWebSocket(broker, on_exec=on_exec, market=market)
+        ws_market = "US" if market == "US" else "KR"
+        return LsOrderWebSocket(broker, on_exec=on_exec, market=ws_market)
     hts_id = (load_kis() or {}).get("hts_id", "")
     if not hts_id:
         return None
@@ -486,20 +493,25 @@ def start(market: str = "KRX") -> dict:
         # pending_orders 갱신 안 되던 결함 fix. intraday_loop은 한 시장씩 가동 (KRX
         # 09:00~15:30 vs US 22:30~05:00 — 시간 겹치지 않음)이라 한 인스턴스로 충분.
         # active broker에 맞는 체결통보 WS. kis(hts_id 필요)→KisOrderWebSocket,
-        # ls→LsOrderWebSocket. None이면 REST 폴링이 체결 인지 fallback(기존 동작).
-        order_ws = make_order_ws(
-            broker, lambda evt: _on_exec_event(trader, broker, evt), market)
-        if order_ws is not None:
-            try:
+        # ls→LsOrderWebSocket. **생성·시작 실패는 catch** — 시세 WS·폴링·hook 등
+        # loop 나머지는 계속 가동돼야 한다(REST 폴백이 체결 인지). 기존 KIS 코드처럼
+        # 생성을 try 안에 둔다(Stage 4서 밖으로 뺐다가 ValueError가 loop-start를
+        # 크래시시킨 2026-06-25 회귀 교정). None이면 REST 폴백(기존 동작).
+        order_ws = None
+        try:
+            order_ws = make_order_ws(
+                broker, lambda evt: _on_exec_event(trader, broker, evt), market)
+            if order_ws is not None:
                 order_ws.start()
                 log.info("[%s] 체결 통보 WebSocket 시작 (%s)",
                           market, type(order_ws).__name__)
-            except Exception as e:
-                log.warning("[%s] 체결 통보 WebSocket 시작 실패: %s", market, e)
-                order_ws = None
-        else:
-            log.info("[%s] 체결 통보 WebSocket 없음 (KIS hts_id 미설정 등) — "
-                      "REST 폴링이 체결 인지 fallback", market)
+            else:
+                log.info("[%s] 체결 통보 WebSocket 없음 (KIS hts_id 미설정 등) — "
+                          "REST 폴링이 체결 인지 fallback", market)
+        except Exception as e:
+            log.warning("[%s] 체결 통보 WebSocket 시작 실패 — REST 폴링 fallback: %s",
+                         market, e)
+            order_ws = None
 
         # 매도 발주 시 push hook
         original_submit = trader._submit_sell
