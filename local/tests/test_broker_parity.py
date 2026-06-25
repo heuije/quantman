@@ -168,17 +168,30 @@ def test_p4_quote_ws_kis_is_kis_websocket(monkeypatch):
     assert isinstance(ws, KisWebSocket)
 
 
-def test_p4_order_ws_ls_is_ls_order_websocket(monkeypatch):
-    """LS 활성 → make_order_ws가 LsOrderWebSocket(hts_id 불요)."""
+def test_p4_order_ws_ls_normalizes_krx_market(monkeypatch):
+    """LS 활성 → make_order_ws가 LsOrderWebSocket·루프 'KRX'를 'KR'로 정규화.
+
+    회귀 방지: 정규화 없으면 LsOrderWebSocket(market='KRX')가 ValueError를 던져
+    loop-start가 크래시한다(2026-06-25 라이브 실측). 실제 호출부 market은 'KRX'.
+    """
     from localapp import intraday_loop
     from localapp.ls_order_websocket import LsOrderWebSocket
     _patch_active_broker(monkeypatch, "ls")
-    ws = intraday_loop.make_order_ws(_FakeWsBroker(), lambda e: None, "KR")
+    ws = intraday_loop.make_order_ws(_FakeWsBroker(), lambda e: None, "KRX")
     assert isinstance(ws, LsOrderWebSocket)
+    assert ws._market == "KR"   # 'KRX' → 'KR' 정규화
+
+
+def test_p4_order_ws_ls_us_market_kept(monkeypatch):
+    """LS US 시장은 'US' 유지."""
+    from localapp import intraday_loop
+    _patch_active_broker(monkeypatch, "ls")
+    ws = intraday_loop.make_order_ws(_FakeWsBroker(), lambda e: None, "US")
+    assert ws._market == "US"
 
 
 def test_p4_order_ws_kis_with_hts_is_kis_order_websocket(monkeypatch):
-    """KIS 활성 + hts_id → KisOrderWebSocket(기존 경로 불변)."""
+    """KIS 활성 + hts_id → KisOrderWebSocket(기존 경로 불변·market 그대로 전달)."""
     from localapp import intraday_loop
     from localapp.kis_order_websocket import KisOrderWebSocket
     _patch_active_broker(monkeypatch, "kis")
@@ -192,5 +205,5 @@ def test_p4_order_ws_kis_no_hts_returns_none(monkeypatch):
     from localapp import intraday_loop
     _patch_active_broker(monkeypatch, "kis")
     monkeypatch.setattr(intraday_loop, "load_kis", lambda: {})
-    ws = intraday_loop.make_order_ws(_FakeWsBroker(), lambda e: None, "KR")
+    ws = intraday_loop.make_order_ws(_FakeWsBroker(), lambda e: None, "KRX")
     assert ws is None
