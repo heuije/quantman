@@ -30,6 +30,9 @@ INDUSTRIES = {
     "화장품": "industry_화장품.csv",
     "미디어엔터테인먼트": "industry_미디어엔터테인먼트.csv",
     "교육출판업": "industry_교육출판업.csv",
+    "식음료": "industry_식음료.csv",
+    "건강기능식품": "industry_건강기능식품.csv",
+    "유틸리티": "industry_유틸리티.csv",
 }
 
 

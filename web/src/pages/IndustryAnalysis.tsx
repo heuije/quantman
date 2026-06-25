@@ -44,15 +44,14 @@ const INDUSTRY_GROUPS: IndustryGroup[] = [
   { label: "반도체.IT", items: ["반도체", "전자부품"] },
   { label: "산업재", items: ["건설"] },
   { label: "소비재", subgroups: [
-    { label: "필수소비재", items: ["화장품"] },
+    { label: "필수소비재", items: ["화장품", "식음료", "건강기능식품"] },
     { label: "경기소비재", items: ["교육출판업"] },
   ] },
   { label: "금융", items: ["금융"] },
-  { label: "건강기능식품", items: [] },
   { label: "미디어 엔터테인먼트", items: ["미디어엔터테인먼트"] },
   { label: "에너지", items: [] },
   { label: "소재", items: [] },
-  { label: "유틸리티", items: [] },
+  { label: "유틸리티", items: ["유틸리티"] },
 ];
 // 대분류가 직접/하위 통틀어 보유한 산업 목록(평탄화).
 const groupIndustries = (g: IndustryGroup): string[] =>
