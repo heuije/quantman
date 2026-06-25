@@ -1861,13 +1861,25 @@ class Trader:
             log.warning("미체결 조회 실패: %s", e)
             broker_pending = []
 
+        n_bought_now = sum(1 for d in decisions if d["action"] == "bought")
+        # A안(서버 타임라인 '자동매매 시작 N건 매수'가 그날 실제 매수를 반영):
+        # 시가매수 주문은 09:00 단일가 체결 전이라 08:55 사이클 시점엔 n_bought(인사이클
+        # 체결)에 안 잡히고 pending에 남는다 → n_bought + 매수 체결대기를 합산해 발주
+        # 완료 매수분을 기록한다. side=buy만 세어 양방향 선물 아침 숏(매도)은 제외(오집계
+        # 방지). DAY 주문이라 다음 아침으로 이월 잔존 없음 → 당일 이 사이클 매수분.
+        n_buy_pending = sum(
+            1 for p in self.pending.values()
+            if p.get("side") == "buy"
+            and _market_group_safe(p.get("symbol", "")) == market)
+
         cycle_summary = {
             "today": today.isoformat(),
             "market": market,                        # Phase 7 catch-up — 시장 식별
             "kind": "catchup_cycle" if catchup else "cycle",   # catch-up 구분
             "cycle_id": cycle_id,                    # 시작 저널(cycle_started)과 join
             "n_strategies": len(strategies),
-            "n_bought": sum(1 for d in decisions if d["action"] == "bought"),
+            "n_bought": n_bought_now,
+            "n_buy_placed": n_bought_now + n_buy_pending,
             "n_sold": sum(1 for d in decisions if d["action"] == "sold"),
             "n_skip_held": sum(1 for d in decisions if d["action"] == "skip_held"),
             "n_rejected": sum(1 for d in decisions if d["action"] == "rejected"),
