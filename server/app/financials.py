@@ -210,6 +210,42 @@ def _graft_sga(fg_pl: dict | None, dart_pl: dict | None) -> None:
         dart_pl["rows"] = d_rows[:j + 1] + grafted + d_rows[j + 1:]
 
 
+def _reorder_by_doc(stmt: dict, layout: list) -> None:
+    """OpenAPI rows를 원문 보고서 표시순서(layout=[(ckey,sign)...])로 제자리 재정렬 + 부호 적용.
+    - 같은 계정명이 여러 번(유동/비유동 매출채권 등)이면 OpenAPI 등장순서대로 보고서 등장순서에 1:1 배정.
+    - 부호: 보고서 표기 부호(비용=음수)를 OpenAPI 절대값에 적용 → 보고서 그대로.
+    - 매칭 안 되는 계정은 원래 상대순서 유지하며 맨 뒤."""
+    from collections import defaultdict
+    rows = stmt.get("rows")
+    if not rows or not layout:
+        return
+    from . import dart_doc
+    docpos = defaultdict(list)                       # ckey → [(위치, 부호), ...] 등장순
+    for i, (ck, sg) in enumerate(layout):
+        docpos[ck].append((i, sg))
+    used = defaultdict(int)
+    keyed = []
+    for j, r in enumerate(rows):
+        ck = dart_doc._ckey(r.get("account", ""))
+        lst = docpos.get(ck)
+        if lst:
+            k = min(used[ck], len(lst) - 1)
+            used[ck] += 1
+            idx, sg = lst[k]
+            # 보고서가 이 계정을 표시상 부호반전(비용을 음수표기 등)하면 전 기간 반전.
+            # 단 OpenAPI 부호와 보고서 부호가 '다를 때만' — 영업이익(손실)처럼 연도별 흑/적이
+            # 바뀌는 계정은 OpenAPI 실제값 보존(최신값 부호를 과거에 강제하면 흑자가 적자로 둔갑).
+            if sg is not None:
+                nz = [v for v in r.get("values", []) if v is not None]
+                if nz and (-1 if nz[-1] < 0 else 1) != sg:
+                    r["values"] = [None if v is None else -v for v in r["values"]]
+            keyed.append((idx, j, r))
+        else:
+            keyed.append((10 ** 6, j, r))
+    keyed.sort(key=lambda x: (x[0], x[1]))           # 보고서 위치, 동률은 OpenAPI 원순서(안정)
+    stmt["rows"] = [r for _, _, r in keyed]
+
+
 def _fetch(code: str) -> dict:
     r = requests.get("https://comp.fnguide.com/SVO2/ASP/SVD_Finance.asp",
                      params={"pGB": 1, "gicode": f"A{code}"}, headers=_UA, timeout=20)
@@ -222,16 +258,23 @@ def _fetch(code: str) -> dict:
         quarterly[key] = _with_change(_parse_div(soup, div_q, annual=False))
     _add_pl_metrics(annual)      # 이익률·EBITDA 하위행 1회 계산·삽입(저장본에 포함)
     _add_pl_metrics(quarterly)
-    # 연간(5개년)·분기 모두 DART 전자공시로 교체(키 있고 성공 시). FnGuide는 폴백.
+    # 연간(5개년)·분기 모두 DART 전자공시(OpenAPI 값) + 원문 보고서 표시순서로 교체. FnGuide는 폴백.
     try:
         from .config import settings
         if settings.OPENDART_API_KEY:
-            from . import dart
+            from . import dart, dart_doc
             draw = dart.fetch(code)
+            order = {}
+            try:
+                order = dart_doc.fetch_order(code, draw)   # 최신 사업보고서 원문 표시순서(draw 재사용)
+            except Exception:
+                _log.exception("원문 표시순서 조회 실패 %s", code)
             if draw and (draw.get("annual") or {}).get("PL"):
                 d_annual = draw["annual"]
                 for k in ("PL", "BS", "CF"):
                     if d_annual.get(k):
+                        if order.get(k):
+                            _reorder_by_doc(d_annual[k], order[k])   # 보고서 표시순서로 재정렬
                         _with_change(d_annual[k])
                 _add_pl_metrics(d_annual)
                 _graft_sga(annual.get("PL"), d_annual.get("PL"))   # FnGuide 판관비 상세 → DART 연간 이식
@@ -240,6 +283,8 @@ def _fetch(code: str) -> dict:
             if d_quarterly and d_quarterly.get("PL"):
                 for k in ("PL", "BS", "CF"):
                     if d_quarterly.get(k):
+                        if order.get(k):
+                            _reorder_by_doc(d_quarterly[k], order[k])
                         _with_change(d_quarterly[k])
                 _add_pl_metrics(d_quarterly)   # 이익률 부여(EBITDA는 DART CF에 D&A 없어 자동 생략)
                 quarterly = d_quarterly    # 분기도 DART 전자공시 단일분기로 교체
@@ -428,7 +473,7 @@ def to_xlsx(code: str) -> bytes:
                     put(ri, v0 + j, ("-" if v is None else v * scale), font_name="Arial",
                         bold=bold, color=GRAY, align="right",
                         fmt=(None if v is None else vfmt), fill=rfill)
-                accs.append((acc, ri, bold, child, (r.get("canon") or acc)))
+                accs.append((acc, ri, bold, child, (r.get("canon") or acc), r.get("values") or []))
                 prev = ri
                 ri += 1
             if prev is not None:
@@ -442,20 +487,33 @@ def to_xlsx(code: str) -> bytes:
                 "BS": {"유동자산", "비유동자산", "유동부채", "비유동부채"},
                 "PL": {"판매비와관리비"},
             }.get(key, set())
-            for idx, (a, prow, pbold, child, canon) in enumerate(accs):
+            for idx, (a, prow, pbold, child, canon, pvals) in enumerate(accs):
                 if canon.replace(" ", "") not in SUB_PARENTS:
                     continue
-                kids = []
-                for (a2, r2, b2, c2, cn2) in accs[idx + 1:]:
+                kids, kvals = [], []
+                for (a2, r2, b2, c2, cn2, v2) in accs[idx + 1:]:
                     if b2 or (key == "CF" and "현금및현금성자산" in cn2.replace(" ", "")):
                         break              # 다음 소계 또는 CF 현금성자산 요약행(증감·환율·기초·기말)에서 중단
                     kids.append(r2)
+                    kvals.append(v2)
                 if not kids:
                     continue
+                # 부호 정합: 부모가 음수표기(비용을 음수로 적은 회사의 판관비 등)이고 하위합이
+                # 양수면 =-SUBTOTAL. 최신 동시존재 기간으로 판정(아니면 +).
+                neg = False
+                for t in range(min(len(pvals), np_) - 1, -1, -1):
+                    pv = pvals[t]
+                    ks = [v[t] for v in kvals if t < len(v) and v[t] is not None]
+                    if pv is None or not ks:
+                        continue
+                    if pv < 0 and sum(ks) > 0:
+                        neg = True
+                    break
+                pre = "-" if neg else ""
                 rfill = bold_fill if pbold else None
                 for j in range(np_):
                     col = get_column_letter(v0 + j)
-                    put(prow, v0 + j, f"=SUBTOTAL(9,{col}{kids[0]}:{col}{kids[-1]})",
+                    put(prow, v0 + j, f"={pre}SUBTOTAL(9,{col}{kids[0]}:{col}{kids[-1]})",
                         font_name="Arial", bold=pbold, color=GRAY, align="right",
                         fmt=AMT_FMT, fill=rfill)
 
@@ -465,7 +523,7 @@ def to_xlsx(code: str) -> bytes:
                 section(ri, "전년대비 증감 (YoY %)")
                 ri += 1
                 prev = None
-                for nm, arow, bold, child, _canon in accs:
+                for nm, arow, bold, child, _canon, _vals in accs:
                     rfill = bold_fill if bold else None
                     if bold and prev is not None:
                         underline(prev)
