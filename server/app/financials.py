@@ -434,25 +434,30 @@ def to_xlsx(code: str) -> bytes:
             if prev is not None:
                 underline(prev)
 
-            # BS 소계 자동합계 — 유동자산 등 하위항목 있는 소계는 SUBTOTAL(9,하위계정)로 일치 보장.
-            # (하위계정=소계 바로 다음부터 다음 볼드 소계 직전까지의 비볼드 행. 값은 풀정밀도 보존.)
-            if key == "BS":
-                SUB_PARENTS = {"유동자산", "비유동자산", "유동부채", "비유동부채"}
-                for idx, (a, prow, bold, child, canon) in enumerate(accs):
-                    if canon.replace(" ", "") not in SUB_PARENTS:
-                        continue
-                    kids = []
-                    for (a2, r2, b2, c2, cn2) in accs[idx + 1:]:
-                        if b2:
-                            break
-                        kids.append(r2)
-                    if not kids:
-                        continue
-                    for j in range(np_):
-                        col = get_column_letter(v0 + j)
-                        put(prow, v0 + j, f"=SUBTOTAL(9,{col}{kids[0]}:{col}{kids[-1]})",
-                            font_name="Arial", bold=True, color=GRAY, align="right",
-                            fmt=AMT_FMT, fill=bold_fill)
+            # 소계 자동합계 — 하위항목 있는 소계를 SUBTOTAL(9,하위계정)로 합계검증.
+            # 하위계정=소계 바로 다음부터 다음 볼드 소계 직전까지(CF는 현금성자산 요약행도 경계). 풀정밀도 보존.
+            # CF는 제외 — DART CF 하위계정이 절대값(취득·상환 모두 양수)이라 단순 SUM이
+            # 순증감과 불일치. CF 활동소계는 DART 원본값(정확)을 그대로 사용.
+            SUB_PARENTS = {
+                "BS": {"유동자산", "비유동자산", "유동부채", "비유동부채"},
+                "PL": {"판매비와관리비"},
+            }.get(key, set())
+            for idx, (a, prow, pbold, child, canon) in enumerate(accs):
+                if canon.replace(" ", "") not in SUB_PARENTS:
+                    continue
+                kids = []
+                for (a2, r2, b2, c2, cn2) in accs[idx + 1:]:
+                    if b2 or (key == "CF" and "현금및현금성자산" in cn2.replace(" ", "")):
+                        break              # 다음 소계 또는 CF 현금성자산 요약행(증감·환율·기초·기말)에서 중단
+                    kids.append(r2)
+                if not kids:
+                    continue
+                rfill = bold_fill if pbold else None
+                for j in range(np_):
+                    col = get_column_letter(v0 + j)
+                    put(prow, v0 + j, f"=SUBTOTAL(9,{col}{kids[0]}:{col}{kids[-1]})",
+                        font_name="Arial", bold=pbold, color=GRAY, align="right",
+                        fmt=AMT_FMT, fill=rfill)
 
             # 하단 ① 전년대비 증감(YoY %) — 전 계정 모아서. RATE(1,0,-전기,당기)=당기/전기-1.
             if accs:

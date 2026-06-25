@@ -444,6 +444,104 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
     );
   };
 
+  // 재무상태표 보조 분석 — NWC·CCC, Net Debt 계산과정(맨 아래, 빈 행 후). 값=백만원, CCC=일.
+  // 차트(FinCharts)의 NWC/CCC·Net Debt와 동일 정의를 표로 명시. 레벨행엔 YoY(연간)/QoQ(분기) 서브행.
+  const renderBsCalc = (kind: "A" | "Q", a?: FinStatement, p?: FinStatement) => {
+    if (!a || !a.periods.length) return null;
+    const P = a.periods, N = P.length;
+    const nm2 = (s: string) => s.replace(/\s/g, "");
+    const pick = (st: FinStatement | undefined, names: string[]): (number | null)[] => {
+      const r = st?.rows.find((x) => names.includes(nm2(x.account)) || (!!x.canon && names.includes(nm2(x.canon))));
+      return r?.values ?? Array(N).fill(null);
+    };
+    const ar = pick(a, ["매출채권및기타유동채권", "매출채권"]);
+    const inv = pick(a, ["재고자산"]);
+    const ap = pick(a, ["매입채무및기타유동채무", "매입채무"]);
+    const std = pick(a, ["단기차입금"]);
+    const ltd = pick(a, ["장기차입금"]);
+    const cltd = pick(a, ["유동성장기차입금", "유동성장기부채", "유동성사채"]);
+    const cash = pick(a, ["현금및현금성자산"]);
+    const rev = pick(p, ["매출액", "수익(매출액)", "영업수익"]);
+    const cogs = pick(p, ["매출원가"]);
+    const Z = (x: number | null) => (x == null ? 0 : x);
+    const some = (...xs: (number | null)[]) => xs.some((x) => x != null);
+    const nwc = P.map((_, i) => (some(ar[i], inv[i], ap[i]) ? Z(ar[i]) + Z(inv[i]) - Z(ap[i]) : null));
+    const dNwc = P.map((_, i) => (i === 0 || nwc[i] == null || nwc[i - 1] == null) ? null : (nwc[i] as number) - (nwc[i - 1] as number));
+    const Dd = kind === "A" ? 365 : 365 / 4;     // CCC 일수 기준 — 연간 365, 분기 ≈91
+    const day = (n: number | null, d: number | null) => (n == null || d == null || d === 0) ? null : (n / d) * Dd;
+    const ccc = P.map((_, i) => {
+      const dso = day(ar[i], rev[i]), dio = day(inv[i], cogs[i]), dpo = day(ap[i], cogs[i]);
+      return (dso == null || dio == null || dpo == null) ? null : Math.round((dso + dio - dpo) * 10) / 10;
+    });
+    const netDebt = P.map((_, i) => (some(std[i], ltd[i], cltd[i], cash[i]) ? Z(std[i]) + Z(ltd[i]) + Z(cltd[i]) - Z(cash[i]) : null));
+    const yoyOf = (s: (number | null)[]) => s.map((v, i) => {
+      const pv = s[i - 1];
+      return (i === 0 || v == null || pv == null || (pv as number) <= 0 || (v as number) < 0) ? null : Math.round((v / (pv as number) - 1) * 1000) / 10;
+    });
+    const acctW = 40, perW = (100 - acctW) / N;
+    type Row = { label: string; vals: (number | null)[]; bold?: boolean; day?: boolean; yoy?: boolean };
+    const sections: { title: string; rows: Row[] }[] = [
+      { title: "NWC · CCC 분석", rows: [
+        { label: "매출채권", vals: ar, yoy: true },
+        { label: "재고자산", vals: inv, yoy: true },
+        { label: "매입채무", vals: ap, yoy: true },
+        { label: "NWC (매출채권+재고자산−매입채무)", vals: nwc, bold: true, yoy: true },
+        { label: "NWC 증감 (전기대비)", vals: dNwc },
+        { label: "CCC (DSO+DIO−DPO, 일)", vals: ccc, day: true },
+      ] },
+      { title: "Net Debt 분석", rows: [
+        { label: "단기차입금", vals: std, yoy: true },
+        { label: "장기차입금", vals: ltd, yoy: true },
+        { label: "유동성장기차입금", vals: cltd, yoy: true },
+        { label: "현금및현금성자산", vals: cash, yoy: true },
+        { label: "Net Debt (차입금합계−현금)", vals: netDebt, bold: true, yoy: true },
+      ] },
+    ];
+    const cell = (v: number | null, isDay?: boolean) =>
+      v == null ? "—" : isDay ? `${(Math.round(v * 10) / 10).toLocaleString()}일` : mwonN(v);
+    return (
+      <div style={{ marginTop: 16, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+          <colgroup><col style={{ width: `${acctW}%` }} />{P.map((pp) => <col key={pp} style={{ width: `${perW}%` }} />)}</colgroup>
+          <tbody>
+            {sections.map((sec, si) => (
+              <Fragment key={si}>
+                {si > 0 && <tr style={{ height: 10 }}><td colSpan={N + 1} /></tr>}
+                <tr style={{ background: "rgba(127,127,127,0.10)", borderBottom: "1px solid var(--border)" }}>
+                  <td colSpan={N + 1} style={{ padding: "6px 8px", fontWeight: 700, color: "var(--accent)" }}>{sec.title} <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: "10pt" }}>(백만원)</span></td>
+                </tr>
+                {sec.rows.map((rw, ri) => {
+                  const chg = rw.yoy ? yoyOf(rw.vals) : null;
+                  const showRow = showChg && !!chg && chg.some((c) => c != null);
+                  return (
+                    <Fragment key={ri}>
+                      <tr style={{ borderBottom: showRow ? "none" : "1px solid var(--border)" }}>
+                        <td style={{ padding: "5px 8px", fontWeight: rw.bold ? 700 : 400, color: rw.day ? "var(--muted)" : "inherit" }}>{rw.label}</td>
+                        {rw.vals.map((v, ci) => (
+                          <td key={ci} style={{ padding: "5px 8px", textAlign: "right", whiteSpace: "nowrap", fontWeight: rw.bold ? 700 : 400, color: rw.day ? "var(--muted)" : "inherit" }}>{cell(v, rw.day)}</td>
+                        ))}
+                      </tr>
+                      {showRow && chg && (
+                        <tr style={{ borderBottom: "1px solid var(--border)", background: "rgba(127,127,127,0.10)" }}>
+                          <td style={{ padding: "2px 8px", paddingLeft: 20, fontSize: "10pt", fontStyle: "italic", color: "var(--muted)" }}>{kind === "A" ? "YoY %" : "QoQ %"}</td>
+                          {chg.map((c, ci) => {
+                            const pv = rw.vals[ci - 1], cv = rw.vals[ci];
+                            const bad = c == null || pv == null || (pv as number) <= 0 || (cv as number) < 0;
+                            return <td key={ci} style={{ padding: "2px 8px", textAlign: "right", fontSize: "10pt", fontStyle: "italic", color: bad ? "var(--muted)" : (c as number) >= 0 ? FIN_UP : FIN_DOWN }}>{bad ? "—" : chgI(c as number)}</td>;
+                          })}
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   if (busy && !data) return <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>재무제표 불러오는 중…</p>;
   const hasAnnual = data && FIN_STMTS.some(([k]) => data.annual[k]?.periods.length);
   if (err || !data || !hasAnnual)
@@ -511,6 +609,7 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
       {/* 선택 재무제표의 지표별 차트(토글·기간 적용) → 상세 표 */}
       {showCharts && <FinCharts src={src} quarterly={period === "Q"} stmt={stmtTab} from={pFrom} to={pTo} />}
       {renderTable(period, stmtTab, src[stmtTab])}
+      {stmtTab === "BS" && renderBsCalc(period, src.BS, src.PL)}
     </>
   );
 }
