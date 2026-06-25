@@ -327,15 +327,17 @@ def _match_snapshot(snaps: list["SnapLite"], scheduled: datetime,
 
 def _summarize_cycle(snap: "SnapLite") -> str:
     cs = (snap.payload or {}).get("cycle_summary") or {}
-    # 매수: 발주 완료분(체결 + 시초가 단일가 체결대기)을 센다. 시가매수 주문은 08:55
-    # 사이클 시점엔 09:00 개장 단일가 체결 전이라 n_bought(인사이클 체결)에 안 잡혀
-    # '2후보 1매수'로 과소표시됐다(2026-06-25 발견). 로컬이 n_buy_placed(=n_bought +
-    # 매수 체결대기·side=buy만)를 기록 → 그날 실제 매수 반영. 구버전 스냅샷엔 부재 →
-    # n_bought 폴백(기존 동작 보존).
+    # 진입: 발주 완료분(체결 + 개장 단일가 체결대기)을 센다. 시가 진입 주문은 08:55
+    # 사이클 시점엔 09:00 개장 단일가 체결 전이라 n_bought/n_sold(인사이클 체결)에 안
+    # 잡혀 과소표시됐다(2026-06-25 발견: 매수 '2후보 1매수' / 숏 진입(매도)은 아예 비표시).
+    # 로컬이 side별 발주 완료분 n_buy_placed(매수=롱 진입)·n_sell_placed(매도=숏 진입)를
+    # 기록 → 그날 실제 진입 반영. 구버전 스냅샷엔 부재 → n_bought/n_sold 폴백(기존 동작).
     bought = cs.get("n_buy_placed")
     if bought is None:
         bought = cs.get("n_bought", 0) or 0
-    sold = cs.get("n_sold", 0) or 0
+    sold = cs.get("n_sell_placed")
+    if sold is None:
+        sold = cs.get("n_sold", 0) or 0
     if bought == 0 and sold == 0:
         return "0건"
     parts = []
