@@ -72,10 +72,29 @@ def test_sync_subscriptions_diff():
 
 def test_sub_msg_via_base():
     ws = LsWebSocket(_FakeBroker(), lambda s, p: None)
-    msg = json.loads(ws._sub_msg("S3_", "005930"))
+    msg = json.loads(ws._sub_msg("S3_", "005930", token="TOK"))
     assert msg["header"]["token"] == "TOK"
     assert msg["header"]["tr_type"] == "1"
     assert msg["body"] == {"tr_cd": "S3_", "tr_key": "005930"}
+
+
+def test_send_sub_uses_stock_account_token():
+    """시세 구독이 주식 계좌 토큰을 쓴다 — BrokerRouter에서도(_stock._token)."""
+    class _Router:
+        virtual = True
+        _stock = _FakeBroker()          # _token → "TOK"
+        _futures = object()
+
+    sent = []
+
+    class _Ws:
+        def send(self, m):
+            sent.append(json.loads(m))
+
+    ws = LsWebSocket(_Router(), lambda s, p: None)
+    ws._send_sub(_Ws(), "005930", sub=True)
+    assert {m["body"]["tr_cd"] for m in sent} == {"S3_", "K3_"}
+    assert all(m["header"]["token"] == "TOK" for m in sent)
 
 
 def test_ws_url_inherited_port():
