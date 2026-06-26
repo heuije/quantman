@@ -680,14 +680,14 @@ export default function Home() {
       <div style={{ position: "relative", maxWidth: 520, marginBottom: 14 }}>
         <input value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="🔍  종목 검색 (기업명 · 종목코드)"
-          style={{ width: "100%", fontSize: 14, padding: "10px 12px" }} />
+          style={{ width: "100%", fontSize: "12pt", padding: "10px 12px" }} />
         {matches.length > 0 && (
           <ul style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30, listStyle: "none",
             margin: "4px 0 0", padding: 4, background: "var(--panel)", border: "1px solid var(--border)",
             borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.35)", maxHeight: 320, overflowY: "auto" }}>
             {matches.map((m) => (
               <li key={m.symbol} onMouseDown={() => { setSym(m.symbol); setQ(""); }}
-                style={{ padding: "8px 10px", cursor: "pointer", fontSize: 13, borderRadius: 6,
+                style={{ padding: "8px 10px", cursor: "pointer", fontSize: "12pt", borderRadius: 6,
                   display: "flex", justifyContent: "space-between", gap: 10 }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = "var(--accent-soft)")}
                 onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
