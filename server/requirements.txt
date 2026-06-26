@@ -23,3 +23,4 @@ lxml>=5.0                     # pandas.read_html 백엔드 (네이버/wisereport
 html5lib>=1.1                 # read_html 대체 파서 (일부 페이지)
 certifi>=2024.0               # krdata HTTPS 인증서 (한국 데이터 소스 SSL)
 OpenDartReader>=0.2.1         # DART 공시 조회 (서버 OPENDART_API_KEY 전용)
+dart-fss>=0.4.16              # 연간 재무제표 XBRL 추출 (보고서 계정·순서·값 그대로 — 은행 포함)
