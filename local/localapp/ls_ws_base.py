@@ -44,12 +44,29 @@ class _LsWsBase:
         port = 29443 if getattr(self.broker, "virtual", True) else 9443
         return f"wss://{_WS_HOST}:{port}/websocket"
 
-    def _sub_msg(self, tr_cd: str, tr_key: str = "", sub: bool = True) -> str:
-        """구독(tr_type=1)/해지(2) 메시지. 토큰은 매 호출 broker._token()로 갱신."""
+    def _sub_msg(self, tr_cd: str, tr_key: str = "", sub: bool = True, *,
+                token: str) -> str:
+        """구독(tr_type=1)/해지(2) 메시지. token = 해당 TR 계좌의 OAuth access token.
+
+        LS 토큰은 계좌별 발급이라 TR마다 그 계좌 토큰을 실어야 그 계좌 체결/시세를 받는다
+        (주식 SC1·시세 = 주식 계좌 토큰 · 선물 C01 = 선물 계좌 토큰). 등록 메시지 헤더에
+        토큰을 실으므로 한 연결로 계좌별 라우팅 가능(LS 공식 SC1/C01 spec)."""
         return json.dumps({
-            "header": {"token": self.broker._token(), "tr_type": "1" if sub else "2"},
+            "header": {"token": token, "tr_type": "1" if sub else "2"},
             "body": {"tr_cd": tr_cd, "tr_key": tr_key},
         })
+
+    def _stock_broker(self):
+        """주식 계좌 브로커 — BrokerRouter면 내부 _stock, 아니면 broker 자신.
+
+        BrokerRouter.__getattr__가 언더스코어 속성(_token) 위임을 무한재귀 방지로 막아
+        broker._token() 직접 호출이 AttributeError('_token')로 실패한다(2026-06-26 라이브
+        '구독 등록 실패 SC1/C01: _token' 근본). 내부 브로커서 토큰을 직접 얻는다."""
+        return getattr(self.broker, "_stock", None) or self.broker
+
+    def _futures_broker(self):
+        """선물 계좌 브로커 — BrokerRouter면 내부 _futures, 아니면 None(선물 미설정)."""
+        return getattr(self.broker, "_futures", None)
 
     # ── 콜백 ──────────────────────────────────────────────────────────────────
 

@@ -56,9 +56,14 @@ class LsWebSocket(_LsWsBase):
     def _send_sub(self, ws, symbol: str, sub: bool = True) -> None:
         if not self._is_domestic_stock(symbol):
             return
+        try:
+            token = self._stock_broker()._token()   # 시세 = 주식 계좌 토큰
+        except Exception as e:
+            log.warning("[ls-ws] 토큰 조회 실패 %s: %s", symbol, e)
+            return
         for tr in _STOCK_TRS:
             try:
-                ws.send(self._sub_msg(tr, symbol, sub=sub))
+                ws.send(self._sub_msg(tr, symbol, sub=sub, token=token))
             except Exception as e:
                 log.warning("[ls-ws] 구독%s 실패 %s/%s: %s",
                             "" if sub else "해지", symbol, tr, e)

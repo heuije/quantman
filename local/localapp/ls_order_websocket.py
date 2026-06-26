@@ -24,9 +24,9 @@ from .ls_ws_base import _LsWsBase
 
 log = logging.getLogger("localapp.ls_order_ws")
 
-# 체결통보 TR: 주식 SC1 · 국내선물 C01. tr_key="" → 내 주문 전체.
+# 체결통보 TR: 주식 SC1(주식 계좌 토큰) · 국내선물 C01(선물 계좌 토큰). tr_key="" → 내 주문 전체.
+# LS 토큰은 계좌별 발급이라 TR마다 해당 계좌 토큰으로 등록한다(_initial_subs).
 # (KRX 한 시장 창에서 주식+선물 전략이 함께 도는 구조라 둘 다 구독해 양쪽 체결을 받는다.)
-_EXEC_TRS = ("SC1", "C01")
 
 
 def _norm_sc1(body: dict) -> dict:
@@ -87,11 +87,18 @@ class LsOrderWebSocket(_LsWsBase):
         self._market = market
 
     def _initial_subs(self, ws) -> None:
-        for tr in _EXEC_TRS:
-            try:
-                ws.send(self._sub_msg(tr, sub=True))
-            except Exception as e:
-                log.warning("[ls-order-ws] 구독 등록 실패 %s: %s", tr, e)
+        # SC1=주식 체결(주식 계좌 토큰)·C01=선물 체결(선물 계좌 토큰). 계좌별 토큰 발급이라
+        # TR마다 해당 계좌 토큰으로 등록한다(미설정 자산은 broker None → 구독 skip).
+        self._sub_exec(ws, "SC1", self._stock_broker())
+        self._sub_exec(ws, "C01", self._futures_broker())
+
+    def _sub_exec(self, ws, tr: str, broker) -> None:
+        if broker is None:
+            return  # 해당 자산(예: 선물) 미설정 → 구독 skip
+        try:
+            ws.send(self._sub_msg(tr, sub=True, token=broker._token()))
+        except Exception as e:
+            log.warning("[ls-order-ws] 구독 등록 실패 %s: %s", tr, e)
 
     def _on_data(self, tr_cd, tr_key, body: dict) -> None:
         norm = _NORMALIZERS.get(tr_cd)

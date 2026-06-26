@@ -19,6 +19,31 @@ class _FakeBroker:
         return "FAKE_TOKEN"
 
 
+class _Acct:
+    def __init__(self, tok):
+        self._tok = tok
+
+    def _token(self):
+        return self._tok
+
+
+class _FakeRouter:
+    """BrokerRouter 미러 — 주식·선물 별도 계좌(토큰). _stock/_futures 내부 속성."""
+
+    def __init__(self, virtual=True):
+        self.virtual = virtual
+        self._stock = _Acct("STK_TOK")
+        self._futures = _Acct("FUT_TOK")
+
+
+class _CaptureWs:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, msg):
+        self.sent.append(json.loads(msg))
+
+
 def test_norm_sc1_maps_to_kis_keys():
     body = {"ordno": "86382", "shtnIsuno": "A005930", "execqty": "168",
             "execprc": "2598000", "exectime": "095636107", "gubun": "B"}
@@ -58,12 +83,30 @@ def test_ws_url_port_by_virtual():
 
 def test_sub_msg_token_trtype_trkey():
     ws = LsOrderWebSocket(_FakeBroker(), lambda e: None)
-    msg = json.loads(ws._sub_msg("SC1"))
-    assert msg["header"]["token"] == "FAKE_TOKEN"
+    msg = json.loads(ws._sub_msg("SC1", token="TOK"))
+    assert msg["header"]["token"] == "TOK"
     assert msg["header"]["tr_type"] == "1"
     assert msg["body"] == {"tr_cd": "SC1", "tr_key": ""}
     # 해지
-    assert json.loads(ws._sub_msg("SC1", sub=False))["header"]["tr_type"] == "2"
+    assert json.loads(ws._sub_msg("SC1", sub=False, token="TOK"))["header"]["tr_type"] == "2"
+
+
+def test_initial_subs_routes_account_tokens():
+    """SC1=주식 계좌 토큰·C01=선물 계좌 토큰 (BrokerRouter·2026-06-26 _token 회귀 가드)."""
+    ws = LsOrderWebSocket(_FakeRouter(), lambda e: None)
+    cap = _CaptureWs()
+    ws._initial_subs(cap)
+    by_tr = {m["body"]["tr_cd"]: m["header"]["token"] for m in cap.sent}
+    assert by_tr == {"SC1": "STK_TOK", "C01": "FUT_TOK"}
+
+
+def test_initial_subs_stock_only_skips_c01():
+    """선물 미설정(_futures 없음) → C01 구독 skip, SC1만(주식 토큰)."""
+    ws = LsOrderWebSocket(_FakeBroker(), lambda e: None)   # 주식 단일 브로커
+    cap = _CaptureWs()
+    ws._initial_subs(cap)
+    assert [m["body"]["tr_cd"] for m in cap.sent] == ["SC1"]
+    assert cap.sent[0]["header"]["token"] == "FAKE_TOKEN"
 
 
 def test_on_message_sc1_data_calls_on_exec():
