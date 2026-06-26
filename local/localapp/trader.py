@@ -135,6 +135,21 @@ def _market_group_safe(symbol: str) -> str:
         return "KRX"
 
 
+def _count_today_pending(pending: dict, side: str, market: str,
+                         today_start_ts: float) -> int:
+    """이 거래일 발주분(submitted_ts ≥ today_start_ts) 중 side·market 일치 미체결 수.
+
+    '자동매매 시작'의 매수/매도 카운트(n_buy_placed·n_sell_placed)가 *이 사이클* 진입을
+    반영하려면, 며칠째 pending에 남은 orphan(LS 체결인지 실패 → 7일 GC 전까지 잔존)을
+    제외해야 한다(2026-06-26 라이브 회귀 '후보 2 → 매수 3': 06-22 orphan 18756이 당일
+    매수에 합산). submitted_ts 없는 엔트리는 0 → 제외(과대표시 방지 우선)."""
+    return sum(
+        1 for p in pending.values()
+        if p.get("side") == side
+        and _market_group_safe(p.get("symbol", "")) == market
+        and float(p.get("submitted_ts") or 0) >= today_start_ts)
+
+
 def _unified_equity_krw(bal: dict) -> float:
     """국내+해외 통합 자산(KRW) — kill switch·drawdown용 계좌 전체 equity.
 
@@ -1867,16 +1882,15 @@ class Trader:
         # 09:00 개장 단일가 체결 전이라 08:55 사이클 시점엔 n_bought/n_sold(인사이클 체결)에
         # 안 잡히고 pending에 남는다 → 발주 완료분(체결+체결대기)을 side별로 기록한다.
         # 매수=롱 진입(n_buy_placed), 매도=숏 진입(n_sell_placed·양방향 선물)을 각각 정확히
-        # 표면화한다(side 분리로 오집계 방지). DAY 주문이라 다음 아침 이월 잔존 없음 →
-        # 당일 이 사이클 진입분.
-        n_buy_pending = sum(
-            1 for p in self.pending.values()
-            if p.get("side") == "buy"
-            and _market_group_safe(p.get("symbol", "")) == market)
-        n_sell_pending = sum(
-            1 for p in self.pending.values()
-            if p.get("side") == "sell"
-            and _market_group_safe(p.get("symbol", "")) == market)
+        # 표면화한다(side 분리로 오집계 방지). 체결대기는 *이 거래일 발주분*만 센다 —
+        # 다일 잔존 orphan 제외(_count_today_pending docstring 참조).
+        _today_start_ts = datetime(
+            today.year, today.month, today.day,
+            tzinfo=ZoneInfo("Asia/Seoul")).timestamp()
+        n_buy_pending = _count_today_pending(
+            self.pending, "buy", market, _today_start_ts)
+        n_sell_pending = _count_today_pending(
+            self.pending, "sell", market, _today_start_ts)
 
         cycle_summary = {
             "today": today.isoformat(),
