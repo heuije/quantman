@@ -4,6 +4,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { stockSearchMatch } from "../format";
 
 export interface TabItem {
   key: string;          // 고유 ID (예: symbol code)
@@ -59,8 +60,7 @@ export default function TabbedSymbolList({
 
   const q = search.trim().toLowerCase();
   const filtered = q
-    ? currentItems.filter((i) => i.label.toLowerCase().includes(q)
-                              || i.key.toLowerCase().includes(q))
+    ? currentItems.filter((i) => stockSearchMatch(i.label, i.key, q))
     : currentItems;
   const shown = filtered.slice(0, PER_PAGE);
   const hidden = filtered.length - shown.length;

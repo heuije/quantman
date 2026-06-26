@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { stockSearchMatch } from "../format";
 import { useNavigate } from "react-router-dom";
 import {
   ComposedChart, Bar, Line, Scatter, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -1445,7 +1446,7 @@ function CompanyReturnsTable({ industry, companies }: { industry: string; compan
     const avg = all.length === 0 ? null
       : wsum > 0 ? all.reduce((a, x) => a + x.v * (x.c.cap || 0), 0) / wsum
         : all.reduce((a, x) => a + x.v, 0) / all.length;
-    const shown = q ? all.filter((x) => x.c.name.includes(q) || x.c.ticker.includes(q)) : all;
+    const shown = q ? all.filter((x) => stockSearchMatch(x.c.name, x.c.ticker, q)) : all;
     return { s, avg, shown, n: all.length };
   }).filter((sec) => sec.shown.length > 0);
 
@@ -1727,7 +1728,7 @@ export default function IndustryAnalysis() {
               {searchQ.trim() && (() => {
                 const q = searchQ.trim().toLowerCase();
                 const matches = companies
-                  .filter((c) => c.name.toLowerCase().includes(q) || c.ticker.includes(q))
+                  .filter((c) => stockSearchMatch(c.name, c.ticker, q))
                   .slice(0, 8);
                 return (
                   <ul style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30,
