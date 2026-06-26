@@ -263,13 +263,13 @@ def _fetch(code: str) -> dict:
     try:
         from .config import settings
         if settings.OPENDART_API_KEY:
-            from . import dart, dart_doc
+            from . import dart, dart_fss_fetch
             draw = dart.fetch(code)
             doc = None
             try:
-                doc = dart_doc.fetch_doc(code, draw)   # 원문 사업보고서 직접 파싱(구조·값·이름 = 보고서 그대로)
+                doc = dart_fss_fetch.fetch(code)   # dart-fss(XBRL) — 보고서 계정·순서·값 그대로(은행 포함 강건)
             except Exception:
-                _log.exception("원문 보고서 파싱 실패 %s", code)
+                _log.exception("dart-fss 추출 실패 %s", code)
             d_annual = (doc or {}).get("annual") or {}
             oa_annual = (draw or {}).get("annual") or {}
             merged = {}
