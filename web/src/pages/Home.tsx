@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
+import { stockSearchMatch } from "../format";
 import { useSearchParams } from "react-router-dom";
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList, ReferenceLine,
@@ -666,7 +667,7 @@ export default function Home() {
   const market = listings.find((l) => l.symbol === sym)?.market;
   const qt = q.trim();
   const matches = qt
-    ? listings.filter((l) => l.name.includes(qt) || l.symbol.includes(qt)).slice(0, 8)
+    ? listings.filter((l) => stockSearchMatch(l.name, l.symbol, qt)).slice(0, 8)
     : [];
 
   const Panel = ({ title, children }: { title: string; children: React.ReactNode }) => (

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { stockSearchMatch } from "../format";
 import {
   ComposedChart, Line, Bar, Scatter, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine, ReferenceArea, CartesianGrid, Legend, Cell,
@@ -364,7 +365,7 @@ export default function StockDashboard({ symbol, hideSearch }: { symbol?: string
     [listings]);
   const q = input.trim().toUpperCase();
   const matches = (q
-    ? sortedListings.filter((l) => l.symbol.includes(q) || l.name.toUpperCase().includes(q))
+    ? sortedListings.filter((l) => stockSearchMatch(l.name, l.symbol, q))
     : sortedListings
   ).slice(0, 60);
   // 과거 검색 기록 → 목록 항목 (입력 없을 때 상단 노출)

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { stockSearchMatch } from "../format";
 import { parseScreenerKey } from "../types";
 import type { ScreenerPreset, ScreenerSpecIO, SymbolInfo } from "../types";
 import ScreenerPanel from "./ScreenerPanel";
@@ -47,8 +48,7 @@ export function CategoryList({ items, order, selected, search, onPick }: {
 }) {
   const q = (search ?? "").trim().toLowerCase();
   const filtered = q
-    ? items.filter((i) => i.label.toLowerCase().includes(q)
-                       || i.key.toLowerCase().includes(q))
+    ? items.filter((i) => stockSearchMatch(i.label, i.key, q))
     : items;
 
   const byCat: Record<string, typeof items> = {};
