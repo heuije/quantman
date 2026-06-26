@@ -251,7 +251,9 @@ def _merge(filings: list) -> dict:
         rows = []
         for r in sts[0]["rows"]:                         # 최신 보고서의 순서·표시명
             ck = _ckey(r["account"])
-            rows.append({"account": r["account"], "values": [vmap.get((ck, p)) for p in periods]})
+            ns = r["account"].replace(" ", "")
+            rows.append({"account": r["account"], "canon": ck, "bold": ns in _BOLD,
+                         "child": ns not in _BOLD, "values": [vmap.get((ck, p)) for p in periods]})
         if rows:
             out[sj] = {"periods": periods, "rows": rows}
     return out
@@ -290,14 +292,15 @@ def fetch_order(code: str, draw: dict | None = None) -> dict:
     return {}
 
 
-def fetch_doc(code: str) -> dict | None:
-    """종목 5개년 연결재무제표(원문, 보고서 표시순서). 사업보고서 3건(FY, FY-2, FY-4) 병합."""
+def fetch_doc(code: str, draw: dict | None = None) -> dict | None:
+    """종목 5개년 연결재무제표(원문, 보고서 표시순서·계정명·값 그대로). 사업보고서 3건(FY,FY-2,FY-4) 병합.
+    draw(이미 받은 dart.fetch)로 refs 재호출 생략. 행에 canon/bold/child 포함(차트·소계·표시용)."""
     from datetime import date
     from . import dart
     cc = dart.corp_code(code)
     if not cc or not _key():
         return None
-    refs = _refs(code)
+    refs = _refs(code, draw)
     if not any(refs.values()):
         return None
     y_hi = date.today().year - 1

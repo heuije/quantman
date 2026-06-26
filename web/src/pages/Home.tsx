@@ -364,8 +364,8 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
     api.financialsExcel(ticker).catch(() => { /* 무시 */ }).finally(() => setXlBusy(false));
   };
 
-  const mwonN = (v: number | null) => v == null ? "—" : Math.round(v * 100).toLocaleString();   // 억원→백만원(×100), 차트와 동일 단위
-  const wonN = (v: number | null) => v == null ? "—" : Math.round(v * 1e8).toLocaleString() + "원";   // 주당이익 — /1e8 환원해 원으로(백만원 헤더와 구분)
+  const mwonN = (v: number | null) => v == null ? "—" : Math.round(v * 100).toLocaleString();   // 억원→백만원(×100). 웹은 정수표시(엑셀 셀만 풀정밀도)
+  const wonN = (v: number | null) => v == null ? "—" : Math.round(v * 1e8).toLocaleString() + "원";   // 주당이익 — 원(웹 정수표시)
   const pctV = (v: number | null) => v == null ? "—" : `${v.toFixed(1)}%`;
   const chgI = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
 

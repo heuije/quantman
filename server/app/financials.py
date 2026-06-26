@@ -258,36 +258,50 @@ def _fetch(code: str) -> dict:
         quarterly[key] = _with_change(_parse_div(soup, div_q, annual=False))
     _add_pl_metrics(annual)      # 이익률·EBITDA 하위행 1회 계산·삽입(저장본에 포함)
     _add_pl_metrics(quarterly)
-    # 연간(5개년)·분기 모두 DART 전자공시(OpenAPI 값) + 원문 보고서 표시순서로 교체. FnGuide는 폴백.
+    # 연간 = DART 전자공시 원문 보고서(계정명·순서·값 '그대로'). 분기 = OpenAPI 단일분기를 원문 계정순서로.
+    # FnGuide는 폴백(원문 파싱 실패 시).
     try:
         from .config import settings
         if settings.OPENDART_API_KEY:
             from . import dart, dart_doc
             draw = dart.fetch(code)
-            order = {}
+            doc = None
             try:
-                order = dart_doc.fetch_order(code, draw)   # 최신 사업보고서 원문 표시순서(draw 재사용)
+                doc = dart_doc.fetch_doc(code, draw)   # 원문 사업보고서 직접 파싱(구조·값·이름 = 보고서 그대로)
             except Exception:
-                _log.exception("원문 표시순서 조회 실패 %s", code)
-            if draw and (draw.get("annual") or {}).get("PL"):
-                d_annual = draw["annual"]
+                _log.exception("원문 보고서 파싱 실패 %s", code)
+            d_annual = (doc or {}).get("annual") or {}
+            oa_annual = (draw or {}).get("annual") or {}
+            merged = {}
+            for k in ("PL", "BS", "CF"):
+                dk, ok = d_annual.get(k), oa_annual.get(k)
+                # 원문이 최신연도까지 있으면 원문(보고서 계정·순서 그대로), 아니면 OpenAPI 폴백
+                # (은행·지주 등 원문 파싱 실패/구버전만 — 무회귀).
+                use_doc = bool(dk and dk.get("rows") and (not (ok and ok.get("periods")) or
+                               (dk.get("periods") and dk["periods"][-1] >= ok["periods"][-1])))
+                pick = dk if use_doc else (ok or dk)
+                if pick:
+                    merged[k] = pick
+            if merged.get("PL") or merged.get("BS"):
                 for k in ("PL", "BS", "CF"):
-                    if d_annual.get(k):
-                        if order.get(k):
-                            _reorder_by_doc(d_annual[k], order[k])   # 보고서 표시순서로 재정렬
-                        _with_change(d_annual[k])
-                _add_pl_metrics(d_annual)
-                _graft_sga(annual.get("PL"), d_annual.get("PL"))   # FnGuide 판관비 상세 → DART 연간 이식
-                annual = d_annual    # 5개년 DART 연간으로 교체
-            d_quarterly = (draw or {}).get("quarterly")
-            if d_quarterly and d_quarterly.get("PL"):
-                for k in ("PL", "BS", "CF"):
-                    if d_quarterly.get(k):
-                        if order.get(k):
-                            _reorder_by_doc(d_quarterly[k], order[k])
-                        _with_change(d_quarterly[k])
-                _add_pl_metrics(d_quarterly)   # 이익률 부여(EBITDA는 DART CF에 D&A 없어 자동 생략)
-                quarterly = d_quarterly    # 분기도 DART 전자공시 단일분기로 교체
+                    if merged.get(k):
+                        _with_change(merged[k])
+                _add_pl_metrics(merged)   # 이익률(·D&A 있으면 EBITDA) 부여. 판관비 상세 graft는 안 함(보고서 그대로).
+                annual = merged    # 연간 = 원문 보고서(폴백 시 OpenAPI)
+                # 분기: OpenAPI 단일분기 값을 원문(연간) 계정순서로 재배치 — 분기보고서는 같은 계정 구조.
+                layout = {k: [(r.get("canon") or r.get("account", ""),
+                               (-1 if (nz := [x for x in r.get("values", []) if x is not None]) and nz[-1] < 0
+                                else (1 if nz else None)))
+                              for r in v.get("rows", [])] for k, v in merged.items()}
+                d_quarterly = (draw or {}).get("quarterly")
+                if d_quarterly and d_quarterly.get("PL"):
+                    for k in ("PL", "BS", "CF"):
+                        if d_quarterly.get(k):
+                            if layout.get(k):
+                                _reorder_by_doc(d_quarterly[k], layout[k])
+                            _with_change(d_quarterly[k])
+                    _add_pl_metrics(d_quarterly)
+                    quarterly = d_quarterly
     except Exception:
         _log.exception("DART 전자공시 병합 실패 — FnGuide 유지 %s", code)
     return {"fetched": date.today().isoformat(), "annual": annual, "quarterly": quarterly}
@@ -373,8 +387,8 @@ def to_xlsx(code: str) -> bytes:
     HEAD_BG = "FFD9D9D9"   # 소제목(계정/YoY/Margins) 행 채움
     BOLD_BG = "FFF2F2F2"   # 볼드 소계 계정 채움
     LINE = "FFA6A6A6"      # 밑줄 색
-    AMT_FMT = "#,##0;(#,##0);-"   # 금액 정수표시(셀 값은 소수 풀정밀도 보존)
-    WON_FMT = '#,##0"원";(#,##0"원");-'   # 주당이익(EPS 등) — 원 단위(웹 차트와 동일)
+    AMT_FMT = "#,##0;(#,##0);-"   # 백만원 표시는 정수(셀 값은 ×scale 풀정밀도 → F2/수식입력줄에 소수점)
+    WON_FMT = '#,##0"원";(#,##0"원");-'   # 주당이익(EPS 등) — 표시는 정수 원(셀 값은 풀정밀도)
     PCT_FMT = '0.0"%"'            # 이익률(값이 이미 %)
     YOY_FMT = "0.0%;(0.0%);-"     # RATE 결과(소수) → %
     title_fill = PatternFill("solid", fgColor=NAVY)
