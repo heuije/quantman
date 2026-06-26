@@ -212,10 +212,10 @@ def test_quota_endpoint_rejects_wrong_password(monkeypatch):
 
 # ── 모델 기본값 ─────────────────────────────────────────────────────────────
 
-def test_default_model_is_haiku():
-    """NL 컴파일 기본 모델이 Haiku 4.5로 설정됨(env 미설정 시)."""
+def test_default_model_is_sonnet():
+    """NL 컴파일 기본 모델이 Sonnet 4.6으로 설정됨(env 미설정 시)."""
     import os
     if os.getenv("QP_NL_COMPILE_MODEL"):
         import pytest
         pytest.skip("env override 설정됨 — 기본값 테스트 불가")
-    assert settings.NL_COMPILE_MODEL == "claude-haiku-4-5-20251001"
+    assert settings.NL_COMPILE_MODEL == "claude-sonnet-4-6"
