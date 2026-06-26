@@ -53,14 +53,14 @@ class Settings:
 
     # NL→IR 컴파일러 (자연어 전략 설명 → StrategyIR). 키 미설정 시 /ir/compile가
     # 503을 명확히 반환(다른 기능엔 영향 없음). 모델은 env로 교체 가능.
-    # 기본 Haiku 4.5 — archetype 평가 동급(12/12)이고 비용이 Sonnet의 ~1/3이라,
-    # 일일 사용량 제한이 걸린 공개 베타 빌더의 기본으로 적합. 더 견고한 컴파일이
-    # 필요하면 env로 상향: QP_NL_COMPILE_MODEL=claude-sonnet-4-6.
+    # 기본 Sonnet 4.6 — 더 견고한 NL→IR 컴파일 우선(복잡 전략·관용구 정확도). 비용 절감이
+    # 필요하면 env로 하향: QP_NL_COMPILE_MODEL=claude-haiku-4-5-20251001
+    # (Haiku는 비용 ~1/3·archetype 평가 동급 12/12이나 어려운 컴파일 견고성은 낮다).
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     # DART 전자공시 OpenAPI 키 — 재무제표 5개년 연결 수집용(opendart.fss.or.kr 무료 발급).
     # server/.env에 OPENDART_API_KEY=... 로 넣으면 됨. 없으면 FnGuide(3개년)로 폴백.
     OPENDART_API_KEY: str = os.getenv("OPENDART_API_KEY", "")
-    NL_COMPILE_MODEL: str = os.getenv("QP_NL_COMPILE_MODEL", "claude-haiku-4-5-20251001")
+    NL_COMPILE_MODEL: str = os.getenv("QP_NL_COMPILE_MODEL", "claude-sonnet-4-6")
     # 대화형 전략 연구소 챗봇 — agentic tool-use 루프(다중턴 추론·결과 논의). NL 컴파일러보다
     # 추론 부담이 커 Sonnet 기본(env로 교체). 키는 ANTHROPIC_API_KEY 공유.
     CHAT_MODEL: str = os.getenv("QP_CHAT_MODEL", "claude-sonnet-4-6")
