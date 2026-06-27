@@ -177,8 +177,10 @@ INV-KIS 위험이 크다 → **YAGNI, 후속 정제로 보류**(§7). 이번엔 
     기록 + 표면화(웹/로컬 상태). **전략 단위 atomicity = naked 차단**(C3). silent 오라우팅 제거(C1).
   - 청산 패스: ledger 포지션의 자산군이 현재 broker 가시 범위 밖이면 `skip_oversell`이 아니라
     **`orphan_uncoverable` 경고**로 분기(Monitor 표면화) — 미청산 침묵 제거(C5).
-- **청산 루프 격리(C6):** 청산 종목 루프를 **per-포지션 try/except**로 감싸 한 발주 실패가 나머지
-  청산을 막지 않게.
+- **청산 루프 격리(C6) — P1 제외(코드 확인 결과 대부분 기 해소):** `_submit_sell`/`_submit_close_short`
+  가 이미 브로커 발주 예외를 잡아 `error` decision으로 처리(trader.py:909-916)하므로, 청산 루프
+  전체를 try/except로 감싸는 블랭킷 가드는 증상 봉합(PR-1)이다. 잔여 헬퍼 취약점은 관측 시 해당
+  지점 근본수정으로 둔다.
 
 ### 3.4 웹 capability 신호 + advisory (웹/서버 — 뿌리 5) **← P4 (희제 협의)**
 
@@ -232,7 +234,7 @@ INV-KIS 위험이 크다 → **YAGNI, 후속 정제로 보류**(§7). 이번엔 
 
 | Phase | 목표 | 닫는 문제 | 주 변경(대략) | 의존 |
 |---|---|---|---|---|
-| **P1 (긴급)** | 사이클 커버리지 게이트 + 청산 가시성 분기 + 청산 루프 격리 | C1·C3·C5·C6 | `core`(분류기 재사용 헬퍼), `local/trader.py`·`runner.py` | 없음 — 라우터 구조 미변경, 즉시 |
+| **P1 (긴급)** | 사이클 커버리지 게이트(진입 skip + 청산 orphan 표면화) | C1·C3·C5 | `local/coverage.py`(신규)·`local/trader.py` | 없음 — 라우터 구조 미변경, 즉시 |
 | **P2** | 브로커 N-leg(선물 단독) + per-leg 예산 분리 | C4·S1·S2(부분) + **사장님 블로커(거래)** | `local/runner.py`·`broker_router.py`·`secrets_store.py` | INV-KIS 골든 선행 |
 | **P3** | 온보딩 슬롯 모델 + 상태머신 순수함수 + 테스트 | 온보딩 stuck·S3·S4·V1 + **사장님 블로커(온보딩)** | `local/gui.py`·`secrets_store.py` | P2 |
 | **P4** | 웹 advisory(asset_coverage 보고 + 웹 표시) | S6·침묵 실패 사전경고 | `local/analytics.py`·`server`(0~최소)·`web`(희제) | P1(요구자산군 도출 공유)·희제 협의 |
@@ -243,12 +245,17 @@ INV-KIS 위험이 크다 → **YAGNI, 후속 정제로 보류**(§7). 이번엔 
 - 자금 안전 경로(P1·P2)는 SimBroker/paper 시나리오 1회 이상.
 
 ### P1 상세 (긴급 — 사장님 블로커와 별개로 실전 자금 보호)
-1. `core`: `required_categories(strategy)` + `instrument_category` 기반 헬퍼(전략 심볼 → 자산군 집합).
-2. `local`: 커버리지 게이트를 사이클 진입부에 — 미커버 전략 skip + `skip_no_credentials` 표면화.
-3. `local`: 청산 패스에서 미가시 자산군 포지션 → `orphan_uncoverable` 경고(silent skip 제거).
-4. `local`: 청산 종목 루프 per-포지션 try/except 격리.
-5. 테스트: (선물 전략 × 선물키 없음 → skip, 오발주 0), (헤지 전략 한 leg 미커버 → 전략 skip,
-   naked 0), (미가시 선물 포지션 → orphan 경고).
+세부 task plan: [autotrade-asset-class-P1-plan.md](autotrade-asset-class-P1-plan.md).
+1. `local/coverage.py`(신규): `covered_categories()`(활성 브로커+슬롯→자산군) +
+   `missing_categories(symbols)`(core `instrument_category` 재사용). 단일 출처.
+2. `local/trader.py` 진입 게이트(`_enter_from_preview`): 전략 후보의 미커버 자산군이 있으면
+   전략 통째 skip + `skip_uncovered` decision(naked-leg·오라우팅 차단).
+3. `local/trader.py` 청산 게이트(`_cycle_body`): 미커버 자산군 포지션 → `orphan_uncovered` 경고
+   (silent skip_oversell 오진 제거).
+4. `cycle_summary`에 `n_skip_uncovered`·`n_orphan_uncovered` 카운트 표면화.
+5. 테스트: coverage 단위(슬롯 조합 매핑) + 시나리오(미커버 선물 전략 skip·발주 0 / 미커버 선물
+   포지션 orphan / 커버 주식 전략 정상 발주 회귀 / cycle_summary 카운트). conftest 스텁으로
+   기존 시나리오 무영향(SimBroker=전 자산군 커버).
 
 ### P2 상세 (선물 단독 거래 가능)
 1. INV-KIS 골든 캡처(주식 / 주식+국내선물 객체 그래프·account_snapshot).
