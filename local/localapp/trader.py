@@ -1762,6 +1762,13 @@ class Trader:
             # 미국 정규장 사이클에서만 매도, 그 반대도 동일).
             if _market_group_safe(pos["symbol"]) != market:
                 continue
+            # P1 커버리지 게이트 — 이 포지션 자산군의 자격증명이 미등록이면 브로커가 보유를
+            # 볼 수 없어 청산이 불가능하다. 조용한 skip(외부매도 오진) 대신 명시 경고로 표면화.
+            if coverage.missing_categories([pos["symbol"]]):
+                decisions.append(order_log.decision(
+                    "orphan_uncovered", sid, pos.get("strategy_name", ""), pos["symbol"],
+                    "자격증명 미등록 자산군 — 청산 불가(수동 정리 필요)"))
+                continue
             held = (today - date.fromisoformat(pos["entry_date"])).days
             parse_failed = False
             try:

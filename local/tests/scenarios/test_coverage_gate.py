@@ -75,3 +75,24 @@ def test_entry_gate_allows_covered_strategy(isolated_trader, monkeypatch):
     assert len(broker.submitted) == 1, decisions
     assert [d for d in decisions if d["action"] == "skip_uncovered"] == []
     invariants.check_all(t)
+
+
+def test_cleanup_orphan_uncovered_position(isolated_trader, monkeypatch):
+    """미커버 자산군 보유 포지션은 청산 skip(외부매도 오진) 대신 orphan_uncovered 표면화 (C5)."""
+    from localapp import coverage
+    t, broker = isolated_trader
+    monkeypatch.setattr(coverage, "covered_categories", lambda: {"kr_equity", "us_equity"})
+    # 선물 포지션(kr_futures, 미커버) 원장 주입 — 진입 경로 우회.
+    t.ledger["heldfut"] = {
+        "symbol": "코스피200선물", "qty": 1, "entry_date": "2026-05-20",
+        "entry_price": 350.0, "peak_price": 350.0, "side": "long",
+        "strategy_name": "선물전략", "definition": _ir_def(
+            {"kind": "single", "symbols": ["코스피200선물"]})}
+    payload = t.cycle(strategies=[], dataset=_DS, buy_candidates=[],
+                      risk_limits={"kill_switch_daily_loss_pct": 3.0}, market="KRX")
+    orphans = [d for d in payload["decisions"] if d["action"] == "orphan_uncovered"]
+    assert len(orphans) == 1, payload["decisions"]
+    assert orphans[0]["symbol"] == "코스피200선물"
+    # 청산 발주 안 함 — 포지션 유지
+    assert "heldfut" in t.ledger
+    assert [s for s in broker.submitted if s.get("side") == "sell"] == []
