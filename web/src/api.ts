@@ -748,6 +748,61 @@ export interface OilTrendSweep {
   min_n: number;                 // 저신뢰 표시 임계
 }
 
+// ── 급등락 → 회귀(REVERSION) — 트레일링 피벗 후 평균회귀 (계좌/레버리지 기준) ──
+export type OilReversionDirection = "down_exhaustion" | "up_exhaustion";
+
+export interface OilReversionEvent {
+  pivot_date: string;
+  pivot_price: number;
+  trigger_date: string;
+  trigger_price: number;
+  direction: OilReversionDirection;
+  run_account: number;        // 트리거 시점 누적(계좌, 부호 상승+/하락-)
+  reversion_account: number;  // N일 후 역추세 계좌수익률(청산 시 -1)
+  liquidated: boolean;
+  liquidation_day: number | null;
+}
+
+export interface OilReversionDirSummary {
+  n: number;
+  mean_reversion: number | null;      // 회귀 수익률 평균 (계좌 %, 청산 포함)
+  median_reversion: number | null;    // 회귀 수익률 중앙값
+  success_rate: number | null;        // reversion>0 비율(%)
+  liquidation_rate: number | null;    // 청산율(%)
+}
+
+export interface OilReversion {
+  symbol: string;
+  reversal: number;
+  run: number;
+  horizon: number;
+  leverage: number;
+  gap: number;
+  down_exhaustion: OilReversionDirSummary;
+  up_exhaustion: OilReversionDirSummary;
+  events: OilReversionEvent[];
+}
+
+export type OilReversionAxis = "reversal" | "run" | "horizon";
+
+export interface OilReversionSweepCell {
+  row: number;
+  col: number;
+  n: number;
+  mean_reversion: number | null;
+  success_rate: number | null;
+  liquidation_rate: number | null;
+}
+
+export interface OilReversionSweep {
+  row_axis: OilReversionAxis;
+  col_axis: OilReversionAxis;
+  direction: OilReversionDirection;
+  row_labels: string[];
+  col_labels: string[];
+  cells: OilReversionSweepCell[];
+}
+
 export const futuresApi = {
   instruments: () => req<OilInstrument[]>("/futures/instruments"),
   dataInfo: (sym: string) => req<OilDataInfo>(`/futures/${sym}/data-info`),
@@ -919,6 +974,46 @@ export const futuresApi = {
     if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
     if (opts.min_n !== undefined) qs.set("min_n", String(opts.min_n));
     return req<OilTrendSweep>(`/futures/${sym}/trend-sweep?` + qs.toString());
+  },
+  // 급등락 → 회귀: 트레일링 피벗 후 N일 회귀(방향별 요약 + 이벤트). 모든 % 계좌 기준.
+  reversion: (sym: string, opts: {
+    reversal: number;
+    run: number;
+    horizon: number;
+    leverage: number;
+    gap?: number;
+  }) => {
+    const qs = new URLSearchParams({
+      reversal: String(opts.reversal),
+      run: String(opts.run),
+      horizon: String(opts.horizon),
+      leverage: String(opts.leverage),
+    });
+    if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
+    return req<OilReversion>(`/futures/${sym}/reversion?` + qs.toString());
+  },
+  // {reversal·run·horizon} 2축 격자(방향 지정) — 최적 조합 한눈에.
+  reversionSweep: (sym: string, opts: {
+    row_axis: OilReversionAxis;
+    col_axis: OilReversionAxis;
+    direction: "down" | "up";
+    reversal: number;
+    run: number;
+    horizon: number;
+    leverage: number;
+    gap?: number;
+  }) => {
+    const qs = new URLSearchParams({
+      row_axis: opts.row_axis,
+      col_axis: opts.col_axis,
+      direction: opts.direction,
+      reversal: String(opts.reversal),
+      run: String(opts.run),
+      horizon: String(opts.horizon),
+      leverage: String(opts.leverage),
+    });
+    if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
+    return req<OilReversionSweep>(`/futures/${sym}/reversion-sweep?` + qs.toString());
   },
   // 향후 종가 증감율 결과(조건·이벤트·요약) .xlsx 다운로드. blob 직접 처리.
   trendExport: async (sym: string, opts: {

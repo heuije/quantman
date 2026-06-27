@@ -50,6 +50,18 @@ from .trend_analysis import (
     trend_regression,
     trend_sweep_2d,
 )
+from .reversion_analysis import (
+    DOWN_EXHAUSTION,
+    UP_EXHAUSTION,
+    REVERSION_SWEEP_AXES,
+    Pivot,
+    ReversionEvent,
+    ReversionSweepCell,
+    find_pivots,
+    reversion_events,
+    reversion_summary,
+    reversion_sweep,
+)
 
 __all__ = [
     "prepare_wti",
@@ -62,4 +74,7 @@ __all__ = [
     "TrendEvent", "TrendRegression", "trend_events", "trend_regression",
     "ScanCell", "trend_explanatory_scan", "trend_matched",
     "SweepCell", "trend_sweep_2d", "SWEEP_AXES",
+    "Pivot", "ReversionEvent", "ReversionSweepCell",
+    "find_pivots", "reversion_events", "reversion_summary", "reversion_sweep",
+    "DOWN_EXHAUSTION", "UP_EXHAUSTION", "REVERSION_SWEEP_AXES",
 ]

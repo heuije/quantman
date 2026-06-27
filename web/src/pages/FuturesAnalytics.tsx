@@ -9,7 +9,7 @@
  *   ⑤ Walk-forward 검증
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   Bar,
   BarChart,
@@ -37,6 +37,11 @@ import {
   type OilMacroContext,
   type OilPricePoint,
   type OilSeasonality,
+  type OilReversion,
+  type OilReversionAxis,
+  type OilReversionDirSummary,
+  type OilReversionSweep,
+  type OilReversionSweepCell,
   type OilSweepAxis,
   type OilTrendEvents,
   type OilTrendScan,
@@ -581,9 +586,15 @@ export default function FuturesAnalytics() {
       )}
 
       {/* ⑧ 진입 추세 → 미래 수익률 탐색기 */}
-      <section className="panel">
+      <section className="panel" style={{ marginBottom: 16 }}>
         <h2 className="section-title">TREND → FORWARD · 진입 추세 → 향후 종가 증가율 탐색기</h2>
         <TrendExplorer symbol={symbol} priceSym={priceSym} />
+      </section>
+
+      {/* ⑨ 급등락 → 회귀 (평균회귀) 탐색기 */}
+      <section className="panel">
+        <h2 className="section-title">REVERSION · 급등락 → 회귀 (평균회귀) 탐색기</h2>
+        <ReversionExplorer symbol={symbol} />
       </section>
     </div>
   );
@@ -2038,6 +2049,342 @@ function TrendExplorer({ symbol, priceSym }: { symbol: string; priceSym: string 
           <div className="muted" style={{ fontSize: 11, marginTop: 12 }}>
             ⚠️ <b>종가 증가율</b>은 종가-종가 기준 서술용(실 백테스트의 익일 시가·비용·청산룰과 다름 — 관계 측정용). forward 윈도우 겹침·레짐 집중은 <b>이벤트 최소 간격(디클러스터)</b>으로 독립표본화 — 결과·회귀·(L,H) 지도에 동일 적용.
             범위를 좁힐수록 표본↓·통계 불안정(n&lt;30 ⚠). (L,H) 지도는 종가범위 조건, 위 회귀는 전체기간 — 조건이 달라 R²가 다를 수 있음.
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+// ── ⑨ 급등락 → 회귀 (평균회귀) 탐색기 ──────────────────────────────────
+// 트레일링 피벗으로 추세 시작 포착 → 피벗 대비 누적 ±급등락임계 도달일=트리거 →
+// 역추세 진입(하락소진→롱·상승소진→숏)의 N일 후 계좌 회귀수익률(청산 반영) 측정.
+// 모든 %·수익률은 레버리지 반영 계좌 기준. 분석 전용(자동매매 무관).
+
+const RE_DEF_REVERSAL = 5;    // 전환임계 (계좌 %)
+const RE_DEF_RUN = 30;        // 급등락임계 (계좌 %)
+const RE_DEF_HORIZON = 20;    // 반등 관측 N일
+const RE_DEF_LEVERAGE = 10;   // 레버리지 (배)
+const RE_DEF_GAP = 0;         // 이벤트 최소 간격(영업일)
+
+type ReMetric = "ret" | "succ" | "liq" | "n";
+
+const RE_SWEEP_AXES: { v: OilReversionAxis; label: string; short: string }[] = [
+  { v: "run", label: "급등락임계", short: "급등락" },
+  { v: "horizon", label: "반등 N일", short: "N일" },
+  { v: "reversal", label: "전환임계", short: "전환" },
+];
+
+// 스윕 셀 색: 회귀 평균=발산(되돌림/+=빨강·추세지속/−=파랑, 한국관례), 성공률=50기준 발산,
+// 청산율·표본수=오렌지 농도(청산은 높을수록 경고 진함).
+function reCell(metric: ReMetric, v: number, maxAbs: number, maxN: number):
+    { bg: string; txt: string; fg: string } {
+  let a: number, bg: string, txt: string;
+  if (metric === "ret") {
+    a = Math.min(0.85, (Math.abs(v) / (maxAbs || 1)) * 0.85);
+    bg = v >= 0 ? `rgba(222,48,51,${a})` : `rgba(22,104,196,${a})`;
+    txt = (v >= 0 ? "+" : "") + v.toFixed(0) + "%";
+  } else if (metric === "succ") {
+    a = Math.min(0.85, (Math.abs(v - 50) / 50) * 0.85);
+    bg = v >= 50 ? `rgba(222,48,51,${a})` : `rgba(22,104,196,${a})`;
+    txt = v.toFixed(0) + "%";
+  } else if (metric === "liq") {
+    a = Math.min(0.85, (v / 100) * 0.85);
+    bg = `rgba(217,119,87,${a})`;
+    txt = v.toFixed(0) + "%";
+  } else {  // n
+    a = Math.min(0.85, (v / (maxN || 1)) * 0.85);
+    bg = `rgba(217,119,87,${a})`;
+    txt = String(v);
+  }
+  return { bg, txt, fg: a > 0.55 ? "#fff" : "var(--text)" };
+}
+
+function reFmtPct(v: number | null, sign = false): string {
+  if (v == null) return "—";
+  return (sign && v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+}
+
+function reColor(v: number | null): string {
+  if (v == null) return "var(--muted)";
+  return v >= 0 ? "var(--up)" : "var(--down)";
+}
+
+// 방향별 요약 카드 (모듈 스코프 — 부모 내부 정의 시 리마운트 회피).
+function ReversionSummaryCard({ title, icon, s }: { title: string; icon: string; s: OilReversionDirSummary }) {
+  return (
+    <div style={{ flex: "1 1 220px", border: "1px solid var(--border)", borderRadius: 10, padding: 14 }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>{icon} {title}</div>
+      {s.n === 0 ? (
+        <div className="muted" style={{ fontSize: 13 }}>표본 없음 — 임계/기간을 조정하세요</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", rowGap: 6, fontSize: 13 }}>
+          <span className="muted">표본수</span><b style={{ textAlign: "right" }}>{s.n}건</b>
+          <span className="muted">회귀 수익률 평균</span>
+          <b style={{ textAlign: "right", color: reColor(s.mean_reversion) }}>{reFmtPct(s.mean_reversion, true)}</b>
+          <span className="muted">회귀 수익률 중앙값</span>
+          <b style={{ textAlign: "right", color: reColor(s.median_reversion) }}>{reFmtPct(s.median_reversion, true)}</b>
+          <span className="muted">회귀 성공률</span><b style={{ textAlign: "right" }}>{reFmtPct(s.success_rate)}</b>
+          <span className="muted">청산율</span>
+          <b style={{ textAlign: "right", color: (s.liquidation_rate ?? 0) > 0 ? "var(--accent-strong)" : "var(--text)" }}>
+            {reFmtPct(s.liquidation_rate)}
+          </b>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ⑨ 급등락 → 회귀 탐색기. 입력(전환·급등락 임계·반등 N일·레버리지·이벤트간격)을 확인하면
+// /reversion(방향별 요약+이벤트) + /reversion-sweep(임계×N일 격자)을 호출해 표시.
+function ReversionExplorer({ symbol }: { symbol: string }) {
+  const [reversal, setReversal] = useState<number | "">(RE_DEF_REVERSAL);
+  const [run, setRun] = useState<number | "">(RE_DEF_RUN);
+  const [horizon, setHorizon] = useState<number | "">(RE_DEF_HORIZON);
+  const [leverage, setLeverage] = useState<number | "">(RE_DEF_LEVERAGE);
+  const [gap, setGap] = useState<number | "">(RE_DEF_GAP);
+
+  const [applied, setApplied] = useState<
+    { reversal: number; run: number; horizon: number; leverage: number; gap: number } | null
+  >(null);
+  const [data, setData] = useState<OilReversion | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // 스윕 상태
+  const [sweepRowAxis, setSweepRowAxis] = useState<OilReversionAxis>("run");
+  const [sweepColAxis, setSweepColAxis] = useState<OilReversionAxis>("horizon");
+  const [sweepDir, setSweepDir] = useState<"down" | "up">("down");
+  const [sweepMetric, setSweepMetric] = useState<ReMetric>("ret");
+  const [sweep, setSweep] = useState<OilReversionSweep | null>(null);
+  const [sweepLoading, setSweepLoading] = useState(false);
+  const [sweepError, setSweepError] = useState<string | null>(null);
+
+  // 종목 변경 시 리셋
+  useEffect(() => { setApplied(null); setData(null); setError(null); setSweep(null); }, [symbol]);
+
+  // 결과 fetch
+  useEffect(() => {
+    if (!applied) return;
+    let cancelled = false;
+    setLoading(true); setError(null);
+    futuresApi.reversion(symbol, applied)
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) { setError(e.message || "계산 실패"); setData(null); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [symbol, applied]);
+
+  // 스윕 fetch
+  useEffect(() => {
+    if (!applied) { setSweep(null); return; }
+    if (sweepRowAxis === sweepColAxis) { setSweep(null); setSweepError("행 축과 열 축을 다르게 선택하세요"); return; }
+    let cancelled = false;
+    setSweepLoading(true); setSweepError(null);
+    futuresApi.reversionSweep(symbol, {
+      row_axis: sweepRowAxis, col_axis: sweepColAxis, direction: sweepDir,
+      reversal: applied.reversal, run: applied.run, horizon: applied.horizon,
+      leverage: applied.leverage, gap: applied.gap,
+    })
+      .then((d) => { if (!cancelled) setSweep(d); })
+      .catch((e) => { if (!cancelled) { setSweepError(e.message || "스윕 실패"); setSweep(null); } })
+      .finally(() => { if (!cancelled) setSweepLoading(false); });
+    return () => { cancelled = true; };
+  }, [symbol, applied, sweepRowAxis, sweepColAxis, sweepDir]);
+
+  const sweepView = useMemo(() => {
+    if (!sweep) return null;
+    const byKey = new Map(sweep.cells.map((c) => [`${c.row}|${c.col}`, c]));
+    const valOf = (c: OilReversionSweepCell): number | null =>
+      sweepMetric === "ret" ? c.mean_reversion
+        : sweepMetric === "succ" ? c.success_rate
+          : sweepMetric === "liq" ? c.liquidation_rate
+            : c.n;
+    let maxAbs = 0, maxN = 0;
+    for (const c of sweep.cells) {
+      if (c.mean_reversion != null) maxAbs = Math.max(maxAbs, Math.abs(c.mean_reversion));
+      maxN = Math.max(maxN, c.n);
+    }
+    return { byKey, valOf, maxAbs: maxAbs || 1, maxN: maxN || 1 };
+  }, [sweep, sweepMetric]);
+
+  const submit = () => {
+    const rv = Number(reversal), rn = Number(run), hz = Number(horizon), lv = Number(leverage), gp = Number(gap || 0);
+    if (!(rv > 0) || !(rn > 0) || !(hz >= 1) || !(lv >= 1)) {
+      setError("전환·급등락 임계 > 0, 반등 N일 ≥ 1, 레버리지 ≥ 1 이어야 합니다.");
+      return;
+    }
+    setApplied({ reversal: rv, run: rn, horizon: hz, leverage: lv, gap: gp });
+  };
+
+  const numIn = (val: number | "", set: (v: number | "") => void, unit: string, width = 52) => (
+    <span className="re-num">
+      <input type="number" value={val} style={{ width }}
+        onChange={(e) => set(e.target.value === "" ? "" : Number(e.target.value))} />{unit}
+    </span>
+  );
+
+  const toggleBtn = (active: boolean): CSSProperties => ({
+    fontSize: 12, padding: "3px 10px", borderRadius: 6, cursor: "pointer",
+    border: active ? "1px solid var(--accent)" : "1px solid var(--border)",
+    background: active ? "var(--accent-soft)" : "transparent",
+    color: active ? "var(--accent-strong)" : "var(--muted)",
+    fontWeight: active ? 700 : 400,
+  });
+
+  return (
+    <>
+      <style>{`
+        .re-num{display:inline-flex;align-items:center;gap:2px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:7px;padding:2px 9px;margin:0 3px;font-weight:600;color:var(--accent-strong)}
+        .re-num input{border:none;background:transparent;color:var(--accent-strong);font:inherit;font-weight:600;text-align:center;-moz-appearance:textfield;appearance:textfield}
+        .re-num input::-webkit-outer-spin-button,.re-num input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+      `}</style>
+
+      <p className="muted" style={{ fontSize: 13, lineHeight: 1.7, marginTop: 0 }}>
+        가격이 <b>전환임계</b>만큼 역행하면 추세가 바뀐 것으로 보고(트레일링 피벗), 그 추세가 <b>급등락임계</b>까지
+        달린 뒤 <b>역추세</b>로 진입(급락→롱·급등→숏)했을 때 <b>N일 후 얼마나 되돌리는지(회귀)</b>를 봅니다.
+        <b> 모든 %·수익률은 레버리지 반영 계좌 기준</b>이며, 보유 중 계좌 −100% 도달 시 청산(전손)으로 집계합니다.
+      </p>
+
+      <div style={{ fontSize: 14, lineHeight: 2.4 }}>
+        전환임계 {numIn(reversal, setReversal, "%")} 역행 = 추세전환 · 누적 {numIn(run, setRun, "%")} 도달 = 급등락 ·
+        이후 {numIn(horizon, setHorizon, "일")} 회귀 관측 · 레버리지 {numIn(leverage, setLeverage, "배", 44)} ·
+        이벤트 최소간격 {numIn(gap, setGap, "일", 44)}
+        <button onClick={submit} disabled={loading} style={{ marginLeft: 10 }}>
+          {loading ? "계산 중…" : "확인 (계산)"}
+        </button>
+      </div>
+
+      {error && <div className="muted" style={{ color: "var(--amber)", marginTop: 8 }}>{error}</div>}
+      {!applied && !error && (
+        <div className="muted" style={{ marginTop: 12 }}>값을 채우고 <b>확인</b>을 누르면 분석합니다.</div>
+      )}
+
+      {applied && data && !loading && (
+        <>
+          <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
+            <ReversionSummaryCard title="하락소진 → 롱 (반등 베팅)" icon="📉" s={data.down_exhaustion} />
+            <ReversionSummaryCard title="상승소진 → 숏 (되돌림 베팅)" icon="📈" s={data.up_exhaustion} />
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            회귀 <b>+</b>면 추세를 되돌림(베팅 성공), <b>−</b>면 추세 지속. 평균은 청산(−100%) 포함 기대값,
+            중앙값은 청산에 덜 휘둘리는 전형값 — 둘의 격차가 꼬리위험입니다.
+          </div>
+
+          {data.events.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
+                <b>이벤트</b> ({data.events.length}건) — 피벗 → 트리거 → {applied.horizon}일 후 회귀(계좌)
+              </div>
+              <div className="table-scroll" style={{ maxHeight: 320 }}>
+                <table className="te-hm" style={{ fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left" }}>피벗일</th>
+                      <th style={{ textAlign: "left" }}>트리거일</th>
+                      <th>방향</th>
+                      <th>트리거 시 누적</th>
+                      <th>{applied.horizon}일 후 회귀</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.events.map((e, i) => {
+                      const down = e.direction === "down_exhaustion";
+                      const rev = e.reversion_account * 100;
+                      return (
+                        <tr key={i}>
+                          <td style={{ textAlign: "left" }}>{e.pivot_date}</td>
+                          <td style={{ textAlign: "left" }}>{e.trigger_date}</td>
+                          <td>{down ? "📉 하락→롱" : "📈 상승→숏"}</td>
+                          <td style={{ color: reColor(e.run_account) }}>
+                            {(e.run_account >= 0 ? "+" : "") + (e.run_account * 100).toFixed(0)}%
+                          </td>
+                          <td style={{ fontWeight: 600, color: e.liquidated ? "var(--down)" : reColor(rev) }}>
+                            {e.liquidated ? `청산 D+${e.liquidation_day}` : (rev >= 0 ? "+" : "") + rev.toFixed(0) + "%"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* 2D 스윕 — {전환·급등락·N일} 중 둘을 격자로 */}
+          <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+            <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
+              <b>2D 스윕</b> — {"{전환임계·급등락임계·반등 N일}"} 중 둘을 격자로. 나머지는 현재 입력 고정.
+              어느 조합에서 회귀가 큰지 한눈에 — 청산율 토글로 교차검증.
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <span className="muted" style={{ fontSize: 12 }}>행</span>
+              <select value={sweepRowAxis} onChange={(e) => setSweepRowAxis(e.target.value as OilReversionAxis)}
+                style={{ fontSize: 12, padding: "3px 6px", borderRadius: 6, border: "1px solid var(--border)" }}>
+                {RE_SWEEP_AXES.map((ax) => <option key={ax.v} value={ax.v} disabled={ax.v === sweepColAxis}>{ax.label}</option>)}
+              </select>
+              <span className="muted" style={{ fontSize: 12 }}>열</span>
+              <select value={sweepColAxis} onChange={(e) => setSweepColAxis(e.target.value as OilReversionAxis)}
+                style={{ fontSize: 12, padding: "3px 6px", borderRadius: 6, border: "1px solid var(--border)" }}>
+                {RE_SWEEP_AXES.map((ax) => <option key={ax.v} value={ax.v} disabled={ax.v === sweepRowAxis}>{ax.label}</option>)}
+              </select>
+              <span style={{ flex: "0 0 8px" }} />
+              {([["down", "📉 하락소진"], ["up", "📈 상승소진"]] as const).map(([d, lbl]) => (
+                <button key={d} onClick={() => setSweepDir(d)} style={toggleBtn(sweepDir === d)}>{lbl}</button>
+              ))}
+              <span style={{ flex: "0 0 8px" }} />
+              {([["ret", "회귀 평균"], ["succ", "성공률"], ["liq", "청산율"], ["n", "표본수"]] as const).map(([m, lbl]) => (
+                <button key={m} onClick={() => setSweepMetric(m)} style={toggleBtn(sweepMetric === m)}>{lbl}</button>
+              ))}
+            </div>
+            {sweepError && <div className="muted" style={{ fontSize: 12, color: "var(--amber)", marginBottom: 6 }}>{sweepError}</div>}
+            {sweepLoading && <div className="muted" style={{ fontSize: 11 }}>스윕 계산 중…</div>}
+            {sweep && sweepView && !sweepLoading && (
+              <div className="table-scroll sticky-table" style={{ maxHeight: 420 }}>
+                <table className="te-hm">
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left" }}>
+                        {RE_SWEEP_AXES.find((a) => a.v === sweepRowAxis)?.short}＼{RE_SWEEP_AXES.find((a) => a.v === sweepColAxis)?.short}
+                      </th>
+                      {sweep.col_labels.map((cl, ci) => <th key={ci}>{cl}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sweep.row_labels.map((rl, ri) => (
+                      <tr key={ri}>
+                        <th style={{ textAlign: "left" }}>{rl}</th>
+                        {sweep.col_labels.map((_, ci) => {
+                          const c = sweepView.byKey.get(`${ri}|${ci}`);
+                          const v = c ? sweepView.valOf(c) : null;
+                          if (!c || v == null) {
+                            return <td key={ci} title={c ? `n=${c.n}` : ""}
+                              style={{ background: "#f1efe8", color: "var(--muted)", opacity: 0.5, borderRadius: 5 }}>·</td>;
+                          }
+                          const { bg, txt, fg } = reCell(sweepMetric, v, sweepView.maxAbs, sweepView.maxN);
+                          const tip = `n=${c.n}`
+                            + ` · 회귀평균 ${c.mean_reversion != null ? c.mean_reversion.toFixed(1) + "%" : "—"}`
+                            + ` · 성공 ${c.success_rate != null ? c.success_rate.toFixed(0) + "%" : "—"}`
+                            + ` · 청산 ${c.liquidation_rate != null ? c.liquidation_rate.toFixed(0) + "%" : "—"}`;
+                          return (
+                            <td key={ci} title={tip} style={{ background: bg, color: fg, borderRadius: 5 }}>
+                              <div style={{ fontWeight: 600 }}>{txt}</div>
+                              <div style={{ fontSize: 10, opacity: 0.9 }}>n{c.n}</div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="muted" style={{ fontSize: 11, marginTop: 12 }}>
+            ⚠️ 종가 기반·종가-종가 회귀 — 실제 백테스트(비용·익일시가·체결지연) 아님(관계 측정용). 청산은 종가 경로·전손(−100%)
+            단순 기준(유지증거금·일중 저점이면 더 일찍 청산될 수 있음). 레버리지 높을수록 같은 임계%가 더 작은 지수 움직임 →
+            이벤트·청산 급증 — 표본수·청산율을 함께 확인하세요.
           </div>
         </>
       )}

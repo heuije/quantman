@@ -32,7 +32,10 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from quant_core.oil_futures import (
+    DOWN_EXHAUSTION,
     LOW_SAMPLE_THRESHOLD,
+    REVERSION_SWEEP_AXES,
+    UP_EXHAUSTION,
     CostModel,
     ExitRules,
     RollModel,
@@ -42,6 +45,9 @@ from quant_core.oil_futures import (
     generate_signals,
     grid_search,
     prepare_wti,
+    reversion_events,
+    reversion_summary,
+    reversion_sweep,
     run_backtest,
     summarize,
     trend_events,
@@ -1131,4 +1137,185 @@ def trend_export_endpoint(
         content=data,
         media_type=_XLSX_MEDIA,
         headers={"Content-Disposition": f'attachment; filename="trend_{cfg.symbol}.xlsx"'},
+    )
+
+
+# ───── 🅗 REVERSION (급등락 → 회귀) ──────────────────────────────────────
+# 트레일링 피벗으로 추세 시작 포착 → 피벗 대비 누적 ±급등락임계 도달일=트리거 →
+# 역추세 진입(하락소진→롱·상승소진→숏)의 N일 후 계좌수익률(청산 반영) 측정.
+# 모든 % 는 레버리지 반영 계좌 기준(엔진이 지수에서 ÷레버리지 환산·결과 ×레버리지).
+
+_REV_HORIZONS = [5, 10, 20, 40, 60]
+_DIR_QUERY = {"down": DOWN_EXHAUSTION, "up": UP_EXHAUSTION}
+
+
+class ReversionEventOut(BaseModel):
+    pivot_date: str
+    pivot_price: float
+    trigger_date: str
+    trigger_price: float
+    direction: str            # "down_exhaustion" | "up_exhaustion"
+    run_account: float        # 트리거 시점 누적(계좌, 부호 상승+/하락-)
+    reversion_account: float  # N일 후 역추세 계좌수익률(청산 시 -1.0)
+    liquidated: bool
+    liquidation_day: Optional[int]
+
+
+class ReversionDirSummary(BaseModel):
+    n: int
+    mean_reversion: Optional[float]      # 계좌 % (청산 포함). 표본 0이면 None
+    median_reversion: Optional[float]
+    success_rate: Optional[float]        # reversion>0 비율 %
+    liquidation_rate: Optional[float]    # %
+
+
+class ReversionResponse(BaseModel):
+    symbol: str
+    reversal: float
+    run: float
+    horizon: int
+    leverage: float
+    gap: int
+    down_exhaustion: ReversionDirSummary
+    up_exhaustion: ReversionDirSummary
+    events: list[ReversionEventOut]
+
+
+def _dir_summary(block: dict) -> ReversionDirSummary:
+    return ReversionDirSummary(
+        n=block["n"],
+        mean_reversion=_nn(block["mean_reversion"]),
+        median_reversion=_nn(block["median_reversion"]),
+        success_rate=_nn(block["success_rate"]),
+        liquidation_rate=_nn(block["liquidation_rate"]),
+    )
+
+
+def _validate_reversion(reversal: float, run: float, horizon: int,
+                        leverage: float, gap: int) -> None:
+    if reversal <= 0 or run <= 0:
+        raise HTTPException(422, "reversal·run 은 0보다 커야 함")
+    if not (1 <= horizon <= 500):
+        raise HTTPException(422, "horizon 은 1~500")
+    if leverage < 1:
+        raise HTTPException(422, "leverage 는 1 이상")
+    if gap < 0:
+        raise HTTPException(422, "gap 은 0 이상")
+
+
+@router.get("/{symbol}/reversion", response_model=ReversionResponse)
+def reversion_endpoint(
+    symbol: str,
+    reversal: float = 5.0,
+    run: float = 30.0,
+    horizon: int = 20,
+    leverage: float = 10.0,
+    gap: int = 0,
+):
+    """급등락(트레일링 피벗→누적 ±run%) 후 N일 회귀 — 방향별 요약 + 이벤트.
+
+    모든 % 는 레버리지 반영 계좌 기준. 청산(N일 내 계좌 -100% 도달)은 -100%로 집계.
+    """
+    _validate_reversion(reversal, run, horizon, leverage, gap)
+    df = _df(symbol)
+    evs = reversion_events(
+        df, reversal_account_pct=reversal, run_account_pct=run,
+        horizon=horizon, leverage=leverage, gap=max(0, gap),
+    )
+    summ = reversion_summary(evs)
+    return ReversionResponse(
+        symbol=symbol, reversal=reversal, run=run, horizon=horizon,
+        leverage=leverage, gap=gap,
+        down_exhaustion=_dir_summary(summ[DOWN_EXHAUSTION]),
+        up_exhaustion=_dir_summary(summ[UP_EXHAUSTION]),
+        events=[
+            ReversionEventOut(
+                pivot_date=str(e.pivot_date.date()), pivot_price=e.pivot_price,
+                trigger_date=str(e.trigger_date.date()), trigger_price=e.trigger_price,
+                direction=e.direction, run_account=e.run_account,
+                reversion_account=e.reversion_account, liquidated=e.liquidated,
+                liquidation_day=e.liquidation_day,
+            )
+            for e in evs
+        ],
+    )
+
+
+class ReversionSweepCellOut(BaseModel):
+    row: int
+    col: int
+    n: int
+    mean_reversion: Optional[float]
+    success_rate: Optional[float]
+    liquidation_rate: Optional[float]
+
+
+class ReversionSweepResponse(BaseModel):
+    row_axis: str
+    col_axis: str
+    direction: str
+    row_labels: list[str]
+    col_labels: list[str]
+    cells: list[ReversionSweepCellOut]
+
+
+def _ladder(center: float) -> list[float]:
+    """중심값 기준 배수 사다리 (스윕 축 값). 양수 유지·중복 제거·오름차순."""
+    vals = sorted({round(center * m, 2) for m in (0.5, 0.75, 1.0, 1.5, 2.0) if center * m > 0})
+    return vals
+
+
+def _reversion_axis_values(axis: str, reversal: float, run: float, horizon: int):
+    """스윕 축별 값 리스트 + 라벨. reversal/run=계좌 % 사다리, horizon=고정 일수 사다리."""
+    if axis == "horizon":
+        return list(_REV_HORIZONS), [f"{v}일" for v in _REV_HORIZONS]
+    if axis == "reversal":
+        vals = _ladder(reversal)
+        return vals, [f"{v:g}%" for v in vals]
+    if axis == "run":
+        vals = _ladder(run)
+        return vals, [f"{v:g}%" for v in vals]
+    raise HTTPException(422, f"축은 {REVERSION_SWEEP_AXES} 중 하나")
+
+
+@router.get("/{symbol}/reversion-sweep", response_model=ReversionSweepResponse)
+def reversion_sweep_endpoint(
+    symbol: str,
+    row_axis: str,
+    col_axis: str,
+    direction: Literal["down", "up"] = "down",
+    reversal: float = 5.0,
+    run: float = 30.0,
+    horizon: int = 20,
+    leverage: float = 10.0,
+    gap: int = 0,
+):
+    """{reversal·run·horizon} 중 2축을 격자 스윕 → 칸마다 한 방향의 회귀 평균·성공률·청산율.
+
+    스윕 안 하는 축은 입력 고정값(중심). 값 하나씩 넣지 않고 최적 조합을 한눈에 비교.
+    """
+    if row_axis == col_axis:
+        raise HTTPException(422, "행 축과 열 축은 달라야 함")
+    _validate_reversion(reversal, run, horizon, leverage, gap)
+    rvals, rlabels = _reversion_axis_values(row_axis, reversal, run, horizon)
+    cvals, clabels = _reversion_axis_values(col_axis, reversal, run, horizon)
+    dir_name = _DIR_QUERY[direction]
+
+    df = _df(symbol)
+    cells = reversion_sweep(
+        df, row_axis=row_axis, col_axis=col_axis, row_values=rvals, col_values=cvals,
+        reversal_account_pct=reversal, run_account_pct=run, horizon=horizon,
+        leverage=leverage, gap=max(0, gap), direction=dir_name,
+    )
+    return ReversionSweepResponse(
+        row_axis=row_axis, col_axis=col_axis, direction=dir_name,
+        row_labels=rlabels, col_labels=clabels,
+        cells=[
+            ReversionSweepCellOut(
+                row=c.row, col=c.col, n=c.n,
+                mean_reversion=_nn(c.mean_reversion), success_rate=_nn(c.success_rate),
+                liquidation_rate=_nn(c.liquidation_rate),
+            )
+            for c in cells
+        ],
     )
