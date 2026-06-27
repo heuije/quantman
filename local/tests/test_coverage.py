@@ -40,10 +40,18 @@ def test_kis_overseas_futures_only(stub_slots):
     assert coverage.covered_categories() == {"us_futures"}
 
 
-def test_ls_stock_is_kr_equity_only(stub_slots):
+def test_ls_virtual_stock_is_kr_equity_only(stub_slots):
+    """LS 모의 주식계좌 — 해외주식 미제공이라 kr_equity만."""
     stub_slots["broker"] = "ls"
-    stub_slots["ls"] = {"app_key": "x"}
+    stub_slots["ls"] = {"app_key": "x", "virtual": True}
     assert coverage.covered_categories() == {"kr_equity"}
+
+
+def test_ls_real_stock_covers_us_equity(stub_slots):
+    """LS 실전 주식계좌 — 해외주식 실전 지원이라 kr_equity + us_equity."""
+    stub_slots["broker"] = "ls"
+    stub_slots["ls"] = {"app_key": "x", "virtual": False}
+    assert coverage.covered_categories() == {"kr_equity", "us_equity"}
 
 
 def test_ls_kr_futures_only(stub_slots):
