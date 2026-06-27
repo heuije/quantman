@@ -78,19 +78,30 @@ def fetch(code: str) -> dict | None:
         return None
     import dart_fss as dfs
     bgn = f"{date.today().year - 6}0101"
-    try:
-        fs = dfs.fs.extract(corp_code=cc, bgn_de=bgn, separate=False, report_tp="annual", dataset="web")
-    except Exception as e:  # noqa: BLE001
-        _log.warning("dart-fss extract 실패 %s: %s", code, e)
-        return None
-    out = {}
-    pl = _conv(fs["is"] if fs["is"] is not None else fs["cis"])
-    if pl:
-        out["PL"] = pl
-    bs = _conv(fs["bs"])
-    if bs:
-        out["BS"] = bs
-    cf = _conv(fs["cf"])
-    if cf:
-        out["CF"] = cf
-    return {"annual": out} if out else None
+    # DART가 구(舊) 보고서 다운로드 연결을 끊으면(RemoteDisconnected) dart-fss가 일부 연도만 받는다.
+    # → 5개년 될 때까지 재시도(다운로드는 디스크 캐시라 재시도가 누락분만 받아 누적 → 5년 도달).
+    best, best_n = None, 0
+    for _ in range(2):
+        try:
+            fs = dfs.fs.extract(corp_code=cc, bgn_de=bgn, separate=False, report_tp="annual", dataset="web")
+        except Exception as e:  # noqa: BLE001
+            _log.warning("dart-fss extract 실패 %s: %s", code, e)
+            continue
+        out = {}
+        pl = _conv(fs["is"] if fs["is"] is not None else fs["cis"])
+        if pl:
+            out["PL"] = pl
+        bs = _conv(fs["bs"])
+        if bs:
+            out["BS"] = bs
+        cf = _conv(fs["cf"])
+        if cf:
+            out["CF"] = cf
+        if not out:
+            continue
+        n = max((len(v["periods"]) for v in out.values()), default=0)
+        if n > best_n:
+            best, best_n = out, n
+        if best_n >= 5:
+            break
+    return {"annual": best} if best else None

@@ -246,6 +246,43 @@ def _reorder_by_doc(stmt: dict, layout: list) -> None:
     stmt["rows"] = [r for _, _, r in keyed]
 
 
+_REV_SYN = {"영업수익", "수익(매출액)", "수익", "매출", "매출수익", "매출액", "영업수익(매출액)"}
+
+
+def _fill_key(name: str) -> str:
+    """채움 매칭용 canon — 매출 동의어(매출액↔영업수익↔수익)는 한 키로(계정 개명 회사 대응)."""
+    from . import dart_doc
+    ns = (name or "").replace(" ", "")
+    return "매출액" if ns in _REV_SYN else dart_doc._ckey(name)
+
+
+def _extend_periods(stmt: dict, oa: dict) -> None:
+    """dart-fss 연간(DART 연결 끊김으로 최근 3개년만 온 경우)을 OpenAPI(oa)로 5개년 축까지 확장.
+    옛 연도(FY21/22)를 canon 매칭해 채움. 표시 계정·순서는 원문(dart-fss) 그대로 유지."""
+    if not stmt or not oa or not oa.get("periods"):
+        return
+    sp = stmt.get("periods") or []
+    op = oa.get("periods") or []
+    target = sorted(set(sp) | set(op))[-5:]
+    si = {p: i for i, p in enumerate(sp)}
+    oi = {p: i for i, p in enumerate(op)}
+    oc = {}
+    for r in oa.get("rows", []):
+        oc.setdefault(_fill_key(r.get("canon") or r.get("account", "")), r)
+    for r in stmt.get("rows", []):
+        orow = oc.get(_fill_key(r.get("canon") or r.get("account", "")))
+        vals = r.get("values", [])
+        ovals = orow.get("values", []) if orow else []
+        nv = []
+        for p in target:
+            v = vals[si[p]] if (p in si and si[p] < len(vals)) else None
+            if v is None and p in oi and oi[p] < len(ovals):
+                v = ovals[oi[p]]                       # 원문이 비면(개명·throttle) OpenAPI로 채움 — 축 완성이어도 행 갭 채움
+            nv.append(v)
+        r["values"] = nv
+    stmt["periods"] = target
+
+
 def _fetch(code: str) -> dict:
     r = requests.get("https://comp.fnguide.com/SVO2/ASP/SVD_Finance.asp",
                      params={"pGB": 1, "gicode": f"A{code}"}, headers=_UA, timeout=20)
@@ -285,6 +322,7 @@ def _fetch(code: str) -> dict:
             if merged.get("PL") or merged.get("BS"):
                 for k in ("PL", "BS", "CF"):
                     if merged.get(k):
+                        _extend_periods(merged[k], oa_annual.get(k))   # 옛 연도(FY21/22)를 OpenAPI로 채워 5개년 축 보장
                         _with_change(merged[k])
                 _add_pl_metrics(merged)   # 이익률(·D&A 있으면 EBITDA) 부여. 판관비 상세 graft는 안 함(보고서 그대로).
                 annual = merged    # 연간 = 원문 보고서(폴백 시 OpenAPI)
