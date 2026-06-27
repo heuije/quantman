@@ -186,7 +186,7 @@ BASE_CASES = [
          ir={"universe": {"kind": "list", "symbols": ["AAA", "BBB", "CCC", "DDD", "EEE"]},
              "signal": {"op": "data", "params": {"ref": "__SELF__.pb_ratio"}}, "query": "select",
              "select": {"top_n": 3, "descending": False, "display": ["pb_ratio"]}},
-         checks={"스크리닝결과": ["순위", "DDD", "pb_ratio"], "설명": ["스크리닝"]}),
+         checks={"스크리닝결과": ["순위", "DDD", "PBR"], "설명": ["스크리닝"]}),  # 친근 라벨(내부키 pb_ratio 노출 X)
     dict(name="describe_single", desc="단일종목 분석(52주·변동성 라이브)", ds=ds_single,
          ir={"universe": {"kind": "single", "symbols": ["AAA"]}, "signal": SIG_C, "query": "describe"},
          checks={"종목요약": ["현재가", "52주 고가", "=MAX(원자료", "STDEV.S(원자료"], "원자료": ["=B5/B4-1"], "설명": ["종목 분석"]}),

@@ -125,7 +125,7 @@ def test_result_contract_columns_scoring(monkeypatch):
     assert res.get("success"), res.get("error")
     cols = {c["key"]: c for c in res["columns"]}
     assert {"name", "code", "score", "pb_ratio"} <= set(cols)       # identity+점수+메트릭
-    assert cols["pb_ratio"]["label"] == "PBR" and cols["pb_ratio"]["unit"] == "배"
+    assert cols["pb_ratio"]["label"] == "PBR" and cols["pb_ratio"]["unit"] == "x"   # 배수=x 표기
     assert res["scoring"]["recipe"]                                 # 산식 문자열(투명)
     assert res["scoring"]["direction"] == "low_better"             # descending=False
 
@@ -135,3 +135,17 @@ def test_column_meta_units():
     assert column_meta("market_cap")["unit"] == "백만원" and column_meta("market_cap")["scale"] == 1e6
     assert column_meta("ev_ebitda")["label"] == "EV/EBITDA"
     assert column_meta("unknown_x")["label"] == "unknown_x"         # 미등록 폴백
+
+
+def test_score_recipe_uses_friendly_labels():
+    """산식 문구는 내부 키(pb_ratio) 대신 친근한 라벨(PBR·PER) — 유저 노출 텍스트."""
+    from quant_core.ir_engine.columns import score_recipe
+
+    def _rank(ref):
+        return {"op": "rank", "params": {"unit": "pct", "descending": False},
+                "inputs": {"signal": {"op": "data", "params": {"ref": ref}}}}
+    signal = {"op": "binary", "params": {"op": "+"},
+              "inputs": {"a": _rank("__SELF__.pb_ratio"), "b": _rank("__SELF__.trailing_pe")}}
+    recipe = score_recipe(signal, descending=False)["recipe"]
+    assert "PBR" in recipe and "PER" in recipe
+    assert "pb_ratio" not in recipe and "trailing_pe" not in recipe

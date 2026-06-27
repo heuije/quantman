@@ -9,13 +9,14 @@ from __future__ import annotations
 # 알려진 필드 → 표시 메타. scale: 표시값 = 원시값/scale. direction: 정렬·해석 힌트.
 _META: dict[str, dict] = {
     "score": {"label": "점수", "format": "0.000"},
-    "pb_ratio": {"label": "PBR", "unit": "배", "format": "0.00", "direction": "low_better"},
-    "pbr": {"label": "PBR", "unit": "배", "format": "0.00", "direction": "low_better"},
-    "trailing_pe": {"label": "PER", "unit": "배", "format": "0.00", "direction": "low_better"},
-    "per": {"label": "PER", "unit": "배", "format": "0.00", "direction": "low_better"},
-    "forward_pe": {"label": "Fwd PER", "unit": "배", "format": "0.00", "direction": "low_better"},
-    "ev_ebitda": {"label": "EV/EBITDA", "unit": "배", "format": "0.00", "direction": "low_better"},
-    "ps_ratio": {"label": "PSR", "unit": "배", "format": "0.00", "direction": "low_better"},
+    # 밸류 멀티플 단위는 'x'(배수 국제 표기 — 예: PER 8.00x). DESIGN.md §배수 표기 규칙.
+    "pb_ratio": {"label": "PBR", "unit": "x", "format": "0.00", "direction": "low_better"},
+    "pbr": {"label": "PBR", "unit": "x", "format": "0.00", "direction": "low_better"},
+    "trailing_pe": {"label": "PER", "unit": "x", "format": "0.00", "direction": "low_better"},
+    "per": {"label": "PER", "unit": "x", "format": "0.00", "direction": "low_better"},
+    "forward_pe": {"label": "Fwd PER", "unit": "x", "format": "0.00", "direction": "low_better"},
+    "ev_ebitda": {"label": "EV/EBITDA", "unit": "x", "format": "0.00", "direction": "low_better"},
+    "ps_ratio": {"label": "PSR", "unit": "x", "format": "0.00", "direction": "low_better"},
     "dividend_yield": {"label": "배당수익률", "unit": "%", "format": "0.00", "direction": "high_better"},
     "market_cap": {"label": "시가총액", "unit": "백만원", "scale": 1e6, "format": "#,##0"},
     "momentum_12_1m": {"label": "모멘텀(12-1M)", "format": "0.000", "direction": "high_better"},
@@ -67,11 +68,13 @@ def score_recipe(signal: dict, descending: bool) -> dict:
 
     _walk(signal)
     uniq = list(dict.fromkeys(refs))
+    # 산식 문구는 내부 키(pb_ratio 등) 대신 친근한 라벨(PBR·PER)로 — 유저 노출 텍스트.
+    labels = [column_meta(r).get("label", r) for r in uniq]
     if len(uniq) > 1 and has_rank:
-        recipe = ("백분위 합 composite(" + "·".join(uniq)
+        recipe = ("백분위 합 composite(" + "·".join(labels)
                   + (", 섹터상대" if has_neutral else "") + ") — 낮을수록 저평가")
     elif uniq:
-        recipe = f"{uniq[0]} 단일 정렬({'큰 순' if descending else '작은 순'})"
+        recipe = f"{labels[0]} 단일 정렬({'큰 순' if descending else '작은 순'})"
     else:
         recipe = "신호 점수 정렬"
     return {"recipe": recipe, "factors": uniq,

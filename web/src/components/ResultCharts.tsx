@@ -402,7 +402,9 @@ function _selFmt(v: unknown, col: SelCol): string {
   const fs = col.format ?? "";
   const dec = fs.includes("0.000") ? 3 : fs.includes("0.00") ? 2 : fs.includes("0.0") ? 1 : 0;
   const s = n.toLocaleString("ko-KR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
-  return col.unit ? (col.unit === "%" ? `${s}%` : `${s} ${col.unit}`) : s;
+  if (!col.unit) return s;
+  // %·x(배수)는 공백 없이 바로 붙이고(8.00x·12.3%), 그 외 단위는 한 칸 띄움(301,000,000 백만원).
+  return col.unit === "%" || col.unit === "x" ? `${s}${col.unit}` : `${s} ${col.unit}`;
 }
 const _selLeft = (key: string) => key === "name" || key === "code" || key === "sector" || key === "symbol";
 
@@ -561,7 +563,7 @@ export function ReportCards({ r }: { r: IrSingleReport }) {
             {(["pb_ratio", "trailing_pe", "ev_ebitda"] as const).map((k) => (
               fund[k] == null
                 ? <Badge key={k} tone="muted">{mlabel(k)} 데이터 없음</Badge>
-                : <Badge key={k} tone="accent">{mlabel(k)} {f2(fund[k])}</Badge>
+                : <Badge key={k} tone="accent">{mlabel(k)} {f2(fund[k])}x</Badge>
             ))}
           </div>
         </Card>
@@ -640,8 +642,9 @@ export function EstimatesView({ est }: { est: Estimates }) {
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: a ? 10 : 0 }}>
           {f.rev_growth != null && <Badge tone={f.rev_growth >= 0 ? "up" : "down"}>매출 {g(f.rev_growth)}</Badge>}
           {f.op_growth != null && <Badge tone={f.op_growth >= 0 ? "up" : "down"}>영업이익 {g(f.op_growth)}</Badge>}
+          {f.op_margin_forward != null && <Badge tone="muted">추정 영업이익률 {f.op_margin_forward.toFixed(1)}%</Badge>}
           {f.ni_growth != null && <Badge tone={f.ni_growth >= 0 ? "up" : "down"}>순이익 {g(f.ni_growth)}</Badge>}
-          {f.forward_pe != null && <Badge tone="accent">forward PER {f.forward_pe.toFixed(1)}</Badge>}
+          {f.forward_pe != null && <Badge tone="accent">forward PER {f.forward_pe.toFixed(1)}x</Badge>}
           {f.roe_forward != null && <Badge tone="muted">추정 ROE {f.roe_forward.toFixed(1)}%</Badge>}
         </div>
       )}
@@ -651,10 +654,14 @@ export function EstimatesView({ est }: { est: Estimates }) {
 }
 
 // 추정실적 다기간 미니표 — 연도 컬럼(확정/추정 색 구분) × 손익 행. 단위는 행 라벨에.
+// 금액은 백만원(HOME 재무제표와 단위 통일·1억=100백만원), EPS=원, 마진=%. 영업이익 바로 아래 영업이익률.
 function EstimatesAnnualTable({ a }: { a: NonNullable<Estimates["annual"]> }) {
+  const mil = (v: number | null) => (v == null ? "—" : Math.round(v * 100).toLocaleString());  // 억→백만원
   const won = (v: number | null) => (v == null ? "—" : Math.round(v).toLocaleString());
-  const rows: [string, (number | null)[] | undefined][] = [
-    ["매출(억)", a.rev], ["영업이익(억)", a.op], ["순이익(억)", a.ni], ["EPS(원)", a.eps],
+  const pctRow = (v: number | null) => (v == null ? "—" : `${v.toFixed(1)}%`);
+  const rows: [string, (number | null)[] | undefined, (v: number | null) => string][] = [
+    ["매출(백만원)", a.rev, mil], ["영업이익(백만원)", a.op, mil], ["영업이익률", a.op_margin, pctRow],
+    ["순이익(백만원)", a.ni, mil], ["EPS(원)", a.eps, won],
   ];
   const cell: React.CSSProperties = {
     padding: "3px 8px", fontSize: 12, textAlign: "right", fontVariantNumeric: "tabular-nums",
@@ -674,11 +681,11 @@ function EstimatesAnnualTable({ a }: { a: NonNullable<Estimates["annual"]> }) {
           </tr>
         </thead>
         <tbody>
-          {rows.filter((row) => row[1]).map(([label, vals]) => (
+          {rows.filter((row) => row[1]).map(([label, vals, fmt]) => (
             <tr key={label}>
               <td style={{ ...cell, textAlign: "left", color: C.muted }}>{label}</td>
               {(vals as (number | null)[]).map((v, i) => (
-                <td key={i} style={{ ...cell, color: a.is_estimate[i] ? C.accent : C.text }}>{won(v)}</td>
+                <td key={i} style={{ ...cell, color: a.is_estimate[i] ? C.accent : C.text }}>{fmt(v)}</td>
               ))}
             </tr>
           ))}

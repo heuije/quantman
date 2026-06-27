@@ -34,8 +34,9 @@ SCREEN_TOOL = {
                           "description": "단일 랭킹 지표 ref (예: momentum_12_1m). 복합은 score_refs."},
             "score_refs": {"type": "array", "items": {"type": "string"},
                            "description": ("복합 저평가 점수용 밸류 지표 ref 목록 — 백분위 합(낮을수록 저평가). "
-                                           "예: ['__SELF__.pb_ratio','__SELF__.trailing_pe','__SELF__.ev_ebitda']. "
-                                           "낮을수록 저평가인 밸류 지표만(혼합 방향 금지).")},
+                                           "예: ['__SELF__.pb_ratio','__SELF__.trailing_pe']. "
+                                           "낮을수록 저평가인 밸류 지표만(혼합 방향 금지). "
+                                           "**ev_ebitda는 저평가 점수에 넣지 말 것**(왜곡 — 사용자 합의로 제외).")},
             "top_n": {"type": "integer", "description": "상위 N 종목(group_by 시 그룹당 N)."},
             "descending": {"type": "boolean",
                            "description": "단일 score_ref일 때만. 큰 순(true·기본)/작은 순(false). composite는 자동."},
