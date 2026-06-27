@@ -1923,6 +1923,10 @@ class Trader:
             "n_errors": sum(1 for d in decisions if d["action"] == "error"),
             "n_unparseable_orphan": sum(
                 1 for d in decisions if d["action"] == "unparseable_orphan"),
+            "n_skip_uncovered": sum(
+                1 for d in decisions if d["action"] == "skip_uncovered"),
+            "n_orphan_uncovered": sum(
+                1 for d in decisions if d["action"] == "orphan_uncovered"),
             # N2 — 이 시장의 미확인 잔존(발주-but-체결미확인 + 이월 미체결).
             # 아침 cycle은 DAY 지정가가 장중 자연 체결될 수 있어 잔존이 정상이지만
             # (서버 타임라인도 cycle 슬롯엔 경고 안 함), 관측을 위해 항상 노출한다.
