@@ -43,4 +43,7 @@ def isolated_trader(tmp_path, monkeypatch):
         **real_merged(o), "post_submit_wait_sec": 0, "poll_interval_sec": 0.01})
 
     broker = SimBroker()
+    from localapp import coverage
+    monkeypatch.setattr(coverage, "covered_categories",
+                        lambda: {"kr_equity", "us_equity", "kr_futures", "us_futures"})
     return tr.Trader(broker), broker

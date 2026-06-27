@@ -29,7 +29,7 @@ from .broker import Broker
 from .config import (CLAIMED_FILLS_PATH, EQUITY_PATH, LEDGER_PATH,
                      PENDING_ORDERS_PATH, TRADES_PATH)
 from .kis_broker import canonical_odno
-from . import analytics, intents, killswitch, order_log, state_store
+from . import analytics, coverage, intents, killswitch, order_log, state_store
 
 log = logging.getLogger("localapp.trader")
 
@@ -1254,6 +1254,14 @@ class Trader:
                 # 서버 preview에 있지만 로컬엔 배정 안 된 전략 — skip
                 continue
             strat_name, strat_def = name_def
+            # P1 커버리지 게이트 — 이 전략 후보가 요구하는 자산군 중 자격증명 미등록이 있으면
+            # 전략을 통째 skip(naked-leg·오라우팅 차단). 한 leg만 발주하지 않는다.
+            missing = coverage.missing_categories(c.get("symbol", "") for c in cands)
+            if missing:
+                decisions.append(order_log.decision(
+                    "skip_uncovered", sid, strat_name, "",
+                    f"자격증명 미등록 자산군: {', '.join(sorted(missing))} — 전략 skip"))
+                continue
             # IR(전략 연구소)은 universe.kind로 다중키 여부를 결정한다. 후보(cands)는
             # 서버 preview가 이미 선정했다.
             uni_kind = (strat_def.get("universe") or {}).get("kind", "single")
@@ -1754,6 +1762,13 @@ class Trader:
             # 미국 정규장 사이클에서만 매도, 그 반대도 동일).
             if _market_group_safe(pos["symbol"]) != market:
                 continue
+            # P1 커버리지 게이트 — 이 포지션 자산군의 자격증명이 미등록이면 브로커가 보유를
+            # 볼 수 없어 청산이 불가능하다. 조용한 skip(외부매도 오진) 대신 명시 경고로 표면화.
+            if coverage.missing_categories([pos["symbol"]]):
+                decisions.append(order_log.decision(
+                    "orphan_uncovered", sid, pos.get("strategy_name", ""), pos["symbol"],
+                    "자격증명 미등록 자산군 — 청산 불가(수동 정리 필요)"))
+                continue
             held = (today - date.fromisoformat(pos["entry_date"])).days
             parse_failed = False
             try:
@@ -1908,6 +1923,10 @@ class Trader:
             "n_errors": sum(1 for d in decisions if d["action"] == "error"),
             "n_unparseable_orphan": sum(
                 1 for d in decisions if d["action"] == "unparseable_orphan"),
+            "n_skip_uncovered": sum(
+                1 for d in decisions if d["action"] == "skip_uncovered"),
+            "n_orphan_uncovered": sum(
+                1 for d in decisions if d["action"] == "orphan_uncovered"),
             # N2 — 이 시장의 미확인 잔존(발주-but-체결미확인 + 이월 미체결).
             # 아침 cycle은 DAY 지정가가 장중 자연 체결될 수 있어 잔존이 정상이지만
             # (서버 타임라인도 cycle 슬롯엔 경고 안 함), 관측을 위해 항상 노출한다.
