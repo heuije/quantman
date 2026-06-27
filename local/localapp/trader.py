@@ -29,7 +29,7 @@ from .broker import Broker
 from .config import (CLAIMED_FILLS_PATH, EQUITY_PATH, LEDGER_PATH,
                      PENDING_ORDERS_PATH, TRADES_PATH)
 from .kis_broker import canonical_odno
-from . import analytics, intents, killswitch, order_log, state_store
+from . import analytics, coverage, intents, killswitch, order_log, state_store
 
 log = logging.getLogger("localapp.trader")
 
@@ -1254,6 +1254,14 @@ class Trader:
                 # 서버 preview에 있지만 로컬엔 배정 안 된 전략 — skip
                 continue
             strat_name, strat_def = name_def
+            # P1 커버리지 게이트 — 이 전략 후보가 요구하는 자산군 중 자격증명 미등록이 있으면
+            # 전략을 통째 skip(naked-leg·오라우팅 차단). 한 leg만 발주하지 않는다.
+            missing = coverage.missing_categories(c.get("symbol", "") for c in cands)
+            if missing:
+                decisions.append(order_log.decision(
+                    "skip_uncovered", sid, strat_name, "",
+                    f"자격증명 미등록 자산군: {', '.join(sorted(missing))} — 전략 skip"))
+                continue
             # IR(전략 연구소)은 universe.kind로 다중키 여부를 결정한다. 후보(cands)는
             # 서버 preview가 이미 선정했다.
             uni_kind = (strat_def.get("universe") or {}).get("kind", "single")
