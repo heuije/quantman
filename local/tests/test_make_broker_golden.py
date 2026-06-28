@@ -57,3 +57,12 @@ def test_kis_no_credentials_raises(hermetic):
     hermetic()                             # 자격증명 전무
     with pytest.raises(RuntimeError):
         runner.make_broker()
+
+
+def test_kis_futures_only_returns_router_no_stock(hermetic):
+    """주식 미등록 + 국내선물 등록 → BrokerRouter(_stock=None) (선물 단독 가능)."""
+    hermetic(kis=None, kis_fut=_CREDS)
+    b = runner.make_broker()
+    assert type(b) is BrokerRouter
+    assert b._stock is None
+    assert type(b._futures) is KisFuturesBroker

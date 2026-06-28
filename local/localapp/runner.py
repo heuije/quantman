@@ -47,14 +47,17 @@ def make_broker() -> Broker:
     """
     from .secrets_store import get_active_broker, load_ls
     if get_active_broker() == "ls":
-        if load_ls() is None:
+        from .secrets_store import load_ls_futures, load_ls_overseas_futures
+        stock = None
+        if load_ls() is not None:
+            from .ls_broker import LsBroker
+            stock = LsBroker()
+        has_fut = bool(load_ls_futures() or load_ls_overseas_futures())
+        if stock is None and not has_fut:
             raise RuntimeError(
                 "LS 자격증명이 등록되지 않았습니다. setup에서 LS appkey/secret/계좌를 "
                 "등록하세요. (LS 모의투자는 별도 키로 발급됩니다.)")
-        from .ls_broker import LsBroker
-        stock = LsBroker()
-        from .secrets_store import load_ls_futures, load_ls_overseas_futures
-        if not (load_ls_futures() or load_ls_overseas_futures()):
+        if not has_fut:
             return stock                         # 국내주식만 — 무변경
         from .ls_futures_broker import LsFuturesBroker
         from .ls_futures_contracts import LsContractResolver
@@ -63,16 +66,18 @@ def make_broker() -> Broker:
         return BrokerRouter(stock, r.broker,
                             resolve=r.resolve, resolve_expiry=r.resolve_expiry,
                             dataset_for_code=r.dataset_for_code)
-    # ── 기존 KIS 경로 (완전 무변경) ──────────────────────────────────────────
-    if load_kis() is None:
+    # ── KIS 경로 — 존재하는 leg만 구성(주식 단독=bare 유지=무변경, 선물 포함=라우터) ──
+    from .secrets_store import load_kis_futures, load_kis_overseas_futures
+    stock = None
+    if load_kis() is not None:
+        from .kis_broker import KisBroker          # KIS 자격증명 필요 시에만 import
+        stock = KisBroker()
+    has_fut = bool(load_kis_futures() or load_kis_overseas_futures())
+    if stock is None and not has_fut:
         raise RuntimeError(
             "KIS 자격증명이 등록되지 않았습니다. setup을 실행해 페어링·KIS 키를 "
             "먼저 등록하세요. (KIS 모의투자 가입은 무료이며 즉시 발급됩니다.)")
-    from .kis_broker import KisBroker          # KIS 자격증명 필요 시에만 import
-    stock = KisBroker()
-
-    from .secrets_store import load_kis_futures, load_kis_overseas_futures
-    if not (load_kis_futures() or load_kis_overseas_futures()):
+    if not has_fut:
         return stock                           # 선물 미등록 → 기존 KisBroker 그대로(무변경)
 
     from .kis_futures_broker import KisFuturesBroker
