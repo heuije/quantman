@@ -1,7 +1,8 @@
 """브로커-aware 게이팅 회귀 — LS 활성 시 웹명령 거부 안 됨 + KIS 동작 불변.
 
 B7 구현 검증:
-1. active_cred_ok() — KIS 활성 시 load_kis()로 환원(불변식), LS 활성 시 load_ls() 사용
+1. active_cred_ok() — 활성 브로커의 자산군 슬롯 ≥1이면 True (P3 일반화 — 주식·선물·해외선물).
+   주식 보유 사용자는 종전과 동일(주식 있으면 True). 선물 단독 검증은 test_broker_ready.py.
 2. gui._handle_command 게이트: active_cred_ok() 호출 여부 소스 레벨 검증
 3. runner._wait_for_order_ws: LS 활성 시 KIS WS 건드리지 않고 즉시 반환
 """
@@ -17,16 +18,19 @@ if str(_LOCAL) not in sys.path:
 # ── 1. active_cred_ok 단위 테스트 ─────────────────────────────────────────────
 
 
-def test_active_cred_ok_kis_reduces_to_load_kis(monkeypatch):
-    """KIS 활성 시 active_cred_ok()는 bool(load_kis())와 동일 — 불변식."""
+def test_active_cred_ok_kis_active_uses_kis_slots(monkeypatch):
+    """KIS 활성 시 active_cred_ok()는 KIS 자산군 슬롯 기준(P3: 슬롯 ≥1). 주식 보유 시 True,
+    모든 KIS 슬롯 부재면 False. (선물 단독 → True 는 test_broker_ready.py에서 검증.)"""
     from localapp import secrets_store as s
     monkeypatch.setattr(s, "get_active_broker", lambda: "kis")
+    for n in ("load_kis_futures", "load_kis_overseas_futures",
+              "load_ls", "load_ls_futures", "load_ls_overseas_futures"):
+        monkeypatch.setattr(s, n, lambda: None)
     monkeypatch.setattr(s, "load_kis", lambda: {"app_key": "x"})
-    monkeypatch.setattr(s, "load_ls", lambda: None)
     assert s.active_cred_ok() is True
 
     monkeypatch.setattr(s, "load_kis", lambda: None)
-    assert s.active_cred_ok() is False   # KIS 자격증명 없으면 False
+    assert s.active_cred_ok() is False   # 모든 KIS 슬롯 부재 → False
 
 
 def test_active_cred_ok_ls_uses_load_ls(monkeypatch):
@@ -39,10 +43,11 @@ def test_active_cred_ok_ls_uses_load_ls(monkeypatch):
 
 
 def test_active_cred_ok_ls_no_ls_cred(monkeypatch):
-    """LS 활성 시 LS 자격증명 없으면 False."""
+    """LS 활성 시 LS 슬롯이 하나도 없으면 False (P3: 자산군 슬롯 집합 기준)."""
     from localapp import secrets_store as s
     monkeypatch.setattr(s, "get_active_broker", lambda: "ls")
-    monkeypatch.setattr(s, "load_ls", lambda: None)
+    for n in ("load_ls", "load_ls_futures", "load_ls_overseas_futures"):
+        monkeypatch.setattr(s, n, lambda: None)
     assert s.active_cred_ok() is False
 
 
