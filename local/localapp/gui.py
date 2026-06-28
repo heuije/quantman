@@ -818,8 +818,8 @@ class SettingsApp:
             self._set_hero("준비 완료 · 중지됨",
                            f"{ident}  ·  ‘자동매매 시작’을 누르면 가동됩니다", SLATE)
 
-        # 설정 영역 toggle — 둘 다 완료 + 사용자가 펼치라고 안 했으면 collapse
-        # kis_ok는 KIS 브로커일 때만 의미있음; LS일 때는 broker_cred_ok로 대체됨.
+        # 설정 영역 toggle — ready(자산군 슬롯 ≥1)는 _render_setup_area가 내부에서
+        # broker_ready(broker_choice)로 직접 계산한다(P3).
         self._render_setup_area(dev_ok=bool(dev))
 
         # Kill switch 배너
