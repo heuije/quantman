@@ -1157,9 +1157,13 @@ class Trader:
                 # KRX 사이징은 국내 현금만 필요 — 해외 API 2건 skip (효율)
                 bal = self.broker.account_snapshot(overseas=False)["balance"]
                 if qc.is_futures(symbol):
-                    # 선물 주문은 선물계좌 가용증거금현금으로 사이징(주식계좌 현금이 아님).
-                    # 미배선/구브로커(키 없음)면 주식 cash로 graceful fallback.
-                    cash = float(bal.get("futures_order_cash") or bal.get("cash") or 0)
+                    # 선물 주문은 해당 시장 선물계좌 가용증거금으로 사이징(시장별 분리 —
+                    # 다계좌 합산 과대사이징 방지). 미배선/구브로커면 주식 cash로 graceful fallback.
+                    from quant_core.futures_contract import futures_market
+                    _mkt = "us" if futures_market(symbol) == "CME" else "kr"
+                    cash = float(bal.get(f"futures_order_cash_{_mkt}")
+                                 or bal.get("futures_order_cash")   # 구 단일 키 호환
+                                 or bal.get("cash") or 0)
                 else:
                     cash = float(bal["cash"])
                 capital = equity_now if equity_now > 0 else cash

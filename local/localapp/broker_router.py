@@ -155,9 +155,9 @@ class BrokerRouter:
         out = {"balance": dict(snap.get("balance", {}) or {}),
                "positions": list(snap.get("positions", []) or [])}
         fetch_failed = list(out["balance"].get("fetch_failed") or [])
-        for getter, cfg_attr, marker in (
-                ("account_snapshot", "domestic_configured", "futures"),
-                ("overseas_account_snapshot", "overseas_configured", "futures_overseas")):
+        for getter, cfg_attr, marker, mkt in (
+                ("account_snapshot", "domestic_configured", "futures", "kr"),
+                ("overseas_account_snapshot", "overseas_configured", "futures_overseas", "us")):
             fn = getattr(self._futures, getter, None)
             if fn is None:
                 continue
@@ -182,16 +182,13 @@ class BrokerRouter:
             if fut_eq:
                 out["balance"]["futures_eval_krw"] = (
                     float(out["balance"].get("futures_eval_krw", 0) or 0) + float(fut_eq))
-            # 선물 주문가능 증거금현금 — 선물 사이징 예산 base(trader). 주식 현금(balance["cash"])과
-            # 분리: 선물 주문은 선물계좌 증거금으로 체결되므로 주식 현금으로 사이징하면 안 된다.
-            # ⚠ 한계: 국내선물·해외선물 계좌(별도 CANO)를 둘 다 구성한 사용자는 futures_order_cash가
-            # 두 계좌 합산 → 단일 시장 주문 1건에 합산 예산을 써 과대사이징 가능. 현재 게이트가
-            # 코스피200만 개방(해외 차단)이라 양쪽 동시 라이브가 불가능해 미발생 — per-market 예산
-            # 분리는 다계좌 라이브 활성화 단계 과제(equity 합산은 보수적=발동 지연이라 영향 작음).
+            # 선물 주문가능 증거금현금 — 시장별 분리 키로 기록(trader가 시장에 맞는 예산만 사용).
+            # 주식 현금(balance["cash"])과 분리: 선물 주문은 선물계좌 증거금으로 체결.
+            # 국내(kr)·해외(us) 별도 키 → 단일 시장 주문이 상대방 계좌 예산을 쓰는
+            # 다계좌 과대사이징(C4)을 차단한다.
             fut_cash = fut_acct.get("order_cash")
             if fut_cash:
-                out["balance"]["futures_order_cash"] = (
-                    float(out["balance"].get("futures_order_cash", 0) or 0) + float(fut_cash))
+                out["balance"][f"futures_order_cash_{mkt}"] = float(fut_cash)
             for p in (fsnap.get("positions") or []):
                 np = dict(p)
                 code = str(p.get("symbol", "") or "")

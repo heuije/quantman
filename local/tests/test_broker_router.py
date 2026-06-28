@@ -253,12 +253,13 @@ def test_snapshot_merges_overseas_futures_normalized():
 def test_snapshot_merges_futures_order_cash_and_equity():
     # 선물계좌 잔고의 equity(추정예탁자산)·order_cash(주문가능증거금현금)를 balance에 노출.
     # order_cash = 선물 사이징 예산 base(trader). equity = kill-switch 통합자산. 주식 현금과 분리.
+    # 국내선물 → futures_order_cash_kr (per-market 분리, C4 과대사이징 차단).
     r, stock, fut = _router()
     fut.account_snapshot = lambda: {"positions": [],
                                     "account": {"equity": 5.0e8, "order_cash": 4.4e8}}
     bal = r.account_snapshot()["balance"]
     assert bal["futures_eval_krw"] == 5.0e8
-    assert bal["futures_order_cash"] == 4.4e8
+    assert bal["futures_order_cash_kr"] == 4.4e8
     assert bal["cash"] == 1                # 주식 현금은 별개로 보존(선물 사이징에 안 씀)
 
 

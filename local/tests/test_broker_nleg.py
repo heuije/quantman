@@ -56,3 +56,23 @@ def test_futures_only_stock_symbol_raises_clear():
     r = BrokerRouter(None, _FakeFutures(), resolve=_resolve, dataset_for_code=_d4c)
     with pytest.raises(RuntimeError):
         r.buy("005930", 1)
+
+
+class _DualFutures:
+    domestic_configured = True
+    overseas_configured = True
+
+    def account_snapshot(self):
+        return {"account": {"equity": 1_000_000.0, "order_cash": 300_000.0}, "positions": []}
+
+    def overseas_account_snapshot(self):
+        return {"account": {"equity": 2_000_000.0, "order_cash": 700_000.0}, "positions": []}
+
+
+def test_per_market_budget_not_summed():
+    r = BrokerRouter(None, _DualFutures(), resolve=_resolve, dataset_for_code=_d4c)
+    bal = r.account_snapshot()["balance"]
+    assert bal.get("futures_order_cash_kr") == 300_000.0
+    assert bal.get("futures_order_cash_us") == 700_000.0
+    # 합산 단일 키로 과대사이징되지 않음 (1,000,000 합산 아님)
+    assert bal.get("futures_order_cash") in (None, 300_000.0)

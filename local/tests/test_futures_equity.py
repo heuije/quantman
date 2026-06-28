@@ -112,13 +112,14 @@ class _OvFut:
 
 
 def test_router_merges_overseas_futures_account_into_balance():
-    """G1/G3: 해외선물 예수금현황이 futures_order_cash(사이징 예산)·futures_eval_krw(kill-switch)에
-    KRW로 합산(둘 다 TKR KRW환산이라 FX 추측 없음). 종전엔 해외 account 미노출로 둘 다 0이었다."""
+    """G1/G3: 해외선물 예수금현황이 futures_order_cash_us(사이징 예산)·futures_eval_krw(kill-switch)에
+    KRW로 합산(둘 다 TKR KRW환산이라 FX 추측 없음). 종전엔 해외 account 미노출로 둘 다 0이었다.
+    해외선물 → futures_order_cash_us (per-market 분리, C4 과대사이징 차단)."""
     router = BrokerRouter(_Stock(), _OvFut(), resolve=lambda s: s)
     bal = router.account_snapshot()["balance"]
-    assert bal["futures_order_cash"] == 13_700_000.0    # 해외선물 계좌 주문가능 → 사이징 예산(G1)
-    assert bal["futures_eval_krw"] == 15_000_000.0      # 해외선물 총자산 → 통합 equity(G3)
-    assert bal["total_eval"] == 1_000_000               # 주식 보존
+    assert bal["futures_order_cash_us"] == 13_700_000.0  # 해외선물 계좌 주문가능 → 사이징 예산(G1)
+    assert bal["futures_eval_krw"] == 15_000_000.0       # 해외선물 총자산 → 통합 equity(G3)
+    assert bal["total_eval"] == 1_000_000                # 주식 보존
 
 
 def test_real_overseas_account_snapshot_combines_positions_and_deposit(monkeypatch):
