@@ -70,6 +70,23 @@ LS증권 **실전 국내선물 계좌** API 키를 로컬앱에 저장하면 "�
   주문에 합산 예산 사용 → 과대사이징. 현재 해외선물 게이트로 *잠재*, 활성화 즉시 발현.
   *부류.* 증거: `broker_router.py:180-187`(코드 주석이 자백), `trader.py:1162`. (PR-3)
 
+- **[C7] 모의/실전 모드 디커플링 — paper 전략이 무경고로 실전 계좌 실거래.** 웹의
+  `strategy.run_mode`(paper/live)와 로컬 자격증명 `virtual` 플래그가 **화해되지 않음**. 로컬
+  트레이더는 `run_mode`를 **아예 읽지 않고**(로컬앱 전체 grep 0건), pull한 모든 paper+live 전략을
+  페어링된 단일 브로커에 동일하게 실행. → **모의 계좌(virtual=True)로 검증한 전략이, 사용자가 같은
+  슬롯에 실전 키를 재등록(virtual=False)하거나 실전 계좌 브로커로 전환하면 다음 사이클부터 동일
+  전략 전부가 실제 자금으로 발주.** 별도 "실전 승격" 확인·재활성화 절차 없음. 모의/실전을 가르는
+  유일 스위치가 로컬 `virtual` 단 하나(웹 의도는 무시됨).
+  *근본:* 모의/실전이 두 진실원천(웹 `run_mode`=사용자 의도 / 로컬 `virtual`=실행 환경)으로 분열,
+  **실행 시점 reconcile 부재**. 전략이 user_id에만 묶이고 **계좌·브로커·모드 바인딩이 전무**(Strategy
+  모델에 account/broker/mode 0). *부류.* (S5와 인접하나 별개: S5=*어느 디바이스가 어느 전략*,
+  C7=*모의↔실전 모드 미스매치*.) 증거: `server/.../sync.py:239-244`(run_mode∈{paper,live} 전부
+  pull·user_id만), `server/.../models.py:30-42`(Strategy: run_mode·account 바인딩 0), 로컬앱
+  `run_mode` 참조 0건, `secrets_store.py:25-43`(virtual 슬롯별), `runner.py:307-353`(pull→단일
+  broker 실행). (PR-1)
+  **→ "계좌-전략 연동(account-linked strategy)" 후속 재설계로 근본 해결**
+  ([2026-06-29-account-linked-strategy-and-fund-transparency-design.md](../superpowers/specs/2026-06-29-account-linked-strategy-and-fund-transparency-design.md)).
+
 ### 🟠 구조 · 확장성
 
 - **[S1] stock-필수 베이스.** `make_broker`가 KIS·LS 둘 다 stock 없으면 `RuntimeError` → 선물
@@ -109,6 +126,15 @@ LS증권 **실전 국내선물 계좌** API 키를 로컬앱에 저장하면 "�
   기존 테스트는 실행계층(secrets/make_broker)만 → 표시-실행 게이트 어긋남이 사각. (PR-4)
 - **[V2] LS 멱등 약화.** `reconcile_submitting`이 LS(`_daily_ccld` 미지원)에서 KR reconcile skip →
   crash-recovery가 KIS보다 약함. 증거: `intents.py:236-243`. (단건)
+- **[V3] 연결 테스트가 계좌번호를 검증 안 함(LS·KIS선물) → 설정 오류가 거래시점 실패로 이연.**
+  LS 연결 테스트(`ls_health.test_credentials`)는 **토큰 발급만** — 계좌번호를 인자로 받지조차 않음
+  (주석 "계좌번호는 받지 않는다"). 반면 KIS 주식 wizard는 잔고조회(TTTC8434R)를 `CANO`로 호출해
+  **계좌번호까지 검증**. KIS 선물·해외선물은 GUI wizard 밖(`futures_preflight.py`)이고 wizard 검증은
+  *주식* 잔고라 선물계좌(상품코드 03)는 미검증. `LsBroker`는 실주문·잔고에서 **입력 계좌번호를 그대로
+  사용**(`AcntNo`·t0424) → 틀린 계좌번호가 "저장됨"으로 통과한 뒤 **첫 사이클에서 거부**(거짓 안심·
+  이연 실패, §0 트리거와 동형). 계좌-핸들 모델(account-linked spec)이 계좌번호 위에 서므로 **핸들
+  신뢰의 전제조건**. 증거: `ls_health.py:25-29`, `kis_health.py:85-110`, `gui.py:1519-1551`,
+  `ls_broker.py:74·398·519`. (PR-4 / account-linked spec **P5.0** 전제)
 
 ### 감사가 합의한 구조적 뿌리
 
