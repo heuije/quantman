@@ -8,6 +8,7 @@ import type {
   CompareResult, KrExtras, IndustryData,
   OpinionList, StockOpinion, OpinionComment,
   SectorNews, CompanyProfile, FinancialsData,
+  GlobalIndices, GlobalCommodities, GlobalEcon, GlobalBattery, BatterySeries,
   ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO, ScreenerUserPreset,
   StrategyDef, StrategyRow, StrategyStats, StrategyVersionRow,
   SymbolInfo, SyncSnapshot, TradingTimeline, UserSettingsIO,
@@ -230,8 +231,8 @@ export const api = {
     req<PortfolioRisk>(`/portfolio/risk?window=${window}`),
 
   // 대시보드/포트폴리오 탭 — on-demand (서버 dataset 미의존)
-  symbolDetail: (symbol: string, range = "1y") =>
-    req<SymbolDetail>(`/market/symbol/${encodeURIComponent(symbol)}?range=${range}`),
+  symbolDetail: (symbol: string, range = "1y", light = false) =>
+    req<SymbolDetail>(`/market/symbol/${encodeURIComponent(symbol)}?range=${range}${light ? "&light=1" : ""}`),
   marketCompare: (symbols: string[], range = "1y") =>
     req<CompareResult>(
       `/market/compare?symbols=${encodeURIComponent(symbols.join(","))}&range=${range}`),
@@ -281,6 +282,12 @@ export const api = {
   // 섹터 키워드 뉴스 / 기업 개요
   sectorNews: (kr: string[], glob: string[]) =>
     req<SectorNews>(`/market/news?kr=${encodeURIComponent(kr.join(","))}&glob=${encodeURIComponent(glob.join(","))}`),
+  globalIndices: () => req<GlobalIndices>("/market/global/indices"),
+  globalCommodities: () => req<GlobalCommodities>("/market/global/commodities"),
+  globalEcon: () => req<GlobalEcon>("/market/global/econ"),
+  globalBattery: () => req<GlobalBattery>("/market/global/battery"),
+  globalBatteryChart: (code: string, crtr: string, hp: string) =>
+    req<BatterySeries>(`/market/global/battery/chart?code=${encodeURIComponent(code)}&crtr=${encodeURIComponent(crtr)}&hp=${encodeURIComponent(hp)}`),
   companyProfile: (ticker: string) =>
     req<CompanyProfile>(`/market/profile/${encodeURIComponent(ticker)}`),
   financials: (ticker: string) =>

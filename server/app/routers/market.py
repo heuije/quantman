@@ -102,22 +102,29 @@ _RANGE_DAYS = {
 }
 
 # P1 — symbol_detail 원시 fetch 캐싱(핸드오프 설계서). 병목의 99%가 FinanceDataReader 라이브
-# fetch(TTFB)라, 종목당 (ticker, 오늘) 키로 1회만 받아두고 range는 슬라이스만 한다. 고정 상한
-# (최장 range + 워밍업)으로 받아 모든 range 호출이 fetch 1회를 공유 → 2번째부터 즉시.
-_MAX_FETCH_DAYS = 11600   # ≈31.5y (30y range + 240MA 워밍업)
+# fetch(TTFB). 종목당 (ticker, 오늘, fetch_days) 키로 1회만 받아두고 range는 슬라이스만 한다.
+# P1.1 — 요청 range에 맞춘 '티어드 fetch'. 이전엔 모든 요청이 31.5y를 받아 summary(1mo) 첫
+# 로딩이 느렸다. 이제 짧은 범위는 적게 받아 첫 로딩↓, 긴 범위만 크게 받는다(240MA 워밍업 +400 포함).
+# 같은 종목을 더 큰 range로 다시 보면 그때 큰 티어를 1회 받는다(드묾).
+_FETCH_TIERS = (500, 800, 1600, 2400, 4300, 8000, 11600)   # ≈1.4y·2y·4y·6.5y·11.5y·22y·31.5y
 
 
-@lru_cache(maxsize=512)
-def _raw_ohlcv(sym: str, _day: str):
+def _tier_for(span: int) -> int:
+    need = span + 400                                       # 표시구간 + ma240 워밍업
+    return next((t for t in _FETCH_TIERS if t >= need), _FETCH_TIERS[-1])
+
+
+@lru_cache(maxsize=1024)
+def _raw_ohlcv(sym: str, _day: str, fetch_days: int):
     import FinanceDataReader as fdr
-    start = (datetime.now().date() - timedelta(days=_MAX_FETCH_DAYS)).isoformat()
+    start = (datetime.now().date() - timedelta(days=fetch_days)).isoformat()
     return fdr.DataReader(sym, start)
 
 
-@lru_cache(maxsize=16)
-def _raw_bench(bench_sym: str, _day: str):
+@lru_cache(maxsize=64)
+def _raw_bench(bench_sym: str, _day: str, fetch_days: int):
     import FinanceDataReader as fdr
-    start = (datetime.now().date() - timedelta(days=_MAX_FETCH_DAYS)).isoformat()
+    start = (datetime.now().date() - timedelta(days=fetch_days)).isoformat()
     return fdr.DataReader(bench_sym, start)
 
 
@@ -220,7 +227,7 @@ def _benchmark_for(market: str, is_kr: bool) -> tuple[str, str]:
 
 
 @router.get("/symbol/{symbol}")
-def symbol_detail(symbol: str, range: str = "1y",
+def symbol_detail(symbol: str, range: str = "1y", light: int = 0,
                   user: User = Depends(get_current_user)):
     """개별 종목 on-demand 조회 — 가격·차트·지표(RSI/이동평균). 한국+미국 상장.
 
@@ -240,7 +247,7 @@ def symbol_detail(symbol: str, range: str = "1y",
     today = datetime.now().date().isoformat()
     # P1 — 원시 일봉은 (ticker, 오늘) 캐시에서 1회 fetch 공유. range는 슬라이스만(워밍업 포함).
     try:
-        raw_full = _raw_ohlcv(sym, today)
+        raw_full = _raw_ohlcv(sym, today, _tier_for(span))
     except Exception as e:  # 외부 데이터 소스 한계 — 호출자에 명확히 전달
         raise HTTPException(status_code=502, detail=f"가격 데이터 조회 실패: {e}")
     if raw_full is None or raw_full.empty or "Close" not in raw_full.columns:
@@ -253,30 +260,33 @@ def symbol_detail(symbol: str, range: str = "1y",
     # 이동평균 (가격) — 5/20/60/120/240, 모든 차트에 상시 오버레이
     for w in (5, 20, 60, 120, 240):
         ind[f"ma{w}"] = c.rolling(w).mean()
-    # 거래량 이동평균 — 거래량 차트에도 동일 MA 표시 요건
-    vser = ind["Volume"]
-    for w in (5, 20, 60, 120, 240):
-        ind[f"vma{w}"] = vser.rolling(w).mean()
-    # 볼린저밴드 (20, 2σ)
-    m20, s20 = c.rolling(20).mean(), c.rolling(20).std()
-    ind["bb_upper"], ind["bb_mid"], ind["bb_lower"] = m20 + 2 * s20, m20, m20 - 2 * s20
-    # MACD (12,26,9)
-    e12 = c.ewm(span=12, adjust=False).mean()
-    e26 = c.ewm(span=26, adjust=False).mean()
-    ind["macd"] = e12 - e26
-    ind["macd_signal"] = ind["macd"].ewm(span=9, adjust=False).mean()
-    ind["macd_hist"] = ind["macd"] - ind["macd_signal"]
-    # 스토캐스틱 (14,3)
-    low14, high14 = ind["Low"].rolling(14).min(), ind["High"].rolling(14).max()
-    rng14 = (high14 - low14).replace(0, np.nan)
-    ind["stoch_k"] = (c - low14) / rng14 * 100
-    ind["stoch_d"] = ind["stoch_k"].rolling(3).mean()
-    # OBV
-    ind["obv"] = (np.sign(c.diff().fillna(0)) * ind["Volume"]).fillna(0).cumsum()
-    # 전일대비 % (급등락 마커용)
+    # 전일대비 % (급등락 마커용) — 요약 주가추이도 사용하므로 항상 계산
     ind["chg_pct"] = c.pct_change() * 100
-    # 확장 기술지표 38종 (EMA·일목·DMI·CCI·MFI·이격도 등) — 별도 모듈에서 계산
-    dashboard_indicators.compute(ind)
+    # light 모드(요약 주가추이): 캔들+이동평균+벤치마크만 필요 → 아래 보조지표·확장지표 38종
+    # 계산을 건너뛴다(계산비용·페이로드 대폭↓). Stock Price 탭(지표 선택)만 full(light=0)로 받는다.
+    if not light:
+        # 거래량 이동평균 — 거래량 차트에도 동일 MA 표시 요건
+        vser = ind["Volume"]
+        for w in (5, 20, 60, 120, 240):
+            ind[f"vma{w}"] = vser.rolling(w).mean()
+        # 볼린저밴드 (20, 2σ)
+        m20, s20 = c.rolling(20).mean(), c.rolling(20).std()
+        ind["bb_upper"], ind["bb_mid"], ind["bb_lower"] = m20 + 2 * s20, m20, m20 - 2 * s20
+        # MACD (12,26,9)
+        e12 = c.ewm(span=12, adjust=False).mean()
+        e26 = c.ewm(span=26, adjust=False).mean()
+        ind["macd"] = e12 - e26
+        ind["macd_signal"] = ind["macd"].ewm(span=9, adjust=False).mean()
+        ind["macd_hist"] = ind["macd"] - ind["macd_signal"]
+        # 스토캐스틱 (14,3)
+        low14, high14 = ind["Low"].rolling(14).min(), ind["High"].rolling(14).max()
+        rng14 = (high14 - low14).replace(0, np.nan)
+        ind["stoch_k"] = (c - low14) / rng14 * 100
+        ind["stoch_d"] = ind["stoch_k"].rolling(3).mean()
+        # OBV
+        ind["obv"] = (np.sign(c.diff().fillna(0)) * ind["Volume"]).fillna(0).cumsum()
+        # 확장 기술지표 38종 (EMA·일목·DMI·CCI·MFI·이격도 등) — 별도 모듈에서 계산
+        dashboard_indicators.compute(ind)
     show = ind.tail(span)
     is_kr = qc.instrument_region(symbol.strip()) == "KRX"   # 국내선물 포함(SSOT)
 
@@ -298,7 +308,7 @@ def symbol_detail(symbol: str, range: str = "1y",
     bench_rebased = None
     beta = None
     try:
-        braw = _raw_bench(bench_sym, today)     # 벤치마크도 (지수, 오늘) 캐시 공유(4중 중복 제거)
+        braw = _raw_bench(bench_sym, today, _tier_for(span))   # 벤치마크도 같은 티어로 캐시 공유
         if braw is not None and not braw.empty and "Close" in braw.columns:
             bclose = braw["Close"].reindex(show.index, method="ffill")
             base_s, base_b = show["Close"].iloc[0], bclose.iloc[0]
@@ -319,6 +329,19 @@ def symbol_detail(symbol: str, range: str = "1y",
         d = idx.date().isoformat() if hasattr(idx, "date") else str(idx)
         bval = (bench_rebased.loc[idx] if bench_rebased is not None
                 and idx in bench_rebased.index else None)
+        if light:
+            # 요약 주가추이 — 캔들·이동평균·벤치마크·급등락만(보조지표·38종 제외)
+            pt = {
+                "date": d,
+                "open": _n(r.get("Open")), "high": _n(r.get("High")),
+                "low": _n(r.get("Low")), "close": _n(r.get("Close")),
+                "volume": _n(r.get("Volume"), 0), "chg_pct": _n(r.get("chg_pct")),
+                "ma5": _n(r.get("ma5")), "ma20": _n(r.get("ma20")),
+                "ma60": _n(r.get("ma60")), "ma120": _n(r.get("ma120")),
+                "ma240": _n(r.get("ma240")), "bench": _n(bval),
+            }
+            series.append(pt)
+            continue
         pt = {
             "date": d,
             "open": _n(r.get("Open")), "high": _n(r.get("High")),
@@ -498,6 +521,42 @@ def industry_stream_index(name: str, user: User = Depends(get_current_user)):
     """Stream(Up/Mid/Down)별 시총가중 누적수익률 지수 시계열 — 3선 차트용."""
     from .. import industry as industry_mod
     return industry_mod.industry_stream_index(name)
+
+
+# ── 글로벌 시장 분석 (세계 지수·원자재·미국 경제지표) ─────────────────────────
+@router.get("/global/indices")
+def global_indices(user: User = Depends(get_current_user)):
+    """세계 10대 지수 — 시작점 대비 % 오버레이 시계열 + 현재값·등락률."""
+    from .. import globalmarket
+    return globalmarket.indices()
+
+
+@router.get("/global/commodities")
+def global_commodities(user: User = Depends(get_current_user)):
+    """원자재 선물(금·은·WTI·천연가스) — 종목별 가격 시계열 + 현재값·등락률."""
+    from .. import globalmarket
+    return globalmarket.commodities()
+
+
+@router.get("/global/econ")
+def global_econ(user: User = Depends(get_current_user)):
+    """미국 경제지표(CPI·PMI·금리 등) — 실제 vs 컨센서스(forecast) vs 직전 + 서프라이즈."""
+    from .. import globalmarket
+    return globalmarket.econ()
+
+
+@router.get("/global/battery")
+def global_battery(user: User = Depends(get_current_user)):
+    """배터리·핵심광물(탄산리튬·니켈·코발트 등) — KOMIS 현재가·등락·단위. Yahoo에 없는 LME/현물 계약."""
+    from .. import komis
+    return komis.battery()
+
+
+@router.get("/global/battery/chart")
+def global_battery_chart(code: str, crtr: str, hp: str, user: User = Depends(get_current_user)):
+    """선택 배터리·핵심광물의 KOMIS 월별 시계열(클릭 차트용)."""
+    from .. import komis
+    return komis.battery_chart(code, crtr, hp)
 
 
 @router.get("/news")

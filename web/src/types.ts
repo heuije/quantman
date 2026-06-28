@@ -1112,6 +1112,41 @@ export interface OpinionList { ticker: string; is_admin: boolean; opinions: Stoc
 // ── 섹터 키워드 뉴스 / 기업 개요 ──
 export interface SectorNewsItem {
   title: string; summary: string; source: string; url: string; date: string;
+  title_ko?: string;   // 해외 기사 영문 제목의 국문 번역(국내 기사엔 없음)
+}
+
+// ── 글로벌 시장 분석 — /market/global/* ──
+export interface GlobalIndexItem { name: string; symbol: string; last: number | null; chg_pct: number | null; }
+export interface GlobalIndices {
+  series: Record<string, number | string | null>[];   // [{date, S&P 500, 나스닥, …}] 원시 종가(프론트가 가시 구간 기준 %로 리베이스)
+  items: GlobalIndexItem[];
+}
+export interface GlobalCommodity {
+  name: string; symbol: string; unit: string; category: string;
+  last: number | null; change: number | null; chg_pct: number | null; date?: string | null;
+}
+export interface GlobalCommodities { items: GlobalCommodity[]; }
+export interface EconEvent {
+  title: string; date: string;
+  actual: number | string | null; forecast: number | string | null; previous: number | string | null;
+  surprise: number | null; unit: string;
+}
+export interface UpcomingEcon {
+  title: string; date: string;
+  forecast: number | string | null; previous: number | string | null; unit: string;
+}
+export interface GlobalEcon { events: EconEvent[]; upcoming?: UpcomingEcon[]; span?: number[]; }
+
+// 배터리·핵심광물 (KOMIS 한국광해광업공단) — Yahoo에 없는 LME/현물 계약
+export interface BatteryMetal {
+  name: string; code: string; crtr: string; hp: string;
+  last: number | null; change: number | null; chg_pct: number | null;
+  unit: string; basis: string; date: string;
+}
+export interface GlobalBattery { items: BatteryMetal[]; }
+export interface BatterySeries {
+  series: { date: string; close: number }[];
+  name: string; unit: string; basis: string;
 }
 export interface SectorNews { kr: SectorNewsItem[]; global: SectorNewsItem[]; }
 export interface CompanyProfile { established: string; homepage: string; ceo: string; employees: string; business?: string; shares?: number | null; }

@@ -17,7 +17,8 @@ import io
 import logging
 import os
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from functools import lru_cache
 
 import certifi
@@ -105,35 +106,57 @@ def investor(code: str) -> list[dict]:
 
 
 # ── 애널리스트 리포트 목록 (네이버 리서치) ───────────────────────────────────
+_RPT_MONTHS = 12          # 최근 12개월 리포트 열람(뉴스 탭과 동일 범위)
+_RPT_MAX_PAGES = 8        # 안전 상한 (30건/page → 최대 ~240건)
+_RPT_DETAIL_N = 15        # 리포트 고유 목표가 상세 파싱은 최신 N건만
+
+
+def _parse_rpt_date(d: str):
+    """네이버 리포트 날짜 'YY.MM.DD' → date. 파싱 실패 시 None."""
+    try:
+        return datetime.strptime(d, "%y.%m.%d").date()
+    except ValueError:
+        return None
+
+
 @lru_cache(maxsize=256)
 def _reports(code: str, _day: str) -> list[dict]:
-    r = requests.get("https://finance.naver.com/research/company_list.naver",
-                     params={"searchType": "itemCode", "itemCode": code},
-                     headers=_H, verify=_C, timeout=15)
-    r.encoding = "euc-kr"
-    soup = BeautifulSoup(r.text, "html.parser")
+    # 네이버 리서치 목록을 페이지네이션하며 최근 12개월치 수집(30건/page).
+    cutoff = date.today() - timedelta(days=365)
     out = []
-    for tr in soup.select("tr"):
-        a = tr.find("a", href=lambda h: h and "company_read" in h)  # 제목→상세 링크 행만
-        if a is None:
-            continue
-        tds = tr.find_all("td")
-        if len(tds) < 5:
-            continue
-        title = a.get_text(strip=True)
-        broker = tds[2].get_text(strip=True)
-        d = tds[4].get_text(strip=True)
-        if not title or "." not in d:
-            continue
-        # 원문: PDF 직접 링크 우선, 없으면 네이버 리포트 상세 페이지
-        pdf = tr.find("a", href=lambda h: h and ".pdf" in h.lower())
-        detail = "https://finance.naver.com/research/" + a["href"]
-        url = pdf["href"] if pdf else detail
-        out.append({"date": d, "title": title, "broker": broker, "url": url, "_detail": detail})
-        if len(out) >= 15:
+    for page in range(1, _RPT_MAX_PAGES + 1):
+        r = requests.get("https://finance.naver.com/research/company_list.naver",
+                         params={"searchType": "itemCode", "itemCode": code, "page": page},
+                         headers=_H, verify=_C, timeout=15)
+        r.encoding = "euc-kr"
+        soup = BeautifulSoup(r.text, "html.parser")
+        page_rows, stop = 0, False
+        for tr in soup.select("tr"):
+            a = tr.find("a", href=lambda h: h and "company_read" in h)  # 제목→상세 링크 행만
+            if a is None:
+                continue
+            tds = tr.find_all("td")
+            if len(tds) < 5:
+                continue
+            title = a.get_text(strip=True)
+            broker = tds[2].get_text(strip=True)
+            d = tds[4].get_text(strip=True)
+            if not title or "." not in d:
+                continue
+            page_rows += 1
+            dt = _parse_rpt_date(d)
+            if dt and dt < cutoff:          # 12개월 경계 도달 — 이후는 버리고 종료
+                stop = True
+                break
+            # 원문: PDF 직접 링크 우선, 없으면 네이버 리포트 상세 페이지
+            pdf = tr.find("a", href=lambda h: h and ".pdf" in h.lower())
+            detail = "https://finance.naver.com/research/" + a["href"]
+            url = pdf["href"] if pdf else detail
+            out.append({"date": d, "title": title, "broker": broker, "url": url, "_detail": detail})
+        if stop or page_rows == 0:          # 경계 도달 또는 빈 페이지면 중단
             break
-    # 각 리포트 '첫 페이지' 목표주가 — 상세 페이지에서 병렬 파싱(브로커 컨센서스 조인이 아니라
-    # 그 리포트 고유 목표가). 없는 리포트(산업·전략 노트 등)는 None.
+    # 리포트 고유 목표주가 — 상세 페이지 병렬 파싱. 12개월 전체는 fetch 비용이 커
+    # 최신 N건만 파싱하고, 나머지는 None → 프론트가 브로커 컨센서스 목표가로 폴백.
     from concurrent.futures import ThreadPoolExecutor
 
     def _tgt(detail_url: str):
@@ -145,10 +168,13 @@ def _reports(code: str, _day: str) -> list[dict]:
             return _int(t.group(1).replace(",", "")) if t else None
         except Exception:
             return None
+    head = out[:_RPT_DETAIL_N]
     with ThreadPoolExecutor(max_workers=8) as ex:
-        targets = list(ex.map(_tgt, [o["_detail"] for o in out]))
-    for o, tg in zip(out, targets):
+        targets = list(ex.map(_tgt, [o["_detail"] for o in head]))
+    for o, tg in zip(head, targets):
         o["target"] = tg
+    for o in out:                            # 상세 미파싱분은 target=None
+        o.setdefault("target", None)
         o.pop("_detail", None)
     return out
 
@@ -427,29 +453,67 @@ def _strip_html(s: str) -> str:
     return re.sub(r"<[^>]+>", "", s or "").strip()
 
 
+# 해외 뉴스 제목 영→한 번역 — 무료 Google Translate 엔드포인트(키 불필요). 실패 시 None(영문만 표시).
+@lru_cache(maxsize=4096)
+def _translate_one(text: str) -> str | None:
+    if not text:
+        return None
+    try:
+        r = requests.get("https://translate.googleapis.com/translate_a/single",
+                         params={"client": "gtx", "sl": "en", "tl": "ko", "dt": "t", "q": text},
+                         headers=_H, timeout=8)
+        data = r.json()
+        return "".join(seg[0] for seg in data[0] if seg and seg[0]) or None
+    except Exception:
+        return None
+
+
+def _translate_many(texts: list[str]) -> list[str | None]:
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        return list(ex.map(_translate_one, texts))
+
+
 @lru_cache(maxsize=64)
 def _news(query: str, region: str, _hour: str) -> list[dict]:
-    """Google News RSS 키워드 검색. region='kr'(한국어) / 'global'(영어). 시간당 캐시."""
+    """Google News RSS 키워드 검색. region='kr'(한국어) / 'global'(영어). 시간당 캐시.
+
+    최근 12개월 기사 전부(최대 100건). 해외(global)는 영문 제목을 국문으로 번역해 title_ko에 담는다.
+    """
     import xml.etree.ElementTree as ET
     hl, gl, ceid = ("ko", "KR", "KR:ko") if region == "kr" else ("en-US", "US", "US:en")
     url = (f"https://news.google.com/rss/search?q={requests.utils.quote(query)}"
            f"&hl={hl}&gl={gl}&ceid={ceid}")
     r = requests.get(url, headers=_H, timeout=12)
     root = ET.fromstring(r.content)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=365)     # 최근 12개월
     out: list[dict] = []
-    for it in root.findall(".//item")[:15]:
+    for it in root.findall(".//item"):
         title = (it.findtext("title", "") or "").strip()
         src_el = it.find("{*}source")
         src = src_el.text if src_el is not None else ""
         if src and title.endswith(" - " + src):      # 제목 끝 " - 언론사" 제거
             title = title[: -(len(src) + 3)].strip()
+        pub = (it.findtext("pubDate", "") or "")
+        try:
+            dt = parsedate_to_datetime(pub)
+            if dt is not None and dt.tzinfo is not None and dt < cutoff:
+                continue                              # 12개월 초과 제외
+        except Exception:
+            pass
         out.append({
             "title": title,
             "summary": _strip_html(it.findtext("description", ""))[:160],
             "source": src or "",
             "url": it.findtext("link", "") or "",
-            "date": (it.findtext("pubDate", "") or "")[:16],
+            "date": pub[:16],
         })
+        if len(out) >= 100:
+            break
+    # 해외 — 영문 제목 국문 번역(병렬, 실패 시 영문만)
+    if region == "global" and out:
+        for o, ko in zip(out, _translate_many([o["title"] for o in out])):
+            o["title_ko"] = ko
     return out
 
 

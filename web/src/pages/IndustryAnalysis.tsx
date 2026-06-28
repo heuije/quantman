@@ -3,7 +3,7 @@ import { stockSearchMatch } from "../format";
 import { useNavigate } from "react-router-dom";
 import {
   ComposedChart, Bar, Line, Scatter, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, Legend,
+  CartesianGrid, Legend, ReferenceLine,
 } from "recharts";
 import Plotly from "plotly.js-dist-min";
 import { api } from "../api";
@@ -329,13 +329,15 @@ function ratingOf(up: number | null): { label: string; color: string; bg: string
   return { label: "Sell", color: "#e0504f", bg: "rgba(224,80,79,0.16)" };
 }
 
-export function CompanyReport({ ticker, company, name }: { ticker: string; company?: IndustryCompany; name?: string }) {
+export function CompanyReport({ ticker, company, name, mode = "full" }:
+  { ticker: string; company?: IndustryCompany; name?: string; mode?: "full" | "consensus" | "estimates" }) {
   const [kr, setKr] = useState<KrExtras | null>(null);
   const [cur, setCur] = useState<number | null>(null);   // 현재가(상승여력 계산용)
   const [busy, setBusy] = useState(false);
+  const [rptPage, setRptPage] = useState(0);             // 컨센서스 리포트 페이지(15건/페이지, 최근 12개월)
   useEffect(() => {
     let alive = true;
-    setBusy(true); setKr(null); setCur(null);
+    setBusy(true); setKr(null); setCur(null); setRptPage(0);
     api.krExtras(ticker)
       .then((d) => { if (alive) setKr(d); })
       .catch(() => { if (alive) setKr(null); })
@@ -353,14 +355,20 @@ export function CompanyReport({ ticker, company, name }: { ticker: string; compa
     v == null || isNaN(v) ? "—" : `${v.toFixed(1)}x`;
   const pctv = (v: number | null | undefined) =>
     v == null || isNaN(v) ? "—" : `${v.toFixed(1)}%`;
-  // 영업이익률은 영업이익 아래, 당기순이익률은 당기순이익 아래(%). 마진은 서버에서 계산·저장됨.
+  // FY 라벨 — '2026/12(E)' → 'FY26E', '2021/12' → 'FY21'
+  const fyLabel = (y: string) => {
+    const m = y.match(/(\d{4})\/\d{2}(\(E\))?/);
+    return m ? `FY${m[1].slice(2)}${m[2] ? "E" : ""}` : y;
+  };
+  const amtAxis = (v: number) => Math.abs(v) >= 10000 ? `${(v / 10000).toFixed(0)}조` : `${Math.round(v)}억`;
+  const amtTip = (v: number | string | null) => v == null ? "—" : `${Math.round(Number(v)).toLocaleString()}억`;
+  // 표기 순서: 금액 3종(매출액·영업이익·당기순이익) → 마진 2종(영업이익률·당기순이익률) → ROE(아래 별도 행).
   const EARN_ROWS: { key: string; label: string; pct?: boolean }[] = [
     { key: "매출액", label: "매출액" },
     { key: "영업이익", label: "영업이익" },
-    { key: "영업이익률", label: "영업이익률 (%)", pct: true },
     { key: "당기순이익", label: "당기순이익" },
+    { key: "영업이익률", label: "영업이익률 (%)", pct: true },
     { key: "당기순이익률", label: "당기순이익률 (%)", pct: true },
-    { key: "지배주주", label: "지배주주순이익" },
   ];
   const MULT_ROWS: [string, string][] = [["P/E", "PER"], ["P/B", "PBR"]];   // 표시명 → FnGuide 행 키
   const earnings = kr?.earnings;
@@ -400,17 +408,78 @@ export function CompanyReport({ ticker, company, name }: { ticker: string; compa
   const avgTarget = tList.length ? Math.round(tList.reduce((s, t) => s + t, 0) / tList.length) : null;
   const tUpside = (avgTarget != null && cur != null && cur > 0) ? (avgTarget / cur - 1) * 100 : null;
 
+  // 추정실적 그래프 데이터 — 과거~추정(2028E) 전 구간. 막대=금액(억), 골드 선=영업이익률·PBR.
+  const yrs = earnings?.years || [];
+  const eRow = (k: string) => earnings?.rows[k] || [];
+  const earnChart = yrs.map((y, i) => ({
+    fy: fyLabel(y), est: y.includes("(E)"),
+    매출액: eRow("매출액")[i] ?? null, 영업이익: eRow("영업이익")[i] ?? null,
+    당기순이익: eRow("당기순이익")[i] ?? null, 영업이익률: eRow("영업이익률")[i] ?? null,
+  }));
+  const valChart = yrs.map((y, i) => ({
+    fy: fyLabel(y), est: y.includes("(E)"),
+    PER: eRow("PER")[i] ?? null, PBR: eRow("PBR")[i] ?? null,
+  }));
+  const firstEstFy = earnChart.find((d) => d.est)?.fy;
+
+  // 컨센서스 리포트 — 최근 12개월, 15건/페이지(뉴스 탭과 동일 페이지네이션).
+  const RPT_PER = 15;
+  const rptPages = Math.max(1, Math.ceil(reports.length / RPT_PER));
+  const rptCur = Math.min(rptPage, rptPages - 1);
+  const rptView = reports.slice(rptCur * RPT_PER, rptCur * RPT_PER + RPT_PER);
+
   if (busy) return <p style={{ color: "var(--muted)", fontSize: 13 }}>리포트 불러오는 중…</p>;
 
   // 좌측 박스 = 컨센서스(목표주가·추정실적·멀티플, 고정) / 우측 박스 = 애널리스트 리포트(스크롤).
   const rating = ratingOf(tUpside);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 18, alignItems: "stretch" }}>
-      {/* 추정실적 박스 = order 2(우측). 고정 높이 + 골드 스크롤(초기 세팅). */}
-      <div className="panel scroll-gold" style={{ minWidth: 0, marginBottom: 0, order: 2, maxHeight: 560, overflowY: "auto" }}>
-      <h3 style={{ marginTop: 0 }}>{name ? `${name} ` : ""}추정 실적</h3>
-      {/* 추정 실적 — 개별종목분석과 동일 */}
+    <div style={{ display: "grid", gridTemplateColumns: mode === "full" ? "repeat(2, minmax(0, 1fr))" : "1fr", gap: 18, alignItems: "stretch" }}>
+      {/* 추정실적 박스 — full: 우측(order 2) / estimates: 상단(order 1). 컨센서스가 하단으로. */}
+      {mode !== "consensus" && (
+      <div className="panel scroll-gold" style={{ minWidth: 0, marginBottom: 0, order: mode === "full" ? 2 : 1, maxHeight: mode === "full" ? 560 : undefined, overflowY: "auto" }}>
+      <h3 style={{ marginTop: 0 }}>{name ? `${name} ` : ""}Estimates <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>(추정실적 · 과거~2028E)</span></h3>
+      {/* 추정 실적 — 그래프(실적·밸류에이션, 과거~추정) + 표 */}
       {hasEarnings ? (
+        <>
+        {/* 실적·밸류에이션 그래프 — estimates 탭 전용(Summary 요약표는 그래프 없이 원복). FYxxE(골드 점선)=추정 */}
+        {mode === "estimates" && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 4 }}>실적 추이 <span style={{ fontWeight: 400 }}>(막대=금액 억원 · 골드선=영업이익률)</span></div>
+            <ResponsiveContainer width="100%" height={235}>
+              <ComposedChart data={earnChart} margin={{ top: 6, right: 6, bottom: 2, left: 4 }}>
+                <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
+                <XAxis dataKey="fy" tick={{ fontSize: 11 }} />
+                <YAxis yAxisId="amt" tick={{ fontSize: 10 }} width={46} tickFormatter={amtAxis} />
+                <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 10 }} width={38} tickFormatter={(v) => `${v}%`} />
+                <Tooltip {...TIP} formatter={(v, n) => n === "영업이익률" ? `${Number(v).toFixed(1)}%` : amtTip(v as number)} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {firstEstFy && <ReferenceLine yAxisId="amt" x={firstEstFy} stroke={ACCENT} strokeDasharray="4 3" />}
+                <Bar yAxisId="amt" dataKey="매출액" fill="#1f3a5f" maxBarSize={24} />
+                <Bar yAxisId="amt" dataKey="영업이익" fill="#4f8ff5" maxBarSize={24} />
+                <Bar yAxisId="amt" dataKey="당기순이익" fill="#9bb8e0" maxBarSize={24} />
+                <Line yAxisId="pct" type="monotone" dataKey="영업이익률" stroke={ACCENT} strokeWidth={2} dot={{ r: 2 }} connectNulls />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 4 }}>밸류에이션 <span style={{ fontWeight: 400 }}>(네이비=PER · 골드=PBR · 배)</span></div>
+            <ResponsiveContainer width="100%" height={235}>
+              <ComposedChart data={valChart} margin={{ top: 6, right: 6, bottom: 2, left: 4 }}>
+                <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
+                <XAxis dataKey="fy" tick={{ fontSize: 11 }} />
+                <YAxis yAxisId="per" tick={{ fontSize: 10 }} width={40} tickFormatter={(v) => `${v}x`} />
+                <YAxis yAxisId="pbr" orientation="right" tick={{ fontSize: 10 }} width={38} tickFormatter={(v) => `${v}x`} />
+                <Tooltip {...TIP} formatter={(v) => `${Number(v).toFixed(1)}x`} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {firstEstFy && <ReferenceLine yAxisId="per" x={firstEstFy} stroke={ACCENT} strokeDasharray="4 3" />}
+                <Line yAxisId="per" type="monotone" dataKey="PER" stroke="#1f3a5f" strokeWidth={2} dot={{ r: 2 }} connectNulls />
+                <Line yAxisId="pbr" type="monotone" dataKey="PBR" stroke={ACCENT} strokeWidth={2} dot={{ r: 2 }} connectNulls />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        )}
         <div style={{ overflowX: "auto" }}>
           <div style={{ margin: "0 0 6px", fontWeight: 400, fontSize: 12, color: "var(--muted)" }}>(연결 · 단위 억원)</div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -499,12 +568,15 @@ export function CompanyReport({ ticker, company, name }: { ticker: string; compa
             )}
           </p>
         </div>
+        </>
       ) : (
         <p style={{ color: "var(--muted)", fontSize: 13 }}>추정 실적 데이터가 없습니다.</p>
       )}
       </div>
-      <div className="panel scroll-gold" style={{ minWidth: 0, marginBottom: 0, order: 1, maxHeight: 560, overflowY: "auto" }}>
-      {/* 컨센서스 박스 = order 1(좌측). 고정 높이 + 골드 스크롤(초기 세팅). 띠 + 리포트. */}
+      )}
+      {mode !== "consensus" && (
+      <div className="panel scroll-gold" style={{ minWidth: 0, marginBottom: 0, order: mode === "full" ? 1 : 2, maxHeight: mode === "estimates" ? 760 : mode === "full" ? 560 : undefined, overflowY: "auto" }}>
+      {/* 컨센서스 박스 — full: 좌측(order 1) / estimates: 하단(order 2, 뉴스 표와 높이 맞춤 760). 띠 + 리포트. */}
       <h3 style={{ marginTop: 0 }}>{name ? `${name} ` : ""}컨센서스</h3>
       {/* 띠 — 투자의견(좌) · Target Price · 목표주가(+증감%) */}
       {avgTarget != null && (
@@ -527,10 +599,10 @@ export function CompanyReport({ ticker, company, name }: { ticker: string; compa
       <div>
       {reports.length > 0 ? (<>
         <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-          {reports.map((r, i) => {
+          {rptView.map((r, i) => {
             const tgt = r.target ?? targetByBroker.get(r.broker);   // 리포트 고유 목표가 우선
             return (
-              <li key={i} style={{ padding: "7px 0", borderBottom: "1px solid var(--border)",
+              <li key={rptCur * RPT_PER + i} style={{ padding: "7px 0", borderBottom: "1px solid var(--border)",
                 fontSize: "12pt", display: "flex", justifyContent: "space-between", gap: 10 }}>
                 <div style={{ minWidth: 0 }}>
                   <a href={r.url} target="_blank" rel="noreferrer"
@@ -545,12 +617,29 @@ export function CompanyReport({ ticker, company, name }: { ticker: string; compa
             );
           })}
         </ul>
-        <p style={{ fontSize: 11, color: "var(--muted)", margin: "6px 2px 0" }}>
-          제목을 클릭하면 원문(PDF·네이버 리포트)이 열립니다. 목표주가는 해당 증권사 최신 컨센서스 기준.
+        {/* 페이지네이션 — 최근 12개월 리포트 누적 탐색(뉴스 탭과 동일) */}
+        {rptPages > 1 && (
+          <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+            <button type="button" className="ghost sm" disabled={rptCur === 0} onClick={() => setRptPage(rptCur - 1)}
+              style={{ fontSize: 12, padding: "3px 8px" }}>‹ 이전</button>
+            {Array.from({ length: rptPages }).map((_, p) => (
+              <button key={p} type="button" onClick={() => setRptPage(p)}
+                style={{ fontSize: 12, padding: "3px 9px", borderRadius: 6, cursor: "pointer",
+                  border: `1px solid ${p === rptCur ? "#4f8ff5" : "var(--border)"}`,
+                  background: p === rptCur ? "rgba(79,143,245,0.16)" : "transparent",
+                  fontWeight: p === rptCur ? 700 : 400, color: p === rptCur ? "#4f8ff5" : "var(--muted)" }}>{p + 1}</button>
+            ))}
+            <button type="button" className="ghost sm" disabled={rptCur >= rptPages - 1} onClick={() => setRptPage(rptCur + 1)}
+              style={{ fontSize: 12, padding: "3px 8px" }}>다음 ›</button>
+          </div>
+        )}
+        <p style={{ fontSize: 11, color: "var(--muted)", margin: "8px 2px 0", textAlign: "center" }}>
+          최근 12개월 · 총 {reports.length}건 · 제목 클릭 시 원문(PDF·네이버) 열림. 목표주가는 해당 증권사 최신 컨센서스 기준.
         </p>
       </>) : <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 0 }}>최근 리포트가 없습니다.</p>}
       </div>
       </div>
+      )}
     </div>
   );
 }
@@ -577,8 +666,9 @@ function sanitizeHtml(html: string): string {
   return doc.body.innerHTML;
 }
 
-const TEXT_COLORS = ["#e6e9ef", "#e0504f", "#4f8ff5", "#2ea65a", "#c4982b"];
-const HILITE_COLORS = ["#5a4d00", "#0d3a5c", "#15401f", "#4a1530"];
+const TEXT_COLORS = ["#e6e9ef", "#000000", "#e0504f", "#ff9900", "#ffd400", "#2ea65a", "#00b0b0", "#4f8ff5", "#9900ff", "#c4982b"];
+const HILITE_COLORS = ["#fff2cc", "#ffe0e0", "#e0f0d8", "#d0e8f8", "#ead1dc", "#5a4d00", "#0d3a5c", "#15401f", "#4a1530"];
+const PT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36];   // 글자 크기(pt) 선택
 
 // 개별 기업 투자의견(Ratings) — 매수/중립/매도 + 제목·목표주가 + 리치 분석글 + 댓글 + 좋아요/싫어요.
 // 운영자(MyStock) 승인된 글만 공개. 작성은 이 보드(Ratings 탭)에서만.
@@ -614,6 +704,16 @@ export function OpinionBoard({ ticker, name }: { ticker: string; name: string })
   const exec = (cmd: string, val?: string) => {
     document.execCommand("styleWithCSS", false, "true");
     document.execCommand(cmd, false, val);
+    editorRef.current?.focus();
+  };
+  // 글자 크기(pt) — execCommand fontSize는 1~7만 지원 → size=7 센티넬을 pt span으로 치환.
+  const setFontPt = (pt: string) => {
+    if (!pt) return;
+    document.execCommand("styleWithCSS", false, "true");
+    document.execCommand("fontSize", false, "7");
+    editorRef.current?.querySelectorAll('font[size="7"]').forEach((el) => {
+      const s = el as HTMLElement; s.removeAttribute("size"); s.style.fontSize = `${pt}pt`;
+    });
     editorRef.current?.focus();
   };
   const insertImageFile = (file: File) => {
@@ -720,20 +820,31 @@ export function OpinionBoard({ ticker, name }: { ticker: string; name: string })
         {/* 서식 툴바 */}
         <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap", alignItems: "center" }}>
           <button type="button" style={{ ...tbBtn, fontWeight: 800 }} onMouseDown={(e) => e.preventDefault()} onClick={() => exec("bold")}>B</button>
-          <button type="button" style={{ ...tbBtn, fontSize: 11 }} onMouseDown={(e) => e.preventDefault()} onClick={() => exec("fontSize", "2")}>작게</button>
-          <button type="button" style={tbBtn} onMouseDown={(e) => e.preventDefault()} onClick={() => exec("fontSize", "3")}>보통</button>
-          <button type="button" style={{ ...tbBtn, fontSize: 15 }} onMouseDown={(e) => e.preventDefault()} onClick={() => exec("fontSize", "5")}>크게</button>
+          {/* 글자 크기(pt) 선택 */}
+          <select title="글자 크기(pt)" defaultValue="" onMouseDown={(e) => e.preventDefault()}
+            onChange={(e) => { setFontPt(e.target.value); e.currentTarget.value = ""; }}
+            style={{ ...tbBtn, padding: "3px 4px" }}>
+            <option value="" disabled>pt</option>
+            {PT_SIZES.map((p) => <option key={p} value={p}>{p}pt</option>)}
+          </select>
           <span style={{ width: 1, height: 18, background: "var(--border)", margin: "0 2px" }} />
           <span style={{ color: "var(--muted)", fontSize: 11 }}>색</span>
           {TEXT_COLORS.map((c) => (
             <button key={c} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("foreColor", c)}
               title="글자색" style={{ width: 16, height: 16, borderRadius: 4, background: c, border: "1px solid var(--border)", cursor: "pointer" }} />
           ))}
+          {/* 사용자 RGB 색 — 엑셀식 색상 선택(전체 색 + RGB 직접) */}
+          <input type="color" title="글자색 직접 선택(RGB)" defaultValue="#e0504f"
+            onChange={(e) => exec("foreColor", e.target.value)}
+            style={{ width: 22, height: 18, padding: 0, border: "1px solid var(--border)", borderRadius: 4, cursor: "pointer", background: "transparent" }} />
           <span style={{ color: "var(--muted)", fontSize: 11, marginLeft: 4 }}>형광</span>
           {HILITE_COLORS.map((c) => (
             <button key={c} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("hiliteColor", c)}
               title="형광펜" style={{ width: 16, height: 16, borderRadius: 4, background: c, border: "1px solid var(--border)", cursor: "pointer" }} />
           ))}
+          <input type="color" title="형광색 직접 선택(RGB)" defaultValue="#fff2cc"
+            onChange={(e) => exec("hiliteColor", e.target.value)}
+            style={{ width: 22, height: 18, padding: 0, border: "1px solid var(--border)", borderRadius: 4, cursor: "pointer", background: "transparent" }} />
           <span style={{ width: 1, height: 18, background: "var(--border)", margin: "0 2px" }} />
           <label style={{ ...tbBtn, display: "inline-flex", alignItems: "center", gap: 4 }}>
             🖼 이미지
@@ -919,12 +1030,14 @@ const INDUSTRY_NEWS_KW: Record<string, { kr: string[]; glob: string[] }> = {
 };
 const DEFAULT_NEWS_KW = { kr: ["증시", "코스피", "코스닥", "실적", "공시"], glob: ["Korea stocks", "KOSPI"] };
 
-export function SectorNewsPanel({ ticker, name }: { ticker?: string; name?: string }) {
+export function SectorNewsPanel({ ticker, name, kw: kwOverride }:
+  { ticker?: string; name?: string; kw?: { kr: string[]; glob: string[] } }) {
   const [news, setNews] = useState<SectorNews | null>(null);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<"kr" | "global">("kr");
+  const [page, setPage] = useState(0);   // 뉴스 페이지네이션(15건/페이지)
   useEffect(() => {
-    let alive = true; setBusy(true); setNews(null);
+    let alive = true; setBusy(true); setNews(null); setPage(0);
     // 종목이 속한 산업을 인식 → 산업별 키워드 + 종목명으로 동적 검색(해시태그는 화면 비노출).
     const run = (kw: { kr: string[]; glob: string[] }) => {
       const kr = name ? [name, ...kw.kr] : kw.kr;
@@ -933,7 +1046,9 @@ export function SectorNewsPanel({ ticker, name }: { ticker?: string; name?: stri
         .catch(() => { /* 무시 */ })
         .finally(() => { if (alive) setBusy(false); });
     };
-    if (ticker) {
+    if (kwOverride) {
+      run(kwOverride);                    // 매크로 뉴스 등 — 키워드 직접 지정
+    } else if (ticker) {
       api.industryOf(ticker)
         .then((r) => run(INDUSTRY_NEWS_KW[r.industry || ""] || DEFAULT_NEWS_KW))
         .catch(() => run(DEFAULT_NEWS_KW));
@@ -941,10 +1056,15 @@ export function SectorNewsPanel({ ticker, name }: { ticker?: string; name?: stri
       run(INDUSTRY_NEWS_KW["2차전지"]);   // 산업분석 페이지 등 종목 미지정 시
     }
     return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker, name]);
-  const items = tab === "kr" ? (news?.kr || []) : (news?.global || []);
+  const all = tab === "kr" ? (news?.kr || []) : (news?.global || []);
+  const PER = 15;
+  const pages = Math.max(1, Math.ceil(all.length / PER));
+  const curPage = Math.min(page, pages - 1);
+  const items = all.slice(curPage * PER, curPage * PER + PER);
   const tabBtn = (k: "kr" | "global", label: string) => (
-    <button type="button" onClick={() => setTab(k)}
+    <button type="button" onClick={() => { setTab(k); setPage(0); }}
       style={{ fontSize: 12, fontWeight: 700, padding: "5px 14px", borderRadius: 8, cursor: "pointer",
         border: `1px solid ${tab === k ? "#4f8ff5" : "var(--border)"}`,
         background: tab === k ? "rgba(79,143,245,0.16)" : "transparent",
@@ -952,19 +1072,42 @@ export function SectorNewsPanel({ ticker, name }: { ticker?: string; name?: stri
   );
   return (
     <>
-      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>{tabBtn("kr", "국내")}{tabBtn("global", "해외")}</div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>{tabBtn("kr", "Local News")}{tabBtn("global", "Global News")}</div>
       {busy ? (
         <p style={{ color: "var(--muted)", fontSize: 13 }}>뉴스 불러오는 중…</p>
-      ) : items.length === 0 ? (
+      ) : all.length === 0 ? (
         <p style={{ color: "var(--muted)", fontSize: 13 }}>관련 뉴스가 없습니다.</p>
-      ) : items.map((n, i) => (
-        <a key={i} href={n.url} target="_blank" rel="noreferrer"
-          style={{ display: "block", padding: "8px 2px", borderBottom: "1px solid var(--border)", textDecoration: "none", color: "inherit" }}>
-          <div style={{ fontWeight: 600, fontSize: "12pt", color: DOWN }}>{n.title}</div>
-          {/* 본문 삭제 — 기사링크(제목)와 중복. 그 자리에 날짜(연도)·언론사명을 본문 크기(12pt)로 */}
-          <div style={{ fontSize: "12pt", color: "var(--muted)", marginTop: 3 }}>{n.date ? `${n.date} · ` : ""}{n.source}</div>
-        </a>
-      ))}
+      ) : (<>
+        {/* 리스트 — 내용에 맞춰 늘되 760px에서 스크롤(maxHeight). 기사가 적으면 그만큼만 차지해 하단 공백 제거. */}
+        <div style={{ maxHeight: 760, overflowY: "auto" }} className="scroll-gold">
+        {items.map((n, i) => (
+          <a key={curPage * PER + i} href={n.url} target="_blank" rel="noreferrer"
+            style={{ display: "block", padding: "8px 2px", borderBottom: "1px solid var(--border)", textDecoration: "none", color: "inherit" }}>
+            <div style={{ fontWeight: 600, fontSize: "12pt", color: DOWN }}>{n.title}</div>
+            {/* 해외 기사: 영문 제목 하단에 국문 번역(링크 없음) */}
+            {n.title_ko && <div style={{ fontSize: "11pt", color: "var(--muted)", marginTop: 2 }}>{n.title_ko}</div>}
+            <div style={{ fontSize: "12pt", color: "var(--muted)", marginTop: 3 }}>{n.date ? `${n.date} · ` : ""}{n.source}</div>
+          </a>
+        ))}
+        </div>
+        {/* 페이지네이션 — 과거 기사 누적 탐색 (최근 12개월) */}
+        {pages > 1 && (
+          <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+            <button type="button" className="ghost sm" disabled={curPage === 0} onClick={() => setPage(curPage - 1)}
+              style={{ fontSize: 12, padding: "3px 8px" }}>‹ 이전</button>
+            {Array.from({ length: pages }).map((_, p) => (
+              <button key={p} type="button" onClick={() => setPage(p)}
+                style={{ fontSize: 12, padding: "3px 9px", borderRadius: 6, cursor: "pointer",
+                  border: `1px solid ${p === curPage ? "#4f8ff5" : "var(--border)"}`,
+                  background: p === curPage ? "rgba(79,143,245,0.16)" : "transparent",
+                  fontWeight: p === curPage ? 700 : 400, color: p === curPage ? "#4f8ff5" : "var(--muted)" }}>{p + 1}</button>
+            ))}
+            <button type="button" className="ghost sm" disabled={curPage >= pages - 1} onClick={() => setPage(curPage + 1)}
+              style={{ fontSize: 12, padding: "3px 8px" }}>다음 ›</button>
+          </div>
+        )}
+        <p style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 6 }}>최근 12개월 · 총 {all.length}건</p>
+      </>)}
     </>
   );
 }
@@ -983,7 +1126,7 @@ export function CompanyPriceChart({ ticker }: { ticker: string }) {
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let alive = true; setBusy(true); setVStart(""); setVEnd(""); setPeriod(12);
-    api.symbolDetail(ticker, "10y")
+    api.symbolDetail(ticker, "10y", true)   // light — 요약 차트는 캔들+이동평균+벤치마크만(보조지표 38종 제외)
       .then((d) => { if (alive) setDetail(d); })
       .catch(() => { if (alive) setDetail(null); })
       .finally(() => { if (alive) setBusy(false); });

@@ -275,10 +275,12 @@ def _fetch(code: str) -> dict:
             merged = {}
             for k in ("PL", "BS", "CF"):
                 dk, ok = d_annual.get(k), oa_annual.get(k)
-                # 원문이 최신연도까지 있으면 원문(보고서 계정·순서 그대로), 아니면 OpenAPI 폴백
-                # (은행·지주 등 원문 파싱 실패/구버전만 — 무회귀).
-                use_doc = bool(dk and dk.get("rows") and (not (ok and ok.get("periods")) or
-                               (dk.get("periods") and dk["periods"][-1] >= ok["periods"][-1])))
+                # 원문(dart-fss)이 최신연도까지 + OpenAPI 못지않은 연수를 가져야 채택, 아니면 OpenAPI 폴백.
+                # ⚠ dart-fss는 XBRL 다운로드 일부 실패(RemoteDisconnected) 시 3개년만 추출하는데,
+                #   연도 '개수'를 안 보면 그 3개년이 OpenAPI 5개년을 덮어써 5개년이 깨진다. len 비교 필수.
+                use_doc = bool(dk and dk.get("rows") and dk.get("periods") and (
+                    not (ok and ok.get("periods")) or
+                    (len(dk["periods"]) >= len(ok["periods"]) and dk["periods"][-1] >= ok["periods"][-1])))
                 pick = dk if use_doc else (ok or dk)
                 if pick:
                     merged[k] = pick
