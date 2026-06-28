@@ -50,7 +50,12 @@ class BrokerRouter:
         return self._futures is not None and qc.is_futures(symbol)
 
     def _broker(self, symbol):
-        return self._futures if self._is_fut(symbol) else self._stock
+        if self._is_fut(symbol):
+            return self._futures
+        if self._stock is None:
+            raise RuntimeError(
+                f"주식 자격증명 미등록 — 주식 심볼 {symbol} 거래 불가(커버리지 게이트가 차단해야 함)")
+        return self._stock
 
     def _code(self, symbol) -> str:
         """선물은 데이터셋 심볼→라이브 계약코드 해석. 주식은 심볼 그대로.
@@ -129,10 +134,11 @@ class BrokerRouter:
             if futures_market(symbol) == "CME":
                 return self._futures.overseas_order_status(order_no)
             return self._futures.order_status(order_no)
+        base = self._stock if self._stock is not None else self._futures
         if hint is None:
             # 레거시 2-인자 호출 보존 — hint 미지원 구현(테스트 더블 등) 호환.
-            return self._stock.order_status(order_no, symbol)
-        return self._stock.order_status(order_no, symbol, hint=hint)
+            return base.order_status(order_no, symbol)
+        return base.order_status(order_no, symbol, hint=hint)
 
     # ── 잔고 스냅샷: stock + 선물(국내·해외) 병합 + 심볼 정규화 (M7) ──────────────────
     def account_snapshot(self, overseas=True):
@@ -142,15 +148,16 @@ class BrokerRouter:
         병합한다. 선물 브로커가 국내(account_snapshot)·해외(overseas_account_snapshot) 컨텍스트별
         잔고를 주면 둘 다 병합(미구성 컨텍스트는 try/except skip). **주식 동작 무변경**(선물 없으면
         stock 스냅샷 그대로). equity 정밀 병합(증거금/평가→_unified_equity_krw)은 라이브 검증 후."""
-        snap = self._stock.account_snapshot(overseas)
+        snap = (self._stock.account_snapshot(overseas)
+                if self._stock is not None else {"balance": {}, "positions": []})
         if self._futures is None:
             return snap
         out = {"balance": dict(snap.get("balance", {}) or {}),
                "positions": list(snap.get("positions", []) or [])}
         fetch_failed = list(out["balance"].get("fetch_failed") or [])
-        for getter, cfg_attr, marker in (
-                ("account_snapshot", "domestic_configured", "futures"),
-                ("overseas_account_snapshot", "overseas_configured", "futures_overseas")):
+        for getter, cfg_attr, marker, mkt in (
+                ("account_snapshot", "domestic_configured", "futures", "kr"),
+                ("overseas_account_snapshot", "overseas_configured", "futures_overseas", "us")):
             fn = getattr(self._futures, getter, None)
             if fn is None:
                 continue
@@ -175,16 +182,13 @@ class BrokerRouter:
             if fut_eq:
                 out["balance"]["futures_eval_krw"] = (
                     float(out["balance"].get("futures_eval_krw", 0) or 0) + float(fut_eq))
-            # 선물 주문가능 증거금현금 — 선물 사이징 예산 base(trader). 주식 현금(balance["cash"])과
-            # 분리: 선물 주문은 선물계좌 증거금으로 체결되므로 주식 현금으로 사이징하면 안 된다.
-            # ⚠ 한계: 국내선물·해외선물 계좌(별도 CANO)를 둘 다 구성한 사용자는 futures_order_cash가
-            # 두 계좌 합산 → 단일 시장 주문 1건에 합산 예산을 써 과대사이징 가능. 현재 게이트가
-            # 코스피200만 개방(해외 차단)이라 양쪽 동시 라이브가 불가능해 미발생 — per-market 예산
-            # 분리는 다계좌 라이브 활성화 단계 과제(equity 합산은 보수적=발동 지연이라 영향 작음).
+            # 선물 주문가능 증거금현금 — 시장별 분리 키로 기록(trader가 시장에 맞는 예산만 사용).
+            # 주식 현금(balance["cash"])과 분리: 선물 주문은 선물계좌 증거금으로 체결.
+            # 국내(kr)·해외(us) 별도 키 → 단일 시장 주문이 상대방 계좌 예산을 쓰는
+            # 다계좌 과대사이징(C4)을 차단한다.
             fut_cash = fut_acct.get("order_cash")
             if fut_cash:
-                out["balance"]["futures_order_cash"] = (
-                    float(out["balance"].get("futures_order_cash", 0) or 0) + float(fut_cash))
+                out["balance"][f"futures_order_cash_{mkt}"] = float(fut_cash)
             for p in (fsnap.get("positions") or []):
                 np = dict(p)
                 code = str(p.get("symbol", "") or "")
@@ -216,4 +220,5 @@ class BrokerRouter:
         # _stock/_futures/_resolve 등 내부 속성은 정상 조회(무한재귀 방지).
         if name.startswith("_"):
             raise AttributeError(name)
-        return getattr(self._stock, name)
+        target = self._stock if self._stock is not None else self._futures
+        return getattr(target, name)
