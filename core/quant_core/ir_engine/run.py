@@ -125,6 +125,16 @@ def run_query(strategy: StrategyIR, dataset: dict) -> dict:
     res = _dispatch_query(strategy, dataset)
     if isinstance(res, dict) and res.get("success", True) and "shape" not in res:
         res["shape"] = result_shape(res)
+    # 결과 품질 계약 — 모든 엔진 결과가 자기 품질(status/diagnostics/verdict)을 서술한다
+    # (chat-reliability-redesign §3 · 뿌리 R1). 빈/퇴화/불가를 '성공'으로 흘려보내지 않도록.
+    # 계약은 **부가 메타데이터·안전장치** — 분류가 실패해도 실제 결과 전달을 절대 깨지 않는다
+    # (예외 시 status 없이 통과 → 소비자는 status 부재를 ok로 간주, B4 회귀 차단).
+    if isinstance(res, dict) and res.get("success", True) and "status" not in res:
+        from .result_status import classify_status
+        try:
+            res.update(classify_status(res))
+        except Exception:   # noqa: BLE001 — 품질 주석이 결과를 깨면 안 됨(안전장치 자체의 fail-safe)
+            pass
     return res
 
 

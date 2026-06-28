@@ -15,6 +15,7 @@ import logging
 import os
 import time
 
+from quant_core.ir_engine import classify_status
 from sqlmodel import Session, select
 
 from ..models import ChatTurnMetric, Conversation, Message
@@ -70,6 +71,15 @@ def _history_to_wire(session: Session, conversation_id: int) -> list[dict]:
 
 
 MAX_TOOL_ROUNDS = 8     # 한 사용자 턴당 도구 라운드 상한(무한루프·비용 가드)
+
+# 결과 품질 계약 — 턴 메트릭에 '가장 나쁜' 결과상태를 기록(모니터링·error_rate 품질 반영).
+_STATUS_RANK = {"ok": 0, "empty": 1, "data_insufficient": 2, "degenerate": 3, "infeasible": 4}
+
+
+def _worse(a: str | None, b: str | None) -> str | None:
+    """두 결과상태 중 더 심각한 것(랭크 높은 쪽). None은 무시."""
+    cands = [s for s in (a, b) if s in _STATUS_RANK]
+    return max(cands, key=lambda s: _STATUS_RANK[s]) if cands else (a or b)
 
 
 def _ir_sig(ir) -> str | None:
@@ -130,7 +140,8 @@ def _accumulate_usage(acc: dict, usage) -> None:
 
 
 def _persist_turn_metric(session: Session, conversation_id: int, model: str,
-                         acc: dict, ttft_ms, latency_ms: int, ok: bool) -> None:
+                         acc: dict, ttft_ms, latency_ms: int, ok: bool,
+                         result_status: str | None = None) -> None:
     """턴별 ChatTurnMetric 1행 적재(chat-perf 측정 환경). user_id는 대화 소유자.
 
     적재 실패가 대화 응답을 깨지 않도록 격리한다 — DB 일시오류 시 지표 누락은 허용하고
@@ -146,7 +157,7 @@ def _persist_turn_metric(session: Session, conversation_id: int, model: str,
             cache_read_tokens=acc["cr"], cache_write_tokens=acc["cw"],
             n_rounds=acc["rounds"], n_tool_calls=len(acc["tools"]),
             tool_names=list(acc["tools"]), model=model,
-            stop_reason=acc["stop"], ok=ok))
+            stop_reason=acc["stop"], ok=ok, result_status=result_status))
         session.commit()
     except Exception:   # noqa: BLE001 — 지표 누락 허용·대화 보존(원칙: 외부 한계 fallback)
         _log.exception("[chat metric] 적재 실패 conv=%s", conversation_id)
@@ -215,6 +226,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
     ttft_ms = None
     completed = False
     ok = True
+    worst_status: str | None = None      # 결과 품질 계약 — 턴 내 가장 나쁜 결과상태(메트릭)
     try:
         for _ in range(MAX_TOOL_ROUNDS):
             with client.messages.stream(model=model, max_tokens=4096, system=system,
@@ -264,6 +276,15 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                 # 도구 결과의 NaN/inf→None — JSON은 NaN을 표현 못 해 브라우저 JSON.parse·
                 # Postgres JSONB가 깨진다(/ir 백테스트 경로와 동일한 clean_json 재사용).
                 full = clean_json(full)
+                # 결과 품질 계약 백스톱 — run_query를 안 거치는 결과(inspect·news·save)도 status를 채운다.
+                # 계약은 안전장치 — 분류 실패가 턴을 깨지 않도록 격리(B4 회귀 차단).
+                if isinstance(full, dict) and full.get("success", True) and "status" not in full:
+                    try:
+                        full.update(classify_status(full))
+                    except Exception:   # noqa: BLE001 — 품질 주석 실패가 대화를 깨면 안 됨
+                        _log.exception("[chat] classify_status 실패 conv=%s", conversation_id)
+                if isinstance(full, dict):
+                    worst_status = _worse(worst_status, full.get("status"))
                 assistant_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": inp})
                 assistant_parts.append({"type": "tool_result", "tool_use_id": b.id,
                                         "name": b.name, "result": full})
@@ -291,7 +312,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
         yield ("delta", {"text": msg})
     _persist(session, conversation_id, "assistant", assistant_parts)
     _persist_turn_metric(session, conversation_id, model, acc, ttft_ms,
-                         int((time.perf_counter() - t0) * 1000), ok)
+                         int((time.perf_counter() - t0) * 1000), ok, worst_status)
     yield ("done", {"parts": assistant_parts})
 
 

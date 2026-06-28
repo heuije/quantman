@@ -119,6 +119,23 @@ def test_compact_simulate():
     assert "백테스트" in out and "3.46" in out and "샤프" in out
 
 
+def test_compact_surfaces_status_header_for_empty():
+    """결과 품질 계약(R1) — status≠ok면 compact_summary가 ⚠ 헤더로 모델에 표면화해
+    '거래가 없어 0%'를 '손실로 0%'와 구분하고 맹목 재실행을 막는다."""
+    res = {"success": True, "shape": "simulate", "status": "empty", "equity": [100, 100],
+           "verdict": "거래 0건 — 신호가 한 번도 충족되지 않았습니다.",
+           "metrics": {"cagr": 0.0, "total_return": 0.0, "n_trades": 0}}
+    out = compact_summary("simulate", res)
+    assert out.startswith("⚠ 결과상태=empty") and "재실행하지 말고" in out
+
+
+def test_compact_ok_no_warning_header():
+    res = {"success": True, "shape": "simulate", "status": "ok", "verdict": "",
+           "equity": [100, 110], "metrics": {"cagr": 5.0, "total_return": 10.0, "n_trades": 50}}
+    out = compact_summary("simulate", res)
+    assert "결과상태" not in out and "백테스트" in out
+
+
 def test_compact_simulate_period_surfaces_buckets():
     """②관측 근본수정: simulate가 연도분할이면 요약이 연도별 buckets를 담는다(이전엔 4스칼라뿐 →
     모델이 연도 수치를 못 봐 재실행하던 헛돌이의 근본 차단)."""

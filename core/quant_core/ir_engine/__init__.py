@@ -24,6 +24,7 @@ from .explain import explain_ir  # noqa: F401
 from .excel_export import build_strategy_excel  # noqa: F401
 from .params import param_manifest  # noqa: F401
 from .summarize import result_shape, summarize_result  # noqa: F401
+from .result_status import classify_status  # noqa: F401
 from .service import backtest_from_spec, strategy_from_spec  # noqa: F401
 from .spec import (  # noqa: F401
     Entry, Exit, Objective, Overlays, ParamAxis, PositionSpec, SelectSpec, Sizing,
@@ -40,7 +41,7 @@ __all__ = [
     "run_backtest_ir", "run_strategy_ir", "run_sweep", "run_period_split", "run_query", "run_select", "run_prescribe", "run_breadth",
     "run_describe_report", "run_portfolio_diagnosis", "run_extremize",
     "backtest_from_spec", "strategy_from_spec", "capability_spec", "explain_ir",
-    "build_strategy_excel", "param_manifest", "result_shape", "summarize_result",
+    "build_strategy_excel", "param_manifest", "result_shape", "summarize_result", "classify_status",
     "collect_strat_refs", "has_strat_refs", "materialize_strategy_assets",
     "StrategyIR", "Universe", "PositionSpec", "Sizing", "Entry", "Exit", "SelectSpec",
     "Overlays", "SimSpec", "Study", "Objective", "ParamAxis", "validate_strategy", "signal_out_type",

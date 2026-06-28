@@ -78,6 +78,8 @@ _NEW_COLS: list[tuple[str, str, str]] = [
     ("stockopinion", "title",                            "VARCHAR DEFAULT ''"),
     ("stockopinion", "target_price",                     "DOUBLE PRECISION"),
     ("stockopinion", "status",                           "VARCHAR DEFAULT 'approved'"),
+    # 결과 품질 계약(chat-reliability §3) — 챗 턴별 결과상태.
+    ("chatturnmetric", "result_status",                  "VARCHAR"),
 ]
 
 

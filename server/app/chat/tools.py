@@ -502,4 +502,17 @@ def compact_summary(tool_name: str, result: dict) -> str:
     if tool_name == "save_strategy" or result.get("strategy_id") is not None:
         return (f"[save_strategy] '{result.get('name')}' 전략을 draft로 저장(id={result.get('strategy_id')}). "
                 "모의/실전은 웹 자동매매 메뉴에서.")
-    return summarize_result(result)
+    return _status_header(result) + summarize_result(result)
+
+
+def _status_header(result: dict) -> str:
+    """결과 품질 계약(status/verdict)을 모델 식단 **맨 앞**에 노출 — 모델이 '손실로 0%'와
+    '거래가 없어 0%'를 구분하고, 빈/퇴화/불가를 맹목 재실행하지 않게 한다(뿌리 R1·R3).
+    status가 없거나 ok면 verdict(저신뢰 주의 등)만, 아니면 경고 헤더를 붙인다."""
+    status = result.get("status")
+    verdict = (result.get("verdict") or "").strip()
+    if status and status != "ok":
+        return (f"⚠ 결과상태={status}: {verdict}\n"
+                "(이 결과는 유효한 분석이 아닙니다. 같은 분석을 재실행하지 말고, 위 사유를 사용자에게 "
+                "정직히 설명하고 구체적 조정안 1개를 제안하세요.)\n")
+    return f"[참고: {verdict}]\n" if verdict else ""

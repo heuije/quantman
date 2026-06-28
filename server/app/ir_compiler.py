@@ -454,6 +454,7 @@ def compile_nl(
         try:
             resp = client.messages.create(
                 model=settings.NL_COMPILE_MODEL, max_tokens=4096, system=system,
+                temperature=0,        # 결정성(뿌리 R2·A2) — 같은 NL이 다른 shape/n_events로 발산하던 비결정 종식
                 tools=[_EMIT_TOOL], tool_choice={"type": "tool", "name": "emit_strategy"},
                 messages=messages)
         except Exception as e:  # noqa: BLE001 — 외부 API 실패는 사유 반환
@@ -484,8 +485,10 @@ def compile_nl(
                          "content": [{"type": "tool_use", "id": tu.id, "name": tu.name, "input": inp}]})
         messages.append({"role": "user", "content": [{
             "type": "tool_result", "tool_use_id": tu.id,
-            "content": ("검증 실패. 아래 오류를 모두 고쳐 emit_strategy를 다시 호출해줘"
-                        "(유효한 op·지표 ref·구조만 사용):\n"
+            # 의도 앵커(뿌리 R2) — 재시도 간 원의도 망실로 엉뚱한 shape(describe↔event)로 발산하던 것 차단.
+            "content": (f"원래 요청(의도 유지): {nl}\n"
+                        "검증 실패. 아래 오류를 모두 고쳐 emit_strategy를 다시 호출해줘"
+                        "(유효한 op·지표 ref·구조만 사용·원래 의도에서 벗어나지 말 것):\n"
                         + json.dumps(errs, ensure_ascii=False))}]})
 
     return {"success": False, "error": "검증을 통과하는 IR을 생성하지 못했습니다.", **last}

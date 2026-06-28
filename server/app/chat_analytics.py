@@ -47,6 +47,9 @@ def compute_stats(session: Session, days: int = 7) -> dict:
     ttft = [r.ttft_ms for r in rows if r.ttft_ms is not None]
     tools = Counter(t for r in rows for t in (r.tool_names or []))
     rounds = Counter(r.n_rounds for r in rows)
+    # 결과 품질 계약 — 빈/퇴화/불가 결과 비율(ok=크래시여부와 직교, 품질 신호).
+    statuses = Counter(getattr(r, "result_status", None) for r in rows if getattr(r, "result_status", None))
+    bad = sum(1 for r in rows if getattr(r, "result_status", None) not in (None, "ok"))
     total_in, total_cr = sum(inp), sum(cr)
     return {
         "turns": n,
@@ -62,6 +65,8 @@ def compute_stats(session: Session, days: int = 7) -> dict:
         "tools": dict(tools.most_common()),
         "rounds_dist": dict(sorted(rounds.items())),
         "error_rate": round(sum(1 for r in rows if not r.ok) / n, 3),
+        "result_status_dist": dict(statuses.most_common()),
+        "bad_result_rate": round(bad / n, 3),
     }
 
 
@@ -71,7 +76,9 @@ def format_stats(st: dict) -> str:
     def trio(d): return f"p50={d['p50']} p90={d['p90']} max={d['max']}"
     lines = [
         f"=== 챗봇 성능 (최근 {st['days']}일) ===",
-        f"  turns={st['turns']}  users={st['users']}  error_rate={st['error_rate']}",
+        f"  turns={st['turns']}  users={st['users']}  error_rate={st['error_rate']}"
+        f"  bad_result_rate={st.get('bad_result_rate', 0)}",
+        f"  result_status {st.get('result_status_dist') or '(없음)'}",
         f"  input_tok   {trio(st['input_tok'])}",
         f"  output_tok  {trio(st['output_tok'])}",
         f"  cache_read  {trio(st['cache_read_tok'])}  hit_rate={st['cache_hit_rate']}",

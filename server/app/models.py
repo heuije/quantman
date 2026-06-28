@@ -209,7 +209,10 @@ class ChatTurnMetric(SQLModel, table=True):
     tool_names: list = Field(default_factory=list, sa_column=Column(JSON))
     model: str = ""
     stop_reason: Optional[str] = None
-    ok: bool = True               # 턴 정상 종료 여부(에러=False)
+    ok: bool = True               # 턴 정상 종료 여부(크래시=False — 품질 무관)
+    # 결과 품질 계약(chat-reliability §3) — 턴 내 가장 나쁜 결과상태(ok/empty/degenerate/
+    # data_insufficient/infeasible). ok(크래시)와 직교 — 빈/퇴화 결과를 모니터링·error_rate에 반영.
+    result_status: Optional[str] = None
 
 
 class TradableSymbol(SQLModel, table=True):

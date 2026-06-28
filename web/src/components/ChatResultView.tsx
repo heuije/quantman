@@ -449,6 +449,27 @@ const RENDERERS: Record<string, (result: Record<string, unknown>) => ReactElemen
   simulate: (result) => <SimulateChart result={result} />,
 };
 
+// 결과 품질 계약(chat-reliability §3) — 빈/퇴화/불가 결과를 가짜 "분석 완료" 대신 경고 배너로.
+// status·verdict는 엔진(run_query)이 스탬프. 일반 div라 DESIGN.md CSS var 토큰 사용(SVG 아님).
+const STATUS_LABEL: Record<string, string> = {
+  empty: "결과 없음", degenerate: "신뢰 불가", data_insufficient: "데이터 부족", infeasible: "실행 불가",
+};
+function StatusBanner({ status, verdict }: { status: string; verdict?: string }) {
+  const danger = status === "degenerate" || status === "infeasible";
+  return (
+    <div style={{
+      border: `1px solid var(${danger ? "--danger" : "--amber"})`,
+      background: `var(${danger ? "--red-soft" : "--amber-soft"})`,
+      borderRadius: 8, padding: "8px 11px", marginBottom: 8, fontSize: 13, lineHeight: 1.5,
+    }}>
+      <span style={{ color: `var(${danger ? "--danger" : "--amber"})`, fontWeight: 700 }}>
+        ⚠ {STATUS_LABEL[status] ?? status}
+      </span>
+      {verdict ? <span style={{ color: "var(--text)", marginLeft: 6 }}>{verdict}</span> : null}
+    </div>
+  );
+}
+
 function ChatResultBody({ result }: Props) {
   const r = result as unknown as IrStrategyResult;
 
@@ -466,19 +487,24 @@ function ChatResultBody({ result }: Props) {
     );
   }
 
+  // 결과 품질 계약 — status≠ok면 경고 배너(빈/퇴화/불가). 배너는 차트 위에 얹어 맥락 보존.
+  const status = (r as { status?: string }).status;
+  const banner = status && status !== "ok"
+    ? <StatusBanner status={status} verdict={(r as { verdict?: string }).verdict} /> : null;
+
   // 형상 레지스트리 단일 조회 — 엔진 스탬프(result.shape) 우선, 미스탬프는 deriveShape 폴백.
   const shape = (r as { shape?: string }).shape ?? deriveShape(r);
   const renderer = RENDERERS[shape];
-  if (renderer) return renderer(result);
+  if (renderer) return <>{banner}{renderer(result)}</>;
 
-  // fallback: 오류 메시지 or 완료 칩
+  // fallback: 오류 메시지 or 완료 칩. 배너가 있으면(비ok) 가짜 "분석 완료"를 보이지 않는다.
   if (r.success === false && r.error) {
     return (
       <div className="chat-result-fallback">
-        <div className="chat-tool done">✓ 분석 완료</div>
+        {banner ?? <div className="chat-tool done">✓ 분석 완료</div>}
         <div className="chat-result-error">{r.error}</div>
       </div>
     );
   }
-  return <div className="chat-tool done">✓ 분석 완료</div>;
+  return banner ?? <div className="chat-tool done">✓ 분석 완료</div>;
 }
