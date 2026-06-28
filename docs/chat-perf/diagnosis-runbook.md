@@ -9,6 +9,23 @@ railway run python -m app.chat_analytics transcripts --conv <id>     # 특정 �
 ```
 `railway`는 Neon URL(QP_DB_URL)을 주입한다. 로컬(QP_DB_URL 미설정)은 SQLite를 본다.
 
+## 0.5. 진단 원칙 — *산출물·실데이터*에서 읽는다 (산문 추론 금지) ⚠필독
+
+근본원인을 *"X 때문이다 / 고쳐졌다"* 라고 말하기 **직전** 이 4개를 지킨다. 안 지키면 자신 있게 틀린다.
+
+1. **표현이 아니라 진실 산출물에서 읽어라.**
+   - NL→IR 계열이면 **모델의 nl 산문이 아니라 *컴파일된 IR*(transcript result의 `ir` 필드 = StrategyIR JSON)** 을 연다. 모델 nl은 *추론 과정*이지 *실행된 것*이 아니다.
+   - 결과 진단이면 **실제 result dict 필드**(`status`·`metrics`·`ref`·`warnings`)를. 로그 요약·내 기억·스냅샷은 전부 *표현*이다.
+2. **싸게 돌릴 수 있으면 돌려본다 ($0 실데이터).** "환경이 막혀서"라 단정하기 전:
+   - 인메모리 몇 종목: `import FinanceDataReader as fdr; fdr.DataReader("005930", "2019")` → `compute_all(df)` → `strategy_from_spec(ir, ds)` (수초·$0).
+   - 더 넓게: `quant_core.data_fetcher.fetch_all()` / `load_dataset_for([...])` (yfinance·FDR·$0).
+   - LLM 포함 실루프: 하니스 `scripts/chat_eval/run.py`가 `tools._load_dataset`·`qc.load_dataset_for`를 *합성*으로 몽키패치한다 — 여기에 **실데이터를 끼우면** NL→IR→실행 전체가 실데이터로 돈다(claude -p 구독·API $0).
+   - 수급(KIS·로컬PC 전용)만 빠지고 **OHLCV·스크리닝·백테스트·밸류·컨센서스는 전부 실데이터로 가능**. (⚠ 로컬 `core/data/dataset-bundle.tar.zst`는 placeholder라 `load_dataset_for`만으론 빈 결과 — 위 방법으로 fetch.)
+3. **"성공"을 의심하라.** 도구 `success`·테스트 pass·`status=ok`는 *코드 정확*이지 *의도 충실*이 아니다. 성공 결과도 **충실성**(컴파일된 IR이 사용자 요청 조건을 실제로 담았나)을 확인 전엔 미검증.
+4. **확인 전엔 "가설"이라 말한다.** 확신 톤은 정확성이 아니다.
+
+> 📌 교훈(2026-06-29): chat 진단에서 모델 nl 산문("6개월=pct_change_120d")만 읽고 "phantom ref·가짜 성공"이라 **2회 자신있게 오진**. 실제 컴파일 IR은 `ts_delta(Close,120)`로 6개월 조건을 *충실히* 표현했고(엔진은 pct_change_120d를 R0로 거부), FDR 실데이터 6종목($0·1분)으로 돌려보고서야 정정. 없는 문제를 만들고 엉뚱한 수정까지 제안할 뻔했다. → 산문이 아니라 *컴파일 IR + 실데이터 실행*에서 진단하라.
+
 ## 1. 정량 진단 (stats)
 
 | 신호 | 의심 근본원인 |
