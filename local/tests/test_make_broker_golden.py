@@ -51,6 +51,9 @@ def test_kis_stock_plus_kr_futures_returns_router(hermetic):
     assert type(b._stock) is KisBroker
     assert type(b._futures) is KisFuturesBroker
     assert b._d4c is dataset_for_contract  # dataset_for_code 미주입 = 기본값 (불변식)
+    # resolve 콜백이 ContractResolver에서 배선됨 (wiring 잠금 — 오배선 회귀 검출)
+    assert b._resolve.__self__.__class__ is ContractResolver
+    assert b._resolve_expiry.__self__.__class__ is ContractResolver
 
 
 def test_kis_no_credentials_raises(hermetic):

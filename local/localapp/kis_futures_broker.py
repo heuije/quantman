@@ -560,7 +560,7 @@ class KisFuturesBroker:
         snap = parse_overseas_balance(data)            # {positions: [...]}
         # G1/G3: 미결제내역(OTFM1412R)은 positions뿐 — 계좌 가용증거금·총자산은 별도
         # 예수금현황(OTFM1411R)에서. 도메스틱 account_snapshot의 {positions, account}와 동형
-        # 만들어, broker_router 병합이 futures_order_cash(사이징)·futures_eval_krw(kill-switch)를
+        # 만들어, broker_router 병합이 futures_order_cash_us(사이징)·futures_eval_krw(kill-switch)를
         # 해외선물 계좌 기준으로 채우게 한다. 조회 실패 시 account 생략(positions만, graceful).
         try:
             snap["account"] = self.overseas_deposit()

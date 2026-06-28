@@ -1162,7 +1162,6 @@ class Trader:
                     from quant_core.futures_contract import futures_market
                     _mkt = "us" if futures_market(symbol) == "CME" else "kr"
                     cash = float(bal.get(f"futures_order_cash_{_mkt}")
-                                 or bal.get("futures_order_cash")   # 구 단일 키 호환
                                  or bal.get("cash") or 0)
                 else:
                     cash = float(bal["cash"])
