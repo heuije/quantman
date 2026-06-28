@@ -17,8 +17,8 @@ from datetime import datetime
 import webbrowser
 from tkinter import font as tkfont, messagebox, ttk
 
-from . import (__version__, auto_state, killswitch, kis_health, order_log,
-                pairing, secrets_store, sync_client, updater)
+from . import (__version__, auto_state, killswitch, kis_health, onboarding,
+                order_log, pairing, secrets_store, sync_client, updater)
 from .commands_client import CommandClient
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
                        PLATFORM_URL)
@@ -685,7 +685,7 @@ class SettingsApp:
         base = f"{d}일 {h}h" if h else f"{d}일"
         return f"{base} {'후' if future else '전'}"
 
-    def _render_setup_area(self, kis_ok: bool, dev_ok: bool):
+    def _render_setup_area(self, dev_ok: bool):
         """4가지 모드 layout — 한 번에 하나씩 진행:
 
           - normal:      hero · setup_bar · af · nb · refresh_btn
@@ -693,41 +693,14 @@ class SettingsApp:
           - wizard_ls:   hero · 브로커선택 + ① LS 폼 (lsf)        ※ kf/pf/af/nb/refresh 숨김
           - wizard_pair: hero · ② 페어링 (pf)만                   ※ 브로커선택/kf/lsf/af/nb/refresh 숨김
 
-        ── LS 브로커 선택 시 모드 결정 (hook: self.broker_choice) ──
-          broker=ls: dev 미완료이거나 ⚙펼침이면 wizard_ls; dev 완료+collapsed → normal.
-          broker=kis: 기존 로직 그대로(kis_ok/dev_ok 기반).
-
-        ── KIS 브로커 선택 시 모드 결정 ──
-          - 둘 다 완료 + setup_collapsed=True              → normal
-          - kis 미등록                                      → wizard_kis (신규 1단계)
-          - kis 등록, dev 미등록                            → wizard_pair (신규 2단계)
-          - 둘 다 등록인데 ⚙로 펼침(setup_collapsed=False) → wizard_kis (자격증명 변경)
-
+        모드 결정은 onboarding.decide_setup_mode 순수함수가 담당(위젯 무의존·테스트됨).
+        ready = secrets_store.broker_ready(broker) — 그 브로커 자산군 슬롯이 ≥1(주식·국내선물·
+        해외선물 중 하나라도). 주식 없이 선물만 등록해도 진행된다(P3 — 선물 단독 온보딩).
         ① wizard/폼 완료 → setup_collapsed=True 자동 설정.
         """
         broker = self.broker_choice.get()
-
-        if broker == "ls":
-            ls_ok = bool(secrets_store.load_ls())
-            if ls_ok and dev_ok and self.setup_collapsed:
-                new_mode = "normal"
-            elif not ls_ok:
-                new_mode = "wizard_ls"          # LS 자격증명 미등록 → LS 폼
-            elif not dev_ok:
-                new_mode = "wizard_pair"        # LS OK, 페어링 필요
-            else:
-                new_mode = "wizard_ls"          # LS·페어링 OK인데 ⚙ 펼침 → 자격증명 변경
-        else:
-            both_ok = kis_ok and dev_ok
-            if both_ok and self.setup_collapsed:
-                new_mode = "normal"
-            elif not kis_ok:
-                new_mode = "wizard_kis"
-            elif not dev_ok:
-                new_mode = "wizard_pair"
-            else:
-                # both_ok이지만 사용자가 ⚙ 클릭으로 펼침 → 자격증명 변경 모드
-                new_mode = "wizard_kis"
+        ready = secrets_store.broker_ready(broker)
+        new_mode = onboarding.decide_setup_mode(broker, ready, dev_ok, self.setup_collapsed)
 
         if getattr(self, "_setup_mode", None) != new_mode:
             # 모드 전환 — 관련 위젯 모두 pack_forget 후 새 모드 순서로 재pack.
@@ -761,8 +734,11 @@ class SettingsApp:
             broker = self.broker_choice.get()
             if broker == "ls":
                 ls = secrets_store.load_ls()
-                mode = "모의" if (ls or {}).get("virtual", True) else "실전"
-                parts = [f"✓ LS증권 자격증명 ({mode})", "✓ 플랫폼 계정 연결됨"]
+                if ls:
+                    mode = "모의" if ls.get("virtual", True) else "실전"
+                    parts = [f"✓ LS증권 자격증명 ({mode})", "✓ 플랫폼 계정 연결됨"]
+                else:   # 선물 단독 등록(주식 슬롯 없음)
+                    parts = ["✓ LS증권 자격증명 등록됨", "✓ 플랫폼 계정 연결됨"]
             else:
                 kis = secrets_store.load_kis()
                 mode = ""
@@ -844,7 +820,7 @@ class SettingsApp:
 
         # 설정 영역 toggle — 둘 다 완료 + 사용자가 펼치라고 안 했으면 collapse
         # kis_ok는 KIS 브로커일 때만 의미있음; LS일 때는 broker_cred_ok로 대체됨.
-        self._render_setup_area(kis_ok=broker_cred_ok, dev_ok=bool(dev))
+        self._render_setup_area(dev_ok=bool(dev))
 
         # Kill switch 배너
         if ks_active:
@@ -1013,6 +989,8 @@ class SettingsApp:
             if broker == "ls":
                 parts = [
                     badge(secrets_store.load_ls(), "LS·국내주식"),
+                    badge(secrets_store.load_ls_futures(), "LS·국내선물"),
+                    badge(secrets_store.load_ls_overseas_futures(), "LS·해외선물"),
                 ]
                 broker_tag = "활성 브로커: LS증권"
             else:
@@ -1524,10 +1502,12 @@ class SettingsApp:
             secrets_store.save_ls_futures(key, secret, acct, virtual=virtual)
         elif acct_type == _LS_ACCT_OV_FUTURES:
             secrets_store.save_ls_overseas_futures(key, secret, acct, virtual=virtual)
-        else:   # 국내주식·해외주식 — LsBroker 기반 브로커 + LS 활성화
+        else:   # 국내주식·해외주식
             secrets_store.save_ls(key, secret, acct, virtual=virtual)
-            secrets_store.set_active_broker("ls")
-            self.broker_choice.set("ls")
+        # 어떤 자산군이든 LS 폼에서 저장 = LS 사용 의도 → active broker 일관 선언
+        # (P2 make_broker가 선물 단독 구성을 지원 — 주식 없이 선물만으로도 동작).
+        secrets_store.set_active_broker("ls")
+        self.broker_choice.set("ls")
         self.ls_e_secret.delete(0, "end")
         self._ls_status.configure(fg=GREEN,
                                   text=f"저장됨 ({acct_type}). 키는 이 PC를 떠나지 않습니다.")
@@ -1535,8 +1515,7 @@ class SettingsApp:
         self.setup_collapsed = True
         messagebox.showinfo("저장 완료",
                             f"LS증권 {acct_type} 자격증명을 저장했습니다 ({mode}).\n\n"
-                            "선물·해외선물은 [계좌 종류]를 바꿔 각각 추가 등록하세요.\n"
-                            "(자동매매엔 '국내주식·해외주식' 계좌 등록이 기본으로 필요합니다.)")
+                            "다른 자산군(선물·해외선물)은 [계좌 종류]를 바꿔 추가 등록할 수 있습니다.")
         self.refresh_status()
 
     # ── KIS 자격증명 wizard ────────────────────────────────────────────────────
