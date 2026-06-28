@@ -75,7 +75,9 @@ def _stub(monkeypatch, *, kis=None, kis_fut=None, kis_ovf=None, broker="kis"):
     monkeypatch.setattr(secrets_store, "load_kis_overseas_futures", lambda: kis_ovf)
 
 
-_CREDS = {"app_key": "k", "app_secret": "s", "account_no": "123-01", "virtual": True}
+# virtual=False — KisBroker는 모의(virtual=True)면 시세용 실전 앱키를 요구(raise)하므로
+# 구조 골든은 실전 creds로(네트워크는 안 탐 — __init__은 creds 파싱만).
+_CREDS = {"app_key": "k", "app_secret": "s", "account_no": "123-01", "virtual": False}
 
 
 def test_kis_stock_only_returns_bare_kisbroker(monkeypatch):
