@@ -199,6 +199,14 @@ a:hover { text-decoration: underline; }
 @supports (-moz-appearance: none) {
   .scroll-gold { scrollbar-width: thin; scrollbar-color: rgba(196,152,43,0.55) transparent; }
 }
+/* 얇고 옅은 스크롤바 — 하이라이트(골드) 대신 잘 안 보이는 중성 회색(표 스크롤용) */
+.scroll-thin::-webkit-scrollbar { width: 5px; height: 5px; }
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+.scroll-thin::-webkit-scrollbar-thumb { background: rgba(140,150,165,0.18); border-radius: 999px; }
+.scroll-thin::-webkit-scrollbar-thumb:hover { background: rgba(140,150,165,0.38); }
+@supports (-moz-appearance: none) {
+  .scroll-thin { scrollbar-width: thin; scrollbar-color: rgba(140,150,165,0.18) transparent; }
+}
 
 /* 리치 에디터 placeholder(빈 상태) + 게시글 인라인 이미지 크기 제한 */
 .rich-ed:empty::before { content: attr(data-ph); color: var(--muted); pointer-events: none; }

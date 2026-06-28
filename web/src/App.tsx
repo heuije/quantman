@@ -14,6 +14,7 @@ import FuturesAnalytics from "./pages/FuturesAnalytics";
 import Home from "./pages/Home";
 import Portfolio from "./pages/Portfolio";
 import IndustryAnalysis from "./pages/IndustryAnalysis";
+import GlobalMarket from "./pages/GlobalMarket";
 import ChatLab from "./pages/ChatLab";
 
 export default function App() {
@@ -45,6 +46,7 @@ export default function App() {
         <Route path="/dashboard" element={<Home />} />
         <Route path="/overview" element={<Dashboard />} />
         <Route path="/industry" element={<IndustryAnalysis />} />
+        <Route path="/global" element={<GlobalMarket />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/lab" element={<IrBuilder />} />
         <Route path="/chat" element={<ChatLab />} />

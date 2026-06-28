@@ -13,6 +13,7 @@ const Ic = ({ children }: { children: React.ReactNode }) => (
 const NAV = [
   { to: "/dashboard", label: "HOME", icon: <Ic><path d="M3 3v18h18" /><path d="m19 8-5 5-4-4-4 4" /></Ic> },
   { to: "/industry", label: "산업 분석", icon: <Ic><rect x="3" y="3" width="8" height="12" rx="1" /><rect x="13" y="3" width="8" height="7" rx="1" /><rect x="13" y="13" width="8" height="8" rx="1" /><rect x="3" y="18" width="8" height="3" rx="1" /></Ic> },
+  { to: "/global", label: "글로벌 시장", icon: <Ic><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18" /></Ic> },
   { to: "/overview", label: "개요", icon: <Ic><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /></Ic> },
   { to: "/chat", label: "전략 연구소", icon: <Ic><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></Ic> },
   { to: "/lab", label: "전략 빌더", icon: <Ic><path d="M9 2h6" /><path d="M10 2v6.4L4.6 18A2 2 0 0 0 6.4 21h11.2a2 2 0 0 0 1.8-2.6L14 8.4V2" /><path d="M7.5 15h9" /></Ic> },

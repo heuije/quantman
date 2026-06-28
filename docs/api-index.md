@@ -30,6 +30,7 @@ API 호출이 막히거나(에러·예상밖 응답) 새 endpoint를 쓸 때, **
 | **NAVER 검색** | 뉴스 / `core/.../feeds/news_kr.py` | 🔴 `developers.naver.com` **fetch 불가** → 🟠 WebSearch, 또는 우리 `news_kr.py`에 형식 명시 | 헤더 `X-Naver-Client-Id`/`X-Naver-Client-Secret`. `search/news.json` (query·display·sort) |
 | **NAVER 모바일** | 스크리너 펀더멘털 / `server/.../naver_fundamentals.py` | 🔴 **비공식 스크랩**(공식문서 없음) → 우리 코드 + GOTCHAS only | `m.stock.naver.com/api/stock/{code}/integration`. 상용 ToS 회색 |
 | **yfinance** | US/선물 OHLCV·매크로 / `data_fetcher.py`·`us_metrics_cache.py` | 🔴 **비공식**(Yahoo unofficial) → 🟡 패키지 소스 + GOTCHAS | `auto_adjust=True`=배당·분할 조정. 상용 ToS 회색 |
+| **KOMIS**(한국광해광업공단) | 배터리·핵심광물 가격(탄산리튬·니켈·코발트·망간) / `server/app/komis.py` | 🔴 **비공식 ajax**(공식문서 없음) → `komis.py` 헤더 주석 + 이 행이 KB | `www.komis.or.kr/Komis/RsrcPrice/ajax/{getMnrlPrcByMnrkndUnqCd=표값(cmercPrc·flctn·단위), getChartData=시계열}` + `/ajax/common/getMnrlKndInfoCodeList`(cdType=HP000,cdGrp=HP001\|HP002→품목코드). **세션·키 불필요(cold OK)**. ⚠`srchPrcCrtr` 누락 시 기본값이 엉뚱(코발트 38768 vs 정상 55.9/kg). ⚠**`kores.net` 도메인 변질(카지노 스팸)—절대 미사용**, `komis.or.kr`만. HP001=비철·HP002=희소. 코드: 리튬=MNRL0001(탄산773·수산화772), 니켈=MNRL0002(LME502), 코발트=MNRL0003(791), 망간=MNRL0004(815) |
 | **Anthropic/Claude** | NL 컴파일러 / `server/.../ir_compiler.py` | 🟣 `/claude-api` 스킬 호출 | 모델ID·툴유즈·캐싱은 스킬 참조 |
 | **Google OAuth** | 로그인 / `server` auth | 🟠 WebSearch/공식(미검증) | `google_sub` 검증 |
 

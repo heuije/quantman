@@ -10,7 +10,7 @@ import StockDashboard from "./StockDashboard";
 import { CompanyReport, OpinionBoard, SectorNewsPanel, CompanyPriceChart, PeerAnalysis } from "./IndustryAnalysis";
 
 // HOME(개별 기업 분석) — 시킹알파식. 최상단 검색 + 하위탭. 종목 1개 중심.
-const TABS = ["Summary", "Ratings by Mystock", "Stock Price", "Peer Analysis", "Financials", "Valuation & Consensus", "News"] as const;
+const TABS = ["Summary", "Ratings by Mystock", "Stock Price", "Peer Analysis", "Financials", "Estimates", "News"] as const;
 type Tab = typeof TABS[number];
 
 // 기업 개요 — 저장본(company_profiles, 분기 갱신) + 검색 이름
@@ -738,8 +738,8 @@ export default function Home() {
 
       {tab === "Ratings by Mystock" && <Panel title={`Ratings by Mystock · ${name} (${sym})`}><OpinionBoard ticker={sym} name={name} /></Panel>}
       {tab === "Peer Analysis" && <Panel title="경쟁사 비교 (Peer Analysis)"><PeerAnalysis ticker={sym} /></Panel>}
-      {tab === "Valuation & Consensus" && <CompanyReport ticker={sym} name={name} />}
-      {tab === "News" && <Panel title="뉴스"><SectorNewsPanel ticker={sym} name={name} /></Panel>}
+      {tab === "Estimates" && <CompanyReport ticker={sym} name={name} mode="estimates" />}
+      {tab === "News" && <Panel title="News"><SectorNewsPanel ticker={sym} name={name} /></Panel>}
       {tab === "Stock Price" && <StockDashboard symbol={sym} hideSearch />}
       {tab === "Financials" && <Panel title="Financials"><FinancialsTab ticker={sym} name={name} /></Panel>}
     </div>
