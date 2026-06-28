@@ -50,7 +50,12 @@ class BrokerRouter:
         return self._futures is not None and qc.is_futures(symbol)
 
     def _broker(self, symbol):
-        return self._futures if self._is_fut(symbol) else self._stock
+        if self._is_fut(symbol):
+            return self._futures
+        if self._stock is None:
+            raise RuntimeError(
+                f"주식 자격증명 미등록 — 주식 심볼 {symbol} 거래 불가(커버리지 게이트가 차단해야 함)")
+        return self._stock
 
     def _code(self, symbol) -> str:
         """선물은 데이터셋 심볼→라이브 계약코드 해석. 주식은 심볼 그대로.
@@ -129,10 +134,11 @@ class BrokerRouter:
             if futures_market(symbol) == "CME":
                 return self._futures.overseas_order_status(order_no)
             return self._futures.order_status(order_no)
+        base = self._stock if self._stock is not None else self._futures
         if hint is None:
             # 레거시 2-인자 호출 보존 — hint 미지원 구현(테스트 더블 등) 호환.
-            return self._stock.order_status(order_no, symbol)
-        return self._stock.order_status(order_no, symbol, hint=hint)
+            return base.order_status(order_no, symbol)
+        return base.order_status(order_no, symbol, hint=hint)
 
     # ── 잔고 스냅샷: stock + 선물(국내·해외) 병합 + 심볼 정규화 (M7) ──────────────────
     def account_snapshot(self, overseas=True):
@@ -142,7 +148,8 @@ class BrokerRouter:
         병합한다. 선물 브로커가 국내(account_snapshot)·해외(overseas_account_snapshot) 컨텍스트별
         잔고를 주면 둘 다 병합(미구성 컨텍스트는 try/except skip). **주식 동작 무변경**(선물 없으면
         stock 스냅샷 그대로). equity 정밀 병합(증거금/평가→_unified_equity_krw)은 라이브 검증 후."""
-        snap = self._stock.account_snapshot(overseas)
+        snap = (self._stock.account_snapshot(overseas)
+                if self._stock is not None else {"balance": {}, "positions": []})
         if self._futures is None:
             return snap
         out = {"balance": dict(snap.get("balance", {}) or {}),
@@ -216,4 +223,5 @@ class BrokerRouter:
         # _stock/_futures/_resolve 등 내부 속성은 정상 조회(무한재귀 방지).
         if name.startswith("_"):
             raise AttributeError(name)
-        return getattr(self._stock, name)
+        target = self._stock if self._stock is not None else self._futures
+        return getattr(target, name)
