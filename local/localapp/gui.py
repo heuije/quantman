@@ -285,6 +285,8 @@ class SettingsApp:
         ttk.Button(self.setup_bar, text="⚙ 자격증명·페어링 변경",
                    command=self._toggle_setup_expanded).pack(side="right",
                                                               padx=8, pady=4)
+        ttk.Button(self.setup_bar, text="자격증명 초기화",
+                   command=self._reset_credentials).pack(side="right", pady=4)
 
         # ①② 묶음 frame — 토글 시 한 번에 펼침/숨김
         self.setup_expanded = tk.Frame(self.root, bg=BG)
@@ -760,6 +762,35 @@ class SettingsApp:
         if was_collapsed and secrets_store.active_cred_ok():
             self._wizard_jump_to_input()
         self.refresh_status()
+
+    def _reset_credentials(self):
+        """모든 자격증명(KIS·LS)·기기 페어링 삭제 → 처음 설정 상태로(파괴적).
+
+        키링(Windows 자격 증명 관리자)의 전 슬롯을 secrets_store.clear()로 지운다. 처음
+        사용자 재현 테스트·기기 변경·키 재발급 시 사용. 자격증명은 OS 키링에만 있어 파일
+        삭제로는 초기화되지 않으므로 이 버튼이 단일 초기화 경로다. 자동매매는 먼저 중지한다."""
+        if not messagebox.askyesno(
+                "자격증명 초기화",
+                "KIS·LS 자격증명과 기기 페어링을 모두 삭제하고 처음 설정 상태로 되돌립니다.\n"
+                "자동매매가 중지되며, 다시 등록하기 전까지는 매매할 수 없습니다.\n\n"
+                "계속하시겠습니까?"):
+            return
+        # 자격증명 없이 스케줄러가 돌면 매 사이클 실패 — 먼저 중지.
+        if self.scheduler and self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
+            self.scheduler = None
+            self.auto_paused = False
+            auto_state.set_status("stopped")
+        secrets_store.clear()
+        # 인메모리 상태 리셋 → 처음 설정 화면(wizard)으로.
+        self.broker_choice.set(secrets_store.get_active_broker())   # 기본 'kis'
+        self._balance_broker = None
+        self.user_email = ""
+        self.setup_collapsed = False
+        self._setup_mode = None
+        self.refresh_status()
+        messagebox.showinfo("초기화 완료",
+                            "자격증명·페어링을 삭제했습니다. 처음 설정 화면으로 돌아갑니다.")
 
     def _fetch_user_info_async(self):
         """페어링된 user의 email을 백그라운드로 조회 → hero 갱신.
