@@ -158,12 +158,21 @@ def get_active_broker() -> str:
     return keyring.get_password(KEYRING_SERVICE, _BROKER_CHOICE) or "kis"
 
 
-def active_cred_ok() -> bool:
-    """현재 활성 브로커의 자격증명이 등록돼 있는지. 단일 브로커 모델의 'broker ready' SSOT.
+def broker_ready(broker: str) -> bool:
+    """주어진 브로커의 자격증명이 하나라도 등록됐는지(자산군 슬롯 ≥1) — 온보딩 ready SSOT.
 
-    active_broker=="kis"면 bool(load_kis())로 환원돼 기존 KIS 동작과 동일(불변식).
-    active_broker=="ls"면 bool(load_ls())로 확인한다."""
-    return bool(load_ls()) if get_active_broker() == "ls" else bool(load_kis())
+    기존 active_cred_ok(주식 슬롯만)을 자산군 슬롯 집합으로 일반화한다. 주식 없이 선물만
+    등록해도 ready=True(선물 단독 온보딩). 주식 보유 사용자는 종전과 동일(주식 있으면 True)."""
+    if broker == "ls":
+        return bool(load_ls() or load_ls_futures() or load_ls_overseas_futures())
+    return bool(load_kis() or load_kis_futures() or load_kis_overseas_futures())
+
+
+def active_cred_ok() -> bool:
+    """현재 활성 브로커의 자격증명이 하나라도 등록됐는지 — 단일 브로커 'broker ready' SSOT.
+
+    기존 KIS 사용자(주식 보유)는 종전과 동일(불변식). 선물 단독 등 신규 조합만 새로 ready."""
+    return broker_ready(get_active_broker())
 
 
 def active_cred_label() -> str:
