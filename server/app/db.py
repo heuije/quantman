@@ -72,6 +72,8 @@ _NEW_COLS: list[tuple[str, str, str]] = [
     # Task 12b — 정적 세부조건 라이브 바스켓(symbol list, JSON). create_all이 만드는
     # definition 등 dict 컬럼과 동일 타입(SQLAlchemy JSON → PG/SQLite 모두 'JSON').
     ("strategy",     "live_basket",                      "JSON"),
+    # P5-2 — 전략↔계좌 핸들 바인딩(account_handle.account_id, opaque). NULL=미바인딩(레거시).
+    ("strategy",     "account_ref",                      "VARCHAR"),
     ("backtestrun",  "strategy_id",                      "INTEGER"),
     ("backtestrun",  "version_no",                       "INTEGER"),
     # 투자의견(Ratings) 고도화 — 제목·목표주가·운영자 승인 상태.

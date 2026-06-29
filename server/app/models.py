@@ -47,6 +47,9 @@ class Strategy(SQLModel, table=True):
     # 전환 후 첫 preview에서 1회 형성(당일 자격 종목)·고정. 동적이면 항상 None.
     # 라이브 상태일 뿐 IR이 아니다 — definition/universe에 넣지 않는다(IR atomic 유지).
     live_basket: Optional[list[str]] = Field(default=None, sa_column=Column(JSON, nullable=True))
+    # P5-2 (계좌-전략 연동) — 이 전략을 실행할 계좌 핸들(account_handle.account_id, opaque uuid).
+    # NULL=미바인딩(레거시) → 로컬 실행 가드(P5-3)가 활성 계좌에서 통과 처리. INV-SEC: 계좌번호 아님.
+    account_ref: Optional[str] = None
 
 
 class StrategyVersion(SQLModel, table=True):
