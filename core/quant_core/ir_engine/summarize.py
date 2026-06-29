@@ -98,6 +98,32 @@ def _bucket_line(k: str, b: Any) -> str:
             f"샤프 {_f(b.get('sharpe'))} · MDD {_f(b.get('mdd'))}% (n={b.get('n', '—')})")
 
 
+_BULK_WARN_CODES = {"stale_data", "data_gap", "missing_data"}
+
+
+def _warning_lines(result: Any, max_bulk: int = 4) -> list[str]:
+    """경고를 모델용 '⚠ ...' 줄로 — 데이터 결손/공백(stale_data·data_gap·missing_data)은 'all'
+    유니버스에서 수십~수백 개 쏟아져 모델 컨텍스트를 범람시키므로 max_bulk개만 보이고 나머지는
+    한 줄로 요약한다(R1 — 결과가 자기 품질을 *간결히* 서술). 그 외 경고(사이징·PIT·무거래·선물
+    자본 등 소수·중요)는 전부 보존한다. 결과 dict의 warnings 원본은 불변(result_status·UI용)."""
+    bulk: list[str] = []
+    other: list[str] = []
+    for w in (result.get("warnings") or []):
+        if isinstance(w, dict):
+            msg, code = w.get("message"), w.get("code")
+        else:
+            msg, code = str(w), None
+        if not msg:
+            continue
+        (bulk if code in _BULK_WARN_CODES else other).append(msg)
+    lines = [f"⚠ {m}" for m in other]
+    lines += [f"⚠ {m}" for m in bulk[:max_bulk]]
+    if len(bulk) > max_bulk:
+        lines.append(f"⚠ 외 {len(bulk) - max_bulk}개 후보 심볼 데이터 결손/공백 — "
+                     "broad 유니버스에서 해당 구간만 자동 제외(선별·개별 거래엔 영향 없음)")
+    return lines
+
+
 def _context_block(result: Any) -> str:
     """P4 사이드카(준실시간 시세·뉴스)를 모델 식단에 표면화 — 서버가 result["context"]에 붙인다
     (엔진 밖·골든 무누출). context 없으면 빈 문자열(엔진 단독 실행·다른 형상)."""
@@ -163,10 +189,8 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
         if m.get("n_trades") is not None:
             parts.append(f"거래 {m.get('n_trades')}회")
         out = "[백테스트] " + " · ".join(parts)
-        for w in (result.get("warnings") or []):       # 데이터 결손·무거래 등 경고 표면화(Phase 0.5)
-            msg = w.get("message") if isinstance(w, dict) else str(w)
-            if msg:
-                out += f"\n⚠ {msg}"
+        for line in _warning_lines(result):            # 경고 표면화(Phase 0.5) — bulk 결손은 캡
+            out += f"\n{line}"
         return out
 
     if shape == "sweep":
@@ -191,10 +215,7 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
                and isinstance(t.get("p_value"), (int, float)) and t["p_value"] < 0.05]
         if sig:
             extra.append(f"유의차(p<0.05): {', '.join(map(str, sig))}")
-        for w in (result.get("warnings") or []):     # 무거래/데이터결손 등 경고를 모델에 표면화
-            msg = w.get("message") if isinstance(w, dict) else str(w)
-            if msg:
-                extra.append(f"⚠ {msg}")
+        extra += _warning_lines(result)              # 무거래/데이터결손 등 — bulk 결손은 캡
         lines = [_bucket_line(k, b) for k, b in items[:max_rows]]
         if len(items) > max_rows:
             lines.append(f"  …외 {len(items) - max_rows}개 구간(생략)")
@@ -306,10 +327,7 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
             ws = ", ".join(f"{s} {_pct(v)}%" for s, v in top)
             lines.append(f"  {lbl.get(key, key)}: 기대변동성 {_pct(o.get('exp_vol'))}% · "
                          f"샤프 {_f(o.get('sharpe'))} · 비중 {ws}")
-        for wn in (result.get("warnings") or []):
-            msg = wn.get("message") if isinstance(wn, dict) else str(wn)
-            if msg:
-                lines.append(f"⚠ {msg}")
+        lines += _warning_lines(result)
         return "\n".join(lines)
 
     if shape == "correlation_matrix":

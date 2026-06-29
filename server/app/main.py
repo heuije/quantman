@@ -743,6 +743,21 @@ def _initial_industry_prewarm() -> None:
         _log.exception("산업 트리맵 프리워밍 예외")
 
 
+def _initial_dataset_cache_prewarm() -> None:
+    """기동 시 원시 OHLCV 메모리 캐시(data_cache._raw)를 미리 데운다 — 첫 챗 백테스트/스크린의
+    콜드 로드(실측 ~28s, Railway 로그 'get_projected: raw=28.07s')를 요청 경로 밖으로 옮긴다.
+
+    raw 캐시는 프로세스 수명 1회 로드(이후 raw=0.00s)라, 재시작·배포 직후 첫 무거운 챗 턴이
+    홀로 28s를 떠안던 것을 제거한다. full compute(get_dataset)는 데우지 않는다 — get_projected가
+    전략이 참조하는 지표만 즉석 계산하므로 raw만 상주하면 충분(메모리도 raw ~1.3GB만)."""
+    try:
+        from . import data_cache
+        n = len(data_cache.get_raw_dataset())
+        _log.info("원시 데이터셋 캐시 프리워밍 완료 — %d종목", n)
+    except Exception:
+        _log.exception("원시 데이터셋 캐시 프리워밍 예외")
+
+
 def _refresh_industry_prices() -> None:
     """산업분석 트리맵 가격 캐시를 장 마감·정산 후 비우고 공식 종가로 미리 데운다.
 
@@ -963,6 +978,8 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_financials_prewarm, daemon=True).start()
     _log.info("산업 트리맵 프리워밍 thread 시작")
     threading.Thread(target=_initial_industry_prewarm, daemon=True).start()
+    _log.info("원시 데이터셋 캐시 프리워밍 thread 시작")
+    threading.Thread(target=_initial_dataset_cache_prewarm, daemon=True).start()
     _log.info("선물 grid 워머 thread 시작")
     futures.start_grid_warmer()
 
