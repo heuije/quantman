@@ -566,6 +566,19 @@ class Trader:
             is_fut = spec.asset_class == "futures"
             mult = spec.multiplier
             realized: float | None = None       # 선물 청산 실현손익(정산)
+
+            def _invest_of(qty: int, px: float) -> dict:
+                """체결 per-order 투입 투명성(snapshot 표면화용). 주식=투입금액, 선물=명목·증거금·레버리지.
+                새 조회 0 — spec(이미 보유)·체결값만. 금액은 체결요약 범주(INV-SEC 무관)."""
+                if is_fut:
+                    notional = qty * px * mult
+                    mr = spec.init_margin_rate or 0.0
+                    return {"notional": round(notional, 2),
+                            "margin": round(notional * mr, 2) if mr else None,
+                            "leverage": round(1.0 / mr, 1) if mr else None,
+                            "currency": spec.currency}
+                return {"amount": round(qty * px, 2), "currency": spec.currency}
+
             pxs = f"${fill_price:,.2f}" if spec.currency == "USD" else f"{fill_price:,.2f}"
 
             if side == "buy":
@@ -596,10 +609,12 @@ class Trader:
                         "definition": p.get("definition", {}),
                     }
                     self._record_contract_meta(sid, symbol)
+                inv = _invest_of(filled_qty, fill_price)
                 ev = {"ts": today, "action": "buy", "symbol": symbol,
                       "qty": filled_qty, "price": fill_price,
                       "strategy": p.get("strategy_name", ""),
-                      "reason": ("숏청산" if realized is not None else "매수신호")}
+                      "reason": ("숏청산" if realized is not None else "매수신호"),
+                      "invest": inv}
                 if realized is not None:
                     ev["realized_pnl"] = round(realized, 2)
                 self._log_trade(ev)
@@ -607,11 +622,15 @@ class Trader:
                     detail = f"{filled_qty}계약 @ {pxs}"
                     if realized is not None:
                         detail += f" 정산 {realized:+,.0f}"
+                    if inv["margin"] is not None and inv["leverage"] is not None:
+                        detail += (f" · 명목 {inv['notional']:,.0f} 증거금 "
+                                   f"{inv['margin']:,.0f} (레버리지 {inv['leverage']}x)")
                 else:
                     detail = f"{filled_qty}주 @ {fill_price:,.0f}원"
+                    detail += f" · 투입 {inv['amount']:,.0f}원"
                 decisions.append(order_log.decision(
                     "bought", sid, p.get("strategy_name", ""), symbol, detail,
-                    {"intended": intended, "fill": fill_price}))
+                    {"intended": intended, "fill": fill_price, "invest": inv}))
             else:
                 lg = self.ledger.get(sid)
                 if lg is not None and lg.get("side", "long") == "short":
@@ -640,10 +659,12 @@ class Trader:
                         "definition": p.get("definition", {}),
                     }
                     self._record_contract_meta(sid, symbol)
+                inv = _invest_of(filled_qty, fill_price)
                 ev = {"ts": today, "action": "sell", "symbol": symbol,
                       "qty": filled_qty, "price": fill_price,
                       "strategy": p.get("strategy_name", ""),
-                      "reason": p.get("reason", "")}
+                      "reason": p.get("reason", ""),
+                      "invest": inv}
                 if realized is not None:
                     ev["realized_pnl"] = round(realized, 2)
                 self._log_trade(ev)
@@ -653,10 +674,15 @@ class Trader:
                         detail += f" 정산 {realized:+,.0f}"
                     if p.get("reason"):
                         detail += f" ({p.get('reason')})"
+                    if inv["margin"] is not None and inv["leverage"] is not None:
+                        detail += (f" · 명목 {inv['notional']:,.0f} 증거금 "
+                                   f"{inv['margin']:,.0f} (레버리지 {inv['leverage']}x)")
                 else:
                     detail = f"{filled_qty}주 @ {fill_price:,.0f}원 ({p.get('reason', '')})"
+                    detail += f" · 투입 {inv['amount']:,.0f}원"
                 decisions.append(order_log.decision(
-                    "sold", sid, p.get("strategy_name", ""), symbol, detail))
+                    "sold", sid, p.get("strategy_name", ""), symbol, detail,
+                    {"fill": fill_price, "invest": inv}))
 
             # M9: 체결 반영 즉시 영속(락 안) — 디스크가 SSOT. 다른 인스턴스
             # (cycle↔intraday loop)가 reload_state로 항상 최신 체결을 본다.
