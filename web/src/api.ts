@@ -1059,4 +1059,37 @@ export const futuresApi = {
     a.remove();
     URL.revokeObjectURL(url);
   },
+  // 급등락→회귀 라이브수식 엑셀(.xlsx) 다운로드. blob 직접 처리.
+  reversionExport: async (sym: string, opts: {
+    reversal: number;
+    run: number;
+    horizon: number;
+    leverage: number;
+    gap?: number;
+  }) => {
+    const t = tokenStore.get();
+    const qs = new URLSearchParams({
+      reversal: String(opts.reversal),
+      run: String(opts.run),
+      horizon: String(opts.horizon),
+      leverage: String(opts.leverage),
+    });
+    if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
+    const res = await fetch(`${BASE}/futures/${sym}/reversion-export.xlsx?` + qs.toString(), {
+      headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      throw new Error(b.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reversion_${sym}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
 };

@@ -100,3 +100,18 @@ def test_reversion_sweep_rejects_bad_axes(monkeypatch):
     assert client.get(
         f"/futures/oil/reversion-sweep?row_axis=bogus&col_axis=horizon&{_Q}"
     ).status_code == 422
+
+
+def test_reversion_export_xlsx(monkeypatch):
+    client = _client(monkeypatch)
+    r = client.get(f"/futures/oil/reversion-export.xlsx?{_Q}")
+    assert r.status_code == 200, r.text
+    assert "spreadsheetml" in r.headers["content-type"]
+    assert r.content[:2] == b"PK"        # xlsx = zip
+    assert "reversion_oil.xlsx" in r.headers.get("content-disposition", "")
+
+
+def test_reversion_export_validation(monkeypatch):
+    client = _client(monkeypatch)
+    assert client.get("/futures/oil/reversion-export.xlsx?reversal=0").status_code == 422
+    assert client.get("/futures/oil/reversion-export.xlsx?leverage=0.5").status_code == 422

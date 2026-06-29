@@ -83,6 +83,30 @@ def test_result_shape_prefers_stamped_over_derivation():
     assert result_shape(res) == "describe_single"
 
 
+def test_warning_cap_collapses_bulk_data_quality():
+    """'all' 유니버스가 쏟아내는 stale_data/data_gap 수십~수백 줄을 모델 요약에서 캡한다 — bulk는
+    소수만 보이고 나머지는 한 줄 요약(컨텍스트 범람 차단). 비-bulk 경고(사이징 등)는 전부 보존."""
+    res = {"success": True, "shape": "simulate",
+           "metrics": {"cagr": 5.0, "total_return": 10.0, "sharpe": 0.7, "n_trades": 12},
+           "warnings": ([{"code": "S-pair", "message": "종목당 예산 사이징 안내"}]
+                        + [{"code": "stale_data", "message": f"종목{i}: 데이터 결손"}
+                           for i in range(20)])}
+    out = summarize_result(res)
+    assert "종목당 예산 사이징 안내" in out               # 비-bulk(중요) 경고 보존
+    assert "외 16개" in out                                # 20 - 4(max_bulk) = 16 요약
+    assert sum("종목" in ln and "사이징" not in ln         # 개별 bulk 줄(종목N: …)만
+               for ln in out.splitlines()) == 4
+
+
+def test_warning_no_cap_when_few():
+    """소수(≤max_bulk) 결손 경고는 요약 없이 그대로 보인다(불필요한 요약줄 미발생)."""
+    res = {"success": True, "shape": "simulate", "metrics": {"cagr": 5.0, "n_trades": 12},
+           "warnings": [{"code": "stale_data", "message": f"종목{i}: 데이터 결손"} for i in range(3)]}
+    out = summarize_result(res)
+    assert "외 " not in out
+    assert sum("데이터 결손" in ln for ln in out.splitlines()) == 3
+
+
 def test_result_shape_falls_back_when_unstamped():
     """미스탬프 결과(inspect 우회·레거시)는 순서의존 파생으로 폴백(행동보존)."""
     assert result_shape({"success": True, "query": "select", "results": []}) == "select"

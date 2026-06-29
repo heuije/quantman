@@ -212,6 +212,31 @@ def _universe_symbols(strategy: StrategyIR, dataset: dict) -> list[str]:
     return out
 
 
+def relevant_symbols(strategy: StrategyIR, dataset: dict) -> set[str]:
+    """데이터 품질 평가용 *전략 관련* 심볼 — 거래가능 유니버스(_universe_symbols·매크로 제외)
+    ∪ 신호/매도조건/그룹라벨/펼침/스크리너가 명시 참조한 크로스에셋(S&P500 등). dataset 실재만.
+
+    'all' 유니버스는 dataset에 매크로·지수·크립토 *참조* 시계열까지 싣지만(컬럼 프로젝션이
+    전 심볼 로드), 그 staleness/gap을 전부 경고하면 후보가 아닌 비트코인·GDP까지 경고해 결과를
+    오해시킨다(진단 뿌리 R4 — 후보 아닌 심볼을 결함으로 표면화). 품질 평가를 전략이 실제 의존하는
+    심볼로 한정해 misleading 경고를 원천 제거한다. single/list는 이미 부분집합 로드라 무변화.
+    """
+    syms = set(_universe_symbols(strategy, dataset))
+    nodes = [strategy.signal, strategy.position.exit.condition,
+             strategy.position.overlays.group_label,
+             strategy.study.label, strategy.study.event, strategy.study.target_node]
+    sc = (strategy.universe.screener or {}).get("condition")
+    if sc is not None:
+        try:
+            nodes.append(Node.model_validate(sc))
+        except Exception:                  # noqa: BLE001 — 잘못된 스크리너는 그냥 참조 미수집(검증경로가 소유)
+            pass
+    for nd in nodes:
+        if nd is not None:
+            syms |= referenced_symbols(nd)
+    return {s for s in syms if s in dataset}
+
+
 # ── 펼침 (비전 §4) — 조건·파라미터·자산 축 ────────────────────────────────────
 
 def _set_path(d: dict, path: str, value) -> None:

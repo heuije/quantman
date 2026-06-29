@@ -249,6 +249,11 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
    (단방향만이면 on_signal+condition+direction="long"/"short". 양방향은 위 부호점수+long_short.)
 2. [시계열 모멘텀(TSMOM) 롱숏] "추세가 양이면 롱, 음이면 숏" → signal=score(예: ts_delta(Close,N)),
    direction="long_short", entry.threshold=0. 부호가 곧 방향(중립=정확히 0).
+   ⚠ ts_delta(Close,N)은 **절대 가격변화(원·달러)**라 *부호(방향)* 판단에만 쓴다. "N일/개월 **수익률**"을
+   횡단 *랭킹·비교*(상위/하위 X%, 수익률 기준 선별)로 쓸 땐 반드시 **퍼센트 수익률**이어야 한다 — 절대 변화로
+   랭킹하면 고가주가 부당하게 위로 쏠린다(예: 50만원주 +5% 가 5천원주 +50% 보다 위). 표준 윈도우는 사전계산
+   %지표(pct_change_5d·20d·252d)를 직접 쓰고, 비표준 윈도우(6개월=126일·3개월=63일 등)는
+   binary("/", ts_delta(Close,N), ts_delay(Close,N))(=N일 퍼센트 수익률) 형태로 만든다. bare ts_delta로 랭킹 금지.
 3. [정기 리밸런스 팩터(횡단)] "매월/매주 ___ 상위 N(또는 X%) 보유" → universe.kind=all(또는 list+세부조건),
    signal=score(팩터), entry.mode="scheduled"+rebalance, top_n 또는 top_pct. 롱숏이면 부호/순위로 양다리.
    "거래대금·시총·밸류 등으로 선별한 종목에서"처럼 자격 필터가 붙으면 universe.screener={{condition, refresh}}로 2차 선별.

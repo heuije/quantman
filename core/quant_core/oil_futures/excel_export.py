@@ -384,6 +384,248 @@ def build_oil_excel(
     return buf.getvalue()
 
 
+def build_oil_reversion_excel(
+    df: pd.DataFrame,      # 전체 OHLCV (date ASC) — 라이브 수식이 참조할 raw 데이터
+    events: list,          # list[ReversionEvent] — 엔진 계산 피벗/트리거(경로의존·정적)
+    *,
+    reversal: float,
+    run: float,
+    horizon: int,
+    leverage: float,
+    gap: int,
+    name: str,
+    price_sym: str,
+) -> bytes:
+    """급등락→회귀(REVERSION)를 **라이브수식 .xlsx**(하이브리드)로.
+
+    피벗·트리거(ZigZag·경로의존)는 엔진 계산 정적 입력으로 두고, **forward 회귀·레버리지·청산은
+    raw OHLCV 수식**으로 만든다 — 노란 칸(레버리지·보유기간 N)을 바꾸면 재계산. 전환·급등락·간격은
+    트리거 집합을 정하므로 고정(웹 스윕이 탐색 담당). 시트4 = 엔진 스냅샷(라이브 수식 대조).
+
+    수식↔엔진 동치: 비청산 회귀=pos·lev·(close[trig+N]/close[trig]−1), 청산=윈도우 MIN/MAX 임계
+    돌파(엔진 일별 첫 −100%와 동치, 청산 시 −100%). 같은 트리거 집합에서 레버리지·N 어떤 값이든 일치.
+    """
+    from .reversion_analysis import DOWN_EXHAUSTION, reversion_summary
+
+    df = df.sort_values("date").reset_index(drop=True)
+    n = len(df)
+    _ = price_sym       # 시그니처 일관성(trend_export와 동일 호출부)·계좌% 표시라 미사용
+
+    bold = Font(bold=True)
+    title_font = Font(bold=True, size=14, color="20201D")
+    accent_font = Font(bold=True, color=_ACCENT)
+    italic = Font(italic=True, color="6F6A62")
+    input_fill = PatternFill("solid", fgColor=_INPUT_BG)
+    spec_fill = PatternFill("solid", fgColor=_SPEC_BG)
+    head_fill = PatternFill("solid", fgColor=_HEAD_BG)
+    border = _thin_border()
+    center = Alignment(horizontal="center")
+    disp = name if "선물" in name else f"{name} 선물"
+
+    date_to_i = {pd.Timestamp(d): i for i, d in enumerate(df["date"].to_numpy())}
+    RAW = "'데이터(raw)'"        # 시트명(괄호 포함) — 참조 시 따옴표 필수
+    CLOSE = f"{RAW}!$E:$E"
+    HROW1 = 2                    # 시트1 헤더행
+    D1 = HROW1 + 1              # 시트1 첫 데이터행
+    last_data_row = HROW1 + n   # 시트1 마지막 데이터행
+    excel_row = {i: D1 + i for i in range(n)}   # df index → 시트1 엑셀 행번호
+
+    wb = Workbook()
+
+    # ── 시트1: raw 데이터 ─────────────────────────────────────────────
+    ws = wb.active
+    ws.title = "데이터(raw)"
+    ws["A1"] = f"{disp} — 원본 OHLCV (수식 참조용)"
+    ws["A1"].font = title_font
+    for j, h in enumerate(["날짜", "시가", "고가", "저가", "종가"]):
+        c = ws.cell(row=HROW1, column=1 + j, value=h)
+        c.font = bold
+        c.fill = head_fill
+        c.border = border
+        c.alignment = center
+    for i in range(n):
+        r = excel_row[i]
+        row = df.iloc[i]
+        ws.cell(row=r, column=1, value=pd.Timestamp(row["date"]).to_pydatetime())
+        ws.cell(row=r, column=2, value=float(row["open"]))
+        ws.cell(row=r, column=3, value=float(row["high"]))
+        ws.cell(row=r, column=4, value=float(row["low"]))
+        ws.cell(row=r, column=5, value=float(row["close"]))
+        ws.cell(row=r, column=1).number_format = "yyyy-mm-dd"
+        for col in (2, 3, 4, 5):
+            ws.cell(row=r, column=col).number_format = "#,##0.00"
+    for col, w in zip("ABCDE", (12, 10, 10, 10, 10)):
+        ws.column_dimensions[col].width = w
+    if n:
+        ws.freeze_panes = f"A{D1}"
+
+    # ── 시트2: 회귀계산 (라이브 수식) ─────────────────────────────────
+    cal = wb.create_sheet("회귀계산")
+    cal["A1"] = f"{disp} — 급등락→회귀 (라이브 수식: 레버리지·보유기간만)"
+    cal["A1"].font = title_font
+    live = [("레버리지 (배)", float(leverage)), ("보유기간 N (영업일)", int(horizon))]
+    for i, (label, val) in enumerate(live):
+        r = 2 + i
+        cal[f"A{r}"] = label
+        cal[f"A{r}"].font = bold
+        c = cal[f"B{r}"]
+        c.value = val
+        c.fill = input_fill
+        c.border = border
+        c.alignment = center
+    cal["C2"] = "← 노란 칸(레버리지·N)을 바꾸면 회귀·청산이 재계산됩니다"
+    cal["C2"].font = italic
+    fixed = [("전환임계 (%)", reversal), ("급등락임계 (%)", run), ("이벤트 최소간격", gap)]
+    for i, (label, val) in enumerate(fixed):
+        r = 4 + i
+        cal[f"A{r}"] = label
+        cal[f"A{r}"].font = bold
+        c = cal[f"B{r}"]
+        c.value = val
+        c.fill = spec_fill
+        c.border = border
+        c.alignment = center
+    cal["C4"] = "← 고정: 트리거 집합을 정함(바꾸려면 웹에서 재내보내기)"
+    cal["C4"].font = italic
+
+    HROW2 = 9
+    headers = ["피벗일", "트리거일", "방향", "누적 급등락(계좌%)", "청산",
+               "N일후 회귀(계좌%)", "_부호", "_피벗행", "_트리거행"]
+    for j, h in enumerate(headers):
+        c = cal.cell(row=HROW2, column=1 + j, value=h)
+        c.font = bold
+        c.fill = head_fill
+        c.border = border
+        c.alignment = center
+
+    for k, e in enumerate(events):
+        r = HROW2 + 1 + k
+        pi = date_to_i.get(pd.Timestamp(e.pivot_date))
+        ti = date_to_i.get(pd.Timestamp(e.trigger_date))
+        if pi is None or ti is None:
+            continue
+        pr, tr = excel_row[pi], excel_row[ti]
+        is_down = e.direction == DOWN_EXHAUSTION
+        cal.cell(row=r, column=1, value=pd.Timestamp(e.pivot_date).to_pydatetime())
+        cal.cell(row=r, column=2, value=pd.Timestamp(e.trigger_date).to_pydatetime())
+        cal.cell(row=r, column=3, value="하락소진" if is_down else "상승소진")
+        cal.cell(row=r, column=7, value=1 if is_down else -1)        # G 방향부호
+        cal.cell(row=r, column=8, value=pr)                          # H 피벗행
+        cal.cell(row=r, column=9, value=tr)                          # I 트리거행
+        trigclose = f"INDEX({CLOSE},$I{r})"
+        pivclose = f"INDEX({CLOSE},$H{r})"
+        win = f"OFFSET({RAW}!$E$1,$I{r},0,$B$3,1)"   # 트리거 다음 N행
+        short_data = f"$I{r}+$B$3>{last_data_row}"   # N 키우면 끝 근처 트리거 보호
+        # D 누적 급등락(계좌%) = 레버리지×(트리거가/피벗가−1)
+        cal.cell(row=r, column=4, value=f"=$B$2*({trigclose}/{pivclose}-1)*100")
+        # E 청산 = 윈도우 역행 경로가 계좌 −100% 임계 돌파(롱=MIN하락·숏=MAX상승)
+        cal.cell(row=r, column=5, value=(
+            f'=IF({short_data},"",IF($G{r}=1,'
+            f'IF(MIN({win})<={trigclose}*(1-1/$B$2),"청산",""),'
+            f'IF(MAX({win})>={trigclose}*(1+1/$B$2),"청산","")))'
+        ))
+        # F N일후 회귀(계좌%) = 청산이면 −100, 아니면 부호×레버리지×(close[트리거+N]/트리거가−1)
+        cal.cell(row=r, column=6, value=(
+            f'=IF({short_data},"",IF($E{r}="청산",-100,'
+            f'$G{r}*$B$2*(INDEX({CLOSE},$I{r}+$B$3)/{trigclose}-1)*100))'
+        ))
+        cal.cell(row=r, column=1).number_format = "yyyy-mm-dd"
+        cal.cell(row=r, column=2).number_format = "yyyy-mm-dd"
+        cal.cell(row=r, column=4).number_format = "+0.0;-0.0"
+        cal.cell(row=r, column=6).number_format = "+0.0;-0.0"
+
+    for col, w in zip("ABCDEF", (12, 12, 10, 17, 8, 16)):
+        cal.column_dimensions[col].width = w
+    for col in ("G", "H", "I"):
+        cal.column_dimensions[col].hidden = True
+    cal.freeze_panes = f"A{HROW2 + 1}"
+
+    # ── 시트3: 요약 (라이브) — 방향별 ─────────────────────────────────
+    summ = wb.create_sheet("요약")
+    summ["A1"] = "방향별 요약 (회귀계산 시트 라이브 수식 집계)"
+    summ["A1"].font = title_font
+    last2 = HROW2 + max(len(events), 1)
+    crange = f"회귀계산!$C${HROW2 + 1}:$C${last2}"
+    frange = f"회귀계산!$F${HROW2 + 1}:$F${last2}"
+    erange = f"회귀계산!$E${HROW2 + 1}:$E${last2}"
+    for j, h in enumerate(["", "📉 하락소진→롱", "📈 상승소진→숏"]):
+        c = summ.cell(row=3, column=1 + j, value=h)
+        c.font = bold
+        c.fill = head_fill
+    rows = [
+        ("표본수", lambda d: f'=COUNTIF({crange},"{d}")', "0"),
+        ("회귀 수익률 평균(%)", lambda d: f'=IFERROR(AVERAGEIFS({frange},{crange},"{d}"),"")', "+0.0;-0.0"),
+        ("회귀 성공률(%)", lambda d: (
+            f'=IFERROR(COUNTIFS({crange},"{d}",{frange},">0")/COUNTIF({crange},"{d}")*100,"")'), "0.0"),
+        ("청산율(%)", lambda d: (
+            f'=IFERROR(COUNTIFS({crange},"{d}",{erange},"청산")/COUNTIF({crange},"{d}")*100,"")'), "0.0"),
+    ]
+    for i, (label, fn, fmt) in enumerate(rows):
+        r = 4 + i
+        summ.cell(row=r, column=1, value=label).font = accent_font
+        for col, d in ((2, "하락소진"), (3, "상승소진")):
+            c = summ.cell(row=r, column=col, value=fn(d))
+            c.number_format = fmt
+            c.border = border
+    for col, w in zip("ABC", (18, 16, 16)):
+        summ.column_dimensions[col].width = w
+
+    # ── 시트4: 현재 결과 (엔진 스냅샷 — 라이브 수식 대조용) ────────────
+    snap = wb.create_sheet("현재 결과(스냅샷)")
+    snap["A1"] = "현재 결과 (엔진 스냅샷 — 라이브 수식과 대조)"
+    snap["A1"].font = title_font
+    s = reversion_summary(events)
+    meta = [
+        ("전환 / 급등락 임계", f"{reversal:g}% / {run:g}% (계좌)"),
+        ("레버리지 / 보유기간 N", f"{leverage:g}배 / {horizon}일"),
+        ("이벤트 최소간격", f"{gap} 영업일"),
+    ]
+    for i, (k, v) in enumerate(meta, start=3):
+        snap[f"A{i}"] = k
+        snap[f"A{i}"].font = bold
+        snap[f"B{i}"] = v
+    for j, h in enumerate(["", "📉 하락소진", "📈 상승소진"]):
+        snap.cell(row=7, column=1 + j, value=h).font = bold
+    metrics = [
+        ("표본수", "n", "{:d}"),
+        ("회귀 수익률 평균(%)", "mean_reversion", "{:+.1f}"),
+        ("회귀 수익률 중앙값(%)", "median_reversion", "{:+.1f}"),
+        ("회귀 성공률(%)", "success_rate", "{:.1f}"),
+        ("청산율(%)", "liquidation_rate", "{:.1f}"),
+    ]
+
+    def _fmt(val, f):
+        if val is None or (isinstance(val, float) and val != val):
+            return "—"
+        return f.format(val)
+
+    for i, (label, key, f) in enumerate(metrics):
+        r = 8 + i
+        snap.cell(row=r, column=1, value=label).font = accent_font
+        snap.cell(row=r, column=2, value=_fmt(s[DOWN_EXHAUSTION][key], f))
+        snap.cell(row=r, column=3, value=_fmt(s["up_exhaustion"][key], f))
+
+    HE = 15
+    for j, h in enumerate(["피벗일", "트리거일", "방향", "누적 급등락(%)", "회귀(%)", "청산"]):
+        c = snap.cell(row=HE, column=1 + j, value=h)
+        c.font = bold
+        c.fill = head_fill
+    for k, e in enumerate(events):
+        r = HE + 1 + k
+        snap.cell(row=r, column=1, value=str(pd.Timestamp(e.pivot_date).date()))
+        snap.cell(row=r, column=2, value=str(pd.Timestamp(e.trigger_date).date()))
+        snap.cell(row=r, column=3, value="하락소진" if e.direction == DOWN_EXHAUSTION else "상승소진")
+        snap.cell(row=r, column=4, value=round(e.run_account * 100, 1))
+        snap.cell(row=r, column=5, value=(-100.0 if e.liquidated else round(e.reversion_account * 100, 1)))
+        snap.cell(row=r, column=6, value=("청산 D+%d" % e.liquidation_day if e.liquidated else ""))
+    for col, w in zip("ABCDEF", (12, 12, 10, 15, 12, 10)):
+        snap.column_dimensions[col].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def build_oil_trend_excel(
     df: pd.DataFrame,      # 전체 OHLCV (date ASC) — 라이브 수식이 참조할 raw 데이터
     events: list,          # list[TrendEvent] — 현재 디클러스터 결과(정적 스냅샷·교차검증용)

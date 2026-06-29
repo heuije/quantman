@@ -41,6 +41,7 @@ from quant_core.oil_futures import (
     RollModel,
     Side,
     build_oil_excel,
+    build_oil_reversion_excel,
     build_oil_trend_excel,
     generate_signals,
     grid_search,
@@ -1318,4 +1319,37 @@ def reversion_sweep_endpoint(
             )
             for c in cells
         ],
+    )
+
+
+@router.get("/{symbol}/reversion-export.xlsx")
+def reversion_export_endpoint(
+    symbol: str,
+    reversal: float = 5.0,
+    run: float = 30.0,
+    horizon: int = 20,
+    leverage: float = 10.0,
+    gap: int = 0,
+):
+    """급등락→회귀 결과를 **라이브수식 .xlsx**(하이브리드)로 반환.
+
+    피벗·트리거는 엔진 계산값(정적), forward 회귀·레버리지·청산은 raw OHLCV 수식
+    (레버리지·보유기간만 live). 시트4 스냅샷으로 라이브 수식 교차검증.
+    """
+    _validate_reversion(reversal, run, horizon, leverage, gap)
+    cfg = _get_cfg(symbol)
+    df = _df(symbol)
+    events = reversion_events(
+        df, reversal_account_pct=reversal, run_account_pct=run,
+        horizon=horizon, leverage=leverage, gap=max(0, gap),
+    )
+    data = build_oil_reversion_excel(
+        df, events,
+        reversal=reversal, run=run, horizon=horizon, leverage=leverage, gap=max(0, gap),
+        name=cfg.name, price_sym=("" if cfg.currency == "KRW" else "$"),
+    )
+    return Response(
+        content=data,
+        media_type=_XLSX_MEDIA,
+        headers={"Content-Disposition": f'attachment; filename="reversion_{cfg.symbol}.xlsx"'},
     )

@@ -21,11 +21,19 @@ _STALE_GRACE_DAYS = 30      # 최신 심볼 대비 이만큼↑ 일찍 끝나면
 _GAP_TOL = 0.05             # 공통 구간 밀도가 최밀 심볼의 (1-tol)배 미만이면 내부 공백
 
 
-def assess_data_quality(dataset: dict[str, Any], *, start=None, end=None) -> list[dict]:
-    """서빙된 데이터셋의 품질 위반 경고 목록. 위반 없으면 빈 리스트(결정적)."""
+def assess_data_quality(dataset: dict[str, Any], *, start=None, end=None,
+                        relevant=None) -> list[dict]:
+    """서빙된 데이터셋의 품질 위반 경고 목록. 위반 없으면 빈 리스트(결정적).
+
+    relevant(심볼 집합)이 주어지면 *그 심볼만* 평가한다 — 'all' 유니버스는 dataset에 매크로/
+    지수/크립토 참조 시계열까지 싣지만, 후보가 아닌 그것들의 staleness를 경고하면 결과를 오해
+    시킨다(R4). 호출자(service)가 전략 관련 심볼(거래가능 유니버스 ∪ 참조)만 넘겨 misleading
+    경고를 원천 차단한다. None이면 전체(하위호환·단위테스트)."""
+    items = (dataset.items() if relevant is None
+             else [(s, dataset[s]) for s in dataset if s in relevant])
     warns: list[dict] = []
     valids: dict[str, pd.Series] = {}
-    for sym, df in dataset.items():
+    for sym, df in items:
         if not isinstance(df, pd.DataFrame) or df.empty or "Close" not in df.columns:
             warns.append({"code": "missing_data", "message": f"{sym}: 데이터 없음"})
             continue
