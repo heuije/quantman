@@ -338,6 +338,16 @@ def local_health() -> dict:
         except OSError as e:
             log.debug("KIS 마스터 stamp 읽기 실패: %s", e)
 
+    # P5-1 — 비민감 계좌 핸들 보고(서버/웹이 계좌 선택·가드 표면화에 사용). 실패해도 health 보존.
+    try:
+        from . import account_handle
+        health["account_handles"] = account_handle.current_handles()
+        health["active_account_ids"] = account_handle.active_account_ids()
+    except Exception as e:
+        log.warning("account_handles 보고 실패(무시): %s", e)
+        health.setdefault("account_handles", [])
+        health.setdefault("active_account_ids", [])
+
     return health
 
 

@@ -97,6 +97,7 @@ class StrategyIn(BaseModel):
     definition: dict[str, Any]        # ir=StrategyIR 형태 (IR 단일 체제)
     run_mode: str = "draft"           # draft | paper | live
     engine: str = "ir"                # ir(전략 연구소) 단일 — 레거시 operand 제거됨
+    account_ref: Optional[str] = None   # 바인딩할 계좌 핸들 id (없으면 미바인딩·레거시)
 
 
 class StrategyOut(BaseModel):
@@ -110,6 +111,8 @@ class StrategyOut(BaseModel):
     # Phase 59 — 적용 기간 계산용
     paper_started_at: Optional[UtcDateTime] = None
     live_started_at: Optional[UtcDateTime] = None
+    # P5-2 — 바인딩된 계좌 핸들 id (NULL=미바인딩·레거시)
+    account_ref: Optional[str] = None
 
 
 class StrategyVersionOut(BaseModel):

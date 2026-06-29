@@ -9,7 +9,9 @@ import {
   RankedListChart, ReportCards, DiagnosisPanel, RegressionChart, ExtremizeChart,
 } from "../components/ResultCharts";
 import MultiSymbolPicker from "../components/MultiSymbolPicker";
+import AccountPicker from "../components/AccountPicker";
 import type {
+  AccountHandle,
   IndicatorInfo, IrBlockSpec, IrDistribution, IrEventStat, IrExtremizeResult, IrICStat,
   IrNode, IrPartition, IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport,
   IrStrategyDef, IrStrategyResult, StrategyRow, SymbolInfo,
@@ -215,6 +217,11 @@ export default function IrBuilder() {
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState("");
 
+  // P5-4 — 적용 시 실행할 계좌 선택. 핸들·활성id는 로컬앱이 sync snapshot에 실어 보고(비민감만).
+  const [accountHandles, setAccountHandles] = useState<AccountHandle[]>([]);
+  const [activeAccountIds, setActiveAccountIds] = useState<string[]>([]);
+  const [showPicker, setShowPicker] = useState(false);
+
   const catalog: Catalog = useMemo(
     () => new Map(catalogList.map((b) => [b.op, b])), [catalogList]);
 
@@ -231,6 +238,13 @@ export default function IrBuilder() {
     api.listStrategies()
       .then((strats) => setStrategies(strats))
       .catch(() => {/* "내 전략" 탭만 비활성 — 비치명 */});
+    // P5-4 — 적용 시 계좌 선택용 핸들 로드. 페어링된 로컬앱이 없으면 빈 배열(→ 안내 경로).
+    api.snapshot()
+      .then((snap) => {
+        setAccountHandles(snap?.payload?.health?.account_handles ?? []);
+        setActiveAccountIds(snap?.payload?.health?.active_account_ids ?? []);
+      })
+      .catch(() => {/* snapshot 실패해도 빌더는 동작 — 핸들 0개로 안내 경로 */});
   }, []);
 
   // ?edit=<id> — 저장된 IR 전략을 불러와 전 폼 state로 역-하이드레이션.
@@ -638,12 +652,15 @@ export default function IrBuilder() {
   // 저장 — 새 전략은 create, ?edit이면 update(버전 스냅샷). 둘 다 engine='ir'.
   // runMode="paper"면 모의 적용(로컬앱 자동매매 진입). Stage 3 컷오버로 IR 라이브
   // 신호평가·청산·사이징이 완성돼 IR도 operand와 동일하게 모의/실전을 소비한다.
-  async function save(runMode: "draft" | "paper") {
+  // runMode: "draft"=초안 저장 / "paper"|"live"=선택한 계좌 모드로 적용(P5-4 — 모드는 계좌가 결정).
+  // accountRef: 적용 시 선택한 핸들의 account_id. 초안/미바인딩이면 undefined.
+  async function save(runMode: "draft" | "paper" | "live", accountRef?: string | null) {
     if (!signal) return;
     const def = buildStrategy() as unknown as IrStrategyDef;
+    const applying = runMode !== "draft";
     // 정적 세부조건(once_at_start) 전략을 모의/실전으로 올릴 때 — 바스켓은 지금
     // 이 시점의 데이터로 확정되며 백테스트에서 본 종목과 다를 수 있음을 고지.
-    if (runMode === "paper" && def.universe?.screener?.refresh === "once_at_start") {
+    if (applying && def.universe?.screener?.refresh === "once_at_start") {
       if (!confirm(
         "이 전략은 세부조건이 '정적'입니다.\n" +
         "모의/실전을 시작하는 지금 시점의 데이터로 매매할 종목 바스켓을 확정하며, 백테스트에서 본 종목과 다를 수 있습니다.\n" +
@@ -653,12 +670,12 @@ export default function IrBuilder() {
     setSaveErr(""); setSaving(true);
     try {
       if (editId) {
-        // 수정: 모의 적용이면 paper 승격, 아니면 기존 run_mode 유지.
-        const mode = runMode === "paper" ? "paper" : (editRunMode ?? "draft");
-        await api.updateStrategy(Number(editId), def, mode, "ir");
+        // 수정: 적용이면 선택 계좌 모드(paper/live)로 승격, 아니면 기존 run_mode 유지.
+        const mode = applying ? runMode : (editRunMode ?? "draft");
+        await api.updateStrategy(Number(editId), def, mode, "ir", accountRef);
         navigate(`/strategies/${editId}`);
       } else {
-        const created = await api.createStrategy(def, runMode, "ir");
+        const created = await api.createStrategy(def, runMode, "ir", accountRef);
         navigate(`/strategies/${created.id}`);
       }
     } catch (e) {
@@ -1293,13 +1310,29 @@ export default function IrBuilder() {
           {saving ? "저장 중…" : editId ? "✓ 수정 저장 (새 버전)" : "전략 저장 (초안)"}
         </button>
         <button type="button" className="apply-btn" disabled={running || saving || !signal || hasErrors}
-                onClick={() => save("paper")}>
-          {saving ? "적용 중…" : "모의 적용"}
+                onClick={() => {
+                  // P5-4 — 적용할 계좌를 명시적으로 선택(선택한 핸들의 mode가 run_mode).
+                  if (accountHandles.length === 0) {
+                    alert("로컬앱에서 계좌를 등록·페어링한 뒤 적용할 수 있습니다.");
+                    return;
+                  }
+                  setShowPicker(true);
+                }}>
+          {saving ? "적용 중…" : "계좌에 적용"}
         </button>
       </div>
       <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-        모의 적용 시 로컬앱이 매일 09:00 자동 실행합니다. 충분히 검증한 뒤 실전으로 승격하세요.
+        적용 시 실행할 계좌를 고르면 그 계좌(모의/실전)로 로컬앱이 매일 09:00 자동 실행합니다.
       </p>
+
+      {showPicker && (
+        <AccountPicker
+          handles={accountHandles}
+          activeIds={activeAccountIds}
+          onSelect={(h) => { setShowPicker(false); save(h.mode, h.account_id); }}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
 
       {result && <ResultPanel result={result} ir={ranIr} />}
     </div>

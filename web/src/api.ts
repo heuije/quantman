@@ -1,7 +1,7 @@
 import type {
   BacktestRunSummary,
   ChatMessage,
-  CommandRow, CommandType, DeviceRow, IndicatorInfo, IrBlockSpec,
+  CommandRow, CommandType, DeviceRow, ExecutionSummary, IndicatorInfo, IrBlockSpec,
   IrStrategyDef, IrStrategyResult,
   MarketContext, NextDayPreview, PortfolioRisk,
   PortfolioAnalyzeIn, PortfolioAnalysis, PortfolioHoldings, SymbolDetail, SymbolListing,
@@ -174,14 +174,14 @@ export const api = {
   getStrategy: (id: number) => req<StrategyRow>(`/strategies/${id}`),
   // engine — ir(전략 연구소) 단일. 레거시 operand는 신규 생성 경로 제거됨(읽기만 호환).
   createStrategy: (definition: StrategyDef | IrStrategyDef, run_mode: string,
-                   engine: "operand" | "ir" = "ir") =>
+                   engine: "operand" | "ir" = "ir", account_ref?: string | null) =>
     req<StrategyRow>("/strategies", {
-      method: "POST", body: JSON.stringify({ definition, run_mode, engine }),
+      method: "POST", body: JSON.stringify({ definition, run_mode, engine, account_ref }),
     }),
   updateStrategy: (id: number, definition: StrategyDef | IrStrategyDef, run_mode: string,
-                   engine: "operand" | "ir" = "ir") =>
+                   engine: "operand" | "ir" = "ir", account_ref?: string | null) =>
     req<StrategyRow>(`/strategies/${id}`, {
-      method: "PUT", body: JSON.stringify({ definition, run_mode, engine }),
+      method: "PUT", body: JSON.stringify({ definition, run_mode, engine, account_ref }),
     }),
   deleteStrategy: (id: number) =>
     req<{ ok: boolean }>(`/strategies/${id}`, { method: "DELETE" }),
@@ -198,6 +198,9 @@ export const api = {
     }),
   getStrategyStats: (id: number) =>
     req<StrategyStats>(`/strategies/${id}/stats`),
+  // P6-4 — 실행 명세 4분류 요약(확정/가정/발주시점/미지). 전략 정의에서 파생(읽기 전용).
+  executionSummary: (id: number) =>
+    req<ExecutionSummary>(`/strategies/${id}/execution-summary`),
   listStrategyBacktests: (id: number) =>
     req<BacktestRunSummary[]>(`/strategies/${id}/backtests`),
 
@@ -1054,6 +1057,39 @@ export const futuresApi = {
     const a = document.createElement("a");
     a.href = url;
     a.download = `trend_${sym}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+  // 급등락→회귀 라이브수식 엑셀(.xlsx) 다운로드. blob 직접 처리.
+  reversionExport: async (sym: string, opts: {
+    reversal: number;
+    run: number;
+    horizon: number;
+    leverage: number;
+    gap?: number;
+  }) => {
+    const t = tokenStore.get();
+    const qs = new URLSearchParams({
+      reversal: String(opts.reversal),
+      run: String(opts.run),
+      horizon: String(opts.horizon),
+      leverage: String(opts.leverage),
+    });
+    if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
+    const res = await fetch(`${BASE}/futures/${sym}/reversion-export.xlsx?` + qs.toString(), {
+      headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      throw new Error(b.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reversion_${sym}.xlsx`;
     document.body.appendChild(a);
     a.click();
     a.remove();

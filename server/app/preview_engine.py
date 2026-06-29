@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from quant_core import market_calendar as _mc
+from quant_core.exec_defaults import DEFAULT_EXECUTION as _DEFAULT_EXECUTION
 from quant_core.exec_defaults import instrument_region as _instrument_region
 from quant_core.exec_defaults import instrument_spec as _instrument_spec
 from quant_core.ir_engine import StrategyIR, needed_columns, needed_symbols
@@ -62,6 +63,17 @@ def _last_date(dataset: dict, symbol: str) -> str | None:
 def _is_kr_symbol(symbol: str) -> bool:
     """6자리 숫자면 한국 종목. 그 외(NVDA·AAPL 등)는 미국으로 분류."""
     return symbol.isdigit() and len(symbol) == 6
+
+
+def _commission_rate(s: "StrategyIR") -> float:
+    """예상 위탁수수료율(편도, 0~1). 단일 출처: 전략 SimSpec.commission이 명시됐으면
+    그 값, 없으면 백테스트 default(exec_defaults bt_commission_bps/10000 = 3bps = 0.0003).
+
+    백테스트가 같은 비용 가정을 쓰므로 preview est_fee_krw가 백테스트 회계와 정합한다."""
+    c = s.simulation.commission
+    if c is not None:
+        return float(c)
+    return _DEFAULT_EXECUTION["bt_commission_bps"] / 10000.0
 
 
 def _last_session_on_or_before(market: str, today: date) -> date | None:
@@ -285,6 +297,7 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
             w = w / tot
         weights = w
 
+    rate = _commission_rate(s)   # 예상 수수료율(편도) — 주식 est_fee_krw 계산용
     now_kst = datetime.now(_KST)
     today_kst = now_kst.date()
     _cands = [(s, "long") for s in longs] + [(s, "short") for s in shorts]
@@ -298,25 +311,30 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
             out["skipped"].append({"symbol": sym, "reason": "전일 종가 없음"})
             continue
         meta = master_by_code.get(sym, {})
-        if _instrument_spec(sym).asset_class == "futures":
+        spec = _instrument_spec(sym)
+        if spec.asset_class == "futures":
             # 선물 — 서버는 선물계좌 가용증거금현금을 모른다(보안경계: KIS 자격증명·계좌가
             # 로컬 PC 전용) → 미국 종목과 동일하게 preview 사이징 불가(qty=None). 단 한글 선물
             # 표시심볼('코스피200선물')은 _is_kr_symbol(6자리 숫자)에 안 걸려 아래 US 분기로
             # 빠지면 통화가 'USD'로 오분류된다 → 계약 스펙의 통화로 명시(KOSPI200=KRW,
             # 해외 CME 선물=USD). 실제 사이징은 발주 시점 로컬앱이 선물계좌로 수행.
+            # leverage/multiplier/margin_rate는 계약의 정적 사실(사이징 무관) — 사전 투명성으로 표시.
+            mr = spec.init_margin_rate
             out["candidates"].append({
                 "symbol": sym, "name": meta.get("name", ""), "qty": None,
                 "prev_close": round(prev_close, 2), "est_limit_price": None,
-                "est_total": None, "sizing_mode": sz.mode,
+                "est_total": None, "est_fee_krw": None, "sizing_mode": sz.mode,
                 "data_as_of": _last_date(dataset, sym), "source": "ir",
-                "currency": _instrument_spec(sym).currency, "direction": side,
+                "currency": spec.currency, "direction": side,
+                "leverage": round(1 / mr, 1) if mr else None,
+                "multiplier": spec.multiplier, "margin_rate": mr,
                 "note": "선물 — 발주 시점 로컬 선물계좌로 사이징 (preview 미지원)"})
             continue
         if not _is_kr_symbol(sym):
             out["candidates"].append({
                 "symbol": sym, "name": meta.get("name", ""), "qty": None,
                 "prev_close": round(prev_close, 2), "est_limit_price": None,
-                "est_total": None, "sizing_mode": sz.mode,
+                "est_total": None, "est_fee_krw": None, "sizing_mode": sz.mode,
                 "data_as_of": _last_date(dataset, sym), "source": "ir",
                 "currency": "USD", "direction": side,
                 "note": "미국 종목 — 발주 시점 USD 잔고로 사이징 (preview 미지원)"})
@@ -337,7 +355,8 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
         out["candidates"].append({
             "symbol": sym, "name": meta.get("name", ""), "qty": qty,
             "prev_close": round(prev_close, 2), "est_limit_price": est_price,
-            "est_total": est_price * qty, "sizing_mode": sz.mode,
+            "est_total": est_price * qty,
+            "est_fee_krw": round(est_price * qty * rate), "sizing_mode": sz.mode,
             "data_as_of": _last_date(dataset, sym), "source": "ir",
             "currency": "KRW", "direction": side})
     return out

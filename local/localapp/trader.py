@@ -29,7 +29,7 @@ from .broker import Broker
 from .config import (CLAIMED_FILLS_PATH, EQUITY_PATH, LEDGER_PATH,
                      PENDING_ORDERS_PATH, TRADES_PATH)
 from .kis_broker import canonical_odno
-from . import analytics, coverage, intents, killswitch, order_log, state_store
+from . import account_handle, analytics, coverage, intents, killswitch, order_log, state_store
 
 log = logging.getLogger("localapp.trader")
 
@@ -566,6 +566,19 @@ class Trader:
             is_fut = spec.asset_class == "futures"
             mult = spec.multiplier
             realized: float | None = None       # 선물 청산 실현손익(정산)
+
+            def _invest_of(qty: int, px: float) -> dict:
+                """체결 per-order 투입 투명성(snapshot 표면화용). 주식=투입금액, 선물=명목·증거금·레버리지.
+                새 조회 0 — spec(이미 보유)·체결값만. 금액은 체결요약 범주(INV-SEC 무관)."""
+                if is_fut:
+                    notional = qty * px * mult
+                    mr = spec.init_margin_rate or 0.0
+                    return {"notional": round(notional, 2),
+                            "margin": round(notional * mr, 2) if mr else None,
+                            "leverage": round(1.0 / mr, 1) if mr else None,
+                            "currency": spec.currency}
+                return {"amount": round(qty * px, 2), "currency": spec.currency}
+
             pxs = f"${fill_price:,.2f}" if spec.currency == "USD" else f"{fill_price:,.2f}"
 
             if side == "buy":
@@ -596,10 +609,12 @@ class Trader:
                         "definition": p.get("definition", {}),
                     }
                     self._record_contract_meta(sid, symbol)
+                inv = _invest_of(filled_qty, fill_price)
                 ev = {"ts": today, "action": "buy", "symbol": symbol,
                       "qty": filled_qty, "price": fill_price,
                       "strategy": p.get("strategy_name", ""),
-                      "reason": ("숏청산" if realized is not None else "매수신호")}
+                      "reason": ("숏청산" if realized is not None else "매수신호"),
+                      "invest": inv}
                 if realized is not None:
                     ev["realized_pnl"] = round(realized, 2)
                 self._log_trade(ev)
@@ -607,11 +622,15 @@ class Trader:
                     detail = f"{filled_qty}계약 @ {pxs}"
                     if realized is not None:
                         detail += f" 정산 {realized:+,.0f}"
+                    if inv["margin"] is not None and inv["leverage"] is not None:
+                        detail += (f" · 명목 {inv['notional']:,.0f} 증거금 "
+                                   f"{inv['margin']:,.0f} (레버리지 {inv['leverage']}x)")
                 else:
                     detail = f"{filled_qty}주 @ {fill_price:,.0f}원"
+                    detail += f" · 투입 {inv['amount']:,.0f}원"
                 decisions.append(order_log.decision(
                     "bought", sid, p.get("strategy_name", ""), symbol, detail,
-                    {"intended": intended, "fill": fill_price}))
+                    {"intended": intended, "fill": fill_price, "invest": inv}))
             else:
                 lg = self.ledger.get(sid)
                 if lg is not None and lg.get("side", "long") == "short":
@@ -640,10 +659,12 @@ class Trader:
                         "definition": p.get("definition", {}),
                     }
                     self._record_contract_meta(sid, symbol)
+                inv = _invest_of(filled_qty, fill_price)
                 ev = {"ts": today, "action": "sell", "symbol": symbol,
                       "qty": filled_qty, "price": fill_price,
                       "strategy": p.get("strategy_name", ""),
-                      "reason": p.get("reason", "")}
+                      "reason": p.get("reason", ""),
+                      "invest": inv}
                 if realized is not None:
                     ev["realized_pnl"] = round(realized, 2)
                 self._log_trade(ev)
@@ -653,10 +674,15 @@ class Trader:
                         detail += f" 정산 {realized:+,.0f}"
                     if p.get("reason"):
                         detail += f" ({p.get('reason')})"
+                    if inv["margin"] is not None and inv["leverage"] is not None:
+                        detail += (f" · 명목 {inv['notional']:,.0f} 증거금 "
+                                   f"{inv['margin']:,.0f} (레버리지 {inv['leverage']}x)")
                 else:
                     detail = f"{filled_qty}주 @ {fill_price:,.0f}원 ({p.get('reason', '')})"
+                    detail += f" · 투입 {inv['amount']:,.0f}원"
                 decisions.append(order_log.decision(
-                    "sold", sid, p.get("strategy_name", ""), symbol, detail))
+                    "sold", sid, p.get("strategy_name", ""), symbol, detail,
+                    {"fill": fill_price, "invest": inv}))
 
             # M9: 체결 반영 즉시 영속(락 안) — 디스크가 SSOT. 다른 인스턴스
             # (cycle↔intraday loop)가 reload_state로 항상 최신 체결을 본다.
@@ -1244,8 +1270,16 @@ class Trader:
         candidates의 종목 코드는 신뢰하되 dataset에 없는 종목은 skip
         (방어적 — preview·dataset가 같은 서버 상태에서 만들어졌으면 일치).
         """
-        strat_def_by_id = {str(s["id"]): (s.get("name", ""), s.get("definition", {}))
+        strat_def_by_id = {str(s["id"]): (s.get("name", ""), s.get("definition", {}),
+                                            s.get("account_ref"))
                              for s in strategies}
+        # P5-3 — 활성 계좌 핸들 집합(사이클당 1회·로컬 keyring). 조회 실패 시 보수적 빈 집합
+        # (account_ref 바인딩 전략은 skip, 레거시 None은 통과) — 불확실하면 실거래 안 함.
+        try:
+            active_ids = set(account_handle.active_account_ids())
+        except Exception as e:
+            log.warning("활성 계좌 핸들 조회 실패 — account_ref 전략 보수적 skip: %s", e)
+            active_ids = set()
         n_preview_used = 0
         for entry in by_strategy:
             sid = str(entry.get("strategy_id", ""))
@@ -1256,7 +1290,15 @@ class Trader:
             if name_def is None:
                 # 서버 preview에 있지만 로컬엔 배정 안 된 전략 — skip
                 continue
-            strat_name, strat_def = name_def
+            strat_name, strat_def, acct_ref = name_def
+            # P5-3 (계좌-전략 연동) — 전략이 특정 계좌(account_ref)에 묶였는데 그 계좌가 현재
+            # 활성 계좌가 아니면 전략 통째 skip. 모의 검증 전략이 실전 계좌로 무경고 실거래되는
+            # 것(C7)을 식별자 차원에서 차단. account_ref=None(레거시·미바인딩)은 통과(기존 거동).
+            if acct_ref and acct_ref not in active_ids:
+                decisions.append(order_log.decision(
+                    "skip_wrong_account", sid, strat_name, "",
+                    "이 전략은 다른 계좌에 묶여 있어 현재 활성 계좌에서 실행되지 않습니다"))
+                continue
             # P1 커버리지 게이트 — 이 전략 후보가 요구하는 자산군 중 자격증명 미등록이 있으면
             # 전략을 통째 skip(naked-leg·오라우팅 차단). 한 leg만 발주하지 않는다.
             missing = coverage.missing_categories(c.get("symbol", "") for c in cands)
@@ -1928,6 +1970,8 @@ class Trader:
                 1 for d in decisions if d["action"] == "unparseable_orphan"),
             "n_skip_uncovered": sum(
                 1 for d in decisions if d["action"] == "skip_uncovered"),
+            "n_skip_wrong_account": sum(
+                1 for d in decisions if d["action"] == "skip_wrong_account"),
             "n_orphan_uncovered": sum(
                 1 for d in decisions if d["action"] == "orphan_uncovered"),
             # N2 — 이 시장의 미확인 잔존(발주-but-체결미확인 + 이월 미체결).

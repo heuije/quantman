@@ -12,6 +12,7 @@
  */
 import { useState } from "react";
 import type { CycleRow, OrderEvent, PendingOrder } from "../types";
+import { wonReadable } from "../format";
 
 type OutcomeKind = "filled" | "pending" | "cancelled" | "rejected" |
                     "skipped" | "duplicate" | "submitted" | "other";
@@ -254,7 +255,25 @@ export default function TradeOutcomes({ cycles, orders, pending }: Props) {
                        style={{ fontWeight: 500, whiteSpace: "nowrap" }}>
                     {outcome.badge}
                   </td>
-                  <td style={{ fontSize: 13 }}>{outcome.detail}</td>
+                  <td style={{ fontSize: 13 }}>
+                    {outcome.detail}
+                    {d.extra?.invest && (() => {
+                      const inv = d.extra.invest;
+                      // USD(해외)면 원 환산 불가 → 원시 숫자 + "$", 그 외는 wonReadable.
+                      const money = (v: number) =>
+                        inv.currency === "USD" ? `${v.toLocaleString()}$` : wonReadable(v);
+                      const line = inv.amount != null
+                        ? `투입 ${money(inv.amount)}`
+                        : inv.notional != null
+                          ? `명목 ${money(inv.notional)}`
+                            + (inv.margin != null ? ` · 증거금 ${money(inv.margin)}` : "")
+                            + (inv.leverage != null ? ` · 레버리지 ${inv.leverage}x` : "")
+                          : "";
+                      return line
+                        ? <div className="muted small" style={{ marginTop: 2 }}>{line}</div>
+                        : null;
+                    })()}
+                  </td>
                 </tr>
               );
             })}

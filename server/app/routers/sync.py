@@ -247,6 +247,7 @@ def pull_strategies(
     # definition엔 빠져 있으므로, 자기완결 spec이 되도록 serve 시점에 column 값을 합친다.
     return [StrategyOut(id=s.id, name=s.name, run_mode=s.run_mode, engine=s.engine,
                         definition={**(s.definition or {}), "engine": s.engine},
+                        account_ref=s.account_ref,
                         created_at=s.created_at, updated_at=s.updated_at) for s in rows]
 
 
