@@ -63,3 +63,16 @@ def test_active_account_ids_for_active_broker(monkeypatch):
     ids = ah.active_account_ids()
     handles = {h["account_id"] for h in ah.current_handles() if h["broker"] == "kis"}
     assert set(ids) == handles            # 활성 브로커(kis) 핸들만
+
+
+def test_local_health_reports_handles_no_secrets(monkeypatch):
+    from localapp import analytics, account_handle as ah
+    monkeypatch.setattr(ah, "current_handles", lambda: [
+        {"account_id": "abc123", "broker": "ls", "asset_classes": ["kr_futures"],
+         "mode": "paper", "nickname": "LS 모의 국내선물"}])
+    monkeypatch.setattr(ah, "active_account_ids", lambda: ["abc123"])
+    h = analytics.local_health()
+    assert h["account_handles"][0]["account_id"] == "abc123"
+    assert h["active_account_ids"] == ["abc123"]
+    blob = str(h)
+    assert "app_key" not in blob and "appkey" not in blob   # INV-SEC: 키 미포함
