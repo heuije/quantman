@@ -92,17 +92,19 @@ if __name__ == "__main__":
 `python local/verify_ls_account.py <key> <secret> <올바른계좌> --futures [--real]` 1회,
 끝자리만 바꾼 *틀린* 계좌번호로 1회. 두 RAW 응답을 캡처.
 
-- [ ] **Step 3: 캡처 결과를 plan에 기록 (LS 검증 전략 확정)**
+- [x] **Step 3: 캡처 결과 기록 (LS 검증 전략 확정) — 완료 2026-06-29 (모의 캡처)**
 
-캡처에서 다음을 확정해 Task 4·5의 구체 코드로 채운다:
-- **성공/오류 신호:** `_post`가 성공 시 dict 반환·오류 시 raise임은 코드로 확정(`ls_broker.py:145-164`). 캡처로
-  잘못된 계좌가 raise를 유발하는지 확인.
-- **read-back 필드:** 응답에서 실제 계좌번호/식별자를 담는 키(예: 선물 `CFOAQ50600OutBlock2`의 계좌필드,
-  주식 `t0424OutBlock`의 계좌필드)를 식별.
-- **검증 전략 결정:** (A) 틀린 계좌가 오류를 내면 = *호출 성공 = 검증 통과*. (B) LS가 키 계좌로 무시하면 =
-  *read-back한 실계좌를 정답으로 사용*(사용자 입력 불일치 시 경고·자동교정).
+**캡처 결과(keyring 모의 선물 슬롯, read-only):**
+- CFOAQ50600(계좌요약): `rsp_cd 01900` "모의투자 미제공" — 예외 아님(200 본문). `_post`는 미제공도 raise 안 함.
+- t0441(포지션): `rsp_cd 00000` 성공. 필드 `t0441OutBlock.{tdtsunik,cts_expcode,cts_medocd,tappamt,tsunik}`·`t0441OutBlock1`(빈 포지션).
+- **계좌 echo 0** — 두 응답 어디에도 입력 계좌번호 미반영. InBlock에도 계좌번호 없음(`ls_futures_broker.py:52-56`).
 
-> 이 task는 코드 변경 없음(진단·결정). 결과가 Task 4의 검증 전략 분기를 확정한다.
+**확정된 전략:** (A)·(B) 모두 **불가** — LS는 read TR에 계좌번호를 안 쓰고 안 돌려줌(appkey=계좌단위).
+account_no는 국내주식/해외 *주문*(CSPAT00601 `AcntNo`)에서만 사용 → 국내선물 cosmetic, 주식/해외도 read-only
+검증 불가. ⇒ **LS 검증 = "토큰 + read TR(rsp_cd 00000) 성공 = appkey 계좌컨텍스트 라이브 확인"으로 한정**
+(token-only보다 강화·계좌번호 자체 검증은 정직히 "불가"로 표면화). read TR은 모의·실전 공통으로 동작하는
+**t0441(선물)·t0424(주식)** 사용(CFOAQ50600은 모의 미제공이라 부적합).
+⚠ 캡처는 *모의*. 실전 CFOAQ50600 응답이 계좌를 echo하면 read-back 가능 — 실전 1회 캡처로 추가 확인(잔여).
 
 ---
 
@@ -262,50 +264,67 @@ LS 검증 = 토큰(기존) → **잔고 TR 1회 호출**(슬롯별: 주식=`LsBr
 ```python
 from unittest.mock import patch
 
-def test_account_check_ok_when_balance_succeeds():
-    # 토큰 OK + 잔고 호출이 정상 dict 반환 → ok=True
+def test_probe_rsp_00000_returns_ok():
+    # 토큰 OK + read TR rsp_cd 00000 → ok=True
     with patch("localapp.ls_health._issue_token", return_value="T"), \
-         patch("localapp.ls_health._balance_probe", return_value={"t0424OutBlock": {}}):
+         patch("localapp.ls_health._acct_probe", return_value={"rsp_cd": "00000", "t0424OutBlock": {}}):
         out = ls_health.test_credentials("k", "s", "5544332211", virtual=True, account_kind="stock")
     assert out["ok"] is True
 
-def test_account_check_fails_when_balance_raises():
-    # 토큰 OK + 잔고 호출이 예외(LS 500 raise) → ok=False, 계좌 안내
+def test_probe_nonzero_rsp_returns_not_ok():
+    # 토큰 OK + read TR rsp_cd != 00000 → ok=False (메시지에 rsp 노출)
     with patch("localapp.ls_health._issue_token", return_value="T"), \
-         patch("localapp.ls_health._balance_probe", side_effect=RuntimeError("IGW...")):
-        out = ls_health.test_credentials("k", "s", "9999999999", virtual=True, account_kind="stock")
+         patch("localapp.ls_health._acct_probe",
+               return_value={"rsp_cd": "IGW00121", "rsp_msg": "권한 없음"}):
+        out = ls_health.test_credentials("k", "s", "5544332211", virtual=True, account_kind="stock")
     assert out["ok"] is False
-    assert "계좌" in out["msg"]
+    assert "IGW00121" in out["msg"]
+
+def test_probe_raises_returns_not_ok():
+    # 토큰 OK + read TR 예외(네트워크/5xx) → ok=False
+    with patch("localapp.ls_health._issue_token", return_value="T"), \
+         patch("localapp.ls_health._acct_probe", side_effect=RuntimeError("conn")):
+        out = ls_health.test_credentials("k", "s", "9999999999", virtual=True, account_kind="futures")
+    assert out["ok"] is False
 ```
 
 - [ ] **Step 2: 테스트 실패 확인**
 
 Run: `cd local && python -m pytest tests/test_ls_health.py -v`
-Expected: FAIL (`test_credentials() got unexpected keyword argument 'account_kind'` / `_balance_probe` 없음).
+Expected: FAIL (`test_credentials() got unexpected keyword argument 'account_kind'` / `_acct_probe` 없음).
 
 - [ ] **Step 3: 구현 — `ls_health.test_credentials` 확장**
 
+> **캡처(Task 1) 반영:** LS는 계좌번호를 read TR에 안 쓰므로 "계좌번호 검증"은 불가. 대신 **토큰 + read TR
+> `rsp_cd=="00000"` 성공 = appkey 계좌컨텍스트 라이브 확인**으로 한정(token-only보다 강화). read TR은 모의·실전
+> 공통 동작하는 **t0441(선물)·t0424(주식)** 사용 — CFOAQ50600은 모의 미제공(01900)이라 부적합. `_post`는 01900도
+> raise 안 하므로 **rsp_cd 명시 확인 필수**(예외만 보면 안 됨).
+
 `ls_health.py`의 `test_credentials` 시그니처에 `account_no`·`account_kind`("stock"|"futures") 추가.
 토큰 발급 로직을 `_issue_token(app_key, app_secret)`로 추출(테스트 patch 지점). 토큰 성공 후
-`_balance_probe(creds, account_kind)` 호출:
+`_acct_probe(creds, account_kind)` 호출:
 ```python
-def _balance_probe(creds: dict, account_kind: str) -> dict:
-    """저장 전 잔고 1회 조회로 계좌번호 검증 — 성공 시 dict, 실패 시 예외(LS _post가 500을 raise).
-    검증된 production 경로(LsBroker/LsFuturesBroker)를 그대로 재사용해 필드 가정 위험 0."""
+def _acct_probe(creds: dict, account_kind: str) -> dict:
+    """저장 전 read TR 1회로 appkey 계좌컨텍스트 확인 — 성공 응답(rsp_cd=='00000') 반환.
+    검증된 production 경로(LsBroker/LsFuturesBroker) 재사용 → 필드 가정 위험 0.
+    ⚠ LS는 계좌번호를 read TR에 안 보냄(appkey=계좌단위) → 입력 계좌번호 자체는 검증 불가."""
     from .ls_broker import _LsAuth, LsBroker
     if account_kind == "futures":
         from .ls_futures_broker import LsFuturesBroker
         b = LsFuturesBroker.__new__(LsFuturesBroker); _LsAuth.__init__(b, creds)
-        return b._acct_summary_raw()          # CFOAQ50600
+        return b._positions_raw()              # t0441 — 모의·실전 공통 동작(CFOAQ50600은 모의 미제공)
     b = LsBroker.__new__(LsBroker); _LsAuth.__init__(b, creds)
     b._overseas_unavailable = True
     return b._balance_raw()                    # t0424
 ```
-`test_credentials` 본문: 토큰 실패→기존 메시지. 토큰 성공 후 `_balance_probe` try/except — 성공이면
-`{"ok": True, "msg": f"App Key·Secret·계좌 유효 — {mode}"}`; 예외면
-`{"ok": False, "msg": "계좌 조회 실패 — 계좌번호를 확인하세요"}`.
-**(Task 1 결과 (B)무시형이면**: `_balance_probe` 응답의 실계좌 필드를 입력 계좌와 대조해 불일치 시
-`ok=True`로 두되 `msg`에 "입력 계좌가 키 계좌와 다름 — 실제 '<read-back>' 사용" 경고. 필드명은 Task 1 캡처값.)
+`test_credentials` 본문: 토큰 실패→기존 메시지. 토큰 성공 후 `_acct_probe` try/except:
+- 예외(네트워크·인증 5xx) → `{"ok": False, "msg": f"LS 계좌 조회 실패: {e}"}`.
+- `rsp_cd == "00000"` → `{"ok": True, "msg": "App Key·Secret 유효 · 계좌 조회 성공 (LS는 appkey가 계좌를 결정)"}`.
+- 그 외 rsp_cd → `{"ok": False, "msg": f"[{rsp_cd}] {rsp_msg}"}`.
+
+**정직한 한계 표면화(필수):** LS는 입력 계좌번호 자체를 read-only로 검증할 수 없다(국내선물은 cosmetic,
+주식/해외는 주문 시에만 사용). 이 한계를 `msg` 또는 인접 UI 텍스트로 사용자에게 노출 — "키는 검증됨; LS는
+appkey가 계좌를 결정합니다". (실전 CFOAQ50600 read-back은 §spec 잔여로 후속.)
 
 - [ ] **Step 4: 테스트 통과 확인**
 

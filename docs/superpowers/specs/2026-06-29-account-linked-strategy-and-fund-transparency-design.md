@@ -237,8 +237,13 @@ snapshot per-trade = `{action, symbol, qty, reason, extra:{intended, fill}}` (`o
 
 ## 8. 미해결 결정 / 라이브 검증 필요 (정직)
 
-- **LS `AcntNo` 검증 거동:** appkey=계좌단위라 잘못된 AcntNo를 LS가 *거부*하는지 *키 계좌로 무시*하는지 미확정
-  → P5.0 라이브 캡처로 확정(read-back 전략 가부 결정).
+- ~~**LS `AcntNo` 검증 거동**~~ **[확정 2026-06-29 라이브 캡처]:** LS는 appkey=계좌단위라 모든 *read* TR이
+  계좌번호를 **보내지도 돌려주지도 않음**(CFOAQ50600/t0441/t0424 InBlock·응답 echo 0). account_no는
+  국내주식·해외 *주문*(CSPAT00601 `AcntNo`)에서만 사용 → **LS 계좌번호는 read-only 검증·read-back 둘 다
+  불가**(국내선물은 cosmetic). ⇒ P5.0 LS 검증은 "잘못된 번호 거부"가 **불가능** — 대신 **토큰+read TR 성공
+  = appkey 계좌컨텍스트 라이브 확인**(token-only보다 강화)으로 한정하고, **LS 계좌 정체성은 appkey 기반
+  핸들로**(P5). ⚠ 캡처는 *모의*(virtual=True). 실전 CFOAQ50600은 계좌요약을 제공하므로 *실전에서 응답이
+  계좌를 echo하면 read-back 가능* — 실전 1회 캡처로 추가 확인(잔여).
 - **선물 qty 사전 표시 완화:** 본인 계좌 한정 노출이 보안원칙과 충돌 없는지 최종 확인(자기 자금이라 무해 판단,
   희제·보안 합의).
 - **TTTC8715R 호출 시점:** 청산 직후 vs 일배치 — 실현손익 TR 특성(매도 후 집계)상 종가청산/정산 사이클에 묶는 게 자연(라이브 1회로 타이밍 확정).

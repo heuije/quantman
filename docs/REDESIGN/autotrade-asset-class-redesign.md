@@ -126,15 +126,18 @@ LS증권 **실전 국내선물 계좌** API 키를 로컬앱에 저장하면 "�
   기존 테스트는 실행계층(secrets/make_broker)만 → 표시-실행 게이트 어긋남이 사각. (PR-4)
 - **[V2] LS 멱등 약화.** `reconcile_submitting`이 LS(`_daily_ccld` 미지원)에서 KR reconcile skip →
   crash-recovery가 KIS보다 약함. 증거: `intents.py:236-243`. (단건)
-- **[V3] 연결 테스트가 계좌번호를 검증 안 함(LS·KIS선물) → 설정 오류가 거래시점 실패로 이연.**
-  LS 연결 테스트(`ls_health.test_credentials`)는 **토큰 발급만** — 계좌번호를 인자로 받지조차 않음
-  (주석 "계좌번호는 받지 않는다"). 반면 KIS 주식 wizard는 잔고조회(TTTC8434R)를 `CANO`로 호출해
-  **계좌번호까지 검증**. KIS 선물·해외선물은 GUI wizard 밖(`futures_preflight.py`)이고 wizard 검증은
-  *주식* 잔고라 선물계좌(상품코드 03)는 미검증. `LsBroker`는 실주문·잔고에서 **입력 계좌번호를 그대로
-  사용**(`AcntNo`·t0424) → 틀린 계좌번호가 "저장됨"으로 통과한 뒤 **첫 사이클에서 거부**(거짓 안심·
-  이연 실패, §0 트리거와 동형). 계좌-핸들 모델(account-linked spec)이 계좌번호 위에 서므로 **핸들
-  신뢰의 전제조건**. 증거: `ls_health.py:25-29`, `kis_health.py:85-110`, `gui.py:1519-1551`,
-  `ls_broker.py:74·398·519`. (PR-4 / account-linked spec **P5.0** 전제)
+- **[V3] 연결 테스트가 계좌번호를 검증 안 함 → 설정 오류가 거래시점 실패로 이연(브로커별 비대칭).**
+  LS 연결 테스트(`ls_health.test_credentials`)는 **토큰 발급만** — 계좌번호를 인자로 받지조차 않음. 반면
+  KIS 주식 wizard는 잔고조회(TTTC8434R)를 `CANO`로 호출해 **계좌번호까지 검증**. KIS 선물은 GUI wizard
+  밖(`futures_preflight.py`)이고 wizard 검증은 *주식* 잔고라 선물계좌(03) 미검증.
+  **라이브 캡처(2026-06-29 모의) 확정:** LS는 **appkey=계좌단위**라 모든 *read* TR이 계좌번호를 **보내지도
+  돌려주지도 않는다**(CFOAQ50600·t0441·t0424 InBlock·응답에 계좌 echo 0). account_no는 **국내주식·해외
+  *주문* InBlock(CSPAT00601 `AcntNo` 등)에서만** 사용 → **LS 국내선물 계좌번호는 cosmetic(미사용)**,
+  LS 국내주식/해외는 *주문 시에만* 사용돼 **read-only 사전검증·read-back 둘 다 불가**.
+  ⇒ **KIS는 계좌번호 read-only 검증 가능(P5.0 구현: 주식 기존·선물 신규)**; **LS는 read-only 검증 불가** —
+  LS 계좌 정체성은 *appkey 기반 핸들*로 다룬다(P5). 증거: `ls_health.py:25-29`, `kis_health.py:85-110`,
+  `ls_futures_broker.py:50-56`(CFOAQ50600 InBlock 무계좌), `ls_broker.py:183-200·396-398`(t0424 무계좌 /
+  CSPAT00601 AcntNo). (PR-4 / account-linked spec **P5.0**)
 
 ### 감사가 합의한 구조적 뿌리
 
