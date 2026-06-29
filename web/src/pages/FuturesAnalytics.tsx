@@ -594,7 +594,7 @@ export default function FuturesAnalytics() {
       {/* ⑨ 급등락 → 회귀 (평균회귀) 탐색기 */}
       <section className="panel">
         <h2 className="section-title">REVERSION · 급등락 → 회귀 (평균회귀) 탐색기</h2>
-        <ReversionExplorer symbol={symbol} />
+        <ReversionExplorer symbol={symbol} priceSym={priceSym} />
       </section>
     </div>
   );
@@ -2137,7 +2137,7 @@ function ReversionSummaryCard({ title, icon, s }: { title: string; icon: string;
 
 // ⑨ 급등락 → 회귀 탐색기. 입력(전환·급등락 임계·반등 N일·레버리지·이벤트간격)을 확인하면
 // /reversion(방향별 요약+이벤트) + /reversion-sweep(임계×N일 격자)을 호출해 표시.
-function ReversionExplorer({ symbol }: { symbol: string }) {
+function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: string }) {
   const [reversal, setReversal] = useState<number | "">(RE_DEF_REVERSAL);
   const [run, setRun] = useState<number | "">(RE_DEF_RUN);
   const [horizon, setHorizon] = useState<number | "">(RE_DEF_HORIZON);
@@ -2150,6 +2150,7 @@ function ReversionExplorer({ symbol }: { symbol: string }) {
   const [data, setData] = useState<OilReversion | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [prices, setPrices] = useState<OilPricePoint[]>([]);
 
   // 스윕 상태
   const [sweepRowAxis, setSweepRowAxis] = useState<OilReversionAxis>("run");
@@ -2207,6 +2208,58 @@ function ReversionExplorer({ symbol }: { symbol: string }) {
     }
     return { byKey, valOf, maxAbs: maxAbs || 1, maxN: maxN || 1 };
   }, [sweep, sweepMetric]);
+
+  // 전체 가격(차트용) — 종목 변경 시 로드.
+  useEffect(() => {
+    setPrices([]);
+    futuresApi.prices(symbol).then(setPrices).catch((e) => console.error("prices", e));
+  }, [symbol]);
+
+  const dateIdx = useMemo(() => new Map(prices.map((p, i) => [p.date, i] as const)), [prices]);
+
+  // 가격 차트: 종가 라인(다운샘플) + forward 구간 음영(방향색) + 트리거/피벗 마커.
+  const chart = useMemo(() => {
+    const empty = {
+      line: [] as { t: number; close: number }[],
+      shades: [] as { x1: number; x2: number; down: boolean }[],
+      trigDown: [] as { t: number; close: number }[],
+      trigUp: [] as { t: number; close: number }[],
+      trigLiq: [] as { t: number; close: number }[],
+      pivots: [] as { t: number; close: number }[],
+    };
+    if (!prices.length) return empty;
+    const ms = (d: string) => new Date(d).getTime();
+    const stride = Math.max(1, Math.ceil(prices.length / 800));
+    const line = prices
+      .filter((_, i) => i % stride === 0 || i === prices.length - 1)
+      .map((p) => ({ t: ms(p.date), close: p.close }));
+    if (!data || !applied) return { ...empty, line };
+    const out = { ...empty, line };
+    for (const e of data.events) {
+      const ti = dateIdx.get(e.trigger_date);
+      const pi = dateIdx.get(e.pivot_date);
+      const down = e.direction === "down_exhaustion";
+      if (ti !== undefined) {
+        const end = Math.min(prices.length - 1, ti + applied.horizon);
+        out.shades.push({ x1: ms(prices[ti].date), x2: ms(prices[end].date), down });
+        const pt = { t: ms(prices[ti].date), close: prices[ti].close };
+        if (e.liquidated) out.trigLiq.push(pt);
+        else (down ? out.trigDown : out.trigUp).push(pt);
+      }
+      if (pi !== undefined) out.pivots.push({ t: ms(prices[pi].date), close: prices[pi].close });
+    }
+    return out;
+  }, [prices, data, applied, dateIdx]);
+
+  // 산점도: 트리거 시 누적 급등락(계좌%) × N일 회귀(계좌%), 방향색.
+  const scatter = useMemo(() => {
+    const down: { x: number; y: number }[] = [], up: { x: number; y: number }[] = [];
+    if (data) for (const e of data.events) {
+      const pt = { x: e.run_account * 100, y: (e.liquidated ? -100 : e.reversion_account * 100) };
+      (e.direction === "down_exhaustion" ? down : up).push(pt);
+    }
+    return { down, up };
+  }, [data]);
 
   const submit = () => {
     const rv = Number(reversal), rn = Number(run), hz = Number(horizon), lv = Number(leverage), gp = Number(gap || 0);
@@ -2270,6 +2323,69 @@ function ReversionExplorer({ symbol }: { symbol: string }) {
             회귀 <b>+</b>면 추세를 되돌림(베팅 성공), <b>−</b>면 추세 지속. 평균은 청산(−100%) 포함 기대값,
             중앙값은 청산에 덜 휘둘리는 전형값 — 둘의 격차가 꼬리위험입니다.
           </div>
+
+          {/* 엑셀 내보내기 — raw data + 라이브수식(레버리지·N일) */}
+          <div style={{ marginTop: 10 }}>
+            <button onClick={() => futuresApi.reversionExport(symbol, applied).catch((e) => setError(e.message))}
+              style={{ fontSize: 12 }}
+              title="현재 구성의 raw OHLCV + 라이브수식(레버리지·N일 바꾸면 재계산) 엑셀">
+              ⬇ 엑셀 내보내기 (raw 데이터 + 수식)
+            </button>
+          </div>
+
+          {/* 표본 차트 — 전체기간 가격 위에 트리거·피벗·forward 음영 */}
+          {prices.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div className="muted" style={{ fontSize: 13, margin: "8px 0 6px" }}>
+                전체기간 가격 — <b style={{ color: "#de3033" }}>● 하락소진→롱</b> / <b style={{ color: "#1668c4" }}>● 상승소진→숏</b> 트리거,
+                음영 = 이후 {applied.horizon}일 구간, <b>○</b>=청산, <b>▲</b>=피벗.
+              </div>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={chart.line} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
+                  <XAxis type="number" dataKey="t" domain={["dataMin", "dataMax"]}
+                    tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 7)} />
+                  <YAxis tick={{ fontSize: 10, fill: "#6f6a62" }} domain={["auto", "auto"]}
+                    tickFormatter={(v) => priceSym + (v >= 1000 ? (v / 1000).toFixed(0) + "k" : v.toFixed(0))} />
+                  <Tooltip labelFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 10)}
+                    formatter={(v) => priceSym + Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 })} />
+                  {chart.shades.map((s, i) => (
+                    <ReferenceArea key={i} x1={s.x1} x2={s.x2} fill={s.down ? "#de3033" : "#1668c4"} fillOpacity={0.1} stroke="none" />
+                  ))}
+                  <Line type="monotone" dataKey="close" stroke="#8a8580" dot={false} strokeWidth={1.2} />
+                  <Scatter data={chart.pivots} dataKey="close" fill="#b0a999" shape="triangle" />
+                  <Scatter data={chart.trigDown} dataKey="close" fill="#de3033" />
+                  <Scatter data={chart.trigUp} dataKey="close" fill="#1668c4" />
+                  <Scatter data={chart.trigLiq} dataKey="close" fill="#fff" stroke="#20201d" />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* 산점도 — 누적 급등락 × N일 회귀 */}
+          {data.events.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
+                급등락(누적 계좌%) × {applied.horizon}일 회귀(계좌%) — 급등락이 클수록 회귀가 큰가?
+                {" "}<b style={{ color: "#de3033" }}>● 하락소진</b> / <b style={{ color: "#1668c4" }}>● 상승소진</b>
+              </div>
+              <ResponsiveContainer width="100%" height={260}>
+                <ScatterChart margin={{ top: 8, right: 20, bottom: 30, left: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
+                  <XAxis type="number" dataKey="x" name="누적 급등락" domain={["auto", "auto"]}
+                    tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => Math.round(Number(v)) + "%"}
+                    label={{ value: "트리거 시 누적 급등락 (계좌%)", position: "insideBottom", offset: -6, style: { fontSize: 11, fill: "#6f6a62" } }} />
+                  <YAxis type="number" dataKey="y" name="회귀" domain={["auto", "auto"]}
+                    tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => Math.round(Number(v)) + "%"}
+                    label={{ value: `${applied.horizon}일 회귀 (계좌%)`, angle: -90, position: "insideLeft", style: { fontSize: 11, fill: "#6f6a62", textAnchor: "middle" } }} />
+                  <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(v) => `${Number(v).toFixed(0)}%`} />
+                  <ReferenceLine y={0} stroke="#6f6a62" />
+                  <Scatter data={scatter.down} fill="#de3033" fillOpacity={0.55} />
+                  <Scatter data={scatter.up} fill="#1668c4" fillOpacity={0.55} />
+                </ScatterChart>
+              </ResponsiveContainer>
+            </div>
+          )}
 
           {data.events.length > 0 && (
             <div style={{ marginTop: 16 }}>
