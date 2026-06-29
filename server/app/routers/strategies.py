@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
 from quant_core import is_futures
 from quant_core.ir_engine import StrategyIR, validate_strategy
+from quant_core.ir_engine.execution_summary import execution_summary
 from sqlmodel import Session, select
 
 from ..db import get_session
@@ -357,6 +358,22 @@ def stop_strategy(
         session.commit()
         session.refresh(row)
     return _out(row)
+
+
+@router.get("/{strategy_id}/execution-summary")
+def get_execution_summary(
+    strategy_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """전략 실행 명세 4분류 요약(확정/가정/발주시점/미지) — 읽기 전용 IR 파생.
+
+    core execution_summary(definition)를 그대로 노출(passthrough). 가정값(수수료·
+    슬리피지·tolerance·갭필터)의 단일 출처는 core exec_defaults — 서버·웹은 렌더만 한다
+    (TS 중복 0 → 드리프트 방지). 전략 변경 0(파생).
+    """
+    row = _own_or_404(session, strategy_id, user.id)
+    return execution_summary(row.definition)
 
 
 @router.delete("/{strategy_id}")
