@@ -607,7 +607,12 @@ export interface CycleRow {
   decisions: { action: string; strategy_id: string; strategy_name: string;
                 symbol: string; reason: string;
                 prev_close?: number; cur_price?: number;
-                intended?: number; fill?: number }[];
+                intended?: number; fill?: number;
+                // P6-1 체결 투입 투명성 — 이미 snapshot JSON에 실려 옴(서버 재전송 불필요).
+                // 주식: invest.amount, 선물: invest.notional/margin/leverage.
+                extra?: { intended?: number; fill?: number;
+                          invest?: { amount?: number; notional?: number; margin?: number;
+                                     leverage?: number; currency?: string } } }[];
   summary: CycleSummary;
 }
 
@@ -920,6 +925,12 @@ export interface PreviewBuyCandidate {
   data_as_of: string | null;
   currency?: "KRW" | "USD";
   note?: string;
+  // P6-2 서버 preview 예상수수료·레버리지 — 이미 snapshot JSON에 실려 옴.
+  // KR 주식: est_fee_krw, 선물: leverage/multiplier/margin_rate.
+  est_fee_krw?: number | null;
+  leverage?: number | null;
+  multiplier?: number | null;
+  margin_rate?: number | null;
 }
 
 export interface PreviewExit {

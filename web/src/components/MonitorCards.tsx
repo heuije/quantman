@@ -357,6 +357,18 @@ function StrategyCard({ name, pnlRow, previewRow, heldPositions }: {
                             (USD)
                           </span>
                         )}
+                        {/* P6-2 — 주식 예상수수료 / 선물 레버리지·증거금률 (snapshot에 실려 옴, 있을 때만) */}
+                        {c.est_fee_krw != null && (
+                          <div className="muted small" style={{ marginTop: 2 }}>
+                            예상수수료 {wonReadable(c.est_fee_krw)}
+                          </div>
+                        )}
+                        {c.leverage != null && (
+                          <div className="muted small" style={{ marginTop: 2 }}>
+                            레버리지 {c.leverage}x
+                            {c.margin_rate != null && ` · 증거금률 ${(c.margin_rate * 100).toFixed(1)}%`}
+                          </div>
+                        )}
                       </td>
                       <td style={{ textAlign: "right" }}>
                         {c.qty != null ? c.qty.toLocaleString() : <span className="muted">—</span>}
