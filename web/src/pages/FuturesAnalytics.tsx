@@ -2277,6 +2277,13 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
     </span>
   );
 
+  // 계좌% → 지수% 환산(계좌%÷레버리지). 예: 계좌 5% · 10배 → 지수 0.5%.
+  const idxEq = (acct: number | "", lev: number | ""): string => {
+    const a = Number(acct), l = Number(lev);
+    if (!(a > 0) || !(l >= 1)) return "—";
+    return String(parseFloat((a / l).toFixed(3)));
+  };
+
   const toggleBtn = (active: boolean): CSSProperties => ({
     fontSize: 12, padding: "3px 10px", borderRadius: 6, cursor: "pointer",
     border: active ? "1px solid var(--accent)" : "1px solid var(--border)",
@@ -2299,10 +2306,14 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
         <b> 모든 %·수익률은 레버리지 반영 계좌 기준</b>이며, 보유 중 계좌 −100% 도달 시 청산(전손)으로 집계합니다.
       </p>
 
-      <div style={{ fontSize: 14, lineHeight: 2.4 }}>
-        전환임계 {numIn(reversal, setReversal, "%")} 역행 = 추세전환 · 누적 {numIn(run, setRun, "%")} 도달 = 급등락 ·
-        이후 {numIn(horizon, setHorizon, "일")} 회귀 관측 · 레버리지 {numIn(leverage, setLeverage, "배", 44)} ·
-        이벤트 최소간격 {numIn(gap, setGap, "일", 44)}
+      <div style={{ fontSize: 14, lineHeight: 2.7 }}>
+        레버리지 {numIn(leverage, setLeverage, "배", 44)} 기준 ·
+        지수가 <b style={{ color: "var(--accent-strong)" }}>{idxEq(reversal, leverage)}%</b> 역행
+        (= 계좌 {numIn(reversal, setReversal, "%")})하면 추세 전환 ·
+        피벗 대비 지수 <b style={{ color: "var(--accent-strong)" }}>{idxEq(run, leverage)}%</b>
+        (= 계좌 {numIn(run, setRun, "%")})까지 달리면 급등락 ·
+        이후 {numIn(horizon, setHorizon, "영업일", 44)} 회귀 관측 ·
+        최소간격 {numIn(gap, setGap, "일", 44)}
         <button onClick={submit} disabled={loading} style={{ marginLeft: 10 }}>
           {loading ? "계산 중…" : "확인 (계산)"}
         </button>
@@ -2350,9 +2361,9 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
                   <Tooltip labelFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 10)}
                     formatter={(v) => priceSym + Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 })} />
                   {chart.shades.map((s, i) => (
-                    <ReferenceArea key={i} x1={s.x1} x2={s.x2} fill={s.down ? "#de3033" : "#1668c4"} fillOpacity={0.1} stroke="none" />
+                    <ReferenceArea key={i} x1={s.x1} x2={s.x2} fill="#d97757" fillOpacity={0.16} stroke="none" />
                   ))}
-                  <Line type="monotone" dataKey="close" stroke="#8a8580" dot={false} strokeWidth={1.2} />
+                  <Line type="monotone" dataKey="close" stroke="#d97757" dot={false} strokeWidth={1.5} />
                   <Scatter data={chart.pivots} dataKey="close" fill="#b0a999" shape="triangle" />
                   <Scatter data={chart.trigDown} dataKey="close" fill="#de3033" />
                   <Scatter data={chart.trigUp} dataKey="close" fill="#1668c4" />
