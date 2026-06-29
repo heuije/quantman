@@ -6,10 +6,12 @@ from __future__ import annotations
 
 
 def decide_setup_mode(broker: str, ready: bool, dev_ok: bool, collapsed: bool) -> str:
-    """온보딩 화면 모드 결정. 반환: normal | wizard_kis | wizard_ls | wizard_pair.
+    """온보딩 화면 모드 결정. 반환: choose_broker | normal | wizard_kis | wizard_ls | wizard_pair.
 
-    ready = 그 브로커 자산군 슬롯 ≥1(secrets_store.broker_ready). 기존 _render_setup_area
-    로직과 동치이되 ready를 '주식 슬롯'이 아니라 '자산군 슬롯 집합'으로 받는다."""
+    broker가 'kis'/'ls'가 아니면(처음 — 미선택) choose_broker(브로커 선택만, 폼 숨김). 유저가
+    KIS/LS를 직접 클릭해야 폼이 뜬다(기본값 없음). ready = 그 브로커 자산군 슬롯 ≥1(broker_ready)."""
+    if broker not in ("kis", "ls"):
+        return "choose_broker"      # 브로커 미선택(처음) → 선택 화면
     wizard = "wizard_ls" if broker == "ls" else "wizard_kis"
     if not ready:
         return wizard               # 자격증명 미등록 → 해당 브로커 입력 폼

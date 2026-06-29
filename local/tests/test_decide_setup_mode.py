@@ -5,6 +5,10 @@ from localapp.onboarding import decide_setup_mode
 
 
 @pytest.mark.parametrize("broker,ready,dev_ok,collapsed,expected", [
+    # 브로커 미선택(처음, 기본값 없음) → choose_broker (ready/dev/collapsed 무관)
+    ("",    False, False, True,  "choose_broker"),
+    ("",    True,  True,  True,  "choose_broker"),
+    ("none", False, False, False, "choose_broker"),
     # 둘 다 완료 + 접힘 → normal
     ("kis", True,  True,  True,  "normal"),
     ("ls",  True,  True,  True,  "normal"),

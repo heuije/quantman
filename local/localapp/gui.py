@@ -293,7 +293,11 @@ class SettingsApp:
 
         # ── 브로커 선택 (KIS / LS) — LS 브로커 지원 추가 ─────────────────────────
         # setup_expanded 최상단에 라디오 2개. 선택 변경 시 → 하단 폼 전환.
-        self.broker_choice = tk.StringVar(value=secrets_store.get_active_broker())
+        # 처음(자격증명 없음)엔 미선택("") → 유저가 KIS/LS를 직접 클릭해야 폼이 뜬다(순수 2지선다,
+        # 기본값 없음). 기존 사용자(자격증명 보유)는 저장된 브로커를 그대로 선택 — 무영향.
+        _init_broker = (secrets_store.get_active_broker()
+                        if secrets_store.active_cred_ok() else "")
+        self.broker_choice = tk.StringVar(value=_init_broker)
         self.broker_selector_frame = tk.Frame(self.setup_expanded, bg=BG)
         self.broker_selector_frame.pack(fill="x", padx=12, pady=(8, 2))
         self._build_broker_selector(self.broker_selector_frame)
@@ -718,6 +722,10 @@ class SettingsApp:
                 self.acct_frame.pack(fill="x", padx=12, pady=(4, 6))
                 self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 4))
                 self.refresh_btn.pack(anchor="e", padx=14, pady=(0, 10))
+            elif new_mode == "choose_broker":
+                # 처음 — 브로커 미선택. 선택기만 노출(폼 숨김), 유저가 KIS/LS 클릭 시 폼 전환.
+                self.setup_expanded.pack(fill="x")
+                self.broker_selector_frame.pack(fill="x", padx=12, pady=(8, 2))
             elif new_mode == "wizard_kis":
                 self.setup_expanded.pack(fill="x")
                 self.broker_selector_frame.pack(fill="x", padx=12, pady=(8, 2))
@@ -761,6 +769,12 @@ class SettingsApp:
         self.setup_collapsed = not self.setup_collapsed
         if was_collapsed and secrets_store.active_cred_ok():
             self._wizard_jump_to_input()
+        self.refresh_status()
+
+    def _close_setup(self):
+        """펼친 설정 → 정상 화면으로 닫기. '⚙ 변경'으로 펼친 뒤 빠져나오지 못하던 갇힘 해소.
+        (자격증명·페어링 완료 사용자만 버튼이 보이므로 닫으면 정상 화면으로 간다.)"""
+        self.setup_collapsed = True
         self.refresh_status()
 
     def _reset_credentials(self):
@@ -852,6 +866,15 @@ class SettingsApp:
         # 설정 영역 toggle — ready(자산군 슬롯 ≥1)는 _render_setup_area가 내부에서
         # broker_ready(broker_choice)로 직접 계산한다(P3).
         self._render_setup_area(dev_ok=bool(dev))
+
+        # 펼친 설정의 닫기·초기화 버튼 — 자격증명 보유 + 펼친 상태에서만 노출(갇힘 해소).
+        # 처음 사용자(자격증명 없음)는 닫을 정상화면도, 지울 키도 없으므로 숨김.
+        if not self.setup_collapsed and broker_cred_ok:
+            self.btn_setup_close.pack(side="right", padx=(4, 0))
+            self.btn_setup_reset.pack(side="right", padx=(4, 0))
+        else:
+            self.btn_setup_close.pack_forget()
+            self.btn_setup_reset.pack_forget()
 
         # Kill switch 배너
         if ks_active:
@@ -1405,20 +1428,30 @@ class SettingsApp:
     # ── 브로커 선택 + LS 자격증명 폼 ─────────────────────────────────────────────
 
     def _build_broker_selector(self, parent) -> None:
-        """KIS / LS 브로커 라디오 선택기.
+        """KIS / LS 브로커 선택 — 크고 명확한 2지선다(처음엔 미선택, 직접 클릭).
 
-        선택 변경 시 secrets_store.set_active_broker 호출 + self.broker_choice 동기화
-        → refresh_status → _render_setup_area 가 올바른 폼으로 전환.
-        """
-        tk.Label(parent, text="브로커 선택", bg=BG, fg=TEXT,
-                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 12))
+        선택 변경 시 secrets_store.set_active_broker + broker_choice 동기화 → refresh_status →
+        _render_setup_area 가 올바른 폼으로 전환. 펼친 상태(자격증명 보유)에선 우측에 닫기·초기화
+        버튼을 노출(refresh_status가 토글) — '⚙ 변경'으로 펼친 뒤 빠져나오지 못하던 갇힘 해소."""
+        top = tk.Frame(parent, bg=BG)
+        top.pack(fill="x")
+        tk.Label(top, text="브로커 선택", bg=BG, fg=TEXT,
+                 font=("Segoe UI", 14, "bold")).pack(side="left")
+        # 펼친 설정 도구(닫기·초기화) — refresh_status가 자격증명 보유+펼침 시에만 pack.
+        self.btn_setup_reset = ttk.Button(top, text="자격증명 초기화",
+                                          command=self._reset_credentials)
+        self.btn_setup_close = ttk.Button(top, text="✕ 닫기",
+                                          command=self._close_setup)
+
+        radios = tk.Frame(parent, bg=BG)
+        radios.pack(fill="x", pady=(10, 4))
         for value, label in (("kis", "KIS 한국투자증권"), ("ls", "LS증권 (이베스트)")):
             tk.Radiobutton(
-                parent, text=label, variable=self.broker_choice, value=value,
+                radios, text=label, variable=self.broker_choice, value=value,
                 bg=BG, fg=TEXT, activebackground=BG, selectcolor=BG,
-                font=("Segoe UI", 9),
+                font=("Segoe UI", 14), padx=12, pady=8, cursor="hand2",
                 command=self._on_broker_choice_change,
-            ).pack(side="left", padx=(0, 16))
+            ).pack(side="left", padx=(0, 28))
 
     def _on_broker_choice_change(self) -> None:
         """브로커 라디오 변경 → 저장 + 화면 전환."""
