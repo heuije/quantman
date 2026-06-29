@@ -163,7 +163,8 @@ def _out(s: Strategy) -> StrategyOut:
                        definition=s.definition, created_at=s.created_at,
                        updated_at=s.updated_at,
                        paper_started_at=s.paper_started_at,
-                       live_started_at=s.live_started_at)
+                       live_started_at=s.live_started_at,
+                       account_ref=s.account_ref)
 
 
 def _own_or_404(session: Session, strategy_id: int, user_id: int) -> Strategy:
@@ -264,6 +265,7 @@ def create_strategy(
     now = datetime.now(timezone.utc)
     row = Strategy(user_id=user.id, name=name, run_mode=body.run_mode,
                    engine=body.engine, definition=definition,
+                   account_ref=body.account_ref,
                    paper_started_at=now if body.run_mode == "paper" else None,
                    live_started_at=now if body.run_mode == "live" else None,
                    live_capital_at_start=(_current_capital(session, user.id)
@@ -323,6 +325,7 @@ def update_strategy(
     row.run_mode = body.run_mode
     row.engine = body.engine
     row.definition = definition
+    row.account_ref = body.account_ref
     row.updated_at = now
     # Task 12b — 사용자 수정·전환 시 정적 라이브 바스켓을 초기화해 다음 preview에서 재형성.
     # live_basket은 서버 파생 상태 — definition·run_mode가 바뀌면 고정 집합도 다시 형성해야 한다.

@@ -1484,10 +1484,13 @@ class SettingsApp:
         self._ls_test_btn.pack(side="right", padx=(0, 8))
 
     def _ls_test_connection(self) -> None:
-        """LS 자격증명 연결 테스트 — 입력값으로 토큰을 발급해 App Key/Secret 유효성 확인.
+        """LS 자격증명 연결 테스트 — 토큰 발급(App Key/Secret) + 계좌 조회(read TR) 성공 확인.
 
-        잔고/주문 TR 필드가 Phase C 실측 전까지 초안이라, 확정된 토큰 엔드포인트만으로
-        검증한다(ls_health.test_credentials). 깊은 검증(잔고·체결)은 verify_ls.py.
+        토큰만이 아니라 계좌유형별 read TR(국내선물 t0441·국내주식 t0424)을 1회 호출해
+        appkey 계좌컨텍스트가 라이브인지까지 검증한다(ls_health.test_credentials).
+        ⚠ LS는 appkey=계좌단위라 계좌번호 자체는 read-only로 검증 불가 — ls_health가 정직한
+        한계를 메시지로 표면화하고, 응답에 계좌번호가 echo되면(실전 가능) read-back으로 확인한다.
+        해외선물은 별도 컨텍스트라 토큰만 검증(후속).
         """
         key = self.ls_e_key.get().strip()
         secret = self.ls_e_secret.get().strip()
@@ -1497,12 +1500,17 @@ class SettingsApp:
                                       text="App Key · Secret · 계좌번호를 모두 입력하세요.")
             return
         virtual = bool(self.ls_virtual_var.get())
+        # 계좌유형 → read TR 선택(ls_health.account_kind). 저장 분기(_ls_save)와 동일 매핑.
+        acct_type = self.ls_acct_type.get()
+        kind = ("futures" if acct_type == _LS_ACCT_FUTURES
+                else "overseas_futures" if acct_type == _LS_ACCT_OV_FUTURES
+                else "stock")
         self._ls_status.configure(fg=MUTED, text="LS 서버에 연결 중...")
         self._ls_test_btn.configure(state="disabled")
 
         def work():
             from . import ls_health
-            return ls_health.test_credentials(key, secret, virtual)
+            return ls_health.test_credentials(key, secret, acct, virtual, account_kind=kind)
 
         def done(result, err):
             self._ls_test_btn.configure(state="normal")
