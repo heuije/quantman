@@ -71,6 +71,10 @@ FDR_SYMBOLS = {
 # 미수집(무료 연속선물 피드 부재) — seed_from_investing_csv로 시드, append_daily_bars로 증분.
 CSV_SEEDED_FUTURES = ["코스피200선물"]
 
+# 미니 코스피200선물 = 정규와 동일 KOSPI200 지수(동일 호가 포인트). 가격 데이터는 정규
+# 시리즈를 공유한다(별도 수급 안 함) — 손익차는 엔진 승수(50k vs 250k)에서만 발생.
+PRICE_ALIAS = {"미니코스피200선물": "코스피200선물"}
+
 # 매크로 지표 — yfinance
 MACRO_YF_SYMBOLS = {
     "VIX":          "^VIX",
@@ -141,7 +145,8 @@ ALL_SYMBOLS = ASSET_SYMBOLS + MACRO_SYMBOLS
 SYMBOL_CATEGORY: dict[str, str] = {
     # 자산
     "S&P500": "자산", "원유선물": "자산", "천연가스선물": "자산", "금선물": "자산",
-    "코스피200선물": "자산", "코스피200선물ETF": "자산", "나스닥100선물": "자산", "은선물": "자산",
+    "코스피200선물": "자산", "미니코스피200선물": "자산", "코스피200선물ETF": "자산",
+    "나스닥100선물": "자산", "은선물": "자산",
     "구리선물": "자산", "비트코인": "자산",
     "나스닥선물": "자산", "은선물(COMEX)": "자산", "비트코인선물": "자산",
     # 변동성
@@ -177,6 +182,7 @@ def symbol_category(name: str) -> str:
 # ── 공통 유틸 ────────────────────────────────────────────────────────────────
 
 def _parquet_path(symbol: str) -> Path:
+    symbol = PRICE_ALIAS.get(symbol, symbol)   # 미니→정규 시리즈 공유
     return DATA_DIR / f"{symbol.replace('/', '_')}.parquet"
 
 def _fund_path(name: str) -> Path:
@@ -1139,6 +1145,8 @@ def load_all() -> dict[str, pd.DataFrame]:
 
     for symbol in ALL_SYMBOLS:
         _add(symbol)
+    for symbol in PRICE_ALIAS:        # 미니 등 alias 심볼 — _add가 _parquet_path로 정규 시리즈 공유(I-1)
+        _add(symbol)
     for stock in load_user_stocks():
         _add(stock["name"])
     # Phase 29: 자동 관리 한국 종목 (KIS 마스터 KOSPI/KOSDAQ union)
@@ -1211,6 +1219,7 @@ def dataset_symbol_index() -> dict[str, dict]:
     DataFrame을 메모리에 적재하지 않는다(저메모리·고속)."""
     import pyarrow.parquet as pq
     names = (list(ALL_SYMBOLS)
+             + list(PRICE_ALIAS)
              + [s["name"] for s in load_user_stocks()]
              + load_managed_kr_codes()
              + [s["code"] for s in load_managed_overseas()])

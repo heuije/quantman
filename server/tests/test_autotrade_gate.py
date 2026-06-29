@@ -13,6 +13,11 @@ def test_asset_class_kospi200_futures():
     assert asset_class_for_symbol("코스피200선물", "") == "kr_futures"
 
 
+def test_asset_class_mini_kospi200_futures():
+    # 미니도 정규와 같은 kr_futures(currency KRW + asset_class futures) — 게이트 무변경으로 개방
+    assert asset_class_for_symbol("미니코스피200선물", "") == "kr_futures"
+
+
 def test_asset_class_jp_hk_unsupported():
     # 일본(TSE)/홍콩(HKS)은 자동매매 미지원 — None
     assert asset_class_for_symbol("7203", "TSE") is None
@@ -41,6 +46,12 @@ def _defn(symbols, broker, direction="long"):
 
 def test_kospi200_futures_paper_allowed_when_bound(monkeypatch):
     _assert_live_tradable("paper", _defn(["코스피200선물"], "kis"), account_broker="kis")
+
+
+def test_mini_kospi200_futures_paper_allowed_when_bound(monkeypatch):
+    # 미니도 kr_futures라 KIS·LS 모의 모두 게이트 통과(코드 변경 없이 개방)
+    _assert_live_tradable("paper", _defn(["미니코스피200선물"], "kis"), account_broker="kis")
+    _assert_live_tradable("paper", _defn(["미니코스피200선물"], "ls"), account_broker="ls")
 
 
 def test_overseas_futures_blocked_phase1(monkeypatch):

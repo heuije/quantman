@@ -46,7 +46,7 @@ from localapp.kis_futures_broker import (  # noqa: E402
 from localapp.secrets_store import load_kis_futures, load_kis_overseas_futures  # noqa: E402
 from localapp.trader import _round_limit  # noqa: E402
 
-SYMBOL = "코스피200선물"          # 데이터셋 심볼(국내 유일 선물)
+SYMBOL = "코스피200선물"          # 진단 기본값 — 정규 코스피200선물
 OVERSEAS_SYMBOL = "금선물"        # 해외 read-only 캡처 대표 종목(GC, globex GCx)
 
 

@@ -6,8 +6,9 @@
 (마스터 텍스트를 인자로 받음; 다운로드/캐시는 호출부 = 로컬앱 Trader).
 
 마스터(KIS 공개·키불요):
-  국내 `fo_idx_code.mst` — KOSPI200 정규선물('1' 시작, 미니'B'/옵션 제외), 만기=2번째 목요일.
-    라인예 `1A01606  ... F 202606 ... KOSPI200` → 단축코드 line[1:7]=A01606.
+  국내 `fo_idx_code.mst` — 정규('1' 시작·단축 A01)·미니('B' 시작·단축 A05)·옵션('2', C/P) 수록.
+    root_char로 상품별 라인 선택(옵션은 항상 제외), 만기=2번째 목요일. 단축코드 line[1:7].
+    라인예 정규 `1A01606 ... F 202606 ... KOSPI200`, 미니 `BA05606 ... 미니F 202606 ... KOSPI200`.
   해외 `ffcode.mst` — CME globex. col0=코드, name에 `-YYYYMM`, exchange/root, 승수.
     근월물 = root 정확일치 + 승수 교차검증(parse 안전장치) + 스프레드(code"-")/TAS(root) 제외 후
     name의 YYYYMM이 today_ym 이상 중 최소. 풀계약만(마이크로 MGC·미니 QM·1oz/100oz 등 root로 배제).
@@ -35,8 +36,14 @@ OVERSEAS_ROOTS: dict[str, str] = {
     "비트코인선물": "BTC",      # Bitcoin 5coin (MBT=micro 제외)
 }
 
-# 국내 선물(KRX) — 현 카탈로그상 KOSPI200 정규선물이 유일.
-_DOMESTIC = ("코스피200선물",)
+# 국내 선물(KRX) 상품별 식별자 — (마스터 라인 첫 글자, 단축코드 prefix). 새 국내선물은 여기 한 줄.
+# 정규 코스피200선물 = 마스터 '1' 시작·단축 A01 / 미니 = 'B' 시작·단축 A05. fo_idx_code.mst가
+# 두 상품을 같은 파일에 담으므로 root_char(첫 글자)로 라인을 갈라 상품별 근월물을 해석한다.
+_DOMESTIC_SPEC: dict[str, tuple[str, str]] = {
+    "코스피200선물":     ("1", "A01"),
+    "미니코스피200선물": ("B", "A05"),
+}
+_DOMESTIC = tuple(_DOMESTIC_SPEC)
 
 
 def _second_thursday(y: int, m: int) -> date:
@@ -45,10 +52,11 @@ def _second_thursday(y: int, m: int) -> date:
 
 
 def _front_domestic(master_text: str, today: date,
-                    lead_days: int = 0) -> tuple[date, str] | None:
-    """fo_idx_code.mst → KOSPI200 정규선물 근월물 (만기일, 단축코드). 없으면 None.
+                    lead_days: int = 0, root_char: str = "1") -> tuple[date, str] | None:
+    """fo_idx_code.mst → KOSPI200 선물 근월물 (만기일, 단축코드). 없으면 None.
 
-    정규선물('1' 시작)만 — 미니('B')·옵션('2', C/P) 제외. 만기=2번째 목요일. 순수함수.
+    root_char로 상품을 선택: 정규('1' 시작, 단축 A01)·미니('B' 시작, 단축 A05). 옵션('2', C/P)은
+    항상 제외. 기본 root_char="1"이라 기존 호출부(정규)는 byte-identical. 만기=2번째 목요일. 순수함수.
 
     lead_days>0이면 **만기 lead일 전부터 차월물로 롤** — 진입 시 만기 임박 계약을 피한다.
     백스톱(_expiry_close_reason)이 보유분을 만기 lead일 전 청산하는 것과 대칭: 진입도
@@ -58,7 +66,7 @@ def _front_domestic(master_text: str, today: date,
     cutoff = today + timedelta(days=lead_days)
     best: tuple[date, str] | None = None
     for line in master_text.splitlines():
-        if "KOSPI200" not in line or not line.startswith("1"):
+        if "KOSPI200" not in line or not line.startswith(root_char):
             continue
         m = re.search(r"F (\d{6})", line)            # 상품명 'F 202606'
         if not m:
@@ -72,9 +80,11 @@ def _front_domestic(master_text: str, today: date,
 
 
 def parse_front_month_domestic(master_text: str, today: date,
-                               lead_days: int = 0) -> str | None:
-    """fo_idx_code.mst → KOSPI200 정규선물 근월물 단축코드(만기≥today+lead 중 최근). 없으면 None."""
-    r = _front_domestic(master_text, today, lead_days)
+                               lead_days: int = 0, root_char: str = "1") -> str | None:
+    """fo_idx_code.mst → KOSPI200 선물 근월물 단축코드(만기≥today+lead 중 최근). 없으면 None.
+
+    root_char로 상품 선택(정규 '1'·미니 'B'). 기본 '1'이라 기존 호출부는 정규 그대로(byte-identical)."""
+    r = _front_domestic(master_text, today, lead_days, root_char)
     return r[1] if r else None
 
 
@@ -134,7 +144,7 @@ def dataset_for_contract(code: str) -> str | None:
     정규화해 기존 (symbol,side) 매칭 로직을 그대로 쓴다. **roll 독립**(root 파싱 — 만기/마스터 불요).
 
     해외: globex = root + 월코드(1) + YY(2) → root = code[:-3] → OVERSEAS_ROOTS 역.
-    국내: KOSPI200이 유일 국내선물 → 'A'+숫자 단축코드(A01606)면 "코스피200선물".
+    국내: 단축코드 prefix로 상품 구분 — A01→정규 코스피200선물·A05→미니. _DOMESTIC_SPEC 역.
     미매칭(미등록 코드) → None.
     """
     if not code:
@@ -143,8 +153,9 @@ def dataset_for_contract(code: str) -> str | None:
     for sym, r in OVERSEAS_ROOTS.items():
         if r == root:
             return sym
-    if re.match(r"^A\d", code):                        # 국내 지수선물 단축코드(KOSPI200 유일)
-        return _DOMESTIC[0]
+    for sym, (_root, prefix) in _DOMESTIC_SPEC.items():   # 국내 단축코드 prefix(A01 정규·A05 미니)
+        if code.startswith(prefix):
+            return sym
     return None
 
 
@@ -171,7 +182,10 @@ def resolve_contract(symbol: str, today: date, *,
     # front_contract(원장 기록)가 같은 lead로 같은 계약을 골라야 정합.
     lead = roll_lead_days(instrument_spec(symbol).default_roll)
     if symbol in _DOMESTIC:
-        return parse_front_month_domestic(domestic_master, today, lead) if domestic_master else None
+        if not domestic_master:
+            return None
+        root_char = _DOMESTIC_SPEC[symbol][0]          # 정규 '1'·미니 'B' — 상품별 마스터 라인 선택
+        return parse_front_month_domestic(domestic_master, today, lead, root_char=root_char)
     root = OVERSEAS_ROOTS.get(symbol)
     if root is not None:
         if not overseas_master:
@@ -197,7 +211,8 @@ def front_contract(symbol: str, today: date, *,
     if symbol in _DOMESTIC:
         if not domestic_master:
             return None
-        r = _front_domestic(domestic_master, today, lead)
+        root_char = _DOMESTIC_SPEC[symbol][0]          # 정규 '1'·미니 'B' — 상품별 마스터 라인 선택
+        r = _front_domestic(domestic_master, today, lead, root_char=root_char)
         if r is None:
             return None
         exp, code = r

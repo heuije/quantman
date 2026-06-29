@@ -208,6 +208,19 @@ def test_event_qty_krw_futures_pct_unchanged():
                          dataset={_FX: _fx_df(1370.0)}) == 20
 
 
+def test_event_qty_mini_kospi200_uses_50k_multiplier():
+    """미니 코스피200선물(승수 50,000 = 정규 1/5) % 사이징 — 같은 예산에 정규의 5배 계약수.
+
+    승수가 instrument_spec에서 동적 전파됨을 고정(미니 자동매매 사이징 검증·T5). 같은 지수(prev_close)
+    라도 계약당 증거금이 1/5라 같은 예산으로 5배 계약 = 동일 명목 노출. KRW 선물이라 FX 무관(정규와 동일)."""
+    mini = _strat({"futures_margin_pct": 20.0},
+                  {"kind": "single", "symbols": ["미니코스피200선물"]})
+    # 1e9 × 20% = 2e8 / (400×50,000×0.10=2e6) = 100계약 (정규 20계약의 5배 — 승수 1/5)
+    assert event_buy_qty(mini, cash=1e9, prev_close=400.0) == 100
+    assert event_buy_qty(mini, cash=1e9, prev_close=400.0,
+                         dataset={_FX: _fx_df(1370.0)}) == 100
+
+
 # ── 백테스트 엔진 (run_unified 이벤트 경로 _budget) ────────────────────────────
 
 def test_engine_usd_fixed_amount_sizing():

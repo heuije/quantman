@@ -208,3 +208,37 @@ def test_front_contract_without_master_none():
     # 마스터 미수신 → None (발주 skip과 동일 — 추측 만기 금지)
     assert front_contract("코스피200선물", date(2026, 6, 7)) is None
     assert front_contract("금선물", date(2026, 6, 7)) is None
+
+
+# ── 미니 코스피200선물 (Task 3: resolver 일반화 — 정규/미니 양쪽 해석) ──────────────
+# 정규('1' 시작·A01)와 미니('B' 시작·A05)가 같은 마스터에 공존. 정규 해석은 byte-identical 보존,
+# 미니는 ADD ALONGSIDE — root_char로 상품별 라인 필터(정규 root="1", 미니 root="B").
+_DOM2 = "\n".join([
+    "1A01606   KR4A01660005F 202606                  00000.0012001     KOSPI200",
+    "1A01609   KR4A01690002F 202609                  00000.0022001     KOSPI200",
+    "BA05606   KR4A05660001미니F 202606              00000.0012001     KOSPI200",
+    "BA05609   KR4A05690008미니F 202609              00000.0022001     KOSPI200",
+    "2A02606   KR4A02660003C 202606  300.0           00000.0012001     KOSPI200",
+])
+
+
+def test_regular_still_resolves_a01():            # 정규 회귀
+    from quant_core.futures_contract import parse_front_month_domestic
+    assert parse_front_month_domestic(_DOM2, date(2026, 6, 7)) == "A01606"
+
+
+def test_mini_resolves_a05():                     # 미니 근월물
+    # 6/5 = 6월물 만기(6/11) 6일 전 → 진입 롤 lead(5일) 밖이라 근월물 A05606 유지(롤 안 함).
+    # 6/7은 lead 안이라 9월물로 롤되므로(정규 A01609와 대칭) 근월 해석 검증엔 lead 밖 날짜를 쓴다.
+    assert resolve_contract("미니코스피200선물", date(2026, 6, 5), domestic_master=_DOM2) == "A05606"
+
+
+def test_regular_resolves_a01_via_resolve_contract():
+    # 6/5 = lead(5일) 밖 → 정규 근월물 A01606 (resolve_contract 경유). 6/7은 lead 안이라 롤(기존
+    # test_resolve_domestic_rolls_within_lead가 A01609 보장) — 그 byte-identical 불변식과 충돌 안 함.
+    assert resolve_contract("코스피200선물", date(2026, 6, 5), domestic_master=_DOM2) == "A01606"
+
+
+def test_dataset_for_contract_splits_regular_mini():
+    assert dataset_for_contract("A01606") == "코스피200선물"
+    assert dataset_for_contract("A05606") == "미니코스피200선물"

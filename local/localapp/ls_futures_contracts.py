@@ -9,9 +9,14 @@ import datetime
 import re
 
 import quant_core as qc
-from quant_core.futures_contract import instrument_spec, roll_lead_days, OVERSEAS_ROOTS
+from quant_core.futures_contract import (
+    instrument_spec, roll_lead_days, OVERSEAS_ROOTS, _DOMESTIC_SPEC,
+)
 
 _KOSPI200 = "코스피200선물"
+# 국내선물 단축코드 prefix는 core _DOMESTIC_SPEC 단일출처에서 파생(정규 A01·미니 A05).
+# 여기서 "A01"/"A05"를 독립 하드코딩하지 않는다 — 그 독립 하드코딩이 이 모듈이 닫으려는 버그류다.
+_DOMESTIC_PREFIX = {sym: prefix for sym, (_root_char, prefix) in _DOMESTIC_SPEC.items()}
 
 # CME 월물코드 → 월 (ADM23 = BscGdsCd + 월물코드 + 연2자리)
 # ⚠ o3101 필드명(Symbol/BscGdsCd)·LS BscGdsCd가 CME globex root와 동일한지(금 GC 등)·
@@ -62,15 +67,23 @@ def _second_thursday(y: int, m: int) -> datetime.date:
     return first_thu + datetime.timedelta(days=7)
 
 
-def _pick_front_kospi200(master: list[dict], today: datetime.date) -> str | None:
-    """t8467 마스터에서 KOSPI200 근월물 shcode. 스프레드(SP)·만기경과 제외, roll lead 반영.
-    아웃라이트 KOSPI200 선물 shcode="A01…"(예 A0169000=F2609), 스프레드="D01…"(F SP …·SP로 제외)."""
-    lead = roll_lead_days(instrument_spec(_KOSPI200).default_roll)
+def _pick_front_kospi200(master: list[dict], today: datetime.date,
+                         symbol: str = _KOSPI200) -> str | None:
+    """t8467 마스터에서 상품(symbol) 근월물 shcode. 스프레드(SP)·만기경과 제외, roll lead 반영.
+
+    symbol로 상품을 선택 — 정규 코스피200선물(단축 "A01…")·미니("A05…"). prefix·roll lead는
+    core _DOMESTIC_SPEC/instrument_spec 단일출처에서 파생한다(독립 하드코딩 금지). 기본 정규라
+    기존 호출부(_orderable_amt_krw)는 byte-identical. 스프레드("D01…"·hname "F SP …")는 SP로 제외."""
+    prefix = _DOMESTIC_PREFIX[symbol]
+    # ⚠ 미니의 t8467 행 형식(shcode "A05…"·hname "미니 F YYMM")은 정규(A01·2026-06-22 모의 실측)
+    #   에서 유추 — 최초 미니 라이브 t8467 덤프로 확정 필요. 형식 불일치 시 _parse_ym→None→해당 행
+    #   skip→resolve None→발주 보류(안전쪽, 오발주 0). 정규(A01)는 실측 확정.
+    lead = roll_lead_days(instrument_spec(symbol).default_roll)
     cands = []
     for row in master:
         h = str(row.get("hname") or "")
         sh = str(row.get("shcode") or "")
-        if "SP" in h or not sh.startswith("A01"):   # 스프레드·비KOSPI200 정규선물 제외
+        if "SP" in h or not sh.startswith(prefix):   # 스프레드·타상품(정규↔미니) prefix 불일치 제외
             continue
         ym = _parse_ym(h)
         if not ym:
@@ -117,9 +130,9 @@ class LsContractResolver:
         if not qc.is_futures(symbol):
             return symbol               # 주식은 심볼 그대로
         today = datetime.date.today()
-        if symbol == _KOSPI200:
-            self._ensure(today)         # 기존 도메스틱 t8432
-            return _pick_front_kospi200(self._master, today) if self._master else None
+        if symbol in _DOMESTIC_SPEC:    # 국내선물(정규 코스피200·미니) — 같은 t8467 마스터
+            self._ensure(today)
+            return _pick_front_kospi200(self._master, today, symbol) if self._master else None
         root = OVERSEAS_ROOTS.get(symbol)
         if root:
             self._ensure_overseas(today)
@@ -129,7 +142,7 @@ class LsContractResolver:
     def resolve_expiry(self, symbol: str):
         """(계약코드, 만기일). 만기 자동청산 ledger 기록용. 미해석 → (None, None)."""
         code = self.resolve(symbol)
-        if not code or symbol != _KOSPI200:
+        if not code or symbol not in _DOMESTIC_SPEC:   # 국내선물(정규·미니)만 2번째 목요일 만기
             return None, None
         ym = _parse_ym(next(
             (r["hname"] for r in (self._master or []) if r.get("shcode") == code), ""))
@@ -139,9 +152,11 @@ class LsContractResolver:
 
     @staticmethod
     def dataset_for_code_static(code: str) -> str | None:
-        """LS 계약코드 → 데이터셋 심볼(역매핑). 국내선물 A01… → 코스피200선물. 주식/미등록 → None."""
-        if code and code.startswith("A01"):
-            return _KOSPI200
+        """LS 계약코드 → 데이터셋 심볼(역매핑). 국내선물 A01…→정규 코스피200선물·A05…→미니.
+        주식/미등록 → None. I-2: A05 라이브 포지션이 None을 반환해 ledger에서 누수하던 결함을 닫는다."""
+        for sym, prefix in _DOMESTIC_PREFIX.items():   # 국내 prefix(A01 정규·A05 미니) — core 단일출처
+            if code and code.startswith(prefix):
+                return sym
         for sym, root in OVERSEAS_ROOTS.items():
             if code and code.startswith(root) and len(code) >= len(root) + 3 \
                     and code[len(root)] in _CME_MONTHS:

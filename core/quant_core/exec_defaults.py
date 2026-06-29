@@ -132,6 +132,7 @@ _INSTRUMENTS: dict[str, InstrumentSpec] = {
     # FHKIF03020100 증분으로 "코스피200선물" 키에 수급(F1). ETF(261220)는 "코스피200선물ETF"로
     # 분리됨 — 이 키에 더는 ETF가 안 들어와 승수 충돌(F0에서 임시로 equity 후퇴했던 것) 해소.
     "코스피200선물":  InstrumentSpec("futures", 250_000.0, 0.05, "KRW", 0.10, 0.075, "kospi200_2nd_thu", "days_before:5"),
+    "미니코스피200선물": InstrumentSpec("futures",  50_000.0, 0.05, "KRW", 0.10, 0.075, "kospi200_2nd_thu", "days_before:5"),
     "원유선물":      InstrumentSpec("futures",   1_000.0, 0.01,  "USD", 0.10, 0.08,  "cme_cl",  "days_before:5"),
     "천연가스선물":   InstrumentSpec("futures",  10_000.0, 0.001, "USD", 0.10, 0.08,  "cme_ng",  "days_before:5"),
     "금선물":        InstrumentSpec("futures",     100.0, 0.10,  "USD", 0.08, 0.06,  "cme_gc",  "days_before:5"),
