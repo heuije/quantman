@@ -174,14 +174,14 @@ export const api = {
   getStrategy: (id: number) => req<StrategyRow>(`/strategies/${id}`),
   // engine — ir(전략 연구소) 단일. 레거시 operand는 신규 생성 경로 제거됨(읽기만 호환).
   createStrategy: (definition: StrategyDef | IrStrategyDef, run_mode: string,
-                   engine: "operand" | "ir" = "ir") =>
+                   engine: "operand" | "ir" = "ir", account_ref?: string | null) =>
     req<StrategyRow>("/strategies", {
-      method: "POST", body: JSON.stringify({ definition, run_mode, engine }),
+      method: "POST", body: JSON.stringify({ definition, run_mode, engine, account_ref }),
     }),
   updateStrategy: (id: number, definition: StrategyDef | IrStrategyDef, run_mode: string,
-                   engine: "operand" | "ir" = "ir") =>
+                   engine: "operand" | "ir" = "ir", account_ref?: string | null) =>
     req<StrategyRow>(`/strategies/${id}`, {
-      method: "PUT", body: JSON.stringify({ definition, run_mode, engine }),
+      method: "PUT", body: JSON.stringify({ definition, run_mode, engine, account_ref }),
     }),
   deleteStrategy: (id: number) =>
     req<{ ok: boolean }>(`/strategies/${id}`, { method: "DELETE" }),

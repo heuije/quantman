@@ -148,6 +148,15 @@ export interface ScreenerField {
   key: string; label: string; unit: string; group: string;
 }
 
+/** P5-4 — 비민감 계좌 핸들. 로컬앱이 sync snapshot health에 실어 보고(INV-SEC: 계좌번호·자격증명 미포함). */
+export interface AccountHandle {
+  account_id: string;
+  broker: "kis" | "ls";
+  asset_classes: string[];
+  mode: "paper" | "live";
+  nickname: string;
+}
+
 export interface StrategyRow {
   id: number; name: string; run_mode: string;
   // 표현 엔진 — operand(레거시 row) | ir(전략 연구소). engine으로 분기해 좁혀 읽는다.
@@ -156,6 +165,8 @@ export interface StrategyRow {
   // Phase 59 — run_mode 전환 시점 기록
   paper_started_at?: string | null;
   live_started_at?: string | null;
+  // P5-4 — 실행 계좌 바인딩(handle.account_id). null/미설정=미바인딩(레거시·핸들 없는 사용자).
+  account_ref?: string | null;
 }
 
 // Phase 59 — 전략 버전 이력
@@ -657,6 +668,9 @@ export interface LocalHealth {
   kis_token_expires_at?: string | null;
   kis_master_pushed_date?: string | null;
   warnings: string[];
+  // P5-4 — 로컬앱이 보고하는 비민감 계좌 핸들 + 현재 활성 계좌 id들(웹 계좌 바인딩 UX).
+  account_handles?: AccountHandle[];
+  active_account_ids?: string[];
 }
 
 export interface MarketIndicator {
