@@ -2219,36 +2219,30 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
 
   // 가격 차트: 종가 라인(다운샘플) + forward 구간 음영(방향색) + 트리거/피벗 마커.
   const chart = useMemo(() => {
-    const empty = {
-      line: [] as { t: number; close: number }[],
-      shades: [] as { x1: number; x2: number; down: boolean }[],
-      trigDown: [] as { t: number; close: number }[],
-      trigUp: [] as { t: number; close: number }[],
-      trigLiq: [] as { t: number; close: number }[],
-      pivots: [] as { t: number; close: number }[],
-    };
+    const empty = { line: [] as { t: number; close: number }[], shades: [] as { x1: number; x2: number }[] };
     if (!prices.length) return empty;
     const ms = (d: string) => new Date(d).getTime();
     const stride = Math.max(1, Math.ceil(prices.length / 800));
     const line = prices
       .filter((_, i) => i % stride === 0 || i === prices.length - 1)
       .map((p) => ({ t: ms(p.date), close: p.close }));
-    if (!data || !applied) return { ...empty, line };
-    const out = { ...empty, line };
+    if (!data || !applied) return { line, shades: [] };
+    // 전환점(피벗) → 급등락(트리거) 형성 구간만 하이라이트, 겹침 병합(TREND 방식).
+    const wins: [number, number][] = [];
     for (const e of data.events) {
-      const ti = dateIdx.get(e.trigger_date);
-      const pi = dateIdx.get(e.pivot_date);
-      const down = e.direction === "down_exhaustion";
-      if (ti !== undefined) {
-        const end = Math.min(prices.length - 1, ti + applied.horizon);
-        out.shades.push({ x1: ms(prices[ti].date), x2: ms(prices[end].date), down });
-        const pt = { t: ms(prices[ti].date), close: prices[ti].close };
-        if (e.liquidated) out.trigLiq.push(pt);
-        else (down ? out.trigDown : out.trigUp).push(pt);
-      }
-      if (pi !== undefined) out.pivots.push({ t: ms(prices[pi].date), close: prices[pi].close });
+      const pi = dateIdx.get(e.pivot_date), ti = dateIdx.get(e.trigger_date);
+      if (pi === undefined || ti === undefined) continue;
+      wins.push([Math.min(pi, ti), Math.max(pi, ti)]);
     }
-    return out;
+    wins.sort((a, b) => a[0] - b[0]);
+    const merged: [number, number][] = [];
+    for (const w of wins) {
+      const last = merged[merged.length - 1];
+      if (last && w[0] <= last[1]) last[1] = Math.max(last[1], w[1]);
+      else merged.push([w[0], w[1]]);
+    }
+    const shades = merged.map(([a, b]) => ({ x1: ms(prices[a].date), x2: ms(prices[b].date) }));
+    return { line, shades };
   }, [prices, data, applied, dateIdx]);
 
   // 산점도: 트리거 시 누적 급등락(계좌%) × N일 회귀(계좌%), 방향색.
@@ -2284,6 +2278,10 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
     return String(parseFloat((a / l).toFixed(3)));
   };
 
+  const info = (text: string) => (
+    <span className="re-info">i<span className="re-tip">{text}</span></span>
+  );
+
   const toggleBtn = (active: boolean): CSSProperties => ({
     fontSize: 12, padding: "3px 10px", borderRadius: 6, cursor: "pointer",
     border: active ? "1px solid var(--accent)" : "1px solid var(--border)",
@@ -2298,23 +2296,34 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
         .re-num{display:inline-flex;align-items:center;gap:2px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:7px;padding:2px 9px;margin:0 3px;font-weight:600;color:var(--accent-strong)}
         .re-num input{border:none;background:transparent;color:var(--accent-strong);font:inherit;font-weight:600;text-align:center;-moz-appearance:textfield;appearance:textfield}
         .re-num input::-webkit-outer-spin-button,.re-num input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+        .re-field{display:inline-flex;align-items:center;gap:4px}
+        .re-info{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--muted);color:var(--muted);font-size:10px;font-weight:700;cursor:help;position:relative}
+        .re-info .re-tip{display:none;position:absolute;bottom:140%;left:50%;transform:translateX(-50%);width:240px;background:var(--navy-950,#0a1a30);color:#fff;padding:8px 10px;border-radius:8px;font-size:11.5px;font-weight:400;line-height:1.55;letter-spacing:normal;z-index:30;box-shadow:0 4px 14px rgba(0,0,0,.32)}
+        .re-info:hover .re-tip{display:block}
       `}</style>
 
       <p className="muted" style={{ fontSize: 13, lineHeight: 1.7, marginTop: 0 }}>
-        가격이 <b>전환임계</b>만큼 역행하면 추세가 바뀐 것으로 보고(트레일링 피벗), 그 추세가 <b>급등락임계</b>까지
-        달린 뒤 <b>역추세</b>로 진입(급락→롱·급등→숏)했을 때 <b>N일 후 얼마나 되돌리는지(회귀)</b>를 봅니다.
-        <b> 모든 %·수익률은 레버리지 반영 계좌 기준</b>이며, 보유 중 계좌 −100% 도달 시 청산(전손)으로 집계합니다.
+        급등락(추세가 크게 달린 뒤) 평균회귀를 봅니다. <b>모든 %·수익률은 레버리지 반영 계좌 기준</b>
+        (레버리지를 먼저 정하면 나머지 임계는 그 기준으로 해석 — 각 항목 <b>ⓘ</b> 참고).
       </p>
 
-      <div style={{ fontSize: 14, lineHeight: 2.7 }}>
-        레버리지 {numIn(leverage, setLeverage, "배", 44)} 기준 ·
-        지수가 <b style={{ color: "var(--accent-strong)" }}>{idxEq(reversal, leverage)}%</b> 역행
-        (= 계좌 {numIn(reversal, setReversal, "%")})하면 추세 전환 ·
-        피벗 대비 지수 <b style={{ color: "var(--accent-strong)" }}>{idxEq(run, leverage)}%</b>
-        (= 계좌 {numIn(run, setRun, "%")})까지 달리면 급등락 ·
-        이후 {numIn(horizon, setHorizon, "영업일", 44)} 회귀 관측 ·
-        최소간격 {numIn(gap, setGap, "일", 44)}
-        <button onClick={submit} disabled={loading} style={{ marginLeft: 10 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 20px", alignItems: "center", fontSize: 14 }}>
+        <span className="re-field">레버리지: {numIn(leverage, setLeverage, "배", 44)}
+          {info("계좌 수익률 = 지수 변동 × 레버리지. 모든 임계·수익률 %는 이 계좌 기준입니다. 예: 10배면 지수 1% 변동 = 계좌 10%.")}
+        </span>
+        <span className="re-field">전환임계: {numIn(reversal, setReversal, "%")}
+          {info(`running 극점에서 계좌 기준 이만큼 역행하면 추세 전환(트레일링 피벗). 지금 = 지수 ${idxEq(reversal, leverage)}% (계좌 ${Number(reversal) || 0}% ÷ ${Number(leverage) || "?"}배). 예: 10배·5%면 지수 0.5%만 움직여도 전환.`)}
+        </span>
+        <span className="re-field">급등락임계: {numIn(run, setRun, "%")}
+          {info(`피벗 대비 누적이 계좌 이만큼 도달하면 '급등락 완성'(트리거). 지금 = 지수 ${idxEq(run, leverage)}% (계좌 ${Number(run) || 0}% ÷ ${Number(leverage) || "?"}배). 이 시점에 역추세 진입(급락→롱·급등→숏).`)}
+        </span>
+        <span className="re-field">보유기간: {numIn(horizon, setHorizon, "영업일", 44)}
+          {info("트리거 후 회귀를 관측할 영업일 수. 보유 중 계좌 −100% 도달 시 청산(전손)으로 집계.")}
+        </span>
+        <span className="re-field">이벤트 최소간격: {numIn(gap, setGap, "일", 44)}
+          {info("같은 방향 트리거가 이 영업일 이내로 겹치면 1건만 채택(독립표본 디클러스터). 0=원시.")}
+        </span>
+        <button onClick={submit} disabled={loading} style={{ marginLeft: 4 }}>
           {loading ? "계산 중…" : "확인 (계산)"}
         </button>
       </div>
@@ -2344,12 +2353,11 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
             </button>
           </div>
 
-          {/* 표본 차트 — 전체기간 가격 위에 트리거·피벗·forward 음영 */}
+          {/* 전체기간 가격 차트 — 전환점→급등락 형성 구간만 하이라이트(TREND 방식) */}
           {prices.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <div className="muted" style={{ fontSize: 13, margin: "8px 0 6px" }}>
-                전체기간 가격 — <b style={{ color: "#de3033" }}>● 하락소진→롱</b> / <b style={{ color: "#1668c4" }}>● 상승소진→숏</b> 트리거,
-                음영 = 이후 {applied.horizon}일 구간, <b>○</b>=청산, <b>▲</b>=피벗.
+                전체기간 가격 — <span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 전환점(피벗) → 급등락(트리거) 형성 구간{data.events.length ? ` · ${data.events.length}건` : ""}.
               </div>
               <ResponsiveContainer width="100%" height={260}>
                 <ComposedChart data={chart.line} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
@@ -2364,10 +2372,6 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
                     <ReferenceArea key={i} x1={s.x1} x2={s.x2} fill="#d97757" fillOpacity={0.16} stroke="none" />
                   ))}
                   <Line type="monotone" dataKey="close" stroke="#d97757" dot={false} strokeWidth={1.5} />
-                  <Scatter data={chart.pivots} dataKey="close" fill="#b0a999" shape="triangle" />
-                  <Scatter data={chart.trigDown} dataKey="close" fill="#de3033" />
-                  <Scatter data={chart.trigUp} dataKey="close" fill="#1668c4" />
-                  <Scatter data={chart.trigLiq} dataKey="close" fill="#fff" stroke="#20201d" />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
