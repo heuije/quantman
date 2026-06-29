@@ -15,7 +15,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import type {
-  AccountHandle, BacktestRunSummary, IrStrategyDef,
+  AccountHandle, BacktestRunSummary, ExecutionSummary, IrStrategyDef,
   StrategyRow, StrategyStats, StrategyVersionRow,
 } from "../types";
 import AccountPicker from "../components/AccountPicker";
@@ -46,6 +46,8 @@ export default function StrategyDetail() {
   const [stats, setStats] = useState<StrategyStats | null>(null);
   const [versions, setVersions] = useState<StrategyVersionRow[]>([]);
   const [backtests, setBacktests] = useState<BacktestRunSummary[]>([]);
+  // P6-4 — 실행 명세 요약(전략 정의 파생). 비치명 — 실패 시 null(섹션 숨김).
+  const [execSummary, setExecSummary] = useState<ExecutionSummary | null>(null);
   // P5-4 — 비민감 계좌 핸들·활성 id(로컬앱이 snapshot에 실어 보고). 바인딩 표시·전환용.
   const [accountHandles, setAccountHandles] = useState<AccountHandle[]>([]);
   const [activeAccountIds, setActiveAccountIds] = useState<string[]>([]);
@@ -63,11 +65,14 @@ export default function StrategyDetail() {
       api.listStrategyBacktests(sid).catch(() => []),
       // 핸들 로드는 비치명 — 페어링된 로컬앱 없으면 빈 배열(→ "계좌 미선택"·안내 경로).
       api.snapshot().catch(() => null),
+      // 실행 명세 요약도 비치명 — 실패 시 null(섹션만 숨김, 페이지는 정상).
+      api.executionSummary(sid).catch(() => null),
     ])
-      .then(([s, st, vs, bs, snap]) => {
+      .then(([s, st, vs, bs, snap, es]) => {
         setStrategy(s); setStats(st); setVersions(vs); setBacktests(bs);
         setAccountHandles(snap?.payload?.health?.account_handles ?? []);
         setActiveAccountIds(snap?.payload?.health?.active_account_ids ?? []);
+        setExecSummary(es);
       })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setLoaded(true));
@@ -164,9 +169,11 @@ export default function StrategyDetail() {
       </nav>
 
       {tab === "config" && (strategy.engine === "ir" ? (
-        <IrConfigTab strategy={strategy} onRemove={remove} onDemote={demote} />
+        <IrConfigTab strategy={strategy} execSummary={execSummary}
+                     onRemove={remove} onDemote={demote} />
       ) : (
-        <LegacyConfigTab runMode={strategy.run_mode} onRemove={remove} onDemote={demote} />
+        <LegacyConfigTab runMode={strategy.run_mode} execSummary={execSummary}
+                         onRemove={remove} onDemote={demote} />
       ))}
       {tab === "versions" && (
         <VersionsTab versions={versions} backtests={backtests} onRestore={restoreVersion} />
@@ -265,8 +272,9 @@ function summarizeIrExit(ex: IrStrategyDef["position"]["exit"]): string {
   return parts.length ? parts.join(" · ") : "없음 (정기 리밸런싱 교체 또는 무청산)";
 }
 
-function IrConfigTab({ strategy, onRemove, onDemote }: {
+function IrConfigTab({ strategy, execSummary, onRemove, onDemote }: {
   strategy: StrategyRow;
+  execSummary: ExecutionSummary | null;
   onRemove: () => void;
   onDemote: () => void;
 }) {
@@ -283,6 +291,8 @@ function IrConfigTab({ strategy, onRemove, onDemote }: {
       <p className="muted small">
         전략 연구소(IR)에서 만든 전략입니다. 전체 설정을 조회하고, 연구소에서 신호·진입·청산을 수정하세요.
       </p>
+
+      <ExecutionSummarySection summary={execSummary} />
 
       <section className="panel">
         <h4>유니버스</h4>
@@ -336,8 +346,9 @@ function IrConfigTab({ strategy, onRemove, onDemote }: {
 
 // ── 탭 1 (레거시 operand): 안내만 — 편집·백테스트는 전략 연구소(IR) 전용 ───────
 
-function LegacyConfigTab({ runMode, onRemove, onDemote }: {
+function LegacyConfigTab({ runMode, execSummary, onRemove, onDemote }: {
   runMode: string;
+  execSummary: ExecutionSummary | null;
   onRemove: () => void;
   onDemote: () => void;
 }) {
@@ -348,6 +359,7 @@ function LegacyConfigTab({ runMode, onRemove, onDemote }: {
           구버전 형식 전략입니다. 전략 연구소에서 새로 만들어 백테스트·자동매매를 진행해 주세요.
         </p>
       </section>
+      <ExecutionSummarySection summary={execSummary} />
       <StrategyActionBar runMode={runMode} onDemote={onDemote} onRemove={onRemove} />
     </div>
   );
@@ -589,6 +601,61 @@ function BacktestsTab({ backtests }: {
         </tbody>
       </table>
     </div>
+  );
+}
+
+// ── 실행 명세 요약 (P6-4 #2) — "이 전략은 이렇게 매매합니다" ──────────────────────
+// core execution_summary 파생(전략 정의에서). 4분류:
+//  확정=전략이 정한 값 · 가정=시스템 기본값(백테스트 기준) · 발주시점=실시간 결정 · 미지=사후 확인.
+// 가정/미지를 명시해 "이건 실제 계좌 값이 아니라 가정"임을 투명하게 드러낸다(사장님 신뢰 요구).
+function ExecutionSummarySection({ summary }: { summary: ExecutionSummary | null }) {
+  if (!summary) return null;
+  const { confirmed, assumed, at_order, unknown } = summary;
+  return (
+    <section className="panel">
+      <h4>이 전략은 이렇게 매매합니다</h4>
+
+      {confirmed.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>확정</div>
+          <div className="muted small" style={{ marginBottom: 6 }}>이 전략이 정한 것</div>
+          {confirmed.map((e) => <Rule key={e.label} label={e.label} v={e.value} />)}
+        </div>
+      )}
+
+      {assumed.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="small" style={{ fontWeight: 600, marginBottom: 4 }}>가정</div>
+          <div className="muted small" style={{ marginBottom: 6 }}>
+            아래는 시스템 가정값입니다 (실제 계좌 값과 다를 수 있음) · 백테스트 기준
+          </div>
+          {assumed.map((e) => (
+            <div key={e.label} className="rule-row">
+              <span className="rule-label">{e.label}</span>
+              <span className="rule-val muted">{e.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {at_order.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>발주 시점 결정</div>
+          <ul className="muted small" style={{ margin: 0, paddingLeft: 18 }}>
+            {at_order.map((x) => <li key={x}>{x}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {unknown.length > 0 && (
+        <div>
+          <div className="muted small" style={{ fontWeight: 600, marginBottom: 6 }}>사후 확인</div>
+          <ul className="muted small" style={{ margin: 0, paddingLeft: 18, opacity: 0.75 }}>
+            {unknown.map((x) => <li key={x}>{x}</li>)}
+          </ul>
+        </div>
+      )}
+    </section>
   );
 }
 

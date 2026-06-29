@@ -193,6 +193,16 @@ export interface StrategyStats {
   last_snapshot_at: string | null;
 }
 
+// P6-4 — 실행 명세 4분류 요약 (/strategies/{id}/execution-summary).
+// core execution_summary가 단일 출처 — 웹은 렌더만 한다(가정값 TS 중복 0).
+// confirmed=전략이 정한 값 · assumed=시스템 기본값(백테스트 가정) · at_order=발주 시점 결정 · unknown=사후 확인.
+export interface ExecutionSummary {
+  confirmed: { label: string; value: string }[];
+  assumed: { label: string; value: string }[];
+  at_order: string[];
+  unknown: string[];
+}
+
 export interface BacktestResult {
   success: boolean; error?: string;
   metrics?: Record<string, number | null>;

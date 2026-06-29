@@ -359,8 +359,9 @@ function StrategyCard({ name, pnlRow, previewRow, heldPositions }: {
                         )}
                         {/* P6-2 — 주식 예상수수료 / 선물 레버리지·증거금률 (snapshot에 실려 옴, 있을 때만) */}
                         {c.est_fee_krw != null && (
-                          <div className="muted small" style={{ marginTop: 2 }}>
-                            예상수수료 {wonReadable(c.est_fee_krw)}
+                          <div className="muted small" style={{ marginTop: 2 }}
+                               title="실제 계좌 수수료율이 아니라 가정치입니다. 전략 시뮬레이션 설정에서 실제 수수료율을 입력할 수 있습니다.">
+                            예상수수료(가정) {wonReadable(c.est_fee_krw)}
                           </div>
                         )}
                         {c.leverage != null && (

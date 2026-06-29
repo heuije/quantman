@@ -1,7 +1,7 @@
 import type {
   BacktestRunSummary,
   ChatMessage,
-  CommandRow, CommandType, DeviceRow, IndicatorInfo, IrBlockSpec,
+  CommandRow, CommandType, DeviceRow, ExecutionSummary, IndicatorInfo, IrBlockSpec,
   IrStrategyDef, IrStrategyResult,
   MarketContext, NextDayPreview, PortfolioRisk,
   PortfolioAnalyzeIn, PortfolioAnalysis, PortfolioHoldings, SymbolDetail, SymbolListing,
@@ -198,6 +198,9 @@ export const api = {
     }),
   getStrategyStats: (id: number) =>
     req<StrategyStats>(`/strategies/${id}/stats`),
+  // P6-4 — 실행 명세 4분류 요약(확정/가정/발주시점/미지). 전략 정의에서 파생(읽기 전용).
+  executionSummary: (id: number) =>
+    req<ExecutionSummary>(`/strategies/${id}/execution-summary`),
   listStrategyBacktests: (id: number) =>
     req<BacktestRunSummary[]>(`/strategies/${id}/backtests`),
 
