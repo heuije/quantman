@@ -74,6 +74,7 @@ _NEW_COLS: list[tuple[str, str, str]] = [
     ("strategy",     "live_basket",                      "JSON"),
     # P5-2 — 전략↔계좌 핸들 바인딩(account_handle.account_id, opaque). NULL=미바인딩(레거시).
     ("strategy",     "account_ref",                      "VARCHAR"),
+    ("strategy",     "account_broker",                   "VARCHAR"),
     ("backtestrun",  "strategy_id",                      "INTEGER"),
     ("backtestrun",  "version_no",                       "INTEGER"),
     # 투자의견(Ratings) 고도화 — 제목·목표주가·운영자 승인 상태.

@@ -16,7 +16,6 @@ import TabbedSymbolList from "./TabbedSymbolList";
 const TRADABLE_TAB_ORDER = [
   "KOSPI", "KOSDAQ", "선물",
   "미국 NASDAQ", "미국 NYSE", "미국 AMEX",
-  "일본", "홍콩",
 ];
 
 function categoryFor(cat: string): string {
@@ -25,8 +24,6 @@ function categoryFor(cat: string): string {
   if (cat.includes("NASDAQ")) return "미국 NASDAQ";
   if (cat.includes("NYSE")) return "미국 NYSE";
   if (cat.includes("AMEX")) return "미국 AMEX";
-  if (cat.startsWith("일본")) return "일본";
-  if (cat.startsWith("홍콩")) return "홍콩";
   return cat;
 }
 
@@ -93,11 +90,11 @@ export default function MultiSymbolPicker({ symbols, value, onChange, inline, sc
       key: s.symbol,
       label: s.name ? `${s.symbol} ${s.name}` : s.symbol,
       cat: s.asset_class === "futures" ? "선물" : categoryFor(s.category),
-      badge: s.asset_class === "futures"
-        ? "백테스트 전용"                                       // 선물 자동매매 미지원 — 백테스트만(라이브 게이트가 차단)
-        : scope === "backtest"
-          ? (s.tradable === false ? "실거래 불가" : undefined)   // 백테스트는 되나 자동매매 대상 아님(지수·매크로 등)
-          : (s.has_backtest_data === false ? "백테스트 불가" : undefined),
+      badge: s.autotrade_hint === "backtest_only"
+        ? "백테스트 전용"                              // 자동매매 불가(지수·매크로·해외선물 등)
+        : (scope === "tradable" && s.has_backtest_data === false)
+          ? "백테스트 불가"                            // 라이브만 가능·백테스트 데이터 없음
+          : undefined,                                 // 자동매매 가능 — 뱃지 없음
     })),
   ];
 

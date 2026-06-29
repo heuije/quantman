@@ -8,7 +8,7 @@
  * 패턴 재사용. mode 배지는 .sc-badge.paper/.live. 인라인 hex 없음 — var(--*) 토큰만.
  */
 
-import type { AccountHandle } from "../types";
+import type { AccountHandle, Capability, CapabilityMatrix } from "../types";
 
 // 자산군 코드 → 한글 라벨(표시 전용). 미정의 코드는 원문 노출(은폐보다 정직).
 const ASSET_CLASS_LABEL: Record<string, string> = {
@@ -27,6 +27,10 @@ interface Props {
   handles: AccountHandle[];
   activeIds: string[];
   currentRef?: string | null;
+  // capability 매트릭스 + 이 전략이 거래하는 자산군. 둘 다 있으면 적용 불가 계좌를 사유와 함께 비활성화.
+  // 미제공(undefined)이면 필터 없이 전 계좌 선택 가능(게이트가 최종 enforcement).
+  capabilities?: CapabilityMatrix;
+  assetClasses?: string[];
   onSelect: (h: AccountHandle) => void;
   onClose: () => void;
 }
@@ -35,12 +39,29 @@ export default function AccountPicker({
   handles,
   activeIds,
   currentRef,
+  capabilities,
+  assetClasses,
   onSelect,
   onClose,
 }: Props) {
+  // 이 (브로커×모드)에서 전략 자산군별 capability 셀들(매트릭스에 없는 자산군은 제외).
+  const cells = (broker: string, mode: string) =>
+    (assetClasses ?? [])
+      .map((ac) => capabilities?.[broker]?.[mode]?.[ac])
+      .filter(Boolean) as Capability[];
+  // blocked 자산군이 하나라도 있으면 적용 불가 — 그 사유를 노출.
+  const blockedReason = (broker: string, mode: string) =>
+    cells(broker, mode).find((c) => c.status === "blocked")?.reason ?? null;
+  // 적용 가능하나 라이브 미검증 셀이 있으면 실전 confirm에 경고 prepend.
+  const hasUnverified = (broker: string, mode: string) =>
+    cells(broker, mode).some((c) => !c.verified);
+
   function pick(h: AccountHandle) {
     if (h.mode === "live") {
+      const warn = hasUnverified(h.broker, h.mode)
+        ? "이 경로는 아직 실거래 검증 전입니다(모의 검증 권장).\n" : "";
       const ok = window.confirm(
+        warn +
         `실전 계좌 '${h.nickname}'로 적용합니다 — 다음 사이클부터 실제 자금으로 거래됩니다. 계속할까요?`,
       );
       if (!ok) return;
@@ -74,10 +95,15 @@ export default function AccountPicker({
               {handles.map((h) => {
                 const isActive = activeIds.includes(h.account_id);
                 const isBound = currentRef != null && h.account_id === currentRef;
+                // capabilities 제공 시에만 필터 — 매트릭스 없으면 reason=null(전 계좌 선택 가능).
+                const reason = capabilities ? blockedReason(h.broker, h.mode) : null;
+                const disabled = reason != null;
                 return (
                   <button
                     key={h.account_id}
-                    className={"account-picker-row" + (isBound ? " bound" : "")}
+                    className={"account-picker-row"
+                      + (isBound ? " bound" : "") + (disabled ? " disabled" : "")}
+                    disabled={disabled}
                     onClick={() => pick(h)}
                   >
                     <span
@@ -98,6 +124,7 @@ export default function AccountPicker({
                         {h.asset_classes.length > 0 &&
                           ` · ${assetClassesLabel(h.asset_classes)}`}
                         {isActive && " · 현재 활성"}
+                        {reason && ` · ${reason}`}
                       </span>
                     </span>
                     <span className={"sc-badge " + h.mode}>

@@ -98,6 +98,8 @@ class StrategyIn(BaseModel):
     run_mode: str = "draft"           # draft | paper | live
     engine: str = "ir"                # ir(전략 연구소) 단일 — 레거시 operand 제거됨
     account_ref: Optional[str] = None   # 바인딩할 계좌 핸들 id (없으면 미바인딩·레거시)
+    account_broker: Optional[str] = None   # "kis"|"ls", NULL=미바인딩
+    ack_unverified: bool = False        # 미검증 실거래 경로(verified=False) 적용 확인
 
 
 class StrategyOut(BaseModel):
@@ -113,6 +115,7 @@ class StrategyOut(BaseModel):
     live_started_at: Optional[UtcDateTime] = None
     # P5-2 — 바인딩된 계좌 핸들 id (NULL=미바인딩·레거시)
     account_ref: Optional[str] = None
+    account_broker: Optional[str] = None
 
 
 class StrategyVersionOut(BaseModel):

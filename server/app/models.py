@@ -50,6 +50,9 @@ class Strategy(SQLModel, table=True):
     # P5-2 (계좌-전략 연동) — 이 전략을 실행할 계좌 핸들(account_handle.account_id, opaque uuid).
     # NULL=미바인딩(레거시) → 로컬 실행 가드(P5-3)가 활성 계좌에서 통과 처리. INV-SEC: 계좌번호 아님.
     account_ref: Optional[str] = None
+    # Phase 1(역량 parity) — 적용 시 선택한 브로커("kis"|"ls"). 비민감(키·계좌번호 아님).
+    # 게이트가 capability(account_broker, run_mode, asset_class)를 검사. NULL=미바인딩.
+    account_broker: Optional[str] = None
 
 
 class StrategyVersion(SQLModel, table=True):

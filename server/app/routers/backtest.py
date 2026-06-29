@@ -11,8 +11,28 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 
 from .. import data_cache, kis_master_cache
+from ..autotrade_caps_api import asset_class_for_symbol
 from ..deps import get_current_user
 from ..models import User
+from quant_core.autotrade_capability import autotrade_capability, BROKERS, MODES
+
+
+def _autotrade_hint(sym: str, market: str) -> str:
+    """빌더 라벨용 브로커-불문 힌트: 어떤 (브로커×모드)로든 자동매매 가능하면 'ok',
+    아니면 'backtest_only'. (해외선물은 Phase 1에서 전 셀 blocked → backtest_only.)
+
+    market="" (마스터 미등록)이면 asset_class_for_symbol→None→"backtest_only"이나,
+    선물은 qc.is_futures로 market-무관 해석돼 정상 "ok"(코스피200선물 등). needs_setup은
+    "ok" 버킷에 포함(빌더에서 셋업 시작 가능) — Phase 1엔 needs_setup 셀이 없어 무영향.
+    """
+    ac = asset_class_for_symbol(sym, market)
+    if ac is None:
+        return "backtest_only"
+    for b in BROKERS:
+        for m in MODES:
+            if autotrade_capability(b, m, ac).status in ("ok", "needs_setup"):
+                return "ok"
+    return "backtest_only"
 
 router = APIRouter(tags=["symbols"])
 
@@ -54,7 +74,6 @@ def _build_symbols_payload() -> dict:
         region = {
             "KOSPI": "국내", "KOSDAQ": "국내",
             "NAS": "미국 NASDAQ", "NYS": "미국 NYSE", "AMS": "미국 AMEX",
-            "TSE": "일본", "HKS": "홍콩",
         }.get(market, "")
         if market in ("KOSPI", "KOSDAQ"):
             return f"국내{kind_label} ({market})"
@@ -68,6 +87,8 @@ def _build_symbols_payload() -> dict:
         meta = master_by_code.get(sym) or master_by_code.get(sym.replace("-", "/")) or {}
         in_master = bool(meta)
         kind = meta.get("kind", "stock")
+        if meta.get("market") in ("TSE", "HKS"):
+            continue   # 일본/홍콩 — 자동매매·노출 제외(설계 §3.5)
         out.append({
             "symbol": sym,
             "name": meta.get("name", ""),
@@ -76,8 +97,10 @@ def _build_symbols_payload() -> dict:
             "tradable": in_master and has_ohlc,
             "has_backtest_data": has_ohlc,
             "asset_class": "futures" if qc.is_futures(sym) else "equity",
+            "autotrade_asset_class": asset_class_for_symbol(sym, meta.get("market", "")),
             "kind": kind if in_master else None,
             "rows": index[sym]["rows"],
+            "autotrade_hint": _autotrade_hint(sym, meta.get("market", "")),
         })
         seen.add(sym)
 
@@ -86,7 +109,8 @@ def _build_symbols_payload() -> dict:
         if code in seen:
             continue
         # §4.8: 미국은 데이터 보유분만 selectable로 노출(데이터 없는 ~1만+ 미국 종목 제외).
-        if meta.get("market") in ("NAS", "NYS", "AMS"):
+        # 일본/홍콩은 자동매매·노출 전면 제외(설계 §3.5).
+        if meta.get("market") in ("NAS", "NYS", "AMS", "TSE", "HKS"):
             continue
         kind = meta.get("kind", "stock")
         out.append({
@@ -96,8 +120,10 @@ def _build_symbols_payload() -> dict:
             "tradable": True,
             "has_backtest_data": False,
             "asset_class": "equity",        # KIS 주식 마스터 — 선물 아님
+            "autotrade_asset_class": asset_class_for_symbol(code, meta.get("market", "")),
             "kind": kind,
             "rows": 0,
+            "autotrade_hint": _autotrade_hint(code, meta.get("market", "")),
         })
 
     # 전역 지표 카탈로그 — 컬럼별 메타(종목 무관). 빌더 지표 드롭다운용, 1회 전송.

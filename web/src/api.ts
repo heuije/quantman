@@ -1,5 +1,6 @@
 import type {
   BacktestRunSummary,
+  CapabilityMatrix,
   ChatMessage,
   CommandRow, CommandType, DeviceRow, ExecutionSummary, IndicatorInfo, IrBlockSpec,
   IrStrategyDef, IrStrategyResult,
@@ -173,16 +174,25 @@ export const api = {
   listStrategies: () => req<StrategyRow[]>("/strategies"),
   getStrategy: (id: number) => req<StrategyRow>(`/strategies/${id}`),
   // engine — ir(전략 연구소) 단일. 레거시 operand는 신규 생성 경로 제거됨(읽기만 호환).
+  // account_broker/ack_unverified — 적용(paper/live) 시 게이트(_assert_live_tradable)가 자산군×브로커
+  // capability 판정·미검증 라이브 ack 확인에 사용. 초안 저장이면 기본값(미바인딩·미확인).
   createStrategy: (definition: StrategyDef | IrStrategyDef, run_mode: string,
-                   engine: "operand" | "ir" = "ir", account_ref?: string | null) =>
+                   engine: "operand" | "ir" = "ir", account_ref: string | null = null,
+                   account_broker: string | null = null, ack_unverified = false) =>
     req<StrategyRow>("/strategies", {
-      method: "POST", body: JSON.stringify({ definition, run_mode, engine, account_ref }),
+      method: "POST",
+      body: JSON.stringify({ definition, run_mode, engine, account_ref, account_broker, ack_unverified }),
     }),
   updateStrategy: (id: number, definition: StrategyDef | IrStrategyDef, run_mode: string,
-                   engine: "operand" | "ir" = "ir", account_ref?: string | null) =>
+                   engine: "operand" | "ir" = "ir", account_ref: string | null = null,
+                   account_broker: string | null = null, ack_unverified = false) =>
     req<StrategyRow>(`/strategies/${id}`, {
-      method: "PUT", body: JSON.stringify({ definition, run_mode, engine, account_ref }),
+      method: "PUT",
+      body: JSON.stringify({ definition, run_mode, engine, account_ref, account_broker, ack_unverified }),
     }),
+  // 자동매매 capability 매트릭스 — broker×mode×asset_class 적용 가능 여부(SSOT 노출).
+  autotradeCapabilities: (): Promise<CapabilityMatrix> =>
+    req<CapabilityMatrix>("/strategies/autotrade-capabilities"),
   deleteStrategy: (id: number) =>
     req<{ ok: boolean }>(`/strategies/${id}`, { method: "DELETE" }),
   // 정지 — 자동매매(모의/실전)를 멈추고 draft로 내린다(비파괴). 삭제의 선행 단계.

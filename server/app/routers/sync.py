@@ -248,6 +248,7 @@ def pull_strategies(
     return [StrategyOut(id=s.id, name=s.name, run_mode=s.run_mode, engine=s.engine,
                         definition={**(s.definition or {}), "engine": s.engine},
                         account_ref=s.account_ref,
+                        account_broker=s.account_broker,
                         created_at=s.created_at, updated_at=s.updated_at) for s in rows]
 
 

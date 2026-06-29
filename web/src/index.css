@@ -1912,6 +1912,9 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .account-picker-row:hover { background: var(--accent-soft); border-color: var(--accent); }
 .account-picker-row.bound { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* 적용 불가(capability blocked) 계좌 — 비활성. hover 강조 제거, 사유는 .account-picker-sub에 표기. */
+.account-picker-row.disabled { opacity: 0.5; cursor: not-allowed; }
+.account-picker-row.disabled:hover { background: var(--bg); border-color: var(--border); }
 .account-picker-active { flex: none; font-size: 13px; line-height: 1; }
 .account-picker-active.on { color: var(--accent-strong); }
 .account-picker-active.off { color: var(--muted); }

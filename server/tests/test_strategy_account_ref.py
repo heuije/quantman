@@ -127,9 +127,10 @@ def test_create_persists_and_serves_account_ref():
 
 def test_update_changes_account_ref(monkeypatch):
     """생성(account_ref=None) → PUT account_ref="acc_2" → GET 반영(재바인딩)."""
-    # paper 승격은 매매가능 유니버스를 요구(tradable 게이트) — 테스트 환경엔 KIS
-    # 마스터가 없어 헬퍼를 _IR_DEF 종목으로 고정(test_strategies_ir.py와 동일).
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    # paper 승격은 capability 게이트(G5)를 통과해야 한다 — 005930을 KOSPI 마스터로 시드해
+    # kr_equity(KIS ok)로 판정되게 한다(테스트 환경엔 네트워크 마스터 없음).
+    monkeypatch.setattr("app.kis_master_cache.get_master_list",
+                        lambda: [{"symbol": "005930", "market": "KOSPI", "name": "삼성전자"}])
     client, tok = _build()
     sid = client.post("/strategies", headers=_jwt(tok),
                       json={"definition": _IR_DEF, "run_mode": "draft",
@@ -147,7 +148,8 @@ def test_update_changes_account_ref(monkeypatch):
 
 def test_pull_strategies_includes_account_ref(monkeypatch):
     """paper 전략 account_ref="acc_p" 생성 → /sync/strategies(device-authed)에 포함."""
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    monkeypatch.setattr("app.kis_master_cache.get_master_list",
+                        lambda: [{"symbol": "005930", "market": "KOSPI", "name": "삼성전자"}])
     client, tok = _build()
     r = client.post("/strategies", headers=_jwt(tok),
                     json={"definition": _IR_DEF, "run_mode": "paper",
@@ -165,3 +167,52 @@ def test_legacy_strategy_account_ref_null():
                     json={"definition": _IR_DEF, "run_mode": "draft", "engine": "ir"})
     assert r.status_code == 201, r.text
     assert r.json()["account_ref"] is None
+
+
+# ── Task 3: account_broker 라운드트립 ─────────────────────────────────────────
+
+def test_account_broker_roundtrip():
+    """create(account_broker="kis") → 응답·GET 모두 서빙; update로 변경 반영."""
+    client, tok = _build()
+    r = client.post("/strategies", headers=_jwt(tok),
+                    json={"definition": _IR_DEF, "run_mode": "draft",
+                          "engine": "ir", "account_broker": "kis"})
+    assert r.status_code == 201, r.text
+    sid = r.json()["id"]
+    assert r.json()["account_broker"] == "kis"
+    assert client.get(f"/strategies/{sid}",
+                      headers=_jwt(tok)).json()["account_broker"] == "kis"
+    # update → "ls"
+    r2 = client.put(f"/strategies/{sid}", headers=_jwt(tok),
+                    json={"definition": _IR_DEF, "run_mode": "draft",
+                          "engine": "ir", "account_broker": "ls"})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["account_broker"] == "ls"
+    assert client.get(f"/strategies/{sid}",
+                      headers=_jwt(tok)).json()["account_broker"] == "ls"
+
+
+def test_account_broker_null_default():
+    """account_broker 미지정 → None(레거시·기존 요청 무변경)."""
+    client, tok = _build()
+    r = client.post("/strategies", headers=_jwt(tok),
+                    json={"definition": _IR_DEF, "run_mode": "draft", "engine": "ir"})
+    assert r.status_code == 201, r.text
+    assert r.json()["account_broker"] is None
+
+
+def test_pull_strategies_includes_account_broker(monkeypatch):
+    """paper 전략 account_broker="kis" 생성 → /sync/strategies(device-authed·로컬앱 pull)에 포함.
+
+    sync.py 의 inline StrategyOut(...)이 account_broker를 실어 나르는지 잠금
+    (account_ref와 동일 경로 — 빠지면 로컬앱이 항상 null을 받아 게이트가 무용지물)."""
+    monkeypatch.setattr("app.kis_master_cache.get_master_list",
+                        lambda: [{"symbol": "005930", "market": "KOSPI", "name": "삼성전자"}])
+    client, tok = _build()
+    r = client.post("/strategies", headers=_jwt(tok),
+                    json={"definition": _IR_DEF, "run_mode": "paper",
+                          "engine": "ir", "account_broker": "kis"})
+    assert r.status_code == 201, r.text
+    rows = client.get("/sync/strategies", headers=_dev()).json()
+    assert len(rows) == 1
+    assert rows[0]["account_broker"] == "kis"

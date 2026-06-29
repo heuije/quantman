@@ -11,15 +11,16 @@
  * 인라인 수정은 다음 단계에서 BuildTab 통합으로 추가.
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import type {
-  AccountHandle, BacktestRunSummary, ExecutionSummary, IrStrategyDef,
+  AccountHandle, BacktestRunSummary, CapabilityMatrix, ExecutionSummary, IrStrategyDef,
   StrategyRow, StrategyStats, StrategyVersionRow,
 } from "../types";
 import AccountPicker from "../components/AccountPicker";
 import { accountLabel } from "../lib/accountLabel";
+import { dedupeAssetClasses } from "../lib/assetClasses";
 
 type TabKey = "config" | "versions" | "stats" | "backtests";
 
@@ -51,6 +52,9 @@ export default function StrategyDetail() {
   // P5-4 — 비민감 계좌 핸들·활성 id(로컬앱이 snapshot에 실어 보고). 바인딩 표시·전환용.
   const [accountHandles, setAccountHandles] = useState<AccountHandle[]>([]);
   const [activeAccountIds, setActiveAccountIds] = useState<string[]>([]);
+  // 전환(재바인딩) 시 AccountPicker 필터용 — capability 매트릭스 + 심볼→자산군 맵. 둘 다 best-effort.
+  const [capabilities, setCapabilities] = useState<CapabilityMatrix | undefined>(undefined);
+  const [assetClassBySymbol, setAssetClassBySymbol] = useState<Map<string, string | null>>(new Map());
   const [tab, setTab] = useState<TabKey>("config");
   const [err, setErr] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -67,12 +71,18 @@ export default function StrategyDetail() {
       api.snapshot().catch(() => null),
       // 실행 명세 요약도 비치명 — 실패 시 null(섹션만 숨김, 페이지는 정상).
       api.executionSummary(sid).catch(() => null),
+      // 전환 picker 필터용 — capability 매트릭스 + 종목 카탈로그(자산군 맵). 둘 다 best-effort.
+      api.autotradeCapabilities().catch(() => undefined),
+      api.symbols().catch(() => null),
     ])
-      .then(([s, st, vs, bs, snap, es]) => {
+      .then(([s, st, vs, bs, snap, es, caps, sym]) => {
         setStrategy(s); setStats(st); setVersions(vs); setBacktests(bs);
         setAccountHandles(snap?.payload?.health?.account_handles ?? []);
         setActiveAccountIds(snap?.payload?.health?.active_account_ids ?? []);
         setExecSummary(es);
+        setCapabilities(caps);
+        setAssetClassBySymbol(
+          new Map((sym?.symbols ?? []).map((x) => [x.symbol, x.autotrade_asset_class ?? null])));
       })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setLoaded(true));
@@ -88,12 +98,20 @@ export default function StrategyDetail() {
     } catch (e) { setErr((e as Error).message); }
   }
 
+  // 이 전략이 거래하는 4분 자산군(중복 제거·null 제외) — 전환 picker가 적용 불가 계좌를 거른다.
+  const assetClasses = useMemo(() => {
+    const def = strategy?.definition as IrStrategyDef | undefined;
+    return dedupeAssetClasses(def?.universe?.symbols ?? [], assetClassBySymbol);
+  }, [strategy, assetClassBySymbol]);
+
   // P5-4 — 실행 계좌 재바인딩. 선택 핸들의 mode=run_mode·account_id=account_ref로 저장.
   // 정의는 그대로 유지(전환은 계좌만 바꾼다). 실전 승격 confirm은 AccountPicker가 처리.
+  // 라이브면 미검증 ack=true(picker가 confirm으로 경고 후 선택) — 게이트가 최종 차단.
   async function rebind(h: AccountHandle) {
     if (!strategy) return;
     try {
-      await api.updateStrategy(strategy.id, strategy.definition, h.mode, "ir", h.account_id);
+      await api.updateStrategy(strategy.id, strategy.definition, h.mode, "ir",
+                               h.account_id, h.broker, h.mode === "live");
       loadAll();
     } catch (e) { setErr((e as Error).message); }
   }
@@ -184,6 +202,8 @@ export default function StrategyDetail() {
           strategy={strategy}
           handles={accountHandles}
           activeIds={activeAccountIds}
+          capabilities={capabilities}
+          assetClasses={assetClasses}
           onRebind={rebind}
         />
       )}
@@ -427,11 +447,13 @@ function labelReason(reason: string): string {
 
 // ── 탭 3: 현황 ────────────────────────────────────────────────────────────────
 
-function StatsTab({ stats, strategy, handles, activeIds, onRebind }: {
+function StatsTab({ stats, strategy, handles, activeIds, capabilities, assetClasses, onRebind }: {
   stats: StrategyStats | null;
   strategy: StrategyRow;
   handles: AccountHandle[];
   activeIds: string[];
+  capabilities?: CapabilityMatrix;
+  assetClasses: string[];
   onRebind: (h: AccountHandle) => void;
 }) {
   // 현황 데이터가 없어도(초안 등) 실행 계좌 섹션은 보여준다 — 바인딩·전환은 stats와 무관.
@@ -440,7 +462,8 @@ function StatsTab({ stats, strategy, handles, activeIds, onRebind }: {
       <div className="strategy-detail-body">
         <p className="muted">현황 데이터가 없습니다.</p>
         <AccountBindingSection
-          strategy={strategy} handles={handles} activeIds={activeIds} onRebind={onRebind} />
+          strategy={strategy} handles={handles} activeIds={activeIds}
+          capabilities={capabilities} assetClasses={assetClasses} onRebind={onRebind} />
       </div>
     );
   }
@@ -485,7 +508,8 @@ function StatsTab({ stats, strategy, handles, activeIds, onRebind }: {
       </section>
 
       <AccountBindingSection
-        strategy={strategy} handles={handles} activeIds={activeIds} onRebind={onRebind} />
+        strategy={strategy} handles={handles} activeIds={activeIds}
+        capabilities={capabilities} assetClasses={assetClasses} onRebind={onRebind} />
 
       <p className="muted small" style={{ marginTop: 12 }}>
         ⓘ 종목별 매매 상세는 로컬앱 "주문 내역" 탭에서 확인하세요 (서버에는 요약만 보관).
@@ -496,10 +520,12 @@ function StatsTab({ stats, strategy, handles, activeIds, onRebind }: {
 
 /** 실행 계좌 섹션 (P5-4) — 바인딩된 계좌(별명·mode 배지) 표시 + "전환"으로 재바인딩.
  *  전환은 AccountPicker(핸들 선택, 실전 confirm 내장)를 열어 선택 핸들로 account_ref를 갱신. */
-function AccountBindingSection({ strategy, handles, activeIds, onRebind }: {
+function AccountBindingSection({ strategy, handles, activeIds, capabilities, assetClasses, onRebind }: {
   strategy: StrategyRow;
   handles: AccountHandle[];
   activeIds: string[];
+  capabilities?: CapabilityMatrix;
+  assetClasses: string[];
   onRebind: (h: AccountHandle) => void;
 }) {
   const [showPicker, setShowPicker] = useState(false);
@@ -528,6 +554,8 @@ function AccountBindingSection({ strategy, handles, activeIds, onRebind }: {
           handles={handles}
           activeIds={activeIds}
           currentRef={strategy.account_ref}
+          capabilities={capabilities}
+          assetClasses={assetClasses}
           onSelect={(h) => { setShowPicker(false); onRebind(h); }}
           onClose={() => setShowPicker(false)}
         />

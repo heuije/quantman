@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type IrValidation, type IrExplanation, type CompileQuota } from "../api";
+import type { CapabilityMatrix } from "../types";
+import { dedupeAssetClasses } from "../lib/assetClasses";
 import SentenceTree, { type Catalog } from "../components/SentenceTree";
 import EquityChart from "../components/EquityChart";
 import ExcelExportButton from "../components/ExcelExportButton";
@@ -221,6 +223,8 @@ export default function IrBuilder() {
   const [accountHandles, setAccountHandles] = useState<AccountHandle[]>([]);
   const [activeAccountIds, setActiveAccountIds] = useState<string[]>([]);
   const [showPicker, setShowPicker] = useState(false);
+  // capability 매트릭스 — AccountPicker가 적용 불가 계좌를 사유와 함께 비활성화. best-effort(실패 시 undefined→필터 없음).
+  const [capabilities, setCapabilities] = useState<CapabilityMatrix | undefined>(undefined);
 
   const catalog: Catalog = useMemo(
     () => new Map(catalogList.map((b) => [b.op, b])), [catalogList]);
@@ -245,6 +249,9 @@ export default function IrBuilder() {
         setActiveAccountIds(snap?.payload?.health?.active_account_ids ?? []);
       })
       .catch(() => {/* snapshot 실패해도 빌더는 동작 — 핸들 0개로 안내 경로 */});
+    api.autotradeCapabilities()
+      .then(setCapabilities)
+      .catch(() => {/* 실패 시 필터 없음 — 게이트가 최종 enforcement */});
   }, []);
 
   // ?edit=<id> — 저장된 IR 전략을 불러와 전 폼 state로 역-하이드레이션.
@@ -383,6 +390,16 @@ export default function IrBuilder() {
 
   // 신호 출력 타입 자동 감지(condition=룰 트리거 · score=팩터 알파). 강제하지 않음.
   const signalType = signal ? catalog.get(signal.op)?.out_type : undefined;
+
+  // 적용 시 계좌 필터용 — 현재 유니버스 종목들의 4분 자산군(중복 제거·null 제외).
+  // 카탈로그(/symbols)의 autotrade_asset_class를 심볼로 조회. 전체(all)·미해석 종목은 빈 배열.
+  const assetClassBySymbol = useMemo(
+    () => new Map(symbols.map((s) => [s.symbol, s.autotrade_asset_class ?? null])),
+    [symbols]);
+  const applyAssetClasses = useMemo(() => {
+    const syms = universeSymbols.split(",").map((s) => s.trim()).filter(Boolean);
+    return dedupeAssetClasses(syms, assetClassBySymbol);
+  }, [universeSymbols, assetClassBySymbol]);
 
   function buildStrategy(): Record<string, unknown> {
     const syms = universeSymbols.split(",").map((s) => s.trim()).filter(Boolean);
@@ -653,8 +670,10 @@ export default function IrBuilder() {
   // runMode="paper"면 모의 적용(로컬앱 자동매매 진입). Stage 3 컷오버로 IR 라이브
   // 신호평가·청산·사이징이 완성돼 IR도 operand와 동일하게 모의/실전을 소비한다.
   // runMode: "draft"=초안 저장 / "paper"|"live"=선택한 계좌 모드로 적용(P5-4 — 모드는 계좌가 결정).
-  // accountRef: 적용 시 선택한 핸들의 account_id. 초안/미바인딩이면 undefined.
-  async function save(runMode: "draft" | "paper" | "live", accountRef?: string | null) {
+  // accountRef: 적용 시 선택한 핸들의 account_id. 초안/미바인딩이면 null.
+  // accountBroker/ackUnverified: 게이트(_assert_live_tradable) 입력 — 브로커 capability·미검증 라이브 ack.
+  async function save(runMode: "draft" | "paper" | "live", accountRef: string | null = null,
+                      accountBroker: string | null = null, ackUnverified = false) {
     if (!signal) return;
     const def = buildStrategy() as unknown as IrStrategyDef;
     const applying = runMode !== "draft";
@@ -672,10 +691,10 @@ export default function IrBuilder() {
       if (editId) {
         // 수정: 적용이면 선택 계좌 모드(paper/live)로 승격, 아니면 기존 run_mode 유지.
         const mode = applying ? runMode : (editRunMode ?? "draft");
-        await api.updateStrategy(Number(editId), def, mode, "ir", accountRef);
+        await api.updateStrategy(Number(editId), def, mode, "ir", accountRef, accountBroker, ackUnverified);
         navigate(`/strategies/${editId}`);
       } else {
-        const created = await api.createStrategy(def, runMode, "ir", accountRef);
+        const created = await api.createStrategy(def, runMode, "ir", accountRef, accountBroker, ackUnverified);
         navigate(`/strategies/${created.id}`);
       }
     } catch (e) {
@@ -1329,7 +1348,13 @@ export default function IrBuilder() {
         <AccountPicker
           handles={accountHandles}
           activeIds={activeAccountIds}
-          onSelect={(h) => { setShowPicker(false); save(h.mode, h.account_id); }}
+          capabilities={capabilities}
+          assetClasses={applyAssetClasses}
+          onSelect={(h) => {
+            setShowPicker(false);
+            // 라이브 적용 시 미검증 ack=true(picker가 confirm으로 경고 노출 후 선택). 게이트가 최종 차단.
+            save(h.mode, h.account_id, h.broker, h.mode === "live");
+          }}
           onClose={() => setShowPicker(false)}
         />
       )}

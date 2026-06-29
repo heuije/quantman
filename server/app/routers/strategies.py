@@ -2,22 +2,23 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
 from quant_core import is_futures
+from quant_core.autotrade_capability import autotrade_capability
 from quant_core.ir_engine import StrategyIR, validate_strategy
 from quant_core.ir_engine.execution_summary import execution_summary
 from sqlmodel import Session, select
 
+from .. import kis_master_cache
+from ..autotrade_caps_api import asset_class_for_symbol, capability_matrix
 from ..db import get_session
 from ..deps import get_current_user
 from ..models import BacktestRun, Strategy, StrategyVersion, SyncSnapshot, User
 from ..schemas import (StrategyIn, StrategyOut, StrategyRestoreIn,
                        StrategyStatsOut, StrategyVersionOut)
-from ..symbols import tradable_symbols
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -70,18 +71,9 @@ def save_ir_draft(session: Session, user_id: int, definition: dict) -> Strategy:
     return row
 
 
-# M1a: 선물 라이브 승격 개방 — KOSPI200만(사용자 결정). 환경변수 게이트(기본 OFF)로,
-# M8 국내 라운드트립 라이브 검증 통과 후 켠다(미검증 라이브 경로 개방 방지 — 원칙4).
-# 켜기 전엔 선물이 tradable에 없어 게이트 ②/③에서 차단 = 현재 동작 보존(휴면).
-_LIVE_FUTURES_SYMBOLS = frozenset({"코스피200선물"})
-
-
-def _futures_live_enabled() -> bool:
-    """선물 라이브 승격 활성 여부(QP_FUTURES_LIVE_ENABLED). M8 검증 후 운영자가 켠다."""
-    return os.getenv("QP_FUTURES_LIVE_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _assert_live_tradable(run_mode: str, definition: dict) -> None:
+def _assert_live_tradable(run_mode: str, definition: dict,
+                          account_broker: str | None = None,
+                          ack_unverified: bool = False) -> None:
     """모의/실전 승격 게이트 — 백테스트≠실거래 발산을 막는다.
 
     ① 레버리지(>1배): 실거래는 사용자 KIS '현금계좌'로 체결한다(로컬앱 order-cash만,
@@ -124,7 +116,7 @@ def _assert_live_tradable(run_mode: str, definition: dict) -> None:
 
     # 당일매매(hold_days=0)는 Stage B(자동매매 종가청산 사이클: trader.liquidate_day_trades +
     # scheduler 종가 cron)가 배선돼 paper/live 승격을 허용한다 — 종가 사이클이 진입 바 종가에
-    # 청산해 backtest=live를 맞춘다. 선물은 아래 QP_FUTURES_LIVE_ENABLED 게이트로 별도 통제.
+    # 청산해 backtest=live를 맞춘다. 선물은 아래 G5 capability 검사로 별도 통제.
 
     u = definition.get("universe") or {}
     syms = u.get("symbols") or []
@@ -143,14 +135,29 @@ def _assert_live_tradable(run_mode: str, definition: dict) -> None:
                 "숏 전략은 선물만 모의·실전 가능합니다(현금계좌로 주식 공매도 불가): "
                 f"{', '.join(non_fut[:5])}")
 
-    ok = tradable_symbols()
-    if _futures_live_enabled():
-        ok = ok | _LIVE_FUTURES_SYMBOLS          # M1a: 플래그 ON 시 KOSPI200 선물 라이브 허용
-    bad = [s for s in syms if s not in ok]
-    if bad:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            f"자동매매 불가 종목이 포함돼 모의·실전으로 적용할 수 없습니다: {', '.join(bad[:5])}")
+    # G5 (capability): 바인딩된 브로커×모드×자산군이 자동매매 가능한지 검사(설계 §3.3).
+    # 미바인딩(account_broker=None) 레거시 주식 전략은 KIS 기본 지원으로 보수 통과.
+    broker = account_broker or "kis"
+    # 마스터가 비면(드문 부팅 직후 네트워크 실패) 주식이 market="" → asset_class None → 아래서
+    # fail-closed 차단(허용보다 차단이 안전 — 자금 게이트). 마스터는 카탈로그와 공유돼 평시 채워짐.
+    master_market = {m["symbol"]: m.get("market", "")
+                     for m in kis_master_cache.get_master_list()}
+    unverified_live: list[str] = []
+    for sym in syms:
+        ac = asset_class_for_symbol(sym, master_market.get(sym, ""))
+        if ac is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"자동매매 미지원 종목입니다(국내/미국 주식·선물만 가능): {sym}")
+        cap = autotrade_capability(broker, run_mode, ac)
+        if cap.status == "blocked":
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"{sym}: {cap.reason}")
+        if run_mode == "live" and not cap.verified:
+            unverified_live.append(sym)
+
+    if unverified_live and not ack_unverified:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "아직 실거래 검증 전 경로입니다(모의 검증 권장): "
+            f"{', '.join(unverified_live[:5])}. 확인 후 다시 적용해 주세요.")
 
     entry_mode = ((definition.get("position") or {}).get("entry") or {}).get("mode")
     if entry_mode == "on_signal" and (u.get("screener") or {}).get("condition"):
@@ -165,7 +172,8 @@ def _out(s: Strategy) -> StrategyOut:
                        updated_at=s.updated_at,
                        paper_started_at=s.paper_started_at,
                        live_started_at=s.live_started_at,
-                       account_ref=s.account_ref)
+                       account_ref=s.account_ref,
+                       account_broker=s.account_broker)
 
 
 def _own_or_404(session: Session, strategy_id: int, user_id: int) -> Strategy:
@@ -262,11 +270,14 @@ def create_strategy(
     if body.engine not in _VALID_ENGINES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "engine이 올바르지 않습니다.")
     name, definition = _validate(body.engine, body.definition)
-    _assert_live_tradable(body.run_mode, definition)
+    _assert_live_tradable(body.run_mode, definition,
+                          account_broker=body.account_broker,
+                          ack_unverified=body.ack_unverified)
     now = datetime.now(timezone.utc)
     row = Strategy(user_id=user.id, name=name, run_mode=body.run_mode,
                    engine=body.engine, definition=definition,
                    account_ref=body.account_ref,
+                   account_broker=body.account_broker,
                    paper_started_at=now if body.run_mode == "paper" else None,
                    live_started_at=now if body.run_mode == "live" else None,
                    live_capital_at_start=(_current_capital(session, user.id)
@@ -281,6 +292,12 @@ def create_strategy(
     session.add(initial)
     session.commit()
     return _out(row)
+
+
+@router.get("/autotrade-capabilities")
+def autotrade_capabilities():
+    """(브로커×모드×자산군) 자동매매 capability 표 — 웹 라벨·AccountPicker 필터용 SSOT."""
+    return capability_matrix()
 
 
 @router.get("/{strategy_id}", response_model=StrategyOut)
@@ -305,7 +322,9 @@ def update_strategy(
     if body.engine not in _VALID_ENGINES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "engine이 올바르지 않습니다.")
     name, definition = _validate(body.engine, body.definition)
-    _assert_live_tradable(body.run_mode, definition)
+    _assert_live_tradable(body.run_mode, definition,
+                          account_broker=body.account_broker,
+                          ack_unverified=body.ack_unverified)
 
     # Phase 59 — 변경 전 정의를 버전으로 스냅샷 (사용자 선택: 매 PUT마다)
     _snapshot_version(session, row, reason="manual_edit")
@@ -327,6 +346,7 @@ def update_strategy(
     row.engine = body.engine
     row.definition = definition
     row.account_ref = body.account_ref
+    row.account_broker = body.account_broker
     row.updated_at = now
     # Task 12b — 사용자 수정·전환 시 정적 라이브 바스켓을 초기화해 다음 preview에서 재형성.
     # live_basket은 서버 파생 상태 — definition·run_mode가 바뀌면 고정 집합도 다시 형성해야 한다.

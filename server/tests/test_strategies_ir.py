@@ -77,6 +77,17 @@ def _auth(tok: str):
     return {"Authorization": f"Bearer {tok}"}
 
 
+def _seed_master(monkeypatch, codes) -> None:
+    """G5 capability 게이트가 자산군을 판정하도록 KIS 마스터를 codes로 고정한다.
+
+    게이트는 kis_master_cache.get_master_list()에서 심볼→market을 얻어 자산군을
+    매핑한다(주식: KOSPI→kr_equity). 테스트 환경엔 마스터(네트워크)가 없으므로
+    필요한 국내주식 코드를 KOSPI로 주입한다. 선물(코스피200선물 등)은 instrument_category가
+    권위라 마스터 없이도 판정되므로 이 시드가 필요 없다."""
+    rows = [{"symbol": c, "name": c, "market": "KOSPI"} for c in codes]
+    monkeypatch.setattr("app.kis_master_cache.get_master_list", lambda: rows)
+
+
 # ── IR 라운드트립 ─────────────────────────────────────────────────────────────
 
 def test_ir_strategy_create_and_get_roundtrip():
@@ -98,9 +109,9 @@ def test_ir_strategy_create_and_get_roundtrip():
 
 
 def test_ir_strategy_update_snapshots_version(monkeypatch):
-    # 모의 승격은 매매가능 유니버스를 요구한다(tradable 게이트). 테스트 환경엔
-    # KIS 마스터가 없어(네트워크 미사용) 헬퍼를 _IR_DEF의 종목 집합으로 고정한다.
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    # 모의 승격은 capability 게이트(G5)를 통과해야 한다 — 005930을 KOSPI 마스터로 시드해
+    # kr_equity(KIS ok)로 판정되게 한다(테스트 환경엔 네트워크 마스터 없음).
+    _seed_master(monkeypatch, {"005930"})
     client, tok = _build()
     sid = client.post("/strategies", headers=_auth(tok),
                       json={"definition": _IR_DEF, "run_mode": "draft",
@@ -189,8 +200,8 @@ def test_leverage_live_rejected():
 
 def test_unleveraged_paper_allowed(monkeypatch):
     """레버리지=1(기본)은 모의 적용 정상 — 게이트 회귀 가드."""
-    # 모의 승격은 매매가능 유니버스를 요구 — _IR_DEF 종목으로 tradable 헬퍼 고정.
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    # 모의 승격은 capability 게이트 통과 필요 — _IR_DEF 종목(005930)을 KOSPI로 시드.
+    _seed_master(monkeypatch, {"005930"})
     client, tok = _build()
     r = client.post("/strategies", headers=_auth(tok),
                     json={"definition": _lev_def(1.0), "run_mode": "paper", "engine": "ir"})
@@ -211,11 +222,11 @@ def test_leverage_promote_to_live_rejected_on_update():
 # ── M1 방향 게이트 — long_short·비선물 숏은 라이브 미지원(4계층 정합) ─────────────
 # 게이트 함수를 직접 호출(IR 검증 분리 — long_short의 score 요구 등과 무관하게 게이트만 검증).
 
-def _gate(run_mode, direction, symbols):
-    from fastapi import HTTPException  # noqa: F401 (가독성)
+def _gate(run_mode, direction, symbols, ack_unverified=False):
     return strategies_router._assert_live_tradable(
         run_mode, {"position": {"direction": direction},
-                   "universe": {"kind": "single", "symbols": symbols}})
+                   "universe": {"kind": "single", "symbols": symbols}},
+        account_broker="kis", ack_unverified=ack_unverified)
 
 
 def test_gate_blocks_long_short_paper():
@@ -243,14 +254,14 @@ def test_gate_blocks_short_on_equity():
     assert e.value.status_code == 422
 
 
-def test_gate_allows_short_on_futures(monkeypatch):
-    # 숏+선물은 게이트 통과(선물은 sell-to-open 지원) — ③ 위해 선물을 tradable로 고정
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"코스피200선물"})
-    _gate("live", "short", ["코스피200선물"])     # 예외 없으면 통과
+def test_gate_allows_short_on_futures():
+    # 숏+선물은 게이트 통과(선물은 sell-to-open 지원). kr_futures는 verified=False라
+    # live 승격엔 미검증 확인(ack)이 필요 — capability 게이트의 새 규칙.
+    _gate("live", "short", ["코스피200선물"], ack_unverified=True)   # 예외 없으면 통과
 
 
 def test_gate_allows_long_on_equity(monkeypatch):
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    _seed_master(monkeypatch, {"005930"})
     _gate("paper", "long", ["005930"])            # 회귀 가드(long은 기존대로 허용)
 
 
@@ -262,17 +273,18 @@ def test_gate_draft_skips_direction_checks():
 
 # ── M5d 부호방향 long_short 게이트 — on_signal directional + 선물만 라이브 허용 ──────
 
-def _gate_ls(run_mode, mode, symbols):
+def _gate_ls(run_mode, mode, symbols, ack_unverified=False):
     return strategies_router._assert_live_tradable(
         run_mode, {"position": {"direction": "long_short", "entry": {"mode": mode}},
-                   "universe": {"kind": "single", "symbols": list(symbols)}})
+                   "universe": {"kind": "single", "symbols": list(symbols)}},
+        account_broker="kis", ack_unverified=ack_unverified)
 
 
-def test_gate_allows_directional_long_short_futures(monkeypatch):
+def test_gate_allows_directional_long_short_futures():
     # on_signal 부호방향 long_short + 선물은 라이브 가능(종목별 독립 방향, 엔진 _direction_for seam).
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"코스피200선물"})
-    _gate_ls("paper", "on_signal", ["코스피200선물"])   # 예외 없으면 통과
-    _gate_ls("live", "on_signal", ["코스피200선물"])
+    # kr_futures는 verified=False라 live는 미검증 확인(ack) 필요. paper는 ack 불필요.
+    _gate_ls("paper", "on_signal", ["코스피200선물"])                    # 예외 없으면 통과
+    _gate_ls("live", "on_signal", ["코스피200선물"], ack_unverified=True)
 
 
 def test_gate_blocks_directional_long_short_equity():
@@ -284,9 +296,9 @@ def test_gate_blocks_directional_long_short_equity():
     assert e.value.status_code == 422
 
 
-def test_gate_blocks_scheduled_long_short_futures(monkeypatch):
+def test_gate_blocks_scheduled_long_short_futures():
     # scheduled long_short = 횡단 랭킹 → 라이브 단방향 체결기가 재현 못 함 → 선물이어도 차단
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"코스피200선물"})
+    # (G2 방향 게이트에서 차단 — G5 capability에 도달하기 전).
     import pytest
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as e:
@@ -299,20 +311,22 @@ def test_gate_blocks_scheduled_long_short_futures(monkeypatch):
 def _gate_exit(run_mode, hold_days, symbols=("005930",)):
     return strategies_router._assert_live_tradable(
         run_mode, {"position": {"direction": "long", "exit": {"hold_days": hold_days}},
-                   "universe": {"kind": "single", "symbols": list(symbols)}})
+                   "universe": {"kind": "single", "symbols": list(symbols)}},
+        account_broker="kis")
 
 
 def test_gate_allows_intraday_day_trade_paper(monkeypatch):
     # Stage B: 자동매매 종가청산 사이클(liquidate_day_trades + scheduler)이 배선돼
     # hold_days=0 당일매매가 paper/live로 승격 가능 — 게이트가 더는 차단하지 않는다.
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    # 005930=kr_equity(KIS ok·verified)라 live도 ack 불필요.
+    _seed_master(monkeypatch, {"005930"})
     _gate_exit("paper", 0)            # 예외 없으면 통과
     _gate_exit("live", 0)
 
 
 def test_gate_allows_hold_days_positive(monkeypatch):
     # hold_days>=1은 기존대로 허용(회귀 가드)
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    _seed_master(monkeypatch, {"005930"})
     _gate_exit("paper", 5)            # 예외 없으면 통과
 
 
@@ -321,40 +335,10 @@ def test_gate_draft_skips_intraday_check():
     _gate_exit("draft", 0)
 
 
-# ── M1a: 선물 라이브 개방 플래그(QP_FUTURES_LIVE_ENABLED) — KOSPI200만, 기본 OFF ────
-def test_m1a_futures_blocked_when_flag_off(monkeypatch):
-    # 플래그 OFF(기본) → KOSPI200 선물은 tradable에 없어 차단(현재 동작·휴면)
-    import pytest
-    from fastapi import HTTPException
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
-    monkeypatch.delenv("QP_FUTURES_LIVE_ENABLED", raising=False)
-    with pytest.raises(HTTPException) as e:
-        _gate("live", "long", ["코스피200선물"])
-    assert e.value.status_code == 422
-
-
-def test_m1a_futures_allowed_when_flag_on(monkeypatch):
-    # 플래그 ON → KOSPI200 선물 라이브 승격 허용(M8 검증 후 운영자가 켬)
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
-    monkeypatch.setenv("QP_FUTURES_LIVE_ENABLED", "1")
-    _gate("live", "long", ["코스피200선물"])       # 예외 없으면 통과
-
-
-def test_m1a_short_kospi200_allowed_when_flag_on(monkeypatch):
-    # 숏+KOSPI200(M1b forward-compat) + M1a 개방 → 통과
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
-    monkeypatch.setenv("QP_FUTURES_LIVE_ENABLED", "1")
-    _gate("live", "short", ["코스피200선물"])
-
-
-def test_m1a_only_kospi200_overseas_futures_still_blocked(monkeypatch):
-    # KOSPI200만 개방 — 금선물(해외)은 플래그 ON이어도 tradable에 없어 차단
-    import pytest
-    from fastapi import HTTPException
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
-    monkeypatch.setenv("QP_FUTURES_LIVE_ENABLED", "1")
-    with pytest.raises(HTTPException):
-        _gate("live", "long", ["금선물"])
+# M1a 선물 라이브 개방 플래그(QP_FUTURES_LIVE_ENABLED) 테스트 4종은 삭제됨 —
+# 플래그·화이트리스트가 capability 게이트(G5)로 대체돼 더는 존재하지 않는다.
+# 선물 라이브 동작은 test_gate_allows_short_on_futures(kr_futures+ack)와
+# test_autotrade_gate.py(국내선물 통과·해외선물 "준비 중" 차단·미검증 ack)가 커버한다.
 
 
 # ── 비매매 유니버스·이벤트 세부조건 게이트 — 모의/실전 승격 차단 ─────────────────
@@ -377,7 +361,9 @@ def _uni_def(universe: dict, entry: dict | None = None) -> dict:
 
 
 def _patch_tradable(monkeypatch, codes: set[str]) -> None:
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: set(codes))
+    # G5는 더는 화이트리스트가 아니라 capability 검사 — 국내주식 코드를 KOSPI 마스터로
+    # 시드하면 kr_equity(KIS ok·verified)로 판정돼 게이트를 통과한다.
+    _seed_master(monkeypatch, codes)
 
 
 def test_nontradable_symbol_paper_rejected(monkeypatch):

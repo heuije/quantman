@@ -261,7 +261,9 @@ def test_static_empty_basket_warns():
 # ── 4) PUT 초기화 ──────────────────────────────────────────────────────────────
 
 def _build_route_app(eng, uid, monkeypatch):
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: set(_SYMS))
+    # G5 capability 게이트가 _SYMS를 kr_equity(KIS ok)로 판정하도록 KOSPI 마스터로 시드.
+    monkeypatch.setattr("app.kis_master_cache.get_master_list",
+                        lambda: [{"symbol": c, "market": "KOSPI", "name": c} for c in _SYMS])
     app = FastAPI()
     app.include_router(strategies_router.router)
 

@@ -178,9 +178,10 @@ def test_sync_strategies_injects_engine_into_definition(monkeypatch):
     """
     from app.routers import strategies as strategies_router
 
-    # 모의 승격은 매매가능 유니버스를 요구(tradable 게이트). 테스트 환경엔 KIS
-    # 마스터가 없어(네트워크 미사용) 헬퍼를 _IR_DEF_MIN 종목으로 고정한다.
-    monkeypatch.setattr(strategies_router, "tradable_symbols", lambda: {"005930"})
+    # 모의 승격은 capability 게이트(G5)를 통과해야 한다 — 005930을 KOSPI 마스터로 시드해
+    # kr_equity(KIS ok)로 판정되게 한다(테스트 환경엔 네트워크 마스터 없음).
+    monkeypatch.setattr("app.kis_master_cache.get_master_list",
+                        lambda: [{"symbol": "005930", "market": "KOSPI", "name": "삼성전자"}])
 
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
                            poolclass=StaticPool)

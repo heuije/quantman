@@ -10,6 +10,10 @@ export interface SymbolInfo {
   tradable: boolean;                // KIS 매수 가능 종목 (마스터에 존재)
   has_backtest_data?: boolean;      // 서버 dataset에 OHLC 보유 — 백테스트 가능
   asset_class?: string;             // "futures" | "equity" — 선물은 백테스트 선택가능(자동매매는 미지원)
+  // 빌더 라벨용 — "ok"|"backtest_only" (자동매매 가능 여부 표시). 브로커-불문 힌트.
+  autotrade_hint?: "ok" | "needs_setup" | "backtest_only";
+  // 4분 자산군 — AccountPicker capability 필터·게이트 판정이 소비. kr_equity|kr_futures|us_equity|us_futures (미지원이면 null).
+  autotrade_asset_class?: string | null;
   rows: number;
   // per-symbol 지표 배열은 제거됨(22k× 중복 = 43.5MB) — 지표 메타는 전역
   // indicator_catalog(/symbols 응답에 1회)로 받는다.
@@ -167,7 +171,19 @@ export interface StrategyRow {
   live_started_at?: string | null;
   // P5-4 — 실행 계좌 바인딩(handle.account_id). null/미설정=미바인딩(레거시·핸들 없는 사용자).
   account_ref?: string | null;
+  // 바인딩된 계좌의 브로커(kis|ls). 게이트 capability 판정에 사용. 미바인딩이면 null.
+  account_broker?: string | null;
 }
+
+// 자동매매 capability 매트릭스 (GET /strategies/autotrade-capabilities).
+// broker → mode → asset_class → Capability. AccountPicker가 셀을 조회해 적용 가능 여부·사유 표시.
+export type Capability = {
+  status: "ok" | "needs_setup" | "blocked";
+  verified: boolean;          // false=경로 구현됐으나 라이브 검증 전(적용 시 경고)
+  reason: string;
+  setup_hint: string | null;
+};
+export type CapabilityMatrix = Record<string, Record<string, Record<string, Capability>>>;
 
 // Phase 59 — 전략 버전 이력
 export interface StrategyVersionRow {
