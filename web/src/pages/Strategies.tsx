@@ -12,8 +12,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
-import type { IrStrategyDef, StrategyDef, StrategyRow, SyncSnapshot } from "../types";
+import type { AccountHandle, IrStrategyDef, StrategyDef, StrategyRow, SyncSnapshot } from "../types";
 import { parseScreenerKey, parseTradeSymbols } from "../types";
+import { accountLabel } from "../lib/accountLabel";
 
 // IR 전략 카드 표시용 한글 라벨 (operand-free, 표시 전용).
 const IR_SIZING_LABEL: Record<string, string> = {
@@ -96,6 +97,8 @@ export default function Strategies() {
 
   const strategyPnl = snap?.payload.strategy_pnl;
   const positions = snap?.payload.positions ?? [];
+  // P5-4 — 비민감 계좌 핸들(로컬앱이 snapshot에 실어 보고). 카드에 바인딩 계좌 표시용.
+  const accountHandles = snap?.payload.health?.account_handles ?? [];
 
   return (
     <div>
@@ -148,6 +151,7 @@ export default function Strategies() {
                   strategy={s}
                   pnl={strategyPnl?.by_strategy.find(r => r.strategy === s.name)}
                   positionCount={positions.filter(p => p.strategy_name === s.name).length}
+                  handles={accountHandles}
                   onClick={() => navigate(`/strategies/${s.id}`)}
                 />
               ))}
@@ -163,14 +167,16 @@ export default function Strategies() {
 }
 
 function StrategyCard({
-  strategy: s, pnl: row, positionCount, onClick,
+  strategy: s, pnl: row, positionCount, handles, onClick,
 }: {
   strategy: StrategyRow;
   pnl?: { pnl: number; today_pnl: number; trades: number; win_rate: number };
   positionCount: number;
+  handles: AccountHandle[];
   onClick: () => void;
 }) {
   const isIr = s.engine === "ir";
+  const account = accountLabel(s.account_ref, handles);
 
   // 카드 본문(대상·요약)을 engine별로 산출. IR row는 operand 필드가 없으므로 분리.
   let target: ReactNode;
@@ -215,6 +221,18 @@ function StrategyCard({
       </div>
       <div className="sc-target">{target}</div>
       <div className="sc-meta">{meta}</div>
+      <div className="sc-meta" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        {account ? (
+          <>
+            <span>계좌: {account.nickname}</span>
+            <span className={"sc-badge " + account.mode}>
+              {account.mode === "live" ? "실전" : "모의"}
+            </span>
+          </>
+        ) : (
+          <span>계좌 미선택</span>
+        )}
+      </div>
       <div className="sc-stats">
         <div className="sc-stat">
           <span className="sc-stat-label">누적 P&L</span>

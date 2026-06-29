@@ -148,6 +148,15 @@ export interface ScreenerField {
   key: string; label: string; unit: string; group: string;
 }
 
+/** P5-4 — 비민감 계좌 핸들. 로컬앱이 sync snapshot health에 실어 보고(INV-SEC: 계좌번호·자격증명 미포함). */
+export interface AccountHandle {
+  account_id: string;
+  broker: "kis" | "ls";
+  asset_classes: string[];
+  mode: "paper" | "live";
+  nickname: string;
+}
+
 export interface StrategyRow {
   id: number; name: string; run_mode: string;
   // 표현 엔진 — operand(레거시 row) | ir(전략 연구소). engine으로 분기해 좁혀 읽는다.
@@ -156,6 +165,8 @@ export interface StrategyRow {
   // Phase 59 — run_mode 전환 시점 기록
   paper_started_at?: string | null;
   live_started_at?: string | null;
+  // P5-4 — 실행 계좌 바인딩(handle.account_id). null/미설정=미바인딩(레거시·핸들 없는 사용자).
+  account_ref?: string | null;
 }
 
 // Phase 59 — 전략 버전 이력
@@ -180,6 +191,16 @@ export interface StrategyStats {
   n_trades: number | null;
   n_positions: number;
   last_snapshot_at: string | null;
+}
+
+// P6-4 — 실행 명세 4분류 요약 (/strategies/{id}/execution-summary).
+// core execution_summary가 단일 출처 — 웹은 렌더만 한다(가정값 TS 중복 0).
+// confirmed=전략이 정한 값 · assumed=시스템 기본값(백테스트 가정) · at_order=발주 시점 결정 · unknown=사후 확인.
+export interface ExecutionSummary {
+  confirmed: { label: string; value: string }[];
+  assumed: { label: string; value: string }[];
+  at_order: string[];
+  unknown: string[];
 }
 
 export interface BacktestResult {
@@ -596,7 +617,12 @@ export interface CycleRow {
   decisions: { action: string; strategy_id: string; strategy_name: string;
                 symbol: string; reason: string;
                 prev_close?: number; cur_price?: number;
-                intended?: number; fill?: number }[];
+                intended?: number; fill?: number;
+                // P6-1 체결 투입 투명성 — 이미 snapshot JSON에 실려 옴(서버 재전송 불필요).
+                // 주식: invest.amount, 선물: invest.notional/margin/leverage.
+                extra?: { intended?: number; fill?: number;
+                          invest?: { amount?: number; notional?: number; margin?: number;
+                                     leverage?: number; currency?: string } } }[];
   summary: CycleSummary;
 }
 
@@ -657,6 +683,9 @@ export interface LocalHealth {
   kis_token_expires_at?: string | null;
   kis_master_pushed_date?: string | null;
   warnings: string[];
+  // P5-4 — 로컬앱이 보고하는 비민감 계좌 핸들 + 현재 활성 계좌 id들(웹 계좌 바인딩 UX).
+  account_handles?: AccountHandle[];
+  active_account_ids?: string[];
 }
 
 export interface MarketIndicator {
@@ -906,6 +935,12 @@ export interface PreviewBuyCandidate {
   data_as_of: string | null;
   currency?: "KRW" | "USD";
   note?: string;
+  // P6-2 서버 preview 예상수수료·레버리지 — 이미 snapshot JSON에 실려 옴.
+  // KR 주식: est_fee_krw, 선물: leverage/multiplier/margin_rate.
+  est_fee_krw?: number | null;
+  leverage?: number | null;
+  multiplier?: number | null;
+  margin_rate?: number | null;
 }
 
 export interface PreviewExit {
