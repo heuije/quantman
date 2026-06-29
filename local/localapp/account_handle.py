@@ -12,6 +12,9 @@ import uuid
 import keyring
 
 from .config import KEYRING_SERVICE
+from .secrets_store import (get_active_broker, load_kis, load_kis_futures,
+                            load_kis_overseas_futures, load_ls, load_ls_futures,
+                            load_ls_overseas_futures)
 
 _HANDLE_MAP = "account_handles"   # keyring: {slot_key: {"account_id":..., "fingerprint":..., "nickname":...}}
 
@@ -44,3 +47,48 @@ def _load_map() -> dict:
 
 def _save_map(m: dict) -> None:
     keyring.set_password(KEYRING_SERVICE, _HANDLE_MAP, json.dumps(m))
+
+
+# slot_key → (broker, asset_class, loader)
+_SLOTS = [
+    ("kis_credentials",                   "kis", "kr_equity",        load_kis),
+    ("kis_futures_credentials",           "kis", "kr_futures",       load_kis_futures),
+    ("kis_overseas_futures_credentials",  "kis", "us_futures",       load_kis_overseas_futures),
+    ("ls_credentials",                    "ls",  "kr_equity",        load_ls),
+    ("ls_futures_credentials",            "ls",  "kr_futures",       load_ls_futures),
+    ("ls_overseas_futures_credentials",   "ls",  "us_futures",       load_ls_overseas_futures),
+]
+
+_LABEL = {"kr_equity": "국내주식", "kr_futures": "국내선물", "us_futures": "해외선물"}
+
+
+def _slot_creds() -> dict:
+    """등록된 슬롯만 {slot_key: (broker, asset_class, creds)} — 테스트 스텁 지점."""
+    out = {}
+    for key, broker, ac, loader in _SLOTS:
+        c = loader()
+        if c:
+            out[key] = (broker, ac, c)
+    return out
+
+
+def current_handles() -> list[dict]:
+    """등록 슬롯 → 핸들 목록(비민감). account_id 회전 매핑을 persist."""
+    store = _load_map()
+    handles = []
+    for slot_key, (broker, ac, creds) in _slot_creds().items():
+        fp = fingerprint(broker, creds)
+        aid = resolve_account_id(slot_key, fp, store)
+        mode = "paper" if creds.get("virtual", True) else "live"
+        nick = store[slot_key].get("nickname") or \
+            f"{broker.upper()} {'모의' if mode == 'paper' else '실전'} {_LABEL.get(ac, ac)}"
+        handles.append({"account_id": aid, "broker": broker,
+                        "asset_classes": [ac], "mode": mode, "nickname": nick})
+    _save_map(store)
+    return handles
+
+
+def active_account_ids() -> list[str]:
+    """활성 브로커의 핸들 account_id 집합 — 사이클 가드(P5-3)가 멤버십 검사."""
+    ab = get_active_broker()
+    return [h["account_id"] for h in current_handles() if h["broker"] == ab]
