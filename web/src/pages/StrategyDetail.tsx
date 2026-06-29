@@ -15,9 +15,11 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import type {
-  BacktestRunSummary, IrStrategyDef,
+  AccountHandle, BacktestRunSummary, IrStrategyDef,
   StrategyRow, StrategyStats, StrategyVersionRow,
 } from "../types";
+import AccountPicker from "../components/AccountPicker";
+import { accountLabel } from "../lib/accountLabel";
 
 type TabKey = "config" | "versions" | "stats" | "backtests";
 
@@ -44,6 +46,9 @@ export default function StrategyDetail() {
   const [stats, setStats] = useState<StrategyStats | null>(null);
   const [versions, setVersions] = useState<StrategyVersionRow[]>([]);
   const [backtests, setBacktests] = useState<BacktestRunSummary[]>([]);
+  // P5-4 — 비민감 계좌 핸들·활성 id(로컬앱이 snapshot에 실어 보고). 바인딩 표시·전환용.
+  const [accountHandles, setAccountHandles] = useState<AccountHandle[]>([]);
+  const [activeAccountIds, setActiveAccountIds] = useState<string[]>([]);
   const [tab, setTab] = useState<TabKey>("config");
   const [err, setErr] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -56,9 +61,13 @@ export default function StrategyDetail() {
       api.getStrategyStats(sid).catch(() => null),
       api.listStrategyVersions(sid).catch(() => []),
       api.listStrategyBacktests(sid).catch(() => []),
+      // 핸들 로드는 비치명 — 페어링된 로컬앱 없으면 빈 배열(→ "계좌 미선택"·안내 경로).
+      api.snapshot().catch(() => null),
     ])
-      .then(([s, st, vs, bs]) => {
+      .then(([s, st, vs, bs, snap]) => {
         setStrategy(s); setStats(st); setVersions(vs); setBacktests(bs);
+        setAccountHandles(snap?.payload?.health?.account_handles ?? []);
+        setActiveAccountIds(snap?.payload?.health?.active_account_ids ?? []);
       })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setLoaded(true));
@@ -70,6 +79,16 @@ export default function StrategyDetail() {
     if (!confirm(`v${versionNo}으로 복원할까요?\n현재 정의도 자동 새 버전으로 보존됩니다.`)) return;
     try {
       await api.restoreStrategyVersion(sid, versionNo);
+      loadAll();
+    } catch (e) { setErr((e as Error).message); }
+  }
+
+  // P5-4 — 실행 계좌 재바인딩. 선택 핸들의 mode=run_mode·account_id=account_ref로 저장.
+  // 정의는 그대로 유지(전환은 계좌만 바꾼다). 실전 승격 confirm은 AccountPicker가 처리.
+  async function rebind(h: AccountHandle) {
+    if (!strategy) return;
+    try {
+      await api.updateStrategy(strategy.id, strategy.definition, h.mode, "ir", h.account_id);
       loadAll();
     } catch (e) { setErr((e as Error).message); }
   }
@@ -152,7 +171,15 @@ export default function StrategyDetail() {
       {tab === "versions" && (
         <VersionsTab versions={versions} backtests={backtests} onRestore={restoreVersion} />
       )}
-      {tab === "stats" && <StatsTab stats={stats} strategy={strategy} />}
+      {tab === "stats" && (
+        <StatsTab
+          stats={stats}
+          strategy={strategy}
+          handles={accountHandles}
+          activeIds={activeAccountIds}
+          onRebind={rebind}
+        />
+      )}
       {tab === "backtests" && <BacktestsTab backtests={backtests} />}
     </div>
   );
@@ -388,11 +415,23 @@ function labelReason(reason: string): string {
 
 // ── 탭 3: 현황 ────────────────────────────────────────────────────────────────
 
-function StatsTab({ stats, strategy }: {
+function StatsTab({ stats, strategy, handles, activeIds, onRebind }: {
   stats: StrategyStats | null;
   strategy: StrategyRow;
+  handles: AccountHandle[];
+  activeIds: string[];
+  onRebind: (h: AccountHandle) => void;
 }) {
-  if (!stats) return <p className="muted">현황 데이터가 없습니다.</p>;
+  // 현황 데이터가 없어도(초안 등) 실행 계좌 섹션은 보여준다 — 바인딩·전환은 stats와 무관.
+  if (!stats) {
+    return (
+      <div className="strategy-detail-body">
+        <p className="muted">현황 데이터가 없습니다.</p>
+        <AccountBindingSection
+          strategy={strategy} handles={handles} activeIds={activeIds} onRebind={onRebind} />
+      </div>
+    );
+  }
   const days = stats.days_live ?? stats.days_paper;
   const lifecycle = stats.live_started_at
     ? `실전 ${stats.days_live ?? 0}일`
@@ -433,10 +472,55 @@ function StatsTab({ stats, strategy }: {
                 : "—"} />
       </section>
 
+      <AccountBindingSection
+        strategy={strategy} handles={handles} activeIds={activeIds} onRebind={onRebind} />
+
       <p className="muted small" style={{ marginTop: 12 }}>
         ⓘ 종목별 매매 상세는 로컬앱 "주문 내역" 탭에서 확인하세요 (서버에는 요약만 보관).
       </p>
     </div>
+  );
+}
+
+/** 실행 계좌 섹션 (P5-4) — 바인딩된 계좌(별명·mode 배지) 표시 + "전환"으로 재바인딩.
+ *  전환은 AccountPicker(핸들 선택, 실전 confirm 내장)를 열어 선택 핸들로 account_ref를 갱신. */
+function AccountBindingSection({ strategy, handles, activeIds, onRebind }: {
+  strategy: StrategyRow;
+  handles: AccountHandle[];
+  activeIds: string[];
+  onRebind: (h: AccountHandle) => void;
+}) {
+  const [showPicker, setShowPicker] = useState(false);
+  const account = accountLabel(strategy.account_ref, handles);
+
+  return (
+    <section className="panel" style={{ marginTop: 16 }}>
+      <h4>실행 계좌</h4>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {account ? (
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontWeight: 600 }}>{account.nickname}</span>
+            <span className={"sc-badge " + account.mode}>
+              {account.mode === "live" ? "실전" : "모의"}
+            </span>
+          </span>
+        ) : (
+          <span className="muted">계좌 미선택</span>
+        )}
+        <span style={{ flex: 1 }} />
+        <button className="ghost sm" onClick={() => setShowPicker(true)}>전환</button>
+      </div>
+
+      {showPicker && (
+        <AccountPicker
+          handles={handles}
+          activeIds={activeIds}
+          currentRef={strategy.account_ref}
+          onSelect={(h) => { setShowPicker(false); onRebind(h); }}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
+    </section>
   );
 }
 
