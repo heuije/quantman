@@ -136,6 +136,7 @@ export default function GlobalMarket() {
   const [selCom, setSelCom] = useState<string | null>(null);   // 차트로 펼친 원자재 심볼
   const [selBat, setSelBat] = useState<BatteryMetal | null>(null);   // 차트로 펼친 배터리광물
   const [econPage, setEconPage] = useState(0);   // 경제지표 과거 페이지네이션
+  const [showSrc, setShowSrc] = useState(false);   // 데이터 출처 — 좌측 통합·접기(기본 숨김)
 
   useEffect(() => {
     api.globalIndices().then(setIdx).catch(() => { /* 무시 */ });
@@ -243,14 +244,6 @@ export default function GlobalMarket() {
             </tbody>
           </table>
         </div>
-        <div style={{ marginTop: 8 }}>
-          {sourceLines(rows).map((s, i) => (
-            <div key={i} style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>Source: {s}</div>
-          ))}
-          {rows.some((r) => r.src === "komis") && (
-            <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>KOMIS는 월/일별 가격이라 변동은 전일(없으면 전월) 대비.</div>
-          )}
-        </div>
       </div>
     );
   };
@@ -334,6 +327,24 @@ export default function GlobalMarket() {
             <KomisChart metal={selBat} />
           </div>
         )}
+        {/* 출처 — 좌측 한곳으로 통합 + 접기(기본 숨김) */}
+        <div style={{ marginTop: 14 }}>
+          <button type="button" onClick={() => setShowSrc((v) => !v)}
+            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--muted)",
+              background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>
+            {showSrc ? "▾" : "▸"} 데이터 출처
+          </button>
+          {showSrc && (
+            <div style={{ marginTop: 6, textAlign: "left" }}>
+              {[...new Set([...sourceLines(energyRows), ...sourceLines(metalRows)])].map((s, i) => (
+                <div key={i} style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>Source: {s}</div>
+              ))}
+              {metalRows.some((r) => r.src === "komis") && (
+                <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>KOMIS는 월/일별 가격이라 변동은 전일(없으면 전월) 대비.</div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 3. 미국 경제지표 — 연내 예정(컨센서스) + 과거(실제 vs 컨센서스) 최장기간 */}
