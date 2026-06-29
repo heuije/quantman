@@ -21,7 +21,10 @@ from .compose import (  # noqa: F401
 )
 from .capabilities import capability_spec  # noqa: F401
 from .explain import explain_ir  # noqa: F401
-from .excel_export import build_strategy_excel  # noqa: F401
+# build_strategy_excel은 아래 __getattr__로 lazy 재노출한다(excel_export가 openpyxl을
+# 모듈 레벨로 import하므로). 엑셀 export는 부차 기능인데 eager re-export하면 자동매매·
+# 분석 등 *엑셀과 무관한* ir_engine import까지 openpyxl을 요구해, 로컬앱 등 openpyxl을
+# 번들하지 않는 실행환경에서 import 자체가 크래시한다(2026-06-30 자동매매 사이클 중단 사건).
 from .params import param_manifest  # noqa: F401
 from .summarize import result_shape, summarize_result  # noqa: F401
 from .result_status import classify_status  # noqa: F401
@@ -51,3 +54,16 @@ __all__ = [
     "two_sample_test", "bootstrap_mean_ci", "block_bootstrap_ci", "jackknife_by_year",
     "walk_forward_consistency", "distribution", "compare_partition", "excess_distribution",
 ]
+
+
+def __getattr__(name: str):
+    """엑셀 export(openpyxl 의존)를 lazy 재노출 — PEP 562.
+
+    `ir_engine`을 import하는 자동매매·분석 경로가 openpyxl을 강제로 끌어오지 않게 한다.
+    `from quant_core.ir_engine import build_strategy_excel` 또는 속성 접근 시에만 실제
+    로드되므로, 엑셀을 쓰지 않는 실행환경(로컬앱 등)은 openpyxl 없이도 정상 import된다.
+    """
+    if name == "build_strategy_excel":
+        from .excel_export import build_strategy_excel
+        return build_strategy_excel
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
