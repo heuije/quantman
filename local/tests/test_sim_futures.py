@@ -39,8 +39,8 @@ def test_settlement_pnl_rejects_bad_side():
 
 
 def test_required_margin():
-    # notional = 375×2×250_000 = 187_500_000; 개시증거금률 0.10 → 18_750_000
-    assert required_margin("코스피200선물", 2, 375.0) == 18_750_000.0
+    # notional = 375×2×250_000 = 187_500_000; 개시증거금률 0.195 → 36_562_500
+    assert required_margin("코스피200선물", 2, 375.0) == 36_562_500.0
 
 
 def test_make_futures_position_shape():
@@ -48,7 +48,7 @@ def test_make_futures_position_shape():
     assert p["symbol"] == "코스피200선물" and p["side"] == "long" and p["qty"] == 2
     assert p["avg_price"] == 375.0 and p["eval_price"] == 377.0
     assert p["multiplier"] == 250_000.0
-    assert p["margin_requirement"] == 18_750_000.0
+    assert p["margin_requirement"] == 36_562_500.0   # 375×2×250k×0.195
     assert p["eval_pnl"] == 1_000_000.0
 
 

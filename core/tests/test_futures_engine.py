@@ -165,10 +165,10 @@ def test_event_buy_qty_futures_uses_margin_pct():
     fut40 = _event_hold("원유선물", futures_margin_pct=40.0)
     assert event_buy_qty(fut40, cash=1.37e10, prev_close=400.0, dataset=fx) == 100  # 2배
     assert event_buy_qty(fut, cash=1.37e10, prev_close=400.0) == 0  # FX 없으면 보류(추측 금지)
-    # 코스피200선물(KRW·승수 250,000): 환산 불요. 1계약 증거금 1e7 → 1e7×20%=2e6 부족 → 0.
+    # 코스피200선물(KRW·승수 250,000·증거금 0.195): 환산 불요. 1계약 증거금=400×250k×0.195=19.5e6.
     big = _event_hold("코스피200선물")
-    assert event_buy_qty(big, cash=1e7, prev_close=400.0) == 0
-    assert event_buy_qty(big, cash=1e8, prev_close=400.0) == 2      # 1e8×20%=2e7 / 1e7 = 2계약
+    assert event_buy_qty(big, cash=1e7, prev_close=400.0) == 0      # 1e7×20%=2e6 < 19.5e6 → 0
+    assert event_buy_qty(big, cash=1e8, prev_close=400.0) == 1      # 1e8×20%=2e7 / 19.5e6 = 1계약
     eq = _event_hold("005930")                                     # 주식 단일=100% 정수주
     assert event_buy_qty(eq, cash=1e7, prev_close=400.0) == 25000   # 1e7//400
 

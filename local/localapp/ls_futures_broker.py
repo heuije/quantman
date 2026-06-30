@@ -59,24 +59,26 @@ class LsFuturesBroker(_LsAuth):
         return self._post("/futureoption/accno", "t0441",
                           {"t0441InBlock": {"cts_expcode": "", "cts_medocd": ""}})
 
-    def _orderable_amt_krw(self) -> int:
-        """CFOAQ10100 선물 주문가능금액(OrdAbleAmt) — CFOAQ50600(평가)이 모의 미제공이라 대체.
-        근월 코스피200선물 기준(가용증거금은 계좌 단위 ≈ 계약 무관). 2026-06-23 모의 실측:
-        CFOAQ50600=01900 미제공 vs CFOAQ10100 OrdAbleAmt=5억. 실패/미해석 → 0."""
+    def _margin_amounts_krw(self) -> tuple[int, int]:
+        """CFOAQ10100에서 (가용 주문가능금액 OrdAbleAmt, 잠긴 증거금 UsePreargMgn) — CFOAQ50600(평가)이
+        모의 미제공일 때 대체. 근월 코스피200선물 기준(계좌 단위 ≈ 계약 무관). 2026-06-30 실전 프로브
+        실측: OrdAbleAmt(가용) + UsePreargMgn(잠긴 증거금) = 추정예탁자산(EvalDpsamtTotamt 동의). 실패/미해석 → (0,0)."""
         try:
             import datetime
             from .ls_futures_contracts import _pick_front_kospi200
             code = _pick_front_kospi200(self.index_futures_master(), datetime.date.today())
             if not code:
-                return 0
+                return 0, 0
             r = self._post("/futureoption/accno", "CFOAQ10100",
                            {"CFOAQ10100InBlock1": {"RecCnt": 1, "QryTp": "1", "OrdAmt": 0,
                                                    "RatVal": 0.0, "FnoIsuNo": code, "BnsTpCode": "2",
                                                    "FnoOrdPrc": 0.0, "FnoOrdprcPtnCode": "00"}})
-            return int(float((r.get("CFOAQ10100OutBlock2") or {}).get("OrdAbleAmt") or 0))
+            ob2 = r.get("CFOAQ10100OutBlock2") or {}
+            return (int(float(ob2.get("OrdAbleAmt") or 0)),
+                    int(float(ob2.get("UsePreargMgn") or 0)))
         except Exception as e:
             log.warning("CFOAQ10100 선물 주문가능 조회 실패: %s", e)
-            return 0
+            return 0, 0
 
     def account_snapshot(self) -> dict:
         """국내선물 잔고 — {account, positions}. 2-TR 중 실패는 raise(라우터가 fetch_failed).
@@ -87,8 +89,11 @@ class LsFuturesBroker(_LsAuth):
         equity = int(float(summary.get("EvalDpsamtTotamt") or 0))
         order_cash = int(float(summary.get("MnyOrdAbleAmt") or 0))
         if not order_cash:                        # 모의 미제공 → CFOAQ10100 주문가능
-            order_cash = self._orderable_amt_krw()
-            equity = equity or order_cash          # 평가 미제공 시 주문가능으로 근사(킬스위치)
+            order_cash, used_margin = self._margin_amounts_krw()
+            # 모의는 평가(EvalDpsamtTotamt) 미제공. equity를 가용증거금(OrdAbleAmt)만으로 근사하면
+            # 포지션이 열려 증거금이 잠길 때 가용액↓ → equity 가짜 하락(킬스위치 오발동·−98% 부류).
+            # 진짜 예탁자산 ≈ 가용 + 잠긴증거금(UsePreargMgn) — 둘 다 CFOAQ10100에 있어 추정 없이 복원.
+            equity = equity or (order_cash + used_margin)
         account = {
             "equity": equity,            # 추정예탁자산(킬스위치) — CFOAQ50600 or 주문가능 근사
             "order_cash": order_cash,    # 현금주문가능(사이징)
@@ -212,7 +217,7 @@ class LsFuturesBroker(_LsAuth):
         code=라이브 계약코드(101V6000 등·라우터가 해석해 전달), side='buy'|'sell', price=지정가(기준).
         반환=NewOrdAbleQty(계약수). LS가 실제 동적 증거금률로 계산한 최대 신규 계약수.
         조회 실패(OutBlock2 부재·_post 예외)는 raise — 호출자(Trader)가 catch해 카탈로그로 강등.
-        정상 응답의 0은 0 반환(증거금 부족). 기존 _orderable_amt_krw(OrdAbleAmt 금액·soft 0폴백)와 별개.
+        정상 응답의 0은 0 반환(증거금 부족). 기존 _margin_amounts_krw(OrdAbleAmt/UsePreargMgn 금액·soft 0폴백)와 별개.
         """
         if side not in ("buy", "sell"):
             raise ValueError(f"orderable_qty side는 'buy'|'sell'만 허용: {side!r}")

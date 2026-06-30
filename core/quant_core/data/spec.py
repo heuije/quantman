@@ -195,6 +195,14 @@ register(DataTypeSpec(
     downstream=["study.label"], current_status="present",
     notes="발표지연 있음 → as_of로 PIT 표기 권장.",
 ))
+register(DataTypeSpec(
+    key="macro.krx", pclass=PClass.MACRO,
+    label="KR 시장지표(V-KOSPI·옵션풋콜비율·KRX채권지수·국고채3/10년·선물 미결제약정·ETF AUM/flow)",
+    frequency="daily", history_rule="2010~", source="공식 KRX Open API(data-dbg.krx.co.kr)",
+    provides=["Close(=val)"], required_meta=_BASE_META,
+    downstream=["study.label(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",
+    notes="AUTH_KEY(KRX_API_KEY) 필요·미설정 시 비활성. 매크로형 명명 시계열(MACRO_KRX_SYMBOLS).",
+))
 
 # ── P5 분류·정적 메타 ─────────────────────────────────────────────────────────
 

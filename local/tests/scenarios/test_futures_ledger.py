@@ -117,6 +117,10 @@ def test_directional_short_candidate_opens_short(isolated_trader):
     trader, broker = isolated_trader
     sym = "코스피200선물"
     broker._prices[sym] = 300.0
+    # 방향 라우팅 검증용 — qty≥1만 보장하면 됨. 선물 사이징은 broker의 futures_order_cash_kr를
+    # 본다(equity_now는 capital). 증거금률 0.195에서 px300 1계약=14.625M이라 50M(100% 예산
+    # → 3계약)로 키워 routing을 관측(기본 cash 10M이면 0계약→skip_funds).
+    broker._balance["futures_order_cash_kr"] = 50_000_000
     n_before = len(broker.submitted)
     decisions: list = []
     ok = trader._try_buy_one_symbol(
@@ -135,6 +139,8 @@ def test_directional_long_candidate_opens_long(isolated_trader):
     trader, broker = isolated_trader
     sym = "코스피200선물"
     broker._prices[sym] = 300.0
+    # 증거금률 0.195: px300 1계약=14.625M → 선물 사이징 cash를 50M로(0계약→skip_funds 방지).
+    broker._balance["futures_order_cash_kr"] = 50_000_000
     decisions: list = []
     ok = trader._try_buy_one_symbol(
         "ls2", "ls2", "양방향", _directional_def(sym), sym, _fut_ds(sym, 300.0),

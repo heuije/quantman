@@ -173,8 +173,8 @@ def test_event_qty_futures_fixed_amount_fx():
     assert event_buy_qty(oil, cash=1e9, prev_close=60.0) == 0                 # FX 없음 → 보류
     k200 = _strat({"mode": "fixed_amount", "amount_krw": 100_000_000},
                   {"kind": "single", "symbols": ["코스피200선물"]})
-    # 1e8 / (400×250,000×0.10) = 10계약 — KRW 선물은 FX 불요(기존 그대로)
-    assert event_buy_qty(k200, cash=1e9, prev_close=400.0) == 10
+    # 1e8 / (400×250,000×0.195=19.5e6) = 5계약 — KRW 선물은 FX 불요(기존 그대로)
+    assert event_buy_qty(k200, cash=1e9, prev_close=400.0) == 5
 
 
 # ── US-F1: 선물 %(futures_margin_pct) 사이징도 USD면 환산 (라이브 전용) ──────────
@@ -202,10 +202,10 @@ def test_event_qty_krw_futures_pct_unchanged():
     """KRW 선물(코스피200) % 사이징은 FX 유무와 무관하게 기존 그대로 (도메스틱 라이브 보존)."""
     k200 = _strat({"futures_margin_pct": 20.0},
                   {"kind": "single", "symbols": ["코스피200선물"]})
-    # 1e9 × 20% = 2e8 / (400×250,000×0.10=1e7) = 20계약
-    assert event_buy_qty(k200, cash=1e9, prev_close=400.0) == 20
+    # 1e9 × 20% = 2e8 / (400×250,000×0.195=19.5e6) = 10계약
+    assert event_buy_qty(k200, cash=1e9, prev_close=400.0) == 10
     assert event_buy_qty(k200, cash=1e9, prev_close=400.0,
-                         dataset={_FX: _fx_df(1370.0)}) == 20
+                         dataset={_FX: _fx_df(1370.0)}) == 10
 
 
 def test_event_qty_mini_kospi200_uses_50k_multiplier():
@@ -215,10 +215,10 @@ def test_event_qty_mini_kospi200_uses_50k_multiplier():
     라도 계약당 증거금이 1/5라 같은 예산으로 5배 계약 = 동일 명목 노출. KRW 선물이라 FX 무관(정규와 동일)."""
     mini = _strat({"futures_margin_pct": 20.0},
                   {"kind": "single", "symbols": ["미니코스피200선물"]})
-    # 1e9 × 20% = 2e8 / (400×50,000×0.10=2e6) = 100계약 (정규 20계약의 5배 — 승수 1/5)
-    assert event_buy_qty(mini, cash=1e9, prev_close=400.0) == 100
+    # 1e9 × 20% = 2e8 / (400×50,000×0.195=3.9e6) = 51계약 (정규 10계약의 ~5배 — 승수 1/5·floor)
+    assert event_buy_qty(mini, cash=1e9, prev_close=400.0) == 51
     assert event_buy_qty(mini, cash=1e9, prev_close=400.0,
-                         dataset={_FX: _fx_df(1370.0)}) == 100
+                         dataset={_FX: _fx_df(1370.0)}) == 51
 
 
 # ── 모델 A 국내선물 라이브 사이징 헬퍼 (futures_margin_pct_of · model_a_qty) ──────

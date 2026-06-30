@@ -3,7 +3,7 @@
 체결 시점에 per-order 투입 정보를 trade 기록(ev)과 decision에 싣는지 검증:
   - 주식: invest.amount = 수량×체결가 (레버리지 없음)
   - 선물: invest.notional = 수량×체결가×승수, margin = notional×개시증거금률,
-          leverage = 1/개시증거금률 (코스피200선물 → 250000·0.10·10x)
+          leverage = 1/개시증거금률 (코스피200선물 → 250000·0.195·5.1x)
 
 서버 preview는 선물을 사이징 못 함(보안경계) — 발주 시점 로컬이 진실원천.
 
@@ -93,7 +93,7 @@ def test_stock_buy_records_amount(isolated_trader):
 def test_futures_buy_records_notional_margin_leverage(isolated_trader):
     """코스피200선물 매수 체결 → invest.notional/margin/leverage.
 
-    코스피200선물 spec: multiplier 250000·init_margin_rate 0.10(=레버리지 10x).
+    코스피200선물 spec: multiplier 250000·init_margin_rate 0.195(=레버리지 5.1x, 1자리 반올림).
     """
     trader, _ = isolated_trader
     qty, fill = 2, 350.0
@@ -103,12 +103,12 @@ def test_futures_buy_records_notional_margin_leverage(isolated_trader):
     bought = [d for d in decisions if d["action"] == "bought"][-1]
     inv = bought["invest"]
     assert inv["notional"] == approx(qty * fill * 250_000)       # 175,000,000
-    assert inv["margin"] == approx(inv["notional"] * 0.10)       # 17,500,000
-    assert inv["leverage"] == approx(10.0)                       # 1 / 0.10
+    assert inv["margin"] == approx(inv["notional"] * 0.195)      # 34,125,000
+    assert inv["leverage"] == approx(5.1)                        # round(1/0.195, 1) = 5.1
     assert inv["currency"] == "KRW"
     assert "amount" not in inv
 
     # trade ev에도 동일 부착
     ev = _last_trade()
     assert ev["invest"]["notional"] == approx(qty * fill * 250_000)
-    assert ev["invest"]["leverage"] == approx(10.0)
+    assert ev["invest"]["leverage"] == approx(5.1)

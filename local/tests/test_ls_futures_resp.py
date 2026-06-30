@@ -46,6 +46,22 @@ def test_account_snapshot_raises_on_partial_failure(monkeypatch):
         b.account_snapshot()
 
 
+def test_account_snapshot_mock_equity_reconstructs_from_used_margin(monkeypatch):
+    """모의(CFOAQ50600 평가 미제공): equity = 가용(OrdAbleAmt) + 잠긴증거금(UsePreargMgn).
+
+    종전엔 equity를 가용증거금만으로 근사 → 포지션이 열려 증거금이 잠기면 가용액↓ → equity 가짜 하락
+    (킬스위치 오발동·−98% 부류). 진짜 예탁자산 = 가용 + 잠긴 — 둘 다 CFOAQ10100에 있어 추정 없이 복원
+    (2026-06-30 실전 프로브 발견: OrdAbleAmt 236M + UsePreargMgn 264M = EvalDpsamtTotamt 500M).
+    사이징(order_cash)은 가용 그대로 — equity(킬스위치)만 복원."""
+    b = _broker()
+    monkeypatch.setattr(b, "_acct_summary_raw", lambda: {"CFOAQ50600OutBlock2": {}}, raising=False)  # 평가 미제공
+    monkeypatch.setattr(b, "_margin_amounts_krw", lambda: (236_254_700, 263_745_300), raising=False)
+    monkeypatch.setattr(b, "_positions_raw", lambda: {"t0441OutBlock1": []}, raising=False)
+    acct = b.account_snapshot()["account"]
+    assert acct["order_cash"] == 236_254_700                  # 사이징 = 가용
+    assert acct["equity"] == 500_000_000                      # 킬스위치 = 가용+잠긴 (가짜하락 없음)
+
+
 def test_price_and_open(monkeypatch):
     b = _broker()
     monkeypatch.setattr(b, "_quote_raw", lambda sym: {
