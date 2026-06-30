@@ -14,11 +14,24 @@ socket.setdefaulttimeout(45)   # 소켓 read/connect 행 방지(원문 문서 6M
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "server"))
 from app import financials  # noqa: E402
 
+import json as _json
 DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "server", "app", "data", "financials")
-codes = sorted(f[:-5] for f in os.listdir(DIR) if f.endswith(".json"))
+_all = sorted(f[:-5] for f in os.listdir(DIR) if f.endswith(".json"))
+
+
+def _needs(c):
+    """resume: 연간 PL이 이미 5개년이면 건너뜀(완료). 미만이면 재처리(재시도로 5년 채움)."""
+    try:
+        d = _json.load(open(os.path.join(DIR, f"{c}.json"), encoding="utf-8"))
+        return len(d.get("annual", {}).get("PL", {}).get("periods", [])) < 5
+    except Exception:  # noqa: BLE001
+        return True
+
+
+codes = [c for c in _all if _needs(c)]
 total = len(codes)
-WORKERS = 4
-print(f"START refetch {total} codes (workers={WORKERS}, socket_to=45s)", flush=True)
+WORKERS = 3
+print(f"START refetch {total}/{len(_all)} codes (resume; workers={WORKERS}, socket_to=45s)", flush=True)
 
 lock = threading.Lock()
 done = ok = fail = dart_q = fg_q = no_q = 0
