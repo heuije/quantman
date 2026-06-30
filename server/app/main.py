@@ -417,6 +417,77 @@ def _initial_kr_ohlcv_backfill():
         _log.exception("KR OHLCV 깊이 백필 초기 청크 예외 — 10분 cron 재시도")
 
 
+# ── KR 시장지표 (공식 KRX Open API, KRX_API_KEY) ──────────────────────────────
+# V-KOSPI·옵션풋콜비율·KRX채권지수·국고채3/10년 = 매크로형 명명 시계열. 날짜축 cursor 백필
+# (컨센서스 패턴). 가벼운 지표(3서비스)는 넓은 윈도우, 옵션 풋콜(하루 ~19k행)은 좁은 윈도우.
+_KRX_BACKFILL_FLOOR = "20100101"
+_KRX_LIGHT_WINDOW_DAYS = 90
+_KRX_PUTCALL_WINDOW_DAYS = 4        # 옵션 무거움(timeout 90s) — 좁게
+
+
+def _krx_cursor_path(name: str):
+    from quant_core import data_fetcher
+    return data_fetcher.DATA_DIR / f"_krx_{name}.cursor"
+
+
+def _krx_backfill(name: str, window_days: int, fetch_fn) -> None:
+    """공식 KRX API 날짜축 cursor 백필 — today→2010 역순 1청크. 성공 시만 cursor 전진."""
+    from datetime import date, datetime, timedelta
+    from quant_core.data.feeds import krx_openapi
+    if not krx_openapi.is_active():
+        return
+    cur = _krx_cursor_path(name)
+    cur.parent.mkdir(parents=True, exist_ok=True)
+    end = (datetime.strptime(cur.read_text().strip(), "%Y%m%d").date()
+           if cur.exists() else date.today())
+    floor = datetime.strptime(_KRX_BACKFILL_FLOOR, "%Y%m%d").date()
+    if end <= floor:
+        return                                       # 백필 완료 — 무비용
+    start = max(floor, end - timedelta(days=window_days))
+    res = fetch_fn(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+    if not res.get("ok"):
+        _log.warning("[altdata] KRX %s 백필 실패(%s~%s) — cursor 유지·재시도", name, start, end)
+        return
+    cur.write_text(start.strftime("%Y%m%d"))
+    _log.info("[altdata] KRX %s 백필 청크 %s~%s: %s", name, start, end, res.get("saved"))
+
+
+def _backfill_krx_market_chunk() -> None:
+    from quant_core.data.feeds import krx_openapi
+    _krx_backfill("market", _KRX_LIGHT_WINDOW_DAYS, krx_openapi.fetch_market_indicators)
+
+
+def _backfill_krx_putcall_chunk() -> None:
+    from quant_core.data.feeds import krx_openapi
+    _krx_backfill("putcall", _KRX_PUTCALL_WINDOW_DAYS, krx_openapi.fetch_putcall)
+
+
+def _refresh_krx_market() -> None:
+    """일일 증분 — 최근 7일 재수집(공식 KRX API는 T+1 08시 갱신)·캐시 attach."""
+    from datetime import date, timedelta
+    from quant_core.data.feeds import krx_openapi
+    if not krx_openapi.is_active():
+        return
+    end = date.today()
+    s = (end - timedelta(days=7)).strftime("%Y%m%d")
+    e = end.strftime("%Y%m%d")
+    r1 = krx_openapi.fetch_market_indicators(s, e)
+    r2 = krx_openapi.fetch_putcall(s, e)
+    data_cache.invalidate()
+    _log.info("[altdata] KRX 시장지표 증분 %s~%s: light=%s pc=%s",
+              s, e, r1.get("saved"), r2.get("saved"))
+
+
+def _initial_krx_market_refresh():
+    try:
+        time.sleep(110)
+        _log.info("KRX 시장지표(공식API) 초기 백필 청크 시작")
+        _backfill_krx_market_chunk()
+        _backfill_krx_putcall_chunk()
+    except Exception:
+        _log.exception("KRX 시장지표 초기 청크 예외 — 10분 cron 재시도")
+
+
 def _initial_technical_refresh():
     import time
     try:
@@ -957,6 +1028,21 @@ def _build_scheduler() -> BackgroundScheduler:
         CronTrigger(minute="7-59/10"),           # :07,:17… — fund(*/10)·consensus(2)·flow(5)와 스태거
         id="kr_ohlcv_depth", replace_existing=True)
 
+    # KR 시장지표(공식 KRX API, KRX_API_KEY) — 10분 청크 백필(가벼운 지표 넓게·옵션 풋콜 좁게)
+    # + 09:30 일일 증분. KRX_API_KEY 미설정이면 feed가 no-op(무영향).
+    scheduler.add_job(
+        lambda: _run_with_retry("krx_market_chunk", _backfill_krx_market_chunk, scheduler),
+        CronTrigger(minute="8-59/10"),           # :08,:18… 스태거
+        id="krx_market_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("krx_putcall_chunk", _backfill_krx_putcall_chunk, scheduler),
+        CronTrigger(minute="4-59/10"),           # :04,:14… 스태거 (옵션 무거움·좁은 윈도우)
+        id="krx_putcall_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("krx_market_daily", _refresh_krx_market, scheduler),
+        CronTrigger(hour=9, minute=30),          # 공식 KRX API T+1 08시 갱신 후
+        id="krx_market_daily", replace_existing=True)
+
     # 일요일 08:00 — 미국 S&P500 시가총액 (fast_info). 분기 변동 낮아 주1회.
     scheduler.add_job(
         lambda: _run_with_retry("us_market_caps", _refresh_us_market_caps, scheduler),
@@ -1011,6 +1097,8 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_flow_refresh, daemon=True).start()
     _log.info("KR OHLCV 깊이 백필 초기 thread 시작")
     threading.Thread(target=_initial_kr_ohlcv_backfill, daemon=True).start()
+    _log.info("KRX 시장지표(공식API) 초기 백필 thread 시작")
+    threading.Thread(target=_initial_krx_market_refresh, daemon=True).start()
     _log.info("기술적 지표 초기 fetch thread 시작")
     threading.Thread(target=_initial_technical_refresh, daemon=True).start()
     _log.info("정적 메타 초기 fetch thread 시작 (섹터·상장폐지일)")
