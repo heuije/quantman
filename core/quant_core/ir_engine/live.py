@@ -143,6 +143,25 @@ def event_buy_qty(strategy: StrategyIR, *, cash: float, prev_close: float,
     return max(0, qty)
 
 
+def futures_margin_pct_of(strategy: StrategyIR) -> Optional[float]:
+    """모델 A 라이브 사이징의 사용률(%) — event_buy_qty와 동일 모드 판정(단일 출처).
+    fixed_amount(amount_krw 설정)→None(금액 기준·호출자가 min-클램프). 그 외(% 모드)→futures_margin_pct."""
+    sz = strategy.position.sizing
+    if sz.mode == "fixed_amount" and sz.amount_krw:
+        return None
+    return float(sz.futures_margin_pct)
+
+
+def model_a_qty(event_qty: int, orderable: int, pct: Optional[float]) -> int:
+    """모델 A 국내선물 라이브 계약수. 항상 0 ≤ qty ≤ 브로커 주문가능수량(과발주 구조적 불가).
+    pct(% 모드)=min(orderable, floor(orderable×pct/100)) — min 캡이 '항상 ≤ 한도' 불변식 보장(사용률>100 방어).
+    pct None(fixed_amount)=min(event_qty, orderable) — 정액 사이징의 안전 상한.
+    max(0, …) — 음수 pct·음수 orderable에서도 자기완결로 ≥0 보장(호출자 backstop 비의존)."""
+    if pct is not None:
+        return max(0, min(orderable, int(orderable * pct / 100.0)))
+    return max(0, min(event_qty, orderable))
+
+
 def intraday_exit_reason(strategy: StrategyIR, *, cur_price: float, entry_price: float,
                          peak_price: float, atr_v: Optional[float] = None) -> Optional[str]:
     """IR 장중 가격청산 사유(익절·손절·트레일).

@@ -59,6 +59,7 @@ _ORDER_PATH = "/uapi/domestic-futureoption/v1/trading/order"
 _BALANCE_PATH = "/uapi/domestic-futureoption/v1/trading/inquire-balance"
 _CANCEL_PATH = "/uapi/domestic-futureoption/v1/trading/order-rvsecncl"
 _CCNL_PATH = "/uapi/domestic-futureoption/v1/trading/inquire-ccnl"
+_PSBL_ORDER_PATH = "/uapi/domestic-futureoption/v1/trading/inquire-psbl-order"
 _QUOTE_PATH = "/uapi/domestic-futureoption/v1/quotations/inquire-price"
 _QUOTE_TR = "FHMIF10000000"   # 선물옵션 시세(실전·모의 공통)
 
@@ -403,6 +404,9 @@ class KisFuturesBroker:
     def _balance_tr(self) -> str:
         return "VTFO6118R" if self.virtual else "CTFO6118R"
 
+    def _psbl_order_tr(self) -> str:
+        return "VTTO5105R" if self.virtual else "TTTO5105R"
+
     # ── 해외선물 인증 (실전 전용, 토큰 캐시) ─────────────────────────────────────────
 
     def _ov_token(self) -> str:
@@ -506,6 +510,40 @@ class KisFuturesBroker:
         data = self._read_get(f"{self.base}{_BALANCE_PATH}", self._headers(self._balance_tr()),
                               build_balance_params(self.cano, self.acnt_prdt_cd))
         return parse_futures_balance(data)
+
+    def orderable_qty(self, code: str, side: str, price) -> int:
+        """국내선물 신규 주문가능 계약수(TTTO5105R/모의 VTTO5105R). 모델 A 라이브 사이징의 브로커 기준값.
+
+        code=라이브 계약코드(A01606 등·라우터가 해석해 전달), side='buy'|'sell', price=지정가(기준).
+        반환=ord_psbl_qty(계약수). KIS가 실제 동적 증거금률로 계산한 최대 신규 계약수.
+        조회 실패(통신·게이트웨이 오류)는 raise — 호출자(Trader)가 catch해 카탈로그로 안전 강등한다.
+        정상 응답의 0은 0 그대로 반환(증거금 부족 = 신규불가).
+
+        PDNO=인자 code 그대로(주문 TR SHTN_PDNO와 동일 코드·라이브 검증). SLL_BUY_DVSN_CD는
+        주문 바디(build_futures_order_body)와 동일 매핑(02 매수/01 매도). idempotent READ라
+        _read_get 사용(주문 POST 아님)."""
+        if side not in ("buy", "sell"):
+            raise ValueError(f"side는 buy|sell: {side}")
+        params = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "PDNO": code,                                     # 선물 6자리(예 A01606) — 변환 없음
+            "SLL_BUY_DVSN_CD": "02" if side == "buy" else "01",
+            "UNIT_PRICE": str(price),                         # 지정가 기준("0"이면 KIS 기준가)
+            "ORD_DVSN_CD": "01",                              # 지정가 고정
+        }
+        data = self._read_get(f"{self.base}{_PSBL_ORDER_PATH}",
+                              self._headers(self._psbl_order_tr()), params)
+        # rt_cd로 "조회 실패"와 "0계약 가능"을 구분한다 — degrade 트리거를 정확히. 실패는 raise해
+        # 호출자가 카탈로그 추정으로 강등하게 하고, 정상 응답의 0은 0 그대로 반환(증거금 부족).
+        if str(data.get("rt_cd")) != "0":
+            raise RuntimeError(
+                f"국내선물 주문가능 조회 실패 rt_cd={data.get('rt_cd')} "
+                f"msg_cd={data.get('msg_cd')} msg1={data.get('msg1')}")
+        out = data.get("output") or {}
+        if isinstance(out, list):                             # KIS가 단일 object를 1원소 array로 줄 때 방어
+            out = out[0] if out else {}
+        return int(float(out.get("ord_psbl_qty") or 0))
 
     # ── 시세(읽기전용, 라이브 검증됨) ──────────────────────────────────────────────
     def _quote(self, symbol: str) -> dict:

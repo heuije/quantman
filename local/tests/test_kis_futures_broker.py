@@ -205,6 +205,108 @@ def test_overseas_limit_buy_routes_to_overseas_endpoint(monkeypatch):
     assert r["order_no"] == "00298040"
 
 
+def _make_psbl_broker(kfb, captured, monkeypatch, *, virtual=True,
+                      content=b'{"output":{"tot_psbl_qty":"11679","lqd_psbl_qty1":"0","ord_psbl_qty":"11665","bass_idx":"379.67000000"},"rt_cd":"0","msg_cd":"OK","msg1":"ok"}'):
+    """orderable_qty 테스트용 인스턴스 — creds 우회 + requests.get 캡처(_read_get는 idempotent GET).
+
+    requests.get 패치는 monkeypatch.setattr로 — 테스트 종료 후 자동 복원돼 전역 오염을 막는다
+    (다른 broker 테스트와 동일 방식)."""
+    class _Resp:
+        status_code = 200
+        def raise_for_status(self): pass
+    _Resp.content = content
+
+    monkeypatch.setattr(
+        kfb.requests, "get",
+        lambda url, headers=None, params=None, timeout=None:
+            (captured.update(url=url, params=params, tr=headers.get("tr_id")), _Resp())[1])
+    b = kfb.KisFuturesBroker.__new__(kfb.KisFuturesBroker)
+    b.key = "AK"
+    b.secret = "SK"
+    b.cano = "50188802"
+    b.acnt_prdt_cd = "03"
+    b.base = kfb._VTS if virtual else kfb._REAL
+    b.virtual = virtual
+    b._tok = "TKN"
+    b._tok_exp = 9999999999.0
+    return b
+
+
+def test_orderable_qty_buy_routes_and_parses(monkeypatch):
+    """국내선물 orderable_qty(TTTO5105R): buy→SLL_BUY_DVSN_CD=02, inquire-psbl-order 경로,
+    모의 tr_id=VTTO5105R, params(PDNO·CANO·ACNT_PRDT_CD·UNIT_PRICE·ORD_DVSN_CD), 반환=ord_psbl_qty."""
+    import localapp.kis_futures_broker as kfb
+    captured = {}
+    b = _make_psbl_broker(kfb, captured, monkeypatch, virtual=True)
+
+    qty = b.orderable_qty("A01606", "buy", 379.5)
+
+    assert qty == 11665
+    assert "domestic-futureoption/v1/trading/inquire-psbl-order" in captured["url"]
+    assert captured["tr"] == "VTTO5105R"                  # 모의
+    p = captured["params"]
+    assert p["PDNO"] == "A01606"                          # 인자 code 그대로(변환 없음)
+    assert p["CANO"] == "50188802"
+    assert p["ACNT_PRDT_CD"] == "03"
+    assert p["SLL_BUY_DVSN_CD"] == "02"                   # 매수
+    assert p["UNIT_PRICE"] == "379.5"                     # str(price)
+    assert p["ORD_DVSN_CD"] == "01"                       # 지정가 고정
+
+
+def test_orderable_qty_sell_side(monkeypatch):
+    import localapp.kis_futures_broker as kfb
+    captured = {}
+    b = _make_psbl_broker(kfb, captured, monkeypatch, virtual=True)
+    b.orderable_qty("A01606", "sell", 379.5)
+    assert captured["params"]["SLL_BUY_DVSN_CD"] == "01"   # 매도
+
+
+def test_orderable_qty_real_tr(monkeypatch):
+    import localapp.kis_futures_broker as kfb
+    captured = {}
+    b = _make_psbl_broker(kfb, captured, monkeypatch, virtual=False)
+    b.orderable_qty("A01606", "buy", 379.5)
+    assert captured["tr"] == "TTTO5105R"                   # 실전
+
+
+def test_orderable_qty_output_as_array(monkeypatch):
+    """KIS가 단일 object를 1원소 array로 주는 변형도 방어 파싱."""
+    import localapp.kis_futures_broker as kfb
+    captured = {}
+    b = _make_psbl_broker(
+        kfb, captured, monkeypatch, virtual=True,
+        content=b'{"output":[{"ord_psbl_qty":"500","tot_psbl_qty":"600"}],"rt_cd":"0"}')
+    assert b.orderable_qty("A01606", "buy", 0) == 500
+
+
+def test_orderable_qty_failure_raises(monkeypatch):
+    """rt_cd!='0'(조회실패) → raise. '조회 실패'와 '0계약 가능'을 구분(degrade 트리거 정확)."""
+    import localapp.kis_futures_broker as kfb
+    captured = {}
+    b = _make_psbl_broker(
+        kfb, captured, monkeypatch, virtual=True,
+        content='{"output":{},"rt_cd":"1","msg_cd":"40570000","msg1":"조회실패"}'.encode("utf-8"))
+    with pytest.raises(RuntimeError):
+        b.orderable_qty("A01606", "buy", 379.5)
+
+
+def test_orderable_qty_zero_is_returned_not_raised(monkeypatch):
+    """정상 응답(rt_cd=0)인데 ord_psbl_qty='0' → 0 반환(증거금 부족, raise 아님)."""
+    import localapp.kis_futures_broker as kfb
+    captured = {}
+    b = _make_psbl_broker(
+        kfb, captured, monkeypatch, virtual=True,
+        content=b'{"output":{"ord_psbl_qty":"0","tot_psbl_qty":"0"},"rt_cd":"0"}')
+    assert b.orderable_qty("A01606", "buy", 379.5) == 0
+
+
+def test_orderable_qty_bad_side(monkeypatch):
+    import localapp.kis_futures_broker as kfb
+    b = kfb.KisFuturesBroker.__new__(kfb.KisFuturesBroker)   # creds 불요 — side 가드 즉시 raise
+    with pytest.raises(ValueError):
+        b.orderable_qty("A01606", "hold", 379.5)
+
+
 def test_parse_ccnl_filled():
     resp = {"output1": [
         {"odno": "0000007045", "tot_ccld_qty": "1", "qty": "0", "avg_idx": "400.00", "rjct_qty": "0"},

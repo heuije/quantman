@@ -148,3 +148,64 @@ def test_cancel_normalizes(monkeypatch):
     monkeypatch.setattr(b, "_post", lambda p, t, body, **k: {"CFOAT00300OutBlock2": {"OrdNo": "99"}}, raising=False)
     r = b.cancel("10", "101V6000", 2)
     assert r["success"] is True and "order_no" not in r
+
+
+# --- orderable_qty (CFOAQ10100 NewOrdAbleQty) — 모델 A 라이브 사이징 브로커 기준값 ---
+
+_OQ_OK = {"CFOAQ10100OutBlock2": {"NewOrdAbleQty": "120", "LqdtOrdAbleQty": "0", "OrdAbleAmt": "500000000"}}
+
+
+def test_orderable_qty_buy_parses_and_sends_inblock(monkeypatch):
+    b = _broker()
+    captured = {}
+    def _post(path, tr, body, **k):
+        captured["path"] = path
+        captured["tr"] = tr
+        captured["ib"] = body["CFOAQ10100InBlock1"]
+        return _OQ_OK
+    monkeypatch.setattr(b, "_post", _post, raising=False)
+    qty = b.orderable_qty("101V6000", "buy", 342.25)
+    assert qty == 120
+    assert captured["tr"] == "CFOAQ10100"
+    assert captured["path"] == "/futureoption/accno"
+    ib = captured["ib"]
+    assert ib["BnsTpCode"] == "2"                  # 매수
+    assert ib["FnoIsuNo"] == "101V6000"
+    assert ib["FnoOrdPrc"] == 342.25               # double 포인트 — int 절삭 금지
+    assert ib["FnoOrdprcPtnCode"] == "00"          # 지정가 고정
+
+
+def test_orderable_qty_sell_uses_bnstp_1(monkeypatch):
+    b = _broker()
+    captured = {}
+    def _post(path, tr, body, **k):
+        captured["ib"] = body["CFOAQ10100InBlock1"]
+        return _OQ_OK
+    monkeypatch.setattr(b, "_post", _post, raising=False)
+    b.orderable_qty("101V6000", "sell", 342.0)
+    assert captured["ib"]["BnsTpCode"] == "1"       # 매도
+
+
+def test_orderable_qty_raises_when_outblock_absent(monkeypatch):
+    """조회 실패(OutBlock2 부재) → raise. 호출자(Trader)가 catch해 카탈로그로 강등.
+    ⚠ _orderable_amt_krw(soft 0폴백)와 달리 0 위장 금지 — 실패와 0계약 구분."""
+    import pytest
+    b = _broker()
+    monkeypatch.setattr(b, "_post", lambda *a, **k: {"rsp_cd": "99", "rsp_msg": "조회실패"}, raising=False)
+    with pytest.raises(RuntimeError):
+        b.orderable_qty("101V6000", "buy", 342.0)
+
+
+def test_orderable_qty_zero_contracts_returns_zero(monkeypatch):
+    """정상 응답의 NewOrdAbleQty=0(증거금 부족)은 0 반환 — raise 아님."""
+    b = _broker()
+    monkeypatch.setattr(b, "_post", lambda *a, **k: {"CFOAQ10100OutBlock2": {"NewOrdAbleQty": "0"}}, raising=False)
+    assert b.orderable_qty("101V6000", "buy", 342.0) == 0
+
+
+def test_orderable_qty_bad_side_raises_value_error(monkeypatch):
+    import pytest
+    b = _broker()
+    monkeypatch.setattr(b, "_post", lambda *a, **k: _OQ_OK, raising=False)
+    with pytest.raises(ValueError):
+        b.orderable_qty("101V6000", "hold", 342.0)

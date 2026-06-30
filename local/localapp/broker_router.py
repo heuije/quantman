@@ -116,6 +116,28 @@ class BrokerRouter:
             return 0.0
         return self._broker(symbol).today_open(self._code(symbol))
 
+    def orderable_qty(self, symbol, side, price):
+        """국내 선물 신규 주문가능 계약수(모델 A 라이브 사이징 기준값). 국내 선물만 — 그 외 None.
+
+        주식·해외선물(CME)·선물 미구성·브로커 미지원·해석/조회 실패는 모두 None을 반환해
+        호출자(Trader)가 카탈로그 추정으로 안전 강등하게 한다. 성공 시 브로커 정수(0 포함).
+        0(증거금 부족)과 None(조회 불가)을 구분 — Trader가 전자는 발주 억제, 후자는 degrade.
+        """
+        if not self._is_fut(symbol):
+            return None                                   # 주식/선물 미구성(_is_fut가 둘 다 커버)
+        if futures_market(symbol) == "CME":
+            return None                                   # 해외선물 orderable은 Phase 2(별도 overseas 경로)
+        fn = getattr(self._futures, "orderable_qty", None)
+        if fn is None:
+            return None                                   # 브로커 미지원 → degrade
+        try:
+            return fn(self._code(symbol), side, price)    # 계약코드 해석 후 위임(0 포함 정수 그대로)
+        except Exception as e:                            # noqa: BLE001 — _code 해석 실패·broker 조회 실패
+            # ⚠ 주문 경로(buy/sell)는 _code raise를 그대로 전파해 발주를 skip하지만, orderable_qty는
+            # 사이징 보조 조회라 해석/조회 실패가 발주를 막으면 안 됨 → catch→None(degrade)으로 의도적 차이.
+            log.warning("선물 주문가능수량 조회 실패 [%s %s] — 카탈로그 강등: %s", symbol, side, e)
+            return None
+
     def cancel(self, order_no, symbol, qty):
         # 해외선물 취소(OTFM3003U)는 원주문일자(ORGN_ORD_DT)가 필수인데 이 시그니처엔 없다.
         # 국내 취소 메서드로 잘못 라우팅하면 다른 계좌를 건드리므로 명시 차단(취소는 Trader

@@ -221,6 +221,66 @@ def test_event_qty_mini_kospi200_uses_50k_multiplier():
                          dataset={_FX: _fx_df(1370.0)}) == 100
 
 
+# ── 모델 A 국내선물 라이브 사이징 헬퍼 (futures_margin_pct_of · model_a_qty) ──────
+#
+# 라이브 계약수 = floor(사용률% × 브로커 주문가능수량). 카탈로그 추정 증거금률(0.10)
+# 기반 ~2배 과다산정 제거 — 계약당 증거금률은 브로커(실제 동적)가 정하고 유저는
+# 위험 크기(사용률%)만 정한다. 두 헬퍼는 event_buy_qty와 동일 모드 판정(단일 출처).
+
+def _sizing_ir(sizing: dict) -> StrategyIR:
+    """모델 A 헬퍼 단위테스트용 — 코스피200선물 단일 유니버스(모드 판정만 관여)."""
+    return StrategyIR.model_validate({
+        "name": "t", "universe": {"kind": "single", "symbols": ["코스피200선물"]},
+        "signal": _always_true().model_dump(),
+        "position": {"direction": "long", "sizing": sizing,
+                     "entry": {"mode": "on_signal"}, "exit": {}, "overlays": {}},
+        "simulation": {},
+    })
+
+
+def test_futures_margin_pct_of_pct_mode():
+    """% 모드(pct_cash) → futures_margin_pct 그대로 반환(기본 20·커스텀 50)."""
+    from quant_core.ir_engine.live import futures_margin_pct_of
+    assert futures_margin_pct_of(
+        _sizing_ir({"mode": "pct_cash", "futures_margin_pct": 20})) == 20.0
+    assert futures_margin_pct_of(
+        _sizing_ir({"mode": "pct_cash", "futures_margin_pct": 50})) == 50.0
+
+
+def test_futures_margin_pct_of_fixed_amount_is_none():
+    """fixed_amount(amount_krw 설정) → None(금액 기준 — 호출자가 min-클램프).
+
+    event_buy_qty(line 101)와 정확히 동일 모드 판정: mode=='fixed_amount' and amount_krw.
+    """
+    from quant_core.ir_engine.live import futures_margin_pct_of
+    assert futures_margin_pct_of(
+        _sizing_ir({"mode": "fixed_amount", "amount_krw": 1_000_000})) is None
+
+
+def test_model_a_qty_pct_mode_caps_at_orderable():
+    """% 모드 = min(orderable, floor(orderable×pct/100)) — 항상 ≤ 주문가능수량."""
+    from quant_core.ir_engine.live import model_a_qty
+    assert model_a_qty(99, 7, 20.0) == 1      # floor(7×0.20)=1
+    assert model_a_qty(99, 5, 100.0) == 5     # floor(5×1.00)=5 (full)
+    assert model_a_qty(99, 7, 150.0) == 7     # min 캡: 사용률>100 방어 → orderable
+    assert model_a_qty(99, 0, 20.0) == 0      # 0계약(증거금 부족) → 0 보존
+
+
+def test_model_a_qty_fixed_amount_clamps_event_to_orderable():
+    """fixed_amount(pct None) = min(event_qty, orderable) — 정액 사이징 안전 상한."""
+    from quant_core.ir_engine.live import model_a_qty
+    assert model_a_qty(2, 5, None) == 2       # event<orderable → event 유지
+    assert model_a_qty(9, 5, None) == 5       # event>orderable → orderable 캡
+
+
+def test_model_a_qty_clamps_negative_to_zero():
+    """음수 pct·음수 orderable → 0(헬퍼 자기완결 0≤qty 보장 — 호출자 skip_funds backstop 비의존)."""
+    from quant_core.ir_engine.live import model_a_qty
+    assert model_a_qty(99, 10, -20.0) == 0    # 음수 pct(스키마 ge=0 부재 방어)
+    assert model_a_qty(99, -5, 20.0) == 0     # 음수 orderable
+    assert model_a_qty(99, -5, None) == 0     # fixed_amount 경로 음수 orderable
+
+
 # ── 백테스트 엔진 (run_unified 이벤트 경로 _budget) ────────────────────────────
 
 def test_engine_usd_fixed_amount_sizing():

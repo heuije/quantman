@@ -1208,9 +1208,29 @@ class Trader:
         # F-01: symbol·dataset 전달 — amount_krw(₩정액)를 USD 종목에 쓸 때 dataset의
         # 원달러환율(엔진 _budget과 같은 fx_usdkrw_rate 룩업)로 환산한다. 미전달이면
         # USD 정액이 ₩금액을 $로 취급해 1,370배 과대 사이징(실증: GOOG 2,832주=$93만).
-        qty = ir_live.event_buy_qty(StrategyIR.model_validate(strat_def),
+        _ir = StrategyIR.model_validate(strat_def)
+        qty = ir_live.event_buy_qty(_ir,
                                     cash=cash, prev_close=prev_close, capital=capital,
                                     symbol=symbol, dataset=dataset)
+
+        # ── 국내 선물 라이브 사이징 — 모델 A: 브로커 주문가능수량(실제 동적 증거금률 반영)이 1차 기준 ──
+        # 카탈로그 추정 증거금률(init_margin_rate 0.10)의 ~2배 과다산정을 제거. 사용률%만 유저가 정하고
+        # 계약당 증거금률은 브로커가 정한다 → 라이브 계약수 = floor(사용률% × 주문가능수량).
+        from quant_core.futures_contract import futures_market
+        if qc.is_futures(symbol) and futures_market(symbol) != "CME":
+            # getattr 가드: SimBroker(paper/sim)엔 orderable_qty 없음 → 모델A 건너뜀(event_buy_qty 유지·degrade
+            # 아님). 라이브(BrokerRouter)만 orderable_qty 보유 → 모델A 적용. 기존 sim 시나리오 byte-identical.
+            oq_fn = getattr(self.broker, "orderable_qty", None)
+            if oq_fn is not None:
+                side = "sell" if is_short else "buy"
+                orderable = oq_fn(symbol, side, prev_close)
+                if orderable is None:
+                    log.warning("[모델A] %s 브로커 주문가능수량 조회 불가 — 카탈로그 추정 증거금률로 degrade", symbol)
+                else:
+                    pct = ir_live.futures_margin_pct_of(_ir)
+                    qty = ir_live.model_a_qty(qty, orderable, pct)
+                    log.info("[모델A] %s 주문가능 %d계약 → %d계약 (%s)", symbol, orderable, qty,
+                             f"사용률 {pct:g}%" if pct is not None else "정액 클램프")
 
         # 가용 현금 한도 — 주식만. 선물은 event_buy_qty가 이미 증거금으로 클램프했고,
         # cash//prev_close(현금÷지수가)는 선물 계약수에 무의미(과대 → 비바인딩)하므로 제외.

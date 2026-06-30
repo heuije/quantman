@@ -206,6 +206,28 @@ class LsFuturesBroker(_LsAuth):
                         "market": "DOMESTIC", "currency": "KRW", "asset_class": "futures"})
         return out
 
+    def orderable_qty(self, code: str, side: str, price) -> int:
+        """국내선물 신규 주문가능 계약수(CFOAQ10100 NewOrdAbleQty). 모델 A 라이브 사이징의 브로커 기준값.
+
+        code=라이브 계약코드(101V6000 등·라우터가 해석해 전달), side='buy'|'sell', price=지정가(기준).
+        반환=NewOrdAbleQty(계약수). LS가 실제 동적 증거금률로 계산한 최대 신규 계약수.
+        조회 실패(OutBlock2 부재·_post 예외)는 raise — 호출자(Trader)가 catch해 카탈로그로 강등.
+        정상 응답의 0은 0 반환(증거금 부족). 기존 _orderable_amt_krw(OrdAbleAmt 금액·soft 0폴백)와 별개.
+        """
+        if side not in ("buy", "sell"):
+            raise ValueError(f"orderable_qty side는 'buy'|'sell'만 허용: {side!r}")
+        bns = "2" if side == "buy" else "1"          # _submit과 동일 매핑(매수2/매도1)
+        resp = self._post("/futureoption/accno", "CFOAQ10100",
+                          {"CFOAQ10100InBlock1": {"RecCnt": 1, "QryTp": "1", "OrdAmt": 0,
+                                                  "RatVal": 0.0, "FnoIsuNo": code, "BnsTpCode": bns,
+                                                  "FnoOrdPrc": float(price),  # double 포인트 — int 절삭 금지
+                                                  "FnoOrdprcPtnCode": "00"}})  # 지정가 고정
+        ob2 = resp.get("CFOAQ10100OutBlock2")
+        if ob2 is None:                              # 조회 실패 — soft 0폴백 금지(실패≠0계약)
+            raise RuntimeError(f"CFOAQ10100 주문가능수량 조회 실패 [{code} {side}]: "
+                               f"rsp_cd={resp.get('rsp_cd')} rsp_msg={resp.get('rsp_msg')}")
+        return int(float(ob2.get("NewOrdAbleQty") or 0))
+
     def _ov_acct_raw(self) -> dict:
         from datetime import datetime
         return self._ov._post("/overseas-futureoption/accno", "CIDBQ03000",
@@ -351,6 +373,3 @@ class LsFuturesBroker(_LsAuth):
                                   "PrdtTpCode": " ", "ExchCode": " "}}, is_order=True)
         r = normalize_ls_order_resp(resp, ordno_field="OvrsFutsOrdNo")
         return {"success": r["success"], "message": r["message"], "msg_cd": r["msg_cd"]}
-
-    # NOTE: orderable_qty(CFOAQ10100 NewOrdAbleQty)는 증거금 사이징 클램프용이나 현재 호출자
-    # 없음(4원칙#2) → 제거. Trader 선물 사이징 배선 시 함께 추가(매핑=domestic-futures-research.md).

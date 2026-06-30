@@ -122,6 +122,72 @@ def test_ir_enter_from_preview_routes_and_sizes(isolated_trader):
     invariants.check_all(t)
 
 
+def _futures_dataset(closes, symbol="코스피200선물"):
+    idx = pd.date_range("2026-05-01", periods=len(closes), freq="B")
+    return {symbol: pd.DataFrame(
+        {"Open": closes, "High": closes, "Low": closes, "Close": closes}, index=idx)}
+
+
+# 코스피200선물 종가 375 (승수 250k·증거금률 카탈로그 0.10 → 1계약 ≈9.375M).
+_FUT_DS = _futures_dataset([370, 372, 374, 376, 375])
+
+
+def test_ir_domestic_futures_model_a_clamps_to_orderable(isolated_trader):
+    """모델 A: 국내선물 % 진입에서 broker.orderable_qty가 주입되면 발주 qty=model_a_qty.
+
+    라이브 계약수 = floor(사용률% × 주문가능수량). orderable=7·사용률 20% →
+    model_a_qty(event_qty, 7, 20)=min(7, floor(7×0.20))=1. event_buy_qty(카탈로그
+    추정 증거금률) 산정값과 무관하게 브로커 주문가능수량이 1차 기준임을 검증.
+    """
+    from quant_core.ir_engine import live as ir_live
+
+    t, broker = isolated_trader
+    broker._prices["코스피200선물"] = 375
+    # 선물 사이징 현금 — 충분히 커서 event_buy_qty>0 (모델A 미적용이면 21계약 발주됐을 값).
+    broker._balance["futures_order_cash_kr"] = 1_000_000_000
+    # 인스턴스 레벨 주입(픽스처마다 새 SimBroker — 전역 오염 없음). getattr 가드가 이를 발견.
+    broker.orderable_qty = lambda symbol, side, price: 7
+
+    sid = "irfut"
+    ir = _ir_def(sizing={"mode": "pct_cash", "futures_margin_pct": 20},
+                 universe={"kind": "single", "symbols": ["코스피200선물"]})
+    order_no, decisions = scenario.strategy_buy_and_fill(
+        t, broker, sid, ir, "코스피200선물", _FUT_DS, fill_price=375.0,
+        equity=1_000_000_000.0)
+    assert order_no is not None, decisions
+    expected = ir_live.model_a_qty(99, 7, 20.0)        # = 1 (event_qty 무관, min 캡)
+    assert expected == 1
+    assert broker.submitted[-1]["qty"] == expected, broker.submitted
+
+
+def test_ir_domestic_futures_no_orderable_qty_degrades(isolated_trader):
+    """degrade 가드: SimBroker(orderable_qty 없음)는 모델A 건너뜀 → event_buy_qty 유지.
+
+    이것이 671 회귀 byte-identical의 근거 — 기존 sim 시나리오는 orderable_qty가 없어
+    모델A 분기를 타지 않는다. cash 1e9×20%/(375×250000×0.10) = 2e8/9.375M = 21계약.
+    """
+    from quant_core.ir_engine import StrategyIR
+    from quant_core.ir_engine import live as ir_live
+
+    t, broker = isolated_trader
+    broker._prices["코스피200선물"] = 375
+    broker._balance["futures_order_cash_kr"] = 1_000_000_000
+    assert not hasattr(broker, "orderable_qty")        # 가드 전제 — Sim엔 없음
+
+    sid = "irfut2"
+    ir = _ir_def(sizing={"mode": "pct_cash", "futures_margin_pct": 20},
+                 universe={"kind": "single", "symbols": ["코스피200선물"]})
+    order_no, decisions = scenario.strategy_buy_and_fill(
+        t, broker, sid, ir, "코스피200선물", _FUT_DS, fill_price=375.0,
+        equity=1_000_000_000.0)
+    assert order_no is not None, decisions
+    expected = ir_live.event_buy_qty(StrategyIR.model_validate(ir),
+                                     cash=1_000_000_000.0, prev_close=375.0,
+                                     capital=1_000_000_000.0, symbol="코스피200선물")
+    assert expected == 21
+    assert broker.submitted[-1]["qty"] == expected, broker.submitted
+
+
 def test_ir_intraday_stop_loss_fill_and_flat(isolated_trader):
     """IR 장중 손절(-5%) tick → IntradayStopManager 트리거 → 실 매도→체결→FLAT.
 

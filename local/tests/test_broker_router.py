@@ -72,6 +72,10 @@ class _FakeFutures(_Fake):
     def order_status(self, order_no):
         self.calls.append(("order_status", order_no)); return {"tag": "fut"}
 
+    # 모델 A 라이브 사이징 — 신규 주문가능 계약수(국내선물). 조회실패=raise·0계약=0.
+    def orderable_qty(self, code, side, price):
+        self.calls.append(("orderable_qty", code, side, price)); return 120
+
     def overseas_order_status(self, order_no):
         self.calls.append(("overseas_order_status", order_no)); return {"tag": "ov"}
 
@@ -207,6 +211,69 @@ def test_domestic_futures_price_unchanged():
     r, stock, fut = _router()
     r.price("코스피200선물")
     assert ("price", "A01606") in fut.calls                  # KRX는 기존 domestic 시세
+
+
+# ── orderable_qty 패스스루 (모델 A 라이브 사이징 — 국내선물만, int|None) ──────────
+def test_orderable_qty_domestic_futures_resolves_code_and_passes_through():
+    # 국내선물(코스피200·KRX): 계약코드 해석 후 위임, 브로커 정수 그대로(0 포함)
+    r, stock, fut = _router()
+    assert r.orderable_qty("코스피200선물", "buy", 350.0) == 120
+    assert ("orderable_qty", "A01606", "buy", 350.0) in fut.calls   # 계약코드 해석 확인
+
+
+def test_orderable_qty_overseas_futures_returns_none():
+    # 해외선물(금선물·CME): Phase 1 국내만 → None, 선물 브로커에 위임 안 함
+    r, stock, fut = _router()
+    assert r.orderable_qty("금선물", "buy", 1950.0) is None
+    assert not any(c[0] == "orderable_qty" for c in fut.calls)      # CME는 위임 안 함
+
+
+def test_orderable_qty_equity_returns_none():
+    # 주식(005930): 비선물 → None(카탈로그 추정으로 degrade)
+    r, stock, fut = _router()
+    assert r.orderable_qty("005930", "buy", 100.0) is None
+    assert not any(c[0] == "orderable_qty" for c in fut.calls)
+
+
+def test_orderable_qty_no_futures_broker_returns_none():
+    # 선물 브로커 미구성 → None (_is_fut가 _futures is not None 검사라 False → None)
+    stock = _FakeStock("stock")
+    r = BrokerRouter(stock, None, resolve=lambda s: None)
+    assert r.orderable_qty("코스피200선물", "buy", 350.0) is None
+
+
+def test_orderable_qty_resolve_failure_degrades_to_none_not_raise():
+    # 해석 실패(미니코스피200선물=KRX이나 resolver codes에 없음) → _code raise → catch → None.
+    # ⚠ 주문 경로(test_futures_resolve_failure_raises_skip)는 raise(발주 skip)지만
+    # orderable_qty는 사이징 보조 조회라 degrade(None) — 의도적 차이.
+    r, stock, fut = _router()
+    assert r.orderable_qty("미니코스피200선물", "buy", 350.0) is None   # raise 아님
+    assert not any(c[0] == "orderable_qty" for c in fut.calls)        # 위임 도달 안 함
+
+
+def test_orderable_qty_zero_contracts_preserved_not_none():
+    # ★ 0(증거금 부족·정상 응답)과 None(조회 불가)을 구분 — 0은 None으로 뭉개지 않는다.
+    r, stock, fut = _router()
+    fut.orderable_qty = lambda code, side, price: 0
+    assert r.orderable_qty("코스피200선물", "buy", 350.0) == 0        # None 아님
+
+
+def test_orderable_qty_broker_query_failure_degrades_to_none():
+    # 브로커 조회 실패(broker가 raise) → catch → None(degrade). 브로커는 조회실패=raise 설계.
+    def _boom(code, side, price):
+        raise RuntimeError("주문가능수량 조회 실패(통신/TR 오류)")
+    r, stock, fut = _router()
+    fut.orderable_qty = _boom
+    assert r.orderable_qty("코스피200선물", "buy", 350.0) is None
+
+
+def test_orderable_qty_broker_unsupported_returns_none():
+    # 선물 브로커에 orderable_qty 메서드 없음(구브로커) → None(degrade).
+    # _Fake(base)는 orderable_qty 미정의 → getattr(..., None) None → 라우터 None.
+    stock, old_fut = _FakeStock("stock"), _Fake("fut")
+    codes = {"금선물": "GCM26", "코스피200선물": "A01606"}
+    r = BrokerRouter(stock, old_fut, resolve=lambda s: codes.get(s))
+    assert r.orderable_qty("코스피200선물", "buy", 350.0) is None
 
 
 # ── 주식 전용 메서드 위임 (__getattr__) ────────────────────────────────────────
