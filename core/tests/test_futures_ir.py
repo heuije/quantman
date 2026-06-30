@@ -22,6 +22,7 @@ from quant_core.exec_defaults import (InstrumentSpec, instrument_spec, is_future
 from quant_core.ir_engine import (Entry, PositionSpec, SimSpec, StrategyIR,
                                    Universe, capability_spec, explain_ir,
                                    validate_strategy)
+from quant_core.ir_engine.spec import Sizing
 
 
 # ── 계약 카탈로그 (단일 출처) ──────────────────────────────────────────────────
@@ -176,6 +177,46 @@ def test_homogeneous_universe_no_mix_warning():
                    for i in validate_strategy(_list_strat(["원유선물", "나스닥선물"])))
     assert not any(i.rule == "S-futures-mix"
                    for i in validate_strategy(_list_strat(["005930", "000660"])))
+
+
+# ── 선물 증거금 사용률 ≤ 0 차단 (S-futmargin — 라이브 silent 미발주 footgun) ──────
+
+def _fut_margin_strat(symbol, *, futures_margin_pct=20.0, mode="pct_cash", amount_krw=None):
+    return StrategyIR(
+        signal=data("momentum_12_1m"),
+        universe=Universe(kind="single", symbols=[symbol]),
+        position=PositionSpec(
+            entry=Entry(mode="always"),
+            sizing=Sizing(mode=mode, futures_margin_pct=futures_margin_pct, amount_krw=amount_krw)),
+        simulation=SimSpec())
+
+
+def test_futures_zero_margin_pct_rejected():
+    # 0%면 증거금 예산=0 → 영원히 0계약. 라이브 자동매매가 조용히 미발주하는 footgun을 차단.
+    issues = validate_strategy(_fut_margin_strat("코스피200선물", futures_margin_pct=0))
+    assert any(i.rule == "S-futmargin" and i.is_error for i in issues)
+    # 음수도 동일 차단(자기완결).
+    assert any(i.rule == "S-futmargin"
+               for i in validate_strategy(_fut_margin_strat("코스피200선물", futures_margin_pct=-5)))
+
+
+def test_futures_positive_margin_pct_ok():
+    assert not any(i.rule == "S-futmargin"
+                   for i in validate_strategy(_fut_margin_strat("코스피200선물", futures_margin_pct=20)))
+
+
+def test_zero_margin_pct_on_equity_not_flagged():
+    # 주식은 futures_margin_pct를 안 쓰므로 0이어도 무관 — 거짓 거부 방지.
+    assert not any(i.rule == "S-futmargin"
+                   for i in validate_strategy(_fut_margin_strat("005930", futures_margin_pct=0)))
+
+
+def test_futures_fixed_amount_zero_margin_ok():
+    # fixed_amount(amount_krw 지정)는 금액 기준 사이징 — futures_margin_pct 무관, 차단 안 함.
+    assert not any(i.rule == "S-futmargin"
+                   for i in validate_strategy(_fut_margin_strat(
+                       "코스피200선물", futures_margin_pct=0,
+                       mode="fixed_amount", amount_krw=5_000_000)))
 
 
 # ── explain_ir 정직성: 선물 롤·통화 '미적용' 결정론적 표면화 (finding 1) ──────────

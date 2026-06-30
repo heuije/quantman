@@ -958,7 +958,7 @@ export default function IrBuilder() {
                    onChange={(e) => setMaxPositionPct(e.target.value === "" ? "" : Number(e.target.value))} />
           </label>
           <label className="lab-field">선물 증거금 사용률(%)
-            <input type="number" value={futuresMarginPct} placeholder="20 (선물 전용)"
+            <input type="number" min={1} value={futuresMarginPct} placeholder="20 (선물 전용)"
                    onChange={(e) => setFuturesMarginPct(e.target.value === "" ? "" : Number(e.target.value))} />
           </label>
           {(sizingMode === "vol_inverse" || sizingMode === "target_vol") && (

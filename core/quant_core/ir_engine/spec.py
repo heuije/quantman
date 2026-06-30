@@ -456,6 +456,18 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                             "참/거짓 신호는 그 자체가 임계 선택이므로 condition 신호를 쓰세요.",
                             "position.entry"))
 
+    # 선물 % 사이징에서 증거금 사용률 ≤ 0이면 예산=0 → 영원히 0계약. 백테스트는 자본부족
+    # 경고(service._futures_capital_warning)로 표면화되지만, 라이브 자동매매는 조용히 미발주
+    # (skip_funds)라 "켰는데 한 번도 안 사는" silent footgun이 된다 — 저장(_validate)·IR
+    # 백테스트(strategy_from_spec) 양 경로의 진입점인 여기서 차단한다. fixed_amount(amount_krw
+    # 지정) 경로는 금액 기준이라 무관 — live.futures_margin_pct_of와 동일 판정.
+    if (not is_research and pos.sizing.futures_margin_pct <= 0
+            and not (pos.sizing.mode == "fixed_amount" and pos.sizing.amount_krw)
+            and any(is_futures(x) for x in u.symbols)):
+        issues.append(Issue("S-futmargin", SEV_ERROR,
+                            "선물 증거금 사용률은 0보다 커야 합니다 — 0이면 증거금 예산이 0이 되어 "
+                            "자동매매가 한 계약도 발주하지 않습니다.", "position.sizing"))
+
     # SELECT 동사 — 랭킹이므로 score 신호 필요 + select 설정 정합.
     if s.query == "select":
         if st != "score":
