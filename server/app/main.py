@@ -462,6 +462,11 @@ def _backfill_krx_putcall_chunk() -> None:
     _krx_backfill("putcall", _KRX_PUTCALL_WINDOW_DAYS, krx_openapi.fetch_putcall)
 
 
+def _backfill_krx_etf_chunk() -> None:
+    from quant_core.data.feeds import krx_openapi
+    _krx_backfill("etf", _KRX_LIGHT_WINDOW_DAYS, krx_openapi.fetch_etf_flow)
+
+
 def _refresh_krx_market() -> None:
     """일일 증분 — 최근 7일 재수집(공식 KRX API는 T+1 08시 갱신)·캐시 attach."""
     from datetime import date, timedelta
@@ -473,9 +478,10 @@ def _refresh_krx_market() -> None:
     e = end.strftime("%Y%m%d")
     r1 = krx_openapi.fetch_market_indicators(s, e)
     r2 = krx_openapi.fetch_putcall(s, e)
+    r3 = krx_openapi.fetch_etf_flow(s, e)
     data_cache.invalidate()
-    _log.info("[altdata] KRX 시장지표 증분 %s~%s: light=%s pc=%s",
-              s, e, r1.get("saved"), r2.get("saved"))
+    _log.info("[altdata] KRX 시장지표 증분 %s~%s: light=%s pc=%s etf=%s",
+              s, e, r1.get("saved"), r2.get("saved"), r3.get("saved"))
 
 
 def _initial_krx_market_refresh():
@@ -483,6 +489,7 @@ def _initial_krx_market_refresh():
         time.sleep(110)
         _log.info("KRX 시장지표(공식API) 초기 백필 청크 시작")
         _backfill_krx_market_chunk()
+        _backfill_krx_etf_chunk()
         _backfill_krx_putcall_chunk()
     except Exception:
         _log.exception("KRX 시장지표 초기 청크 예외 — 10분 cron 재시도")
@@ -1038,6 +1045,10 @@ def _build_scheduler() -> BackgroundScheduler:
         lambda: _run_with_retry("krx_putcall_chunk", _backfill_krx_putcall_chunk, scheduler),
         CronTrigger(minute="4-59/10"),           # :04,:14… 스태거 (옵션 무거움·좁은 윈도우)
         id="krx_putcall_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("krx_etf_chunk", _backfill_krx_etf_chunk, scheduler),
+        CronTrigger(minute="6-59/10"),           # :06,:16… 스태거 (ETF AUM/flow)
+        id="krx_etf_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("krx_market_daily", _refresh_krx_market, scheduler),
         CronTrigger(hour=9, minute=30),          # 공식 KRX API T+1 08시 갱신 후

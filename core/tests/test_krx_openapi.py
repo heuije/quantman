@@ -55,6 +55,23 @@ def test_extractors():
     assert kx.extract_futures_oi(_FUT, "코스닥150 선물") == 30.0
 
 
+_ETF_D1 = [
+    {"ISU_CD": "A", "INVSTASST_NETASST_TOTAMT": "1000", "LIST_SHRS": "100", "NAV": "10"},
+    {"ISU_CD": "B", "INVSTASST_NETASST_TOTAMT": "2000", "LIST_SHRS": "200", "NAV": "10"},
+]
+_ETF_D2 = [
+    {"ISU_CD": "A", "INVSTASST_NETASST_TOTAMT": "1100", "LIST_SHRS": "110", "NAV": "10"},  # +10좌×10=+100
+    {"ISU_CD": "B", "INVSTASST_NETASST_TOTAMT": "1900", "LIST_SHRS": "200", "NAV": "10"},  # 좌수불변(가격↓)→0
+    {"ISU_CD": "C", "INVSTASST_NETASST_TOTAMT": "500", "LIST_SHRS": "50", "NAV": "10"},    # 신규(prev없음)→제외
+]
+
+
+def test_etf_aum_and_flow():
+    assert kx.extract_etf_aum(_ETF_D2) == 3500.0          # 1100+1900+500
+    # flow = Δ좌수×NAV: A=+100, B=0(가격효과 제외), C=신규제외
+    assert kx.compute_etf_flow(_ETF_D1, _ETF_D2) == 100.0
+
+
 def test_extractor_missing_returns_none():
     assert kx.extract_vkospi([]) is None
     assert kx.extract_ktb_yield(_KTS, "20") is None        # 없는 만기

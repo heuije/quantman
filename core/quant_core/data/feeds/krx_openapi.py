@@ -6,6 +6,7 @@
 매크로형 명명 시계열(VIX·미국채처럼 하루 1값):
   S1 시장지표 — 코스피200변동성지수(V-KOSPI) · 옵션풋콜비율 · KRX채권지수 · 국고채3년 · 국고채10년
   S2 선물 OI — 코스피200선물미결제약정 · 코스닥150선물미결제약정
+  S3 ETF — KRETF순자산총액(AUM) · KRETF순자금유입(Δ상장좌수×NAV)
 데이터포인트당 소스 1개 원칙(no-backup) — 이 지표들의 진실원천 = 공식 KRX API.
 
 라이브 검증(2026-06-30): 전 서비스 2010 깊이·필드 확정. 옵션은 하루 ~19k행이라 timeout 90s.
@@ -28,6 +29,7 @@ _SVC_DRVPROD = "idx/drvprod_dd_trd"   # 파생상품지수 (V-KOSPI 포함)
 _SVC_BOND_IDX = "idx/bon_dd_trd"      # 채권지수
 _SVC_KTS = "bon/kts_bydd_trd"         # 국채전문유통시장 일별
 _SVC_FUT = "drv/fut_bydd_trd"         # 선물 일별 (미결제약정 OI)
+_SVC_ETF = "etp/etf_bydd_trd"         # ETF 일별 (순자산·상장좌수 → AUM·flow)
 _SVC_OPT = "drv/opt_bydd_trd"         # 옵션 일별 (P/C용·무거움)
 
 
@@ -147,6 +149,41 @@ def extract_putcall(rows: list[dict]):
     return round(put_v / call_v, 4)
 
 
+def extract_etf_aum(rows: list[dict]):
+    """전 ETF 순자산총액 합 = KR ETF 시장 총 AUM(원)."""
+    total = 0.0
+    found = False
+    for r in rows:
+        a = _f(r.get("INVSTASST_NETASST_TOTAMT"))
+        if a is not None:
+            total += a
+            found = True
+    return total if found else None
+
+
+def compute_etf_flow(prev_rows: list[dict], cur_rows: list[dict]):
+    """전 ETF 순자금유입(원) = Σ (상장좌수_t − 상장좌수_{t-1}) × NAV_t (양일 공통 ISU).
+
+    상장좌수(LIST_SHRS) 변화 = 설정/환매(creation/redemption) → 가격효과를 제거한 순수 자금흐름.
+    AUM의 단순 차분(ΔAUM)은 가격등락이 섞이지만, Δ좌수×NAV는 실제 유출입만 잡는다.
+    """
+    prev = {}
+    for r in prev_rows:
+        s = _f(r.get("LIST_SHRS"))
+        if s is not None:
+            prev[r.get("ISU_CD")] = s
+    flow = 0.0
+    found = False
+    for r in cur_rows:
+        isu = r.get("ISU_CD")
+        s = _f(r.get("LIST_SHRS"))
+        nav = _f(r.get("NAV"))
+        if isu in prev and s is not None and nav is not None:
+            flow += (s - prev[isu]) * nav
+            found = True
+    return flow if found else None
+
+
 # ── 시리즈 정의: (시리즈명, 서비스, 추출기) ────────────────────────────────────
 
 # 가벼운 지표(서비스 3종·각 수~수백행) — 한 백필 청크에서 넓은 윈도우 가능
@@ -161,9 +198,13 @@ _LIGHT_SERIES = [
 # 무거운 지표(옵션 하루 ~19k행·timeout 90s) — 좁은 윈도우로 분리
 _PUTCALL_SERIES = ("옵션풋콜비율", _SVC_OPT, extract_putcall)
 
+_ETF_AUM_SYMBOL = "KRETF순자산총액"
+_ETF_FLOW_SYMBOL = "KRETF순자금유입"
+
 LIGHT_SYMBOLS = [name for name, _, _ in _LIGHT_SERIES]
 PUTCALL_SYMBOL = _PUTCALL_SERIES[0]
-ALL_SYMBOLS = LIGHT_SYMBOLS + [PUTCALL_SYMBOL]
+ETF_SYMBOLS = [_ETF_AUM_SYMBOL, _ETF_FLOW_SYMBOL]
+ALL_SYMBOLS = LIGHT_SYMBOLS + [PUTCALL_SYMBOL] + ETF_SYMBOLS
 
 
 def _weekdays(sdate: str, edate: str):
@@ -245,3 +286,46 @@ def fetch_putcall(sdate: str, edate: str, fetch=_fetch_day) -> dict:
     if n:
         _df.mark_data_dirty()
     return {"ok": fail == 0, "days": days, "fail": fail, "saved": {name: n}}
+
+
+def fetch_etf_flow(sdate: str, edate: str, fetch=_fetch_day) -> dict:
+    """ETF 총 AUM + 순자금유입을 [sdate,edate] 평일 수집·merge-save.
+
+    flow는 전일 대비 Δ상장좌수가 필요(cross-day) → sdate 직전 평일까지 확장 fetch(경계 결손 0).
+    AUM은 per-day 독립, flow는 직전 거래일과의 Δ. 결손일(fetch 실패)은 건너뛴다.
+    """
+    if not is_active():
+        return {"inactive": True}
+    # sdate 직전 평일 1일 확장(flow의 prev용)
+    sd = datetime.strptime(sdate, "%Y%m%d").date()
+    ext = sd
+    for _ in range(5):
+        ext -= timedelta(days=1)
+        if ext.weekday() < 5:
+            break
+    rows_by_day = {}
+    fail = 0
+    for bd in _weekdays(ext.strftime("%Y%m%d"), edate):   # 역순
+        r = fetch(_SVC_ETF, bd)
+        if r is None:
+            fail += 1
+            continue
+        rows_by_day[bd] = r
+    aum_pts, flow_pts = {}, {}
+    sorted_days = sorted(rows_by_day)                       # ascending
+    for i, bd in enumerate(sorted_days):
+        if bd < sdate:                                     # 확장일은 prev로만 사용
+            continue
+        a = extract_etf_aum(rows_by_day[bd])
+        if a is not None:
+            aum_pts[bd] = a
+        if i > 0:
+            f = compute_etf_flow(rows_by_day[sorted_days[i - 1]], rows_by_day[bd])
+            if f is not None:
+                flow_pts[bd] = f
+    n_aum = _save_series(_ETF_AUM_SYMBOL, aum_pts)
+    n_flow = _save_series(_ETF_FLOW_SYMBOL, flow_pts)
+    if n_aum or n_flow:
+        _df.mark_data_dirty()
+    return {"ok": fail == 0, "days": len(aum_pts),
+            "saved": {_ETF_AUM_SYMBOL: n_aum, _ETF_FLOW_SYMBOL: n_flow}}
