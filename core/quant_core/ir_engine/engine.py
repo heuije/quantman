@@ -353,6 +353,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
 
     defer = (fill == "next_open")
     cash = float(sim.initial_capital)
+    capital_starved = 0   # 선물 진입 신호가 떴으나 자본<1계약 증거금이라 0계약으로 스킵된 횟수(#2)
     positions: dict[str, Position] = {}
     pending_buys: dict[str, float] = {}     # sym → 진입 방향 부호(defer 시 보류 후 시가 체결)
     pending_sells: dict[str, str] = {}
@@ -375,7 +376,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         return cash_snapshot * (pct / 100.0)
 
     def _open(sym: str, i: int, raw_price: float, budget: float, sign: float):
-        nonlocal cash
+        nonlocal cash, capital_starved
         if np.isnan(raw_price) or raw_price <= 0 or budget <= 0:
             return
         a = aligned[sym]
@@ -390,6 +391,10 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             denom = price * a["mult"] * a["mr"]
             new_shares = int(budget / denom) if denom > 0 else 0
             if new_shares <= 0:
+                # 진입 신호가 떴으나(budget>0) 자본이 1계약 증거금에 못 미쳐 0계약 — 침묵 스킵하지
+                # 말고 카운트해 result_status가 '자본부족'을 정직히 표면화하게 한다(#2).
+                if budget > 0:
+                    capital_starved += 1
                 return
         else:
             per_share_cost = price * (1 + commission)
@@ -586,6 +591,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     weight_panel = pd.DataFrame(_wrec, index=master_idx).fillna(0.0)   # 비중 패널(비교 기질)
     return {"success": True, "error": None, "equity": equity_s,
             "benchmark": benchmark_s, "trades": trades_df, "weight": weight_panel,
+            "capital_starved": capital_starved,
             "metrics": finalize_metrics(_metrics(equity_s, benchmark_s, trades_df),
                                         equity_s, benchmark_s, trades_df)}
 
