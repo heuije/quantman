@@ -15,9 +15,11 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import type {
-  AccountHandle, BacktestRunSummary, CapabilityMatrix, ExecutionSummary, IrStrategyDef,
+  AccountHandle, BacktestRunSummary, CapabilityMatrix, ExecutionSummary,
+  IndicatorInfo, IrBlockSpec, IrStrategyDef, SymbolInfo,
   StrategyRow, StrategyStats, StrategyVersionRow,
 } from "../types";
+import SentenceTree, { type Catalog } from "../components/SentenceTree";
 import AccountPicker from "../components/AccountPicker";
 import { accountLabel } from "../lib/accountLabel";
 import { dedupeAssetClasses } from "../lib/assetClasses";
@@ -55,6 +57,10 @@ export default function StrategyDetail() {
   // 전환(재바인딩) 시 AccountPicker 필터용 — capability 매트릭스 + 심볼→자산군 맵. 둘 다 best-effort.
   const [capabilities, setCapabilities] = useState<CapabilityMatrix | undefined>(undefined);
   const [assetClassBySymbol, setAssetClassBySymbol] = useState<Map<string, string | null>>(new Map());
+  // 신호(진입 조건)를 한글 문장으로 렌더하기 위한 카탈로그·종목·지표 메타(SentenceTree가 소비).
+  const [symbols, setSymbols] = useState<SymbolInfo[]>([]);
+  const [indicatorCatalog, setIndicatorCatalog] = useState<IndicatorInfo[]>([]);
+  const [catalog, setCatalog] = useState<Catalog>(new Map());
   const [tab, setTab] = useState<TabKey>("config");
   const [err, setErr] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -74,13 +80,18 @@ export default function StrategyDetail() {
       // 전환 picker 필터용 — capability 매트릭스 + 종목 카탈로그(자산군 맵). 둘 다 best-effort.
       api.autotradeCapabilities().catch(() => undefined),
       api.symbols().catch(() => null),
+      // 신호 문장 렌더용 블록 카탈로그 — 비치명(실패 시 빈 blocks → 신호 패널만 숨김).
+      api.irCatalog().catch(() => ({ blocks: [] as IrBlockSpec[] })),
     ])
-      .then(([s, st, vs, bs, snap, es, caps, sym]) => {
+      .then(([s, st, vs, bs, snap, es, caps, sym, cat]) => {
         setStrategy(s); setStats(st); setVersions(vs); setBacktests(bs);
         setAccountHandles(snap?.payload?.health?.account_handles ?? []);
         setActiveAccountIds(snap?.payload?.health?.active_account_ids ?? []);
         setExecSummary(es);
         setCapabilities(caps);
+        setSymbols(sym?.symbols ?? []);
+        setIndicatorCatalog(sym?.indicator_catalog ?? []);
+        setCatalog(new Map(cat.blocks.map((b) => [b.op, b])));
         setAssetClassBySymbol(
           new Map((sym?.symbols ?? []).map((x) => [x.symbol, x.autotrade_asset_class ?? null])));
       })
@@ -187,8 +198,9 @@ export default function StrategyDetail() {
       </nav>
 
       {tab === "config" && (strategy.engine === "ir" ? (
-        <IrConfigTab strategy={strategy} execSummary={execSummary}
+        <IrConfigTab strategy={strategy}
                      isFutures={assetClasses.some((ac) => ac.endsWith("_futures"))}
+                     catalog={catalog} symbols={symbols} indicatorCatalog={indicatorCatalog}
                      onRemove={remove} onDemote={demote} />
       ) : (
         <LegacyConfigTab runMode={strategy.run_mode} execSummary={execSummary}
@@ -310,10 +322,16 @@ function SettingsGroupHeader({ live, title, note }: { live: boolean; title: stri
   );
 }
 
-function IrConfigTab({ strategy, execSummary, isFutures, onRemove, onDemote }: {
+// KRX 코스피200 위탁증거금 개시율 ~19.5% — core exec_defaults와 동기·표시용 근사.
+// 라이브 실제 계약수는 모델 A(브로커 실시간 주문가능수량)로 산정되므로 이 상수와 무관.
+const KOSPI200_MARGIN_RATE = 0.195;
+
+function IrConfigTab({ strategy, isFutures, catalog, symbols, indicatorCatalog, onRemove, onDemote }: {
   strategy: StrategyRow;
-  execSummary: ExecutionSummary | null;
   isFutures: boolean;
+  catalog: Catalog;
+  symbols: SymbolInfo[];
+  indicatorCatalog: IndicatorInfo[];
   onRemove: () => void;
   onDemote: () => void;
 }) {
@@ -329,23 +347,35 @@ function IrConfigTab({ strategy, execSummary, isFutures, onRemove, onDemote }: {
     : strategy.run_mode === "paper" ? "모의" : null;
   const isAutotrading = strategy.run_mode !== "draft";
 
-  // 사이징은 자동매매에 실제 쓰이는 값으로 표시 — 선물은 증거금 사용률(%), 주식은 정액/정률.
-  // (선물은 sizing.mode와 무관하게 futures_margin_pct로 사이징 — engine event_buy_qty 동일.)
-  const sizingDetail = isFutures
-    ? `선물 증거금 사용률 ${sizing.futures_margin_pct ?? 20}% (가용 자본 대비)`
-    : sizing.mode === "fixed_amount" && sizing.amount_krw != null
-      ? `종목당 ${Number(sizing.amount_krw).toLocaleString()}원`
-      : sizing.mode === "pct_cash"
-        ? `가용 자본의 ${sizing.amount_pct ?? 10}%`
-        : (IR_SIZING_LABEL[sizing.mode ?? "equal_weight"] ?? "동일가중");
+  // 사이징은 자동매매에 실제 쓰이는 값으로 표시 — 주식은 정액/정률 한 줄.
+  // (선물은 sizing.mode와 무관하게 futures_margin_pct로 사이징 — engine event_buy_qty 동일.
+  //  선물은 아래에서 증거금 사용률·레버리지 효과·증거금률 3행으로 개념 분리해 보여준다.)
+  const sizingDetail = sizing.mode === "fixed_amount" && sizing.amount_krw != null
+    ? `종목당 ${Number(sizing.amount_krw).toLocaleString()}원`
+    : sizing.mode === "pct_cash"
+      ? `가용 자본의 ${sizing.amount_pct ?? 10}%`
+      : (IR_SIZING_LABEL[sizing.mode ?? "equal_weight"] ?? "동일가중");
+
+  // 선물 레버리지 효과 = 증거금 사용률 ÷ 증거금률. 유저는 사용률만 정하고 증거금률은 브로커가 정한다.
+  // 사용률이 낮으면(예 20%) 레버리지가 ~1배(거의 무레버리지)임을 드러내는 게 목적.
+  const marginPct = sizing.futures_margin_pct ?? 20;
+  const leverage = marginPct / 100 / KOSPI200_MARGIN_RATE;
+  const marginRatePct = KOSPI200_MARGIN_RATE * 100;
+
+  // 백테스트 비용 가정 — bps 필드는 ExecutionPolicy(def.execution)에 산다(engine execution_summary와 동일 소스).
+  // 수수료는 전략이 simulation.commission(소수)을 명시했으면 그 값(×100), 아니면 default bt_commission_bps/100.
+  const exec = def.execution ?? undefined;
+  const commissionPct = sim.commission != null
+    ? sim.commission * 100
+    : (exec?.bt_commission_bps ?? 3) / 100;
+  const slippagePct = (exec?.bt_slippage_bps ?? 10) / 100;
+  const sellTaxPct = (exec?.bt_sell_tax_bps ?? 23) / 100;
 
   return (
     <div className="strategy-detail-body">
       <p className="muted small">
         전략 연구소(IR)에서 만든 전략입니다. 전체 설정을 조회하고, 연구소에서 신호·진입·청산을 수정하세요.
       </p>
-
-      <ExecutionSummarySection summary={execSummary} />
 
       {/* 🟡 자동매매 실사용 설정 — 실제 라이브 발주를 결정하는 조건·설정값 */}
       <SettingsGroupHeader live title="자동매매 실사용 설정"
@@ -358,6 +388,24 @@ function IrConfigTab({ strategy, execSummary, isFutures, onRemove, onDemote }: {
         <Rule label="대상" v={summarizeIrUniverse(def)} />
       </section>
 
+      {/* 신호(진입 조건) — IR을 한글 문장으로(SentenceTree 재사용·read-only).
+          catalog 로딩 전엔 빈칸 picker가 떠 혼란을 주므로 catalog.size>0일 때만 렌더. */}
+      {def.signal && (
+        <section className="panel" style={{ marginTop: 12 }}>
+          <h4>신호 (진입 조건)</h4>
+          {catalog.size > 0 ? (
+            <div className="st-readonly">
+              <SentenceTree node={def.signal} catalog={catalog} symbols={symbols}
+                selfIndicators={indicatorCatalog}
+                requiredType={catalog.get(def.signal.op)?.out_type ?? "condition"}
+                onChange={() => {}} depth={0} />
+            </div>
+          ) : (
+            <p className="muted small">신호 불러오는 중…</p>
+          )}
+        </section>
+      )}
+
       <section className="panel" style={{ marginTop: 12 }}>
         <h4>진입 · 포지션</h4>
         <Rule label="진입 트리거" v={IR_ENTRY_LABEL[entry.mode ?? "on_signal"] ?? "이벤트"} />
@@ -365,7 +413,18 @@ function IrConfigTab({ strategy, execSummary, isFutures, onRemove, onDemote }: {
           <Rule label="리밸런싱" v={IR_REBALANCE_LABEL[entry.rebalance ?? "monthly"] ?? "매월"} />
         )}
         <Rule label="방향" v={IR_DIR_LABEL[p.direction ?? "long"] ?? "롱"} />
-        <Rule label="사이징" v={sizingDetail} />
+        {isFutures ? (
+          <>
+            <Rule label="증거금 사용률"
+                  v={`${marginPct}% (가용 자본의 ${marginPct}%를 증거금으로 투입)`} />
+            <Rule label="레버리지 효과"
+                  v={`약 ${leverage.toFixed(1)}배 (사용률 ${marginPct}% ÷ 증거금률 ${marginRatePct.toFixed(1)}%)`} />
+            <Rule label="증거금률"
+                  v={`약 ${marginRatePct.toFixed(1)}% — 브로커·거래소 결정(유저 미설정), 라이브는 실시간`} />
+          </>
+        ) : (
+          <Rule label="사이징" v={sizingDetail} />
+        )}
         {entry.mode !== "on_signal" && entry.top_n != null && (
           <Rule label="상위 N" v={`${entry.top_n}종목`} />
         )}
@@ -389,6 +448,11 @@ function IrConfigTab({ strategy, execSummary, isFutures, onRemove, onDemote }: {
         <Rule label="초기자본" v={`${(sim.initial_capital ?? 10_000_000).toLocaleString()}원`} />
         <Rule label="체결" v={`지연 ${sim.delay ?? 1}일 · ${sim.fill === "close" ? "당일 종가"
           : sim.fill === "typical" ? "당일 (고+저+종)/3" : "익일 시가"}`} />
+        <Rule label="수수료(편도)" v={`${commissionPct.toFixed(3)}%`} />
+        <Rule label="슬리피지(편도)" v={`${slippagePct.toFixed(3)}%`} />
+        {!isFutures && (
+          <Rule label="매도세" v={`${sellTaxPct.toFixed(3)}%`} />
+        )}
         {analysisSummary && <Rule label="분석" v={analysisSummary} />}
         {isFutures && (
           <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>

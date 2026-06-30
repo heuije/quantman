@@ -2434,6 +2434,11 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .st-blank:hover { background: var(--accent-soft); }
 .st-unknown { color: var(--red); }
+/* SentenceTree read-only(설정값 탭 신호) — 문장만 표시, 편집 chrome 비활성.
+   pointer-events:none가 마우스·hover를 막아 ✕(hover로만 노출)는 자동 숨김.
+   variadic 그룹의 추가 ＋ picker만 명시적으로 제거(완성된 신호엔 빈 슬롯 없음). */
+.st-readonly { pointer-events: none; }
+.st-readonly .st-blank { display: none; }
 
 .stat-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
 .stat-grid .stat { flex: 1; min-width: 110px; }
