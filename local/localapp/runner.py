@@ -197,6 +197,16 @@ def _cycle_backoffs(reserved: bool) -> tuple[int, ...]:
     return _RESERVED_BACKOFF_SEC if reserved else _RETRY_BACKOFF_SEC
 
 
+def _synced_eval_krw(balance: dict) -> int:
+    """동기화 성공 로그용 평가금액(KRW) — 선물 전용 balance엔 total_eval 키가 없으므로
+    통합평가(futures_eval_krw)로 폴백(없으면 0). 하드 subscript 금지가 핵심: total_eval
+    KeyError가 push 성공 후 '동기화 실패'로 둔갑하던 2026-06-30 LS 선물 모의 버그의 근본 수정."""
+    eq = balance.get("total_eval")
+    if eq is None:                       # 주식 미보유/선물 전용 — total_eval 키 자체가 없음
+        eq = balance.get("futures_eval_krw", 0)
+    return int(eq or 0)
+
+
 def run_cycle(market: str = "KRX", catchup: bool = False,
               reserved: bool = False, trigger: str = "cron") -> dict:
     """1회 자동매매 사이클을 실행하고 동기화 스냅샷을 반환한다.
@@ -393,11 +403,17 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
 
     try:
         push_snapshot(payload)
-        log.info("동기화 완료 — 평가금액 %s원", f"{payload['balance']['total_eval']:,}")
     except Exception as e:
         # 잔고·포지션·체결 정보는 같은 PC의 다른 사용자가 읽으면 안 됨 (R5: 원자+ACL).
         save_json(PENDING_PATH, payload)
         log.warning("동기화 실패 — 보류 큐 저장 (다음 사이클 재전송): %s", e)
+    else:
+        # 성공 로그는 else 절(push 성공 시에만)·try 밖에 둔다 — 종전엔 이 로그가 try 안에서
+        # balance['total_eval']를 하드 subscript했는데, **선물 전용 balance엔 total_eval 키가
+        # 없어**(주식 브로커만 만드는 키) KeyError가 같은 try의 except에서 '동기화 실패'로 둔갑해
+        # 거짓 경고 + 불필요 재전송을 냈다(2026-06-30 LS 선물 모의). push는 이미 성공이므로
+        # 로그 실패가 동기화 실패로 오인되면 안 된다. 평가금액은 _synced_eval_krw가 안전 조회.
+        log.info("동기화 완료 — 평가금액 %s원", f"{_synced_eval_krw(payload['balance']):,}")
 
     return payload
 

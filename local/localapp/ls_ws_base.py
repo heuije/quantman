@@ -57,12 +57,21 @@ class _LsWsBase:
         })
 
     def _stock_broker(self):
-        """주식 계좌 브로커 — BrokerRouter면 내부 _stock, 아니면 broker 자신.
+        """주식 계좌 브로커 — BrokerRouter면 내부 _stock(주식 미설정이면 None→SC1 구독 skip),
+        아니면 broker 자신.
 
         BrokerRouter.__getattr__가 언더스코어 속성(_token) 위임을 무한재귀 방지로 막아
         broker._token() 직접 호출이 AttributeError('_token')로 실패한다(2026-06-26 라이브
-        '구독 등록 실패 SC1/C01: _token' 근본). 내부 브로커서 토큰을 직접 얻는다."""
-        return getattr(self.broker, "_stock", None) or self.broker
+        '구독 등록 실패 SC1: _token' 근본). 라우터면 내부 _stock에서 토큰을 직접 얻는다.
+
+        ⚠ 종전 'getattr(...,"_stock",None) or self.broker'는 **주식계좌 없는 라우터**
+        (선물 전용 LS 계좌)에서 _stock=None → fallback이 router 자신을 반환 → router._token()이
+        다시 AttributeError('_token')로 SC1 구독을 거짓 실패시켰다(2026-06-30 LS 선물 모의 재발).
+        라우터(_stock 속성 보유)면 _stock을 그대로 반환(None이면 _sub_exec가 SC1 skip),
+        라우터가 아닌 단일 브로커여야만 broker 자신을 쓴다."""
+        if hasattr(self.broker, "_stock"):       # BrokerRouter — 주식 미설정이면 _stock=None
+            return self.broker._stock            # None → _sub_exec가 SC1 구독 skip
+        return self.broker                        # 라우터 아닌 단일 브로커
 
     def _futures_broker(self):
         """선물 계좌 브로커 — BrokerRouter면 내부 _futures, 아니면 None(선물 미설정)."""

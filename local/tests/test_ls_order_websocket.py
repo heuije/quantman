@@ -150,6 +150,39 @@ def test_on_message_non_json_ignored():
     assert got == []
 
 
+class _FuturesOnlyRouter:
+    """선물 전용 LS 라우터 — 주식 계좌 미설정(_stock=None). 실 BrokerRouter처럼 언더스코어
+    속성(_token) 접근을 AttributeError로 막아, 종전 'or self.broker' fallback이 router 자신을
+    반환해 router._token()으로 SC1 구독을 거짓 실패시키던 버그(2026-06-30 LS 선물 모의)를 재현."""
+
+    def __init__(self, virtual=True):
+        self.virtual = virtual
+        self._stock = None                 # 주식계좌 미설정 (선물 전용)
+        self._futures = _Acct("FUT_TOK")
+
+    def __getattr__(self, name):           # BrokerRouter.__getattr__ 미러 — _token 위임 차단
+        raise AttributeError(name)
+
+
+def test_stock_broker_none_when_router_has_no_stock():
+    """주식계좌 없는 라우터(_stock=None) → _stock_broker()=None.
+
+    종전 'getattr(...,"_stock",None) or self.broker'는 None or router → router 자신을 반환해
+    router._token()이 AttributeError('_token')로 SC1 구독을 거짓 실패시켰다. 라우터면 _stock을
+    그대로 반환(None이면 SC1 skip)해야 한다."""
+    ws = LsOrderWebSocket(_FuturesOnlyRouter(), lambda e: None)
+    assert ws._stock_broker() is None
+
+
+def test_initial_subs_futures_only_router_skips_sc1_no_token_error():
+    """선물 전용 라우터 → SC1(주식) 구독 skip, C01(선물)만 발송. _token 에러·예외 없음."""
+    ws = LsOrderWebSocket(_FuturesOnlyRouter(), lambda e: None)
+    cap = _CaptureWs()
+    ws._initial_subs(cap)                  # raise 없어야 함(종전엔 _token 접근으로 진입)
+    by_tr = {m["body"]["tr_cd"]: m["header"]["token"] for m in cap.sent}
+    assert by_tr == {"C01": "FUT_TOK"}     # SC1 미발송(주식계좌 없음), C01만 선물 토큰으로
+
+
 def test_normalized_evt_satisfies_on_exec_contract():
     """정규화 evt가 _on_exec_event가 읽는 키를 모두 포함 (계약 보장)."""
     for norm, body in (

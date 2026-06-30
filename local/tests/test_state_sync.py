@@ -61,6 +61,28 @@ def test_push_snapshot_injects_auto_status(monkeypatch, tmp_path):
     assert captured["json"]["payload"]["auto_status"] == "paused"
 
 
+# ── 동기화 성공 로그 평가금액 — 선물 전용 balance KeyError 둔갑 회귀 (2026-06-30 LS 선물 모의) ──
+# 종전: push_snapshot 성공 후 성공로그가 balance['total_eval']를 하드 subscript → 선물 전용
+# balance엔 키 부재 → KeyError가 같은 try의 except에서 '동기화 실패'로 둔갑 + 불필요 재전송.
+# 근본수정: 로그를 try/except/else의 else로 분리 + _synced_eval_krw(.get + futures_eval_krw 폴백).
+
+def test_synced_eval_krw_futures_only_balance_falls_back():
+    from localapp.runner import _synced_eval_krw
+    # 선물 전용 balance(주식 미보유) — total_eval 키 자체가 없음 → 통합평가 폴백(KeyError 아님).
+    assert _synced_eval_krw(
+        {"futures_eval_krw": 236254700.0, "futures_order_cash_kr": 3.4e8}) == 236254700
+
+
+def test_synced_eval_krw_stock_uses_total_eval():
+    from localapp.runner import _synced_eval_krw
+    assert _synced_eval_krw({"total_eval": 500000000, "futures_eval_krw": 1}) == 500000000
+
+
+def test_synced_eval_krw_empty_balance_zero():
+    from localapp.runner import _synced_eval_krw
+    assert _synced_eval_krw({}) == 0                      # 키 둘 다 없음 → 0 (KeyError 아님)
+
+
 def test_push_snapshot_preserves_explicit_auto_status(monkeypatch, tmp_path):
     """builder가 명시한 auto_status는 보존(setdefault)."""
     monkeypatch.setattr(auto_state, "AUTO_STATE_PATH", tmp_path / "a.json")
