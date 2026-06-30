@@ -1589,6 +1589,9 @@ class SettingsApp:
                             f"LS증권 {acct_type} 자격증명을 저장했습니다 ({mode}).\n\n"
                             "다른 자산군(선물·해외선물)은 [계좌 종류]를 바꿔 추가 등록할 수 있습니다.")
         self.refresh_status()
+        # 새 핸들(특히 모의→실전 전환)을 웹 AccountPicker에 즉시 반영 — 없으면 다음 사이클·
+        # 상태변경까지 서버 스냅샷이 stale이라 방금 등록한 실전계좌가 웹에 안 뜬다(best-effort).
+        self._push_state_async()
 
     # ── KIS 자격증명 wizard ────────────────────────────────────────────────────
 
@@ -2171,6 +2174,9 @@ class SettingsApp:
             "키는 이 PC를 떠나지 않습니다.\n\n"
             "다음 단계: ② 플랫폼 계정 연결.")
         self.refresh_status()
+        # 새 핸들(모의→실전 전환 등)을 웹 AccountPicker에 즉시 반영 — 저장만으론 서버 스냅샷이
+        # 다음 사이클·상태변경까지 stale이라 방금 등록한 계좌가 웹에 안 뜬다(best-effort).
+        self._push_state_async()
 
     def _wizard_jump_to_input(self) -> None:
         """⚙ 변경 클릭 시 — Step 1 안내·모드 선택 건너뛰고 Step 3 직행.
