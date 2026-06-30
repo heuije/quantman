@@ -148,6 +148,8 @@ def test_regression_zero_periods_data_insufficient():
 
 
 def test_single_symbol_ic_infeasible_preserved():
-    # 단일종목 IC는 엔진이 _empty(success=False)로 → infeasible(기존 동작 회귀 잠금)
-    r = classify_status({"success": False, "error": "IC 분석은 종목이 2개 이상이어야 합니다."})
-    assert r["status"] == "infeasible" and "2개 이상" in r["verdict"]
+    # 단일종목 IC는 엔진이 _empty(success=False)로 → infeasible(기존 동작 회귀 잠금).
+    # M1(#9): 메시지가 막다른 제약이 아니라 올바른 대안(이벤트 스터디)을 안내해야 한다.
+    r = classify_status({"success": False, "error": "IC 분석은 종목이 2개 이상이어야 합니다. "
+                                                    "단일종목의 예측력은 이벤트 스터디(신호 발생 후 수익 분포)로 분석하세요."})
+    assert r["status"] == "infeasible" and "2개 이상" in r["verdict"] and "이벤트" in r["verdict"]

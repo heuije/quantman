@@ -683,7 +683,9 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                                     "IC 분석은 forward 윈도우(windows)가 필요합니다.", "study.windows"))
             if s.universe.kind == "single":
                 issues.append(Issue("S-target", SEV_ERROR,
-                                    "IC(횡단 상관) 분석은 종목이 2개 이상이어야 합니다.", "universe"))
+                                    "IC(횡단 상관) 분석은 종목이 2개 이상이어야 합니다. "
+                                    "단일종목의 예측력은 이벤트 스터디(query=relate + study.event 조건 + windows)로 분석하세요.",
+                                    "universe"))
 
     # 다중팩터 횡단 회귀(relation_kind=regression) — 설명변수(factors) 1개 이상·종목 2+·
     # forward 윈도우 필요. 각 factor는 score/condition 블록이고 시장 데이터를 참조해야 한다.
@@ -693,7 +695,9 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                                 "다중 회귀는 설명변수(factors)가 1개 이상 필요합니다.", "study.factors"))
         if s.universe.kind == "single":
             issues.append(Issue("S-REG", SEV_ERROR,
-                                "횡단 회귀는 종목이 2개 이상이어야 합니다.", "universe"))
+                                "횡단 회귀는 종목이 2개 이상이어야 합니다. "
+                                "단일종목의 예측력은 이벤트 스터디(query=relate + study.event 조건 + windows)로 분석하세요.",
+                                "universe"))
         if not st.windows:
             issues.append(Issue("S-REG", SEV_ERROR,
                                 "회귀는 forward 윈도우(windows)가 필요합니다.", "study.windows"))

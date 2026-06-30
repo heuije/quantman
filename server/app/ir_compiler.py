@@ -123,6 +123,37 @@ _FEWSHOT = [
             "expressible": True,
         },
     },
+    {
+        # 이벤트 스터디(단일종목 방향성·국면별) — #5/#9 앵커. "예측력/방향"을 횡단 IC로 오매핑하던 부류를
+        # 이벤트 스터디로 교정(한 종목으로 forward 수익 분포·국면별 유의성). IC는 횡단(종목 2+)이라 단일종목 불가.
+        "nl": "삼성전자가 60일 이동평균을 골든크로스한 뒤 5일·20일 수익이 어떻게 되는지, 상승장과 하락장에서 다른지 보고 싶어",
+        "out": {
+            "intent_summary": "삼성전자 단일. 종가가 60일 이동평균을 상향 돌파(골든크로스)한 날을 이벤트로, 그 뒤 5·20거래일 forward 수익 분포를 본다. 장기추세(상승/하락 국면)별로 나눠 비교.",
+            "strategy_archetype": "이벤트 스터디(단일종목 방향성·국면조건부)",
+            "mapping_rationale": "*신호 발생 후 수익 분포*가 답이고 *단일종목 예측*이라 IC(횡단·종목 2+)가 아니라 이벤트 스터디(레시피 15) → query=relate + study.event. '골든크로스한 날'=cross(up; 종가, ts_mean(종가,60))(이산 트리거라 compare(>)보다 cross). forward 5·20→study.windows=[5,20]. '상승장/하락장 다른지'=국면 라벨→study.label=bucket(120일 가격변화 부호로 상승(>0)/하락(<0) 2국면). 단일종목→universe.single. signal은 명목(data Close — 분석 동사).",
+            "strategy": {
+                "name": "삼성전자 골든크로스 후 수익(국면별)",
+                "universe": {"kind": "single", "symbols": ["005930"]},
+                "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}},
+                "query": "relate",
+                "study": {
+                    "event": {"op": "cross", "params": {"direction": "up"}, "inputs": {
+                        "left": {"op": "data", "params": {"ref": "__SELF__.Close"}},
+                        "right": {"op": "ts_mean", "params": {"window": 60}, "inputs": {
+                            "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}}}}}},
+                    "windows": [5, 20],
+                    "event_basis": "close",
+                    "label": {"op": "bucket", "params": {"edges": [0]}, "inputs": {
+                        "signal": {"op": "ts_delta", "params": {"window": 120}, "inputs": {
+                            "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}}}}}},
+                },
+            },
+            "assumptions": ["'골든크로스'를 종가가 60일 단순이동평균을 상향 돌파하는 날로 해석",
+                            "'상승장/하락장'을 120거래일 가격변화 부호(>0 상승·<0 하락)로 2국면 분할",
+                            "이벤트 후 5·20거래일 종가 기준 forward 수익(분석 전용·매매 신호 아님)"],
+            "expressible": True,
+        },
+    },
 ]
 
 
@@ -220,6 +251,13 @@ StrategyIR = {{
 <reference_data>
 지표 ref(이 외 임의 지표 금지; 종목 자신은 __SELF__. 접두): {", ".join(indicator_cols)}
 기본 OHLCV: Open, High, Low, Close, Volume
+- **지표 의미(필드 선택·#3)**: op_margin·gross_margin은 수익성 **률**(효율·%)이지 이익 *절대액*이 아니다. "영업이익/순이익
+  **성장**"은 *증가율(%)·부호* 의미 — ts_delta(절대 차이)로 랭킹하지 말 것(고가·대형주 쏠림; 레시피 2). 카탈로그에 없는
+  펀더(영업이익 절대액·EPS 성장률 등 — 위 목록에 없으면 **없는 것**)는 지어내지 말고 가까운 가용 지표로 대체 제안하거나
+  assumptions에 "미지원" 명시.
+- **z-score window(#8)**: ts_zscore의 window=표준화 롤링 기간(평균·표준편차 계산 구간)이다 — 입력 지표 자체의 룩백
+  (예: 모멘텀 N일)과 **별개의 역할**. "윈도우 바꿔가며"가 모호하면 어느 window(표준화 기간 vs 입력 룩백)인지 param_grid
+  path로 구분해 스윕한다(두 역할을 한 값으로 묶지 말 것 — 라벨이 모호해진다).
 종목 표기: 국내주식=6자리 코드(삼성전자 005930), 미국주식=티커(AAPL), 내장 자산명=정확한 키
 (S&P500, 코스피200선물, 원유선물, 금선물, 은선물(COMEX), 천연가스선물, 나스닥선물, 비트코인선물 등). 모르면 사용자가 쓴 명칭 그대로.
 </reference_data>
@@ -293,11 +331,15 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
     "어떤 종목이 제일 나은가"처럼 *그리드 중 최적 1개*가 답이면 → study.axis="parameter"(+param_grid)
     또는 "entity"(+assets) + study.reduction="extremize" + study.objective={{metric, direction, oos_guard:true}}.
     metric은 sharpe(기본)·sortino·cagr·cum_return·mdd만. ⚠ mdd는 음수라 "낙폭 최소"=direction:"max".
-    oos_guard=true(기본)면 최적값을 시간폴드로 재검(과최적화 경고). (※ enumerate=모든 셀 나열, extremize=최적 1개.)
+    oos_guard=true(기본)면 최적값을 시간폴드로 재검(과최적화 경고).
+    ⚠ **비교 vs 최적 구분**: "어느 게 *최적* 1개"=reduction="extremize"; "여러 조건/임계/종목/시나리오를 *각각 비교·나열*
+    (다 보여줘·어떻게 다른가)"=study.axis="parameter"(+param_grid 후보값들) 또는 "entity"(+assets) + reduction="enumerate".
+    비교·나열 요청을 study 없이(axis=none) 단일 실행으로 떨어뜨리지 말 것 — N개를 한 번에 펼쳐 비교한다.
 11. [다중팩터 횡단 회귀] "밸류·모멘텀·퀄리티 중 무엇이 forward 수익을 설명하나(상호 통제)"·"여러 지표로
     수익 횡단 회귀"처럼 *여러 설명변수의 동시 예측력*이면 → query="relate" + study.relation_kind="regression"
     + study.factors=[팩터1, 팩터2, ...](각 score 블록) + study.windows. universe.kind=all/list(종목 2+).
-    Fama-MacBeth(날짜별 횡단 OLS→계수 시계열 평균+t값/신뢰구간). (※ 단일팩터 예측력=relation_kind="ic"+target_node.)
+    Fama-MacBeth(날짜별 횡단 OLS→계수 시계열 평균+t값/신뢰구간). (※ 단일팩터 예측력=relation_kind="ic"
+    +target_node — 단, IC·회귀는 **횡단(종목 2+ 필수)**. *단일종목*의 예측력은 IC 아님 → 이벤트 스터디(레시피 15).)
 12. [상관행렬] "A와 B(와 C)의 상관계수"·"이 종목들 상관관계/같이 움직이나"·"분산투자 되나·헤지 후보"처럼
     *종목 간 수익 동조성*이면 → query="relate" + study.relation_kind="correlation" + universe.kind="list"(종목 2+).
     target_node·factors 불필요(가격수익 공행렬). windows=[N]으로 최근 N거래일 한정 가능(없으면 전체). 결과=상관 히트맵.
@@ -307,6 +349,16 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
 14. [시장 breadth] "코스피 왜 빠져/올라"·"시장 분위기·장세 어때"·"상승하락 종목 수/시장 폭"처럼 *시장 전반 상태*면
     → query="breadth" + universe.kind="all"(전체) 또는 list(대표 종목군). 상승하락 비율·평균수익·MA 상회·섹터별 약강세.
     *왜*(거시·뉴스 인과)는 엔진이 아니라 사이드카·해석이 보강 — breadth는 시장 폭의 what을 결정적으로 제공. signal은 명목.
+15. [이벤트 스터디 — 신호 후 수익·방향성·단일종목 예측] "롱/숏 신호(돌파·골든크로스 등) 발생 후 N일 수익이
+    어떻게 분포하나"·"이 조건 뒤 오를 확률·반등이 유의한가"·"삼성전자가 ___면 그 뒤 오르나(예측력)"처럼
+    *이벤트 후 전향(forward) 수익*이나 *단일종목의 방향성/예측*이 답이면 → query="relate" +
+    study.event=<발생 조건 block(condition·발생 여부; '돌파한 날'은 cross가 정확·compare(>)는 그 위에 머무는 동안 참)>
+    + study.windows=[전향 거래일들] + event_basis="close"(시장 대비 초과수익 보려면 "excess"·종목 2+ 필요).
+    universe=single(한 종목 가능)·list. 결과=이벤트 후 forward 수익 분포·승률(prob_positive)·유의성(t/p)·MAE/MFE.
+    **국면별로 다른가**(상승장 vs 하락장·고변동 vs 저변동)면 study.label=<국면 라벨(bucket 등 label 블록)>도 추가
+    → by_regime로 분리 비교. signal은 명목(data Close — 분석 동사).
+    ⚠ 단일종목의 "예측력/오를까/방향"은 횡단 IC(종목 2+ 필요)가 **아니라** 이벤트 스터디다(한 종목으로 가능).
+    ⚠ 과대약속 금지 — 표본(이벤트 수)이 적으면 신뢰구간이 넓고 유의성이 약하다(엔진이 정직히 표면화).
 </idioms>
 
 <process>
