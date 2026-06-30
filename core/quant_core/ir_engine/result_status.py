@@ -78,6 +78,15 @@ def classify_status(result: Any) -> dict:
                         f"데이터 밀도 {cov * 100:.0f}%로 부족 — 결손 구간이 결과를 왜곡합니다"
                         "(데이터 보강 또는 기간 조정 필요).")
         if nt == 0:
+            starved = result.get("capital_starved") or 0
+            if starved:
+                # 신호는 발생했으나 자본이 1계약 증거금에 못 미쳐 진입 못 함(#2) — '신호 미충족'으로
+                # 오인시키지 않는다. 결과 수치는 불변, 사유만 정확히.
+                diag["capital_starved"] = starved
+                return done("empty",
+                            "거래 0건 — 진입 신호는 발생했으나 자본이 1계약 증거금에 못 미쳐 진입하지 "
+                            "못했습니다. 자본을 늘리거나, 증거금 사용률을 높이거나, 미니 선물(승수 작음)을 "
+                            "검토하세요.")
             return done("empty",
                         "거래 0건 — 신호가 한 번도 충족되지 않았습니다(전략·유니버스·사이징 점검).")
         impossible = (_num(tr) is not None and _num(tr) < _LOSS_IMPOSSIBLE) or \

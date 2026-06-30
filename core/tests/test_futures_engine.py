@@ -143,6 +143,30 @@ def test_event_futures_margin_pct_scales_engine_return():
         f"futures_margin_pct 미반영: 20%={ret20:.3%} 40%={ret40:.3%}"
 
 
+def test_event_futures_capital_starved_surfaces_honestly():
+    """#2 — 자본이 1계약 증거금에 못 미치면 침묵 0거래 대신 'capital_starved'를 표면화한다.
+    코스피200선물(승수 250,000·증거금 0.195) @400: 1계약 증거금=400×250k×0.195=19.5M인데
+    자본 1e7(×20%=2M)으론 0계약 → 신호는 발생했으나 진입 불가. result_status는 '신호 미충족'이
+    아니라 '자본부족'으로 정직히 고지해야 한다(Phase1 결과계약 T4 연결)."""
+    res = run_strategy_ir(_event_hold("코스피200선물", futures_margin_pct=20.0),
+                          _ds("코스피200선물", _UP))
+    assert res["success"], res.get("error")
+    assert res["metrics"].get("n_trades", 0) == 0, "1계약도 못 사 0거래여야"
+    assert res.get("capital_starved", 0) > 0, "자본부족 진입스킵이 카운트돼야"
+    from quant_core.ir_engine.result_status import classify_status
+    st = classify_status(res)
+    assert st["status"] == "empty"
+    assert "자본" in st["verdict"], f"자본부족을 명시해야(신호 미충족 아님): {st['verdict']}"
+    assert st["diagnostics"].get("capital_starved", 0) > 0
+
+
+def test_event_futures_funded_not_starved():
+    """충분한 자본이면 capital_starved=0 (회귀 가드) — 원유선물은 2M로 50계약 진입."""
+    res = run_strategy_ir(_event_hold("원유선물", futures_margin_pct=20.0), _ds("원유선물", _UP))
+    assert res["success"] and res["metrics"].get("n_trades", 0) > 0
+    assert res.get("capital_starved", 0) == 0, "자본 충분하면 starved 0이어야"
+
+
 def test_event_equity_baseline_no_leverage():
     """같은 on_signal 보유를 주식(005930)으로: 승수=1·증거금=1 → ~1%(레버리지 없음).
     선물과의 차이가 곧 E1b 이벤트 경로 승수·증거금 회계 효과(주식 회귀 무변)."""
