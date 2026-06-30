@@ -3,6 +3,21 @@
 > 조사 2026-06-22 (read-only). 출처 = **LsApiHelper specs**(LS 공식 포털 미러·실 req/res 예시·blocks.json 364 TR) + **teranum/ls-openapi-samples**(`15.국내선물`·`08.지수선물마스터`·`22.실시간` — **모의투자 라이브 출력 포함**) 교차. 🟢=2소스 일치. ⚠=단일/모의 실측 필요.
 > 공통 구조는 국내주식 KB와 동일(단일 도메인 `:8080`·OAuth2·`tr_cd` 헤더·블록 JSON·POST). programgarden-finance는 국내선물 미수록 → 2소스는 teranum 라이브.
 
+## 🔬 2026-06-30 실측 확정 (verify_ls.py 모의+실전 프로브 — 차이 시 이 절이 정본)
+모의(계좌 …51)+실전(…02) read-only 프로브로 확정. 아래 inline 값과 다르면 **이 절 우선**:
+- **지수선물 마스터 TR = `t8467`** (`index_futures_broker.index_futures_master()`가 호출). OB=`t8467OutBlock[]`:
+  `hname`("F 2609" = YYMM 4자리)·`shcode`·`expcode`(ISIN)·상하한·`jnilclose`. ⚠ 아래 표의 **t8432/t9943은 미사용/구**.
+- **계약(단축)코드 = `A01…` 8자** (예 `A0169000`=26-09·`A016C000`=26-12·`A0173000`=27-03·ISIN `KR4A01690002`).
+  표/§선물특화·§대비의 **`101V6000`은 stale** — 실측은 `A01…`. resolver prefix `"A01"`·core `_DOMESTIC_SPEC`와 일치.
+- **CFOAQ10100 `NewOrdAbleQty` 필드 실재** — 모의 값 3(가용 236M÷계약증거금[1360×250k×**~0.195**]≈3 = 실 동적
+  증거금률 반영 확인)·실전 0(빈계좌). 모델 A 사이징 토대 확정. OB2에 `UsePreargMgn`(잠긴증거금)도 있음(모의 equity 복원용).
+- **CFOAQ50600: 실전은 `EvalDpsamtTotamt`(추정예탁자산) 정상 제공**(rsp_cd 00136·전체 평가 OB2·예수금·증거금·평가손익).
+  **모의는 미제공**(rsp_cd 01900→OrdAbleAmt 근사 → 포지션 시 equity 가짜하락). **G-DF4 실전 해소**(실금 후 값 확정).
+- **G-DF9 해소**: hname YYMM 4자리·resolver 정규식 일치(모의+실전 resolve→`A0169000`). **G-DF8 해소**: t0441 보유행 실측
+  (expcode `A0169000`·medosu "매도"·jqty·pamt·dtsunik1, 모의).
+- **주문 WS `C01` = 실전 port 9443 연결 + 구독 ack rsp_cd 00000 확인**(발주 0). SC1(주식) 미설정 라우터서 정상 skip.
+- 미해소(실금 필요·Phase 1): 실전 발주(CFOAT00100 `OrdNo`)·체결·t0441 보유형식·C01 체결 payload.
+
 ## 🟢 TOP — 국내선물옵션 모의투자 지원됨
 teranum `15.국내선물` 라이브 = "접속서버: **모의투자**" + CFOAT00100 매수/CFOAT00200 정정이 모의서버에서 실제 처리("모의투자 정정주문 완료"). → 모의 키로 paper 주문 라운드트립 E2E 가능(KIS 국내선물 모의 지원과 동일). **4자산군 전부 모의 지원 확정.**
 

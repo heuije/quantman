@@ -188,6 +188,30 @@ def test_ir_domestic_futures_no_orderable_qty_degrades(isolated_trader):
     assert broker.submitted[-1]["qty"] == expected, broker.submitted
 
 
+def test_ir_domestic_futures_orderable_fail_holds_order(isolated_trader):
+    """degrade→skip: 실 브로커(orderable_qty 보유)가 None(조회 실패) 반환 → **발주 보류**.
+
+    종전엔 카탈로그 추정 증거금률(0.10)로 event_buy_qty(21계약)를 그대로 발주했으나, 그건
+    실제(~19.5%) 대비 ~2배 과대 사이징이라 의도(사용률 20%)의 2배 레버리지를 시도하는 셈이다.
+    실전 자금안전 위해 조회 실패 시 qty=0으로 발주 보류(skip_funds) — 카탈로그 21계약 발주 안 함.
+    (SimBroker는 orderable_qty 메서드 자체가 없어 이 경로에 도달 안 함 — 위 _degrades 테스트가 보장.)
+    """
+    t, broker = isolated_trader
+    broker._prices["코스피200선물"] = 375
+    broker._balance["futures_order_cash_kr"] = 1_000_000_000
+    broker.orderable_qty = lambda symbol, side, price: None     # 실 브로커 조회 실패 시뮬
+
+    sid = "irfut3"
+    ir = _ir_def(sizing={"mode": "pct_cash", "futures_margin_pct": 20},
+                 universe={"kind": "single", "symbols": ["코스피200선물"]})
+    order_no, decisions = scenario.strategy_buy_and_fill(
+        t, broker, sid, ir, "코스피200선물", _FUT_DS, fill_price=375.0,
+        equity=1_000_000_000.0)
+    assert order_no is None, broker.submitted                  # 발주 보류
+    assert broker.submitted == [], broker.submitted            # 카탈로그 21계약 발주 안 함(★ 자금안전)
+    assert any(d.get("action") == "skip_funds" for d in decisions), decisions
+
+
 def test_ir_intraday_stop_loss_fill_and_flat(isolated_trader):
     """IR 장중 손절(-5%) tick → IntradayStopManager 트리거 → 실 매도→체결→FLAT.
 

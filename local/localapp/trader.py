@@ -1225,7 +1225,14 @@ class Trader:
                 side = "sell" if is_short else "buy"
                 orderable = oq_fn(symbol, side, prev_close)
                 if orderable is None:
-                    log.warning("[모델A] %s 브로커 주문가능수량 조회 불가 — 카탈로그 추정 증거금률로 degrade", symbol)
+                    # 실 브로커(orderable_qty 보유)인데 조회 실패 → **발주 보류**(qty=0). 카탈로그
+                    # 추정 증거금률(0.10)로 사이징하면 실제(~19.5%) 대비 ~2배 과대 계약수가 되어,
+                    # 큰 금액 실전에서 의도(사용률%)의 2배 레버리지를 시도하게 된다. "조회 안 되면
+                    # 안 한다"가 안전한 기본값 — qty=0으로 아래 `qty<=0 → skip_funds`가 사유 표면화.
+                    # (sim/paper는 orderable_qty 메서드 자체가 없어 이 분기에 도달 안 함 — 무영향.)
+                    qty = 0
+                    log.warning("[모델A] %s 브로커 주문가능수량 조회 실패 — 발주 보류"
+                                "(카탈로그 추정 2배 과대 사이징 회피)", symbol)
                 else:
                     pct = ir_live.futures_margin_pct_of(_ir)
                     qty = ir_live.model_a_qty(qty, orderable, pct)

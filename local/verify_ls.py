@@ -413,12 +413,19 @@ def _probe_futures(fbroker, resolver, captured, secret_values, show_fbroker, do_
 
     # [F1] 잔고 (CFOAQ50600 + t0441)
     print("\n[F1] 선물 잔고 조회 (CFOAQ50600 + t0441)")
+    # CFOAQ50600(평가TR) 단독 dump — 실전 EvalDpsamtTotamt 제공 여부·equity 정확성 확정.
+    # (모의는 01900 미제공→OrdAbleAmt 근사로 가짜하락. 실전 제공 시 평가 정확·equity #3 자동해소.)
+    try:
+        fbroker._acct_summary_raw()
+        show_fbroker("CFOAQ50600 예탁·증거금 (★ EvalDpsamtTotamt 제공 여부 — equity 정확성)")
+    except Exception as e:
+        print(f"   CFOAQ50600 예외: {e!r}")
     fsnap = None
     try:
         fsnap = fbroker.account_snapshot()
     except Exception as e:
         print(f"   account_snapshot 예외: {e!r}")
-    show_fbroker("CFOAQ50600+t0441 선물잔고 (path / tr_cd / 요청 / 응답)")
+    show_fbroker("t0441 포지션 (path / tr_cd / 요청 / 응답)")
     if fsnap:
         acct = fsnap["account"]
         print(f"   파싱결과 → equity {acct['equity']:,} · order_cash {acct['order_cash']:,} · "
@@ -439,6 +446,24 @@ def _probe_futures(fbroker, resolver, captured, secret_values, show_fbroker, do_
     else:
         print("   ⚠ resolve None — t8432 hname 형식이 _HNAME_YM 정규식과 불일치 가능(G-DF9). "
               "RAW 의 hname 형식 확인 후 ls_futures_contracts.py 교정 필요.")
+
+    # [F2.5] 주문가능수량 (CFOAQ10100 NewOrdAbleQty) — 모델 A 라이브 사이징 토대 (읽기전용·무발주)
+    if code:
+        print(f"\n[F2.5] 주문가능수량 (CFOAQ10100 NewOrdAbleQty) — {code} · 모델 A 사이징 토대")
+        ref = 0.0
+        try:
+            ref = fbroker.price(code) or 0.0
+        except Exception:
+            ref = 0.0
+        for side in ("buy", "sell"):
+            try:
+                q = fbroker.orderable_qty(code, side, ref)
+                print(f"   orderable_qty({side}, 기준가 {ref:,.0f}) → {q} 계약")
+            except Exception as e:
+                print(f"   orderable_qty({side}) 예외: {e!r}")
+        show_fbroker("CFOAQ10100 주문가능수량 (★ NewOrdAbleQty 필드 존재·값 확정 — 모델 A 토대)")
+    else:
+        print("\n[F2.5] 주문가능수량 생략 (code=None)")
 
     # [F3] 시세 (t2101)
     if code:
