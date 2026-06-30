@@ -24,6 +24,19 @@ if str(_LOCAL) not in sys.path:
 from localapp import sync_client
 
 
+@pytest.fixture(autouse=True)
+def _stub_device_token(monkeypatch):
+    """이 파일의 모든 테스트는 페어링 토큰과 무관하게 타임아웃 동작만 격리 검증한다.
+
+    fetch_dataset_bundle은 타임아웃 로직 전에 _headers()→load_device_token()을
+    호출하므로, 토큰이 키링에 없으면(미페어링 CI·초기화 직후) RuntimeError로
+    먼저 깨져(sync_client.py) 정작 검증하려는 타임아웃 경로에 도달하지 못한다.
+    load_device_token을 스텁해 그 의존을 끊어 — 페어링 여부와 상관없이 항상
+    같은 타임아웃 동작을 검증하게 한다(이 부류 전체를 한 곳에서 닫는다).
+    """
+    monkeypatch.setattr(sync_client, "load_device_token", lambda: "dummy-token")
+
+
 def test_bundle_download_uses_fast_fail_tuple_timeout(tmp_path):
     """requests.get timeout이 (connect, read) 튜플이고 read가 합리적으로 짧아야 한다."""
     resp = MagicMock(status_code=304)
