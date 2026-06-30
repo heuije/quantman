@@ -36,10 +36,8 @@ def _patch(monkeypatch, master_loaded: bool) -> list[str]:
     monkeypatch.setattr(data_fetcher, "fetch_all",
                         lambda **k: calls.append("fetch_all"))
     monkeypatch.setattr(data_fetcher, "fetch_managed_overseas", _fetch_overseas)
-    monkeypatch.setattr(appmain, "_seed_sp500_overseas",
-                        lambda: calls.append("seed"))
-    monkeypatch.setattr(appmain, "_seed_us_master_overseas",
-                        lambda: calls.append("seed_us"))
+    monkeypatch.setattr(appmain, "_rebuild_overseas_universe",
+                        lambda: (calls.append("rebuild"), 0)[1])
     monkeypatch.setattr(appmain.data_cache, "invalidate",
                         lambda: calls.append("invalidate"))
     monkeypatch.setattr(appmain, "_trigger_preview",
@@ -53,12 +51,12 @@ def _patch(monkeypatch, master_loaded: bool) -> list[str]:
     return calls
 
 
-def test_seed_before_overseas_fetch(monkeypatch):
-    """S&P500 시드가 해외 OHLCV fetch보다 먼저 호출된다 (콜드스타트 순서)."""
+def test_rebuild_before_overseas_fetch(monkeypatch):
+    """해외 유니버스 rebuild가 해외 OHLCV fetch보다 먼저 호출된다 (콜드스타트 순서)."""
     calls = _patch(monkeypatch, master_loaded=True)
     appmain._refresh_global_dataset()
-    assert "seed" in calls and "fetch_overseas" in calls
-    assert calls.index("seed") < calls.index("fetch_overseas")
+    assert "rebuild" in calls and "fetch_overseas" in calls
+    assert calls.index("rebuild") < calls.index("fetch_overseas")
 
 
 def test_master_loaded_before_us_metrics_when_cold(monkeypatch):

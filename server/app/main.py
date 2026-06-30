@@ -518,15 +518,12 @@ def _refresh_global_dataset() -> None:
     # 매크로/자산/사용자 종목 (yfinance, FDR ETF, FRED, Binance, 공포탐욕)
     data_fetcher.fetch_all(verbose=False)
 
-    # 해외 종목 시드를 fetch 전에 — 콜드스타트 레이스 방지. 시드는 원래
-    # _refresh_kr_dataset(18:15)에만 있어, 첫 부팅 때 글로벌 초기 갱신이 kr보다
-    # 먼저 돌면 managed_overseas가 비어 US OHLCV를 못 받았다. save_managed_overseas는
-    # union이라 멱등. US 마스터 시드는 마스터 로드가 선행돼야 하므로 가드(멱등).
+    # 해외 유니버스 rebuild를 fetch 전에 — 콜드스타트 레이스 방지(빈 universe→US OHLCV 못받음).
+    # rebuild는 KIS 마스터를 읽으므로 마스터 로드가 선행돼야 한다(가드·멱등).
     if not kis_master_cache.get_master_set():
-        _log.info("해외 시드 전 KIS 마스터 로드 (콜드스타트 가드)")
+        _log.info("해외 rebuild 전 KIS 마스터 로드 (콜드스타트 가드)")
         kis_master_cache.refresh()
-    _seed_sp500_overseas()         # 클래스주 yf 코드 보존
-    _seed_us_master_overseas()     # KIS 미국 마스터 전체 (주식+ETF) — 국내와 대칭
+    _rebuild_overseas_universe()   # NASDAQ Trader(권위·정제) ∪ KIS US master(거래가능) overwrite
 
     # 해외 종목 — yfinance 배치 수집 (글로벌 cron에 묶음)
     n = data_fetcher.fetch_managed_overseas()
@@ -573,13 +570,9 @@ def _refresh_kr_dataset() -> None:
     종목별 RSI/MA/ATR 등을 compute_all로 계산해 dict로 반환.
     """
     from quant_core import data_fetcher
-    from sqlmodel import Session, select
-    from .db import engine
-    from .models import Strategy
 
     # 1. KIS 마스터 KOSPI/KOSDAQ → 한국 종목 FDR fetch
     master_list = kis_master_cache.get_master_list()
-    by_code = {m["symbol"]: m for m in master_list}
     kr_codes = sorted({m["symbol"] for m in master_list
                         if m.get("market") in ("KOSPI", "KOSDAQ")})
     data_fetcher.save_managed_kr_codes(kr_codes)
@@ -587,25 +580,9 @@ def _refresh_kr_dataset() -> None:
         _log.info("한국 종목 fetch: %d 종목", len(kr_codes))
         data_fetcher.fetch_korean_stocks(kr_codes, verbose=False)
 
-    # 2. 등록 전략의 해외 trade_symbol을 managed_overseas에 등록 (fetch는 글로벌 cron에서)
-    overseas_new: list[dict] = []
-    with Session(engine) as session:
-        rows = session.exec(select(Strategy)).all()
-        for s in rows:
-            # IR 단일 체제 — 매매 타겟은 universe.symbols. 레거시 operand 행은 skip.
-            if s.engine != "ir":
-                continue
-            syms = ((s.definition or {}).get("universe") or {}).get("symbols") or []
-            for code in syms:
-                meta = by_code.get(code)
-                if meta is None or meta.get("market") in ("KOSPI", "KOSDAQ"):
-                    continue
-                overseas_new.append({"code": code, "name": meta.get("name", "")})
-
-    existing_overseas = data_fetcher.load_managed_overseas()
-    data_fetcher.save_managed_overseas(existing_overseas + overseas_new)
-    _seed_sp500_overseas()        # S&P500 큐레이션 (클래스주 yf 코드 보존)
-    _seed_us_master_overseas()    # KIS 미국 마스터 전체 (주식+ETF) — 국내와 대칭
+    # 2. 해외 유니버스 rebuild — 등록 전략의 해외 심볼은 by_code(KIS master) 조회로만 추가됐어
+    #    KIS US master ⊆ 라, rebuild(NASDAQ Trader ∪ KIS US master)가 자동 포함한다.
+    _rebuild_overseas_universe()
 
     data_cache.invalidate()
     _trigger_preview("dataset_kr")
@@ -638,6 +615,42 @@ def _seed_us_master_overseas() -> int:
           for m in master if m.get("market") in ("NAS", "NYS", "AMS")]
     data_fetcher.save_managed_overseas(data_fetcher.load_managed_overseas() + us)
     return len(us)
+
+
+_OVERSEAS_MIN_SANE = 8000        # NASDAQ Trader rebuild 가드 — 이보다 적으면 반쪽/실패로 보고 skip
+
+
+def _rebuild_overseas_universe() -> int:
+    """US 데이터 유니버스를 **재생성(overwrite)** — NASDAQ Trader(권위 정의) ∪ KIS US master(거래가능).
+
+    기존 append(누적)는 상장폐지·정크가 영영 안 빠졌다. rebuild로 매 cron이 깨끗한 명단을 다시 쓴다
+    (데이터 parquet은 안 지움 — 명단만). NASDAQ Trader=보통주+ETF 정제(워런트/우선주 제외), KIS US
+    master=거래가능 보장(데이터⊇거래 — 등록전략 해외심볼도 KIS master ⊆ 라 자동 포함). '/'코드 제외·
+    dedupe는 save_managed_overseas가 담당.
+
+    **가드:** NASDAQ Trader fetch 실패 또는 종목수 비정상(<_OVERSEAS_MIN_SANE)이면 overwrite 하지
+    않고 기존 유니버스를 보존 — 네트워크 일시오류로 유니버스가 비는 것 방지.
+    """
+    from quant_core import data_fetcher
+    from quant_core.data.feeds import nasdaq_trader
+
+    try:
+        nt = nasdaq_trader.fetch()                  # 보통주+ETF 정제·yf코드 정규화
+    except Exception:
+        _log.exception("NASDAQ Trader fetch 실패 — 해외 유니버스 보존(rebuild skip)")
+        return 0
+    if len(nt) < _OVERSEAS_MIN_SANE:
+        _log.warning("NASDAQ Trader %d종목(<%d 비정상) — 해외 유니버스 보존(rebuild skip)",
+                     len(nt), _OVERSEAS_MIN_SANE)
+        return 0
+
+    master = kis_master_cache.get_master_list()     # 거래가능(KIS) — 데이터⊇거래
+    kis = [{"code": (m.get("ticker") or m["symbol"]), "name": m.get("name", "")}
+           for m in master if m.get("market") in ("NAS", "NYS", "AMS")]
+    rows = [{"code": r["code"], "name": r["name"]} for r in nt] + kis   # NT 우선 union → overwrite
+    data_fetcher.save_managed_overseas(rows)        # '/'제외·dedupe·overwrite(append 아님)
+    _log.info("해외 유니버스 rebuild: NASDAQ Trader %d + KIS %d", len(nt), len(kis))
+    return len(nt)
 
 
 def _initial_dataset_refresh():
