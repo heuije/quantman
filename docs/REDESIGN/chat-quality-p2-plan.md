@@ -63,10 +63,17 @@ prompt/컴파일러 라우팅이 능력을 노출하지 않는 것이 근본. Ph
   ② **LLM e2e($0·ClaudeCodeBackend 구독)**: #9·#5·#9b 3질문 모두 `query=relate + study.event`(국면질문은 +label)·
   universe=single로 컴파일(**repair=0** — 레시피+few-shot이 직접 앵커, IC 오매핑 0). M1 안전망은 백스톱 확인.
 
-### M3 — prompt 라우팅 교정 (G) [#5]
-- **`prompt.py:39,43` 라우팅 교정:** "방향성·롱숏·이벤트후수익 판단 → simulate(이벤트스터디)" — 방향성 질문을 describe 폴백 대신 분석 엔진으로. (describe는 *현황 요약*에만.)
-- **정직성:** 방향성 답변은 *forward 수익 분포 + 유의성*으로(예측 단정 아님). `prompt.py:90~91` 예측가드와 양립.
-- **검증:** chat_eval 라우팅 하니스(claude -p $0) — 방향성 질문 → simulate(event study) 라우팅.
+### M3 — prompt 라우팅 교정 (G) [#5] ✅ 구현·검증 완료
+**§0.5:** `<analysis_menu>`(prompt.py)는 *이미* 국면별·팩터예측·이벤트스터디를 simulate로 라우팅했으나,
+라우팅 요약줄(line 43)의 **"전망→describe"** 가 단일종목 방향성·예측 질문을 describe(현황)로 선점하던 충돌이 #5 뿌리.
+- **교정:** line 43 describe 절을 "단일종목 현황 리포트(밸류·추정실적·펀더멘털 전망)"로 좁히고, **방향성·예측력**
+  ("이 신호/조건 후 오를까·돌파 후 수익·예측력 있나·상승장/하락장 다른가")은 describe가 아니라 **simulate(이벤트
+  스터디)** 로 명시 분기("전망"=펀더멘털→describe, 신호·조건 예측/방향→simulate). analysis_menu 이벤트스터디 줄도
+  단일종목 방향성·예측 포함으로 보강.
+- **정직성:** 방향성 답변=forward 수익 분포+유의성(예측 단정 아님). prompt.py 예측가드와 양립.
+- **검증(LLM e2e·$0·전체 에이전트):** chat_eval 코퍼스에 #5/#9 라우팅 시나리오 2개 신설 →
+  `event_study_single_directional`("골든크로스 후 5/20일 수익")·`event_study_prediction_power`("예측력 있는 신호인지")
+  **둘 다 tools=['simulate'] 라우팅 + 이벤트스터디(axis=time·forward 수익/유의성) 결과 PASS**(describe 폴백 0).
 
 ### M4 — F 충실성 레시피 (컴파일) [#10, #8, #3-field]
 - **비교 명확화** (#10): "여러 조건 *비교/나열*"=`study.axis=parameter`+`reduction=enumerate`(모두 보기) vs "*최적 1개*"=`reduction=extremize`. 레시피 10(`ir_compiler.py:292~296`)에 enumerate↔extremize 구분 명시.
