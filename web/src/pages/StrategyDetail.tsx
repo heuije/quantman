@@ -188,6 +188,7 @@ export default function StrategyDetail() {
 
       {tab === "config" && (strategy.engine === "ir" ? (
         <IrConfigTab strategy={strategy} execSummary={execSummary}
+                     isFutures={assetClasses.some((ac) => ac.endsWith("_futures"))}
                      onRemove={remove} onDemote={demote} />
       ) : (
         <LegacyConfigTab runMode={strategy.run_mode} execSummary={execSummary}
@@ -292,9 +293,27 @@ function summarizeIrExit(ex: IrStrategyDef["position"]["exit"]): string {
   return parts.length ? parts.join(" · ") : "없음 (정기 리밸런싱 교체 또는 무청산)";
 }
 
-function IrConfigTab({ strategy, execSummary, onRemove, onDemote }: {
+// 설정값 그룹 헤더 — 라이브(자동매매 실사용)는 골드 강조, 백테스트 가정은 muted.
+// (DESIGN.md: 빨강 --up은 방향성 숫자 전용 → 그룹 강조엔 골드 --accent 사용)
+function SettingsGroupHeader({ live, title, note }: { live: boolean; title: string; note: string }) {
+  return (
+    <div style={{
+      marginTop: 20, marginBottom: 8, paddingLeft: 11,
+      borderLeft: `3px solid ${live ? "var(--accent)" : "var(--navy-700)"}`,
+    }}>
+      <div style={{
+        fontSize: 13, fontWeight: 700, letterSpacing: "0.01em",
+        color: live ? "var(--accent-strong)" : "var(--muted)",
+      }}>{title}</div>
+      <div className="muted small" style={{ marginTop: 3, lineHeight: 1.45 }}>{note}</div>
+    </div>
+  );
+}
+
+function IrConfigTab({ strategy, execSummary, isFutures, onRemove, onDemote }: {
   strategy: StrategyRow;
   execSummary: ExecutionSummary | null;
+  isFutures: boolean;
   onRemove: () => void;
   onDemote: () => void;
 }) {
@@ -306,6 +325,20 @@ function IrConfigTab({ strategy, execSummary, onRemove, onDemote }: {
   const sizing = p.sizing ?? ({} as IrStrategyDef["position"]["sizing"]);
   const analysisSummary = summarizeIrAnalysis(def);
 
+  const runModeLabel = strategy.run_mode === "live" ? "실전"
+    : strategy.run_mode === "paper" ? "모의" : null;
+  const isAutotrading = strategy.run_mode !== "draft";
+
+  // 사이징은 자동매매에 실제 쓰이는 값으로 표시 — 선물은 증거금 사용률(%), 주식은 정액/정률.
+  // (선물은 sizing.mode와 무관하게 futures_margin_pct로 사이징 — engine event_buy_qty 동일.)
+  const sizingDetail = isFutures
+    ? `선물 증거금 사용률 ${sizing.futures_margin_pct ?? 20}% (가용 자본 대비)`
+    : sizing.mode === "fixed_amount" && sizing.amount_krw != null
+      ? `종목당 ${Number(sizing.amount_krw).toLocaleString()}원`
+      : sizing.mode === "pct_cash"
+        ? `가용 자본의 ${sizing.amount_pct ?? 10}%`
+        : (IR_SIZING_LABEL[sizing.mode ?? "equal_weight"] ?? "동일가중");
+
   return (
     <div className="strategy-detail-body">
       <p className="muted small">
@@ -313,6 +346,12 @@ function IrConfigTab({ strategy, execSummary, onRemove, onDemote }: {
       </p>
 
       <ExecutionSummarySection summary={execSummary} />
+
+      {/* 🟡 자동매매 실사용 설정 — 실제 라이브 발주를 결정하는 조건·설정값 */}
+      <SettingsGroupHeader live title="자동매매 실사용 설정"
+        note={isAutotrading
+          ? `${runModeLabel} 자동매매로 실행 중 — 아래 설정이 실제 발주를 결정합니다.`
+          : "실제 자동매매(모의·실전)에서 발주를 결정하는 설정입니다."} />
 
       <section className="panel">
         <h4>유니버스</h4>
@@ -326,7 +365,7 @@ function IrConfigTab({ strategy, execSummary, onRemove, onDemote }: {
           <Rule label="리밸런싱" v={IR_REBALANCE_LABEL[entry.rebalance ?? "monthly"] ?? "매월"} />
         )}
         <Rule label="방향" v={IR_DIR_LABEL[p.direction ?? "long"] ?? "롱"} />
-        <Rule label="사이징" v={IR_SIZING_LABEL[sizing.mode ?? "equal_weight"] ?? "동일가중"} />
+        <Rule label="사이징" v={sizingDetail} />
         {entry.mode !== "on_signal" && entry.top_n != null && (
           <Rule label="상위 N" v={`${entry.top_n}종목`} />
         )}
@@ -340,13 +379,23 @@ function IrConfigTab({ strategy, execSummary, onRemove, onDemote }: {
         <Rule label="규칙" v={summarizeIrExit(p.exit)} />
       </section>
 
-      <section className="panel" style={{ marginTop: 12 }}>
+      {/* 🧪 백테스트 전용 가정값 — 라이브 발주에 영향 없음 */}
+      <SettingsGroupHeader live={false} title="백테스트 전용 가정값"
+        note="과거 데이터 백테스트에만 적용됩니다. 실제 계좌의 수수료·체결가·증거금과 다를 수 있으며, 자동매매 발주에는 영향을 주지 않습니다." />
+
+      <section className="panel">
         <h4>시뮬레이션</h4>
         <Rule label="기간" v={`${sim.start || "전체"} ~ ${sim.end || "전체"}`} />
         <Rule label="초기자본" v={`${(sim.initial_capital ?? 10_000_000).toLocaleString()}원`} />
         <Rule label="체결" v={`지연 ${sim.delay ?? 1}일 · ${sim.fill === "close" ? "당일 종가"
           : sim.fill === "typical" ? "당일 (고+저+종)/3" : "익일 시가"}`} />
         {analysisSummary && <Rule label="분석" v={analysisSummary} />}
+        {isFutures && (
+          <p className="muted small" style={{ marginTop: 8, lineHeight: 1.45 }}>
+            ⓘ 선물 레버리지·증거금률 표시는 백테스트용 카탈로그 추정값입니다. 실제 자동매매 계약수는
+            증권사가 알려주는 실시간 주문가능수량(모델 A)으로 산정됩니다.
+          </p>
+        )}
       </section>
 
       <StrategyActionBar
