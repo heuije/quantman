@@ -2196,29 +2196,37 @@ class SettingsApp:
         self._wizard_show_step(3)
 
     def _pair(self):
-        self.btn_pair.config(state="disabled")
+        # 폴링(최대 10분 승인 대기)을 취소할 수 있도록 stop_event 발급 — 버튼이 '취소'로
+        # 바뀌어 클릭 시 _cancel_pair가 이 이벤트를 set, poll_for_token이 즉시 중단한다.
+        self._pair_stop = threading.Event()
+        self.btn_pair.config(text="취소", command=self._cancel_pair)
         self.pair_msg.config(text="페어링 코드 발급 중...")
 
         def start():
             return pairing.start_pairing(socket.gethostname() or "내 PC")
 
         def started(info, err):
+            if self._pair_stop.is_set():
+                return                          # 코드 발급 중 취소됨 — 폴링 시작 안 함
             if err:
                 self.pair_msg.config(text=f"오류: {err}")
-                self.btn_pair.config(state="normal")
+                self._reset_pair_button()
                 return
             self.pair_code.config(text=info["user_code"])
             self.pair_msg.config(
-                text="브라우저에서 로그인 후 승인 버튼을 누르세요. 승인 대기 중...")
+                text="브라우저에서 로그인 후 승인 버튼을 누르세요. 승인 대기 중… ('취소'로 중단)")
             # 코드가 미리 채워진 URL로 연다(구버전 서버 대비 fallback)
             webbrowser.open(info.get("verification_uri_complete")
                             or info["verification_uri"])
 
             def poll():
-                return pairing.poll_for_token(info["device_code"])
+                return pairing.poll_for_token(info["device_code"],
+                                              stop_event=self._pair_stop)
 
             def polled(_tok, e):
-                self.btn_pair.config(state="normal")
+                if self._pair_stop.is_set():
+                    return                      # 취소됨 — _cancel_pair가 이미 UI 리셋
+                self._reset_pair_button()
                 if e:
                     self.pair_msg.config(text=f"페어링 실패: {e}")
                 else:
@@ -2227,10 +2235,27 @@ class SettingsApp:
                     self.setup_collapsed = True  # 페어링 후 자동 정상 모드 복귀
                     self._fetch_user_info_async()
                     self.refresh_status()
+                    # 온보딩 순서 '자격증명 등록 → 페어링'에서, 저장 시점엔 토큰이 없어 핸들
+                    # 스냅샷 push가 실패했다(서버 인증 불가). 페어링 완료가 토큰+자격증명이
+                    # 처음 함께 존재하는 시점이므로 여기서 핸들을 push해야 웹 '계좌에 적용'에
+                    # 계좌가 뜬다(없으면 다음 사이클·상태변경까지 0개로 안내됨).
+                    self._push_state_async()
 
             self._run_bg(poll, polled)
 
         self._run_bg(start, started)
+
+    def _cancel_pair(self):
+        """페어링 취소 — stop_event로 백그라운드 폴링을 즉시 중단하고 버튼을 복원한다.
+        '코드 발급 중' 단계에서도 동작한다(started가 stop_event를 보고 폴링을 시작하지 않음)."""
+        self._pair_stop.set()
+        self._reset_pair_button()
+        self.pair_code.config(text="")
+        self.pair_msg.config(text="페어링을 취소했습니다.")
+
+    def _reset_pair_button(self):
+        """페어링 버튼을 '시작' 상태로 복원 — 취소·실패·완료 후 공통."""
+        self.btn_pair.config(text="기기 페어링 시작", command=self._pair, state="normal")
 
     def _toggle_auto(self):
         if self.scheduler and self.scheduler.running:
