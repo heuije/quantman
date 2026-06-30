@@ -49,24 +49,34 @@ interface Row {
   date: string;
   전략: number | null;
   "Buy&Hold": number | null;
+  // T6 — 기준자본 대비 % 수익(각 시리즈 자기 첫값=0%). %/금액 토글로 표시 전환(#1 %정규화 곡선).
+  "전략%": number | null;
+  "Buy&Hold%": number | null;
   buy: number | null;
   sell: number | null;
+  buyPct: number | null;       // %모드 마커 위치(전략% 위)
+  sellPct: number | null;
   buyInfo: { sym?: string; price: number | null }[];
   sellInfo: { sym?: string; price: number | null; ret: number | null }[];
 }
 
-function ChartTooltip({ active, payload, label }:
-  { active?: boolean; payload?: { payload: Row }[]; label?: string }) {
+const pctFmt = (v: number | null | undefined) =>
+  v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+
+function ChartTooltip({ active, payload, label, pct }:
+  { active?: boolean; payload?: { payload: Row }[]; label?: string; pct?: boolean }) {
   if (!active || !payload?.length) return null;
   const row = payload[0].payload;
+  const sv = pct ? pctFmt(row["전략%"]) : won(row.전략);
+  const bv = pct ? pctFmt(row["Buy&Hold%"]) : won(row["Buy&Hold"]);
   return (
     <div style={{
       background: C.panel, border: `1px solid ${C.grid}`, borderRadius: 8,
       padding: "8px 10px", fontSize: 12, color: C.muted,
     }}>
       <div style={{ fontWeight: 600, color: C.ink, marginBottom: 4 }}>{label}</div>
-      <div>전략 {won(row.전략)}</div>
-      {row["Buy&Hold"] != null && <div>Buy&Hold {won(row["Buy&Hold"])}</div>}
+      <div>전략 {sv}</div>
+      {row["Buy&Hold"] != null && <div>Buy&Hold {bv}</div>}
       {row.buyInfo.map((b, k) => (
         <div key={`b${k}`} style={{ color: C.up, marginTop: 2 }}>
           ▲ 매수 {b.sym ? `${b.sym} ` : ""}{px(b.price)}
@@ -90,14 +100,20 @@ function EquityChart({ equity, benchmark, trades }: Props) {
   const [override, setOverride] = useState<{ trades?: Trade[]; show: boolean } | null>(null);
   const showTrades = override && override.trades === trades
     ? override.show : tradeCount <= MARKER_CAP;
+  const [pct, setPct] = useState(false);   // T6 — %수익(기준자본=0%) vs 금액. 기본=금액(기존 동작 보존).
 
   const { rows, distinctDates } = useMemo(() => {
     const idx = new Map<string, number>();
+    const v0 = equity.find((p) => p.value != null)?.value ?? null;     // 전략 기준값(첫 비결손)
+    const b0 = benchmark?.find((p) => p.value != null)?.value ?? null;  // Buy&Hold 기준값
     const merged: Row[] = equity.map((p, i) => {
       idx.set(p.date, i);
+      const bench = benchmark?.[i]?.value ?? null;
       return {
-        date: p.date, 전략: p.value, "Buy&Hold": benchmark?.[i]?.value ?? null,
-        buy: null, sell: null, buyInfo: [], sellInfo: [],
+        date: p.date, 전략: p.value, "Buy&Hold": bench,
+        "전략%": v0 && p.value != null ? (p.value / v0 - 1) * 100 : null,
+        "Buy&Hold%": b0 && bench != null ? (bench / b0 - 1) * 100 : null,
+        buy: null, sell: null, buyPct: null, sellPct: null, buyInfo: [], sellInfo: [],
       };
     });
 
@@ -108,10 +124,12 @@ function EquityChart({ equity, benchmark, trades }: Props) {
         const si = idx.get(t["청산일"] as string);
         if (bi != null) {
           merged[bi].buy = merged[bi].전략;            // 마커는 그날 자산곡선 값 위에
+          merged[bi].buyPct = merged[bi]["전략%"];      // %모드에선 전략% 위에
           merged[bi].buyInfo.push({ sym, price: (t["진입가"] as number) ?? null });
         }
         if (si != null) {
           merged[si].sell = merged[si].전략;
+          merged[si].sellPct = merged[si]["전략%"];
           merged[si].sellInfo.push({
             sym, price: (t["청산가"] as number) ?? null,
             ret: (t["수익률(%)"] as number) ?? null,
@@ -162,39 +180,50 @@ function EquityChart({ equity, benchmark, trades }: Props) {
     v >= 1e8 ? `${(v / 1e8).toFixed(1)}억`
       : v >= 1e4 ? `${Math.round(v / 1e4)}만` : `${v}`;
 
+  const stratKey = pct ? "전략%" : "전략";
+  const benchKey = pct ? "Buy&Hold%" : "Buy&Hold";
+  const buyKey = pct ? "buyPct" : "buy";
+  const sellKey = pct ? "sellPct" : "sell";
   return (
     <div>
-      {hasTrades && (
-        <label style={{
-          display: "flex", alignItems: "center", gap: 6, fontSize: 12,
-          color: C.muted, marginBottom: 6, cursor: "pointer", userSelect: "none",
-        }}>
-          <input type="checkbox" checked={showTrades}
-                 onChange={(e) => setOverride({ trades, show: e.target.checked })} />
-          거래 표시 (매수 ▲ · 매도 ▼)
-          {tradeCount > MARKER_CAP && (
-            <span>— 거래 {tradeCount.toLocaleString()}건이라 기본 꺼짐</span>
-          )}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 14, fontSize: 12,
+        color: C.muted, marginBottom: 6, flexWrap: "wrap",
+      }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+          <input type="checkbox" checked={pct} onChange={(e) => setPct(e.target.checked)} />
+          % 수익 (기준자본 = 0%)
         </label>
-      )}
+        {hasTrades && (
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
+            <input type="checkbox" checked={showTrades}
+                   onChange={(e) => setOverride({ trades, show: e.target.checked })} />
+            거래 표시 (매수 ▲ · 매도 ▼)
+            {tradeCount > MARKER_CAP && (
+              <span>— 거래 {tradeCount.toLocaleString()}건이라 기본 꺼짐</span>
+            )}
+          </label>
+        )}
+      </div>
       <ResponsiveContainer width="100%" height={280}>
         <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
           <CartesianGrid stroke={C.grid} />
           <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={50} />
-          <YAxis tickFormatter={fmt} tick={{ fontSize: 11 }} width={52} />
-          <Tooltip content={<ChartTooltip />} />
+          <YAxis tickFormatter={pct ? (v) => `${Math.round(Number(v))}%` : fmt}
+                 tick={{ fontSize: 11 }} width={52} />
+          <Tooltip content={<ChartTooltip pct={pct} />} />
           <Legend />
-          <Line type="monotone" dataKey="전략" stroke={C.accent}
+          <Line type="monotone" dataKey={stratKey} name="전략" stroke={C.accent}
                 dot={false} strokeWidth={2} isAnimationActive={false} />
-          <Line type="monotone" dataKey="Buy&Hold" stroke={C.muted}
+          <Line type="monotone" dataKey={benchKey} name="Buy&Hold" stroke={C.muted}
                 dot={false} strokeWidth={1.5} strokeDasharray="4 3"
                 isAnimationActive={false} />
           {hasTrades && showTrades && (
-            <Scatter name="매수" dataKey="buy" fill={C.up}
+            <Scatter name="매수" dataKey={buyKey} fill={C.up}
                      shape={<BuyMarker />} legendType="triangle" isAnimationActive={false} />
           )}
           {hasTrades && showTrades && (
-            <Scatter name="매도" dataKey="sell" fill={C.down}
+            <Scatter name="매도" dataKey={sellKey} fill={C.down}
                      shape={<SellMarker />} legendType="triangle" isAnimationActive={false} />
           )}
         </ComposedChart>

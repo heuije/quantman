@@ -21,8 +21,8 @@ from sqlmodel import Session, select
 from ..models import ChatTurnMetric, Conversation, Message
 from ..serialize import clean_json
 from .context import attach_context
-from .tools import (TOOL_SCHEMAS, compact_summary, run_adjust, run_simulate, run_tool,
-                    save_strategy_tool)
+from .tools import (TOOL_SCHEMAS, attach_methodology, compact_summary, run_adjust, run_simulate,
+                    run_tool, save_strategy_tool)
 from .prompt import chat_system_prompt
 
 _log = logging.getLogger("app.chat.agent")
@@ -325,6 +325,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                         full.update(classify_status(full))
                     except Exception:   # noqa: BLE001 — 품질 주석 실패가 대화를 깨면 안 됨
                         _log.exception("[chat] classify_status 실패 conv=%s", conversation_id)
+                full = attach_methodology(full)   # 백테스트면 structured 방법론 동봉(웹 패널·#7·#1)
                 if isinstance(full, dict):
                     worst_status = _worse(worst_status, full.get("status"))
                 assistant_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": inp})

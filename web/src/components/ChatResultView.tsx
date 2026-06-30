@@ -21,7 +21,7 @@ import {
   CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { Link } from "react-router-dom";
-import { useState, type ReactElement } from "react";
+import { Fragment, useState, type ReactElement } from "react";
 import EquityChart from "./EquityChart";
 import ExcelExportButton from "./ExcelExportButton";
 import ParamControls, { type AdjustableParam } from "./ParamControls";
@@ -55,7 +55,56 @@ interface Props {
 }
 
 // inspect 원시 시계열 — 컬럼별 라인. recharts SVG는 CSS var 불가라 토큰값 직접 인라인(EquityChart와 동기).
-const INSPECT_COLORS = ["#d4a738", "#1668c4", "#de3033", "#8b94a3"];
+const INSPECT_COLORS = ["#d4a738", "#1668c4", "#de3033", "#8b94a3", "#e0b958", "#2ea65a"];
+
+const inspectFmt = (v: number) =>
+  Math.abs(v) >= 1e4 ? Math.round(v).toLocaleString()
+    : Math.abs(v) >= 1 ? v.toFixed(1) : v.toFixed(3);
+
+// 컬럼 대표 크기(중앙값 절대값의 자릿수) — 이질 스케일 분리 기준(T5 #6·#9c).
+function magOrder(vals: (number | null)[]): number {
+  const abs = vals.filter((v): v is number => v != null && !Number.isNaN(v) && v !== 0).map(Math.abs);
+  if (abs.length === 0) return 0;
+  abs.sort((a, b) => a - b);
+  return Math.round(Math.log10(abs[Math.floor(abs.length / 2)]));
+}
+
+// 크기 차가 ~100x(2자릿수) 넘는 컬럼은 별도 패널로 분리 — 한 축에 종가(~3만)+RSI(0~100)+거래량을
+// 겹쳐 RSI·이동평균이 납작하게 깔려 안 보이던 단일축 한계(#6·#9c)를 닫는다.
+function scaleGroups(columns: string[], series: Record<string, (number | null)[]>): string[][] {
+  const ord = new Map(columns.map((c) => [c, magOrder(series[c] ?? [])] as const));
+  const sorted = [...columns].sort((a, b) => ord.get(a)! - ord.get(b)!);
+  const groups: string[][] = [];
+  for (const c of sorted) {
+    const g = groups[groups.length - 1];
+    if (g && Math.abs(ord.get(g[0])! - ord.get(c)!) <= 1) g.push(c);   // ~10x 이내 → 같은 패널
+    else groups.push([c]);
+  }
+  return groups;
+}
+
+// 한 스케일 패널 — 같은 자릿수대 컬럼만 한 축에. colorOf로 색을 원본 컬럼순서에 고정(범례 일관).
+function InspectPanel({ data, columns, height, colorOf }: {
+  data: Record<string, string | number | null>[];
+  columns: string[]; height: number; colorOf: (c: string) => string;
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 8 }}>
+        <CartesianGrid stroke="#2b323e" />
+        <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={48} />
+        <YAxis tick={{ fontSize: 10 }} width={52} domain={["auto", "auto"]}
+               tickFormatter={(v) => inspectFmt(Number(v))} />
+        <Tooltip formatter={(v) => (v == null ? "—" : inspectFmt(Number(v)))} />
+        {columns.length > 1 && <Legend />}
+        {columns.map((c) => (
+          <Line key={c} type="monotone" dataKey={c} stroke={colorOf(c)}
+                dot={false} strokeWidth={1.8} connectNulls isAnimationActive={false} />
+        ))}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
 
 function InspectChart({ result }: Props) {
   const symbol = (result.symbol as string) ?? "";
@@ -67,29 +116,18 @@ function InspectChart({ result }: Props) {
     for (const c of columns) row[c] = series[c]?.[i] ?? null;
     return row;
   });
-  const fmtNum = (v: number) =>
-    Math.abs(v) >= 1e4 ? Math.round(v).toLocaleString()
-      : Math.abs(v) >= 1 ? v.toFixed(1) : v.toFixed(3);
+  const colorOf = (c: string) => INSPECT_COLORS[columns.indexOf(c) % INSPECT_COLORS.length];
+  const groups = scaleGroups(columns, series);
   return (
     <div className="chat-result">
       <div className="muted" style={{ fontSize: "0.8em", marginBottom: 4 }}>
         {symbol} · {dates[0]}~{dates[dates.length - 1]} ({dates.length}일)
+        {groups.length > 1 ? " · 스케일이 달라 패널 분리" : ""}
       </div>
-      <ResponsiveContainer width="100%" height={200}>
-        <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 8 }}>
-          <CartesianGrid stroke="#2b323e" />
-          <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={48} />
-          <YAxis tick={{ fontSize: 10 }} width={52} domain={["auto", "auto"]}
-                 tickFormatter={(v) => fmtNum(Number(v))} />
-          <Tooltip formatter={(v) => (v == null ? "—" : fmtNum(Number(v)))} />
-          {columns.length > 1 && <Legend />}
-          {columns.map((c, i) => (
-            <Line key={c} type="monotone" dataKey={c}
-                  stroke={INSPECT_COLORS[i % INSPECT_COLORS.length]}
-                  dot={false} strokeWidth={1.8} connectNulls isAnimationActive={false} />
-          ))}
-        </LineChart>
-      </ResponsiveContainer>
+      {groups.map((cols, gi) => (
+        <InspectPanel key={gi} data={data} columns={cols} colorOf={colorOf}
+                      height={groups.length > 1 ? 150 : 200} />
+      ))}
     </div>
   );
 }
@@ -161,11 +199,22 @@ function EventStudy({ result }: { result: IrStrategyResult }) {
     <td className={p != null && p < 0.05 ? "pos" : ""}>{p != null ? p.toFixed(4) : "—"}</td>);
   const basisLabel = { close: "종가→종가", intraday: "시가→종가(당일)", excess: "시장초과" }[
     result.basis ?? "close"] ?? "종가→종가";
+  // T7 — 풀 구성 분해(종목 상위·연도범위)를 표면화해 'n=수천 무차별 pooling'(#4c)을 투명화.
+  const comp = result.composition;
+  const bySym = comp?.by_symbol ? Object.entries(comp.by_symbol) : [];
+  const byYear = comp?.by_year ? Object.keys(comp.by_year) : [];
   return (
     <div className="chat-result">
       <div className="muted" style={{ fontSize: "0.8em", marginBottom: 4 }}>
         이벤트 분석 — 총 {result.n_events ?? 0}건 · 기준 {basisLabel} (forward 수익, 손익 아님)
       </div>
+      {bySym.length > 0 && (
+        <div className="muted" style={{ fontSize: "0.78em", marginBottom: 6 }}>
+          구성: {bySym.slice(0, 5).map(([s, n]) => `${s} ${n}건`).join(" · ")}
+          {bySym.length > 5 ? ` 외 ${bySym.length - 5}종목` : ""}
+          {byYear.length > 0 ? ` · ${byYear[0]}~${byYear[byYear.length - 1]}` : ""}
+        </div>
+      )}
       <EventStudyChart windows={windows} overall={overall} />
       <div style={{ overflowX: "auto" }}>
         <table className="sweep-table">
@@ -470,6 +519,38 @@ function StatusBanner({ status, verdict }: { status: string; verdict?: string })
   );
 }
 
+// Wave 2 T2 — 분석 방법(provenance.ir_summary) 패널. 사용자가 백테스트 로직(기간·기준자본·종목·
+// 방향·사이징·진입/청산·체결가정)을 보고 결과를 직접 검증하게 한다(증상 #7·#1). 사실 출처는 core
+// execution_summary 단일(서버 attach_methodology가 붙임 — TS에 가정값 중복 없음). DESIGN var 토큰.
+function MethodologyPanel({ m }: { m: NonNullable<IrStrategyResult["methodology"]> }) {
+  const items = [...(m.confirmed ?? []), ...(m.assumed ?? [])];
+  const cap = m.initial_capital != null ? Math.round(m.initial_capital).toLocaleString() : null;
+  const head = [m.period ? `기간 ${m.period}` : null, cap ? `기준자본 ${cap}원` : null]
+    .filter(Boolean).join(" · ");
+  if (items.length === 0 && !head) return null;
+  return (
+    <details className="chat-methodology" style={{
+      border: "1px solid var(--border)", background: "var(--panel)",
+      borderRadius: 8, padding: "6px 10px", marginBottom: 8, fontSize: 12.5,
+    }}>
+      <summary style={{ cursor: "pointer", color: "var(--accent-strong)", fontWeight: 600 }}>
+        분석 방법{head ? ` · ${head}` : ""}
+      </summary>
+      <div style={{
+        display: "grid", gridTemplateColumns: "auto 1fr", gap: "3px 10px",
+        marginTop: 6, color: "var(--text)",
+      }}>
+        {items.map((it, i) => (
+          <Fragment key={i}>
+            <span style={{ color: "var(--muted)" }}>{it.label}</span>
+            <span>{it.value}</span>
+          </Fragment>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function ChatResultBody({ result }: Props) {
   const r = result as unknown as IrStrategyResult;
 
@@ -492,10 +573,13 @@ function ChatResultBody({ result }: Props) {
   const banner = status && status !== "ok"
     ? <StatusBanner status={status} verdict={(r as { verdict?: string }).verdict} /> : null;
 
+  // T2 자기서술 — 백테스트면 방법론 패널(배너 다음·차트 위). 서버가 backtest 결과에만 붙인다.
+  const method = r.methodology ? <MethodologyPanel m={r.methodology} /> : null;
+
   // 형상 레지스트리 단일 조회 — 엔진 스탬프(result.shape) 우선, 미스탬프는 deriveShape 폴백.
   const shape = (r as { shape?: string }).shape ?? deriveShape(r);
   const renderer = RENDERERS[shape];
-  if (renderer) return <>{banner}{renderer(result)}</>;
+  if (renderer) return <>{banner}{method}{renderer(result)}</>;
 
   // fallback: 오류 메시지 or 완료 칩. 배너가 있으면(비ok) 가짜 "분석 완료"를 보이지 않는다.
   if (r.success === false && r.error) {

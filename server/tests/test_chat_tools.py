@@ -200,6 +200,29 @@ def test_serialize_preserves_event_composition():
     assert out.get("composition", {}).get("by_symbol", {}).get("AAA") == 2
 
 
+def test_attach_methodology_for_backtest():
+    """T2: 백테스트 결과에 structured 방법론(기간·기준자본·confirmed/assumed)이 붙어 웹이 패널 렌더."""
+    res = {"success": True, "shape": "simulate", "ir": _BT_IR,
+           "equity": [{"date": "2015-01-02", "value": 100.0},
+                      {"date": "2024-12-30", "value": 150.0}],
+           "metrics": {"cagr": 3.0}}
+    out = chat_tools.attach_methodology(res)
+    m = out["methodology"]
+    assert m["period"] == "2015-01-02~2024-12-30"
+    assert m["initial_capital"] == 100_000_000          # 기본 1억(#3)
+    labels = {d["label"] for d in m["confirmed"]}
+    assert "방향" in labels and "사이징" in labels
+    assert m["assumed"]                                  # 수수료·슬리피지 등 가정
+
+
+def test_attach_methodology_skips_non_backtest():
+    res = {"success": True, "shape": "select", "ir": {"universe": {"kind": "all"},
+           "signal": {"op": "data", "params": {"ref": "x"}}, "query": "select",
+           "select": {"top_n": 3}}}
+    out = chat_tools.attach_methodology(res)
+    assert "methodology" not in out                      # 스크린은 방법론 패널 미부착
+
+
 def test_load_dataset_invalid_ir_returns_empty():
     # 파싱 불가 IR(필수 signal 없음) → {} 반환(엔진 검증경로로 위임), 예외 전파 안 함.
     assert chat_tools._load_dataset({}) == {}

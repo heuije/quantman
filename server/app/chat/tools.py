@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from quant_core.ir_engine import (StrategyIR, needed_columns, needed_symbols,
                                    param_manifest, result_shape, strategy_from_spec,
                                    summarize_result)
-from quant_core.ir_engine.execution_summary import methodology_brief
+from quant_core.ir_engine.execution_summary import execution_summary, methodology_brief
 
 from ..compile_service import compile_strategy
 from ..models import Message
@@ -534,6 +534,30 @@ def _methodology_header(result: dict) -> str:
         return ""
     line = methodology_brief(ir, _equity_period(result))
     return f"{line}\n" if line else ""
+
+
+def attach_methodology(result: dict) -> dict:
+    """백테스트 결과에 structured 방법론(execution_summary 4분류 + 기간 + 기준자본)을 붙여 **웹이
+    방법론 패널을 렌더**하게 한다 — provenance.ir_summary의 사용자 표면(증상 #7·#1). 사실 출처는
+    core execution_summary 단일(TS에 가정값·로직 중복 금지 → 드리프트 방지). 비백테스트·IR 없음은
+    무동작. 주석 실패가 결과를 깨지 않도록 격리(best-effort)."""
+    if not isinstance(result, dict):
+        return result
+    ir = result.get("ir")
+    if not isinstance(ir, dict) or result_shape(result) not in ("simulate", "sweep"):
+        return result
+    try:
+        spec = execution_summary(ir)
+        cap = StrategyIR.model_validate(ir).simulation.initial_capital
+    except Exception:   # noqa: BLE001 — 방법론 주석 실패가 결과를 깨면 안 됨
+        return result
+    result["methodology"] = {
+        "period": _equity_period(result),
+        "initial_capital": cap,
+        "confirmed": spec.get("confirmed") or [],
+        "assumed": spec.get("assumed") or [],
+    }
+    return result
 
 
 def _status_header(result: dict) -> str:
