@@ -242,11 +242,12 @@ def _backfill_kr_fundamentals_chunk() -> None:
     from quant_core.data.feeds import fundamental_kr
     codes = data_fetcher.load_managed_kr_codes()
     yr = datetime.now().year
-    # 과거 PER/밸류 이력 백필 — 10년치(2016~·한 경기순환 포함). fetch_one이 종목 parquet을
-    # 덮어쓰므로 전체 범위를 한 번에 받아 이력을 보존한다(과거엔 [yr-1,yr]만 받아 2년치로 잘려
-    # 과거 PER이 ~2년 전부터만 = 데이터 분열 뿌리①의 한 증상). fresh_days=80·종목별 원자기록·
-    # OpenDART 한도(020) 자동스로틀로 한도(~20k콜/일) 내에서 ~2주에 걸쳐 점진 채움.
-    res = fundamental_kr.fetch(codes, list(range(yr - 10, yr + 1)), budget_calls=1500)
+    # 과거 PER/밸류 이력 백필 — OpenDART 바닥 2015까지(yr-11·한 경기순환 포함). fetch_one이 종목
+    # parquet을 덮어쓰므로 전체 범위를 한 번에 받아 이력을 보존한다(과거엔 [yr-1,yr]만 받아 2년치로
+    # 잘려 과거 PER이 ~2년 전부터만 = 데이터 분열 뿌리①의 한 증상). 2010~14는 무료 OpenDART에 없어
+    # 2015가 바닥. fresh_days=80·종목별 원자기록·OpenDART 한도(020) 자동스로틀로 한도(~20k콜/일)
+    # 내에서 ~2주에 걸쳐 점진 채움.
+    res = fundamental_kr.fetch(codes, list(range(yr - 11, yr + 1)), budget_calls=1500)
     if res.get("ok") or res.get("empty") or res.get("rate_limited"):   # 진행/한도 있을 때만 로그(무작업 폴 침묵)
         _log.info("KR 펀더멘털 백필 청크(OpenDART): %s", res)
 
@@ -294,7 +295,7 @@ def _initial_kr_fundamentals_refresh():
 
 
 # ── 애널 컨센서스(한경, 무로그인) ─────────────────────────────────────────────
-_CONSENSUS_BACKFILL_START = "20150101"     # 한경 컨센서스 소급 가능 최소 시점(~11년)
+_CONSENSUS_BACKFILL_START = "20100101"     # 완결 일관 데이터셋 floor(한경은 2006까지 제공·프로브 검증, 2010로 통일)
 _CONSENSUS_WINDOW_DAYS = 90                 # 백필 1청크 윈도우(역순)
 
 
@@ -361,7 +362,7 @@ def _backfill_flow_chunk() -> None:
     from quant_core import data_fetcher
     from quant_core.data.feeds import flow_kr
     codes = data_fetcher.load_managed_kr_codes()
-    res = flow_kr.fetch(codes, "20140101", date.today().strftime("%Y%m%d"),
+    res = flow_kr.fetch(codes, "20100101", date.today().strftime("%Y%m%d"),
                         budget_symbols=120, fresh_days=999999)
     if not res.get("inactive") and (res.get("ok") or res.get("fail")):
         _log.info("[altdata] KR 수급 백필 청크(pykrx): %s", res)
@@ -390,6 +391,108 @@ def _initial_flow_refresh():
         _backfill_flow_chunk()
     except Exception:
         _log.exception("KR 수급 초기 청크 예외 — 10분 cron 재시도")
+
+
+# ── KR OHLCV 깊이 백필(FDR, 무키) ─────────────────────────────────────────────
+
+def _backfill_kr_ohlcv_chunk() -> None:
+    """KR OHLCV 깊이 백필 청크(10분) — 기존 종목을 2010까지 소급 prepend.
+
+    일일 dataset_kr fetch는 기존 parquet을 *앞으로만* 증분하므로 2010~2014 과거가
+    안 채워진다. 이 백필이 그 갭만 메운다(종목별 1회 + depth-done 마커로 완료 시 0비용)."""
+    from quant_core import data_fetcher
+    codes = data_fetcher.load_managed_kr_codes()
+    res = data_fetcher.backfill_korean_stocks_depth(codes, floor="2010-01-01",
+                                                    budget_symbols=150)
+    if res.get("deepened") or res.get("fail"):
+        _log.info("KR OHLCV 깊이 백필 청크(FDR): %s", res)
+
+
+def _initial_kr_ohlcv_backfill():
+    try:
+        time.sleep(100)            # dataset 초기 갱신 이후 — 외부 호출 분산 (모듈 time 사용)
+        _log.info("KR OHLCV 깊이 백필 초기 청크 시작")
+        _backfill_kr_ohlcv_chunk()
+    except Exception:
+        _log.exception("KR OHLCV 깊이 백필 초기 청크 예외 — 10분 cron 재시도")
+
+
+# ── KR 시장지표 (공식 KRX Open API, KRX_API_KEY) ──────────────────────────────
+# V-KOSPI·옵션풋콜비율·KRX채권지수·국고채3/10년 = 매크로형 명명 시계열. 날짜축 cursor 백필
+# (컨센서스 패턴). 가벼운 지표(3서비스)는 넓은 윈도우, 옵션 풋콜(하루 ~19k행)은 좁은 윈도우.
+_KRX_BACKFILL_FLOOR = "20100101"
+_KRX_LIGHT_WINDOW_DAYS = 90
+_KRX_PUTCALL_WINDOW_DAYS = 4        # 옵션 무거움(timeout 90s) — 좁게
+
+
+def _krx_cursor_path(name: str):
+    from quant_core import data_fetcher
+    return data_fetcher.DATA_DIR / f"_krx_{name}.cursor"
+
+
+def _krx_backfill(name: str, window_days: int, fetch_fn) -> None:
+    """공식 KRX API 날짜축 cursor 백필 — today→2010 역순 1청크. 성공 시만 cursor 전진."""
+    from datetime import date, datetime, timedelta
+    from quant_core.data.feeds import krx_openapi
+    if not krx_openapi.is_active():
+        return
+    cur = _krx_cursor_path(name)
+    cur.parent.mkdir(parents=True, exist_ok=True)
+    end = (datetime.strptime(cur.read_text().strip(), "%Y%m%d").date()
+           if cur.exists() else date.today())
+    floor = datetime.strptime(_KRX_BACKFILL_FLOOR, "%Y%m%d").date()
+    if end <= floor:
+        return                                       # 백필 완료 — 무비용
+    start = max(floor, end - timedelta(days=window_days))
+    res = fetch_fn(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+    if not res.get("ok"):
+        _log.warning("[altdata] KRX %s 백필 실패(%s~%s) — cursor 유지·재시도", name, start, end)
+        return
+    cur.write_text(start.strftime("%Y%m%d"))
+    _log.info("[altdata] KRX %s 백필 청크 %s~%s: %s", name, start, end, res.get("saved"))
+
+
+def _backfill_krx_market_chunk() -> None:
+    from quant_core.data.feeds import krx_openapi
+    _krx_backfill("market", _KRX_LIGHT_WINDOW_DAYS, krx_openapi.fetch_market_indicators)
+
+
+def _backfill_krx_putcall_chunk() -> None:
+    from quant_core.data.feeds import krx_openapi
+    _krx_backfill("putcall", _KRX_PUTCALL_WINDOW_DAYS, krx_openapi.fetch_putcall)
+
+
+def _backfill_krx_etf_chunk() -> None:
+    from quant_core.data.feeds import krx_openapi
+    _krx_backfill("etf", _KRX_LIGHT_WINDOW_DAYS, krx_openapi.fetch_etf_flow)
+
+
+def _refresh_krx_market() -> None:
+    """일일 증분 — 최근 7일 재수집(공식 KRX API는 T+1 08시 갱신)·캐시 attach."""
+    from datetime import date, timedelta
+    from quant_core.data.feeds import krx_openapi
+    if not krx_openapi.is_active():
+        return
+    end = date.today()
+    s = (end - timedelta(days=7)).strftime("%Y%m%d")
+    e = end.strftime("%Y%m%d")
+    r1 = krx_openapi.fetch_market_indicators(s, e)
+    r2 = krx_openapi.fetch_putcall(s, e)
+    r3 = krx_openapi.fetch_etf_flow(s, e)
+    data_cache.invalidate()
+    _log.info("[altdata] KRX 시장지표 증분 %s~%s: light=%s pc=%s etf=%s",
+              s, e, r1.get("saved"), r2.get("saved"), r3.get("saved"))
+
+
+def _initial_krx_market_refresh():
+    try:
+        time.sleep(110)
+        _log.info("KRX 시장지표(공식API) 초기 백필 청크 시작")
+        _backfill_krx_market_chunk()
+        _backfill_krx_etf_chunk()
+        _backfill_krx_putcall_chunk()
+    except Exception:
+        _log.exception("KRX 시장지표 초기 청크 예외 — 10분 cron 재시도")
 
 
 def _initial_technical_refresh():
@@ -925,6 +1028,32 @@ def _build_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=16, minute=30),
         id="flow_daily", replace_existing=True)
 
+    # KR OHLCV 깊이 백필(FDR, 무키) — 10분 청크로 기존 종목을 2010까지 소급 prepend.
+    # 일일 dataset_kr 증분은 앞으로만 가서 과거를 못 채움 → 별도 백필이 그 갭만 메움(완료 시 0비용).
+    scheduler.add_job(
+        lambda: _run_with_retry("kr_ohlcv_depth", _backfill_kr_ohlcv_chunk, scheduler),
+        CronTrigger(minute="7-59/10"),           # :07,:17… — fund(*/10)·consensus(2)·flow(5)와 스태거
+        id="kr_ohlcv_depth", replace_existing=True)
+
+    # KR 시장지표(공식 KRX API, KRX_API_KEY) — 10분 청크 백필(가벼운 지표 넓게·옵션 풋콜 좁게)
+    # + 09:30 일일 증분. KRX_API_KEY 미설정이면 feed가 no-op(무영향).
+    scheduler.add_job(
+        lambda: _run_with_retry("krx_market_chunk", _backfill_krx_market_chunk, scheduler),
+        CronTrigger(minute="8-59/10"),           # :08,:18… 스태거
+        id="krx_market_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("krx_putcall_chunk", _backfill_krx_putcall_chunk, scheduler),
+        CronTrigger(minute="4-59/10"),           # :04,:14… 스태거 (옵션 무거움·좁은 윈도우)
+        id="krx_putcall_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("krx_etf_chunk", _backfill_krx_etf_chunk, scheduler),
+        CronTrigger(minute="6-59/10"),           # :06,:16… 스태거 (ETF AUM/flow)
+        id="krx_etf_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("krx_market_daily", _refresh_krx_market, scheduler),
+        CronTrigger(hour=9, minute=30),          # 공식 KRX API T+1 08시 갱신 후
+        id="krx_market_daily", replace_existing=True)
+
     # 일요일 08:00 — 미국 S&P500 시가총액 (fast_info). 분기 변동 낮아 주1회.
     scheduler.add_job(
         lambda: _run_with_retry("us_market_caps", _refresh_us_market_caps, scheduler),
@@ -977,6 +1106,10 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_consensus_refresh, daemon=True).start()
     _log.info("KR 수급(pykrx) 초기 백필 thread 시작")
     threading.Thread(target=_initial_flow_refresh, daemon=True).start()
+    _log.info("KR OHLCV 깊이 백필 초기 thread 시작")
+    threading.Thread(target=_initial_kr_ohlcv_backfill, daemon=True).start()
+    _log.info("KRX 시장지표(공식API) 초기 백필 thread 시작")
+    threading.Thread(target=_initial_krx_market_refresh, daemon=True).start()
     _log.info("기술적 지표 초기 fetch thread 시작")
     threading.Thread(target=_initial_technical_refresh, daemon=True).start()
     _log.info("정적 메타 초기 fetch thread 시작 (섹터·상장폐지일)")

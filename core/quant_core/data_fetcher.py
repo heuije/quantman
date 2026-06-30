@@ -135,9 +135,16 @@ MACRO_OTHER = ["암호화폐공포탐욕"]
 MACRO_DERIVED = ["VIX 기간구조", "구리금비율", "회사채신용스프레드",
                  "버핏지수", "실질기준금리"]
 
+# KR 시장지표 — 공식 KRX Open API(data/feeds/krx_openapi.py)가 수집. fetch_all 아님.
+MACRO_KRX_SYMBOLS = ["코스피200변동성지수", "옵션풋콜비율", "KRX채권지수",
+                     "국고채3년", "국고채10년",
+                     "코스피200선물미결제약정", "코스닥150선물미결제약정",
+                     "KRETF순자산총액", "KRETF순자금유입"]
+
 ASSET_SYMBOLS = list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + ["비트코인"] + CSV_SEEDED_FUTURES
 MACRO_SYMBOLS = (list(MACRO_YF_SYMBOLS) + list(MACRO_FRED_SYMBOLS)
-                 + list(MACRO_FRED_LAGGED) + MACRO_OTHER + MACRO_DERIVED)
+                 + list(MACRO_FRED_LAGGED) + MACRO_OTHER + MACRO_DERIVED
+                 + MACRO_KRX_SYMBOLS)
 ALL_SYMBOLS = ASSET_SYMBOLS + MACRO_SYMBOLS
 
 # 종목 카테고리 — 조건 빌더 UI에서 종목 목록을 그룹화하기 위한 분류.
@@ -171,6 +178,13 @@ SYMBOL_CATEGORY: dict[str, str] = {
     "구리금비율": "거시지표", "버핏지수": "거시지표",
     # 심리
     "암호화폐공포탐욕": "심리",
+    "옵션풋콜비율": "심리",
+    "코스피200선물미결제약정": "심리", "코스닥150선물미결제약정": "심리",
+    "KRETF순자금유입": "심리",
+    # KR 시장지표 (공식 KRX API)
+    "코스피200변동성지수": "변동성",
+    "KRX채권지수": "금리·환율", "국고채3년": "금리·환율", "국고채10년": "금리·환율",
+    "KRETF순자산총액": "거시지표",
 }
 
 
@@ -556,7 +570,7 @@ def fetch_fdr(symbol_name: str, ticker: str, start: str = "2010-01-01") -> pd.Da
         return existing
 
 
-def fetch_korean_stocks(codes: list[str], start: str = "2015-01-01",
+def fetch_korean_stocks(codes: list[str], start: str = "2010-01-01",
                          verbose: bool = False) -> dict[str, int]:
     """한국 거래소 종목 OHLC 일괄 수집 (FinanceDataReader, KRX 직접 소스).
 
@@ -576,7 +590,9 @@ def fetch_korean_stocks(codes: list[str], start: str = "2015-01-01",
 
     Args:
         codes: KRX 종목 코드 리스트 (6자리)
-        start: 새 종목 첫 fetch 시 시작일. 기존 parquet 있으면 무시되고 이어받음.
+        start: 새 종목 첫 fetch 시 시작일(기본 2010 — 깊은 이력). 기존 parquet 있으면
+            무시되고 *앞으로만* 이어받음 → 기존 종목의 floor 이전 과거 소급은
+            backfill_korean_stocks_depth가 담당(증분은 과거를 못 채우므로).
     Returns:
         {"ok": int, "skip": int, "fail": int} — count 통계만
     """
@@ -644,6 +660,85 @@ def fetch_korean_stocks(codes: list[str], start: str = "2015-01-01",
     if n_ok:
         mark_data_dirty()       # 데이터 변경 — 라이브 캐시 자가 리로드 신호
     return {"ok": n_ok, "skip": n_skip, "fail": n_fail}
+
+
+# ── KR OHLCV 깊이 백필: 기존 종목을 floor(2010)까지 소급 prepend ────────────────
+# 일일 fetch_korean_stocks는 기존 parquet을 *앞으로만* 증분 append하므로(증분 시작점=
+# 마지막 보유일+1) 이미 데이터가 있는 종목의 floor 이전 과거는 영영 안 채워진다. 이 백필이
+# 그 갭만 메운다. depth-done 마커로 완료 종목을 영구 skip → 완주 시 네트워크 0비용
+# (펀더멘털·flow의 freshness skip, 컨센서스 cursor와 같은 '완료=무비용' 성질).
+
+def _kr_ohlcv_depth_marker() -> Path:
+    return DATA_DIR / "_kr_ohlcv_depth_done.json"
+
+
+def _load_depth_done() -> set[str]:
+    p = _kr_ohlcv_depth_marker()
+    if p.exists():
+        try:
+            return set(json.loads(p.read_text(encoding="utf-8")))
+        except Exception:
+            return set()
+    return set()
+
+
+def _save_depth_done(done: set[str]) -> None:
+    _kr_ohlcv_depth_marker().write_text(
+        json.dumps(sorted(done), ensure_ascii=False), encoding="utf-8")
+
+
+def backfill_korean_stocks_depth(codes: list[str], floor: str = "2010-01-01",
+                                 budget_symbols: int = 150,
+                                 verbose: bool = False) -> dict[str, int]:
+    """기존 KR 종목 OHLCV 깊이를 floor까지 **소급(prepend)**.
+
+    종목별: 최저일 <= floor면 이미 깊음 / 없으면 floor~(최저일-1)을 1회 받아 merge·prepend.
+    빈 결과 = 상장이 floor 이후(genuine, 더 깊이 불가) → 마커. 네트워크 예외 = 마커 안 함(재시도).
+    budget_symbols = 한 청크에서 실제 fetch 시도 종목 수 상한(*/10분 청크 분할·재개).
+    """
+    floor_ts = pd.to_datetime(floor)
+    done = _load_depth_done()
+    n_deepened = n_young = n_fail = 0
+    attempted = 0
+    for code in codes:
+        if attempted >= budget_symbols:
+            break
+        if code in done:
+            continue
+        existing = _load_existing(code)
+        if existing.empty:
+            done.add(code)                      # 신규 — 일일 fetch가 floor부터 직접 받음
+            continue
+        if existing.index.min() <= floor_ts:
+            done.add(code)                      # 이미 충분히 깊음
+            continue
+        attempted += 1
+        end = (existing.index.min() - timedelta(days=1)).strftime("%Y-%m-%d")
+        try:
+            df = fdr.DataReader(code, floor, end)
+        except Exception as e:
+            n_fail += 1
+            if verbose:
+                print(f"  {code}: 깊이백필 오류 {e}")
+            continue                            # 마커 안 함 → 다음 청크 재시도
+        if df is None or df.empty:
+            done.add(code)                      # 상장이 floor 이후 — 더 깊이 불가
+            n_young += 1
+            continue
+        cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        df = df[cols].copy()
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        merged = _merge(existing, df)
+        _save(code, merged)
+        n_deepened += 1
+        if merged.index.min() <= floor_ts:
+            done.add(code)                      # floor 도달
+        # else: FDR이 한 번에 floor까지 못 줌(드묾) — 마커 보류, 다음 청크 계속
+    _save_depth_done(done)
+    if n_deepened:
+        mark_data_dirty()
+    return {"deepened": n_deepened, "young": n_young, "fail": n_fail,
+            "done_total": len(done)}
 
 
 # ── 자동 관리 종목 목록 ───────────────────────────────────────────────────────
