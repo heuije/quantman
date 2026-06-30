@@ -1125,6 +1125,8 @@ def _run_event_study(strategy: StrategyIR, dataset: dict) -> dict:
     start_ts = pd.Timestamp(sim.start) if sim.start is not None else None
     end_ts = pd.Timestamp(sim.end) if sim.end is not None else None
     collected: dict[int, list] = {w: [] for w in windows}   # w → [(end, mae, mfe, regime)]
+    by_symbol: dict[str, int] = defaultdict(int)   # 구성 분해 — 어느 종목서 몇 이벤트(#4c 무차별 pooling 투명화)
+    by_year: dict[int, int] = defaultdict(int)     # 구성 분해 — 어느 해서 몇 이벤트(시기 편중 투명화)
     n_events = 0
     for sym in syms:
         df = dataset.get(sym)
@@ -1145,6 +1147,8 @@ def _run_event_study(strategy: StrategyIR, dataset: dict) -> dict:
             if (start_ts is not None and d < start_ts) or (end_ts is not None and d > end_ts):
                 continue
             n_events += 1
+            by_symbol[sym] += 1
+            by_year[int(d.year)] += 1
             r = (float(reg[p]) if reg is not None and np.isfinite(reg[p]) else None)
             for w in windows:
                 got = _event_paths(ca, oa, p, w, basis, mvals)
@@ -1173,6 +1177,10 @@ def _run_event_study(strategy: StrategyIR, dataset: dict) -> dict:
                         pd.Series([t[0] for t in groups[keys[j]]]))
             by_regime[str(w)] = {"by_regime": regimes, "pairwise": pairwise}
 
+    composition = {
+        "by_symbol": dict(sorted(by_symbol.items(), key=lambda kv: -kv[1])),   # 많은 순(편중 즉시 보임)
+        "by_year": {str(y): by_year[y] for y in sorted(by_year)},              # 연도 오름차순
+    }
     return {"success": True, "axis": "time", "basis": basis,
-            "windows": [str(w) for w in windows],
-            "n_events": int(n_events), "overall": overall, "by_regime": by_regime}
+            "windows": [str(w) for w in windows], "n_events": int(n_events),
+            "overall": overall, "by_regime": by_regime, "composition": composition}

@@ -98,6 +98,27 @@ def _bucket_line(k: str, b: Any) -> str:
             f"샤프 {_f(b.get('sharpe'))} · MDD {_f(b.get('mdd'))}% (n={b.get('n', '—')})")
 
 
+def _composition_line(result: Any, top: int = 5) -> str:
+    """이벤트/풀 분석의 구성 분해(종목 상위·연도)를 한 줄로 — n=수천 단일풀이 '어느 종목·언제'서
+    왔는지 모델·사용자가 보게 한다(증상 #4c 섹터 무차별 pooling). composition 없으면 빈 문자열."""
+    comp = result.get("composition") if isinstance(result, dict) else None
+    if not isinstance(comp, dict):
+        return ""
+    parts: list[str] = []
+    by_sym = comp.get("by_symbol") or {}
+    if by_sym:
+        items = list(by_sym.items())
+        head = ", ".join(f"{s} {c}건" for s, c in items[:top])
+        more = f" 외 {len(items) - top}종목" if len(items) > top else ""
+        parts.append(f"종목 {head}{more}")
+    by_year = comp.get("by_year") or {}
+    if by_year:
+        yrs = list(by_year.items())
+        peak_y, peak_c = max(yrs, key=lambda kv: kv[1])
+        parts.append(f"연도 {yrs[0][0]}~{yrs[-1][0]}(최다 {peak_y} {peak_c}건)")
+    return "\n  구성: " + " · ".join(parts) if parts else ""
+
+
 _BULK_WARN_CODES = {"stale_data", "data_gap", "missing_data"}
 
 
@@ -348,8 +369,9 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
             o = _win(overall, w)
             lines.append(f"  +{w}일: 평균 {_f(o.get('mean'))}% · p {_f(o.get('p_value'), 4)} · "
                          f"양(+) {_f(o.get('prob_positive'), 1)}% · MAE {_f(o.get('mean_mae'))}% · MFE {_f(o.get('mean_mfe'))}%")
-        return (f"[이벤트] {result.get('n_events', '?')}건 · 기준 {result.get('basis', 'close')} (forward 수익)\n"
-                + "\n".join(lines))
+        head = f"[이벤트] {result.get('n_events', '?')}건 · 기준 {result.get('basis', 'close')} (forward 수익)"
+        head += _composition_line(result)        # 풀 구성(종목·연도) — 무차별 pooling 투명화(#4c)
+        return head + "\n" + "\n".join(lines)
 
     if shape == "signal_dist":
         o = result.get("overall") or {}

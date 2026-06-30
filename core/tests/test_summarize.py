@@ -107,6 +107,30 @@ def test_warning_no_cap_when_few():
     assert sum("데이터 결손" in ln for ln in out.splitlines()) == 3
 
 
+# ── T7 (Wave 2): 이벤트스터디 구성 분해 — 무차별 pooling 투명화(#4c) ────────────
+def test_event_study_composition_by_symbol_and_year():
+    """이벤트스터디가 풀을 종목·연도로 분해 — n=수천 단일풀의 '무차별 pooling'(#4c)을 투명화.
+    구성 합 = n_events(누락 없이 전 이벤트가 어느 종목·언제서 왔는지 추적)."""
+    res = _run("relate_event")
+    comp = res.get("composition") or {}
+    by_sym = comp.get("by_symbol") or {}
+    assert by_sym and set(by_sym) <= {"AAA", "BBB", "CCC"}     # 종목 구성
+    assert sum(by_sym.values()) == res["n_events"]             # 합 = 총 이벤트
+    assert comp.get("by_year")                                 # 연도 구성도
+
+
+def test_summarize_event_study_surfaces_composition():
+    """모델 요약이 구성(종목 상위·연도)을 표면화 — 모델이 풀 편중을 보고 답하게 한다."""
+    res = {"success": True, "shape": "event_study", "axis": "time", "basis": "close",
+           "n_events": 100, "windows": ["5"],
+           "overall": {"5": {"mean": 1.2, "p_value": 0.03, "prob_positive": 55.0,
+                             "mean_mae": -2.0, "mean_mfe": 3.0}},
+           "composition": {"by_symbol": {"AAA": 60, "BBB": 40},
+                           "by_year": {"2020": 50, "2021": 50}}}
+    out = summarize_result(res)
+    assert "이벤트" in out and "구성" in out and "AAA 60" in out
+
+
 def test_result_shape_falls_back_when_unstamped():
     """미스탬프 결과(inspect 우회·레거시)는 순서의존 파생으로 폴백(행동보존)."""
     assert result_shape({"success": True, "query": "select", "results": []}) == "select"

@@ -189,6 +189,17 @@ def test_compact_no_methodology_for_non_backtest():
     assert "[분석 방법]" not in out and "AAA" in out
 
 
+def test_serialize_preserves_event_composition():
+    """T7: axis 직렬화가 composition을 보존한다(모델·UI·엑셀이 구성 분해를 받게 — 화이트리스트)."""
+    from app.serialize import serialize_ir_result
+    raw = {"success": True, "axis": "time", "basis": "close", "n_events": 3, "windows": ["5"],
+           "overall": {"5": {"mean": 1.0}}, "shape": "event_study",
+           "composition": {"by_symbol": {"AAA": 2, "BBB": 1}, "by_year": {"2020": 3}}}
+    out, kind = serialize_ir_result(raw)
+    assert kind == "axis"
+    assert out.get("composition", {}).get("by_symbol", {}).get("AAA") == 2
+
+
 def test_load_dataset_invalid_ir_returns_empty():
     # 파싱 불가 IR(필수 signal 없음) → {} 반환(엔진 검증경로로 위임), 예외 전파 안 함.
     assert chat_tools._load_dataset({}) == {}
