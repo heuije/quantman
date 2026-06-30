@@ -12,7 +12,7 @@ from .spec import (  # noqa: F401
     data_spec, get, register,
 )
 from .manifest import (  # noqa: F401
-    DataManifest, FeedManifest, SymbolManifest, build_manifest,
+    DataManifest, FeedManifest, SymbolManifest, build_manifest, coverage_report,
     default_manifest_path, load_manifest, save_manifest,
 )
 from .deps import required_data  # noqa: F401
@@ -22,6 +22,6 @@ __all__ = [
     "DataTypeSpec", "PClass", "Frequency", "Adjustment", "Derivation",
     "REGISTRY", "register", "get", "data_spec",
     "DataManifest", "FeedManifest", "SymbolManifest", "build_manifest",
-    "load_manifest", "save_manifest", "default_manifest_path",
+    "load_manifest", "save_manifest", "default_manifest_path", "coverage_report",
     "required_data", "evaluate_data_soundness",
 ]

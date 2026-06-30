@@ -17,6 +17,7 @@ from ..compile_service import compile_strategy
 from ..models import Message
 from ..routers.strategies import save_ir_draft
 from ..serialize import serialize_ir_result
+from ..data_manifest import build_dataset_manifest
 
 # ── 도구 스키마 ──────────────────────────────────────────────────────────────
 
@@ -281,6 +282,12 @@ def _load_dataset(ir: dict) -> dict:
     return get_dataset()
 
 
+def _manifest(dataset: dict):
+    """챗 경로용 데이터 매니페스트 — IR 라우터(ir.py)와 동일하게 무결성 4액션 게이트와
+    필드 커버리지(null≠0)를 가동한다. 빈 데이터셋이면 None(엔진이 단일 검증경로로 처리)."""
+    return build_dataset_manifest(dataset) if dataset else None
+
+
 # ── 도구 실행 ─────────────────────────────────────────────────────────────────
 
 def run_simulate(session, user_id, tool_input: dict) -> dict:
@@ -297,7 +304,7 @@ def run_simulate(session, user_id, tool_input: dict) -> dict:
         return {"success": False, "error": comp.get("error") or "전략을 IR로 컴파일하지 못했습니다."}
     ir = comp["ir"]
     dataset = _load_dataset(ir)
-    res = strategy_from_spec(ir, dataset)
+    res = strategy_from_spec(ir, dataset, manifest=_manifest(dataset))
     if isinstance(res, dict) and res.get("success"):
         res, _ = serialize_ir_result(res)        # pandas→JSON(백테스트 영속/렌더) — 추가필드 前 직렬화
         res["ir"] = ir
@@ -353,7 +360,7 @@ def run_tool(tool_name: str, tool_input: dict) -> dict:
     except (ValueError, KeyError, TypeError) as e:
         return {"success": False, "error": f"도구 입력 오류({tool_name}): {e}"}
     dataset = _load_dataset(ir)
-    res = strategy_from_spec(ir, dataset)   # valid_refs=None → 엔진이 available_refs 도출
+    res = strategy_from_spec(ir, dataset, manifest=_manifest(dataset))   # 게이트·커버리지 가동
     # 결과에 IR + 조정가능 변수 동봉 → 챗 결과뷰의 '엑셀로 내보내기'(증빙)·'변수 조정'(실시간 재실행).
     if isinstance(res, dict) and res.get("success"):
         res, _ = serialize_ir_result(res)        # 모든 챗 도구 결과를 JSON-안전하게(부류 가드)
@@ -476,7 +483,8 @@ def run_adjust(session, conversation_id, tool_input: dict) -> dict:
         StrategyIR.model_validate(ir)                  # 조정 후 유효성 재검(부류 가드)
     except ValidationError as e:
         return {"success": False, "error": f"조정된 IR이 유효하지 않습니다: {e}"}
-    res = strategy_from_spec(ir, _load_dataset(ir))
+    dataset = _load_dataset(ir)
+    res = strategy_from_spec(ir, dataset, manifest=_manifest(dataset))
     if isinstance(res, dict) and res.get("success"):
         res, _ = serialize_ir_result(res)        # pandas→JSON(조정 재실행도 백테스트일 수 있음)
         res["ir"] = ir

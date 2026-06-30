@@ -12,7 +12,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 
 from quant_core.data import (  # noqa: E402
-    DataManifest, REGISTRY, build_manifest, data_spec, get, load_manifest, save_manifest,
+    DataManifest, REGISTRY, build_manifest, coverage_report, data_spec, get,
+    load_manifest, save_manifest,
 )
 
 
@@ -63,6 +64,44 @@ def test_build_manifest_derives_coverage():
     assert m.feed_status("ohlcv.kr") == "ok"
     assert m.feed_status("nonexistent") == "absent"
     assert m.feeds["ohlcv.kr"].adjustment == "raw"
+
+
+def test_build_manifest_field_coverage_tracks_nonprice():
+    """track_fields 주면 비가격 필드의 종목별 비결측 first/last/n 기록(null≠0). 미지정 시 기존동작."""
+    import numpy as np
+    idx = pd.date_range("2021-01-04", periods=10, freq="B")
+    df_a = pd.DataFrame({                                 # 005930: trailing_pe는 뒤 4영업일만
+        "Close": range(10),
+        "trailing_pe": [np.nan] * 6 + [12.0, 12.5, 13.0, 13.5],
+        "inst_net_buy": range(10),                       # 전구간
+    }, index=idx)
+    df_b = pd.DataFrame({"Close": range(10)}, index=idx)  # AAPL: 비가격 필드 전무
+    ds = {"005930": df_a, "AAPL": df_b}
+    m = build_manifest(ds, track_fields=["trailing_pe", "inst_net_buy", "pb_ratio"])
+    fc = m.symbol("005930").field_coverage
+    assert fc["trailing_pe"] == {"first": "2021-01-12", "last": "2021-01-15", "n": 4}
+    assert fc["inst_net_buy"]["n"] == 10
+    assert "pb_ratio" not in fc                           # 컬럼 없음 → 키 생략(미보유)
+    assert m.symbol("AAPL").field_coverage == {}          # 추적 필드 전무
+    assert build_manifest(ds).symbol("005930").field_coverage == {}   # 미지정=기존동작
+
+
+def test_coverage_report_aggregates_global():
+    """coverage_report — 필드별 유니버스 커버리지(covered/total/pct) 집계(백필 기준선·P2/P3)."""
+    import numpy as np
+    idx = pd.date_range("2021-01-04", periods=5, freq="B")
+    ds = {
+        "A": pd.DataFrame({"Close": range(5), "trailing_pe": [1.0] * 5,
+                           "inst_net_buy": [1.0] * 5}, index=idx),
+        "B": pd.DataFrame({"Close": range(5),
+                           "trailing_pe": [np.nan, np.nan, 2.0, 2.0, 2.0]}, index=idx),
+        "C": pd.DataFrame({"Close": range(5)}, index=idx),         # 비가격 필드 전무
+    }
+    rep = coverage_report(build_manifest(ds, track_fields=["trailing_pe", "inst_net_buy"]))
+    assert rep["trailing_pe"]["covered"] == 2 and rep["trailing_pe"]["total"] == 3
+    assert rep["trailing_pe"]["pct"] == 66.7
+    assert rep["trailing_pe"]["first"] == "2021-01-04" and rep["trailing_pe"]["last"] == "2021-01-08"
+    assert rep["inst_net_buy"]["covered"] == 1 and rep["inst_net_buy"]["pct"] == 33.3
 
 
 def test_manifest_roundtrip(tmp_path):
@@ -264,6 +303,35 @@ def test_strategy_from_spec_applies_gate_strict():
     # 비-strict면 경고로 통과(실행 성공)
     ok = strategy_from_spec(spec, ds, manifest=m, strict=False)
     assert ok["success"] and any(w["rule"] == "D-surv" for w in ok.get("warnings", []))
+
+
+def test_strategy_from_spec_surfaces_field_coverage():
+    """다종목 쿼리에서 부분 커버리지 필드를 diagnostics.field_coverage로 노출(null≠0·편향가드)."""
+    import numpy as np
+    from quant_core.ir_engine import strategy_from_spec
+    idx = pd.date_range("2020-01-01", periods=200, freq="B")
+
+    def mk(pe, mom):
+        d = {"Open": np.linspace(100, 120, 200), "High": np.linspace(100, 120, 200) * 1.01,
+             "Low": np.linspace(100, 120, 200) * 0.99, "Close": np.linspace(100, 120, 200),
+             "Volume": 1e6, "momentum_12_1m": float(mom)}
+        if pe is not None:
+            d["trailing_pe"] = float(pe)                # None이면 컬럼 자체 없음(미보유)
+        return pd.DataFrame(d, index=idx)
+
+    ds = {"A": mk(10, 9), "B": mk(12, 5), "C": mk(None, 1), "D": mk(None, -4)}  # trailing_pe 2/4만
+    spec = {"signal": {"op": "rank", "inputs": {"signal": {"op": "data",
+                                                           "params": {"ref": "momentum_12_1m"}}}},
+            "universe": {"kind": "all"},
+            "position": {"entry": {"mode": "scheduled", "rebalance": "monthly", "top_n": 2}}}
+    m = build_manifest(ds, track_fields=["trailing_pe", "inst_net_buy"],
+                       feeds={"ohlcv.kr": {"adjustment": "split_adjusted"}},
+                       has_membership_history=True)
+    res = strategy_from_spec(spec, ds, manifest=m)
+    assert res["success"]
+    assert res["diagnostics"]["field_coverage"] == {"trailing_pe": {"covered": 2, "total": 4}}
+    # 부분만 노출 — 전무(inst_net_buy) 생략. manifest 없으면 미부착(기존 동작).
+    assert "field_coverage" not in (strategy_from_spec(spec, ds).get("diagnostics") or {})
 
 
 if __name__ == "__main__":

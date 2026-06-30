@@ -81,11 +81,12 @@ def test_run_tool_dispatches_to_engine(monkeypatch):
         captured["ir"] = ir
         return {"AAA": object()}            # 더미 데이터셋(엔진 호출 안 함)
 
-    def fake_run(ir, dataset):
+    def fake_run(ir, dataset, **kw):
         captured["ran"] = (ir, dataset)
         return {"success": True, "query": "select", "results": []}
 
     monkeypatch.setattr(chat_tools, "_load_dataset", fake_load)
+    monkeypatch.setattr(chat_tools, "_manifest", lambda ds: None)   # 게이트 빌드 격리(HERMETIC)
     monkeypatch.setattr(chat_tools, "strategy_from_spec", fake_run)
 
     out = chat_tools.run_tool("screen", {"score_ref": "__SELF__.pb_ratio", "top_n": 2})
@@ -243,8 +244,8 @@ def test_run_adjust_one_field_diff(monkeypatch):
     monkeypatch.setattr(chat_tools, "_load_dataset", lambda ir: {})
     seen = {}
     monkeypatch.setattr(chat_tools, "strategy_from_spec",
-                        lambda ir, ds: seen.update(ir=ir) or {"success": True, "equity": [1, 2],
-                                                              "metrics": {"cagr": 1.0}})
+                        lambda ir, ds, **kw: seen.update(ir=ir) or {"success": True, "equity": [1, 2],
+                                                                    "metrics": {"cagr": 1.0}})
     out = chat_tools.run_adjust(None, 1, {"changes": [{"path": "simulation.commission", "value": 0}]})
     assert out["success"] is True
     assert seen["ir"]["simulation"]["commission"] == 0                  # 바뀜
@@ -272,7 +273,7 @@ def test_run_adjust_clamps_to_range(monkeypatch):
     monkeypatch.setattr(chat_tools, "_load_dataset", lambda ir: {})
     seen = {}
     monkeypatch.setattr(chat_tools, "strategy_from_spec",
-                        lambda ir, ds: seen.update(ir=ir) or {"success": True, "equity": [1]})
+                        lambda ir, ds, **kw: seen.update(ir=ir) or {"success": True, "equity": [1]})
     chat_tools.run_adjust(None, 1, {"changes": [{"path": "simulation.commission", "value": 5}]})
     assert seen["ir"]["simulation"]["commission"] == 0.01              # max로 클램프
 
@@ -344,7 +345,7 @@ def test_run_simulate_delegates_to_compiler(monkeypatch):
         "assumptions": ["가정1"], "explanation": {"summary": "단일종목 백테스트"}})
     monkeypatch.setattr(tools, "_load_dataset", lambda ir: {})
     monkeypatch.setattr(tools, "strategy_from_spec",
-                        lambda ir, ds: {"success": True, "metrics": {"cagr": 0.1}})
+                        lambda ir, ds, **kw: {"success": True, "metrics": {"cagr": 0.1}})
     out = tools.run_simulate(session=None, user_id=1, tool_input={"nl": "삼성전자 종가 전략"})
     assert out["success"] is True and out["metrics"]["cagr"] == 0.1
     assert out["ir"]["universe"]["symbols"] == ["005930"]   # 검증 IR 동봉(저장 재사용·표시)
@@ -472,8 +473,9 @@ def test_inspect_unknown_column_returns_valid_options(monkeypatch):
 def test_run_tool_attaches_adjustable_manifest(monkeypatch):
     """screen(select) 결과에 '변수 조정' 매니페스트(adjustable) 동봉."""
     monkeypatch.setattr(chat_tools, "_load_dataset", lambda ir: {"A": object()})
+    monkeypatch.setattr(chat_tools, "_manifest", lambda ds: None)   # 게이트 빌드 격리(HERMETIC)
     monkeypatch.setattr(chat_tools, "strategy_from_spec",
-                        lambda ir, ds: {"success": True, "query": "select", "results": []})
+                        lambda ir, ds, **kw: {"success": True, "query": "select", "results": []})
     out = chat_tools.run_tool("screen", {"score_ref": "__SELF__.pb_ratio", "top_n": 4, "descending": False})
     assert isinstance(out.get("adjustable"), list)
     assert "select.top_n" in {p["path"] for p in out["adjustable"]}
@@ -492,7 +494,7 @@ def test_run_simulate_attaches_adjustable_manifest(monkeypatch):
         "assumptions": [], "explanation": {}})
     monkeypatch.setattr(tools, "_load_dataset", lambda ir: {})
     monkeypatch.setattr(tools, "strategy_from_spec",
-                        lambda ir, ds: {"success": True, "metrics": {"cagr": 0.1}})
+                        lambda ir, ds, **kw: {"success": True, "metrics": {"cagr": 0.1}})
     out = tools.run_simulate(session=None, user_id=1, tool_input={"nl": "모멘텀"})
     paths = {p["path"] for p in out["adjustable"]}
     assert {"position.entry.top_n", "simulation.commission", "simulation.initial_capital"} <= paths

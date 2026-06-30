@@ -68,7 +68,8 @@ def build_dataset_manifest(dataset: dict, *, version: int = 0) -> DataManifest:
 
     # 펀더멘털 피드 — 종목 df에 펀더멘털 컬럼이 붙어 있으면 수급된 것(SEC US·OpenDART KR).
     import pandas as pd
-    from quant_core.indicators import FUND_INDICATOR_COLS
+    from quant_core.indicators import (FUND_INDICATOR_COLS, FLOW_INDICATOR_COLS,
+                                       CONSENSUS_INDICATOR_COLS)
     fund_syms = [s for s, df in dataset.items()
                  if df is not None and any(c in df.columns for c in FUND_INDICATOR_COLS)]
     # has_as_of 실측 — 펀더멘털 parquet이 실제 as_of(제출일) 인덱스를 갖는지 확인(단언 아님).
@@ -86,5 +87,9 @@ def build_dataset_manifest(dataset: dict, *, version: int = 0) -> DataManifest:
                                        "n_symbols": len(fund_syms)}
 
     # has_membership_history=False — 멤버십 이력 미연동(정직). has_pit은 펀더멘털 as_of 실측으로 판정.
+    # track_fields — sourced sparse 필드(펀더/플로우/컨센서스)의 종목별 가용성 측정(null≠0 노출용).
+    # 가격파생 BASE 지표는 가격 있는 곳엔 항상 재계산 가능하므로 추적 제외(편향 무관).
     return build_manifest(dataset, version=version, symbol_meta=sym_meta, feeds=feeds,
+                          track_fields=(list(FUND_INDICATOR_COLS) + list(FLOW_INDICATOR_COLS)
+                                        + list(CONSENSUS_INDICATOR_COLS)),
                           has_membership_history=False, has_pit=fund_has_asof, delay=1)

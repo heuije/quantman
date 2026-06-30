@@ -130,6 +130,27 @@ def backtest_from_spec(
     return res
 
 
+def _field_coverage_summary(manifest, symbols: list) -> dict:
+    """관련 종목들의 비가격 필드 '부분 커버리지'를 요약 — {field: {"covered","total"}}.
+
+    다종목 쿼리에서 일부 종목만 가진 필드(시총·펀더·수급)는 랭킹·집계를 편향시킨다. 완전
+    (covered==total)·전무(covered==0)는 생략하고 *부분만* 노출 → 챗봇이 결손을 0으로 오해하지
+    않게(null≠0). 단일 종목은 '부분' 개념이 없어 빈 dict(게이트·describe 리포트가 담당).
+    """
+    if len(symbols) < 2:
+        return {}
+    counts: dict = {}
+    for sym in symbols:
+        sm = manifest.symbol(sym)
+        if sm is None:
+            continue
+        for f in sm.field_coverage:
+            counts[f] = counts.get(f, 0) + 1
+    total = len(symbols)
+    return {f: {"covered": c, "total": total}
+            for f, c in sorted(counts.items()) if 0 < c < total}
+
+
 def strategy_from_spec(
     spec: dict,
     dataset: dict[str, pd.DataFrame],
@@ -182,9 +203,9 @@ def strategy_from_spec(
         warns = list(res.get("warnings") or []) + [_issue_dict(i) for i in issues]   # run_query(무거래 등) 보존 후 병합
         from .data_quality import assess_data_quality   # Phase 0.5 — 실행 전 데이터 품질 불변식
         from .run import relevant_symbols                # 평가를 전략 관련 심볼로 한정(매크로 노이즈 제거)
+        rel = relevant_symbols(s, dataset)
         warns += assess_data_quality(dataset, start=getattr(s.simulation, "start", None),
-                                     end=getattr(s.simulation, "end", None),
-                                     relevant=relevant_symbols(s, dataset))
+                                     end=getattr(s.simulation, "end", None), relevant=rel)
         try:
             cap_warn = _futures_capital_warning(s, dataset, res)
         except Exception:   # noqa: BLE001 — 부가 경고 계산 실패가 정상 백테스트 결과를 깨지 않게(보조 정보)
@@ -192,4 +213,8 @@ def strategy_from_spec(
         if cap_warn:
             warns.append(cap_warn)
         res["warnings"] = warns
+        if manifest is not None:                # 필드 부분커버리지 → 결과계약 노출(null≠0·편향가드)
+            fc = _field_coverage_summary(manifest, rel)
+            if fc:
+                res.setdefault("diagnostics", {})["field_coverage"] = fc
     return res

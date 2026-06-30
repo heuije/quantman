@@ -50,6 +50,9 @@ class SymbolManifest(BaseModel):
     n_rows: int = 0
     listing_date: Optional[str] = None
     delisting_date: Optional[str] = None
+    # 비가격 필드(펀더/플로우/컨센서스)의 실측 가용성 {field: {"first","last","n"}}.
+    # sparse 커버리지를 종목×필드×기간으로 노출 → 챗봇이 결손을 0으로 오해 못 하게(null≠0).
+    field_coverage: dict[str, dict] = Field(default_factory=dict)
 
 
 class DataManifest(BaseModel):
@@ -82,13 +85,22 @@ class DataManifest(BaseModel):
 
 # ── 빌드 (가격 DataFrame에서 유도 가능한 것 + 외부 메타 머지) ──────────────────
 
+def _dstr(x) -> str:
+    """DatetimeIndex 값 → 'YYYY-MM-DD'(date 속성 있으면) 또는 str."""
+    return str(x.date()) if hasattr(x, "date") else str(x)
+
+
 def build_manifest(dataset: dict, *, version: int = 0,
                    feeds: Optional[dict] = None,
-                   symbol_meta: Optional[dict] = None, **flags) -> DataManifest:
+                   symbol_meta: Optional[dict] = None,
+                   track_fields: Optional[list] = None, **flags) -> DataManifest:
     """dataset(dict[sym]->DataFrame)에서 per-symbol 커버리지(날짜·행수)를 유도해 매니페스트 생성.
 
     가격 DataFrame만으로는 통화·시장·섹터·출처·조정수준을 알 수 없다(정직) — symbol_meta·feeds로
     외부에서 주입(cron이 KIS master·소스 정보로 채움). 주입 안 된 필드는 None(미상)으로 둔다.
+
+    track_fields: 비가격 필드(펀더/플로우/컨센서스 컬럼) 목록 — 주면 종목별 비결측 first/last/n을
+    field_coverage에 기록한다(null≠0 노출용). None이면 가격 커버리지만 기록(기존 동작·하위호환).
     """
     from datetime import datetime, timezone   # 지연 import — 스키마 경량 유지
 
@@ -100,10 +112,20 @@ def build_manifest(dataset: dict, *, version: int = 0,
         else:
             idx = df.index
             lo, hi = idx.min(), idx.max()
+            fc: dict[str, dict] = {}
+            if track_fields:
+                for f in track_fields:
+                    if f in df.columns:
+                        nn = df[f].notna()
+                        n = int(nn.sum())
+                        if n:                 # 비결측이 하나도 없으면 '미보유'로 둔다(키 자체 생략)
+                            present = df.index[nn.to_numpy()]
+                            fc[f] = {"first": _dstr(present.min()),
+                                     "last": _dstr(present.max()), "n": n}
             sm = SymbolManifest(
                 symbol=s, n_rows=int(len(df)),
-                first_date=str(lo.date()) if hasattr(lo, "date") else str(lo),
-                last_date=str(hi.date()) if hasattr(hi, "date") else str(hi))
+                first_date=_dstr(lo), last_date=_dstr(hi),
+                field_coverage=fc)
         if s in symbol_meta:                  # 외부 메타 머지(통화·시장·섹터·feed 등)
             sm = sm.model_copy(update=symbol_meta[s])
         syms[s] = sm
@@ -113,6 +135,29 @@ def build_manifest(dataset: dict, *, version: int = 0,
     return DataManifest(version=version,
                         built_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                         feeds=feed_objs, symbols=syms, **flags)
+
+
+def coverage_report(manifest: "DataManifest") -> dict:
+    """전 종목 매니페스트 → 필드별 글로벌 커버리지 {field: {covered, total, pct, first, last}}.
+
+    비가격 필드(펀더·플로우·컨센서스)의 유니버스 커버리지를 집계 — 백필 진행률·무결손 SLA의
+    측정 기준선(P2/P3). field_coverage(build_manifest track_fields)가 채워진 매니페스트가 입력.
+    """
+    total = len(manifest.symbols)
+    agg: dict = {}
+    for sm in manifest.symbols.values():
+        for f, cov in sm.field_coverage.items():
+            a = agg.get(f)
+            if a is None:
+                agg[f] = {"covered": 1, "first": cov["first"], "last": cov["last"]}
+            else:
+                a["covered"] += 1
+                a["first"] = min(a["first"], cov["first"])
+                a["last"] = max(a["last"], cov["last"])
+    for a in agg.values():
+        a["total"] = total
+        a["pct"] = round(100 * a["covered"] / total, 1) if total else 0.0
+    return dict(sorted(agg.items()))
 
 
 # ── 사이드카 IO ───────────────────────────────────────────────────────────────
