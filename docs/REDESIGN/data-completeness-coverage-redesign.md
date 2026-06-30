@@ -96,6 +96,50 @@
 - **P4 갭 필드**: US 시총 이력화(shares×price), 섹터 전종목(KSIC/SIC), US 13F 수급 대안.
 
 ## 8. 충돌/협업 노트
-- `#243 financials-fill`(dart-fss 5개년) = **P2 재무**에서만 겹침 → 그때 협의.
+- `#243 financials-fill`(dart-fss 5개년) = server HOME 재무(`financials.py`·`dart_fss_fetch.py`)만 건드림 → **P2-A 엔진 재무 백필(main.py cron·fundamental_kr)과 파일 무겹침** 확인(2026-06-30). "엔진 피드 vs 서버 HOME" 두 평행 계층이라 안전.
 - `_wt-data-engine`(detached, stale)이 `spec.py`·`classification.py` diff 보유 — P0에서 `spec.py` 편집 시 재확인.
 - 데이터엔진=조대표 단독 담당이라 희제 충돌 없음. push·머지·프로덕션 배포는 사장님 명시 허락 후.
+
+---
+
+## 9. P2 실행 — feasibility verdict · 결정 · 구현 상태 (2026-06-30)
+
+**P0(#253 `51eb5aa`)·P1(#258 `3f49e97`) 머지·배포·prod LIVE** (P1 rebuild 로그 `NASDAQ Trader 11566 + KIS 12498` 확인).
+
+### 9.1 스코프 확장 (사장님 승인) — 인스트루먼트 타입별 완결 정의
+"완결 일관"="모든 필드"가 아니라 **인스트루먼트 타입별 적용 필드를 같은 기간·무결손**으로:
+- **KR 주식** {OHLCV·재무·컨센서스·flow·배당·섹터}
+- **KR 선물** {OHLCV·투자자 수급(flow)·미결제약정(OI)}  ← 원래 누락분 편입
+- **US 주식** {OHLCV·재무·배당·섹터·시총}  (flow·컨센서스는 미국 시장구조상 미해당)
+→ KR/US는 **필드셋 자체가 다름**. 완결은 유니버스별로 정의.
+
+### 9.2 Feasibility verdict (2026-06-30, 병렬 조사 2건·증거 기반) — **원래 "KRX MDC 스크래퍼 하나로 다 풀림" 가정이 무너짐**
+- **KRX MDC 익명접근 = 사망.** `data.krx.co.kr/comm/bldAttendant/getJsonData.cmd` 익명 POST → HTTP 400(쿠키 심어도). pykrx [#244](https://github.com/sharebook-kr/pykrx/issues/244): KRX 로그인 의무 멤버십 전환. **단 prod엔 `KRX_ID/PW`가 있어 주식 flow(flow_kr/pykrx)는 인증경로로 작동 중** — 즉 익명만 막혔지 *인증 스크래퍼*는 prod에서 가능.
+- **KIS = 선물 투자자수급 TR 없음**; OI는 현재 스냅샷 필드뿐(일별이력 컬럼 없음) → 선물 둘 다 불가.
+- **LS OpenAPI = 선물 수급/OI 둘 다 깨끗이 가능** ✅: `t8462`(선물 투자자 수급·일별·from/to 페이징·investor 코드 sv_00…sv_18), `t8466`(선물 일봉 OHLCV+`openyak`=미결제약정·sdate/edate/cts_date 페이징). **단 LS appkey는 계정단위**(서버 전용 데이터계정 필요)·**이력깊이 미확인**(2010 못 미칠 수 있음 → prod 프로브 필요).
+- **Tier1**: V-KOSPI(FDR-Yahoo 실패·KS11 sanity는 2010 정상→KRX 소스 추정), 옵션 P/C·프로그램매매·ETF flow = **KRX MDC 게이트**(인증 스크래퍼 자작 필요·pykrx는 파생 함수 없음·봇취약). 실적캘린더 KR=KIND·US=Finnhub 무료키 = **비게이트 feasible**. CBOE US P/C = 무료 연속이력 없음(equity archive 2016·index 2012·FRED 2019 종료) → **보류**.
+
+### 9.3 결정 (사장님, 2026-06-30)
+- **선물 수급/OI 소스 = LS 전용 데이터계정** (provision 필요 + prod 깊이/TR 프로브 선결). KIS·KRX 불채택.
+- **Tier1 = 보류** (대부분 KRX 게이트/소스 미해결 — 코어 집중·over-engineering 회피).
+
+### 9.4 재설계한 P2 3갈래
+- **P2-A KR 코어패널 2010 깊이 백필** = 확실·신규크레덴셜 0·고가치 코어. **→ 구현·검증 완료(아래 9.5).**
+- **P2-B KR 선물 수급/OI (LS)** = `t8462`+`t8466`로 `flow_kr.py` 모양 피드 신설. **블로커: ① 서버 전용 LS 데이터계정 provision(Railway env) ② prod 이력깊이·TR shape 프로브**(t8462 sv_00…18 코드 legend·미니K200 underlying id·`openyak` 깊이). 착수 전 prod 프로브 먼저(검증된 해결책만).
+- **P2-C Tier1 = 보류.** (재개 시: 비게이트 승리 실적캘린더부터, KRX 파생통계는 인증 스크래퍼 결정 후.)
+
+### 9.5 P2-A 구현 (branch `feat/data-depth-2010`·worktree `_wt-data-p2a`·미push)
+| 항목 | 변경 | 파일 |
+|---|---|---|
+| KR OHLCV → 2010 | 신규 `backfill_korean_stocks_depth(codes, floor, budget_symbols)` — 기존 종목 `min>floor`면 `floor~(min-1)` fetch→prepend. depth-done 마커(`_kr_ohlcv_depth_done.json`)로 완료 종목 영구 skip(완주=0비용). 신규함수 필요한 이유=일일 `fetch_korean_stocks`는 *앞으로만* 증분 append라 과거 소급 불가. + 신규종목 기본 `start` 2015→2010 | `core/quant_core/data_fetcher.py` |
+| 백필 cron 배선 | `_backfill_kr_ohlcv_chunk`(10분 `minute="7-59/10"` 스태거)+`_initial_kr_ohlcv_backfill`(부팅 +100s) | `server/app/main.py` |
+| KR flow → 2010 | `_backfill_flow_chunk` start `20140101`→`20100101` | `server/app/main.py` |
+| KR 컨센서스 → 2010 | `_CONSENSUS_BACKFILL_START` `20150101`→`20100101` (한경 2006까지 제공·프로브) | `server/app/main.py` |
+| KR 재무 → 2015 | `range(yr-10,yr+1)`→`range(yr-11,yr+1)` (OpenDART 바닥 2015) | `server/app/main.py` |
+
+**검증:** core 581 passed(+신규 `test_kr_ohlcv_depth_backfill.py` 4: deepen/young/idempotent/budget)·golden green·server 448 passed(펀더 contract 테스트 2015 floor로 갱신)·ruff main.py 0(기존 10 vestigial 정리)·data_fetcher 신규에러 0. **데이터 parquet 미삭제**(명단·깊이만 추가). 배포 후 며칠 점진 백필→`coverage_report()`로 진행률 추적.
+
+### 9.6 다음 (P2-B 착수 순서)
+1. **LS 서버 데이터계정 provision**(사장님) → Railway env(예: `QP_LS_DATA_APPKEY`/`SECRET`). 모의/데이터전용 계정이 t8462/t8466 서빙하는지 확인.
+2. **prod 프로브**: t8466 `openyak` 이력깊이, t8462 sv 코드 legend·미니K200 id, 정규 K200(`K2I`) 동작. → 깊이 확정.
+3. 확정 후 `feeds/flow_futures_kr.py`(가칭) 신설 — `flow_kr.py` 모양(per-product parquet·raw investor 컬럼+OI·merge 백필+증분·creds 가드 no-op)·OAuth2 토큰·~1req/s throttle.

@@ -12,6 +12,8 @@
 - **OpenDART 라벨은 필러마다 다르다 — 정확매칭 금지.** 주식총수 보고서의 보통주 행 `se`가 회사별로 '보통주'/'의결권 있는 주식\n(보통주)'/'의결권있는 주식' 등 제각각 → `==` 매칭은 ~8%를 조용히 놓쳤다(주식수 null→pb 미산출). 공시 텍스트 필드는 정규화(공백·개행 제거) 후 포함 판정으로. (`fundamental_kr._is_common_share`, 2026-06-10)
 - **KR 펀더멘털 커버리지 천장 = 실기업 수(~2,608/4,307).** 관리종목의 ~40%(1,699)는 ETF/ETN/특수증권이라 DART corp_code 자체가 없음 — "커버리지 90%" 같은 전체 비율 게이트는 도달 불가. 게이트는 "실기업 pb 표면화율"로 잡을 것.
 - **재배포 직후 스냅샷(Store B) 필드 검증은 +20분 후에.** 부팅 enrich 체인(KRX→NAVER→materialize)이 콜드스타트에 ~12-20분 걸려, 그 사이 per/pbr 등 enrich 필드는 비어 있다(자가 치유). 이 윈도를 회귀로 오인하지 말 것 — 2026-06-11 A1 검증 때 실제로 오인했다.
+- **증분 fetch는 *앞으로만* 간다 — 과거 깊이 소급은 별도 prepend 경로 필요.** `fetch_korean_stocks`는 기존 parquet이 있으면 `마지막일+1`부터만 받는다 → `start`를 2010으로 낮춰도 *기존* 종목의 2010~2014는 영영 안 채워진다(신규 종목만 깊게 받음). 깊이 백필은 `min>floor`면 `floor~(min-1)`만 받아 merge-prepend하는 전용 함수로(`backfill_korean_stocks_depth`, depth-done 마커로 완주=0비용). "start 한 줄 바꾸면 끝"이라 착각하면 배포 후 며칠 헛수고. (2026-06-30 P2-A)
+- **외부 소스 feasibility는 *프로브*로 — "스크래퍼 하나로 다 풀림" 류 가정 금지.** KRX MDC(`data.krx.co.kr getJsonData.cmd`)는 2026 로그인 의무화로 **익명 POST가 400**(쿠키 심어도). 단 prod `KRX_ID/PW`로는 주식 flow가 작동 = *익명만* 막힘. 선물 수급/OI는 pykrx 미지원·KIS 투자자TR 없음 → **LS `t8462`(수급)+`t8466`(OHLCV+`openyak`OI)**가 유일 깨끗한 길(단 appkey 계정단위·이력깊이 prod 검증 필요). (2026-06-30 P2 feasibility)
 
 ## 현재 구조 (안정)
 
@@ -31,6 +33,12 @@
 - **absent→배선중(2026-06-17):** 애널 컨센서스·목표가(한경, 무로그인 11년)·수급(외국인/기관, KRX `pykrx` 로그인 — 2025-12-27 KRX 로그인의무화로 공식 무료API엔 없음)을 feeds·indicators에 정식 편입(P0/P1/P3 완료, 백필 전이라 데이터 absent). 공매도·KR 지수 멤버십 이력은 여전히 absent.
 
 ## 작업계획 로그 (누적·최신 우선)
+
+### [2026-06-29~] 완결 일관 데이터셋 — 커버리지 강화 (P0~P2) [진행중]
+- 의도: 챗봇이 과거 단면(예: N년 전 시총상위)을 **편향 없이** 답하도록, KR/US 유니버스 내에서 *동일 기간·동일 (적용)필드·무결손* "완결 일관 데이터셋"을 유지한다. 편향의 진짜 원인은 데이터가 얕은 것이 아니라 *없는 걸 0으로 취급*하는 것 → **null≠0**(커버리지 측정·노출)이 1순위, 그 다음 깊이 백필. 완결="모든 필드"가 아니라 **인스트루먼트 타입별 적용필드**(KR주식·KR선물·US주식이 필드셋 자체가 다름). 설계서=`docs/REDESIGN/data-completeness-coverage-redesign.md`.
+- 계획: P0 커버리지 매니페스트(측정·노출·무위험) → P1 US 유니버스 권위정의 → P2 깊이 백필(A=KR 2010, B=선물 수급/OI LS, C=Tier1 보류) → P3 무결손검증 → P4 갭필드.
+- 진행: **P0(#253 `51eb5aa`)·P1(#258 `3f49e97`) 머지·배포·prod LIVE.** **P2-A(KR 코어패널 2010 깊이) 구현·검증 완료**(branch `feat/data-depth-2010`·미push): OHLCV 신규 깊이백필 함수+cron / flow·컨센 floor 2010 / 재무 2015. core 581·golden·server 448 green·ruff clean. **P2-B(선물 수급/OI)=LS `t8462`/`t8466` 결정**(LS 데이터계정 provision + prod 깊이프로브 선결). **P2-C(Tier1)=보류.** 교훈 2건(증분 prepend·feasibility 프로브)은 §교훈에 distill.
+- ⚠ feasibility로 **원래 "KRX MDC 스크래퍼 하나로 선물+Tier1 다 풀림" 가정이 무너짐**(KRX MDC 익명 400·로그인벽). §교훈·설계서 §9 참조.
 
 ### [2026-06-17] 애널 컨센서스·기관수급을 IR 데이터로 정식 편입 [진행중]
 - 의도: 애널 컨센서스/목표가(한경컨센서스)와 기관·외국인 수급(KRX, pykrx 로그인)을 OHLCV·펀더멘털과 **동일한 core IR 데이터로 편입**한다. 기존 server `krdata.py`는 개별종목분석 전용 메모리 on-demand 스냅샷(~120일)이라 백테스트·시계열 불가 — PIT parquet 적재 + `spec.py` 등록 + 수집 cron으로 끌어와 인사이트 엔진이 `__SELF__.<col>` 신호 ref로 백테스트/스크리닝/describe에서 소비하게 한다. 범위는 core 데이터 엔진(feeds·spec·indicators·cron)만 — `krdata.py`·개별종목분석은 additive(미변경, 후속 조율로 core store 재사용).
