@@ -77,8 +77,8 @@ def event_buy_qty(strategy: StrategyIR, *, cash: float, prev_close: float,
     """이벤트(on_signal) IR 진입 종목당 수량 — 엔진 _open과 동일.
 
     예산: 주식 = amount_krw(fixed_amount) 또는 cash×amount_pct%(단일 종목은 100% 전액).
-    **선물 = cash×futures_margin_pct%(증거금 사용률, 기본 20%)** — 유저가 조절하는 레버리지
-    안전상한(100%면 full-margin). 엔진 _budget과 동일 식.
+    **선물 = cash×futures_margin_pct%(증거금 사용률, 기본 100%=full-margin)** — 유저가 낮춰
+    레버리지 조절(낮을수록 레버리지↓). 엔진 _budget과 동일 식.
     선물이면 **계약수 = floor(예산/(px×승수×증거금률))**(예산=증거금 → 명목 레버리지; 엔진 E1b
     _open과 일치). 주식이면 정수주 = floor(예산/px). symbol 미지정 시 단일 유니버스면 그 종목으로 추론.
     횡단 사이저(equal/vol/target_vol/fixed_weight)는 스케줄·상시 전용 — 호출자가 preview 수량 사용.
@@ -116,7 +116,7 @@ def event_buy_qty(strategy: StrategyIR, *, cash: float, prev_close: float,
                 return 0       # 환산 불가 — 발주 보류(호출자 skip_funds로 사유 표면화)
             budget = budget / fx
     elif is_fut:
-        # 선물: 예산 = 가용현금 × 증거금 사용률(기본 20%). 엔진 _budget과 동일.
+        # 선물: 예산 = 가용현금 × 증거금 사용률(기본 100%=full-margin). 엔진 _budget과 동일.
         budget = cash * (sz.futures_margin_pct / 100.0)
         # US-F1: 해외선물(USD)은 라이브 선물계좌 현금이 KRW인데 계약 가격·승수가 USD다
         # (trader가 _currency_of=KRW로 보내 futures_order_cash[KRW]를 넘긴다). KRW 예산을

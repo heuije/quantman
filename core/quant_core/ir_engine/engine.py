@@ -370,8 +370,8 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             # 해당 바 이전 값이 없으면(시계열 시작 전·i=0) 예산 0 → 진입 보류(추측 환율 금지).
             fx = fx_usdkrw_rate(dataset, asof=master_idx[i - 1]) if i >= 1 else None
             return float(amount_krw) / fx if fx else 0.0
-        # 선물: 증거금 사용률(futures_margin_pct, 기본 20%) — full-margin 레버리지 상한을 유저가
-        # 조절. 주식: 단일=100%·다종목=amount_pct(기존 보존). live.event_buy_qty와 동일 식.
+        # 선물: 증거금 사용률(futures_margin_pct, 기본 100%=풀레버리지) — 유저가 낮춰 레버리지 조절.
+        # 주식: 단일=100%·다종목=amount_pct(기존 보존). live.event_buy_qty와 동일 식.
         pct = sz.futures_margin_pct if aligned[sym]["is_fut"] else amount_pct
         return cash_snapshot * (pct / 100.0)
 

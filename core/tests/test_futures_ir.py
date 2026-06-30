@@ -205,6 +205,11 @@ def test_futures_positive_margin_pct_ok():
                    for i in validate_strategy(_fut_margin_strat("코스피200선물", futures_margin_pct=20)))
 
 
+def test_futures_margin_pct_default_is_full_leverage():
+    # 기본값 = 100%(풀레버리지). 선물은 레버리지가 기본 의도 — 20%면 ~1배라 의미 없다(사용자 결정).
+    assert Sizing().futures_margin_pct == 100.0
+
+
 def test_zero_margin_pct_on_equity_not_flagged():
     # 주식은 futures_margin_pct를 안 쓰므로 0이어도 무관 — 거짓 거부 방지.
     assert not any(i.rule == "S-futmargin"

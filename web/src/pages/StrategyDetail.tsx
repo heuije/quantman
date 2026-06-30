@@ -358,7 +358,7 @@ function IrConfigTab({ strategy, isFutures, catalog, symbols, indicatorCatalog, 
 
   // 선물 레버리지 효과 = 증거금 사용률 ÷ 증거금률. 유저는 사용률만 정하고 증거금률은 브로커가 정한다.
   // 사용률이 낮으면(예 20%) 레버리지가 ~1배(거의 무레버리지)임을 드러내는 게 목적.
-  const marginPct = sizing.futures_margin_pct ?? 20;
+  const marginPct = sizing.futures_margin_pct ?? 100;
   const leverage = marginPct / 100 / KOSPI200_MARGIN_RATE;
   const marginRatePct = KOSPI200_MARGIN_RATE * 100;
 
