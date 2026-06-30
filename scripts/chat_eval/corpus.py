@@ -94,6 +94,20 @@ SCENARIOS: list[dict] = [
                 "ir": {"study.relation_kind": "regression"},
                 "judge_focus": "계수·t값을 인과가 아닌 설명력으로 해석하는가(표 재현 아닌 결론 중심)."}},
 
+    {"name": "event_study_single_directional",
+     # M3(#5) — 단일종목 방향성·신호후수익은 describe(현황) 폴백이 아니라 simulate(이벤트 스터디)로 라우팅돼야.
+     "turns": ["삼성전자가 60일 이동평균을 골든크로스하면 그 뒤 5일·20일 수익이 어떤지 보여줘"],
+     "expect": {"tools": ["simulate"],
+                "judge_focus": "단일종목 방향성 질문을 describe(현황 리포트)가 아니라 이벤트 스터디로 분석하는가. "
+                               "이벤트 후 forward 수익 분포·승률·유의성으로 답하고, 표본 적으면 과대약속(예측 단정)하지 않는가."}},
+
+    {"name": "event_study_prediction_power",
+     # M1+M3(#9) — '예측력' 트랩: 단일종목이라 횡단 IC 불가 → 이벤트 스터디로.
+     "turns": ["삼성전자가 앞으로 오를지, 60일선 위에 있는 게 예측력이 있는 신호인지 분석해줘"],
+     "expect": {"tools": ["simulate"],
+                "judge_focus": "단일종목 예측력을 횡단 IC(종목 2+ 필요)로 오인하지 않고 이벤트 스터디로 분석하는가. "
+                               "이벤트/백테스트 수익을 '미래 예측'으로 단정하지 않는가."}},
+
     {"name": "simulate_portfolio_diag",
      "turns": ["삼성전자·SK하이닉스·현대차를 동일비중으로 들고 있는데 집중도랑 섹터 노출 진단해줘"],
      "expect": {"tools": ["simulate"],

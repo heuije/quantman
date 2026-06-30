@@ -512,7 +512,8 @@ def _run_ic_study(strategy: StrategyIR, dataset: dict) -> dict:
     """
     syms = _universe_symbols(strategy, dataset)
     if len(syms) < 2:
-        return _empty("IC 분석은 종목이 2개 이상이어야 합니다.")
+        return _empty("IC 분석은 종목이 2개 이상이어야 합니다. "
+                      "단일종목의 예측력은 이벤트 스터디(신호 발생 후 수익 분포)로 분석하세요.")
     node = strategy.study.target_node
     if node is None:
         return _empty("분석 노드(target_node)가 없습니다.")
@@ -607,7 +608,8 @@ def _run_regression_study(strategy: StrategyIR, dataset: dict) -> dict:
     from ..blocks.node import referenced_columns
     syms = _universe_symbols(strategy, dataset)
     if len(syms) < 2:
-        return _empty("횡단 회귀는 종목이 2개 이상이어야 합니다.")
+        return _empty("횡단 회귀는 종목이 2개 이상이어야 합니다. "
+                      "단일종목의 예측력은 이벤트 스터디(신호 발생 후 수익 분포)로 분석하세요.")
     nodes = list(strategy.study.factors)
     if not nodes:
         return _empty("다중 회귀는 설명변수(factors)가 1개 이상 필요합니다.")
