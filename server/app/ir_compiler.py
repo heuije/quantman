@@ -251,6 +251,13 @@ StrategyIR = {{
 <reference_data>
 지표 ref(이 외 임의 지표 금지; 종목 자신은 __SELF__. 접두): {", ".join(indicator_cols)}
 기본 OHLCV: Open, High, Low, Close, Volume
+- **지표 의미(필드 선택·#3)**: op_margin·gross_margin은 수익성 **률**(효율·%)이지 이익 *절대액*이 아니다. "영업이익/순이익
+  **성장**"은 *증가율(%)·부호* 의미 — ts_delta(절대 차이)로 랭킹하지 말 것(고가·대형주 쏠림; 레시피 2). 카탈로그에 없는
+  펀더(영업이익 절대액·EPS 성장률 등 — 위 목록에 없으면 **없는 것**)는 지어내지 말고 가까운 가용 지표로 대체 제안하거나
+  assumptions에 "미지원" 명시.
+- **z-score window(#8)**: ts_zscore의 window=표준화 롤링 기간(평균·표준편차 계산 구간)이다 — 입력 지표 자체의 룩백
+  (예: 모멘텀 N일)과 **별개의 역할**. "윈도우 바꿔가며"가 모호하면 어느 window(표준화 기간 vs 입력 룩백)인지 param_grid
+  path로 구분해 스윕한다(두 역할을 한 값으로 묶지 말 것 — 라벨이 모호해진다).
 종목 표기: 국내주식=6자리 코드(삼성전자 005930), 미국주식=티커(AAPL), 내장 자산명=정확한 키
 (S&P500, 코스피200선물, 원유선물, 금선물, 은선물(COMEX), 천연가스선물, 나스닥선물, 비트코인선물 등). 모르면 사용자가 쓴 명칭 그대로.
 </reference_data>
@@ -324,7 +331,10 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
     "어떤 종목이 제일 나은가"처럼 *그리드 중 최적 1개*가 답이면 → study.axis="parameter"(+param_grid)
     또는 "entity"(+assets) + study.reduction="extremize" + study.objective={{metric, direction, oos_guard:true}}.
     metric은 sharpe(기본)·sortino·cagr·cum_return·mdd만. ⚠ mdd는 음수라 "낙폭 최소"=direction:"max".
-    oos_guard=true(기본)면 최적값을 시간폴드로 재검(과최적화 경고). (※ enumerate=모든 셀 나열, extremize=최적 1개.)
+    oos_guard=true(기본)면 최적값을 시간폴드로 재검(과최적화 경고).
+    ⚠ **비교 vs 최적 구분**: "어느 게 *최적* 1개"=reduction="extremize"; "여러 조건/임계/종목/시나리오를 *각각 비교·나열*
+    (다 보여줘·어떻게 다른가)"=study.axis="parameter"(+param_grid 후보값들) 또는 "entity"(+assets) + reduction="enumerate".
+    비교·나열 요청을 study 없이(axis=none) 단일 실행으로 떨어뜨리지 말 것 — N개를 한 번에 펼쳐 비교한다.
 11. [다중팩터 횡단 회귀] "밸류·모멘텀·퀄리티 중 무엇이 forward 수익을 설명하나(상호 통제)"·"여러 지표로
     수익 횡단 회귀"처럼 *여러 설명변수의 동시 예측력*이면 → query="relate" + study.relation_kind="regression"
     + study.factors=[팩터1, 팩터2, ...](각 score 블록) + study.windows. universe.kind=all/list(종목 2+).

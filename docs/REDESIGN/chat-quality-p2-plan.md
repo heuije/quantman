@@ -75,11 +75,20 @@ prompt/컴파일러 라우팅이 능력을 노출하지 않는 것이 근본. Ph
   `event_study_single_directional`("골든크로스 후 5/20일 수익")·`event_study_prediction_power`("예측력 있는 신호인지")
   **둘 다 tools=['simulate'] 라우팅 + 이벤트스터디(axis=time·forward 수익/유의성) 결과 PASS**(describe 폴백 0).
 
-### M4 — F 충실성 레시피 (컴파일) [#10, #8, #3-field]
-- **비교 명확화** (#10): "여러 조건 *비교/나열*"=`study.axis=parameter`+`reduction=enumerate`(모두 보기) vs "*최적 1개*"=`reduction=extremize`. 레시피 10(`ir_compiler.py:292~296`)에 enumerate↔extremize 구분 명시.
-- **z-score window 2역할** (#8): `<reference_data>` 또는 레시피에 "z-score window=롤링 std 계산기간(거래일). 룩백 기간과 혼동 금지" 명확화. (실제 z-score 블록 구현 `core/quant_core/.../blocks/` 먼저 확인 — agent 미조회 항목.)
-- **필드 가이드** (#3-field): "영업이익 **절대**=ttm_ebit(규모) vs **률**=op_margin(효율). '성장'=%수익률 또는 부호(ts_delta는 절대차→부호만)." `<reference_data>`(`ir_compiler.py:220~225`)에 추가.
-- **검증($0):** 컴파일 하니스 재컴파일(#10 axis=parameter·#3 올바른 필드).
+### M4 — F 충실성 레시피 (컴파일) [#10, #8, #3-field] ✅ 구현·검증 완료
+- **비교 명확화** (#10): 레시피 10에 "비교 vs 최적 구분 — '여러 조건/시나리오 *각각 비교·나열*'=axis=parameter
+  (+param_grid)/entity(+assets)+reduction=enumerate; '*최적 1개*'=extremize. 비교 요청을 axis=none 단일 실행으로
+  떨어뜨리지 말 것" 명시.
+- **z-score window 2역할** (#8): **§0.5** — z-score는 `ts_zscore`(롤링·window=표준화 기간) 단일 param. `<reference_data>`에
+  "ts_zscore window=표준화 롤링 기간(평균·표준편차 계산)으로 입력 지표 룩백과 별개 역할 — 모호하면 param_grid path로
+  구분, 한 값으로 묶지 말 것" 명확화.
+- **필드 가이드** (#3-field): **§0.5 정정** — `ttm_ebit`(영업이익 절대액)·EPS성장률 필드는 **카탈로그에 없다**(가용 펀더=
+  op_margin·gross_margin(률)·trailing_pe·pb_ratio·peg·ev_* 등). 플랜 원안의 ttm_ebit 전제가 틀림. `<reference_data>`에
+  "op_margin·gross_margin은 수익성 *률*(절대액 아님)·'성장'=증가율(%)·부호(ts_delta 절대차 랭킹 금지)·없는 펀더는
+  지어내지 말고 가용 지표 대체 또는 assumptions에 '미지원' 명시" 추가. (영업이익 절대/성장 시계열은 **Phase 3 데이터 갭**.)
+- **검증(LLM e2e·$0·컴파일):** #10 "보유기간 3가지 각각 비교"→**axis=parameter·reduction=enumerate**(none 폴백 0);
+  #8 "z-score 윈도우 20·60·120 바꿔가며"→param_grid path=z-score.window **단일 1D**(3×3 혼동 0); #3 "영업이익 성장"→
+  **op_margin·trailing_pe 사용·ttm_ebit 환각 0**·assumption "영업이익 절대액 없어 op_margin 변화로 표현"(정직 대체). 전부 repair=0.
 
 ---
 
