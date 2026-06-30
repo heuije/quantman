@@ -47,6 +47,8 @@ def test_submit_open_short_creates_short_with_definition(isolated_trader):
 def test_try_buy_routes_short_to_sell_to_open(isolated_trader):
     trader, broker = isolated_trader
     broker._prices["코스피200선물"] = 350.0       # 가격 평면 정책 — 발주는 broker 시세 필요
+    # 증거금률 0.195: px350 1계약=17.06M → 선물 사이징 cash 50M(0계약→skip_funds 방지).
+    broker._balance["futures_order_cash_kr"] = 50_000_000
     ok = trader._try_buy_one_symbol("k1", "k1", "t", _strat_def("short"),
                                     "코스피200선물", _dataset(), 0.0, [])
     assert ok
@@ -57,6 +59,8 @@ def test_try_buy_routes_short_to_sell_to_open(isolated_trader):
 def test_try_buy_routes_long_to_buy(isolated_trader):
     trader, broker = isolated_trader
     broker._prices["코스피200선물"] = 350.0       # 가격 평면 정책 — 발주는 broker 시세 필요
+    # 증거금률 0.195: px350 1계약=17.06M → 선물 사이징 cash 50M(0계약→skip_funds 방지).
+    broker._balance["futures_order_cash_kr"] = 50_000_000
     ok = trader._try_buy_one_symbol("k1", "k1", "t", _strat_def("long"),
                                     "코스피200선물", _dataset(), 0.0, [])
     assert ok

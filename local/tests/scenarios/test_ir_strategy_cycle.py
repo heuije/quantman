@@ -128,7 +128,7 @@ def _futures_dataset(closes, symbol="코스피200선물"):
         {"Open": closes, "High": closes, "Low": closes, "Close": closes}, index=idx)}
 
 
-# 코스피200선물 종가 375 (승수 250k·증거금률 카탈로그 0.10 → 1계약 ≈9.375M).
+# 코스피200선물 종가 375 (승수 250k·증거금률 카탈로그 0.195 → 1계약 ≈18.28M).
 _FUT_DS = _futures_dataset([370, 372, 374, 376, 375])
 
 
@@ -143,7 +143,7 @@ def test_ir_domestic_futures_model_a_clamps_to_orderable(isolated_trader):
 
     t, broker = isolated_trader
     broker._prices["코스피200선물"] = 375
-    # 선물 사이징 현금 — 충분히 커서 event_buy_qty>0 (모델A 미적용이면 21계약 발주됐을 값).
+    # 선물 사이징 현금 — 충분히 커서 event_buy_qty>0 (모델A 미적용이면 10계약 발주됐을 값).
     broker._balance["futures_order_cash_kr"] = 1_000_000_000
     # 인스턴스 레벨 주입(픽스처마다 새 SimBroker — 전역 오염 없음). getattr 가드가 이를 발견.
     broker.orderable_qty = lambda symbol, side, price: 7
@@ -164,7 +164,7 @@ def test_ir_domestic_futures_no_orderable_qty_degrades(isolated_trader):
     """degrade 가드: SimBroker(orderable_qty 없음)는 모델A 건너뜀 → event_buy_qty 유지.
 
     이것이 671 회귀 byte-identical의 근거 — 기존 sim 시나리오는 orderable_qty가 없어
-    모델A 분기를 타지 않는다. cash 1e9×20%/(375×250000×0.10) = 2e8/9.375M = 21계약.
+    모델A 분기를 타지 않는다. cash 1e9×20%/(375×250000×0.195) = 2e8/18.28M = 10계약.
     """
     from quant_core.ir_engine import StrategyIR
     from quant_core.ir_engine import live as ir_live
@@ -184,16 +184,16 @@ def test_ir_domestic_futures_no_orderable_qty_degrades(isolated_trader):
     expected = ir_live.event_buy_qty(StrategyIR.model_validate(ir),
                                      cash=1_000_000_000.0, prev_close=375.0,
                                      capital=1_000_000_000.0, symbol="코스피200선물")
-    assert expected == 21
+    assert expected == 10
     assert broker.submitted[-1]["qty"] == expected, broker.submitted
 
 
 def test_ir_domestic_futures_orderable_fail_holds_order(isolated_trader):
     """degrade→skip: 실 브로커(orderable_qty 보유)가 None(조회 실패) 반환 → **발주 보류**.
 
-    종전엔 카탈로그 추정 증거금률(0.10)로 event_buy_qty(21계약)를 그대로 발주했으나, 그건
-    실제(~19.5%) 대비 ~2배 과대 사이징이라 의도(사용률 20%)의 2배 레버리지를 시도하는 셈이다.
-    실전 자금안전 위해 조회 실패 시 qty=0으로 발주 보류(skip_funds) — 카탈로그 21계약 발주 안 함.
+    카탈로그 증거금률(0.195)로 event_buy_qty(10계약)를 산정하더라도, 실 브로커 주문가능수량
+    조회가 실패하면 그 카탈로그 추정만으로 발주하지 않는다(브로커 실시간 증거금률이 진실원천).
+    실전 자금안전 위해 조회 실패 시 qty=0으로 발주 보류(skip_funds) — 카탈로그 10계약 발주 안 함.
     (SimBroker는 orderable_qty 메서드 자체가 없어 이 경로에 도달 안 함 — 위 _degrades 테스트가 보장.)
     """
     t, broker = isolated_trader
@@ -208,7 +208,7 @@ def test_ir_domestic_futures_orderable_fail_holds_order(isolated_trader):
         t, broker, sid, ir, "코스피200선물", _FUT_DS, fill_price=375.0,
         equity=1_000_000_000.0)
     assert order_no is None, broker.submitted                  # 발주 보류
-    assert broker.submitted == [], broker.submitted            # 카탈로그 21계약 발주 안 함(★ 자금안전)
+    assert broker.submitted == [], broker.submitted            # 카탈로그 10계약 발주 안 함(★ 자금안전)
     assert any(d.get("action") == "skip_funds" for d in decisions), decisions
 
 
