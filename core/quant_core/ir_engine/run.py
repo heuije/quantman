@@ -1094,25 +1094,28 @@ def _event_paths(ca, oa, p, w, basis, mvals):
     return float(seg[-1]), float(seg.min()), float(seg.max())
 
 
-def _run_event_study(strategy: StrategyIR, dataset: dict) -> dict:
-    """이벤트(신호 참) 발생일 기준 forward 수익 + 경로지표(MAE·MFE) + 국면 유의성.
+def _collect_event_rows(strategy: StrategyIR, dataset: dict) -> dict:
+    """이벤트(신호 참) 발생을 윈도별 경로(end/mae/mfe)·종목·일자까지 수집 — 집계 전 원자료.
 
-    "돌파 후 반등이 유의한가", "변동성 확대가 mean reversion 선행지표인가", "갭하락 후
-    당일 종가까지 반등하나(intraday)", "거래량 동반 돌파의 forward 낙폭(MAE)" 같은
-    질문에 단일 메커니즘으로 답한다. basis로 종가/시가내재/초과수익 기준을 고른다.
+    _run_event_study(요약)와 event_records(엑셀 증빙)가 **공유**해 동일 이벤트 집합을 보장한다
+    (엑셀 AVERAGE 재계산 = 엔진 mean 패리티의 근거). 반환:
+      {ok:False, error} | {ok:True, windows, basis, has_label, collected, events,
+       n_events, by_symbol, by_year}
+    collected[w]=[(end,mae,mfe,regime)] (요약·by_regime용·기존 형상 보존),
+    events=[{symbol, date, regime, ends:{w:end_pct}}] (증빙 — end는 %로 환산).
     """
     from collections import defaultdict
 
     syms = _universe_symbols(strategy, dataset)
     if not syms:
-        return _empty("이벤트 분석 유니버스에 종목이 없습니다.")
+        return {"ok": False, "error": "이벤트 분석 유니버스에 종목이 없습니다."}
     windows = strategy.study.windows or [5, 10, 20]
     basis = strategy.study.event_basis
     ev_node = strategy.study.event or strategy.signal
     ctx = EvalContext.from_dataset(_scoped(dataset, syms, ev_node, strategy.study.label))
     ev_panel = evaluate(ev_node, ctx)
     if not isinstance(ev_panel, pd.DataFrame):
-        return _empty("이벤트 신호가 패널을 산출하지 않습니다.")
+        return {"ok": False, "error": "이벤트 신호가 패널을 산출하지 않습니다."}
     ev_panel = ev_panel.astype(bool)
 
     label_panel = None
@@ -1125,6 +1128,7 @@ def _run_event_study(strategy: StrategyIR, dataset: dict) -> dict:
     start_ts = pd.Timestamp(sim.start) if sim.start is not None else None
     end_ts = pd.Timestamp(sim.end) if sim.end is not None else None
     collected: dict[int, list] = {w: [] for w in windows}   # w → [(end, mae, mfe, regime)]
+    events: list[dict] = []                                 # 이벤트별 원자료(증빙)
     by_symbol: dict[str, int] = defaultdict(int)   # 구성 분해 — 어느 종목서 몇 이벤트(#4c 무차별 pooling 투명화)
     by_year: dict[int, int] = defaultdict(int)     # 구성 분해 — 어느 해서 몇 이벤트(시기 편중 투명화)
     n_events = 0
@@ -1150,13 +1154,54 @@ def _run_event_study(strategy: StrategyIR, dataset: dict) -> dict:
             by_symbol[sym] += 1
             by_year[int(d.year)] += 1
             r = (float(reg[p]) if reg is not None and np.isfinite(reg[p]) else None)
+            ends: dict[int, float] = {}
             for w in windows:
                 got = _event_paths(ca, oa, p, w, basis, mvals)
                 if got is not None:
                     collected[w].append((got[0], got[1], got[2], r))
+                    ends[w] = got[0] * 100.0      # 증빙 원자료는 % (엑셀 AVERAGE = 엔진 mean)
+            events.append({"symbol": sym,
+                           "date": d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
+                           "regime": r, "ends": ends})
+    return {"ok": True, "windows": windows, "basis": basis, "has_label": label_panel is not None,
+            "collected": collected, "events": events, "n_events": int(n_events),
+            "by_symbol": dict(by_symbol), "by_year": dict(by_year)}
+
+
+def event_records(strategy: StrategyIR | dict, dataset: dict, *, cap: int = 50_000) -> dict:
+    """이벤트 스터디의 집계 전 원자료(이벤트별 종목·일자·윈도별 forward수익%) — 엑셀 증빙용.
+
+    _collect_event_rows 공유라 _run_event_study 요약과 **동일 이벤트 집합**(엑셀 AVERAGE = 엔진
+    mean 패리티). cap 초과 시 앞 cap개만(truncated=True) — 그땐 재계산이 전체와 불일치할 수 있어
+    호출측이 표기한다.
+    """
+    if isinstance(strategy, dict):
+        strategy = StrategyIR.model_validate(strategy)
+    c = _collect_event_rows(strategy, dataset)
+    if not c["ok"]:
+        return {"ok": False, "error": c["error"], "windows": [], "events": []}
+    events = c["events"]
+    return {"ok": True, "windows": list(c["windows"]), "basis": c["basis"],
+            "n_events": c["n_events"], "events": events[:cap], "truncated": len(events) > cap}
+
+
+def _run_event_study(strategy: StrategyIR, dataset: dict) -> dict:
+    """이벤트(신호 참) 발생일 기준 forward 수익 + 경로지표(MAE·MFE) + 국면 유의성.
+
+    "돌파 후 반등이 유의한가", "변동성 확대가 mean reversion 선행지표인가", "갭하락 후
+    당일 종가까지 반등하나(intraday)", "거래량 동반 돌파의 forward 낙폭(MAE)" 같은
+    질문에 단일 메커니즘으로 답한다. basis로 종가/시가내재/초과수익 기준을 고른다.
+    수집은 _collect_event_rows에 위임(엑셀 증빙과 동일 이벤트 집합 공유).
+    """
+    from collections import defaultdict
+
+    c = _collect_event_rows(strategy, dataset)
+    if not c["ok"]:
+        return _empty(c["error"])
+    windows, basis, collected = c["windows"], c["basis"], c["collected"]
 
     overall: dict = {}
-    by_regime: dict | None = {} if label_panel is not None else None
+    by_regime: dict | None = {} if c["has_label"] else None
     for w in windows:
         rows = collected[w]
         overall[str(w)] = summarize_events([x[0] for x in rows],
@@ -1178,9 +1223,9 @@ def _run_event_study(strategy: StrategyIR, dataset: dict) -> dict:
             by_regime[str(w)] = {"by_regime": regimes, "pairwise": pairwise}
 
     composition = {
-        "by_symbol": dict(sorted(by_symbol.items(), key=lambda kv: -kv[1])),   # 많은 순(편중 즉시 보임)
-        "by_year": {str(y): by_year[y] for y in sorted(by_year)},              # 연도 오름차순
+        "by_symbol": dict(sorted(c["by_symbol"].items(), key=lambda kv: -kv[1])),   # 많은 순(편중 즉시 보임)
+        "by_year": {str(y): c["by_year"][y] for y in sorted(c["by_year"])},          # 연도 오름차순
     }
     return {"success": True, "axis": "time", "basis": basis,
-            "windows": [str(w) for w in windows], "n_events": int(n_events),
+            "windows": [str(w) for w in windows], "n_events": int(c["n_events"]),
             "overall": overall, "by_regime": by_regime, "composition": composition}

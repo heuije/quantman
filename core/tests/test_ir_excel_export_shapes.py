@@ -74,3 +74,18 @@ def test_all_shapes_have_methodology_sheet() -> None:
         wb = load_workbook(io.BytesIO(xlsx))
         assert "설명" in wb.sheetnames, f"[{case['name']}] '설명' 시트 누락"
         assert "전략 정의 (IR)" in _sheet_text(wb["설명"])
+
+
+def test_event_study_excel_has_raw_evidence_and_recompute_formula() -> None:
+    """T8(#4b): 이벤트 엑셀이 집계 전 원자료('이벤트원자료')와 원자료 재계산 라이브 수식
+    (=AVERAGE·=COUNTIF — 엔진 요약 검산)을 담아 '요약만'이던 증빙을 raw+수식 패리티로 끌어올린다."""
+    case = next(c for c in BASE_CASES if c["name"] == "relate_event")
+    _ir, _ds, _res, xlsx = _build(case["ds"], case["ir"])
+    wb = load_workbook(io.BytesIO(xlsx))
+    assert "이벤트원자료" in wb.sheetnames, wb.sheetnames
+    raw_text = _sheet_text(wb["이벤트원자료"])
+    assert "종목" in raw_text and "일자" in raw_text          # 이벤트별 원자료 헤더
+    summary_text = _sheet_text(wb["이벤트분석"])
+    assert "라이브 검증" in summary_text                       # 재계산 블록
+    assert "AVERAGE(이벤트원자료!" in summary_text             # 평균 재계산이 원자료 참조
+    assert "COUNTIF(이벤트원자료!" in summary_text             # 양(+)비율 재계산이 원자료 참조
