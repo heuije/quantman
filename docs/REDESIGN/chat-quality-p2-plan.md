@@ -32,15 +32,23 @@ prompt/컴파일러 라우팅이 능력을 노출하지 않는 것이 근본. Ph
 
 착수 순서: **M1(구조 안전망) → M2(쿡북) → M3(라우팅) → M4(F)**. 새 엔진 프리미티브 0(atomic 원칙 — 전부 쿡북/검증/프롬프트).
 
-### M1 — method-fit gate (키스톤 · G 구조적 안전망) [#9, #5-partial]
+### M1 — method-fit gate (키스톤 · G 구조적 안전망) [#9, #5-partial] ✅ 구현 완료
 컴파일된 IR의 method↔가설형상 부정합을 **결정적으로** 잡아 repair 루프로 되돌린다(프롬프트/쿡북이 놓친 것의 안전망).
 ⚠ NL 키워드 매칭(band-aid) 아님 — **IR 형상 기반** 근본 검증.
 
-- **신규 core 순수함수** `method_fit_issues(ir: StrategyIR) -> list[issue]` (위치 후보: `core/quant_core/ir_engine/`에 새 모듈 또는 spec 인접). 규칙:
-  - `relate` + `relation_kind=="ic"`(또는 `regression`) + 단일종목(universe single 또는 list 1개) → issue: "IC/회귀는 횡단(≥2종목) 분석. 단일종목 예측력은 이벤트스터디(query=relate+study.event)로."
-  - (확장 여지: 다른 명백한 부정합. 단 over-reach 금지 — 측정된 증상만.)
-- **server 배선:** `validate_fn`(컴파일 검증기)이 method_fit_issues를 포함 → repair 루프(`ir_compiler.py:458~493`)가 모델에 피드백 → intent 앵커와 함께 이벤트스터디로 재컴파일.
-- **검증($0):** IR 픽스처 단위테스트(단일종목 IC→issue, 횡단 IC→무issue, 이벤트스터디→무issue). analysis_diag 코퍼스에 단일종목-예측 케이스 추가.
+**§0.5 정정 (구현 중 실제 코드 검증):** 원안은 "단일종목 IC 미탐지 → 신규 `method_fit_issues` 함수"였으나,
+**게이트는 이미 존재**한다 — `validate_strategy`(spec.py:684 IC·694 회귀·651 상관)와 엔진(`run.py:515` IC·`610` 회귀)
+*양 surface 모두* 단일종목 횡단 method를 SEV_ERROR로 거부 중. 신규 함수는 **중복(원칙2 위반)**. 진짜 #9 뿌리는
+*메시지가 "종목 2개 이상"이라는 막다른 제약*일 뿐 **올바른 대안(이벤트스터디)을 안내하지 않아** repair가 종목
+추가(의도 왜곡)로 잘못 수렴하던 것. → **기존 게이트의 막다른 메시지를 이벤트스터디로 리다이렉트**(더 단순·더 근본).
+
+- **변경:** `validate_strategy` IC·회귀 단일종목 에러 메시지(모델 대면·repair 피드백 경로)에 "단일종목의 예측력은
+  이벤트 스터디(query=relate + study.event 조건 + windows)로 분석하세요" 추가. 엔진 `_empty` IC·회귀 메시지
+  (사용자 대면 verdict 경로)에도 평이체 리다이렉트 추가 → **부류를 양 surface에서 닫음**.
+  - 상관(correlation)·처방·breadth 단일종목 가드는 *예측 부류 아님*(동조성/비중/시장폭) → 무변경(scope 규율).
+- **검증($0·완료):** `test_question_validate.py` 4종(단일 IC/회귀→이벤트 안내·횡단 IC 2종목 클린·단일 이벤트스터디 클린),
+  `test_result_status.py`(verdict 리다이렉트 잠금). 전체 코어 **579 passed**. *end-to-end repair 루프 재컴파일*(NL→이벤트
+  스터디 전환)은 LLM 필요 → M2 컴파일 하니스에서 검증(M1·M2 상보).
 
 ### M2 — 이벤트스터디 쿡북 레시피 신설 (F) [#5, #9]
 현재 쿡북에 이벤트스터디 레시피가 **없다**. 추가:
