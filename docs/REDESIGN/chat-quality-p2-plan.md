@@ -50,13 +50,18 @@ prompt/컴파일러 라우팅이 능력을 노출하지 않는 것이 근본. Ph
   `test_result_status.py`(verdict 리다이렉트 잠금). 전체 코어 **579 passed**. *end-to-end repair 루프 재컴파일*(NL→이벤트
   스터디 전환)은 LLM 필요 → M2 컴파일 하니스에서 검증(M1·M2 상보).
 
-### M2 — 이벤트스터디 쿡북 레시피 신설 (F) [#5, #9]
-현재 쿡북에 이벤트스터디 레시피가 **없다**. 추가:
+### M2 — 이벤트스터디 쿡북 레시피 신설 (F) [#5, #9] ✅ 구현·검증 완료
+현재 쿡북에 이벤트스터디 레시피가 **없었다**(레시피 0개). 추가:
 
-- **신규 레시피** (`ir_compiler.py:235~310` `<idioms>`에): "[이벤트 스터디 / 방향성·이벤트후수익] '롱/숏 신호 후 forward 수익 분포'·'돌파 후 반등이 유의?'·단일종목 예측 → `query=relate` + `study.event`(조건 블록) + `study.windows`[기간들] + (국면 있으면) `study.label`. universe=single/list. event는 condition(발생 여부)." 
-- **레시피 11(IC) 보강** (`ir_compiler.py:300`): "IC는 횡단(종목 2+) 예측력. **단일종목 예측력은 IC 아님 → 이벤트스터디(위 레시피)**."
-- **few-shot 1개 추가** (`ir_compiler.py:25~126` `_FEWSHOT`): 방향성 국면-조건부 이벤트스터디 archetype(#5: "코스피200 20일선 돌파 후 5/20일 수익, 상승장/하락장 다른가").
-- **검증($0):** Sonnet 4.6 NL→IR 컴파일 하니스로 #5·#9 재컴파일 → event study IR(IC 아님) 확인.
+- **신규 레시피 15** (`ir_compiler.py` `<idioms>`): "[이벤트 스터디 — 신호 후 수익·방향성·단일종목 예측]
+  → `query=relate` + `study.event`(condition·발생 여부; '돌파한 날'=cross) + `study.windows` + (국면 있으면)
+  `study.label`(bucket). universe=single 가능. 결과=forward 수익 분포·승률·유의성·MAE/MFE." + 과대약속 금지 주석.
+- **레시피 11(IC) 보강:** "IC·회귀는 횡단(종목 2+). 단일종목 예측력은 IC 아님 → 이벤트 스터디(레시피 15)."
+- **few-shot 신설:** 단일종목 방향성 이벤트스터디(국면별) — "삼성전자 골든크로스 후 5/20일 수익, 상승/하락장 비교"
+  (#5/#9 앵커). cross(돌파) + bucket(120일 추세부호) 국면 라벨. **사전에 validate_strategy·엔진 실행으로 패턴 검증.**
+- **검증:** ① 결정적($0): `test_event_study_single_regime.py` — 단일종목 이벤트스터디 실행 + by_regime 2국면 분리 잠금.
+  ② **LLM e2e($0·ClaudeCodeBackend 구독)**: #9·#5·#9b 3질문 모두 `query=relate + study.event`(국면질문은 +label)·
+  universe=single로 컴파일(**repair=0** — 레시피+few-shot이 직접 앵커, IC 오매핑 0). M1 안전망은 백스톱 확인.
 
 ### M3 — prompt 라우팅 교정 (G) [#5]
 - **`prompt.py:39,43` 라우팅 교정:** "방향성·롱숏·이벤트후수익 판단 → simulate(이벤트스터디)" — 방향성 질문을 describe 폴백 대신 분석 엔진으로. (describe는 *현황 요약*에만.)
