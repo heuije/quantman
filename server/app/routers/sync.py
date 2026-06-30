@@ -41,12 +41,64 @@ def push_snapshot(
     실행 → push 응답 시간은 webhook 지연과 분리된다. 단 같은 프로세스에서
     돌아가므로 진정한 격리는 아님(Redis 큐는 베타엔 과설계).
     """
+    # 자동 강등 diff용 — 새 스냅샷 저장 전에 이 기기의 직전 스냅샷 계좌 핸들을 잡아둔다.
+    prev = session.scalars(
+        select(SyncSnapshot).where(SyncSnapshot.device_id == device.id)
+        .order_by(SyncSnapshot.received_at.desc())).first()
     snap = SyncSnapshot(user_id=device.user_id, device_id=device.id,
                         payload=body.payload)
     session.add(snap)
     session.commit()
+    _demote_strategies_for_removed_accounts(
+        session, device.user_id, prev.payload if prev else None, body.payload)
     background_tasks.add_task(_check_alerts_bg, device.user_id, body.payload)
     return {"ok": True}
+
+
+def _account_ids(payload: dict | None) -> set[str]:
+    """스냅샷 payload의 비민감 계좌 핸들 account_id 집합."""
+    handles = ((payload or {}).get("health") or {}).get("account_handles") or []
+    return {h.get("account_id") for h in handles if h.get("account_id")}
+
+
+def _demote_strategies_for_removed_accounts(
+    session: Session, user_id: int, prev_payload: dict | None, new_payload: dict,
+) -> None:
+    """이 기기에서 계좌가 사라지면(모의↔실전 전환·자격증명 초기화 후 다른 계좌 등록) 그 계좌에
+    묶인 모의/실전 전략을 초안(draft)으로 내린다 — '실거래를 안 하는데 실전으로 표시'되는 혼란 제거
+    (로컬 사이클은 이미 skip_wrong_account로 차단하므로 안전·표시 정합성 보강).
+
+    트리거 = 직전 vs 현재 스냅샷의 '사라진 계좌'(prev−new)만. 이 선택의 이유:
+    - **멀티기기 안전**: 다른 기기의 계좌는 이 기기 핸들에 애초에 없어 '사라짐'에 안 잡힌다(오강등 방지).
+    - **임시/재등록 안전**: 같은 계좌 재등록은 같은 uuid라 안 사라져 강등 안 됨. 빈 보고(current_handles
+      에러·미등록)는 과강등 방지로 skip → 실제 '계좌 교체'에서만 강등.
+    account_ref도 비워 깨끗한 초안으로(계좌가 실제로 사라졌으므로). updated_at·활성기간 기준점도 초기화.
+    """
+    new_ids = _account_ids(new_payload)
+    if not new_ids:                       # 빈 보고(에러·미등록)는 강등 안 함
+        return
+    removed = _account_ids(prev_payload) - new_ids
+    if not removed:
+        return
+    rows = session.scalars(
+        select(Strategy).where(
+            Strategy.user_id == user_id,
+            Strategy.run_mode != "draft",
+            Strategy.account_ref.in_(removed))).all()
+    if not rows:
+        return
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        row.run_mode = "draft"
+        row.account_ref = None
+        row.paper_started_at = None
+        row.live_started_at = None
+        row.live_capital_at_start = None
+        row.updated_at = now
+        session.add(row)
+    session.commit()
+    _log.info("자동 강등: user=%s 사라진 계좌 %s에 묶인 전략 %d개 → 초안",
+              user_id, removed, len(rows))
 
 
 def _check_alerts_bg(user_id: int, payload: dict) -> None:
