@@ -197,7 +197,7 @@ register(DataTypeSpec(
 ))
 register(DataTypeSpec(
     key="macro.krx", pclass=PClass.MACRO,
-    label="KR 시장지표(V-KOSPI·옵션풋콜비율·KRX채권지수·국고채3/10년)",
+    label="KR 시장지표(V-KOSPI·옵션풋콜비율·KRX채권지수·국고채3/10년·선물 미결제약정)",
     frequency="daily", history_rule="2010~", source="공식 KRX Open API(data-dbg.krx.co.kr)",
     provides=["Close(=val)"], required_meta=_BASE_META,
     downstream=["study.label(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",

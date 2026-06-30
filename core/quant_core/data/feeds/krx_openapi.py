@@ -3,8 +3,9 @@
 로그인벽 `data.krx.co.kr` MDC와 **별개** — `AUTH_KEY` 헤더 + `basDd`(하루 1콜=그날 전종목)·
 이력 2010~. `KRX_API_KEY` 미설정 시 no-op(비활성·로그 침묵, flow_kr 패턴).
 
-S1 = 시장지표 4종(매크로형 명명 시계열 — VIX·미국채처럼 하루 1값):
-  코스피200변동성지수(V-KOSPI) · 옵션풋콜비율 · KRX채권지수 · 국고채3년 · 국고채10년
+매크로형 명명 시계열(VIX·미국채처럼 하루 1값):
+  S1 시장지표 — 코스피200변동성지수(V-KOSPI) · 옵션풋콜비율 · KRX채권지수 · 국고채3년 · 국고채10년
+  S2 선물 OI — 코스피200선물미결제약정 · 코스닥150선물미결제약정
 데이터포인트당 소스 1개 원칙(no-backup) — 이 지표들의 진실원천 = 공식 KRX API.
 
 라이브 검증(2026-06-30): 전 서비스 2010 깊이·필드 확정. 옵션은 하루 ~19k행이라 timeout 90s.
@@ -26,6 +27,7 @@ _BASE = "https://data-dbg.krx.co.kr/svc/apis"
 _SVC_DRVPROD = "idx/drvprod_dd_trd"   # 파생상품지수 (V-KOSPI 포함)
 _SVC_BOND_IDX = "idx/bon_dd_trd"      # 채권지수
 _SVC_KTS = "bon/kts_bydd_trd"         # 국채전문유통시장 일별
+_SVC_FUT = "drv/fut_bydd_trd"         # 선물 일별 (미결제약정 OI)
 _SVC_OPT = "drv/opt_bydd_trd"         # 옵션 일별 (P/C용·무거움)
 
 
@@ -104,6 +106,26 @@ def extract_ktb_yield(rows: list[dict], maturity: str):
     return None
 
 
+def extract_futures_oi(rows: list[dict], prod_name: str):
+    """선물 일별에서 특정 상품의 총 미결제약정(OI) = 주간 월물 OI 합.
+
+    ⚠ 주간/야간 세션이 같은 계약 OI를 두 행으로 보고 → '(야간)' 제외해 이중계산 방지.
+    야간 도입(2016~) 전 데이터는 세션 접미사가 없어 그대로 포함된다.
+    """
+    total = 0.0
+    found = False
+    for r in rows:
+        if r.get("PROD_NM") != prod_name:
+            continue
+        if "(야간)" in str(r.get("ISU_NM", "")):
+            continue
+        oi = _f(r.get("ACC_OPNINT_QTY"))
+        if oi is not None:
+            total += oi
+            found = True
+    return total if found else None
+
+
 def extract_putcall(rows: list[dict]):
     """옵션 일별에서 코스피200 옵션(미니 제외) 풋/콜 **거래량** 비율 = PUT_vol / CALL_vol.
 
@@ -133,6 +155,8 @@ _LIGHT_SERIES = [
     ("KRX채권지수", _SVC_BOND_IDX, extract_bond_index),
     ("국고채3년", _SVC_KTS, lambda rows: extract_ktb_yield(rows, "3")),
     ("국고채10년", _SVC_KTS, lambda rows: extract_ktb_yield(rows, "10")),
+    ("코스피200선물미결제약정", _SVC_FUT, lambda rows: extract_futures_oi(rows, "코스피200 선물")),
+    ("코스닥150선물미결제약정", _SVC_FUT, lambda rows: extract_futures_oi(rows, "코스닥150 선물")),
 ]
 # 무거운 지표(옵션 하루 ~19k행·timeout 90s) — 좁은 윈도우로 분리
 _PUTCALL_SERIES = ("옵션풋콜비율", _SVC_OPT, extract_putcall)

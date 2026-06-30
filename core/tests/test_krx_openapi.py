@@ -35,6 +35,13 @@ _OPT = [
     {"PROD_NM": "미니코스피200 옵션", "RGHT_TP_NM": "PUT", "ACC_TRDVOL": "9999"},  # 미니 — 제외
     {"PROD_NM": "코스닥150 옵션", "RGHT_TP_NM": "PUT", "ACC_TRDVOL": "8888"},      # 제외
 ]
+_FUT = [
+    {"PROD_NM": "코스피200 선물", "ISU_NM": "코스피200 F 202609 (주간)", "ACC_OPNINT_QTY": "100"},
+    {"PROD_NM": "코스피200 선물", "ISU_NM": "코스피200 F 202609 (야간)", "ACC_OPNINT_QTY": "101"},  # 이중계산 방지
+    {"PROD_NM": "코스피200 선물", "ISU_NM": "코스피200 F 202612 (주간)", "ACC_OPNINT_QTY": "50"},
+    {"PROD_NM": "코스닥150 선물", "ISU_NM": "코스닥150 F 202609 (주간)", "ACC_OPNINT_QTY": "30"},
+    {"PROD_NM": "3년국채 선물", "ISU_NM": "3년국채 F 202609", "ACC_OPNINT_QTY": "9999"},      # 타상품 제외
+]
 
 
 def test_extractors():
@@ -43,6 +50,9 @@ def test_extractors():
     assert kx.extract_ktb_yield(_KTS, "3") == 3.727
     assert kx.extract_ktb_yield(_KTS, "10") == 4.117      # 물가(1.494) 아닌 명목
     assert kx.extract_putcall(_OPT) == 0.77               # 77/100, 미니·코스닥 제외
+    # 선물 OI: 주간 월물 합(100+50), 야간(101)·타상품(국채 9999) 제외
+    assert kx.extract_futures_oi(_FUT, "코스피200 선물") == 150.0
+    assert kx.extract_futures_oi(_FUT, "코스닥150 선물") == 30.0
 
 
 def test_extractor_missing_returns_none():
@@ -67,7 +77,8 @@ def _setup(monkeypatch, tmp_path):
 
 def test_fetch_market_indicators_saves_series(monkeypatch, tmp_path):
     _setup(monkeypatch, tmp_path)
-    canned = {kx._SVC_DRVPROD: _DRVPROD, kx._SVC_BOND_IDX: _BOND_IDX, kx._SVC_KTS: _KTS}
+    canned = {kx._SVC_DRVPROD: _DRVPROD, kx._SVC_BOND_IDX: _BOND_IDX,
+              kx._SVC_KTS: _KTS, kx._SVC_FUT: _FUT}
 
     def fake(svc, bd, timeout=30):
         return canned[svc]
@@ -76,11 +87,14 @@ def test_fetch_market_indicators_saves_series(monkeypatch, tmp_path):
     assert res["ok"] and res["days"] == 2
     assert res["saved"]["코스피200변동성지수"] == 2
     assert res["saved"]["국고채10년"] == 2
+    assert res["saved"]["코스피200선물미결제약정"] == 2
 
     vk = _df._load_existing("코스피200변동성지수")
     assert len(vk) == 2 and vk["Close"].iloc[0] == 92.71
     ktb10 = _df._load_existing("국고채10년")
     assert ktb10["Close"].iloc[-1] == 4.117
+    oi = _df._load_existing("코스피200선물미결제약정")
+    assert oi["Close"].iloc[-1] == 150.0      # 주간 합·야간 제외
 
 
 def test_fetch_network_fail_skips_day_not_marked(monkeypatch, tmp_path):
