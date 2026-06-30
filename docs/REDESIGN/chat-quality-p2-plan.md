@@ -1,8 +1,11 @@
 # 챗봇 품질 Wave 2 — Phase 2 실행계획 (방법 지능 G+F)
 
-> 상태: **계획 확정 · 구현 대기** (사장님 승인 2026-06-30). 상위 설계 = [`chat-quality-redesign.md`](chat-quality-redesign.md) §3 Phase 2.
+> 상태: **M1~M4 구현·검증 완료 · 미푸시**(2026-06-30, draft [PR#265](https://github.com/MercKR/quantman/pull/265) ahead).
+> 상위 설계 = [`chat-quality-redesign.md`](chat-quality-redesign.md) §3 Phase 2.
 > Phase 1(자기서술 spine + fail-soft)은 **머지·배포 완료**([PR#262](https://github.com/MercKR/quantman/pull/262)→main `ecf59a6`).
-> 이 문서는 Phase 2의 *상세 task 분해*(M1~M4) — 다음 세션이 바로 실행하도록 검증된 file:line 근거를 싣는다.
+> 이 문서는 Phase 2의 *상세 task 분해*(M1~M4)와 각 §0.5 정정·검증 결과를 싣는다. 닫은 증상: #5·#9·#10·#8·#3(필드).
+> 검증: 결정적 코어 테스트(core 581 pass·신규 6) + **LLM e2e($0·ClaudeCodeBackend 구독)** 컴파일/라우팅 확인,
+> describe 라우팅 무회귀 확인. 잔여=프로덕션 라이브 테스트(사장님)·#3 영업이익 절대/성장 데이터는 Phase 3 갭.
 
 ---
 
