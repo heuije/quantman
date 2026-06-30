@@ -53,3 +53,27 @@ def test_futures_summary_has_leverage():
                for e in s["assumed"])
     assert any("계약수" in x for x in s["at_order"])
     assert "당일" in conf["청산"]                  # hold_days=0
+
+
+# ── methodology_brief (Wave 2 T1): 모델 식단용 1블록 방법론 ────────────────────
+from quant_core.ir_engine.execution_summary import methodology_brief
+
+
+def test_methodology_brief_surfaces_logic_and_baseline():
+    """백테스트 '무엇을 어떻게'(기간·기준자본·종목·방향·사이징·진입(신호기준)·청산)를 한 블록으로.
+    기준자본 미지정 시 기본 1억을 명시(증상 #3 '1억 기준 미명시' 근본). 기간은 호출측이 결과에서 주입."""
+    d = {"universe": {"kind": "list", "symbols": ["005930", "000660"]},
+         "signal": _SIGNAL,
+         "position": {"direction": "long",
+                      "sizing": {"mode": "pct_cash", "amount_pct": 10.0},
+                      "exit": {"hold_days": 5}}}
+    out = methodology_brief(d, period="2015-01-02~2024-12-30")
+    assert out.startswith("[분석 방법]")
+    assert "2015-01-02~2024-12-30" in out          # 기간(#7)
+    assert "100,000,000" in out                    # 기본 1억 기준자본(#3)
+    assert "롱" in out and "10" in out and "보유 5일" in out   # 방향·사이징·청산
+    assert "전일 데이터" in out                     # 신호 평가 기준(#7 신호기준)
+
+
+def test_methodology_brief_invalid_ir_is_empty():
+    assert methodology_brief({"bad": "ir"}) == ""   # 파싱 실패 → 빈 문자열(best-effort)
