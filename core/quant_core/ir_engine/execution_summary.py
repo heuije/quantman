@@ -82,6 +82,36 @@ def execution_summary(strategy_def: dict) -> dict:
             "at_order": at_order, "unknown": unknown}
 
 
+def methodology_brief(strategy_def: dict, period: str | None = None) -> str:
+    """백테스트 실행명세 → 모델 식단용 1블록 방법론 텍스트(provenance.ir_summary의 모델 표면).
+
+    모델이 '무엇을 어떻게 돌렸나'(기간·기준자본·종목·방향·사이징·진입(신호기준)·청산·체결가정)를
+    보고 답에 백테스트 로직을 서술하게 한다(증상 #7·#3·#1 — 방법론 미서술). execution_summary와
+    동일 출처라 드리프트가 없다. 기간은 결과의 실제 구간이라 호출측이 주입한다(여기선 IR만 봄).
+    파싱 실패는 빈 문자열(best-effort — 모델 요약을 깨지 않는다).
+    """
+    try:
+        ir = StrategyIR.model_validate(strategy_def)
+        spec = execution_summary(strategy_def)
+    except Exception:   # noqa: BLE001 — 방법론 주석 실패가 모델 요약을 깨면 안 됨
+        return ""
+    conf = {d["label"]: d["value"] for d in spec["confirmed"]}
+    asm = {d["label"]: d["value"] for d in spec["assumed"]}
+    bits: list[str] = []
+    if period:
+        bits.append(f"기간 {period}")
+    cap = ir.simulation.initial_capital
+    if cap:
+        bits.append(f"기준자본 {cap:,.0f}원")
+    for lbl in ("종목", "방향", "사이징", "진입 시점", "청산"):
+        if conf.get(lbl):
+            bits.append(f"{lbl} {conf[lbl]}")
+    for lbl in ("수수료", "슬리피지(백테스트 가정)", "레버리지(선물)"):
+        if asm.get(lbl):
+            bits.append(f"{lbl.split('(')[0]} {asm[lbl]}")
+    return "[분석 방법] " + " · ".join(bits) if bits else ""
+
+
 # ── 헬퍼 ──────────────────────────────────────────────────────────────────────
 
 def _universe_desc(universe) -> str:

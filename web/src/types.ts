@@ -515,6 +515,16 @@ export interface IrStrategyResult extends BacktestResult {
   // P3 seam #1 — 엔진(run_query)이 스탬프한 canonical 형상 태그. ChatResultView가 이 키로
   // 렌더러 레지스트리를 단일 조회(없으면 deriveShape 폴백). select/describe_single/…/simulate.
   shape?: string;
+  // Wave 2 T2 — 백테스트 자기서술(provenance.ir_summary). 서버 attach_methodology가 core
+  // execution_summary로 붙인다(가정값·로직을 TS에 중복하지 않음 → 드리프트 방지). MethodologyPanel 렌더.
+  methodology?: {
+    period?: string | null;
+    initial_capital?: number | null;
+    confirmed?: { label: string; value: string }[];
+    assumed?: { label: string; value: string }[];
+  };
+  // Wave 2 T7 — 이벤트 풀 구성 분해(섹터 무차별 pooling 투명화). 엔진이 산출.
+  composition?: { by_symbol?: Record<string, number>; by_year?: Record<string, number> };
   // P4 context 사이드카 — 서버가 엔진 밖에서 붙인 준실시간 시세·뉴스·시장스냅샷(골든 무누출·표시 전용).
   context?: {
     quotes?: Record<string, { price: number | null; chg: number | null; change?: number | null }>;

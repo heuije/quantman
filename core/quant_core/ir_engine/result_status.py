@@ -128,8 +128,49 @@ def classify_status(result: Any) -> dict:
             return done("data_insufficient", f"데이터 밀도 {cov * 100:.0f}%로 부족합니다.")
         return done("ok")
 
-    # ── 그 외(describe·relate·prescribe·breadth·inspect·news 등) — 성공이면 ok ──
+    # ── 관계 분석(IC·회귀·상관) — 횡단 표본 0이면 무의미한 NaN을 ok로 흘려보내지 않는다 ──
+    # 좋은 가설(예: 외국인 수급)이 종목 수·공통구간 부족으로 표본 0이 돼 '빈 차트'로 죽던 부류(#9b)를
+    # 닫는다. 단일종목은 엔진이 success=False(_empty)로 이미 infeasible 처리.
+    if shape == "relate_ic":
+        n = _max_window_count(result, "n")
+        diag["ic_samples"] = n
+        if n == 0:
+            return done("data_insufficient",
+                        "IC 표본 0 — 횡단 상관을 낼 종목 수·공통구간이 부족합니다(단일종목·짧은 기간). "
+                        "단일 종목 예측은 시계열 이벤트스터디가 더 적합합니다.")
+        if n < _MIN_EVENTS:
+            return done("ok", f"IC 표본 {n}일로 적어 통계 신뢰도가 제한적입니다.")
+        return done("ok")
+
+    if shape == "relate_regression":
+        if _max_window_count(result, "n_periods") == 0:
+            return done("data_insufficient",
+                        "회귀 표본 0 — 횡단 회귀를 낼 종목·공통구간이 부족합니다(종목 수·기간 점검).")
+        return done("ok")
+
+    if shape == "correlation_matrix":
+        if not result.get("n_obs"):
+            return done("data_insufficient",
+                        "공통 관측치 0 — 상관을 낼 공통 거래일이 없습니다(기간·종목 점검).")
+        return done("ok")
+
+    # ── 그 외(describe·prescribe·breadth·inspect·news 등) — 성공이면 ok ──
     return done("ok")
+
+
+def _max_window_count(result: Any, key: str) -> int:
+    """관계분석 by_window의 표본 수 최댓값 — IC는 overall.n, 회귀는 n_periods. 윈도마다 표본이
+    달라(공통구간 차이) 가장 많은 쪽을 본다(하나라도 유효하면 분석 가능). 결손/비수치는 0."""
+    bw = result.get("by_window") if isinstance(result, dict) else None
+    best = 0
+    for block in (bw or {}).values():
+        if not isinstance(block, dict):
+            continue
+        src = block.get("overall") if key == "n" else block
+        n = (src or {}).get(key) if isinstance(src, dict) else None
+        if isinstance(n, int):
+            best = max(best, n)
+    return best
 
 
 def _num(v: Any) -> float | None:

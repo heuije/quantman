@@ -21,8 +21,8 @@ from sqlmodel import Session, select
 from ..models import ChatTurnMetric, Conversation, Message
 from ..serialize import clean_json
 from .context import attach_context
-from .tools import (TOOL_SCHEMAS, compact_summary, run_adjust, run_simulate, run_tool,
-                    save_strategy_tool)
+from .tools import (TOOL_SCHEMAS, attach_methodology, compact_summary, run_adjust, run_simulate,
+                    run_tool, save_strategy_tool)
 from .prompt import chat_system_prompt
 
 _log = logging.getLogger("app.chat.agent")
@@ -80,6 +80,52 @@ def _worse(a: str | None, b: str | None) -> str | None:
     """두 결과상태 중 더 심각한 것(랭크 높은 쪽). None은 무시."""
     cands = [s for s in (a, b) if s in _STATUS_RANK]
     return max(cands, key=lambda s: _STATUS_RANK[s]) if cands else (a or b)
+
+
+# ── 실패 fail-soft (Wave 2 T3) — 크래시·도구 예외를 막다른길 대신 구조화 ──────────
+# 도구 함수(run_simulate 등)는 *예상된* 실패를 {success:False}로 반환한다. 여기로 오는 건
+# 가드를 빠져나간 *예기치 못한* 예외 — anthropic API(일시적·재시도 유효)와 엔진·데이터 raise
+# (결정적·재시도 무익)를 갈라 복구 제안을 다르게 준다(막다른 '잠시 후 다시'의 증상 #4a 근본).
+_FAILURE_COPY = {
+    "transient": ("일시적인 연결 문제로", "잠시 후 다시 시도해 주세요."),
+    "analysis": ("문제가 생겨", "조건을 단순하게 하거나 종목·기간을 좁혀 다시 시도해 주세요."),
+}
+
+
+def _classify_failure(exc: BaseException) -> str:
+    """예외 → 실패 부류. anthropic API 오류=transient(일시적), 그 외=analysis(결정적)."""
+    import anthropic
+    return "transient" if isinstance(exc, anthropic.APIError) else "analysis"
+
+
+def _failure_message(klass: str, had_partial: bool) -> str:
+    """턴 크래시 시 사용자 fail-soft 답변 — 원인 부류 + (부분결과 안내) + 복구 제안."""
+    cause, recover = _FAILURE_COPY.get(klass, _FAILURE_COPY["analysis"])
+    partial = " 위에 표시된 중간 결과는 참고하실 수 있어요." if had_partial else ""
+    return f"분석 도중 {cause} 멈췄어요.{partial} {recover}"
+
+
+def _tool_failure_result(tool_name: str, exc: BaseException) -> dict:
+    """도구가 예기치 못한 예외로 죽었을 때 모델에 줄 구조화 결과(턴은 계속 — #4a 근본).
+    한 도구의 raise가 전체 대화를 막다른길로 만들던 부류를 닫는다(엔진 raise도 여기로 수렴)."""
+    _, recover = _FAILURE_COPY.get(_classify_failure(exc), _FAILURE_COPY["analysis"])
+    return {"success": False, "status": "infeasible",
+            "error": f"'{tool_name}' 분석 실행 중 문제가 생겼습니다. {recover}",
+            "verdict": recover}
+
+
+def _dispatch_tool(session: Session, conversation_id: int, name: str, inp: dict) -> dict:
+    """도구 이름 → 엔진/도구 실행. side-effect 도구(simulate·save·adjust)는 대화 소유자·대화맥락이
+    필요하고 나머지는 순수 run_tool. 예상된 실패는 각 함수가 {success:False}로 반환한다."""
+    if name in ("simulate", "save_strategy", "adjust_analysis"):
+        conv = session.get(Conversation, conversation_id)
+        uid = conv.user_id if conv else None
+        if name == "simulate":
+            return run_simulate(session, uid, inp)
+        if name == "adjust_analysis":
+            return run_adjust(session, conversation_id, inp)
+        return save_strategy_tool(session, uid, conversation_id, inp)
+    return run_tool(name, inp)
 
 
 def _ir_sig(ir) -> str | None:
@@ -259,23 +305,19 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                 inp = dict(b.input or {})
                 acc["tools"].append(b.name)
                 yield ("tool_use", {"id": b.id, "name": b.name, "input": inp})
-                if b.name in ("simulate", "save_strategy", "adjust_analysis"):
-                    conv = session.get(Conversation, conversation_id)
-                    uid = conv.user_id if conv else None
-                    if b.name == "simulate":
-                        full = run_simulate(session, uid, inp)
-                    elif b.name == "adjust_analysis":
-                        full = run_adjust(session, conversation_id, inp)
-                    else:
-                        full = save_strategy_tool(session, uid, conversation_id, inp)
-                else:
-                    full = run_tool(b.name, inp)
-                # P4 context 사이드카 — describe/select 결과를 준실시간 시세·뉴스로 enrich
-                # (엔진 밖·골든 무누출·best-effort). 모델 해석·웹 맥락 카드용.
-                full = attach_context(full)
-                # 도구 결과의 NaN/inf→None — JSON은 NaN을 표현 못 해 브라우저 JSON.parse·
-                # Postgres JSONB가 깨진다(/ir 백테스트 경로와 동일한 clean_json 재사용).
-                full = clean_json(full)
+                try:
+                    full = _dispatch_tool(session, conversation_id, b.name, inp)
+                    # P4 context 사이드카 — describe/select 결과를 준실시간 시세·뉴스로 enrich
+                    # (엔진 밖·골든 무누출·best-effort). 모델 해석·웹 맥락 카드용.
+                    full = attach_context(full)
+                    # 도구 결과의 NaN/inf→None — JSON은 NaN을 표현 못 해 브라우저 JSON.parse·
+                    # Postgres JSONB가 깨진다(/ir 백테스트 경로와 동일한 clean_json 재사용).
+                    full = clean_json(full)
+                except Exception as exc:   # noqa: BLE001 — 한 도구의 예기치 못한 raise(엔진 버그 등)가
+                    # 턴을 막다른길로 만들지 않게 구조화 결과로 환원(#4a). 모델은 다른 결과와 함께
+                    # 답하거나 이 실패를 구체적으로 설명·조정 제안한다(턴은 ok 유지·status로 표면).
+                    _log.exception("[chat] tool %s raised for conversation %s", b.name, conversation_id)
+                    full = _tool_failure_result(b.name, exc)
                 # 결과 품질 계약 백스톱 — run_query를 안 거치는 결과(inspect·news·save)도 status를 채운다.
                 # 계약은 안전장치 — 분류 실패가 턴을 깨지 않도록 격리(B4 회귀 차단).
                 if isinstance(full, dict) and full.get("success", True) and "status" not in full:
@@ -283,6 +325,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                         full.update(classify_status(full))
                     except Exception:   # noqa: BLE001 — 품질 주석 실패가 대화를 깨면 안 됨
                         _log.exception("[chat] classify_status 실패 conv=%s", conversation_id)
+                full = attach_methodology(full)   # 백테스트면 structured 방법론 동봉(웹 패널·#7·#1)
                 if isinstance(full, dict):
                     worst_status = _worse(worst_status, full.get("status"))
                 assistant_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": inp})
@@ -298,10 +341,16 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                     seen_sigs.add(sig)
                 tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": content})
             messages.append({"role": "user", "content": tool_results})
-    except Exception:   # noqa: BLE001 — 외부 LLM·도구 호출 실패는 대화에 오류 답변으로 표면화(고아 방지)
+    except Exception as exc:   # noqa: BLE001 — 도구 밖(LLM 스트림·영속 등) 예기치 못한 실패의 최후
+        # 방어선. 막다른 '잠시 후 다시' 대신 실패 부류별 복구 + (있으면) 부분결과 안내를 표면화하고,
+        # 메트릭에 'error'로 분류해 bad_result_rate가 크래시를 포착하게 한다(#4a).
         ok = False
         _log.exception("[chat] turn failed for conversation %s", conversation_id)
-        err = "분석 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
+        worst_status = "error"      # 턴-레벨 크래시(분석 품질 status와 별개·가장 심각)
+        had_partial = any(p.get("type") == "tool_result"
+                          and isinstance(p.get("result"), dict) and p["result"].get("success")
+                          for p in assistant_parts)
+        err = _failure_message(_classify_failure(exc), had_partial)
         assistant_parts.append({"type": "text", "text": err})
         yield ("delta", {"text": err})
     if ok and not completed:

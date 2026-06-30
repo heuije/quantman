@@ -1219,7 +1219,12 @@ def _build_relation(ir, dataset, result, disp: str) -> bytes:
 
 
 def _build_event(ir, dataset, result, disp: str) -> bytes:
-    """RELATE event-study — 윈도별 이벤트 후 수익 분포(MAE/MFE 포함) 감사표."""
+    """RELATE event-study — 윈도별 요약 + 이벤트 원자료(집계 전 증빙) + 원자료 재계산 라이브 수식(#4b).
+
+    엔진 요약(표본·평균·양(+)비율)을 '이벤트원자료' 시트의 셀 수식(COUNT·AVERAGE·COUNTIF)으로
+    재계산해 나란히 보여 → 사용자가 요약이 *어떤 이벤트들에서* 나왔는지 직접 검산(증빙 패리티).
+    """
+    from .run import event_records
     S = _styles()
     wb = Workbook()
     ws = wb.active
@@ -1239,8 +1244,50 @@ def _build_event(ir, dataset, result, disp: str) -> bytes:
             ws.cell(r, 2 + j, _num(ev.get(k))).number_format = fmt
         r += 1
     ws.freeze_panes = "A4"
+
+    # ── 이벤트 원자료 시트 (집계 전 — 이벤트별 종목·일자·윈도별 forward수익%) ──
+    rec = event_records(ir, dataset)
+    rwins = rec.get("windows") or []
+    raw = wb.create_sheet("이벤트원자료")
+    _title(raw, f"{disp} — 이벤트 원자료 (집계 전 {rec.get('n_events', '?')}건)", S)
+    _header(raw, 3, ["종목", "일자"] + [f"+{w}일수익%" for w in rwins], S)
+    rr = 4
+    for e in rec.get("events", []):
+        raw.cell(rr, 1, e.get("symbol"))
+        raw.cell(rr, 2, e.get("date"))
+        ends = e.get("ends") or {}
+        for j, w in enumerate(rwins):
+            v = ends.get(w)
+            if v is not None:
+                raw.cell(rr, 3 + j, round(float(v), 4)).number_format = "0.00"
+        rr += 1
+    raw.freeze_panes = "A4"
+    raw.column_dimensions["A"].width = 12
+    raw.column_dimensions["B"].width = 12
+    first_row, last_row = 4, max(4, rr - 1)
+    if rec.get("truncated"):
+        raw.cell(rr + 1, 1, f"※ 이벤트가 많아 앞 {len(rec.get('events') or [])}건만 표기 — "
+                            "아래 재계산은 표기분 기준(엔진 요약은 전체)").font = S["italic"]
+
+    # ── 라이브 검증: 원자료에서 표본·평균·양(+)비율 재계산 → 엔진 요약과 대조(증빙 패리티) ──
+    has_rows = bool(rwins and rec.get("events"))
+    vr = r + 1
+    ws.cell(vr, 1, "라이브 검증 (원자료 재계산 — 엔진 요약과 일치 확인)").font = S["accent"]
+    _header(ws, vr + 1, ["윈도(일)", "표본 =COUNT", "평균수익% =AVERAGE", "양(+)비율% =COUNTIF>0/COUNT"], S)
+    vrr = vr + 2
+    for j, w in enumerate(rwins):
+        col = get_column_letter(3 + j)
+        rng = f"이벤트원자료!{col}{first_row}:{col}{last_row}"
+        ws.cell(vrr, 1, str(w))
+        if has_rows:
+            ws.cell(vrr, 2, f"=COUNT({rng})").number_format = "#,##0"
+            ws.cell(vrr, 3, f"=IFERROR(AVERAGE({rng}),0)").number_format = "0.00"
+            ws.cell(vrr, 4, f"=IFERROR(COUNTIF({rng},\">0\")/COUNT({rng})*100,0)").number_format = "0.0"
+        vrr += 1
+
     _methodology(wb, ir, f"{disp} — 이벤트 스터디 방법론", [
         ("이벤트 스터디", "이벤트(조건 충족) 발생 후 forward 윈도 수익 분포. MAE=구간내 최대손실, MFE=최대이익."),
-        ("값 only(감사표)", "엔진 산출 이벤트 통계를 그대로 표기."),
+        ("원자료 + 재계산 (증빙)", "'이벤트원자료' 시트에 이벤트별 종목·일자·윈도수익을 그대로 싣고, "
+         "표본·평균·양(+)비율을 셀 수식(COUNT·AVERAGE·COUNTIF)으로 재계산 → 엔진 요약과 일치 확인."),
     ], S, result=result)
     return _save(wb)

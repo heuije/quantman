@@ -174,11 +174,94 @@ def test_run_chat_turn_persists_error_reply_on_failure():
         def __init__(self): self.messages = _BoomMessages()
 
     parts = chat_agent.run_chat_turn(s, conv.id, "질문", client=_BoomClient())
-    # 오류 답변 반환(고아 아님) + user+assistant 둘 다 영속
-    assert any(p["type"] == "text" and "오류" in p["text"] for p in parts)
+    # fail-soft 답변 반환(막다른길 아님·고아 아님) + user+assistant 둘 다 영속
+    assert any(p["type"] == "text" and "다시 시도" in p["text"] for p in parts)
     rows = s.exec(select(Message).where(Message.conversation_id == conv.id)
                   .order_by(Message.id)).all()
     assert [r.role for r in rows] == ["user", "assistant"]
+
+
+# ── T3 (Wave 2 Phase 1): 크래시 fail-soft ─────────────────────────────────────
+def test_classify_failure_transient_vs_analysis():
+    """실패 부류: anthropic API 오류=일시적(재시도 유효) vs 그 외=결정적(조건 조정 필요)."""
+    import anthropic
+
+    class _FakeAPIErr(anthropic.APIError):
+        def __init__(self): pass        # 베이스 __init__(request 요구) 우회 — isinstance만 검사
+    assert chat_agent._classify_failure(_FakeAPIErr()) == "transient"
+    assert chat_agent._classify_failure(RuntimeError("engine boom")) == "analysis"
+    assert chat_agent._classify_failure(ValueError()) == "analysis"
+
+
+def test_failure_message_class_and_partial():
+    """fail-soft 메시지: 부류별 원인·복구 + 부분결과 있으면 안내 문구."""
+    m = chat_agent._failure_message("transient", had_partial=False)
+    assert "일시적" in m and "다시 시도" in m and "중간 결과" not in m
+    m2 = chat_agent._failure_message("analysis", had_partial=True)
+    assert "중간 결과" in m2 and "좁혀" in m2 and "다시 시도" in m2
+
+
+def test_tool_unexpected_raise_yields_structured_result(monkeypatch):
+    """도구가 예기치 못한 예외로 죽어도 턴은 막다른길이 아니라 구조화 결과로 이어진다(#4a 근본).
+
+    엔진(strategy_from_spec 등)이 도구 가드를 빠져나가 raise → success=False·status=infeasible
+    tool_result(모델 피드백) + 최종 답변까지 도달. 한 도구 크래시가 전체 대화를 죽이지 않는다.
+    """
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+
+    def _boom(name, inp):       # noqa: ARG001
+        raise RuntimeError("engine exploded")
+    monkeypatch.setattr(chat_agent, "run_tool", _boom)
+    queue = [
+        _Resp([_Block(type="tool_use", id="t1", name="screen",
+                      input={"score_ref": "__SELF__.pb_ratio", "top_n": 3})], "tool_use"),
+        _Resp([_Block(type="text", text="죄송해요, 그 분석은 실패했어요.")], "end_turn"),
+    ]
+    parts = chat_agent.run_chat_turn(s, conv.id, "스크리닝", client=_FakeClient(queue))
+    tr = next(p for p in parts if p["type"] == "tool_result")
+    assert tr["result"]["success"] is False
+    assert tr["result"]["status"] == "infeasible"          # 구조화(막다른 텍스트 아님)
+    assert "다시 시도" in tr["result"]["verdict"]
+    assert any(p["type"] == "text" and "실패" in p["text"] for p in parts)   # 턴은 최종답변까지 도달
+    rows = s.exec(select(Message).where(Message.conversation_id == conv.id)
+                  .order_by(Message.id)).all()
+    assert [r.role for r in rows] == ["user", "assistant"]   # 고아 없이 영속
+
+
+def test_turn_crash_failsoft_notes_partial_and_records_status(monkeypatch):
+    """루프 자체(LLM 스트림)가 죽으면 막다른 '잠시 후 다시' 대신 부류별 복구 + 부분결과 안내.
+
+    1라운드 도구 성공 후 2라운드 스트림이 죽는 시나리오 → 중간 결과 안내 + 재시도 제안,
+    메트릭은 ok=False·result_status='error'(bad_result_rate 포착).
+    """
+    from app.models import ChatTurnMetric
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    monkeypatch.setattr(chat_agent, "run_tool",
+                        lambda name, inp: {"success": True, "query": "select",
+                                           "as_of": "2026-06-17", "universe_size": 5,
+                                           "results": [{"symbol": "AAA", "score": 0.8}]})
+
+    class _CrashOnSecond:
+        def __init__(self): self.n = 0
+        def stream(self, **kw):     # noqa: ARG002
+            self.n += 1
+            if self.n == 1:
+                return _FakeStream(_Resp([_Block(type="tool_use", id="t1", name="screen",
+                                                 input={"score_ref": "__SELF__.pb_ratio",
+                                                        "top_n": 3})], "tool_use"))
+            raise RuntimeError("stream died")
+
+    class _C:
+        def __init__(self): self.messages = _CrashOnSecond()
+    parts = chat_agent.run_chat_turn(s, conv.id, "스크리닝", client=_C())
+    assert any(p["type"] == "tool_result" and p["result"].get("success") for p in parts)  # 부분결과 보존
+    txt = next(p["text"] for p in parts if p["type"] == "text")
+    assert "중간 결과" in txt and "다시 시도" in txt
+    met = s.exec(select(ChatTurnMetric)
+                 .where(ChatTurnMetric.conversation_id == conv.id)).first()
+    assert met.ok is False and met.result_status == "error"
 
 
 def test_history_reconstructs_alternating_rounds():

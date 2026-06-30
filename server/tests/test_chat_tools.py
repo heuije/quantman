@@ -153,6 +153,76 @@ def test_compact_failure():
     assert "실패" in out and "전략 파싱 오류" in out
 
 
+# ── T1 (Wave 2): 방법론 자기서술 — 모델이 백테스트 로직을 봄 ────────────────────
+_BT_IR = {"universe": {"kind": "list", "symbols": ["005930"]},
+          "signal": {"op": "compare", "params": {"op": ">="}, "inputs": {
+              "left": {"op": "data", "params": {"ref": "__SELF__.pct_change_1d"}},
+              "right": {"op": "const", "params": {"value": 0.001}}}},
+          "position": {"direction": "long", "entry": {"mode": "on_signal"},
+                       "sizing": {"mode": "pct_cash", "amount_pct": 10.0},
+                       "exit": {"hold_days": 5}}}
+
+
+def test_compact_includes_methodology_for_backtest():
+    """T1: 백테스트 결과면 compact_summary가 방법론(기간·기준자본·종목·방향·사이징)을 모델 식단
+    앞에 노출 → 모델이 백테스트 로직을 답에 서술한다(#7·#3). 기간은 equity 날짜에서 파생."""
+    res = {"success": True, "shape": "simulate", "ir": _BT_IR,
+           "equity": [{"date": "2015-01-02", "value": 100.0},
+                      {"date": "2024-12-30", "value": 150.0}],
+           "metrics": {"cagr": 3.46, "sharpe": 0.26, "mdd": -20.0,
+                       "total_return": 50.0, "n_trades": 30}}
+    out = compact_summary("simulate", res)
+    assert "[분석 방법]" in out
+    assert "2015-01-02~2024-12-30" in out          # 기간(equity 날짜)
+    assert "100,000,000" in out                    # 기준자본 1억
+    assert "[백테스트]" in out and "3.46" in out     # 메트릭은 그대로 유지
+    assert out.index("[분석 방법]") < out.index("[백테스트]")   # 방법론이 메트릭 앞(맥락 먼저)
+
+
+def test_compact_no_methodology_for_non_backtest():
+    """스크린·종목분석 등 비백테스트는 방법론 블록을 붙이지 않는다(방향/청산이 무의미)."""
+    res = {"success": True, "query": "select", "shape": "select", "as_of": "2026-06-17",
+           "universe_size": 10, "results": [{"symbol": "AAA", "score": 0.8}],
+           "ir": {"universe": {"kind": "all"}, "signal": {"op": "data", "params": {"ref": "x"}},
+                  "query": "select", "select": {"top_n": 3}}}
+    out = compact_summary("screen", res)
+    assert "[분석 방법]" not in out and "AAA" in out
+
+
+def test_serialize_preserves_event_composition():
+    """T7: axis 직렬화가 composition을 보존한다(모델·UI·엑셀이 구성 분해를 받게 — 화이트리스트)."""
+    from app.serialize import serialize_ir_result
+    raw = {"success": True, "axis": "time", "basis": "close", "n_events": 3, "windows": ["5"],
+           "overall": {"5": {"mean": 1.0}}, "shape": "event_study",
+           "composition": {"by_symbol": {"AAA": 2, "BBB": 1}, "by_year": {"2020": 3}}}
+    out, kind = serialize_ir_result(raw)
+    assert kind == "axis"
+    assert out.get("composition", {}).get("by_symbol", {}).get("AAA") == 2
+
+
+def test_attach_methodology_for_backtest():
+    """T2: 백테스트 결과에 structured 방법론(기간·기준자본·confirmed/assumed)이 붙어 웹이 패널 렌더."""
+    res = {"success": True, "shape": "simulate", "ir": _BT_IR,
+           "equity": [{"date": "2015-01-02", "value": 100.0},
+                      {"date": "2024-12-30", "value": 150.0}],
+           "metrics": {"cagr": 3.0}}
+    out = chat_tools.attach_methodology(res)
+    m = out["methodology"]
+    assert m["period"] == "2015-01-02~2024-12-30"
+    assert m["initial_capital"] == 100_000_000          # 기본 1억(#3)
+    labels = {d["label"] for d in m["confirmed"]}
+    assert "방향" in labels and "사이징" in labels
+    assert m["assumed"]                                  # 수수료·슬리피지 등 가정
+
+
+def test_attach_methodology_skips_non_backtest():
+    res = {"success": True, "shape": "select", "ir": {"universe": {"kind": "all"},
+           "signal": {"op": "data", "params": {"ref": "x"}}, "query": "select",
+           "select": {"top_n": 3}}}
+    out = chat_tools.attach_methodology(res)
+    assert "methodology" not in out                      # 스크린은 방법론 패널 미부착
+
+
 def test_load_dataset_invalid_ir_returns_empty():
     # 파싱 불가 IR(필수 signal 없음) → {} 반환(엔진 검증경로로 위임), 예외 전파 안 함.
     assert chat_tools._load_dataset({}) == {}

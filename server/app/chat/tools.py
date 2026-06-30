@@ -11,7 +11,9 @@ import copy
 import quant_core as qc
 from pydantic import ValidationError
 from quant_core.ir_engine import (StrategyIR, needed_columns, needed_symbols,
-                                   param_manifest, strategy_from_spec, summarize_result)
+                                   param_manifest, result_shape, strategy_from_spec,
+                                   summarize_result)
+from quant_core.ir_engine.execution_summary import execution_summary, methodology_brief
 
 from ..compile_service import compile_strategy
 from ..models import Message
@@ -510,7 +512,52 @@ def compact_summary(tool_name: str, result: dict) -> str:
     if tool_name == "save_strategy" or result.get("strategy_id") is not None:
         return (f"[save_strategy] '{result.get('name')}' 전략을 draft로 저장(id={result.get('strategy_id')}). "
                 "모의/실전은 웹 자동매매 메뉴에서.")
-    return _status_header(result) + summarize_result(result)
+    return _status_header(result) + _methodology_header(result) + summarize_result(result)
+
+
+def _equity_period(result: dict) -> str | None:
+    """백테스트 결과의 실제 기간 = equity 곡선 첫~마지막 날짜(직렬화된 {date,value} points)."""
+    eq = result.get("equity")
+    if isinstance(eq, list) and eq and isinstance(eq[0], dict):
+        start, end = eq[0].get("date"), eq[-1].get("date")
+        if start and end:
+            return f"{start}~{end}"
+    return None
+
+
+def _methodology_header(result: dict) -> str:
+    """백테스트 결과면 방법론(기간·기준자본·유니버스·방향·사이징·진입/청산·체결가정)을 모델 식단
+    맨 앞(status 헤더 다음)에 노출 — 모델이 백테스트 로직을 답에 서술하게 한다(증상 #7·#3·#1).
+    IR이 동봉되고 형상이 백테스트(simulate·sweep)일 때만(스크린·종목분석은 방향/청산 무의미)."""
+    ir = result.get("ir")
+    if not isinstance(ir, dict) or result_shape(result) not in ("simulate", "sweep"):
+        return ""
+    line = methodology_brief(ir, _equity_period(result))
+    return f"{line}\n" if line else ""
+
+
+def attach_methodology(result: dict) -> dict:
+    """백테스트 결과에 structured 방법론(execution_summary 4분류 + 기간 + 기준자본)을 붙여 **웹이
+    방법론 패널을 렌더**하게 한다 — provenance.ir_summary의 사용자 표면(증상 #7·#1). 사실 출처는
+    core execution_summary 단일(TS에 가정값·로직 중복 금지 → 드리프트 방지). 비백테스트·IR 없음은
+    무동작. 주석 실패가 결과를 깨지 않도록 격리(best-effort)."""
+    if not isinstance(result, dict):
+        return result
+    ir = result.get("ir")
+    if not isinstance(ir, dict) or result_shape(result) not in ("simulate", "sweep"):
+        return result
+    try:
+        spec = execution_summary(ir)
+        cap = StrategyIR.model_validate(ir).simulation.initial_capital
+    except Exception:   # noqa: BLE001 — 방법론 주석 실패가 결과를 깨면 안 됨
+        return result
+    result["methodology"] = {
+        "period": _equity_period(result),
+        "initial_capital": cap,
+        "confirmed": spec.get("confirmed") or [],
+        "assumed": spec.get("assumed") or [],
+    }
+    return result
 
 
 def _status_header(result: dict) -> str:

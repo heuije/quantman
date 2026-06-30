@@ -108,3 +108,46 @@ def test_failure_is_infeasible():
 
 def test_non_dict_infeasible():
     assert classify_status(None)["status"] == "infeasible"
+
+
+# ── T4 (Wave 2): 관계분석(IC·회귀·상관) 0표본 → 정직 status (빈 차트 차단) ───────
+def test_ic_zero_sample_is_data_insufficient():
+    """공통구간 부족 IC는 횡단 표본이 0 → ok로 흘려보내지 않고 data_insufficient로 정직 고지
+    (증상 #9b — 좋은 가설이 빈 차트로 죽던 C측 뿌리). 단일종목은 엔진이 success=False로 별도 차단."""
+    r = classify_status({"success": True, "shape": "relate_ic", "axis": "relation",
+                         "relation": "ic", "windows": ["21"],
+                         "by_window": {"21": {"overall": {"n": 0, "mean": None}}}})
+    assert r["status"] == "data_insufficient" and "이벤트스터디" in r["verdict"]
+
+
+def test_ic_with_samples_is_ok():
+    r = classify_status({"success": True, "shape": "relate_ic", "axis": "relation",
+                         "relation": "ic", "windows": ["21"],
+                         "by_window": {"21": {"overall": {"n": 240, "mean": 0.03}}}})
+    assert r["status"] == "ok"
+
+
+def test_ic_low_sample_ok_low_confidence():
+    r = classify_status({"success": True, "shape": "relate_ic", "axis": "relation",
+                         "relation": "ic", "windows": ["21"],
+                         "by_window": {"21": {"overall": {"n": 3, "mean": 0.1}}}})
+    assert r["status"] == "ok" and "신뢰도" in r["verdict"]
+
+
+def test_correlation_zero_obs_data_insufficient():
+    r = classify_status({"success": True, "shape": "correlation_matrix", "axis": "relation",
+                         "relation": "correlation", "symbols": ["A", "B"], "n_obs": 0})
+    assert r["status"] == "data_insufficient"
+
+
+def test_regression_zero_periods_data_insufficient():
+    r = classify_status({"success": True, "shape": "relate_regression", "axis": "relation",
+                         "relation": "regression", "windows": ["21"],
+                         "by_window": {"21": {"n_periods": 0, "factors": None}}})
+    assert r["status"] == "data_insufficient"
+
+
+def test_single_symbol_ic_infeasible_preserved():
+    # 단일종목 IC는 엔진이 _empty(success=False)로 → infeasible(기존 동작 회귀 잠금)
+    r = classify_status({"success": False, "error": "IC 분석은 종목이 2개 이상이어야 합니다."})
+    assert r["status"] == "infeasible" and "2개 이상" in r["verdict"]
