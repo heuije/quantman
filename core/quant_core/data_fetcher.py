@@ -135,9 +135,16 @@ MACRO_OTHER = ["암호화폐공포탐욕"]
 MACRO_DERIVED = ["VIX 기간구조", "구리금비율", "회사채신용스프레드",
                  "버핏지수", "실질기준금리"]
 
+# KR 시장지표 — 공식 KRX Open API(data/feeds/krx_openapi.py)가 수집. fetch_all 아님.
+MACRO_KRX_SYMBOLS = ["코스피200변동성지수", "옵션풋콜비율", "KRX채권지수",
+                     "국고채3년", "국고채10년",
+                     "코스피200선물미결제약정", "코스닥150선물미결제약정",
+                     "KRETF순자산총액", "KRETF순자금유입"]
+
 ASSET_SYMBOLS = list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + ["비트코인"] + CSV_SEEDED_FUTURES
 MACRO_SYMBOLS = (list(MACRO_YF_SYMBOLS) + list(MACRO_FRED_SYMBOLS)
-                 + list(MACRO_FRED_LAGGED) + MACRO_OTHER + MACRO_DERIVED)
+                 + list(MACRO_FRED_LAGGED) + MACRO_OTHER + MACRO_DERIVED
+                 + MACRO_KRX_SYMBOLS)
 ALL_SYMBOLS = ASSET_SYMBOLS + MACRO_SYMBOLS
 
 # 종목 카테고리 — 조건 빌더 UI에서 종목 목록을 그룹화하기 위한 분류.
@@ -171,6 +178,13 @@ SYMBOL_CATEGORY: dict[str, str] = {
     "구리금비율": "거시지표", "버핏지수": "거시지표",
     # 심리
     "암호화폐공포탐욕": "심리",
+    "옵션풋콜비율": "심리",
+    "코스피200선물미결제약정": "심리", "코스닥150선물미결제약정": "심리",
+    "KRETF순자금유입": "심리",
+    # KR 시장지표 (공식 KRX API)
+    "코스피200변동성지수": "변동성",
+    "KRX채권지수": "금리·환율", "국고채3년": "금리·환율", "국고채10년": "금리·환율",
+    "KRETF순자산총액": "거시지표",
 }
 
 
