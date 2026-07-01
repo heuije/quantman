@@ -1082,7 +1082,8 @@ class Trader:
                               dataset: dict, equity_now: float,
                               decisions: list[dict],
                               catchup: bool = False,
-                              cand_direction: str | None = None) -> bool:
+                              cand_direction: str | None = None,
+                              is_close_entry: bool = False) -> bool:
         """수동(단일/다중) 종목 1개에 대해 사이징 + 발주 (EOD-순수 모델).
 
         Phase 30: 매수 path는 전일 종가만으로 결정. KIS 현재가 호출 없음.
@@ -1106,6 +1107,16 @@ class Trader:
                 "skip_no_data", strategy_id, strat_name, symbol,
                 "전일 종가가 0 — 데이터 이상"))
             return False
+
+        # 종가 진입(fill=close): 참조가를 종가 무렵 현재가로 교체. 전일종가 기준은 15:40 시점엔
+        # 오늘 등락만큼 stale → 지정가가 종가 단일가창을 빗나가 미체결된다. 청산(liquidate_day_
+        # trades)이 쓰는 것과 동일하게 _safe_price(현재가) 기준으로 통일한다 — 이후 사이징·발주가·
+        # 선물 orderable 힌트가 모두 이 참조가를 쓴다. 현재가 조회 실패 시 dataset 전일종가 유지
+        # (발주 보류보다 나은 근사 — 청산 fallback과 동형).
+        if is_close_entry:
+            cur = self._safe_price(symbol)
+            if cur and cur > 0:
+                prev_close = cur
 
         # Phase 48 — 거래정지·관리종목·투자위험 자동 차단. KIS broker가 거부로
         # 2차 안전망을 제공하나 사이클 중 불필요한 발주 시도를 줄인다. status를
@@ -1284,7 +1295,9 @@ class Trader:
                               decisions: list[dict],
                               sold_this_cycle: set[str],
                               market: str = "KRX",
-                              catchup: bool = False) -> None:
+                              catchup: bool = False,
+                              entry_window: str = "open",
+                              instrument_class: str | None = None) -> None:
         """Phase 37: 서버 preview의 candidates 종목을 직접 발주.
 
         매수 신호 재평가는 skip (preview가 어제 18:15에 이미 평가).
@@ -1318,6 +1331,26 @@ class Trader:
                 # 서버 preview에 있지만 로컬엔 배정 안 된 전략 — skip
                 continue
             strat_name, strat_def, acct_ref = name_def
+            # 진입창 라우팅(fill) — 엔진 defer(fill=="next_open")와 동일 분할: next_open은
+            # 아침 시가창(open), close/typical은 종가창(close)이 전담한다. 한 창에서 다른 fill
+            # 전략을 진입하지 않는다 — 종가매수(fill=close)가 아침 시가창서 시가진입 전략들과
+            # 증거금 경쟁에 밀려 미체결되던 근본(전략18)을 닫는다. 종가매수 진입은 종가창 전담.
+            strat_fill = (strat_def.get("simulation") or {}).get("fill") or "next_open"
+            is_close_fill = strat_fill in ("close", "typical")
+            if (entry_window == "open") == is_close_fill:
+                continue
+            # degenerate 방어 — 종가매수(fill=close)+당일청산(hold_days==0)은 진입한 바에 청산할
+            # 창이 없다(백테스트는 진입=청산 바라 순노출 0). 라이브는 종가에 진입 후 청산 창이
+            # 없어 오버나이트로 남아 backtest≠live가 된다 → 진입 안 하고 표면화(오버나이트 롱은
+            # 보유일수≥1로). 아침창(fill=next_open+hold_days==0=정상 당일매매)은 이 분기에 안 온다.
+            if entry_window == "close":
+                _hd = ((strat_def.get("position") or {}).get("exit") or {}).get("hold_days")
+                if _hd == 0:
+                    decisions.append(order_log.decision(
+                        "skip_unsupported", sid, strat_name, "",
+                        "종가매수+당일청산(보유일수 0)은 청산 창이 없어 진입하지 않습니다 — "
+                        "오버나이트 롱은 보유일수를 1 이상으로 설정하세요"))
+                    continue
             # P5-3 (계좌-전략 연동) — 전략이 특정 계좌(account_ref)에 묶였는데 그 계좌가 현재
             # 활성 계좌가 아니면 전략 통째 skip. 모의 검증 전략이 실전 계좌로 무경고 실거래되는
             # 것(C7)을 식별자 차원에서 차단. account_ref=None(레거시·미바인딩)은 통과(기존 거동).
@@ -1364,13 +1397,20 @@ class Trader:
                 # 시장 배칭 — 이번 사이클 시장의 후보만 진입
                 if _market_group_safe(symbol) != market:
                     continue
+                # 종가창은 클래스별 분리 발주창(주식 15:25·선물 15:40)이라 클래스도 필터한다 —
+                # 15:25 주식 종가창이 선물 후보를 진입(또는 그 반대)하지 않도록. 아침 시가창
+                # (instrument_class=None)은 주식·선물을 같은 08:55에 함께 진입(기존 거동 유지).
+                if instrument_class is not None:
+                    if (instrument_class == "futures") != qc.is_futures(symbol):
+                        continue
                 ledger_key = f"{sid}:{symbol}" if is_multi_key else sid
                 if ledger_key in self.ledger or ledger_key in sold_this_cycle:
                     continue
                 if self._try_buy_one_symbol(
                         ledger_key, sid, strat_name, strat_def,
                         symbol, dataset, equity_now, decisions,
-                        catchup=catchup, cand_direction=c.get("direction")):
+                        catchup=catchup, cand_direction=c.get("direction"),
+                        is_close_entry=(entry_window == "close")):
                     bought += 1
                     n_preview_used += 1
 
@@ -1463,7 +1503,7 @@ class Trader:
         return self._state_payload(decisions, today, kind="emergency_liquidation")
 
     def liquidate_day_trades(self, dataset: dict, instrument_class: str, *,
-                             market: str = "KRX") -> dict:
+                             market: str = "KRX", record_cycle: bool = True) -> dict:
         """당일매매(hold_days==0) 종가 청산 사이클 — 일반 cycle과 독립·additive (Stage B).
 
         당일매매는 백테스트에서 진입 바 종가에 청산한다. 라이브는 사이클이 아침·종가로
@@ -1588,8 +1628,130 @@ class Trader:
             and qc.is_futures(p.get("symbol", "")) == (instrument_class == "futures"))
         return self._state_payload(
             decisions, today, kind="day_trade_close", market=market,
+            record_cycle=record_cycle,
             extra_summary={"instrument_class": instrument_class,
                            "n_pending_unresolved": n_unresolved})
+
+    def enter_close_candidates(self, by_strategy: list[dict],
+                               strategies: list[dict], dataset: dict,
+                               risk_limits: dict | None = None, *,
+                               market: str = "KRX",
+                               instrument_class: str = "stock") -> dict:
+        """종가창 진입 — fill=close/typical 전략을 종가 무렵 발주 (Stage C, additive).
+
+        아침 시가창(run_cycle)은 fill=next_open만 진입하고, 종가매수(fill=close)는 이 경로가
+        종가 발주창(주식 15:25·선물 15:40·미장 마감−5분)에 전담한다. 진입 로직(사이징·발주·
+        ledger·게이트)은 아침과 동일한 _enter_from_preview 재사용 — 참조가만 종가 무렵 현재가
+        (is_close_entry). 청산(익일 시가매도 등 hold_days≥1)은 다음날 아침 청산 패스가 처리하므로
+        여기선 진입만 한다. 킬스위치·drawdown 게이트는 아침 진입(_cycle_body §3)과 동일 의미로
+        적용해 일중 손실 회로가 열렸으면 신규 종가진입도 차단한다(day_start 앵커·손실한도 발동은
+        아침 cycle·장중 loop가 담당 — 여기선 그 상태만 읽는다).
+
+        instrument_class로 주식/선물 분리(스케줄러가 클래스별 cron으로 호출 — 종가창 시각이 다름).
+        _CYCLE_LOCK으로 장중 ks·settlement 트리거와 직렬화(아침 cycle과 동일 규약).
+        """
+        with _CYCLE_LOCK:
+            self._in_cycle = True
+            self._krx_status = {}      # 종가창 halt 미조회 — 브로커 거부가 2차 안전망(아침 fallback과 동형)
+            self._reserved_us = False  # 종가 진입은 즉시 주문(예약 아님)
+            try:
+                return self._enter_close_body(by_strategy, strategies, dataset,
+                                              risk_limits or {}, market, instrument_class)
+            finally:
+                self._in_cycle = False
+                self._reserved_us = False
+
+    def _enter_close_body(self, by_strategy, strategies, dataset, rl,
+                          market, instrument_class) -> dict:
+        decisions: list[dict] = []
+        today = kst_today()
+        # 미체결 정합 후 잔고 — 아침 cycle과 동일 순서(미기록 체결 복원 뒤 사이징).
+        self._resolve_pending(decisions)
+        try:
+            snap_pre = self.broker.account_snapshot()
+            equity_now = _unified_equity_krw(snap_pre["balance"])
+        except Exception as e:
+            log.error("[종가진입] 잔고 조회 실패 — 진입 보류: %s", e)
+            decisions.append(order_log.decision(
+                "skip_kis_health", "", "", "",
+                f"KIS 잔고 조회 실패 — 종가 진입 보류: {e}"))
+            return self._state_payload(
+                decisions, today, kind="day_trade_close", market=market,
+                record_cycle=False,
+                extra_summary={"instrument_class": instrument_class, "n_bought": 0})
+        balance_fetch_failed = list(
+            (snap_pre.get("balance") or {}).get("fetch_failed") or [])
+        # 잔고 부분조회 실패 — 손실한도·drawdown 평가 보류를 표면화(아침 §1과 동일 계약). 부분
+        # equity는 거짓 −98% 폭락으로 읽혀(06-09 킬스위치 오발동 실증) 위험 결정을 오염시키므로
+        # 측정이 완전할 때만 평가한다. 진입 자체는 아침과 동일하게 계속(가용성 우선 — understated
+        # equity는 보수적 사이징이라 과매수 위험 없음).
+        if balance_fetch_failed:
+            log.critical("[종가진입] 잔고 부분조회 %s — 손실한도·drawdown 평가 보류 "
+                         "(부분 equity %s원)", balance_fetch_failed, f"{equity_now:,.0f}")
+            decisions.append(order_log.decision(
+                "risk_eval_skipped", "", "", "",
+                f"잔고 부분조회 실패 {balance_fetch_failed} — 손실한도·drawdown 평가 보류"))
+
+        # 리스크 한도 인스턴스 상태 — 아침 _cycle_body와 동일(발주 직전 _try_buy_one_symbol 참조).
+        global_policy = merged_execution(None)
+        self._us_bp_mode = rl.get("us_buying_power_mode") or "integrated"
+        _dll = rl.get("kill_switch_daily_loss_pct")
+        self._daily_loss_limit_pct = float(_dll) if _dll is not None else None
+        self._daily_turnover_limit_krw = int(rl.get("daily_turnover_limit_krw") or 0)
+        self._daily_trade_count_limit = int(rl.get("daily_trade_count_limit") or 0)
+
+        # 킬스위치·drawdown 게이트 (아침 진입 §1/§3 미러) — 신규 진입만 차단(청산은 무관).
+        ks_state = killswitch.load()
+        ks_active = bool(ks_state.get("active"))
+        # 일일 손실 한도 재평가 — 장중 손절 loop는 15:30 종료라, 선물 종가창(15:40)과 주식
+        # 종가 단일가(15:25~15:30)에서 새로 터진 일일 손실을 (멈춘) loop도 아침 cycle도 못 잡는다.
+        # day_start 앵커는 아침 cycle(또는 catch-up)이 이미 설정했으므로 여기선 update 없이
+        # check만 — 한도 초과면 신규 종가 진입을 차단한다(장 막판 손실을 종가에 키우는 것 방지).
+        if (not balance_fetch_failed and not ks_active
+                and self._daily_loss_limit_pct is not None):
+            reason = killswitch.check_daily_loss(equity_now, self._daily_loss_limit_pct)
+            if reason:
+                killswitch.activate(reason)
+                ks_active = True
+                ks_state = killswitch.load()
+        _user_dd = rl.get("max_drawdown_pct")
+        max_dd = _user_dd if _user_dd is not None else global_policy.get("max_drawdown_pct")
+        drawdown_active = False
+        if max_dd is not None and not balance_fetch_failed and equity_now > 0:
+            peak = equity_now
+            for e in self.equity:
+                v = float(e.get("value") or 0)
+                if v > peak:
+                    peak = v
+            if peak > 0 and (equity_now - peak) / peak * 100 <= -abs(float(max_dd)):
+                drawdown_active = True
+
+        if ks_active:
+            decisions.append(order_log.decision(
+                "skip_killswitch", "", "", "",
+                f"종가 진입 차단 — {ks_state.get('reason', '')}"))
+        elif drawdown_active:
+            decisions.append(order_log.decision(
+                "skip_drawdown", "", "", "",
+                "종가 진입 차단 — 누적 drawdown 한도 도달"))
+        elif by_strategy:
+            # entry_window="close" → _enter_from_preview가 is_close_entry(현재가 참조)를 내부 파생.
+            self._enter_from_preview(by_strategy, strategies, dataset, equity_now,
+                                     decisions, set(), market=market,
+                                     entry_window="close",
+                                     instrument_class=instrument_class)
+
+        # 종가 단일가 체결 지연 흡수 — 아침 cycle과 동일 wait(기본 60s/20s 폴링).
+        self._wait_pending(global_policy["post_submit_wait_sec"],
+                           global_policy["poll_interval_sec"], decisions)
+        n_bought = sum(1 for d in decisions if d["action"] == "bought")
+        # kind=day_trade_close + record_cycle=False: 종가창 진입을 별도 슬롯/로컬 cycle로 만들지
+        # 않고 run_close_cycle이 청산(day_trade_close)과 병합해 1회 push한다 — 서버 종가 슬롯
+        # (trading.py: kind="day_trade_close")에 진입 n_bought까지 함께 매칭(서버 무변경).
+        return self._state_payload(
+            decisions, today, kind="day_trade_close", market=market,
+            record_cycle=False,
+            extra_summary={"instrument_class": instrument_class, "n_bought": n_bought})
 
     def state_snapshot(self) -> dict:
         """현 상태(잔고·포지션·kill_switch) 스냅샷 — 거래 없이 상태 변경(kill-switch 해제·
@@ -1931,9 +2093,11 @@ class Trader:
                 f"신규 진입 차단 — 누적 drawdown {drawdown_pct:.2f}% "
                 f"(한도 -{float(max_drawdown_limit_pct):.1f}%)"))
         elif buy_candidates is not None:
+            # 아침 시가창 — fill=next_open 전략만 시가 진입(fill=close는 종가창 전담).
             self._enter_from_preview(buy_candidates, strategies, dataset,
                                        equity_now, decisions, sold_this_cycle,
-                                       market=market, catchup=catchup)
+                                       market=market, catchup=catchup,
+                                       entry_window="open")
 
         # ── 4. 미체결 짧게 대기 (시초가 동시호가 직후 대부분 잡힘) ───────
         # Q7: 300초 → 60초 (post_submit_wait_sec). DAY 정책으로 못 잡힌 분은

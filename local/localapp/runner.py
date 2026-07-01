@@ -419,49 +419,94 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
 
 
 def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dict:
-    """종가 청산 사이클 — 당일매매(hold_days==0) 포지션만 종가 기준 청산 (Stage B).
+    """종가 사이클 — 당일매매(hold_days==0) 청산(Stage B) + 종가매수(fill=close) 진입(Stage C).
 
-    아침 메인 cycle(08:55)은 시가 진입까지만 담당하고, 당일매매 청산은 이 사이클이
-    종가 발주창에 전담한다(국내주식 15:25·국내선물 15:40·미국주식·해외선물 폐장−5분). 매수·
-    preview·KIS intent reconcile은 불필요 — 청산은 ledger(보유)+dataset(ref/clamp)만 있으면
-    되므로 run_cycle의 무거운 진입 경로를 재사용하지 않고 격리한다(Over-engineering 회피).
+    아침 메인 cycle(08:55)은 시가 진입(fill=next_open)까지만 담당하고, 이 사이클이 종가 발주창
+    (국내주식 15:25·국내선물 15:40·미국주식·해외선물 폐장−5분)에서 두 가지를 전담한다:
+      · 청산: 당일매매(hold_days==0) 포지션을 종가 기준 청산(liquidate_day_trades).
+      · 진입: 종가매수(fill=close/typical) 전략을 종가 무렵 발주(enter_close_candidates) —
+              오버나이트 롱의 종가 진입. 익일 시가매도(hold_days≥1)는 다음날 아침 청산 패스가 처리.
+    진입이 붙으면서 preview·전략 pull이 필요해졌다(종전 청산-only는 ledger만 봤다). 서버 장애로
+    preview 없으면 청산만 진행(fail-soft). 청산을 먼저 해 마진을 회수한 뒤 진입한다.
 
     market ∈ {"KRX","US"}, instrument_class ∈ {"stock","futures"} — 시장·클래스별 종가창이
-    달라 스케줄러가 분리 잡으로 호출한다(US-F4: 해외선물도 폐장−5분에 청산 — 종전 stock만이라
-    선물 day-trade가 오버나이트 방치됐다. CME 정산시각 정밀정렬은 라이브 정밀화). 신규 Trader라
-    _reserved_us=False → trader.liquidate_day_trades가 클래스로 라우팅(국내=시장가 단일가,
-    미국=라이브 지정가 시장가근사).
+    달라 스케줄러가 분리 잡으로 호출한다. 신규 Trader라 _reserved_us=False → 국내=시장가 단일가,
+    미국=라이브 지정가 시장가근사. 청산·진입 decisions는 병합해 서버 종가 슬롯(day_trade_close)에
+    1회 push한다.
     """
     setup_logging()
     _flush_pending()
 
-    # L-03: KRX 휴장일이면 종가 청산도 무의미(체결 없음) — run_cycle과 동일 가드.
+    # L-03: KRX 휴장일이면 종가 청산·진입 모두 무의미(체결 없음) — run_cycle과 동일 가드.
     if market == "KRX":
         from quant_core import market_calendar as _mc
         from .trader import kst_today
         today = kst_today()
         if not _mc.is_session_day("KR", today):
-            log.info("KRX 휴장일 — 종가청산 사이클 skip (today=%s)", today.isoformat())
+            log.info("KRX 휴장일 — 종가 사이클 skip (today=%s)", today.isoformat())
             return {"status": "skipped_holiday", "market": "KRX",
                     "today": today.isoformat()}
 
     broker = make_broker()
     trader = Trader(broker)
 
-    # B1 — dataset을 보유 종목만 로드(매수 후보 없음 — 종가 청산은 진입 안 함).
-    # ref_price는 _safe_price(현재가) 우선, dataset Close는 fallback.
-    from . import dataset_scope
-    needed = dataset_scope.needed_symbols([], [], trader.ledger)
-    dataset = qc.load_dataset_for(needed, with_indicators=True)
-    log.info("종가청산 dataset 로드 — %d종목 (보유 scoped)", len(dataset))
+    # 종가매수 진입 후보 — 전략·preview pull(아침 cycle과 동일 소스). pull 실패해도 청산은
+    # 진행한다(fail-soft): 진입 없이 당일매매 청산만.
+    strategies: list[dict] = []
+    buy_candidates: list[dict] = []
+    try:
+        strategies = pull_strategies()
+    except Exception as e:
+        log.warning("[종가] 전략 pull 실패 — 종가진입 없이 청산만 진행: %s", e)
+    if strategies:
+        try:
+            preview = pull_preview()
+            buy_candidates = (preview or {}).get("by_strategy") or []
+        except Exception as e:
+            log.warning("[종가] preview pull 실패 — 종가진입 skip: %s", e)
 
-    payload = trader.liquidate_day_trades(dataset, instrument_class, market=market)
+    # dataset — 보유(청산 ref/clamp) + 종가매수 후보(진입 사이징·발주) 모두 포함.
+    from . import dataset_scope
+    needed = dataset_scope.needed_symbols(strategies, buy_candidates, trader.ledger)
+    dataset = qc.load_dataset_for(needed, with_indicators=True)
+    log.info("종가 사이클 dataset 로드 — %d종목 (보유+종가매수 후보 scoped)", len(dataset))
+
+    # ① 당일매매 청산 (마진 회수 우선). 진입이 뒤따르면 청산은 cycle 로그를 남기지 않고
+    #    (record_cycle=False) 아래에서 청산+진입을 병합한 cycle 1건만 기록한다(로컬 audit 일치).
+    payload = trader.liquidate_day_trades(
+        dataset, instrument_class, market=market, record_cycle=not buy_candidates)
+
+    # ② 종가매수(fill=close) 진입 — 청산 후. 병합해 day_trade_close 슬롯에 1회 push.
+    if buy_candidates:
+        risk_limits = pull_risk_limits()
+        entry = trader.enter_close_candidates(
+            buy_candidates, strategies, dataset, risk_limits,
+            market=market, instrument_class=instrument_class)
+        liq_cs = payload.get("cycle_summary") or {}
+        merged = list(payload.get("decisions") or []) + list(entry.get("decisions") or [])
+        payload = entry                       # 진입 후 최신 잔고/포지션 채택
+        payload["decisions"] = merged
+        payload["trades"] = [d for d in merged
+                             if d.get("action") in ("bought", "sold")]
+        # 요약 카운트는 청산+진입 병합 기준 재계산(진입 payload는 진입 decisions만 셌다).
+        cs = payload.get("cycle_summary") or {}
+        for key, act in (("n_sold", "sold"), ("n_bought", "bought"),
+                         ("n_rejected", "rejected"), ("n_unfilled", "unfilled"),
+                         ("n_errors", "error")):
+            cs[key] = sum(1 for d in merged if d["action"] == act)
+        cs["n_pending_unresolved"] = liq_cs.get("n_pending_unresolved", 0)
+        payload["cycle_summary"] = cs
+        # 병합 cycle 1건 로컬 기록 — 청산·진입 둘 다 record_cycle=False였으므로 여기서 1회.
+        from . import order_log
+        order_log.log_cycle(merged, cs)
+
     try:
         push_snapshot(payload)
-        log.info("종가청산 사이클 완료 (market=%s, class=%s)", market, instrument_class)
+        log.info("종가 사이클 완료 (market=%s, class=%s, 청산+진입)",
+                 market, instrument_class)
     except Exception as e:
         save_json(PENDING_PATH, payload)
-        log.warning("종가청산 동기화 실패 — 보류 큐 저장: %s", e)
+        log.warning("종가 사이클 동기화 실패 — 보류 큐 저장: %s", e)
     return payload
 
 

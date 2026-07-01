@@ -31,7 +31,7 @@ def cycle_exit_reason(strategy: StrategyIR, *, held_days: int,
     으로 치환; 외부 참조 종목은 _scoped가 보존).
 
     **당일매매(hold_days==0)**: 백테스트는 진입한 바의 종가에 청산한다(시가 진입 → 같은 날
-    종가 청산). 라이브는 사이클이 아침(08:55)·종가(15:25/15:43) 둘로 나뉘므로 호출자가
+    종가 청산). 라이브는 사이클이 아침(08:55)·종가(15:25/15:40) 둘로 나뉘므로 호출자가
     `is_close`로 어느 사이클인지 알린다 — 종가 사이클에서만 당일 청산해 backtest=live를 맞춘다.
       · is_close=True  → "당일청산"(종가 사이클: 당일 청산)
       · is_close=False·held_days==0 → None(아침 진입 직후: 종가까지 보유)
