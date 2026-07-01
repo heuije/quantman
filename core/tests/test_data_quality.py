@@ -69,3 +69,59 @@ def test_relevant_scoping_excludes_nonrelevant_symbols():
     scoped = assess_data_quality(ds, relevant={"005930", "000660"})
     assert not any("GDP" in w.get("message", "") for w in scoped)
     assert scoped == []                      # 주식 2종은 신선 → 무경고
+
+
+# ── 3a: 교차자산 거래달력 carry-forward 표면화 (#1) ────────────────────────────
+def _cross_calendars():
+    """S&P500=미국 거래일, 코스피선물=한국 거래일 — 서로 휴장일이 달라 각자 상대 개장일에 결손."""
+    us = pd.bdate_range("2022-01-03", "2023-12-29")
+    us_hol = pd.to_datetime(["2022-01-17", "2022-02-21", "2022-05-30", "2022-07-04",
+                             "2022-09-05", "2022-11-24", "2022-12-26", "2023-01-16",
+                             "2023-02-20", "2023-05-29", "2023-07-04", "2023-09-04",
+                             "2023-11-23", "2023-12-25"])
+    kr = pd.bdate_range("2022-01-03", "2023-12-29")
+    kr_hol = pd.to_datetime(["2022-01-31", "2022-03-01", "2022-05-05", "2022-06-06",
+                             "2022-09-09", "2022-10-03", "2023-01-23", "2023-03-01",
+                             "2023-05-05", "2023-08-15", "2023-10-03", "2023-12-25"])
+    return us[~us.isin(us_hol)], kr[~kr.isin(kr_hol)]
+
+
+def test_cross_calendar_carryforward_surfaced():
+    """교차자산(미국 캘린더)이 한국 개장·미국 휴장일에 전일값 유지되는 것을 INFO로 표면화 —
+    사용자가 '결손 多'로 오인하던 #1. data_gap(진짜 결손)과 구분: carry-forward는 정상."""
+    us, kr = _cross_calendars()
+    out = assess_data_quality({"S&P500": _df(us), "코스피200선물": _df(kr)})
+    cf = [w for w in out if w["code"] == "calendar_carryforward"]
+    assert cf, f"교차달력 carry-forward가 표면화돼야: {out}"
+    assert "S&P500" in cf[0]["message"]
+    # 정상 신호이지 결손이 아니므로 data_gap로 오탐하지 않는다(5% 허용 이내).
+    assert not any(w["code"] == "data_gap" for w in out), f"교차달력을 data_gap로 오탐 금지: {out}"
+
+
+def test_cross_calendar_flags_only_minority_calendar():
+    """다수(한국 2종) + 소수(S&P500 미국) → 소수 캘린더(S&P500)만 flag, 한국 종목은 무플래그."""
+    us, kr = _cross_calendars()
+    out = assess_data_quality({"005930": _df(kr), "000660": _df(kr), "S&P500": _df(us)})
+    cf = [w for w in out if w["code"] == "calendar_carryforward"]
+    assert cf and "S&P500" in cf[0]["message"], f"S&P500이 flag돼야: {out}"
+    assert "005930" not in cf[0]["message"] and "000660" not in cf[0]["message"], \
+        f"다수 캘린더(한국 종목)는 flag 금지: {cf[0]['message']}"
+
+
+def test_same_calendar_no_carryforward():
+    """같은 거래달력(모두 한국)이면 carry-forward 없음(회귀 가드 — 노이즈 억제)."""
+    kr = pd.bdate_range("2022-01-03", "2023-12-29")
+    out = assess_data_quality({"005930": _df(kr), "000660": _df(kr), "005380": _df(kr)})
+    assert not any(w["code"] == "calendar_carryforward" for w in out), f"동일달력 무경고여야: {out}"
+
+
+def test_carryforward_traded_reference_flags_only_signal():
+    """traded(체결 유니버스=코스피선물) 기준이면 신호 심볼(S&P500)만 flag하고 거래 심볼은 제외 —
+    거래 심볼은 자기 달력에서 결손이 아니므로(#1 n=2 정밀도: '내가 거래하는 종목이 왜 결손?' 방지)."""
+    us, kr = _cross_calendars()
+    out = assess_data_quality({"S&P500": _df(us), "코스피200선물": _df(kr)},
+                              traded={"코스피200선물"})
+    cf = [w for w in out if w["code"] == "calendar_carryforward"]
+    assert cf and "S&P500" in cf[0]["message"], f"S&P500(신호)이 flag돼야: {out}"
+    assert "코스피200선물" not in cf[0]["message"], \
+        f"거래 심볼은 제외돼야(자기 달력에서 결손 아님): {cf[0]['message']}"
