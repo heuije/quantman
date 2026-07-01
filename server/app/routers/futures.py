@@ -32,7 +32,9 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from quant_core.oil_futures import (
+    COLD_STREAK,
     DOWN_EXHAUSTION,
+    HOT_STREAK,
     LOW_SAMPLE_THRESHOLD,
     REVERSION_SWEEP_AXES,
     UP_EXHAUSTION,
@@ -43,13 +45,18 @@ from quant_core.oil_futures import (
     build_oil_excel,
     build_oil_reversion_excel,
     build_oil_trend_excel,
+    composite_strategy_daily,
+    daily_return_streak_events,
     generate_signals,
     grid_search,
     prepare_wti,
+    ReversionSweepCell,
     reversion_events,
     reversion_summary,
     reversion_sweep,
     run_backtest,
+    streak_summary,
+    strategy_segments,
     summarize,
     trend_events,
     trend_explanatory_scan,
@@ -1149,6 +1156,64 @@ def trend_export_endpoint(
 _REV_HORIZONS = [5, 10, 20, 40, 60]
 _DIR_QUERY = {"down": DOWN_EXHAUSTION, "up": UP_EXHAUSTION}
 
+# 코스피200 REVERSION은 원지수 가격이 아니라 **혼합전략 자본곡선**을 기준 시리즈로 쓴다
+# (S&P 신호 당일매매 + 오버나이트 롱). S&P→코스피 전용 전략이라 이 종목에만 적용.
+_KOSPI_SYMBOL = "kospi"
+
+
+def _kospi_strategy_df(leverage: float) -> pd.DataFrame:
+    """코스피 혼합전략 일별 프레임(composite_strategy_daily).
+
+    코스피 OHLC=정적 스냅샷(_df), S&P500 종가=데이터 캐시. 둘 다 있어야 계산.
+    close 컬럼=레버리지 계좌 자본곡선(리버전 엔진의 '가격', leverage=1로 투입).
+    """
+    kospi = _df(_KOSPI_SYMBOL)
+    snp = get_raw_dataset().get("S&P500")
+    if snp is None or snp.empty or "Close" not in snp.columns:
+        raise HTTPException(status_code=503,
+                            detail="S&P500 데이터 미수집 — 혼합전략(코스피 REVERSION) 계산 불가")
+    return composite_strategy_daily(kospi, snp["Close"], leverage=leverage)
+
+
+def _reversion_analysis(symbol: str, *, reversal: float, run: float, horizon: int,
+                        leverage: float, gap: int, direction: Optional[str] = None):
+    """(events, base_df) — 코스피=전략곡선 세그먼트별(leverage=1) 병합, 그 외=원지수(leverage=N).
+
+    코스피는 청산 리셋 경계로 나눈 각 생존 세그먼트에서 reversion_events 를 돌려 병합한다
+    (곡선이 이미 계좌기준이라 leverage=1; 청산일 0·리셋 점프를 회귀에서 배제).
+    """
+    if symbol == _KOSPI_SYMBOL:
+        curve = _kospi_strategy_df(leverage)
+        evs = []
+        for seg in strategy_segments(curve):
+            evs += reversion_events(
+                seg, reversal_account_pct=reversal, run_account_pct=run,
+                horizon=horizon, leverage=1.0, gap=gap, direction=direction,
+            )
+        evs.sort(key=lambda e: e.trigger_date)
+        return evs, curve
+    df = _df(symbol)
+    evs = reversion_events(
+        df, reversal_account_pct=reversal, run_account_pct=run,
+        horizon=horizon, leverage=leverage, gap=gap, direction=direction,
+    )
+    return evs, df
+
+
+def _downsample_series(df: pd.DataFrame, value_col: str, *, cap: int = 800) -> list["CurvePoint"]:
+    """차트용 (date, value) 시계열 다운샘플(균등 stride + 마지막 점 보존)."""
+    n = len(df)
+    if n == 0:
+        return []
+    stride = max(1, -(-n // cap))    # ceil(n/cap)
+    dates = df["date"].to_numpy()
+    vals = df[value_col].to_numpy()
+    out: list[CurvePoint] = []
+    for i in range(n):
+        if i % stride == 0 or i == n - 1:
+            out.append(CurvePoint(date=str(pd.Timestamp(dates[i]).date()), v=float(vals[i])))
+    return out
+
 
 class ReversionEventOut(BaseModel):
     pivot_date: str
@@ -1170,6 +1235,11 @@ class ReversionDirSummary(BaseModel):
     liquidation_rate: Optional[float]    # %
 
 
+class CurvePoint(BaseModel):
+    date: str        # YYYY-MM-DD
+    v: float         # 기준 시리즈 값(코스피=전략 자본곡선 배수, 그 외=종가)
+
+
 class ReversionResponse(BaseModel):
     symbol: str
     reversal: float
@@ -1177,6 +1247,8 @@ class ReversionResponse(BaseModel):
     horizon: int
     leverage: float
     gap: int
+    strategy: bool                    # True면 기준 시리즈=혼합전략 자본곡선(코스피)
+    curve: list[CurvePoint]           # 차트 배경(다운샘플) — 회귀가 도는 그 시리즈
     down_exhaustion: ReversionDirSummary
     up_exhaustion: ReversionDirSummary
     events: list[ReversionEventOut]
@@ -1218,15 +1290,15 @@ def reversion_endpoint(
     모든 % 는 레버리지 반영 계좌 기준. 청산(N일 내 계좌 -100% 도달)은 -100%로 집계.
     """
     _validate_reversion(reversal, run, horizon, leverage, gap)
-    df = _df(symbol)
-    evs = reversion_events(
-        df, reversal_account_pct=reversal, run_account_pct=run,
-        horizon=horizon, leverage=leverage, gap=max(0, gap),
+    evs, base = _reversion_analysis(
+        symbol, reversal=reversal, run=run, horizon=horizon, leverage=leverage, gap=max(0, gap),
     )
     summ = reversion_summary(evs)
     return ReversionResponse(
         symbol=symbol, reversal=reversal, run=run, horizon=horizon,
         leverage=leverage, gap=gap,
+        strategy=(symbol == _KOSPI_SYMBOL),
+        curve=_downsample_series(base, "close"),
         down_exhaustion=_dir_summary(summ[DOWN_EXHAUSTION]),
         up_exhaustion=_dir_summary(summ[UP_EXHAUSTION]),
         events=[
@@ -1279,6 +1351,34 @@ def _reversion_axis_values(axis: str, reversal: float, run: float, horizon: int)
     raise HTTPException(422, f"축은 {REVERSION_SWEEP_AXES} 중 하나")
 
 
+def _kospi_reversion_sweep(segments, *, row_axis, col_axis, row_values, col_values,
+                           reversal, run, horizon, gap, direction):
+    """전략곡선 세그먼트 리스트에 대한 격자 스윕(leverage=1). core reversion_sweep의
+    세그먼트-병합 버전 — 셀마다 각 세그먼트의 reversion_events 를 모아 요약."""
+    cells = []
+    for ri, rv in enumerate(row_values):
+        for ci, cv in enumerate(col_values):
+            rev_pct, run_pct, hz = reversal, run, horizon
+            for axis, val in ((row_axis, rv), (col_axis, cv)):
+                if axis == "reversal":
+                    rev_pct = float(val)
+                elif axis == "run":
+                    run_pct = float(val)
+                else:
+                    hz = int(val)
+            evs = []
+            for seg in segments:
+                evs += reversion_events(
+                    seg, reversal_account_pct=rev_pct, run_account_pct=run_pct,
+                    horizon=hz, leverage=1.0, gap=gap, direction=direction,
+                )
+            s = reversion_summary(evs)[direction]
+            cells.append(ReversionSweepCell(
+                ri, ci, s["n"], s["mean_reversion"], s["success_rate"], s["liquidation_rate"],
+            ))
+    return cells
+
+
 @router.get("/{symbol}/reversion-sweep", response_model=ReversionSweepResponse)
 def reversion_sweep_endpoint(
     symbol: str,
@@ -1302,12 +1402,19 @@ def reversion_sweep_endpoint(
     cvals, clabels = _reversion_axis_values(col_axis, reversal, run, horizon)
     dir_name = _DIR_QUERY[direction]
 
-    df = _df(symbol)
-    cells = reversion_sweep(
-        df, row_axis=row_axis, col_axis=col_axis, row_values=rvals, col_values=cvals,
-        reversal_account_pct=reversal, run_account_pct=run, horizon=horizon,
-        leverage=leverage, gap=max(0, gap), direction=dir_name,
-    )
+    if symbol == _KOSPI_SYMBOL:
+        # 코스피=전략곡선 세그먼트별(leverage=1). 곡선은 leverage 고정이라 1회만 만들고 셀마다 재사용.
+        segs = strategy_segments(_kospi_strategy_df(leverage))
+        cells = _kospi_reversion_sweep(
+            segs, row_axis=row_axis, col_axis=col_axis, row_values=rvals, col_values=cvals,
+            reversal=reversal, run=run, horizon=horizon, gap=max(0, gap), direction=dir_name,
+        )
+    else:
+        cells = reversion_sweep(
+            _df(symbol), row_axis=row_axis, col_axis=col_axis, row_values=rvals, col_values=cvals,
+            reversal_account_pct=reversal, run_account_pct=run, horizon=horizon,
+            leverage=leverage, gap=max(0, gap), direction=dir_name,
+        )
     return ReversionSweepResponse(
         row_axis=row_axis, col_axis=col_axis, direction=dir_name,
         row_labels=rlabels, col_labels=clabels,
@@ -1318,6 +1425,100 @@ def reversion_sweep_endpoint(
                 liquidation_rate=_nn(c.liquidation_rate),
             )
             for c in cells
+        ],
+    )
+
+
+# ───── 🅘 STREAK (일일 실현수익률 → 이후 수익, 렌즈 B · 코스피 전용) ─────────
+# 혼합전략의 일일 실현수익 d(t)=max(-1, N*(r1+r2)) 시계열에서, 관측창 W일 평균이
+# +θ%(과열)/-θ%(과냉) 돌파 시 → 이후 H일 누적수익률(청산 반영). 비겹침 창.
+
+class StreakEventOut(BaseModel):
+    signal_date: str
+    fwd_end_date: str         # 이후 H일 창의 끝 날짜(차트 하이라이트용)
+    lookback_avg: float       # 관측창 평균(계좌 소수)
+    direction: str            # "hot_streak" | "cold_streak"
+    fwd_return: float         # 이후 H일 누적(계좌 소수, 청산 시 -1.0)
+    liquidated: bool
+
+
+class StreakDirSummary(BaseModel):
+    n: int
+    mean_fwd: Optional[float]        # 이후 H일 누적 평균(계좌 %). 표본 0이면 None
+    median_fwd: Optional[float]
+    success_rate: Optional[float]    # fwd>0 비율 %
+    liquidation_rate: Optional[float]
+
+
+class StreakResponse(BaseModel):
+    symbol: str
+    window: int
+    threshold: float
+    horizon: int
+    leverage: float
+    daily: list[CurvePoint]          # 일일 실현수익률 시계열(다운샘플, v=계좌 소수)
+    hot_streak: StreakDirSummary
+    cold_streak: StreakDirSummary
+    events: list[StreakEventOut]
+
+
+def _streak_dir_summary(block: dict) -> StreakDirSummary:
+    return StreakDirSummary(
+        n=block["n"],
+        mean_fwd=_nn(block["mean_fwd"]),
+        median_fwd=_nn(block["median_fwd"]),
+        success_rate=_nn(block["success_rate"]),
+        liquidation_rate=_nn(block["liquidation_rate"]),
+    )
+
+
+@router.get("/{symbol}/reversion-streak", response_model=StreakResponse)
+def reversion_streak_endpoint(
+    symbol: str,
+    window: int = 20,
+    threshold: float = 1.0,
+    horizon: int = 20,
+    leverage: float = 10.0,
+):
+    """렌즈 B: 관측창 W일 일일수익 평균이 ±θ% 돌파 → 이후 H일 누적수익률. 코스피 전용.
+
+    모든 % 는 레버리지 반영 계좌 기준. 과열/과냉 방향별 표본·평균·성공률·청산율.
+    """
+    if symbol != _KOSPI_SYMBOL:
+        raise HTTPException(404, "혼합전략 스트릭 분석은 코스피200 전용입니다")
+    if not (1 <= window <= 500):
+        raise HTTPException(422, "window 는 1~500")
+    if threshold <= 0:
+        raise HTTPException(422, "threshold 는 0보다 커야 함")
+    if not (1 <= horizon <= 500):
+        raise HTTPException(422, "horizon 은 1~500")
+    if leverage < 1:
+        raise HTTPException(422, "leverage 는 1 이상")
+
+    curve = _kospi_strategy_df(leverage)
+    d = curve["daily_return"].to_numpy()
+    dates = curve["date"].to_numpy()
+    evs = daily_return_streak_events(d, dates, window=window, threshold_pct=threshold, horizon=horizon)
+    summ = streak_summary(evs)
+    date_to_i = {pd.Timestamp(dt): i for i, dt in enumerate(dates)}
+    n = len(dates)
+
+    def _fwd_end(sig) -> str:
+        i = date_to_i[pd.Timestamp(sig)]
+        return str(pd.Timestamp(dates[min(i + horizon, n - 1)]).date())
+
+    return StreakResponse(
+        symbol=symbol, window=window, threshold=threshold, horizon=horizon, leverage=leverage,
+        daily=_downsample_series(curve, "daily_return"),
+        hot_streak=_streak_dir_summary(summ[HOT_STREAK]),
+        cold_streak=_streak_dir_summary(summ[COLD_STREAK]),
+        events=[
+            StreakEventOut(
+                signal_date=str(e.signal_date.date()), fwd_end_date=_fwd_end(e.signal_date),
+                lookback_avg=e.lookback_avg, direction=e.direction,
+                fwd_return=e.fwd_return, liquidated=e.liquidated,
+            )
+            for e in evs
         ],
     )
 

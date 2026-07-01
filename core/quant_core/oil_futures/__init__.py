@@ -62,6 +62,15 @@ from .reversion_analysis import (
     reversion_summary,
     reversion_sweep,
 )
+from .strategy_curve import (
+    HOT_STREAK,
+    COLD_STREAK,
+    StreakEvent,
+    composite_strategy_daily,
+    strategy_segments,
+    daily_return_streak_events,
+    streak_summary,
+)
 
 __all__ = [
     "prepare_wti",
@@ -77,4 +86,7 @@ __all__ = [
     "Pivot", "ReversionEvent", "ReversionSweepCell",
     "find_pivots", "reversion_events", "reversion_summary", "reversion_sweep",
     "DOWN_EXHAUSTION", "UP_EXHAUSTION", "REVERSION_SWEEP_AXES",
+    "HOT_STREAK", "COLD_STREAK", "StreakEvent",
+    "composite_strategy_daily", "strategy_segments",
+    "daily_return_streak_events", "streak_summary",
 ]

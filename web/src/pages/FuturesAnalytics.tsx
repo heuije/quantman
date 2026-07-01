@@ -42,6 +42,8 @@ import {
   type OilReversionDirSummary,
   type OilReversionSweep,
   type OilReversionSweepCell,
+  type OilStreak,
+  type OilStreakDirSummary,
   type OilSweepAxis,
   type OilTrendEvents,
   type OilTrendScan,
@@ -2110,6 +2112,19 @@ function reColor(v: number | null): string {
   return v >= 0 ? "var(--up)" : "var(--down)";
 }
 
+// 숫자 입력칩 · ⓘ 툴팁 (렌즈 A·B 공용 — .re-num/.re-info 스타일은 ReversionExplorer <style>가 전역 주입).
+function reNumInput(val: number | "", set: (v: number | "") => void, unit: string, width = 52) {
+  return (
+    <span className="re-num">
+      <input type="number" value={val} style={{ width }}
+        onChange={(e) => set(e.target.value === "" ? "" : Number(e.target.value))} />{unit}
+    </span>
+  );
+}
+function reInfo(text: string) {
+  return <span className="re-info">i<span className="re-tip">{text}</span></span>;
+}
+
 // 방향별 요약 카드 (모듈 스코프 — 부모 내부 정의 시 리마운트 회피).
 function ReversionSummaryCard({ title, icon, s }: { title: string; icon: string; s: OilReversionDirSummary }) {
   return (
@@ -2135,6 +2150,234 @@ function ReversionSummaryCard({ title, icon, s }: { title: string; icon: string;
   );
 }
 
+// 렌즈 B 방향별 요약 카드 (과열/과냉 → 이후 수익).
+function StreakSummaryCard({ title, icon, s }: { title: string; icon: string; s: OilStreakDirSummary }) {
+  return (
+    <div style={{ flex: "1 1 220px", border: "1px solid var(--border)", borderRadius: 10, padding: 14 }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>{icon} {title}</div>
+      {s.n === 0 ? (
+        <div className="muted" style={{ fontSize: 13 }}>표본 없음 — 관측창/임계를 조정하세요</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", rowGap: 6, fontSize: 13 }}>
+          <span className="muted">표본수</span><b style={{ textAlign: "right" }}>{s.n}건</b>
+          <span className="muted">이후 수익률 평균</span>
+          <b style={{ textAlign: "right", color: reColor(s.mean_fwd) }}>{reFmtPct(s.mean_fwd, true)}</b>
+          <span className="muted">이후 수익률 중앙값</span>
+          <b style={{ textAlign: "right", color: reColor(s.median_fwd) }}>{reFmtPct(s.median_fwd, true)}</b>
+          <span className="muted">상승 비율</span><b style={{ textAlign: "right" }}>{reFmtPct(s.success_rate)}</b>
+          <span className="muted">청산율</span>
+          <b style={{ textAlign: "right", color: (s.liquidation_rate ?? 0) > 0 ? "var(--accent-strong)" : "var(--text)" }}>
+            {reFmtPct(s.liquidation_rate)}
+          </b>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ST_DEF_WINDOW = 20, ST_DEF_THRESHOLD = 1, ST_DEF_HORIZON = 20, ST_DEF_LEVERAGE = 10;
+
+// 렌즈 B: 일일 실현수익률 스트릭 탐색기(코스피 전용). 관측창 W일 일일수익 평균이 ±θ% 돌파
+// (과열/과냉) → 이후 H일 누적수익률을 /reversion-streak로 계산·표시. 비겹침 창.
+function StreakExplorer({ symbol }: { symbol: string }) {
+  const [leverage, setLeverage] = useState<number | "">(ST_DEF_LEVERAGE);
+  const [win, setWin] = useState<number | "">(ST_DEF_WINDOW);
+  const [threshold, setThreshold] = useState<number | "">(ST_DEF_THRESHOLD);
+  const [horizon, setHorizon] = useState<number | "">(ST_DEF_HORIZON);
+  const [applied, setApplied] = useState<
+    { window: number; threshold: number; horizon: number; leverage: number } | null
+  >(null);
+  const [data, setData] = useState<OilStreak | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { setApplied(null); setData(null); setError(null); }, [symbol]);
+
+  useEffect(() => {
+    if (!applied) return;
+    let cancelled = false;
+    setLoading(true); setError(null);
+    futuresApi.reversionStreak(symbol, applied)
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) { setError(e.message || "계산 실패"); setData(null); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [symbol, applied]);
+
+  // 일일 실현수익률(계좌%) 라인 + 신호→이후H일 창 음영(과열 빨강·과냉 파랑).
+  const chart = useMemo(() => {
+    const empty = { line: [] as { t: number; v: number }[], shades: [] as { x1: number; x2: number; hot: boolean }[] };
+    if (!data) return empty;
+    const ms = (d: string) => new Date(d).getTime();
+    const line = data.daily.map((p) => ({ t: ms(p.date), v: p.v * 100 }));
+    const shades = data.events.map((e) => ({
+      x1: ms(e.signal_date), x2: ms(e.fwd_end_date), hot: e.direction === "hot_streak",
+    }));
+    return { line, shades };
+  }, [data]);
+
+  // 산점도: 관측창 평균(계좌%/일) × 이후 H일 누적(계좌%). 과열/과냉 색.
+  const scatter = useMemo(() => {
+    const hot: { x: number; y: number }[] = [], cold: { x: number; y: number }[] = [];
+    if (data) for (const e of data.events) {
+      const pt = { x: e.lookback_avg * 100, y: (e.liquidated ? -100 : e.fwd_return * 100) };
+      (e.direction === "hot_streak" ? hot : cold).push(pt);
+    }
+    return { hot, cold };
+  }, [data]);
+
+  const submit = () => {
+    const w = Number(win), th = Number(threshold), hz = Number(horizon), lv = Number(leverage);
+    if (!(w >= 1) || !(th > 0) || !(hz >= 1) || !(lv >= 1)) {
+      setError("관측창·이후 ≥ 1, 임계 > 0, 레버리지 ≥ 1 이어야 합니다.");
+      return;
+    }
+    setApplied({ window: w, threshold: th, horizon: hz, leverage: lv });
+  };
+
+  return (
+    <>
+      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>
+        📈 일일 실현수익률 — 과열/과냉 스트릭 → 이후 수익
+      </div>
+      <p className="muted" style={{ fontSize: 13, lineHeight: 1.7, marginTop: 0 }}>
+        전략이 매일 실현하는 계좌수익률 자체를 봅니다. 최근 <b>관측창</b> 일일수익 평균이 <b>+임계 이상(과열)</b>·
+        <b>−임계 이하(과냉)</b>일 때, <b>이후 H일 누적수익</b>이 +면 모멘텀 지속·−면 되돌림입니다.
+        <b> 모든 %는 레버리지 반영 계좌 기준</b> (하루 −100% 도달 시 청산).
+      </p>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 20px", alignItems: "center", fontSize: 14 }}>
+        <span className="re-field">레버리지: {reNumInput(leverage, setLeverage, "배", 44)}
+          {reInfo("계좌 일일수익 = 지수 일일변동 × 레버리지. 모든 % 이 계좌 기준. 예: 10배면 지수 1% = 계좌 10%.")}
+        </span>
+        <span className="re-field">관측창: {reNumInput(win, setWin, "영업일", 44)}
+          {reInfo("최근 이만큼의 일일수익 평균으로 과열/과냉을 판정합니다. 예: 20이면 최근 20영업일 평균.")}
+        </span>
+        <span className="re-field">과열/과냉 임계: {reNumInput(threshold, setThreshold, "%")}
+          {reInfo("관측창 일일수익 평균이 +이 값 이상이면 과열, −이 값 이하면 과냉. 하루 평균 계좌수익 기준(예: 1%면 하루 평균 +1%↑).")}
+        </span>
+        <span className="re-field">이후: {reNumInput(horizon, setHorizon, "영업일", 44)}
+          {reInfo("신호 다음날부터 이만큼의 누적수익(계좌)을 측정. 겹치지 않게 신호 후 이 기간을 건너뜁니다(비겹침).")}
+        </span>
+        <button onClick={submit} disabled={loading} style={{ marginLeft: 4 }}>
+          {loading ? "계산 중…" : "확인 (계산)"}
+        </button>
+      </div>
+
+      {error && <div className="muted" style={{ color: "var(--amber)", marginTop: 8 }}>{error}</div>}
+      {!applied && !error && (
+        <div className="muted" style={{ marginTop: 12 }}>값을 채우고 <b>확인</b>을 누르면 분석합니다.</div>
+      )}
+
+      {applied && data && !loading && (
+        <>
+          <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
+            <StreakSummaryCard title="과열 (최근 평균 +) → 이후" icon="🔥" s={data.hot_streak} />
+            <StreakSummaryCard title="과냉 (최근 평균 −) → 이후" icon="❄️" s={data.cold_streak} />
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            이후 <b>+</b>면 스트릭이 이어짐(모멘텀), <b>−</b>면 되돌림. 평균은 청산(−100%) 포함, 중앙값은 꼬리에 덜 휘둘리는 전형값.
+          </div>
+
+          {/* 일일 실현수익률 차트 — 신호→이후H일 창 음영 */}
+          {chart.line.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div className="muted" style={{ fontSize: 13, margin: "8px 0 6px" }}>
+                일일 실현수익률(계좌%) — 음영 = 신호 이후 {applied.horizon}일 창
+                {" "}<b style={{ color: "#de3033" }}>■ 과열</b> / <b style={{ color: "#1668c4" }}>■ 과냉</b>{data.events.length ? ` · ${data.events.length}건` : ""}.
+              </div>
+              <ResponsiveContainer width="100%" height={240}>
+                <ComposedChart data={chart.line} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
+                  <XAxis type="number" dataKey="t" domain={["dataMin", "dataMax"]}
+                    tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 7)} />
+                  <YAxis tick={{ fontSize: 10, fill: "#6f6a62" }} domain={["auto", "auto"]}
+                    tickFormatter={(v) => Number(v).toFixed(0) + "%"} />
+                  <Tooltip labelFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 10)}
+                    formatter={(v) => Number(v).toFixed(1) + "%"} />
+                  {chart.shades.map((s, i) => (
+                    <ReferenceArea key={i} x1={s.x1} x2={s.x2} fill={s.hot ? "#de3033" : "#1668c4"} fillOpacity={0.12} stroke="none" />
+                  ))}
+                  <ReferenceLine y={0} stroke="#6f6a62" />
+                  <Line type="monotone" dataKey="v" stroke="#d97757" dot={false} strokeWidth={1} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* 산점도 — 관측창 평균 × 이후 누적 */}
+          {data.events.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
+                관측창 평균(계좌%/일) × 이후 {applied.horizon}일 누적(계좌%) — 스트릭이 이어지나 되돌아가나?
+                {" "}<b style={{ color: "#de3033" }}>● 과열</b> / <b style={{ color: "#1668c4" }}>● 과냉</b>
+              </div>
+              <ResponsiveContainer width="100%" height={240}>
+                <ScatterChart margin={{ top: 8, right: 20, bottom: 30, left: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e8e3db" />
+                  <XAxis type="number" dataKey="x" name="관측창 평균" domain={["auto", "auto"]}
+                    tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => Number(v).toFixed(1) + "%"}
+                    label={{ value: "관측창 일일수익 평균 (계좌%/일)", position: "insideBottom", offset: -6, style: { fontSize: 11, fill: "#6f6a62" } }} />
+                  <YAxis type="number" dataKey="y" name="이후 누적" domain={["auto", "auto"]}
+                    tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(v) => Math.round(Number(v)) + "%"}
+                    label={{ value: `이후 ${applied.horizon}일 누적 (계좌%)`, angle: -90, position: "insideLeft", style: { fontSize: 11, fill: "#6f6a62", textAnchor: "middle" } }} />
+                  <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(v) => `${Number(v).toFixed(1)}%`} />
+                  <ReferenceLine y={0} stroke="#6f6a62" />
+                  <Scatter data={scatter.hot} fill="#de3033" fillOpacity={0.55} />
+                  <Scatter data={scatter.cold} fill="#1668c4" fillOpacity={0.55} />
+                </ScatterChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {data.events.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
+                <b>신호</b> ({data.events.length}건) — 신호일 · 관측창 평균 · 이후 {applied.horizon}일 누적(계좌)
+              </div>
+              <div className="table-scroll" style={{ maxHeight: 320 }}>
+                <table className="te-hm" style={{ fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left" }}>신호일</th>
+                      <th>구분</th>
+                      <th>관측창 평균</th>
+                      <th>이후 {applied.horizon}일 누적</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.events.map((e, i) => {
+                      const hot = e.direction === "hot_streak";
+                      const fwd = e.fwd_return * 100;
+                      return (
+                        <tr key={i}>
+                          <td style={{ textAlign: "left" }}>{e.signal_date}</td>
+                          <td>{hot ? "🔥 과열" : "❄️ 과냉"}</td>
+                          <td style={{ color: reColor(e.lookback_avg) }}>
+                            {(e.lookback_avg >= 0 ? "+" : "") + (e.lookback_avg * 100).toFixed(2)}%
+                          </td>
+                          <td style={{ fontWeight: 600, color: e.liquidated ? "var(--down)" : reColor(fwd) }}>
+                            {e.liquidated ? "청산 −100%" : (fwd >= 0 ? "+" : "") + fwd.toFixed(0) + "%"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="muted" style={{ fontSize: 11, marginTop: 12 }}>
+            ⚠️ 일일수익 = 전략1(S&P신호 당일매매) + 전략2(오버나이트 롱)의 지수수익 합에 레버리지·청산 floor(−100%/일) 적용.
+            이후 누적은 청산 시 −100%. 관측창·임계·이후는 독립 노브 — 관계 측정용이며 실제 체결·비용은 미반영.
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 // ⑨ 급등락 → 회귀 탐색기. 입력(전환·급등락 임계·반등 N일·레버리지·이벤트간격)을 확인하면
 // /reversion(방향별 요약+이벤트) + /reversion-sweep(임계×N일 격자)을 호출해 표시.
 function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: string }) {
@@ -2150,7 +2393,7 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
   const [data, setData] = useState<OilReversion | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [prices, setPrices] = useState<OilPricePoint[]>([]);
+  const isKospi = symbol === "kospi";
 
   // 스윕 상태
   const [sweepRowAxis, setSweepRowAxis] = useState<OilReversionAxis>("run");
@@ -2209,31 +2452,18 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
     return { byKey, valOf, maxAbs: maxAbs || 1, maxN: maxN || 1 };
   }, [sweep, sweepMetric]);
 
-  // 전체 가격(차트용) — 종목 변경 시 로드.
-  useEffect(() => {
-    setPrices([]);
-    futuresApi.prices(symbol).then(setPrices).catch((e) => console.error("prices", e));
-  }, [symbol]);
-
-  const dateIdx = useMemo(() => new Map(prices.map((p, i) => [p.date, i] as const)), [prices]);
-
-  // 가격 차트: 종가 라인(다운샘플) + forward 구간 음영(방향색) + 트리거/피벗 마커.
+  // 기준 시리즈 차트: 회귀가 도는 그 시리즈(코스피=혼합전략 자본곡선·그 외=종가) 라인 +
+  // 전환점(피벗)→급등락(트리거) 형성 구간 음영. 서버가 다운샘플한 curve·이벤트 날짜만 사용.
   const chart = useMemo(() => {
-    const empty = { line: [] as { t: number; close: number }[], shades: [] as { x1: number; x2: number }[] };
-    if (!prices.length) return empty;
+    const empty = { line: [] as { t: number; v: number }[], shades: [] as { x1: number; x2: number }[] };
+    if (!data) return empty;
     const ms = (d: string) => new Date(d).getTime();
-    const stride = Math.max(1, Math.ceil(prices.length / 800));
-    const line = prices
-      .filter((_, i) => i % stride === 0 || i === prices.length - 1)
-      .map((p) => ({ t: ms(p.date), close: p.close }));
-    if (!data || !applied) return { line, shades: [] };
-    // 전환점(피벗) → 급등락(트리거) 형성 구간만 하이라이트, 겹침 병합(TREND 방식).
-    const wins: [number, number][] = [];
-    for (const e of data.events) {
-      const pi = dateIdx.get(e.pivot_date), ti = dateIdx.get(e.trigger_date);
-      if (pi === undefined || ti === undefined) continue;
-      wins.push([Math.min(pi, ti), Math.max(pi, ti)]);
-    }
+    // curve는 신규 필드 — 서버 배포 전(preview↔구 prod API) 스큐에서 undefined일 수 있어 방어.
+    const line = (data.curve ?? []).map((p) => ({ t: ms(p.date), v: p.v }));
+    const wins: [number, number][] = data.events.map((e) => {
+      const p = ms(e.pivot_date), t = ms(e.trigger_date);
+      return [Math.min(p, t), Math.max(p, t)] as [number, number];
+    });
     wins.sort((a, b) => a[0] - b[0]);
     const merged: [number, number][] = [];
     for (const w of wins) {
@@ -2241,9 +2471,8 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
       if (last && w[0] <= last[1]) last[1] = Math.max(last[1], w[1]);
       else merged.push([w[0], w[1]]);
     }
-    const shades = merged.map(([a, b]) => ({ x1: ms(prices[a].date), x2: ms(prices[b].date) }));
-    return { line, shades };
-  }, [prices, data, applied, dateIdx]);
+    return { line, shades: merged.map(([x1, x2]) => ({ x1, x2 })) };
+  }, [data]);
 
   // 산점도: 트리거 시 누적 급등락(계좌%) × N일 회귀(계좌%), 방향색.
   const scatter = useMemo(() => {
@@ -2264,12 +2493,8 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
     setApplied({ reversal: rv, run: rn, horizon: hz, leverage: lv, gap: gp });
   };
 
-  const numIn = (val: number | "", set: (v: number | "") => void, unit: string, width = 52) => (
-    <span className="re-num">
-      <input type="number" value={val} style={{ width }}
-        onChange={(e) => set(e.target.value === "" ? "" : Number(e.target.value))} />{unit}
-    </span>
-  );
+  const numIn = reNumInput;
+  const info = reInfo;
 
   // 계좌% → 지수% 환산(계좌%÷레버리지). 예: 계좌 5% · 10배 → 지수 0.5%.
   const idxEq = (acct: number | "", lev: number | ""): string => {
@@ -2277,10 +2502,6 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
     if (!(a > 0) || !(l >= 1)) return "—";
     return String(parseFloat((a / l).toFixed(3)));
   };
-
-  const info = (text: string) => (
-    <span className="re-info">i<span className="re-tip">{text}</span></span>
-  );
 
   const toggleBtn = (active: boolean): CSSProperties => ({
     fontSize: 12, padding: "3px 10px", borderRadius: 6, cursor: "pointer",
@@ -2303,6 +2524,10 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
       `}</style>
 
       <p className="muted" style={{ fontSize: 13, lineHeight: 1.7, marginTop: 0 }}>
+        {isKospi && (
+          <><b style={{ color: "var(--accent-strong)" }}>기준 = 혼합전략 자본곡선</b>(S&P 전일대비 신호로 코스피200선물
+          시가매수/매도-당일청산 + 매일 종가매수-익일시가매도). 원지수 대신 이 전략의 레버리지 계좌 자본곡선에서{" "}</>
+        )}
         급등락(추세가 크게 달린 뒤) 평균회귀를 봅니다. <b>모든 %·수익률은 레버리지 반영 계좌 기준</b>
         (레버리지를 먼저 정하면 나머지 임계는 그 기준으로 해석 — 각 항목 <b>ⓘ</b> 참고).
       </p>
@@ -2344,20 +2569,23 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
             중앙값은 청산에 덜 휘둘리는 전형값 — 둘의 격차가 꼬리위험입니다.
           </div>
 
-          {/* 엑셀 내보내기 — raw data + 라이브수식(레버리지·N일) */}
-          <div style={{ marginTop: 10 }}>
-            <button onClick={() => futuresApi.reversionExport(symbol, applied).catch((e) => setError(e.message))}
-              style={{ fontSize: 12 }}
-              title="현재 구성의 raw OHLCV + 라이브수식(레버리지·N일 바꾸면 재계산) 엑셀">
-              ⬇ 엑셀 내보내기 (raw 데이터 + 수식)
-            </button>
-          </div>
+          {/* 엑셀 내보내기 — raw data + 라이브수식(레버리지·N일). 코스피 전략곡선 엑셀은 준비 중이라 원지수 종목만 */}
+          {!data.strategy && (
+            <div style={{ marginTop: 10 }}>
+              <button onClick={() => futuresApi.reversionExport(symbol, applied).catch((e) => setError(e.message))}
+                style={{ fontSize: 12 }}
+                title="현재 구성의 raw OHLCV + 라이브수식(레버리지·N일 바꾸면 재계산) 엑셀">
+                ⬇ 엑셀 내보내기 (raw 데이터 + 수식)
+              </button>
+            </div>
+          )}
 
-          {/* 전체기간 가격 차트 — 전환점→급등락 형성 구간만 하이라이트(TREND 방식) */}
-          {prices.length > 0 && (
+          {/* 기준 시리즈 차트 — 전환점→급등락 형성 구간만 하이라이트(TREND 방식) */}
+          {chart.line.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <div className="muted" style={{ fontSize: 13, margin: "8px 0 6px" }}>
-                전체기간 가격 — <span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 전환점(피벗) → 급등락(트리거) 형성 구간{data.events.length ? ` · ${data.events.length}건` : ""}.
+                {data.strategy ? "혼합전략 자본곡선(자본배수·레버리지 반영)" : "전체기간 가격"} —
+                {" "}<span style={{ color: "var(--accent-strong)", fontWeight: 600 }}>음영</span> = 전환점(피벗) → 급등락(트리거) 형성 구간{data.events.length ? ` · ${data.events.length}건` : ""}.
               </div>
               <ResponsiveContainer width="100%" height={260}>
                 <ComposedChart data={chart.line} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
@@ -2365,13 +2593,13 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
                   <XAxis type="number" dataKey="t" domain={["dataMin", "dataMax"]}
                     tick={{ fontSize: 10, fill: "#6f6a62" }} tickFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 7)} />
                   <YAxis tick={{ fontSize: 10, fill: "#6f6a62" }} domain={["auto", "auto"]}
-                    tickFormatter={(v) => priceSym + (v >= 1000 ? (v / 1000).toFixed(0) + "k" : v.toFixed(0))} />
+                    tickFormatter={(v) => data.strategy ? "×" + Number(v).toFixed(v >= 10 ? 0 : 1) : priceSym + (v >= 1000 ? (v / 1000).toFixed(0) + "k" : v.toFixed(0))} />
                   <Tooltip labelFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 10)}
-                    formatter={(v) => priceSym + Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 })} />
+                    formatter={(v) => data.strategy ? "×" + Number(v).toFixed(3) : priceSym + Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 })} />
                   {chart.shades.map((s, i) => (
                     <ReferenceArea key={i} x1={s.x1} x2={s.x2} fill="#d97757" fillOpacity={0.16} stroke="none" />
                   ))}
-                  <Line type="monotone" dataKey="close" stroke="#d97757" dot={false} strokeWidth={1.5} />
+                  <Line type="monotone" dataKey="v" stroke="#d97757" dot={false} strokeWidth={1.5} />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -2518,6 +2746,13 @@ function ReversionExplorer({ symbol, priceSym }: { symbol: string; priceSym: str
             이벤트·청산 급증 — 표본수·청산율을 함께 확인하세요.
           </div>
         </>
+      )}
+
+      {/* 렌즈 B — 일일 실현수익률 스트릭(코스피 전용, 렌즈 A와 독립) */}
+      {isKospi && (
+        <div style={{ marginTop: 24, paddingTop: 18, borderTop: "2px solid var(--border)" }}>
+          <StreakExplorer symbol={symbol} />
+        </div>
       )}
     </>
   );

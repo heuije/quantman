@@ -791,6 +791,11 @@ export interface OilReversionDirSummary {
   liquidation_rate: number | null;    // 청산율(%)
 }
 
+export interface OilCurvePoint {
+  date: string;    // YYYY-MM-DD
+  v: number;       // 코스피=전략 자본곡선 배수 / 그 외=종가
+}
+
 export interface OilReversion {
   symbol: string;
   reversal: number;
@@ -798,6 +803,8 @@ export interface OilReversion {
   horizon: number;
   leverage: number;
   gap: number;
+  strategy: boolean;            // true면 기준 시리즈=혼합전략 자본곡선(코스피)
+  curve: OilCurvePoint[];       // 차트 배경(회귀가 도는 그 시리즈)
   down_exhaustion: OilReversionDirSummary;
   up_exhaustion: OilReversionDirSummary;
   events: OilReversionEvent[];
@@ -821,6 +828,38 @@ export interface OilReversionSweep {
   row_labels: string[];
   col_labels: string[];
   cells: OilReversionSweepCell[];
+}
+
+// 렌즈 B: 일일 실현수익률 스트릭(코스피 전용)
+export type OilStreakDirection = "hot_streak" | "cold_streak";
+
+export interface OilStreakEvent {
+  signal_date: string;
+  fwd_end_date: string;    // 이후 H일 창 끝 날짜(차트 하이라이트용)
+  lookback_avg: number;    // 관측창 평균(계좌 소수)
+  direction: OilStreakDirection;
+  fwd_return: number;      // 이후 H일 누적(계좌 소수, 청산 시 -1)
+  liquidated: boolean;
+}
+
+export interface OilStreakDirSummary {
+  n: number;
+  mean_fwd: number | null;         // 이후 H일 누적 평균(계좌 %)
+  median_fwd: number | null;
+  success_rate: number | null;     // fwd>0 비율(%)
+  liquidation_rate: number | null;
+}
+
+export interface OilStreak {
+  symbol: string;
+  window: number;
+  threshold: number;
+  horizon: number;
+  leverage: number;
+  daily: OilCurvePoint[];          // 일일 실현수익률 시계열(v=계좌 소수)
+  hot_streak: OilStreakDirSummary;
+  cold_streak: OilStreakDirSummary;
+  events: OilStreakEvent[];
 }
 
 export const futuresApi = {
@@ -1034,6 +1073,21 @@ export const futuresApi = {
     });
     if (opts.gap !== undefined) qs.set("gap", String(opts.gap));
     return req<OilReversionSweep>(`/futures/${sym}/reversion-sweep?` + qs.toString());
+  },
+  // 렌즈 B: 일일 실현수익 관측창 평균 ±θ 돌파 → 이후 H일 누적수익(코스피 전용).
+  reversionStreak: (sym: string, opts: {
+    window: number;
+    threshold: number;
+    horizon: number;
+    leverage: number;
+  }) => {
+    const qs = new URLSearchParams({
+      window: String(opts.window),
+      threshold: String(opts.threshold),
+      horizon: String(opts.horizon),
+      leverage: String(opts.leverage),
+    });
+    return req<OilStreak>(`/futures/${sym}/reversion-streak?` + qs.toString());
   },
   // 향후 종가 증감율 결과(조건·이벤트·요약) .xlsx 다운로드. blob 직접 처리.
   trendExport: async (sym: string, opts: {
