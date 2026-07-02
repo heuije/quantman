@@ -187,7 +187,8 @@ def _accumulate_usage(acc: dict, usage) -> None:
 
 def _persist_turn_metric(session: Session, conversation_id: int, model: str,
                          acc: dict, ttft_ms, latency_ms: int, ok: bool,
-                         result_status: str | None = None) -> None:
+                         result_status: str | None = None,
+                         result_shape: str | None = None) -> None:
     """턴별 ChatTurnMetric 1행 적재(chat-perf 측정 환경). user_id는 대화 소유자.
 
     적재 실패가 대화 응답을 깨지 않도록 격리한다 — DB 일시오류 시 지표 누락은 허용하고
@@ -203,7 +204,8 @@ def _persist_turn_metric(session: Session, conversation_id: int, model: str,
             cache_read_tokens=acc["cr"], cache_write_tokens=acc["cw"],
             n_rounds=acc["rounds"], n_tool_calls=len(acc["tools"]),
             tool_names=list(acc["tools"]), model=model,
-            stop_reason=acc["stop"], ok=ok, result_status=result_status))
+            stop_reason=acc["stop"], ok=ok, result_status=result_status,
+            result_shape=result_shape))
         session.commit()
     except Exception:   # noqa: BLE001 — 지표 누락 허용·대화 보존(원칙: 외부 한계 fallback)
         _log.exception("[chat metric] 적재 실패 conv=%s", conversation_id)
@@ -273,6 +275,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
     completed = False
     ok = True
     worst_status: str | None = None      # 결과 품질 계약 — 턴 내 가장 나쁜 결과상태(메트릭)
+    turn_shape: str | None = None        # 학습 hook(P4) — 이 턴이 선택한 첫 분석법(result_shape)
     try:
         for _ in range(MAX_TOOL_ROUNDS):
             with client.messages.stream(model=model, max_tokens=4096, system=system,
@@ -328,6 +331,8 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                 full = attach_methodology(full)   # 백테스트면 structured 방법론 동봉(웹 패널·#7·#1)
                 if isinstance(full, dict):
                     worst_status = _worse(worst_status, full.get("status"))
+                    if turn_shape is None and full.get("shape"):
+                        turn_shape = full.get("shape")   # 첫 분석결과의 method(P4 학습 hook)
                 assistant_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": inp})
                 assistant_parts.append({"type": "tool_result", "tool_use_id": b.id,
                                         "name": b.name, "result": full})
@@ -361,7 +366,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
         yield ("delta", {"text": msg})
     _persist(session, conversation_id, "assistant", assistant_parts)
     _persist_turn_metric(session, conversation_id, model, acc, ttft_ms,
-                         int((time.perf_counter() - t0) * 1000), ok, worst_status)
+                         int((time.perf_counter() - t0) * 1000), ok, worst_status, turn_shape)
     yield ("done", {"parts": assistant_parts})
 
 

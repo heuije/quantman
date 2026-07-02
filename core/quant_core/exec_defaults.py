@@ -112,8 +112,9 @@ class InstrumentSpec:
     """상품 계약명세. equity면 multiplier=1·margin=1·만기없음.
 
     엔진 소비(현재): asset_class·multiplier·tick·currency·init_margin_rate.
-    예약(미소비): maint_margin_rate·expiry_rule·default_roll — E1b(변동증거금)·E2(만기 롤)에서
-    배선 예정. *검증된 계약 사실*이라 보관하되, 엔진이 아직 읽지 않음을 여기 명시한다(미배선 표면화).
+    default_roll = 만기물 패널 보유 선물의 연속물 기본 롤(S4/E2 — 데이터 계층·엔진이 소비).
+    예약(미소비): maint_margin_rate(E1b 변동증거금) · expiry_rule(만기는 패널 마지막 존재일로
+    데이터 주도 도출 → 달력 규칙 미사용). *검증된 계약 사실*이라 보관한다.
     """
     asset_class: str          # [소비] "equity" | "futures"
     multiplier: float         # [소비] point value: 선물 1pt = multiplier 통화단위. equity=1.0
@@ -121,21 +122,21 @@ class InstrumentSpec:
     currency: str             # [소비] "KRW" | "USD"
     init_margin_rate: float   # [소비] 개시증거금률(notional 대비). equity=1.0(전액)
     maint_margin_rate: float  # [예약·E1b] 유지증거금률. 현재 엔진은 SimSpec.maintenance_margin_pct(사용자값) 사용
-    expiry_rule: str          # [예약·E2] 만기 캘린더 키 "kospi200_2nd_thu"|"cme_cl"… equity=""(만기없음)
-    default_roll: str         # [예약·E2] 기본 롤 "days_before:N"|"volume_cross"|"oi_cross". equity=""
+    expiry_rule: str          # [예약] 만기 캘린더 키 — 국내선물은 패널 마지막 존재일로 대체(미사용). equity=""
+    default_roll: str         # [소비·S4/E2] 연속물 기본 롤 "at_expiry"|"days_before:N"|"volume_cross"|"oi_cross". equity=""
 
 
 # 거래소 표준 승수·틱(server/app/futures_config.py와 정렬). 증거금률·만기·롤은 본 카탈로그 신규.
 # 키 = data_fetcher 캐시/dataset 심볼 키. (선물은 한글 상품명, 주식은 종목코드)
 _INSTRUMENTS: dict[str, InstrumentSpec] = {
-    # 실 KOSPI200 선물 연속 일봉(지수포인트) — data_fetcher가 투자닷컴 CSV(2010+) 백필 + KIS
-    # FHKIF03020100 증분으로 "코스피200선물" 키에 수급(F1). ETF(261220)는 "코스피200선물ETF"로
-    # 분리됨 — 이 키에 더는 ETF가 안 들어와 승수 충돌(F0에서 임시로 equity 후퇴했던 것) 해소.
+    # 실 KOSPI200 선물 연속 일봉(지수포인트) — KRX 공식 API fut_bydd_trd 만기물 패널(2010+)에서
+    # default_roll(at_expiry)로 "코스피200선물" 연속물 서빙뷰를 파생(S4). ETF(261220)는
+    # "코스피200선물ETF"로 분리 — 이 키엔 ETF 안 들어와 승수 충돌(F0 equity 후퇴) 해소.
     # 증거금률 = KRX 위탁증거금 실측(myasset 2026.6.1 + LS CFOAQ10100 실측 교차): 개시 19.5%·유지 13.0%.
     # 종전 0.10은 추정치로 백테스트 계약수·레버리지 표시를 ~2배 과다(레버리지 10배 vs 실제 ~5.1배)로 냈다.
     # ⚠ KRX가 변동성 따라 주기적 조정 → 카탈로그는 대표값. 라이브는 모델 A(브로커 주문가능수량)가 실시간 반영.
-    "코스피200선물":  InstrumentSpec("futures", 250_000.0, 0.05, "KRW", 0.195, 0.13, "kospi200_2nd_thu", "days_before:5"),
-    "미니코스피200선물": InstrumentSpec("futures",  50_000.0, 0.05, "KRW", 0.195, 0.13, "kospi200_2nd_thu", "days_before:5"),
+    "코스피200선물":  InstrumentSpec("futures", 250_000.0, 0.05, "KRW", 0.195, 0.13, "kospi200_2nd_thu", "at_expiry"),
+    "미니코스피200선물": InstrumentSpec("futures",  50_000.0, 0.05, "KRW", 0.195, 0.13, "kospi200_2nd_thu", "at_expiry"),
     "원유선물":      InstrumentSpec("futures",   1_000.0, 0.01,  "USD", 0.10, 0.08,  "cme_cl",  "days_before:5"),
     "천연가스선물":   InstrumentSpec("futures",  10_000.0, 0.001, "USD", 0.10, 0.08,  "cme_ng",  "days_before:5"),
     "금선물":        InstrumentSpec("futures",     100.0, 0.10,  "USD", 0.08, 0.06,  "cme_gc",  "days_before:5"),
