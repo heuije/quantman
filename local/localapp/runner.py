@@ -471,34 +471,15 @@ def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dic
     dataset = qc.load_dataset_for(needed, with_indicators=True)
     log.info("종가 사이클 dataset 로드 — %d종목 (보유+종가매수 후보 scoped)", len(dataset))
 
-    # ① 당일매매 청산 (마진 회수 우선). 진입이 뒤따르면 청산은 cycle 로그를 남기지 않고
-    #    (record_cycle=False) 아래에서 청산+진입을 병합한 cycle 1건만 기록한다(로컬 audit 일치).
-    payload = trader.liquidate_day_trades(
-        dataset, instrument_class, market=market, record_cycle=not buy_candidates)
-
-    # ② 종가매수(fill=close) 진입 — 청산 후. 병합해 day_trade_close 슬롯에 1회 push.
-    if buy_candidates:
-        risk_limits = pull_risk_limits()
-        entry = trader.enter_close_candidates(
-            buy_candidates, strategies, dataset, risk_limits,
-            market=market, instrument_class=instrument_class)
-        liq_cs = payload.get("cycle_summary") or {}
-        merged = list(payload.get("decisions") or []) + list(entry.get("decisions") or [])
-        payload = entry                       # 진입 후 최신 잔고/포지션 채택
-        payload["decisions"] = merged
-        payload["trades"] = [d for d in merged
-                             if d.get("action") in ("bought", "sold")]
-        # 요약 카운트는 청산+진입 병합 기준 재계산(진입 payload는 진입 decisions만 셌다).
-        cs = payload.get("cycle_summary") or {}
-        for key, act in (("n_sold", "sold"), ("n_bought", "bought"),
-                         ("n_rejected", "rejected"), ("n_unfilled", "unfilled"),
-                         ("n_errors", "error")):
-            cs[key] = sum(1 for d in merged if d["action"] == act)
-        cs["n_pending_unresolved"] = liq_cs.get("n_pending_unresolved", 0)
-        payload["cycle_summary"] = cs
-        # 병합 cycle 1건 로컬 기록 — 청산·진입 둘 다 record_cycle=False였으므로 여기서 1회.
-        from . import order_log
-        order_log.log_cycle(merged, cs)
+    # 넷팅 사이클(설계 §13) — PLAN(청산·진입 의도 산출)→NET(같은 contract·side open↔close
+    # 상쇄)→APPLY(핸드오프=합성 체결·잔여=실발주). 같은 발주창에서 같은 선물의 당일청산과
+    # 오버나이트 진입이 겹치면 브로커 왕복 없이 원장 이관해 수수료를 제거한다. 넷팅 대상이
+    # 없으면 잔여=전체라 기존처럼 청산 먼저→진입. record_cycle 기본 True(넷팅이 청산+진입을
+    # 한 payload로 통합 — 별도 병합 불필요).
+    risk_limits = pull_risk_limits() if buy_candidates else None
+    payload = trader.run_close_netting(
+        buy_candidates, strategies, dataset,
+        market=market, instrument_class=instrument_class, risk_limits=risk_limits)
 
     try:
         push_snapshot(payload)

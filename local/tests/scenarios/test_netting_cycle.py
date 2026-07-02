@@ -94,15 +94,21 @@ def test_handoff_realizes_closer_pnl_at_ref(isolated_trader):
     assert sold[0].get("netted") is True, "넷팅 청산 결정에 netted 표식"
 
 
-def test_handoff_writes_intent_seed_for_idempotency(isolated_trader):
-    """N1: 넷팅 leg도 intent 저널에 기록 → is_active 게이트가 재발주 차단."""
+def test_handoff_no_intent_seed_ledger_is_truth(isolated_trader):
+    """N1: 넷팅 leg은 intent 시드를 쓰지 않는다(브로커 미접촉) — 원장이 멱등성 진실.
+
+    시드를 쓰면 같은 (sid,symbol,side)의 잔여 실주문이 is_active에 막히므로 반드시 미기록.
+    재실행 idempotency는 원장(A 소멸·B 생성)으로 held-check가 보장한다.
+    """
     t, broker = isolated_trader
     _seed_long(t, "A", "005930", 5, entry=90)
     decisions: list[dict] = []
     t._apply_netted_leg(_exit_leg("A", "005930", 5, entry=90, ref=100), decisions)
     t._apply_netted_leg(_entry_leg("B", "005930", 5, ref=100), decisions)
-    assert intents.is_active("2026-06-01", "A", "005930", "sell")
-    assert intents.is_active("2026-06-01", "B", "005930", "buy")
+    assert not intents.is_active("2026-06-01", "A", "005930", "sell"), \
+        "넷팅 청산은 intent 시드 없어야(잔여 실주문 미차단)"
+    assert not intents.is_active("2026-06-01", "B", "005930", "buy")
+    assert "A" not in t.ledger and t.ledger["B"]["qty"] == 5   # 원장이 멱등성 진실
 
 
 def test_partial_handoff_reduces_slot(isolated_trader):
@@ -242,3 +248,66 @@ def test_plan_entries_credit_depletes_across_multiple(isolated_trader):
         by_strat, strats, _ds(prev_close=100.0), 10_000_000.0, liq, "KRX", "stock")
     total = sum(c.qty for c in captured)
     assert total == 50, f"다중 진입 합계가 회수여력(50주)을 넘지 않아야 — 실제 {total}"
+
+
+# ── Phase 4 — run_close_netting 전체 사이클 (PLAN-NET-APPLY) ─────────────────────
+
+def test_close_netting_full_handoff_no_broker_orders(isolated_trader):
+    """하락일 완전 넷팅: A 당일청산50 + B 오버나이트진입50 → 브로커 0·원장 이관·절약>0."""
+    t, broker = isolated_trader
+    broker._balance["cash"] = 0
+    broker._prices["005930"] = 100.0
+    broker.set_positions([{"symbol": "005930", "qty": 50, "side": "long"}])
+    _seed_daytrade(t, "A", "005930", 50, entry=90)
+    by_strat = [{"strategy_id": "B", "candidates": [{"symbol": "005930"}]}]
+    strats = [{"id": "B", "name": "B", "definition": _overnight_def(), "account_ref": None}]
+    payload = t.run_close_netting(by_strat, strats, _ds(prev_close=100.0),
+                                  market="KRX", instrument_class="stock")
+    assert broker.submitted == [], "완전 넷팅 → 브로커 주문 0"
+    assert "A" not in t.ledger and t.ledger["B"]["qty"] == 50
+    cs = payload["cycle_summary"]
+    assert cs["n_netted"] == 50 and cs["commission_saved_krw"] > 0
+    assert cs["n_sold"] == 0 and cs.get("n_bought", 0) == 0, "넷팅은 실거래로 세지 않음(N3)"
+
+
+def test_close_netting_liquidation_only_submits_sell(isolated_trader):
+    """넷팅 대상 없음(청산만): 잔여 실 매도 발주(현행 동작 보존)."""
+    t, broker = isolated_trader
+    broker._prices["005930"] = 100.0
+    broker.set_positions([{"symbol": "005930", "qty": 50, "side": "long"}])
+    _seed_daytrade(t, "A", "005930", 50, entry=90)
+    payload = t.run_close_netting([], [], _ds(prev_close=100.0),
+                                  market="KRX", instrument_class="stock")
+    assert len(broker.submitted) == 1 and broker.submitted[0]["side"] == "sell"
+    assert payload["cycle_summary"]["n_netted"] == 0
+
+
+def test_close_netting_entry_only_submits_buy(isolated_trader):
+    """넷팅 대상 없음(진입만): 잔여 실 매수 발주(현행 동작 보존)."""
+    t, broker = isolated_trader
+    broker._balance["cash"] = 1_000_000
+    broker._prices["005930"] = 100.0
+    by_strat = [{"strategy_id": "B", "candidates": [{"symbol": "005930"}]}]
+    strats = [{"id": "B", "name": "B", "definition": _overnight_def(pct=10),
+               "account_ref": None}]
+    payload = t.run_close_netting(by_strat, strats, _ds(prev_close=100.0),
+                                  market="KRX", instrument_class="stock")
+    assert len(broker.submitted) == 1 and broker.submitted[0]["side"] == "buy"
+    assert payload["cycle_summary"]["n_netted"] == 0
+
+
+def test_close_netting_killswitch_blocks_entry_liquidates(isolated_trader):
+    """킬스위치 활성: 진입 계획 skip(넷팅 없음)·청산은 진행(E5)."""
+    from localapp import killswitch
+    t, broker = isolated_trader
+    killswitch.activate("test")
+    broker._prices["005930"] = 100.0
+    broker.set_positions([{"symbol": "005930", "qty": 50, "side": "long"}])
+    _seed_daytrade(t, "A", "005930", 50, entry=90)
+    by_strat = [{"strategy_id": "B", "candidates": [{"symbol": "005930"}]}]
+    strats = [{"id": "B", "name": "B", "definition": _overnight_def(), "account_ref": None}]
+    payload = t.run_close_netting(by_strat, strats, _ds(prev_close=100.0),
+                                  market="KRX", instrument_class="stock", risk_limits={})
+    assert any(d["action"] == "skip_killswitch" for d in payload["decisions"])
+    assert len(broker.submitted) == 1 and broker.submitted[0]["side"] == "sell"
+    assert payload["cycle_summary"]["n_netted"] == 0
