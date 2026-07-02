@@ -40,6 +40,16 @@ def test_chat_prompt_high_stakes_clarify_gate():
     assert "과도한 되묻기 금지" in p            # 약한 모호성은 여전히 기본값+가정(원칙2 균형)
 
 
+def test_chat_prompt_answer_quality_gates():
+    """답변 품질 3게이트가 프롬프트에 노출돼야 — IP1 시황("오늘 장 어때")이 지수 스냅샷(코스피/코스닥/
+    나스닥/S&P/VIX)을 앞세우게, IP3 종합 매수/매도 점수는 날조 말고 팩터 순위로, IP4 세금은 일반론+
+    전문가 확인+원화환산. 배선(context·summarize)과 함께 이 지침이 있어야 실제 답변에 반영된다."""
+    p = cp.chat_system_prompt()
+    assert "시장 스냅샷" in p and "오늘 장 어때" in p          # IP1 시황 지수레벨 앞세우기
+    assert "매수/매도 점수" in p                              # IP3 종합점수 미제공 명시
+    assert "세무 전문가" in p and "원화환산" in p             # IP4 세금 면책 + 해외주식 FX
+
+
 def test_chat_prompt_includes_data_provenance():
     """데이터 출처 메타인지 — 챗봇이 출처를 추측("PER=FnGuide")하지 않도록 계보 표가 프롬프트에
     실제 노출돼야. trailing 밸류=전자공시(OpenDART) vs 추정실적=FnGuide 구분이 핵심."""

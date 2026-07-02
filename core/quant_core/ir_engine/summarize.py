@@ -197,7 +197,9 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
     shape = result_shape(result)
 
     if shape == "news_research":          # 뉴스 리서치 = 이미 Haiku 다이제스트 텍스트(모델용)
-        return str(result.get("digest") or "[뉴스 리서치 결과 없음]")
+        # + 시황/왜움직였나 답변이 지수 현재가를 앞세우도록 시장 스냅샷(context.market) 표면화 —
+        # 뉴스가 비어도 모델이 "지수레벨 없음"이라 하지 않고 스냅샷으로 답하게(IP1 배선갭).
+        return str(result.get("digest") or "[뉴스 리서치 결과 없음]") + _context_block(result)
 
     if shape == "simulate":
         m = result.get("metrics") or {}
