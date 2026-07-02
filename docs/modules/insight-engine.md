@@ -43,6 +43,12 @@
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [2026-07-02] 챗봇 품질 Wave 2 Phase 4 — 학습 hook substrate [완료·미푸시]
+- 의도: 5단계 파이프라인 마지막 Phase. Phase2/3 방법지능이 프로덕션에서 실제 쓰이는지 측정할 수 있게, 턴이 선택한 분석법을 적재. 본격 flywheel(검색·큐레이션)은 별건 Phase(과적합/노이즈 난제 선결 후).
+- 계획: ChatTurnMetric.result_shape 추가→agent 턴 첫 분석 shape 수집→chat_analytics method_dist 리포트.
+- 시행착오·인사이트: **§0.5 통찰 — 설계가 제안한 4학습신호 중 3개는 *이미 수집*됨**(질문의도=Message 텍스트·후속=turn 시퀀스·품질=result_status[Phase1]). 유일한 갭=**선택방법(result_shape)** — 어떤 분석법(event_study/relate_ic/simulate/select…)을 썼는지가 어디에도 쿼리가능하게 저장 안 됨(tool_names는 도구만·shape는 런타임 소실). 이거 하나만 추가(§6 비-목표 "기존 자산 재사용·중복 구축 금지"). **투기적 flywheel-전용 데이터(질문 fingerprint·후속 신호 필드)는 별건 Phase로 미룸(원칙2 — dead 데이터 수집 회피).** 구현: models.result_shape+`_NEW_COLS` 마이그레이션·agent 첫 분석결과 `full.get("shape")` 수집(worst_status 옆)·chat_analytics `method_dist`. 검증: 단위2(적재·집계)·서버 471 pass.
+- 교훈: **"학습 substrate"의 대부분은 이미 로그에 있다 — 진짜 갭(선택방법)만 좁게 추가하고 flywheel 전용 투기 데이터는 미룬다(원칙2). 측정 가능성이 캠페인 루프를 닫는다**(Phase2/3이 프로덕션에서 작동하는지 method_dist로 확인).
+
 ### [2026-06-30] 챗봇 품질 Wave 2 Phase 3 — 엔진 substrate (3b 선물 사이징) [3b 완료·미푸시 / 3a·#3 보류]
 - 의도: 챗봇 품질 재설계 5단계 파이프라인 ③엔진 substrate 정확성. A 교차캘린더(#1)·D 선물 사이징(#2). #3 영업이익 데이터는 데이터엔진 세션(PR#264/267) 영역이라 위임.
 - 계획: 3b D 선물 사이징부터(머지된 PR#266 0.195율 위에) → 3a A 캘린더.

@@ -108,6 +108,25 @@ def test_metric_records_tools_and_rounds(monkeypatch):
         assert m.input_tokens == 500 and m.output_tokens == 60   # 라운드 합
 
 
+def test_metric_records_result_shape(monkeypatch):
+    """Phase 4 — 턴이 선택한 분석법(result_shape)을 적재해 Phase2/3 방법지능을 프로덕션에서 측정."""
+    from app.chat import agent as ag
+    monkeypatch.setattr(ag, "run_tool",
+                        lambda name, inp: {"success": True, "shape": "select", "results": []})
+    eng = _engine()
+    with Session(eng) as s:
+        _, cid = _seed_user_conv(s)
+        client = _FakeClient([
+            _Msg([_B(type="tool_use", id="t1", name="screen", input={"top_n": 3})],
+                 "tool_use", usage=_Usage(input_tokens=200, output_tokens=20)),
+            _Msg([_B(type="text", text="AAA가 저평가입니다.")], "end_turn",
+                 usage=_Usage(input_tokens=300, output_tokens=40)),
+        ])
+        ag.run_chat_turn(s, cid, "저평가주 골라줘", client=client)
+        m = s.exec(select(ChatTurnMetric)).one()
+        assert m.result_shape == "select", f"선택 분석법이 적재돼야: {m.result_shape}"
+
+
 def test_metric_ok_false_on_error():
     from app.chat.agent import run_chat_turn
     eng = _engine()
@@ -156,6 +175,20 @@ def test_compute_stats_aggregates():
         assert st["tools"] == {"screen": 1}
         assert st["error_rate"] == round(1 / 6, 3)
         assert 0.0 < st["cache_hit_rate"] < 1.0
+
+
+def test_compute_stats_method_dist():
+    """Phase 4 — 선택 분석법 분포(result_shape) 집계 → 방법지능 프로덕션 측정."""
+    from app.chat_analytics import compute_stats
+    eng = _engine()
+    with Session(eng) as s:
+        uid, cid = _seed_user_conv(s)
+        _seed_metric(s, cid, uid, result_shape="event_study")
+        _seed_metric(s, cid, uid, result_shape="event_study")
+        _seed_metric(s, cid, uid, result_shape="select")
+        _seed_metric(s, cid, uid)                          # shape 없음(대화/협의 턴) → 제외
+        st = compute_stats(s, days=7)
+        assert st["method_dist"] == {"event_study": 2, "select": 1}, st.get("method_dist")
 
 
 def test_compute_stats_respects_days_window():
