@@ -101,7 +101,7 @@ def _model_alias(model: str | None) -> str:
         return "haiku"
     if "opus" in m:
         return "opus"
-    return "sonnet"   # CHAT_MODEL(claude-sonnet-4-6) 등 기본
+    return "sonnet"   # CHAT_MODEL(claude-sonnet-5) 등 기본
 
 
 def _join_system(system) -> str:

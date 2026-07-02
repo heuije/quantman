@@ -16,9 +16,16 @@ import Portfolio from "./pages/Portfolio";
 import IndustryAnalysis from "./pages/IndustryAnalysis";
 import GlobalMarket from "./pages/GlobalMarket";
 import ChatLab from "./pages/ChatLab";
+import DevRender from "./pages/DevRender";
 
 export default function App() {
   const { email, ready } = useAuth();
+
+  // DEV 전용 — 픽스처 차트 렌더 검증($0·인증 우회). import.meta.env.DEV는 컴파일 상수라
+  // 프로덕션 빌드에선 이 분기·DevRender가 tree-shake로 제거된다.
+  if (import.meta.env.DEV && window.location.pathname.startsWith("/dev/render")) {
+    return <DevRender />;
+  }
 
   if (!ready) {
     return <div className="center-wrap muted">불러오는 중…</div>;

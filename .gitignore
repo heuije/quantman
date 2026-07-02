@@ -83,3 +83,6 @@ _apis_meta.json
 analysis_diag_out/
 # 챗봇 LLM 평가 하니스 산출물(트랜스크립트·REPORT — 재생성 가능)
 chat_eval_out/
+
+# dev 시각검증 픽스처(생성물 — dump_results.py로 재생성)
+web/public/dev-fixtures/

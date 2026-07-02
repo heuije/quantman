@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -128,6 +129,35 @@ def extract_futures_oi(rows: list[dict], prod_name: str):
     return total if found else None
 
 
+_CONTRACT_RE = re.compile(r"\bF\s+(\d{6})\b")   # "코스피200 F 202609 (주간)" → 202609
+
+
+def extract_futures_panel(rows: list[dict], prod_name: str) -> list[dict]:
+    """선물 일별에서 특정 상품의 **outright 만기물별 일봉** → [{contract, OHLC, Settle, Volume, OI}].
+
+    스프레드(ISU_NM 'SP …'·계약월 정규식 미스로 제외)·야간 세션 제외. 계약월 = 'F YYYYMM'.
+    OHLC(TDD_*)는 비유동 원월이면 결측 → build_continuous가 Settle로 폴백.
+    """
+    out = []
+    for r in rows:
+        if r.get("PROD_NM") != prod_name:
+            continue
+        nm = str(r.get("ISU_NM", ""))
+        if "(야간)" in nm:
+            continue
+        mo = _CONTRACT_RE.search(nm)
+        if not mo:                                # outright 아님(스프레드 등)
+            continue
+        out.append({
+            "contract": mo.group(1),
+            "Open": _f(r.get("TDD_OPNPRC")), "High": _f(r.get("TDD_HGPRC")),
+            "Low": _f(r.get("TDD_LWPRC")), "Close": _f(r.get("TDD_CLSPRC")),
+            "Settle": _f(r.get("SETL_PRC")), "Volume": _f(r.get("ACC_TRDVOL")),
+            "OI": _f(r.get("ACC_OPNINT_QTY")),
+        })
+    return out
+
+
 def extract_putcall(rows: list[dict]):
     """옵션 일별에서 코스피200 옵션(미니 제외) 풋/콜 **거래량** 비율 = PUT_vol / CALL_vol.
 
@@ -200,6 +230,9 @@ _PUTCALL_SERIES = ("옵션풋콜비율", _SVC_OPT, extract_putcall)
 
 _ETF_AUM_SYMBOL = "KRETF순자산총액"
 _ETF_FLOW_SYMBOL = "KRETF순자금유입"
+
+# 선물 만기물 패널 — 연속물 서빙뷰 심볼(엔진/백테스트 소비) ↔ KRX 상품명(공백 포함)
+_FUT_PANEL = {"코스피200선물": "코스피200 선물"}
 
 LIGHT_SYMBOLS = [name for name, _, _ in _LIGHT_SERIES]
 PUTCALL_SYMBOL = _PUTCALL_SERIES[0]
@@ -329,3 +362,36 @@ def fetch_etf_flow(sdate: str, edate: str, fetch=_fetch_day) -> dict:
         _df.mark_data_dirty()
     return {"ok": fail == 0, "days": len(aum_pts),
             "saved": {_ETF_AUM_SYMBOL: n_aum, _ETF_FLOW_SYMBOL: n_flow}}
+
+
+def fetch_futures_panel(sdate: str, edate: str, symbol: str = "코스피200선물",
+                        fetch=_fetch_day) -> dict:
+    """[sdate,edate] 평일 선물 만기물 패널 수집·merge-save + 연속물 서빙뷰 재구성.
+
+    진실원천(만기물 패널)을 저장하고, 백테스트용 단일 연속물(카탈로그 기본 롤·조정)을
+    data_fetcher.rebuild_futures_continuous로 파생한다. 반환 {ok, days, fail, rows, cont}.
+    """
+    if not is_active():
+        return {"inactive": True}
+    prod = _FUT_PANEL[symbol]
+    frames = []
+    days = fail = 0
+    for bd in _weekdays(sdate, edate):
+        rows = fetch(_SVC_FUT, bd)
+        if rows is None:
+            fail += 1
+            continue
+        days += 1
+        recs = extract_futures_panel(rows, prod)
+        if recs:
+            df = pd.DataFrame(recs)
+            df.index = pd.to_datetime([bd] * len(df), format="%Y%m%d")
+            frames.append(df)
+    if not frames:
+        return {"ok": fail == 0, "days": days, "fail": fail, "rows": 0, "cont": 0,
+                "saved": {"패널행": 0, "연속물": 0}}
+    n_rows = _df.merge_futures_panel(symbol, pd.concat(frames))
+    n_cont = _df.rebuild_futures_continuous(symbol)
+    _df.mark_data_dirty()
+    return {"ok": fail == 0, "days": days, "fail": fail, "rows": n_rows, "cont": n_cont,
+            "saved": {"패널행": n_rows, "연속물": n_cont}}

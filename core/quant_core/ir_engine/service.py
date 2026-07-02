@@ -202,10 +202,12 @@ def strategy_from_spec(
     if res.get("success"):
         warns = list(res.get("warnings") or []) + [_issue_dict(i) for i in issues]   # run_query(무거래 등) 보존 후 병합
         from .data_quality import assess_data_quality   # Phase 0.5 — 실행 전 데이터 품질 불변식
-        from .run import relevant_symbols                # 평가를 전략 관련 심볼로 한정(매크로 노이즈 제거)
+        from .run import relevant_symbols, _universe_symbols   # 평가 스코핑 + 체결 유니버스(교차달력 기준)
         rel = relevant_symbols(s, dataset)
+        traded = set(_universe_symbols(s, dataset))      # carry-forward 기준 거래달력(신호/참조만 표면화)
         warns += assess_data_quality(dataset, start=getattr(s.simulation, "start", None),
-                                     end=getattr(s.simulation, "end", None), relevant=rel)
+                                     end=getattr(s.simulation, "end", None),
+                                     relevant=rel, traded=traded)
         try:
             cap_warn = _futures_capital_warning(s, dataset, res)
         except Exception:   # noqa: BLE001 — 부가 경고 계산 실패가 정상 백테스트 결과를 깨지 않게(보조 정보)
