@@ -120,7 +120,7 @@ type Alert = {
 
 export function StatusStrip({
   autoStatus, health, receivedAt, lastHeartbeatAt,
-  killSwitch, drawdown, reconciliation, cycleSummary, onCommand,
+  killSwitch, drawdown, reconciliation, cycleSummary, equityNow, onCommand,
 }: {
   autoStatus?: "running" | "paused" | "stopped";
   health?: LocalHealth;
@@ -130,6 +130,7 @@ export function StatusStrip({
   drawdown?: DrawdownState;
   reconciliation?: ReconciliationResult;
   cycleSummary?: CycleSummary;
+  equityNow?: number;
   onCommand: (type: CommandType) => void;
 }) {
   const now = new Date();
@@ -175,6 +176,17 @@ export function StatusStrip({
     alerts.push({ tone: "amber",
       main: `고점 대비 ${depth.toFixed(1)}% 하락 (${drawdown!.days_since_high}일 전 고점)`,
       act: "peak 회복 시 자동 해제 · 청산은 계속" });
+  }
+  // 일일 손실 한도 근접(킬스위치 발동 전 소프트 경고) — 기준자본 = kill switch와 동일 day_start.
+  const dsEq = killSwitch?.day_start_equity ?? null;
+  if (!killSwitch?.active && dsEq && dsEq > 0 && equityNow != null) {
+    const dayChange = (equityNow - dsEq) / dsEq * 100;
+    const usage = -dayChange / 3 * 100;   // 일일 손실 한도 -3%
+    if (usage >= 80) {
+      alerts.push({ tone: "amber",
+        main: `오늘 손실 ${dayChange.toFixed(2)}% · 일일 한도 −3% 대비 ${Math.min(100, usage).toFixed(0)}% 사용`,
+        act: "100% 도달 시 신규 진입 자동 차단" });
+    }
   }
   if (reconciliation?.has_drift) {
     const n = (reconciliation.ledger_orphans?.length ?? 0)
