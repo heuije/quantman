@@ -381,6 +381,25 @@ class Trader:
             log.error("가격 조회 실패 [%s]: %s", symbol, e)
             return None
 
+    def _resolve_contract_key(self, symbol: str) -> str:
+        """넷팅용 물리 계약 식별자 — 선물=활성 만기 계약코드, 주식=종목코드(E6).
+
+        선물은 상품명("코스피200선물")이 여러 만기물로 매핑되므로, 넷팅이 롤 경계에서
+        근월↔원월을 오상계하지 않도록 실제 계약코드로 그룹핑한다. 청산 의도는 원장의
+        contract_code(진입 시 _record_contract_meta가 기록)를, 진입 의도는 여기서 브로커
+        해석을 쓰며 같은 발주창에선 같은 활성 월물로 수렴한다. 해석 불가(SimBroker·구배선)면
+        상품명 fallback — 청산 의도도 같은 fallback이라 일관."""
+        if not qc.is_futures(symbol):
+            return symbol
+        fn = getattr(self.broker, "contract_expiry", None)
+        if fn is None:
+            return symbol
+        try:
+            code, _ = fn(symbol)
+        except Exception:
+            return symbol
+        return code or symbol
+
     # ── 미체결 추적·해제 ──────────────────────────────────────────────────────
 
     def _resolve_pending(self, decisions: list[dict]) -> None:
@@ -1130,7 +1149,9 @@ class Trader:
                               decisions: list[dict],
                               catchup: bool = False,
                               cand_direction: str | None = None,
-                              is_close_entry: bool = False) -> bool:
+                              is_close_entry: bool = False,
+                              capacity_credit: dict | None = None,
+                              capture: list | None = None) -> bool:
         """수동(단일/다중) 종목 1개에 대해 사이징 + 발주 (EOD-순수 모델).
 
         Phase 30: 매수 path는 전일 종가만으로 결정. KIS 현재가 호출 없음.
@@ -1257,6 +1278,10 @@ class Trader:
                 f"가용자금 조회 실패: {e}"))
             return False
 
+        # E1: 주식은 넷팅될 같은-종목 청산이 회수할 현금을 크레딧(선물은 위 orderable 계약 크레딧).
+        if capacity_credit and not qc.is_futures(symbol):
+            cash += float(capacity_credit.get(symbol, 0))
+
         # 사이징 — 전일 종가 기준 (cash·prev_close 모두 종목 통화).
         # IR(전략 연구소)은 position.sizing(이벤트 진입 예산)으로 사이징한다.
         # ir_live.event_buy_qty가 백테스트 엔진 _budget과 동일(amount_krw 또는
@@ -1282,6 +1307,12 @@ class Trader:
             if oq_fn is not None:
                 side = "sell" if is_short else "buy"
                 orderable = oq_fn(symbol, side, prev_close)
+                if orderable is not None and capacity_credit:
+                    # E1/N7: 넷팅될 같은-계약 청산이 회수할 여력(계약수)을 크레딧 —
+                    # 청산을 실체결하지 않고도 진입이 회수 마진을 보게 한다. 다중 진입은
+                    # 아래 capture 시 credit을 차감해 로컬 순차 소진(E2·N9). 클램프된
+                    # 청산 수량만 크레딧돼 유령 여력 방지(N7).
+                    orderable = int(orderable) + int(capacity_credit.get(symbol, 0))
                 if orderable is None:
                     # 실 브로커(orderable_qty 보유)인데 조회 실패 → **발주 보류**(qty=0). 카탈로그
                     # 추정 증거금률(0.10)로 사이징하면 실제(~19.5%) 대비 ~2배 과대 계약수가 되어,
@@ -1324,6 +1355,24 @@ class Trader:
             log.info("[L-01] 중복 진입 차단 %s/%s (%s)", ledger_key, symbol, entry_side)
             return False
 
+        # 넷팅 PLAN(capture) — 발주하지 않고 진입 '의도'만 수집(설계 §13). 사이징·게이트는
+        # 위에서 이미 실주문과 동일하게 통과했다. 로컬 여력원장(capacity_credit) 차감으로
+        # 다중 진입이 회수 여력을 중복 소진하지 않게 한다(E2·N9).
+        if capture is not None:
+            from .netting import Intent
+            spec = instrument_spec(symbol)
+            capture.append(Intent(
+                sid=ledger_key, strategy_id=ledger_key, strategy_name=strat_name,
+                contract_key=self._resolve_contract_key(symbol), symbol=symbol,
+                kind="entry", position_side=("short" if is_short else "long"),
+                order_side=("sell" if is_short else "buy"), qty=int(qty),
+                ref_price=float(prev_close), entry_price=None,
+                mult=spec.multiplier, currency=spec.currency, definition=strat_def))
+            if capacity_credit is not None:
+                consumed = qty if qc.is_futures(symbol) else qty * prev_close
+                capacity_credit[symbol] = capacity_credit.get(symbol, 0) - consumed
+            return True
+
         # 발주가는 submit 내부에서 prev_close × (1 ± tolerance%) 계산.
         if is_short:
             # 숏 진입(sell-to-open) — 선물 전용. 예약·catchup 없음(선물은 즉시주문).
@@ -1344,7 +1393,9 @@ class Trader:
                               market: str = "KRX",
                               catchup: bool = False,
                               entry_window: str = "open",
-                              instrument_class: str | None = None) -> None:
+                              instrument_class: str | None = None,
+                              capacity_credit: dict | None = None,
+                              capture: list | None = None) -> None:
         """Phase 37: 서버 preview의 candidates 종목을 직접 발주.
 
         매수 신호 재평가는 skip (preview가 어제 18:15에 이미 평가).
@@ -1457,7 +1508,8 @@ class Trader:
                         ledger_key, sid, strat_name, strat_def,
                         symbol, dataset, equity_now, decisions,
                         catchup=catchup, cand_direction=c.get("direction"),
-                        is_close_entry=(entry_window == "close")):
+                        is_close_entry=(entry_window == "close"),
+                        capacity_credit=capacity_credit, capture=capture):
                     bought += 1
                     n_preview_used += 1
 
@@ -1602,6 +1654,35 @@ class Trader:
                 entry_price=float(pos["entry_price"]), mult=spec.multiplier,
                 currency=spec.currency, definition=pos.get("definition") or {}))
         return out
+
+    def _freed_capacity(self, liq_intents: list) -> dict:
+        """청산 의도가 회수할 여력을 상품명별로 합산 — 진입 사이징 크레딧(E1·§5.5).
+
+        선물=계약수(orderable에 더함)·주식=현금(수량×기준가, cash에 더함). 클램프된 청산
+        수량만 반영돼 유령 여력을 만들지 않는다(N7)."""
+        cap: dict = {}
+        for lg in liq_intents:
+            add = lg.qty if qc.is_futures(lg.symbol) else lg.qty * lg.ref_price
+            cap[lg.symbol] = cap.get(lg.symbol, 0) + add
+        return cap
+
+    def plan_close_entries(self, by_strategy: list, strategies: list, dataset: dict,
+                           equity_now: float, liq_intents: list, market: str,
+                           instrument_class: str) -> tuple[list, list]:
+        """종가창 진입 '의도'를 산출(발주 안 함) — 넷팅 PLAN(설계 §13).
+
+        _enter_from_preview를 capture 모드로 재사용(fill 라우팅·계좌·커버리지·보유·멱등 게이트와
+        사이징을 실주문과 동일하게 통과) + 로컬 여력원장에 같은-종목 청산 회수여력을 시드해
+        E1(진입이 회수 마진을 봄)·E2/N9(다중 진입 순차 소진)를 해결. 반환 (entry_intents, decisions).
+        """
+        capacity = self._freed_capacity(liq_intents)
+        captured: list = []
+        decisions: list = []
+        self._enter_from_preview(by_strategy, strategies, dataset, equity_now,
+                                 decisions, set(), market=market,
+                                 entry_window="close", instrument_class=instrument_class,
+                                 capacity_credit=capacity, capture=captured)
+        return captured, decisions
 
     def liquidate_day_trades(self, dataset: dict, instrument_class: str, *,
                              market: str = "KRX", record_cycle: bool = True) -> dict:

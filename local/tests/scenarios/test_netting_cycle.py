@@ -175,3 +175,70 @@ def test_plan_liquidations_clamps_external_sell(isolated_trader):
     broker.set_positions([{"symbol": "005930", "qty": 3, "side": "long"}])  # 실보유 3(외부 2매도)
     legs = t.plan_close_liquidations(_ds(), "stock", "KRX", broker.account_snapshot())
     assert len(legs) == 1 and legs[0].qty == 3, "실보유로 클램프(외부매도 초과 방지)"
+
+
+# ── Task 3.2 — plan_close_entries (여력원장 크레딧·발주 안 함) ────────────────────
+
+def _overnight_def(symbol="005930", pct=100):
+    return {"name": "ov", "engine": "ir",
+            "universe": {"kind": "single", "symbols": [symbol]},
+            "signal": _DUMMY_SIGNAL,
+            "position": {"direction": "long",
+                         "sizing": {"mode": "pct_cash", "amount_pct": pct},
+                         "entry": {"mode": "on_signal"}, "exit": {"hold_days": 1}},
+            "simulation": {"fill": "close"}}
+
+
+def _liq(sid, symbol, qty, ref):
+    return Intent(sid=sid, strategy_id=sid, strategy_name=sid, contract_key=symbol,
+                  symbol=symbol, kind="exit", position_side="long", order_side="sell",
+                  qty=qty, ref_price=float(ref), entry_price=90.0, mult=1.0,
+                  currency="KRW", definition={})
+
+
+def test_plan_entries_no_credit_sizes_zero_without_cash(isolated_trader):
+    """크레딧 없으면(청산 없음) 현금 0 → 진입 사이징 0 (skip_funds)."""
+    t, broker = isolated_trader
+    broker._balance["cash"] = 0
+    broker._prices["005930"] = 100.0
+    by_strat = [{"strategy_id": "B", "candidates": [{"symbol": "005930"}]}]
+    strats = [{"id": "B", "name": "B", "definition": _overnight_def(), "account_ref": None}]
+    captured, decisions = t.plan_close_entries(
+        by_strat, strats, _ds(prev_close=100.0), 10_000_000.0, [], "KRX", "stock")
+    assert captured == [], "현금 0·크레딧 없음 → 진입 의도 없음"
+    assert broker.submitted == [], "PLAN은 발주하지 않는다"
+
+
+def test_plan_entries_credit_enables_sizing(isolated_trader):
+    """E1: 같은 종목 청산 회수 현금을 크레딧하면 진입이 그 여력으로 사이징된다."""
+    t, broker = isolated_trader
+    broker._balance["cash"] = 0                        # 기저 현금 0(A가 점유했다고 가정)
+    broker._prices["005930"] = 100.0
+    liq = [_liq("A", "005930", 50, ref=100)]           # A 청산 50주 → 회수 현금 5000
+    by_strat = [{"strategy_id": "B", "candidates": [{"symbol": "005930"}]}]
+    strats = [{"id": "B", "name": "B", "definition": _overnight_def(), "account_ref": None}]
+    captured, decisions = t.plan_close_entries(
+        by_strat, strats, _ds(prev_close=100.0), 10_000_000.0, liq, "KRX", "stock")
+    assert broker.submitted == []
+    assert len(captured) == 1, decisions
+    ce = captured[0]
+    assert ce.kind == "entry" and ce.order_side == "buy" and ce.symbol == "005930"
+    assert ce.qty == 50, "회수 현금 5000 / 100원 = 50주 (크레딧 없으면 0)"
+    assert ce.ref_price == 100.0
+
+
+def test_plan_entries_credit_depletes_across_multiple(isolated_trader):
+    """E2/N9: 같은 종목 다중 진입은 회수 여력을 순차 소진(중복 사용 안 함)."""
+    t, broker = isolated_trader
+    broker._balance["cash"] = 0
+    broker._prices["005930"] = 100.0
+    liq = [_liq("A", "005930", 50, ref=100)]           # 회수 현금 5000 = 50주분
+    # B1, B2 둘 다 005930 종가진입(각 pct_cash 100%) → 합쳐 50주까지만
+    by_strat = [{"strategy_id": "B1", "candidates": [{"symbol": "005930"}]},
+                {"strategy_id": "B2", "candidates": [{"symbol": "005930"}]}]
+    strats = [{"id": "B1", "name": "B1", "definition": _overnight_def(), "account_ref": None},
+              {"id": "B2", "name": "B2", "definition": _overnight_def(), "account_ref": None}]
+    captured, _ = t.plan_close_entries(
+        by_strat, strats, _ds(prev_close=100.0), 10_000_000.0, liq, "KRX", "stock")
+    total = sum(c.qty for c in captured)
+    assert total == 50, f"다중 진입 합계가 회수여력(50주)을 넘지 않아야 — 실제 {total}"
