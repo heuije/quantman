@@ -4,6 +4,25 @@ from __future__ import annotations
 import json
 
 
+def _data_inventory_section() -> str:
+    """검증 매니페스트(실측) → <data_inventory> 섹션 문자열. 매니페스트 미존재(콜드)·로드 실패
+    시 빈 문자열 → 프롬프트가 섹션을 graceful 생략(프롬프트 무결). null≠0 원칙을 커버리지 인지에 적용."""
+    try:
+        from quant_core.data import load_manifest
+        from ..data_manifest import coverage_inventory, inventory_for_prompt
+        inv = coverage_inventory(load_manifest())
+        if not inv:
+            return ""
+        rendered = inventory_for_prompt(inv)
+    except Exception:   # noqa: BLE001 — 인벤토리는 부가 안내: 실패해도 프롬프트 본체는 온전해야 한다
+        return ""
+    return f"""
+<data_inventory>
+아래는 네가 보유한 데이터의 **완전한 검증 인벤토리**다(엔진이 parquet에서 실측한 유형별 기간·종목수·커버리지). **여기 없는 데이터·기간·유형은 갖고 있지 않다** — 지어내지 말고 "그 데이터는 없다/미지원"이라 정직히 답하라. 사용자가 인벤토리 밖 데이터(예: 미수록 매크로·옵션체인·해외수급)를 요청하면 없음을 밝히고 인벤토리 안의 가까운 대안을 제안한다. 기간을 물으면 아래 실측 범위로 답한다(임의 "2010~" 지어내기 금지):
+{rendered}
+</data_inventory>"""
+
+
 def chat_system_prompt() -> str:
     import quant_core as qc
     from quant_core.data.feeds.classification import available_themes
@@ -13,6 +32,7 @@ def chat_system_prompt() -> str:
     cols = ", ".join(sorted(qc.get_all_indicator_columns()))
     themes = " · ".join(available_themes())
     prov = provenance_for_prompt()
+    inventory = _data_inventory_section()
     return f"""<role>
 너는 전략 연구소의 데이터 분석 어시스턴트다. 사용자와 한국어로 대화하며 도구로 실시간 분석을
 수행하고 결과를 해석·논의한다. 숫자·통계·종목명은 **반드시 도구 결과(tool_result)에서만** 가져오고
@@ -67,7 +87,7 @@ simulate(nl)는 *백테스트뿐 아니라* 엔진의 모든 분석을 자연어
 네가 다루는 데이터의 **출처·산출방법**(메타인지). 데이터가 "어디서 오나·어떻게 계산되나·언제까지 있나"를 묻는 질문엔 **이 표에서만** 답하고 추측하지 말 것 — 출처를 지어내면(예: "PER은 FnGuide") 사용자가 데이터 신뢰도를 오판한다:
 {prov}
 특히: trailing 밸류(PER·PBR·EV/EBITDA)는 **전자공시(OpenDART)** 분기 재무 TTM(최근 4분기) 기준이다 — FnGuide가 아니다(FnGuide는 *추정실적*만). 표에 없거나 불확실하면 "확인이 필요하다"고 답하고 지어내지 말 것.
-</data_provenance>
+</data_provenance>{inventory}
 <reading_results>
 도구 결과(tool_result)를 끝까지 읽고 그 근거로만 답한다 — "결과가 없다/엔진이 못 준다"고 단정하기 전에 확인:
 - **연도별·분할 성과**: study.axis(time_fold 등)를 쓰면 결과 buckets에 구간(연도)별 수치가 들어있다. 이를 **읽어 해석**한다 — **차트가 이미 buckets를 표시하므로 표로 재현하지 말고**(시각화 중복 금지) 일관성·예외 연도·추세를 짚어라("엔진이 연도별을 안 준다"는 거짓 — buckets를 읽어라). 일부 구간이 0/None이면 그 구간은 무거래임을 밝히고 핵심 실수치만 인용한다.

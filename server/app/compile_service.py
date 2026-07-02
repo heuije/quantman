@@ -39,6 +39,16 @@ def _schema_issues(e: ValidationError) -> list[dict]:
     return issues
 
 
+# 매크로 심볼 별칭 — 사용자가 쓰는 통용어 → 정식 데이터 심볼키(name_map 병합, #B).
+# 정식키는 data_fetcher.MACRO_KRX_SYMBOLS 등에 실재해야 크로스에셋 참조가 컴파일된다.
+_MACRO_ALIASES: dict[str, str] = {
+    "풋콜비율": "옵션풋콜비율", "put call ratio": "옵션풋콜비율", "pcr": "옵션풋콜비율",
+    "변동성지수": "코스피200변동성지수", "브이코스피": "코스피200변동성지수",
+    "vkospi": "코스피200변동성지수", "v-kospi": "코스피200변동성지수",
+    "국고채금리": "국고채3년", "국고채": "국고채3년",
+}
+
+
 # %-단위 수익률류 지표 — 임계가 |const|<0.01이면 '0.1%→0.001' 식 ÷100(분수화) 오류로 보고
 # ×100 교정. 프롬프트가 '−0.1로 쓰라'고 명시해도 LLM이 비결정적으로 −0.001을 내므로(이미 인입된
 # nl까지), 결정적 후보정으로 부류를 닫는다. <0.01 한정이라 정상 임계(0.05%=0.05 등)는 불변.
@@ -85,6 +95,15 @@ def compile_strategy(session: Session, user_id: int | None, nl: str) -> dict:
     indicator_cols = sorted(qc.get_all_indicator_columns())
     rows = session.exec(select(TradableSymbol).where(TradableSymbol.user_id == user_id)).all()
     name_map = {r.name.strip().lower(): r.symbol for r in rows if r.name}
+    # 매크로 별칭 병합 — 사용자 표현(풋콜비율·VKOSPI·국고채금리)을 정식 심볼키로 해석(#B).
+    name_map = {**_MACRO_ALIASES, **name_map}   # 사용자 등록이 별칭보다 우선
+
+    # 컴파일러 심볼 카탈로그(#B) — 크로스에셋 신호 참조가 가능한 심볼을 프롬프트에 노출.
+    # 매크로 그룹 + 주요 자산심볼. 개별주식(동적 유니버스)은 제외(name_map/valid_keys가 흡수).
+    symbols_catalog: dict[str, list[str]] = {
+        "매크로·시장지표": list(_df.MACRO_SYMBOLS),
+        "자산(선물·지수·크립토)": list(_df.ASSET_SYMBOLS),
+    }
 
     def _validate(strat: dict) -> tuple[list[dict], bool]:
         # extra="ignore" 모델이 환각/오타 필드를 silent drop 하기 전에 raw에서 포착 → repair 피드백.
@@ -101,7 +120,7 @@ def compile_strategy(session: Session, user_id: int | None, nl: str) -> dict:
 
     res = compile_nl(nl, catalog=catalog_spec(), capabilities=capability_spec(),
                      indicator_cols=indicator_cols, valid_keys=valid_keys,
-                     name_map=name_map, validate_fn=_validate)
+                     name_map=name_map, validate_fn=_validate, symbols=symbols_catalog)
 
     # 후보정: %수익률 임계 단위 오류(−0.001 등) 결정적 교정 — LLM 비결정 보정(별개 A 부류).
     if res.get("success") and isinstance(res.get("ir"), dict):

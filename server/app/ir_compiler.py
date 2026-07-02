@@ -210,13 +210,30 @@ def _capabilities_text(caps: dict) -> str:
     return "\n".join(out)
 
 
-def _system_prompt(catalog: list[dict], capabilities: dict, indicator_cols: list[str]) -> str:
+def _symbols_text(symbols: dict[str, list[str]]) -> str:
+    """크로스에셋 참조 가능 심볼 카탈로그 렌더 — {그룹라벨: [심볼]}. 지표 열거와 동형.
+
+    신호가 다른 자산·매크로를 참조할 때(예: 옵션풋콜비율.pct_change_1d) 유효 심볼키를 컴파일러가
+    사전에 알게 한다(사후검증만으로는 매크로 크로스에셋을 못 낸다)."""
+    lines = []
+    for label, syms in symbols.items():
+        if syms:
+            lines.append(f"  [{label}] {', '.join(syms)}")
+    return "\n".join(lines)
+
+
+def _system_prompt(catalog: list[dict], capabilities: dict, indicator_cols: list[str],
+                   symbols: dict[str, list[str]] | None = None) -> str:
     examples = "\n\n".join(
         f"<example>\n입력: {ex['nl']}\nemit_strategy 인자:\n{json.dumps(ex['out'], ensure_ascii=False, indent=1)}\n</example>"
         for ex in _FEWSHOT
     )
     # %계열 지표(COMPARE_GROUP SSOT) — 임계 const 스케일 가이드용(값이 이미 퍼센트).
     pct_cols = [c for c in indicator_cols if get_indicator_compare_group(c) == "pct"]
+    symbols_block = (
+        f"\n크로스에셋 참조 가능 심볼(신호 ref에 'SYM.지표'로 참조 — 매매는 universe 종목으로):\n"
+        f"{_symbols_text(symbols)}" if symbols else ""
+    )
     return f"""<role>
 너는 한국어 투자전략 설명을 백테스트 IR(StrategyIR JSON)로 변환하는 결정론적 컴파일러다.
 오직 emit_strategy 도구로만 결과를 제출한다. 아래 <capabilities>·<block_catalog>·<reference_data>에
@@ -259,7 +276,7 @@ StrategyIR = {{
   (예: 모멘텀 N일)과 **별개의 역할**. "윈도우 바꿔가며"가 모호하면 어느 window(표준화 기간 vs 입력 룩백)인지 param_grid
   path로 구분해 스윕한다(두 역할을 한 값으로 묶지 말 것 — 라벨이 모호해진다).
 종목 표기: 국내주식=6자리 코드(삼성전자 005930), 미국주식=티커(AAPL), 내장 자산명=정확한 키
-(S&P500, 코스피200선물, 원유선물, 금선물, 은선물(COMEX), 천연가스선물, 나스닥선물, 비트코인선물 등). 모르면 사용자가 쓴 명칭 그대로.
+(S&P500, 코스피200선물, 원유선물, 금선물, 은선물(COMEX), 천연가스선물, 나스닥선물, 비트코인선물 등). 모르면 사용자가 쓴 명칭 그대로.{symbols_block}
 </reference_data>
 
 <units_and_costs>
@@ -484,6 +501,7 @@ def compile_nl(
     valid_keys: set[str],
     name_map: dict[str, str],
     validate_fn: Callable[[dict], tuple[list[dict], bool]],
+    symbols: dict[str, list[str]] | None = None,
     max_repairs: int = 2,
 ) -> dict:
     """자연어 → StrategyIR. validate_fn(strategy_dict)->(issues, ok). 내부 수리 루프.
@@ -502,7 +520,7 @@ def compile_nl(
     client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     # 정적·대형 시스템 프롬프트는 프롬프트 캐싱(ephemeral)으로 호출당 비용·지연 절감.
     system = [{"type": "text",
-               "text": _system_prompt(catalog, capabilities, indicator_cols),
+               "text": _system_prompt(catalog, capabilities, indicator_cols, symbols),
                "cache_control": {"type": "ephemeral"}}]
     messages: list[dict] = [{"role": "user", "content": f"다음 전략을 컴파일해줘:\n\n{nl}"}]
     last: dict = {"ir": {}, "assumptions": [], "issues": [], "repair_count": 0}
