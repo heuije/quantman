@@ -293,14 +293,24 @@ def _environment(sim: SimSpec, u: Universe, split_mode: str) -> dict:
                      _does("period_split", split_mode)))
     items.append(_it("데이터 빈도", "일봉 (일별 OHLC)", _DEF, "분/틱 단위 아님."))
     items.append(_it("데이터 처리", "종목별 시장 소스 1개 사용 · 배당/생존편향 등 세부 처리는 데이터 레이어에 의존", _DEF))
-    # 선물 연속물·롤·통화 — 엔진 미적용(예약)을 정직하게 못박는다. roll_method 등을 채워 와도,
-    # 또는 LLM 설명이 "만기 자동 롤"이라 해도, 실제 엔진은 단일 연속 시계열·무환산이다(거짓 약속 차단).
+    # 선물 연속물·롤 — 심볼별 정직성. 만기물 패널 보유(KOSPI200)는 롤/조정을 백테스트에 반영,
+    # 미보유(원유 등 yfinance)는 단일 연속 시계열 가정(미적용). LLM이 "만기 자동 롤"이라 해도
+    # 실제 반영 여부를 패널 존재로 판정해 거짓 약속을 차단한다. 통화 환산(FX)은 여전히 미적용.
     if u.kind in ("single", "list") and any(is_futures(x) for x in u.symbols):
-        reserved = [k for k, v in (("만기 롤", sim.roll_method), ("연속물 조정", sim.series_adjust),
-                                   ("롤비용", sim.roll_cost_pct)) if v is not None]
-        set_note = f" (설정한 {', '.join(reserved)}은 현재 미반영)" if reserved else ""
-        items.append(_it("선물 연속물·롤", "단일 연속 시계열 가정 — 만기 롤·연속물 조정은 현재 엔진 미적용(예약)" + set_note,
-                         _DEF, "롤·만기물 전환은 데이터 의존 기능(E2)으로 아직 백테스트에 반영되지 않음."))
+        from ..data_fetcher import has_futures_panel
+        fut = [x for x in u.symbols if is_futures(x)]
+        if any(has_futures_panel(x) for x in fut):
+            rm = sim.roll_method or "at_expiry(기본)"
+            sa = sim.series_adjust or "none(기본)"
+            items.append(_it("선물 연속물·롤", f"만기물 패널로 연속물 구성 — 롤={rm}, 조정={sa} (백테스트 반영)",
+                             _SET if (sim.roll_method or sim.series_adjust) else _DEF,
+                             "만기=패널 마지막 존재일(데이터 주도). roll_cost_pct는 실제 베이시스 우선이라 무시."))
+        if any(not has_futures_panel(x) for x in fut):
+            reserved = [k for k, v in (("만기 롤", sim.roll_method), ("연속물 조정", sim.series_adjust),
+                                       ("롤비용", sim.roll_cost_pct)) if v is not None]
+            set_note = f" (설정한 {', '.join(reserved)}은 현재 미반영)" if reserved else ""
+            items.append(_it("선물 연속물·롤", "단일 연속 시계열 가정 — 만기물 패널 미수집 선물은 롤·연속물 조정 미적용" + set_note,
+                             _DEF, "롤·만기물 전환은 만기물 패널이 있어야 반영됨(현재 KOSPI200)."))
         if sim.account_currency == "USD" or any(instrument_currency_usd(x) for x in u.symbols):
             items.append(_it("선물 통화 환산", "현재 미적용 — 단일통화 백테스트 가정(손익률은 통화 스케일에 불변)",
                              _DEF, "해외선물 USD↔KRW 환율 환산은 아직 미구현."))

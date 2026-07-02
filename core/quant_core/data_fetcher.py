@@ -31,6 +31,7 @@ DATA_DIR = Path(os.getenv("QP_CORE_DATA_DIR")
 FUNDAMENTALS_DIR = DATA_DIR / "fundamentals"
 CONSENSUS_DIR = DATA_DIR / "consensus"      # 애널 컨센서스 패널 (consensus_kr 피드, KR 한정)
 FLOW_DIR = DATA_DIR / "flow"                # 기관·외국인 수급 (flow_kr 피드, KR 한정)
+FUTURES_PANEL_DIR = DATA_DIR / "futures_panel"  # 선물 만기물별 일봉 패널 (krx_openapi 피드)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 FUNDAMENTALS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -60,16 +61,16 @@ YFINANCE_SYMBOLS = {
 
 FDR_SYMBOLS = {
     # ⚠ 261220은 KODEX200선물 *ETF*(주식, ~₩만대) — 실제 KOSPI200 선물 계약이 아니다.
-    # 실선물(지수포인트·승수 250,000)은 "코스피200선물" 키로 CSV 백필+KIS 증분 수급(CSV_SEEDED_FUTURES).
+    # 실선물(지수포인트·승수 250,000)은 "코스피200선물" 키로 KRX 만기물 패널서 파생(KRX_PANEL_FUTURES).
     # 둘이 같은 키를 쓰던 충돌(ETF에 선물 승수 적용)을 분리(F1) — ETF는 ETF 키로.
     "코스피200선물ETF": "261220",
     "나스닥100선물": "304940",
     "은선물":        "144600",
 }
 
-# CSV(투자닷컴) 콜드스타트 백필 + KIS 일봉 증분으로 수급하는 실선물(연속 일봉). FDR/yfinance
-# 미수집(무료 연속선물 피드 부재) — seed_from_investing_csv로 시드, append_daily_bars로 증분.
-CSV_SEEDED_FUTURES = ["코스피200선물"]
+# 공식 KRX API(fut_bydd_trd) 만기물 패널에서 연속물을 파생하는 실선물(S4). 진실원천=패널,
+# 서빙뷰=연속물("코스피200선물"). 롤/조정은 백테스트 파라미터(data.futures_roll·엔진 E2).
+KRX_PANEL_FUTURES = ["코스피200선물"]
 
 # 미니 코스피200선물 = 정규와 동일 KOSPI200 지수(동일 호가 포인트). 가격 데이터는 정규
 # 시리즈를 공유한다(별도 수급 안 함) — 손익차는 엔진 승수(50k vs 250k)에서만 발생.
@@ -141,7 +142,7 @@ MACRO_KRX_SYMBOLS = ["코스피200변동성지수", "옵션풋콜비율", "KRX�
                      "코스피200선물미결제약정", "코스닥150선물미결제약정",
                      "KRETF순자산총액", "KRETF순자금유입"]
 
-ASSET_SYMBOLS = list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + ["비트코인"] + CSV_SEEDED_FUTURES
+ASSET_SYMBOLS = list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + ["비트코인"] + KRX_PANEL_FUTURES
 MACRO_SYMBOLS = (list(MACRO_YF_SYMBOLS) + list(MACRO_FRED_SYMBOLS)
                  + list(MACRO_FRED_LAGGED) + MACRO_OTHER + MACRO_DERIVED
                  + MACRO_KRX_SYMBOLS)
@@ -226,238 +227,79 @@ def _merge(existing: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
     return combined.sort_index()
 
 
-# ── 실선물 일봉 수급: CSV 콜드스타트 백필 + 증분 append (KOSPI200 선물 등) ──────────
-# KOSPI200은 무료 연속선물 피드가 없어, 투자닷컴 과거데이터 CSV로 깊은 과거(2010+)를 1회
-# 시드하고, 이후 일봉은 KIS(FHKIF03020100, 모의 OK)가 단일 소스로 증분 append한다.
-# 날짜로 소스를 분할(CSV=과거·KIS=신규, 중복은 KIS 우선) → "데이터포인트당 소스 1개" 준수.
+# ── 선물 만기물 패널: 진실원천(만기물별 일봉) + 연속물 서빙뷰 파생 ─────────────────
+# KRX fut_bydd_trd 만기물 패널을 진실원천으로 저장하고, 백테스트용 단일 연속 시계열은
+# futures_roll.build_continuous로 파생한다(롤·조정은 데이터에 굽지 않고 백테스트 파라미터).
+# 패널은 하루에 여러 만기물 → 날짜 중복. dedup 키 = (날짜, contract)이라 _merge(index 전용)와
+# 다른 병합이 필요하다.
 
-def _parse_investing_volume(v) -> float:
-    """investing.com 거래량 '18.45K'·'175.97K'·'2.3M' → 숫자. 빈값/'-'/NaN → 0."""
-    if v is None:
-        return 0.0
-    s = str(v).strip().replace(",", "")
-    if s in ("", "-", "nan", "NaN", "None"):
-        return 0.0
-    mult = 1.0
-    if s[-1] in "KkMmBb":
-        mult = {"K": 1e3, "M": 1e6, "B": 1e9}[s[-1].upper()]
-        s = s[:-1]
-    try:
-        return float(s) * mult
-    except ValueError:
-        return 0.0
+def _futures_panel_path(symbol: str) -> Path:
+    symbol = PRICE_ALIAS.get(symbol, symbol)   # 미니→정규 패널 공유(동일 KOSPI200 지수)
+    return FUTURES_PANEL_DIR / f"{symbol.replace('/', '_')}.parquet"
 
+def has_futures_panel(symbol: str) -> bool:
+    """만기물 패널 보유 여부 — 롤/조정이 백테스트에 실제 반영되는 선물인지(explain 정직성)."""
+    return _futures_panel_path(symbol).exists()
 
-def clean_investing_csv(csv_path) -> pd.DataFrame:
-    """investing.com 과거데이터 CSV → 정제 OHLCV(오름차순 DatetimeIndex).
+def load_futures_panel(symbol: str) -> pd.DataFrame:
+    p = _futures_panel_path(symbol)
+    if not p.exists():
+        return pd.DataFrame()
+    df = read_parquet_safe(p)
+    return df if df is not None else pd.DataFrame()
 
-    내보내기 특이점 처리: 날짜 내부 공백('2026- 06- 02'), 천단위 콤마('1,434.95'),
-    거래량 K/M 접미사, 최신→과거 역순. 컬럼: 날짜·종가·시가·고가·저가·거래량(·변동%).
-    """
-    raw = pd.read_csv(csv_path, encoding="utf-8-sig")
-    raw = raw.rename(columns={"날짜": "date", "종가": "Close", "시가": "Open",
-                              "고가": "High", "저가": "Low", "거래량": "Volume"})
-    # raw는 RangeIndex, 새 index는 DatetimeIndex라 Series 그대로 넣으면 라벨정렬로 전부 NaN이
-    # 된다 → 전부 .to_numpy()로 위치기반 배정·필터(인덱스 비정렬 오류도 회피).
-    idx = pd.to_datetime(raw["date"].astype(str).str.replace(" ", "", regex=False),
-                         errors="coerce").to_numpy()
-
-    def _num(col):
-        return pd.to_numeric(raw[col].astype(str).str.replace(",", "", regex=False),
-                             errors="coerce").to_numpy()
-
-    close = _num("Close")
-    vol = (raw["Volume"].map(_parse_investing_volume).to_numpy()
-           if "Volume" in raw.columns else [0.0] * len(raw))
-    df = pd.DataFrame({"Open": _num("Open"), "High": _num("High"), "Low": _num("Low"),
-                       "Close": close, "Volume": vol}, index=idx)
-    df = df[(~pd.isna(idx)) & (~pd.isna(close))].sort_index()
-    df.index.name = None
-    return df
-
-
-def seed_from_investing_csv(symbol: str, csv_path) -> pd.DataFrame:
-    """investing.com CSV로 콜드스타트 백필(1회). 기존 parquet을 **덮어쓴다**(프록시 데이터 교체).
-
-    실선물 연속 일봉이라 엔진이 그대로 소비(별도 롤 데이터 불필요 — 롤은 시리즈에 내재).
-    이후 일봉은 append_daily_bars(KIS 증분)가 단일 소스.
-    """
-    df = clean_investing_csv(csv_path)
+def save_futures_panel(symbol: str, df: pd.DataFrame):
     if df.empty:
-        raise ValueError(f"CSV 정제 결과가 비어 있음: {csv_path}")
-    _save(symbol, df)            # 덮어쓰기 — 기존(프록시 ETF) 데이터를 실선물로 교체
-    mark_data_dirty()
-    return df
+        return
+    FUTURES_PANEL_DIR.mkdir(parents=True, exist_ok=True)
+    df = df.copy()
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    write_parquet_atomic(df.sort_index(), _futures_panel_path(symbol))
 
-
-def read_clean_csv(csv_path) -> pd.DataFrame:
-    """표준화 OHLCV CSV(date,open,high,low,close[,volume]; 오름차순) → 정제 DataFrame.
-
-    시드(seed_from_clean_csv)와 공백 점검(csv_coverage_gap)이 *동일 파싱*을 쓰도록 분리.
-    clean_investing_csv는 *원시* 투자닷컴 포맷(한글헤더·날짜공백·K접미사)용 — 이 함수는 *이미
-    표준화된* CSV(번들 server/app/data/static/kospi200_futures.csv)용.
-    """
-    raw = pd.read_csv(csv_path)
-    raw = raw.rename(columns={"date": "d", "open": "Open", "high": "High",
-                              "low": "Low", "close": "Close", "volume": "Volume"})
-    # raw는 RangeIndex, 새 index는 DatetimeIndex라 Series 그대로 넣으면 라벨정렬로 NaN → .to_numpy() 위치배정.
-    idx = pd.to_datetime(raw["d"].astype(str), errors="coerce").to_numpy()
-
-    def _num(col):
-        return (pd.to_numeric(raw[col], errors="coerce").to_numpy()
-                if col in raw.columns else [0.0] * len(raw))
-
-    close = _num("Close")
-    df = pd.DataFrame({"Open": _num("Open"), "High": _num("High"), "Low": _num("Low"),
-                       "Close": close, "Volume": _num("Volume")}, index=idx)
-    df = df[(~pd.isna(idx)) & (~pd.isna(close))].sort_index()
-    df["Volume"] = df["Volume"].fillna(0.0)
-    df.index.name = None
-    return df
-
-
-def seed_from_clean_csv(symbol: str, csv_path) -> pd.DataFrame:
-    """정제완료 OHLCV CSV → parquet **덮어쓰기** 시드. 번들 정적 CSV(투자닷컴 KOSPI200 연속선물
-    2010+ 스냅샷)를 깊은 base로 적재. 이후 최근분은 fetch_kis_futures_daily(KIS 증분)가 이 base
-    위에 append → "데이터포인트당 소스 1개"(과거=CSV·신규=KIS).
-    """
-    df = read_clean_csv(csv_path)
-    if df.empty:
-        raise ValueError(f"정제 CSV 결과가 비어 있음: {csv_path}")
-    _save(symbol, df)            # 덮어쓰기 — 기존(얕은 KIS·프록시 ETF·혼합·구멍난) 데이터를 깊은 연속물로 교체
-    mark_data_dirty()
-    return df
-
-
-def csv_coverage_gap(existing: pd.DataFrame, csv_path, *, tol: float = 0.99) -> bool:
-    """parquet이 번들 CSV 대비 **내부 공백**(결손)이 있나 — 재시드 트리거 판정.
-
-    _refresh의 needs_deep가 min-date(깊이)만 보면 '깊지만 구멍난' parquet(예: 2021/2023/2024
-    구간 결손)이 영구 미복구된다 — 선물분석 탭은 CSV를 직독해 멀쩡한데 인사이트 엔진만 거래0.
-    CSV 구간[min,max] 안에서 parquet의 유효(non-NaN Close) 행이 CSV의 tol배 미만이면 True →
-    CSV 재시드 필요. KIS 증분은 CSV 구간 *이후*만 append하므로, 정상이면 [csv.min,csv.max]
-    안은 parquet=CSV로 정확히 일치(tol 여유는 휴장일 미세차 흡수).
-    """
-    if existing is None or existing.empty or "Close" not in existing.columns:
-        return True
-    csv_df = read_clean_csv(csv_path)
-    overlap = csv_df.index[csv_df.index <= existing.index.max()]
-    if len(overlap) == 0:
-        return False
-    have = int(existing["Close"].reindex(overlap).notna().sum())
-    return have < len(overlap) * tol
-
-
-def append_daily_bars(symbol: str, new: pd.DataFrame) -> pd.DataFrame:
-    """신규 일봉을 기존 parquet에 증분 머지(중복 날짜는 new=최신 소스 우선). KIS 증분 진입점.
-
-    new = OHLCV(+Volume) DatetimeIndex DataFrame(예: KIS FHKIF03020100 일봉을 대문자 OHLCV로
-    매핑한 것). 스플라이스 정합(예: |new 첫 바 ≈ 기존 마지막 바|)은 호출자가 검증해 점프를 차단한다.
-    """
+def merge_futures_panel(symbol: str, new: pd.DataFrame) -> int:
+    """신규 패널 행을 기존과 병합(중복 (날짜,contract)=new 우선). 반환 총 행수."""
     if new is None or new.empty:
-        return _load_existing(symbol)
+        return len(load_futures_panel(symbol))
     new = new.copy()
     new.index = pd.to_datetime(new.index).tz_localize(None)
-    merged = _merge(_load_existing(symbol), new)
-    _save(symbol, merged)
+    existing = load_futures_panel(symbol)
+    combined = pd.concat([existing, new]) if not existing.empty else new
+    combined = (combined.reset_index(names="_d")
+                .drop_duplicates(subset=["_d", "contract"], keep="last")
+                .set_index("_d").sort_index())
+    combined.index.name = None
+    save_futures_panel(symbol, combined)
+    return len(combined)
+
+def rebuild_futures_continuous(symbol: str, roll_method: str | None = None,
+                               series_adjust: str | None = None) -> int:
+    """만기물 패널 → 기본 연속물 서빙뷰를 재구성해 symbol parquet 덮어쓰기.
+
+    롤·조정 미지정 시 상품 카탈로그(exec_defaults) 기본값 — SSOT. 백테스트가 다른 롤을
+    쓰면 엔진이 패널에서 재-stitch(E2). 반환 연속물 행수(패널 없으면 0).
+
+    ⚠ 마이그레이션 안전: 기존 깊은 시리즈(예: 옛 CSV 시드 2010~)가 있는데 패널이 아직 얕으면
+    (백필 진행 중) **덮어쓰지 않는다** — 얕은 연속물로 교체하면 백필이 2010까지 차오르기 전까지
+    선물 백테스트가 얕은 데이터로 회귀한다. 패널이 기존 깊이에 도달한 뒤 단일출처로 클린 교체
+    (얕은 창 회귀·소스 혼합 동시 회피). "증분은 앞으로만" 교훈의 데이터-소급판.
+    """
+    from .data.futures_roll import build_continuous
+    from .exec_defaults import instrument_spec
+    panel = load_futures_panel(symbol)
+    if panel.empty:
+        return 0
+    spec = instrument_spec(symbol)
+    cont = build_continuous(panel, roll_method or spec.default_roll or "at_expiry",
+                            series_adjust or "none")
+    if cont.empty:
+        return 0
+    existing = _load_existing(symbol)
+    if (not existing.empty
+            and cont.index.min() > existing.index.min() + pd.Timedelta(days=90)):
+        return 0                    # 패널이 기존보다 얕음 — 백필 대기(기존 깊은 서빙뷰 유지)
+    _save(symbol, cont)
     mark_data_dirty()
-    return merged
-
-
-def kis_futures_daily_to_ohlcv(output2) -> pd.DataFrame:
-    """KIS FHKIF03020100 output2[](기간별 조회데이터) → OHLCV(오름차순 DatetimeIndex).
-
-    필드(KIS 공식 spec, 국내선물옵션_기본시세.xlsx): stck_bsop_date(YYYYMMDD)·futs_oprc(시)·
-    futs_hgpr(고)·futs_lwpr(저)·futs_prpr(현재가=종가)·acml_vol(거래량). 예: futs_prpr "344.70".
-    """
-    rows = []
-    for r in output2 or []:
-        d = str(r.get("stck_bsop_date", "")).strip()
-        if len(d) != 8 or not d.isdigit():
-            continue
-        try:
-            rows.append((pd.Timestamp(f"{d[:4]}-{d[4:6]}-{d[6:]}"),
-                         float(r["futs_oprc"]), float(r["futs_hgpr"]),
-                         float(r["futs_lwpr"]), float(r["futs_prpr"]),
-                         float(r.get("acml_vol", 0) or 0)))
-        except (KeyError, ValueError, TypeError):
-            continue
-    cols = ["Open", "High", "Low", "Close", "Volume"]
-    if not rows:
-        return pd.DataFrame(columns=cols)
-    df = (pd.DataFrame(rows, columns=["d"] + cols)
-          .set_index("d").sort_index())
-    df.index.name = None
-    return df
-
-
-def fetch_kis_futures_daily(symbol: str, request_fn, *, iscd: str,
-                            start: str, end: str, market: str = "F") -> pd.DataFrame:
-    """KIS FHKIF03020100(국내선물옵션 일봉, 모의 OK)로 일봉 fetch → 증분 append.
-
-    request_fn(tr_id, params)->dict(JSON)을 주입한다 — KIS 자격증명·인증·HTTP는 호출자(로컬 KIS
-    환경)가 제공하고, core는 KIS 클라이언트에 비의존. iscd=선물 종목코드(지수선물 6자리, 현행 최근
-    월물), start/end=YYYYMMDD. 반환 = append 후 머지된 전체 시리즈.
-
-    GET /uapi/domestic-futureoption/v1/quotations/inquire-daily-fuopchartprice
-    ⚠ 검증범위: 요청 파라미터·output2 매핑은 KIS 공식 spec 기준 + 모의 응답으로 단위검증됨.
-    실제 KIS HTTP 호출(인증·현행 최근월물 종목코드 결정)은 KIS 연결 시점에 검증 필요.
-    """
-    resp = request_fn("FHKIF03020100", {
-        "FID_COND_MRKT_DIV_CODE": market,   # F: 지수선물, O: 지수옵션
-        "FID_INPUT_ISCD": iscd,
-        "FID_INPUT_DATE_1": start,          # 조회 시작일 (YYYYMMDD)
-        "FID_INPUT_DATE_2": end,            # 조회 종료일 (YYYYMMDD)
-        "FID_PERIOD_DIV_CODE": "D",         # D:일봉
-    })
-    df = kis_futures_daily_to_ohlcv((resp or {}).get("output2") or [])
-    # PIT 불변식 — 호출자가 정한 end(확정 세션)까지만. KIS가 범위 밖(형성 중 당일 봉)을
-    # 돌려줘도 canonical dataset에 넣지 않는다 — 미확정 봉이 들어가면 '전일 종가'(iloc[-1])
-    # 의미가 깨져 preview 기준가·백테스트가 장중 값을 본다(2026-06-11 만기일 인시던트 F1).
-    if not df.empty:
-        df = df[df.index <= pd.Timestamp(end)]
-    if df.empty:
-        return _load_existing(symbol)
-    return append_daily_bars(symbol, df)
-
-
-def seed_kis_futures_full(symbol: str, request_fn, iscd: str, *, floor: str = "20100101",
-                          market: str = "F", max_calls: int = 60) -> pd.DataFrame:
-    """KIS FHKIF03020100을 과거로 거슬러 페이지네이션해 최대 깊이 일봉을 모아 **덮어쓰기** 시드.
-
-    KIS 일봉은 호출당 제한(~100건)이라 날짜 윈도우를 거슬러 반복(floor까지/더 받을 게 없을 때까지).
-    기존 parquet(ETF orphan·스케일 혼합 등)을 *통째 교체* → 혼합 오염 원천 차단. KIS 보관 깊이만큼
-    획득(얕으면 그만큼만; 깊은 과거는 별도 CSV 시드로 보완). request_fn은 호출자(KIS 자격증명 보유)가 주입.
-    """
-    from datetime import datetime, timedelta
-    frames: list[pd.DataFrame] = []
-    seen: set = set()
-    end_dt = datetime.now()
-    for _ in range(max_calls):
-        start = max((end_dt - timedelta(days=140)).strftime("%Y%m%d"), floor)
-        end = end_dt.strftime("%Y%m%d")
-        if start > end:
-            break
-        resp = request_fn("FHKIF03020100", {
-            "FID_COND_MRKT_DIV_CODE": market, "FID_INPUT_ISCD": iscd,
-            "FID_INPUT_DATE_1": start, "FID_INPUT_DATE_2": end, "FID_PERIOD_DIV_CODE": "D"})
-        df = kis_futures_daily_to_ohlcv((resp or {}).get("output2") or [])
-        new = df[~df.index.isin(seen)]
-        if new.empty:                       # 더 받을 과거 없음 → 종료
-            break
-        frames.append(new)
-        seen.update(new.index)
-        earliest = new.index.min()
-        if earliest.strftime("%Y%m%d") <= floor:
-            break
-        end_dt = earliest - timedelta(days=1)
-    if not frames:
-        return _load_existing(symbol)
-    full = pd.concat(frames)
-    full = full[~full.index.duplicated(keep="first")].sort_index()
-    _save(symbol, full)                     # 덮어쓰기 — orphan/혼합 제거
-    mark_data_dirty()
-    return full
+    return len(cont)
 
 
 # ── 데이터셋 세대 마커 (캐시 일관성) ──────────────────────────────────────────
