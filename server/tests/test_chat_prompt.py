@@ -30,6 +30,16 @@ def test_chat_prompt_requires_reading_fold_and_cost_results():
     assert "재실행" in p               # 재실행 시 ir 대조(귀인 오류 차단)
 
 
+def test_chat_prompt_high_stakes_clarify_gate():
+    """고위험 모호성(자산 레버리지/상품형태·미가용 대체·종목 정체성)에선 기본값 추측이 아니라
+    먼저 되묻으라는 게이트가 노출돼야 — "코스피200"을 임의로 선물(≈5배)로 컴파일해 -130% MDD
+    같은 오도 결과를 주던 부류 차단. 약한 모호성은 기존대로 기본값+가정 진행(과도한 되묻기 방지)."""
+    p = cp.chat_system_prompt()
+    assert "고위험 모호성" in p                 # stakes 에스컬레이션 조항 존재
+    assert "레버리지" in p and "코스피200선물" in p   # 자산 상품형태 되묻기(캐논 예시)
+    assert "과도한 되묻기 금지" in p            # 약한 모호성은 여전히 기본값+가정(원칙2 균형)
+
+
 def test_chat_prompt_includes_data_provenance():
     """데이터 출처 메타인지 — 챗봇이 출처를 추측("PER=FnGuide")하지 않도록 계보 표가 프롬프트에
     실제 노출돼야. trailing 밸류=전자공시(OpenDART) vs 추정실적=FnGuide 구분이 핵심."""
