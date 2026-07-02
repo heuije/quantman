@@ -1072,9 +1072,13 @@ class SettingsApp:
                 pnl = pnl_idx.get(order_log._trade_key(
                     o.get("ts", ""), side, o.get("symbol", ""),
                     o.get("qty", 0), o.get("fill_price")))
+            # 넷팅 합성 체결은 실제 브로커 체결과 구분 표시(브로커 왕복 없이 원장 이관·수수료 0).
+            status = gui_format.order_status_ko(o.get("event", ""))
+            if gui_format.is_netted(o):
+                status += " (넷팅)"
             self.tv_orders.insert("", "end", values=(
                 self._fmt_ts(o.get("ts", "")),
-                gui_format.order_status_ko(o.get("event", "")),
+                status,
                 f"{kind}·{'매수' if side == 'buy' else '매도'}",
                 o.get("symbol", ""),
                 o.get("qty", ""),
@@ -1305,9 +1309,18 @@ class SettingsApp:
                     self.bal_pnl.config(style="BalFlat.TLabel",
                                         text="오늘 손익 — (장 시작 후 표시)")
                 usd = balance.get("cash_usd") or 0
-                self.balance_summary.config(
-                    text=f"현금 {balance.get('cash') or 0:,.0f}원 · 해외 예수금 "
-                         f"${usd:,.2f} · 보유 {len(positions)}종목")
+                summary_txt = (f"현금 {balance.get('cash') or 0:,.0f}원 · 해외 예수금 "
+                               f"${usd:,.2f} · 보유 {len(positions)}종목")
+                # 넷팅 누적 절약(최근 사이클) — 반대 주문 상쇄로 아낀 수수료를 투명하게 노출.
+                try:
+                    saved = sum(
+                        float((c.get("summary") or {}).get("commission_saved_krw") or 0)
+                        for c in order_log.read_cycles(60))
+                except Exception:
+                    saved = 0.0
+                if saved > 0:
+                    summary_txt += f" · 넷팅 절약 {saved:,.0f}원"
+                self.balance_summary.config(text=summary_txt)
                 for p in positions:
                     ret = p.get("cur_return_pct")
                     if isinstance(ret, (int, float)):

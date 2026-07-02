@@ -43,6 +43,25 @@ def order_kind_ko(order: dict) -> str:
     return "진입"
 
 
+def is_netted(order: dict) -> bool:
+    """넷팅 합성 체결 여부 — 구조적 `netted` 플래그 우선, 없으면 order_no 접두("NETTED-") 폴백.
+
+    넷팅 체결은 같은 발주창에서 반대 주문이 겹쳐 브로커 왕복 없이 원장만 이관된 것(수수료 0)이라
+    실제 시장 체결과 구분해 표시한다(사용자가 '실제 거래인지 장부 이관인지' 알 수 있게)."""
+    if order.get("netted") is True:
+        return True
+    return str(order.get("order_no") or "").startswith("NETTED-")
+
+
+def netting_summary_ko(cycle_summary: dict) -> str:
+    """사이클 요약의 넷팅 집계 → 사람용 한 줄. 넷팅 없으면 빈 문자열."""
+    n = int(cycle_summary.get("n_netted") or 0)
+    if n <= 0:
+        return ""
+    saved = float(cycle_summary.get("commission_saved_krw") or 0)
+    return f"넷팅 이관 {n} · 수수료 약 {saved:,.0f}원 절약"
+
+
 def order_window(fill: str, instrument_class: str) -> tuple[str, int, int]:
     """전략의 체결설정(fill)·상품클래스로 KRX 주문 발주 창 결정 → (창이름, 시, 분).
 

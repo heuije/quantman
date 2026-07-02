@@ -53,3 +53,18 @@ def test_order_window():
     assert gf.order_window("typical", "futures") == ("종가", 15, 40)
     # 미지 fill → 시가창 기본(다음날 시가).
     assert gf.order_window("", "stock") == ("시가", 8, 55)
+
+
+def test_is_netted_flag_and_order_no_prefix():
+    assert gf.is_netted({"netted": True}) is True
+    assert gf.is_netted({"order_no": "NETTED-abc123"}) is True
+    assert gf.is_netted({"order_no": "0000000042"}) is False
+    assert gf.is_netted({}) is False
+
+
+def test_netting_summary_ko():
+    assert gf.netting_summary_ko({"n_netted": 5, "commission_saved_krw": 3200}) \
+        == "넷팅 이관 5 · 수수료 약 3,200원 절약"
+    # 넷팅 없으면 빈 문자열(표시 안 함).
+    assert gf.netting_summary_ko({"n_netted": 0}) == ""
+    assert gf.netting_summary_ko({}) == ""
