@@ -33,8 +33,6 @@ const TAB_LABEL: Record<TabKey, string> = {
   backtests: "백테스트 내역",
 };
 
-const krw = (v: number | null | undefined) =>
-  v == null ? "—" : (v >= 0 ? "+" : "") + v.toLocaleString() + "원";
 const pct = (v: number | null | undefined, sign = true) =>
   v == null ? "—"
     : (sign && v >= 0 ? "+" : "") + v.toFixed(2) + "%";
@@ -580,34 +578,14 @@ function StatsTab({ stats, strategy, handles, activeIds, capabilities, assetClas
       </div>
     );
   }
-  const days = stats.days_live ?? stats.days_paper;
-  const lifecycle = stats.live_started_at
-    ? `실전 ${stats.days_live ?? 0}일`
-    : stats.paper_started_at
-      ? `모의 ${stats.days_paper ?? 0}일`
-      : "—";
-
   return (
     <div className="strategy-detail-body">
-      <div className="stats-grid">
-        <StatBox label="적용 기간" value={lifecycle}
-                 sub={days != null && days > 0
-                   ? `시작일 ${dateOnly(stats.live_started_at ?? stats.paper_started_at)}`
-                   : ""} />
-        <StatBox label="누적 P&L" value={krw(stats.pnl_total)}
-                 cls={(stats.pnl_total ?? 0) >= 0 ? "pos" : "neg"}
-                 sub={stats.pnl_pct != null ? pct(stats.pnl_pct) : ""} />
-        <StatBox label="거래된 금액"
-                 value={stats.traded_amount != null ? krw(stats.traded_amount) : "—"}
-                 sub="총 체결대금(누적)" />
-        <StatBox label="승률"
-                 value={stats.win_rate != null ? pct(stats.win_rate, false) : "—"}
-                 sub={stats.n_trades ? `거래 ${stats.n_trades}건` : ""} />
-        <StatBox label="현재 보유"
-                 value={stats.n_positions > 0 ? `${stats.n_positions}종목` : "없음"} />
-      </div>
+      <p className="muted small" style={{ marginBottom: 14 }}>
+        ⓘ 실행 손익·평가금액·보유는 <b>트레이딩</b> 탭에서 확인하세요.
+        이 탭은 연동·운용 상태만 보여줍니다.
+      </p>
 
-      <section className="panel" style={{ marginTop: 16 }}>
+      <section className="panel" style={{ marginTop: 0 }}>
         <h4>운용 모드</h4>
         <Rule label="현재 모드"
               v={strategy.run_mode === "live" ? "실전"
@@ -674,18 +652,6 @@ function AccountBindingSection({ strategy, handles, activeIds, capabilities, ass
         />
       )}
     </section>
-  );
-}
-
-function StatBox({ label, value, sub, cls }: {
-  label: string; value: string; sub?: string; cls?: string;
-}) {
-  return (
-    <div className="stat-box">
-      <div className="stat-label">{label}</div>
-      <div className={"stat-value " + (cls ?? "")}>{value}</div>
-      {sub && <div className="stat-sub muted small">{sub}</div>}
-    </div>
   );
 }
 
