@@ -50,6 +50,9 @@ def compute_stats(session: Session, days: int = 7) -> dict:
     # 결과 품질 계약 — 빈/퇴화/불가 결과 비율(ok=크래시여부와 직교, 품질 신호).
     statuses = Counter(getattr(r, "result_status", None) for r in rows if getattr(r, "result_status", None))
     bad = sum(1 for r in rows if getattr(r, "result_status", None) not in (None, "ok"))
+    # 학습 hook substrate(P4) — 턴이 선택한 분석법 분포. Phase 2/3 방법지능이 프로덕션에서
+    # 실제 쓰이는지(방향성→event_study 등) 측정. shape 없는 턴(대화/협의)은 제외.
+    shapes = Counter(getattr(r, "result_shape", None) for r in rows if getattr(r, "result_shape", None))
     total_in, total_cr = sum(inp), sum(cr)
     return {
         "turns": n,
@@ -67,6 +70,7 @@ def compute_stats(session: Session, days: int = 7) -> dict:
         "error_rate": round(sum(1 for r in rows if not r.ok) / n, 3),
         "result_status_dist": dict(statuses.most_common()),
         "bad_result_rate": round(bad / n, 3),
+        "method_dist": dict(shapes.most_common()),
     }
 
 
@@ -79,6 +83,7 @@ def format_stats(st: dict) -> str:
         f"  turns={st['turns']}  users={st['users']}  error_rate={st['error_rate']}"
         f"  bad_result_rate={st.get('bad_result_rate', 0)}",
         f"  result_status {st.get('result_status_dist') or '(없음)'}",
+        f"  method_dist  {st.get('method_dist') or '(없음)'}",
         f"  input_tok   {trio(st['input_tok'])}",
         f"  output_tok  {trio(st['output_tok'])}",
         f"  cache_read  {trio(st['cache_read_tok'])}  hit_rate={st['cache_hit_rate']}",

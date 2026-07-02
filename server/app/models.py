@@ -219,6 +219,11 @@ class ChatTurnMetric(SQLModel, table=True):
     # 결과 품질 계약(chat-reliability §3) — 턴 내 가장 나쁜 결과상태(ok/empty/degenerate/
     # data_insufficient/infeasible). ok(크래시)와 직교 — 빈/퇴화 결과를 모니터링·error_rate에 반영.
     result_status: Optional[str] = None
+    # 학습 hook substrate(Wave 2 Phase 4) — 턴이 선택한 분석법(첫 분석결과 shape:
+    # simulate/event_study/relate_ic/select/sweep 등). Phase 2/3 방법지능이 프로덕션에서
+    # 실제 쓰이는지 측정(방향성→event_study 라우팅 등). 나머지 학습신호는 이미 수집(질문=Message·
+    # 후속=turn시퀀스·품질=result_status)이라 이 하나만 추가(§6 비-목표 중복 구축 금지).
+    result_shape: Optional[str] = None
 
 
 class TradableSymbol(SQLModel, table=True):

@@ -83,6 +83,8 @@ _NEW_COLS: list[tuple[str, str, str]] = [
     ("stockopinion", "status",                           "VARCHAR DEFAULT 'approved'"),
     # 결과 품질 계약(chat-reliability §3) — 챗 턴별 결과상태.
     ("chatturnmetric", "result_status",                  "VARCHAR"),
+    # 학습 hook substrate(Wave 2 Phase 4) — 챗 턴이 선택한 분석법(result_shape).
+    ("chatturnmetric", "result_shape",                   "VARCHAR"),
 ]
 
 
