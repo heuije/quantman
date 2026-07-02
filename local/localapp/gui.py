@@ -17,8 +17,9 @@ from datetime import datetime
 import webbrowser
 from tkinter import font as tkfont, messagebox, ttk
 
-from . import (__version__, auto_state, killswitch, kis_health, onboarding,
-                order_log, pairing, secrets_store, sync_client, updater)
+from . import (__version__, auto_state, gui_format, killswitch, kis_health,
+                onboarding, order_log, pairing, secrets_store, sync_client,
+                updater)
 from .commands_client import CommandClient
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
                        PLATFORM_URL)
@@ -190,6 +191,11 @@ class SettingsApp:
 
     def _build(self):
         pad = {"padx": 12, "pady": (4, 6)}
+        # 반응형 설명 라벨 — 창 너비에 맞춰 wraplength 갱신(왼쪽 몰림·조기 줄바꿈 해소).
+        # _flow(lbl)로 등록한 라벨만 대상. <Configure>로 창 크기 변화 시 재계산.
+        self._flow_labels: list = []
+        self._last_flow_w = 0
+        self.root.bind("<Configure>", self._reflow_labels, add="+")
 
         # Phase 60 — 새 버전 알림 배너 (최상단). 평소엔 pack_forget 상태.
         # _check_updates_async가 최신 release 발견 시 _show_update_banner로 노출.
@@ -320,10 +326,11 @@ class SettingsApp:
         ttk.Label(self.pf, style="Muted.TLabel",
                   text=f"플랫폼: {PLATFORM_URL}"
                   ).pack(anchor="w", padx=12, pady=(8, 2))
-        ttk.Label(self.pf, style="Muted.TLabel", wraplength=500, justify="left",
-                  text="‘기기 페어링 시작’을 누르면 브라우저가 열립니다. "
-                       "플랫폼에 로그인한 뒤 승인하면 연결이 끝납니다."
-                  ).pack(anchor="w", padx=12, pady=(0, 4))
+        _pf_desc = ttk.Label(self.pf, style="Muted.TLabel", justify="left",
+                             text="‘기기 페어링 시작’을 누르면 브라우저가 열립니다. "
+                                  "플랫폼에 로그인한 뒤 승인하면 연결이 끝납니다.")
+        _pf_desc.pack(anchor="w", padx=12, pady=(0, 4), fill="x")
+        self._flow(_pf_desc)
         self.pair_code = tk.Label(self.pf, text="", bg=BG, fg=ACCENT,
                                   font=("Segoe UI", 19, "bold"))
         self.pair_code.pack(anchor="w", padx=12, pady=2)
@@ -336,10 +343,11 @@ class SettingsApp:
         # ③ 자동매매
         self.af = ttk.LabelFrame(self.root, text="③ 자동매매")
         self.af.pack(fill="x", **pad)
-        ttk.Label(self.af, style="Muted.TLabel", wraplength=500, justify="left",
-                  text="시작하면 평일 오전 8시 55분에 자동으로 매매합니다. "
-                       "‘지금 한 번 실행’으로 즉시 테스트할 수 있습니다."
-                  ).pack(anchor="w", padx=12, pady=(8, 4))
+        _af_desc = ttk.Label(self.af, style="Muted.TLabel", justify="left",
+                             text="시작하면 평일 오전 8시 55분에 자동으로 매매합니다. "
+                                  "‘지금 한 번 실행’으로 즉시 테스트할 수 있습니다.")
+        _af_desc.pack(anchor="w", padx=12, pady=(8, 4), fill="x")
+        self._flow(_af_desc)
         row = ttk.Frame(self.af)
         row.pack(fill="x", padx=12, pady=8)
         self.btn_toggle = ttk.Button(row, text="자동매매 시작",
@@ -357,11 +365,13 @@ class SettingsApp:
         self.acct_frame = ttk.LabelFrame(self.root, text="활성 계좌 · 전략")
         self.acct_frame.pack(fill="x", **pad)
         self.lbl_accounts = ttk.Label(self.acct_frame, style="Muted.TLabel",
-                                      justify="left", wraplength=820, text="계좌 확인 중…")
-        self.lbl_accounts.pack(anchor="w", padx=12, pady=(8, 2))
+                                      justify="left", text="계좌 확인 중…")
+        self.lbl_accounts.pack(anchor="w", padx=12, pady=(8, 2), fill="x")
+        self._flow(self.lbl_accounts)
         self.lbl_strategies = ttk.Label(self.acct_frame, style="Muted.TLabel",
-                                        justify="left", wraplength=820, text="활성 전략 불러오는 중…")
-        self.lbl_strategies.pack(anchor="w", padx=12, pady=(0, 8))
+                                        justify="left", text="활성 전략 불러오는 중…")
+        self.lbl_strategies.pack(anchor="w", padx=12, pady=(0, 8), fill="x")
+        self._flow(self.lbl_strategies)
 
         # 거래 모니터링 — Notebook: 주문 예정 / 미체결 / 잔고 / 주문 내역 / 개발자 정보
         self.nb = ttk.Notebook(self.root)
@@ -398,25 +408,52 @@ class SettingsApp:
         tree.tag_configure("sell", background=DOWN_SOFT)
         return tree
 
+    def _flow(self, lbl):
+        """설명 라벨을 반응형 wraplength 대상으로 등록하고 그대로 반환(체이닝용)."""
+        self._flow_labels.append(lbl)
+        return lbl
+
+    def _reflow_labels(self, event=None):
+        """등록된 설명 라벨의 wraplength를 현재 창 너비에 맞춘다 — 왼쪽 몰림·조기 줄바꿈 해소.
+
+        <Configure>는 자식 위젯마다 빈발하므로 창 폭이 실제로 바뀔 때만 재계산(불필요 갱신 회피)."""
+        try:
+            w = self.root.winfo_width()
+        except Exception:
+            return
+        if w <= 1 or w == self._last_flow_w:
+            return
+        self._last_flow_w = w
+        wrap = max(360, w - 56)          # 좌우 여백 제외한 가용 폭
+        for lbl in self._flow_labels:
+            try:
+                lbl.config(wraplength=wrap)
+            except Exception:
+                pass
+
     def _build_tab_upcoming(self):
         f = ttk.Frame(self.nb)
         self.nb.add(f, text="주문 예정")
-        ttk.Label(f, style="Muted.TLabel", wraplength=760, justify="left",
-                  text="현시점 서버 preview 기준 다음 매매 후보입니다. 실제 발주는 사이클 "
-                       "시점의 자금·현재가·거래상태에 따라 달라질 수 있습니다."
-                  ).pack(anchor="w", padx=12, pady=(8, 0))
+        lbl = ttk.Label(f, style="Muted.TLabel", justify="left",
+                        text="현시점 서버 preview + 로컬 사이징 기준 다음 매매 후보입니다. "
+                             "예상 수량은 발주 시점의 자금·현재가·주문가능수량에 따라 달라질 수 "
+                             "있습니다.")
+        lbl.pack(anchor="w", padx=12, pady=(8, 0), fill="x")
+        self._flow(lbl)
         self.tv_upcoming = self._make_tree(f, [
-            ("strategy", "전략", 200), ("symbol", "종목", 110),
-            ("direction", "방향", 80), ("score", "점수", 90),
+            ("strategy", "전략", 190), ("symbol", "종목", 110),
+            ("direction", "방향", 80), ("when", "주문예정", 120),
+            ("qty", "예상 수량", 110),
         ])
 
     def _build_tab_pending(self):
         f = ttk.Frame(self.nb)
         self.nb.add(f, text="미체결")
-        ttk.Label(f, style="Muted.TLabel", wraplength=760, justify="left",
-                  text="매매 주문을 넣었으나 아직 체결되지 않은 항목입니다. "
-                       "동시호가에 들어간 주문은 시초가/종가 단일가에 일괄 체결됩니다."
-                  ).pack(anchor="w", padx=12, pady=(8, 0))
+        lbl = ttk.Label(f, style="Muted.TLabel", justify="left",
+                        text="매매 주문을 넣었으나 아직 체결되지 않은 항목입니다. "
+                             "동시호가에 들어간 주문은 시초가/종가 단일가에 일괄 체결됩니다.")
+        lbl.pack(anchor="w", padx=12, pady=(8, 0), fill="x")
+        self._flow(lbl)
         self.tv_pending = self._make_tree(f, [
             ("time", "제출시각", 90), ("side", "방향", 60),
             ("symbol", "종목", 80), ("name", "이름", 100),
@@ -428,9 +465,22 @@ class SettingsApp:
     def _build_tab_balance(self):
         f = ttk.Frame(self.nb)
         self.nb.add(f, text="잔고")
+        # 종합요약 카드 — 평가금액(크게) + 오늘 손익(색상). 새로고침/탭 열 때 갱신(브로커 스냅샷).
+        _st = ttk.Style()
+        _st.configure("BalEval.TLabel", font=("Segoe UI", 15, "bold"), foreground=TEXT)
+        _st.configure("BalUp.TLabel", font=("Segoe UI", 11, "bold"), foreground=UP)
+        _st.configure("BalDown.TLabel", font=("Segoe UI", 11, "bold"), foreground=DOWN)
+        _st.configure("BalFlat.TLabel", font=("Segoe UI", 11), foreground=MUTED)
+        card = ttk.Frame(f)
+        card.pack(fill="x", padx=12, pady=(8, 2))
+        self.bal_eval = ttk.Label(card, style="BalEval.TLabel", text="평가금액 —")
+        self.bal_eval.pack(side="left")
+        self.bal_pnl = ttk.Label(card, style="BalFlat.TLabel", text="")
+        self.bal_pnl.pack(side="left", padx=(16, 0))
         self.balance_summary = ttk.Label(f, style="Muted.TLabel", justify="left",
-                                         wraplength=760, text="잔고 불러오는 중…")
-        self.balance_summary.pack(anchor="w", padx=12, pady=(8, 4))
+                                         text="잔고 불러오는 중…")
+        self.balance_summary.pack(anchor="w", padx=12, pady=(0, 4), fill="x")
+        self._flow(self.balance_summary)
         self.tv_balance = self._make_tree(f, [
             ("symbol", "종목", 90), ("name", "이름", 130),
             ("qty", "수량", 70), ("avg", "평균가", 100),
@@ -444,17 +494,22 @@ class SettingsApp:
     def _build_tab_orders(self):
         f = ttk.Frame(self.nb)
         self.nb.add(f, text="주문 내역")
-        ttk.Label(f, style="Muted.TLabel",
-                  text="최근 100건의 주문 이벤트 — 제출 / 체결 / 취소 / 거부 모두. "
-                       "손익은 청산이 끝난 건만 표시됩니다(선물 정산)."
-                  ).pack(anchor="w", padx=12, pady=(8, 0))
+        lbl = ttk.Label(f, style="Muted.TLabel", justify="left",
+                        text="최근 100건의 주문 이벤트 — 접수 / 체결 / 취소 / 거부 모두. "
+                             "행 색은 진입(연빨강)·청산(연파랑) 기준입니다. 손익은 청산이 "
+                             "끝난 건만 표시됩니다(선물 정산).")
+        lbl.pack(anchor="w", padx=12, pady=(8, 0), fill="x")
+        self._flow(lbl)
         self.tv_orders = self._make_tree(f, [
             ("time", "시각", 130), ("event", "상태", 70),
-            ("side", "방향", 50), ("symbol", "종목", 80),
+            ("side", "방향", 95), ("symbol", "종목", 80),
             ("qty", "수량", 60), ("limit", "지정가", 80),
             ("fill", "체결가", 80), ("pnl", "손익", 110),
             ("strategy", "전략", 110), ("reason", "사유", 110),
         ])
+        # 행 색 = 진입/청산 기준(매수/매도 아님). 숏 진입=매도·롱 청산=매도라 side로는 구분 불가.
+        self.tv_orders.tag_configure("entry", background=UP_SOFT)   # 진입 = 연빨강 틴트
+        self.tv_orders.tag_configure("exit", background=DOWN_SOFT)  # 청산 = 연파랑 틴트
 
     def _build_tab_debug(self):
         f = ttk.Frame(self.nb)
@@ -1011,6 +1066,7 @@ class SettingsApp:
         pnl_idx = order_log.realized_pnl_index()
         for o in order_log.read_orders(100):
             side = "buy" if o.get("side") == "buy" else "sell"
+            kind = gui_format.order_kind_ko(o)      # 진입 | 청산 (kind 필드·구버전 사유 폴백)
             pnl = None
             if o.get("event") in ("filled", "partial"):
                 pnl = pnl_idx.get(order_log._trade_key(
@@ -1018,8 +1074,8 @@ class SettingsApp:
                     o.get("qty", 0), o.get("fill_price")))
             self.tv_orders.insert("", "end", values=(
                 self._fmt_ts(o.get("ts", "")),
-                o.get("event", ""),
-                "매수" if side == "buy" else "매도",
+                gui_format.order_status_ko(o.get("event", "")),
+                f"{kind}·{'매수' if side == 'buy' else '매도'}",
                 o.get("symbol", ""),
                 o.get("qty", ""),
                 f"{o.get('limit_price') or 0:,.0f}" if o.get("limit_price") else "—",
@@ -1027,7 +1083,7 @@ class SettingsApp:
                 self._fmt_pnl(pnl),
                 o.get("strategy", ""),
                 o.get("reason", ""),
-            ), tags=(side,))
+            ), tags=("entry" if kind == "진입" else "exit",))
 
     # ── 활성 계좌·전략 (신규) ───────────────────────────────────────────────────
 
@@ -1085,7 +1141,10 @@ class SettingsApp:
             pass
 
     def _refresh_upcoming(self):
-        """주문 예정 — 서버 preview 후보(백그라운드). strategy_id→name 매핑."""
+        """주문 예정 — 서버 preview 후보 + 로컬 사이징(예상 수량·발주 예정 시각). 백그라운드.
+
+        예상 수량은 트레이더와 같은 코어 사이징(ir_live)으로 계산 — 선물은 브로커 주문가능수량
+        (계좌 실증거금률)×사용률%(모델A). 브로커 조회가 있어 job(백그라운드)에서 행을 완성한다."""
         def job():
             from . import sync_client
             preview = sync_client.pull_preview()
@@ -1093,40 +1152,113 @@ class SettingsApp:
                 strategies = sync_client.pull_strategies()
             except Exception:
                 strategies = []
-            return preview, strategies
+            broker = balance = None
+            try:
+                broker = self._get_balance_broker()
+                balance = broker.account_snapshot().get("balance", {}) or {}
+            except Exception:
+                broker = balance = None
+            def_by_id = {str(s.get("id")): (s.get("name") or "", s.get("definition") or {})
+                         for s in (strategies or [])}
+            rows = []
+            for entry in ((preview or {}).get("by_strategy") or []):
+                sid = str(entry.get("strategy_id", ""))
+                sname, sdef = def_by_id.get(sid, (sid or "?", {}))
+                for c in (entry.get("candidates") or []):
+                    sym = c.get("symbol", "")
+                    if not sym:
+                        continue
+                    side = c.get("direction") or "long"
+                    dlabel = {"long": "매수(롱)", "short": "매도(숏)"}.get(side, "—")
+                    when = self._next_order_time_label(sdef, sym, c.get("currency"))
+                    qty_txt = "—"
+                    if broker is not None and balance is not None:
+                        ref = c.get("prev_close") or 0
+                        q, unit = self._estimate_qty(
+                            broker, balance, sdef, sym,
+                            "sell" if side == "short" else "buy", ref)
+                        qty_txt = f"{q:,}{unit}" if q is not None else "—"
+                    rows.append((sname, sym, dlabel, when, qty_txt))
+            return rows
 
         def done(res, err):
             try:
                 self.tv_upcoming.delete(*self.tv_upcoming.get_children())
-                if err or not res:
+                if err:
                     return
-                preview, strategies = res
-                name_by_id = {str(s.get("id")): (s.get("name") or "")
-                              for s in (strategies or [])}
-                n = 0
-                for entry in ((preview or {}).get("by_strategy") or []):
-                    sid = str(entry.get("strategy_id", ""))
-                    sname = name_by_id.get(sid) or sid or "?"
-                    for c in (entry.get("candidates") or []):
-                        sym = c.get("symbol", "")
-                        if not sym:
-                            continue
-                        dlabel = {"long": "매수(롱)", "short": "매도(숏)"}.get(
-                            c.get("direction"), "—")
-                        score = c.get("score")
-                        slabel = f"{score:.3f}" if isinstance(score, (int, float)) else "—"
-                        self.tv_upcoming.insert("", "end",
-                                                values=(sname, sym, dlabel, slabel))
-                        n += 1
-                if n == 0:
-                    self.tv_upcoming.insert("", "end",
-                                            values=("(다음 매매 후보 없음)", "", "", ""))
+                for row in (res or []):
+                    self.tv_upcoming.insert("", "end", values=row)
+                if not res:
+                    self.tv_upcoming.insert(
+                        "", "end", values=("(다음 매매 후보 없음)", "", "", "", ""))
             except Exception:
                 pass
         try:
             self._run_bg(job, done)
         except Exception:
             pass
+
+    def _next_order_time_label(self, ir_def: dict, symbol: str,
+                               currency: str | None = None) -> str:
+        """다음 발주 예정 시각 라벨 — 체결설정(fill)+상품클래스로 창 결정. KRX는 오늘/익영업일 구분.
+
+        미국 상품(currency=USD)은 동적 야간 스케줄이라 창 이름만 표시(정확 시각은 세션별 상이)."""
+        import quant_core as qc
+        from datetime import datetime, time as _t
+        from zoneinfo import ZoneInfo
+        fill = ((ir_def.get("simulation") or {}).get("fill")) or "next_open"
+        icls = "futures" if qc.is_futures(symbol) else "stock"
+        name, hh, mm = gui_format.order_window(fill, icls)
+        if currency == "USD":
+            return f"미국장 {name}"
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+        try:
+            from quant_core import market_calendar as mc
+            is_sess = mc.is_session_day("KR", now.date())
+        except Exception:
+            is_sess = now.weekday() < 5
+        prefix = "오늘" if (is_sess and now.time() < _t(hh, mm)) else "다음 영업일"
+        return f"{prefix} {hh:02d}:{mm:02d} {name}"
+
+    def _estimate_qty(self, broker, balance: dict, ir_def: dict, symbol: str,
+                      side: str, ref_price):
+        """다음 발주 예상 수량 — 트레이더와 같은 코어 사이징(ir_live). (수량, 단위) 반환.
+
+        선물=event_buy_qty→모델A(주문가능수량×사용률%), 주식=event_buy_qty→현금 한도 클램프.
+        브로커 주문가능수량 조회 실패는 트레이더와 동일하게 발주 보류(None → 화면 '—')."""
+        import quant_core as qc
+        from quant_core.ir_engine import StrategyIR
+        from quant_core.ir_engine import live as ir_live
+        from quant_core.futures_contract import futures_market
+        is_fut = qc.is_futures(symbol)
+        unit = "계약" if is_fut else "주"
+        try:
+            ref = float(ref_price or 0)
+            if ref <= 0 or not ir_def:
+                return None, unit
+            ir = StrategyIR.model_validate(ir_def)
+            if is_fut:
+                mkt = "us" if futures_market(symbol) == "CME" else "kr"
+                cash = float(balance.get(f"futures_order_cash_{mkt}")
+                             or balance.get("cash") or 0)
+            else:
+                cash = float(balance.get("cash") or 0)
+            equity = float(balance.get("total_eval") or cash or 0)
+            qty = ir_live.event_buy_qty(ir, cash=cash, prev_close=ref,
+                                        capital=equity, symbol=symbol, dataset={})
+            if is_fut and futures_market(symbol) != "CME":
+                oq = getattr(broker, "orderable_qty", None)
+                if oq is not None:
+                    orderable = oq(symbol, side, ref)
+                    if orderable is None:
+                        return None, unit          # 조회 실패 → 발주 보류(트레이더와 동일)
+                    pct = ir_live.futures_margin_pct_of(ir)
+                    qty = ir_live.model_a_qty(qty, orderable, pct)
+            elif not is_fut:
+                qty = min(int(qty), int(cash // ref))    # 현금 한도(트레이더와 동일)
+            return max(0, int(qty)), unit
+        except Exception:
+            return None, unit
 
     def _refresh_balance(self):
         """잔고 — KIS 계좌 스냅샷 + 포지션 수익률(백그라운드). 브로커·in-flight 가드."""
@@ -1157,11 +1289,25 @@ class SettingsApp:
                     self._balance_broker = None     # 실패 시 다음에 재생성
                     return
                 balance, positions = res
-                krw = balance.get("total_eval") or balance.get("cash") or 0
+                from .trader import _unified_equity_krw, kst_today
+                eq = _unified_equity_krw(balance)
+                self.bal_eval.config(text=f"평가금액 {eq:,.0f}원")
+                # 오늘 손익 = 현재 통합자산 − 오늘 시작자본(킬스위치 day_start). 선물 일일정산과 정합.
+                ks = killswitch.load()
+                ds = ks.get("day_start_equity")
+                if (ks.get("day_start_date") == kst_today().isoformat()
+                        and isinstance(ds, (int, float)) and ds > 0):
+                    diff = eq - ds
+                    self.bal_pnl.config(
+                        style="BalUp.TLabel" if diff >= 0 else "BalDown.TLabel",
+                        text=f"오늘 {diff:+,.0f}원 ({diff / ds * 100:+.2f}%)")
+                else:
+                    self.bal_pnl.config(style="BalFlat.TLabel",
+                                        text="오늘 손익 — (장 시작 후 표시)")
                 usd = balance.get("cash_usd") or 0
                 self.balance_summary.config(
-                    text=f"국내 평가 {krw:,.0f}원 · 해외 예수금 ${usd:,.2f} · "
-                         f"보유 {len(positions)}종목")
+                    text=f"현금 {balance.get('cash') or 0:,.0f}원 · 해외 예수금 "
+                         f"${usd:,.2f} · 보유 {len(positions)}종목")
                 for p in positions:
                     ret = p.get("cur_return_pct")
                     if isinstance(ret, (int, float)):

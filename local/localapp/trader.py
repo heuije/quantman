@@ -459,7 +459,8 @@ class Trader:
                                     order_no=order_no,
                                     intended_price=p.get("intended_price"),
                                     limit_price=p.get("limit_price"),
-                                    strategy_name=p.get("strategy_name", ""))
+                                    strategy_name=p.get("strategy_name", ""),
+                                    kind=p.get("kind", ""))
                 decisions.append(order_log.decision(
                     "unfilled", p.get("strategy_id", ""),
                     p.get("strategy_name", ""), p["symbol"],
@@ -554,7 +555,7 @@ class Trader:
                              limit_price=p.get("limit_price"),
                              fill_price=fill_price,
                              strategy_name=p.get("strategy_name", ""),
-                             reason=p.get("reason", ""))
+                             reason=p.get("reason", ""), kind=p.get("kind", ""))
 
         # M3: self.ledger 읽기-수정-쓰기를 단일 락으로 직렬화 — WS 체결 thread·
         # monitor·cycle이 같은 원장을 동시 변경하는 race(lost update) 차단.
@@ -886,7 +887,7 @@ class Trader:
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, strat_def, symbol, "buy", qty,
                             ref_price, limit, policy, decisions, reason="매수신호",
-                            today_iso=today_iso, intent_id=intent_id)
+                            today_iso=today_iso, intent_id=intent_id, kind="진입")
 
     def _submit_sell(self, sid: str, strat_name: str, symbol: str, qty: int,
                      ref_price: float, policy: dict, reason: str,
@@ -943,7 +944,7 @@ class Trader:
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, None, symbol, "sell", qty,
                             ref_price, limit, policy, decisions, reason=reason,
-                            today_iso=today_iso, intent_id=intent_id)
+                            today_iso=today_iso, intent_id=intent_id, kind="청산")
 
     def _submit_close_short(self, sid: str, strat_name: str, symbol: str, qty: int,
                             ref_price: float, policy: dict, reason: str,
@@ -973,7 +974,7 @@ class Trader:
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, None, symbol, "buy", qty,
                             ref_price, limit, policy, decisions, reason=reason,
-                            today_iso=today_iso, intent_id=intent_id)
+                            today_iso=today_iso, intent_id=intent_id, kind="청산")
 
     def _submit_open_short(self, sid: str, strat_name: str, strat_def: dict,
                            symbol: str, qty: int, ref_price: float, policy: dict,
@@ -1000,21 +1001,26 @@ class Trader:
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, strat_def, symbol, "sell", qty,
                             ref_price, limit, policy, decisions, reason="숏진입",
-                            today_iso=today_iso, intent_id=intent_id)
+                            today_iso=today_iso, intent_id=intent_id, kind="진입")
 
     def _after_submit(self, r: dict, sid: str, strat_name: str,
                       strat_def: dict | None, symbol: str, side: str, qty: int,
                       intended_price: float, limit_price: int,
                       policy: dict, decisions: list[dict], reason: str,
-                      today_iso: str = "", intent_id: str = "") -> None:
-        """submit 결과를 후처리: pending 등록 / 즉시 체결 반영 / 거부 로깅."""
+                      today_iso: str = "", intent_id: str = "",
+                      kind: str = "") -> None:
+        """submit 결과를 후처리: pending 등록 / 즉시 체결 반영 / 거부 로깅.
+
+        kind: "진입"|"청산" — 발주 메서드가 명시(_submit_buy·_submit_open_short=진입,
+        _submit_sell·_submit_close_short=청산). pending 레코드에 실어 체결 이벤트까지 전파.
+        """
         order_no = r.get("order_no", "")
         if not r.get("success"):
             order_log.log_order("rejected", symbol, side, qty,
                                  order_no=order_no,
                                  intended_price=intended_price,
                                  limit_price=limit_price,
-                                 strategy_name=strat_name, reason=reason,
+                                 strategy_name=strat_name, reason=reason, kind=kind,
                                  extra={"msg": r.get("message", "")})
             decisions.append(order_log.decision(
                 "rejected", sid, strat_name, symbol,
@@ -1035,7 +1041,7 @@ class Trader:
             "submitted_ts": time.time(),
             # Q7: timeout_sec 필드 제거 — _resolve_pending이 timeout cancel을
             # 더 이상 사용하지 않음. KIS DAY 정책으로 마감 시 자동 cancel.
-            "definition": strat_def or {}, "reason": reason,
+            "definition": strat_def or {}, "reason": reason, "kind": kind,
             "filled_so_far": 0,
             # δ: 미국 예약주문 여부 — 접수번호와 체결행 odno의 번호공간이 달라
             # (실측 448 vs 10자리) _resolve_pending이 종목+사이드+수량 매칭으로
@@ -1045,7 +1051,7 @@ class Trader:
         order_log.log_order("submitted", symbol, side, qty, order_no=order_no,
                              intended_price=intended_price,
                              limit_price=limit_price, strategy_name=strat_name,
-                             reason=reason)
+                             reason=reason, kind=kind)
         # 일부 KIS 즉시체결 응답엔 체결 정보가 포함돼 있다 — pending 단계 건너뛰고 즉시 반영.
         filled = int(r.get("filled_qty", 0) or 0)
         fill_price = float(r.get("price", 0) or 0)
