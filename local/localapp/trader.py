@@ -541,13 +541,20 @@ class Trader:
 
     def _apply_fill(self, order_no: str, p: dict, filled_qty: int,
                     fill_price: float, decisions: list[dict],
-                    partial: bool = False) -> None:
-        """체결을 원장·이벤트 로그에 반영."""
+                    partial: bool = False, netted: bool = False) -> None:
+        """체결을 원장·이벤트 로그에 반영.
+
+        netted=True — 넷팅 합성 체결(브로커 미접촉·수수료 0). ledger·realized·통화·side
+        분기를 실체결과 동일하게 재사용하되, 주문/거래/결정 레코드에 netted 표식을 남긴다
+        (슬리피지는 호출부가 intended_price=None으로 넘겨 log_order가 자동 skip·N2·N3).
+        기본 False = 현행 byte-identical.
+        """
         sid = str(p.get("strategy_id", ""))
         symbol = p["symbol"]
         side = p["side"]
         intended = p.get("intended_price")
         today = kst_today().isoformat()
+        nx = {"netted": True} if netted else None
 
         order_log.log_order("partial" if partial else "filled", symbol, side,
                              filled_qty, order_no=order_no,
@@ -555,7 +562,8 @@ class Trader:
                              limit_price=p.get("limit_price"),
                              fill_price=fill_price,
                              strategy_name=p.get("strategy_name", ""),
-                             reason=p.get("reason", ""), kind=p.get("kind", ""))
+                             reason=p.get("reason", ""), kind=p.get("kind", ""),
+                             extra=nx)
 
         # M3: self.ledger 읽기-수정-쓰기를 단일 락으로 직렬화 — WS 체결 thread·
         # monitor·cycle이 같은 원장을 동시 변경하는 race(lost update) 차단.
@@ -618,6 +626,8 @@ class Trader:
                       "invest": inv}
                 if realized is not None:
                     ev["realized_pnl"] = round(realized, 2)
+                if netted:
+                    ev["netted"] = True
                 self._log_trade(ev)
                 if is_fut:
                     detail = f"{filled_qty}계약 @ {pxs}"
@@ -631,7 +641,8 @@ class Trader:
                     detail += f" · 투입 {inv['amount']:,.0f}원"
                 decisions.append(order_log.decision(
                     "bought", sid, p.get("strategy_name", ""), symbol, detail,
-                    {"intended": intended, "fill": fill_price, "invest": inv}))
+                    {"intended": intended, "fill": fill_price, "invest": inv,
+                     **(nx or {})}))
             else:
                 lg = self.ledger.get(sid)
                 if lg is not None and lg.get("side", "long") == "short":
@@ -668,6 +679,8 @@ class Trader:
                       "invest": inv}
                 if realized is not None:
                     ev["realized_pnl"] = round(realized, 2)
+                if netted:
+                    ev["netted"] = True
                 self._log_trade(ev)
                 if is_fut:
                     detail = f"{filled_qty}계약 @ {pxs}"
@@ -683,7 +696,7 @@ class Trader:
                     detail += f" · 투입 {inv['amount']:,.0f}원"
                 decisions.append(order_log.decision(
                     "sold", sid, p.get("strategy_name", ""), symbol, detail,
-                    {"fill": fill_price, "invest": inv}))
+                    {"fill": fill_price, "invest": inv, **(nx or {})}))
 
             # M9: 체결 반영 즉시 영속(락 안) — 디스크가 SSOT. 다른 인스턴스
             # (cycle↔intraday loop)가 reload_state로 항상 최신 체결을 본다.
@@ -702,6 +715,34 @@ class Trader:
                     self._ks_trigger_hook("apply_fill")
                 except Exception as e:
                     log.error("[ks-hook] apply_fill 트리거 핸들러 실패: %s", e)
+
+    def _apply_netted_leg(self, leg, decisions: list[dict]) -> None:
+        """넷팅 핸드오프 1건(진입/청산 leg)을 합성 체결로 원장 반영 — 브로커 미호출·수수료 0.
+
+        설계 §13. 기존 _apply_fill을 재사용해 ledger·realized·통화·side 분기·락을 그대로 태운다
+        (합성 체결도 실체결과 동일 회계 → N8·N10 클래스 해소). 슬리피지는 intended_price=None으로
+        자동 skip(N2), 킬스위치 훅은 _in_cycle 중 skip(N11). intent 저널에 NETTED 시드를 남겨
+        재실행/크래시 시 is_active 게이트가 재발주를 차단한다(N1). order_no="NETTED-<iid>"가 표식.
+        호출부(runner)가 _CYCLE_LOCK 임계구역에서 book_legs 전체를 원자적으로 적용한다(N6).
+        """
+        today_iso = kst_today().isoformat()
+        iid = intents.new_intent_id()
+        intents.begin(today_iso, iid, leg.sid, leg.strategy_name, leg.symbol,
+                      leg.order_side, leg.qty, leg.ref_price)
+        order_no = "NETTED-" + iid
+        intents.mark_submitted(today_iso, iid, order_no)
+        p = {
+            "strategy_id": leg.sid,          # _apply_fill의 원장 키
+            "strategy_name": leg.strategy_name,
+            "symbol": leg.symbol,
+            "side": leg.order_side,
+            "intended_price": None,          # 넷팅 → 슬리피지 미기록(시장 미접촉)
+            "limit_price": None,
+            "reason": "넷팅 청산" if leg.kind == "exit" else "넷팅 진입",
+            "kind": "청산" if leg.kind == "exit" else "진입",
+            "definition": leg.definition,
+        }
+        self._apply_fill(order_no, p, leg.qty, leg.ref_price, decisions, netted=True)
 
     # ── Q5: 장중 kill switch (Tier 1·2 공용 평가/실행 helpers) ─────────────────
 
