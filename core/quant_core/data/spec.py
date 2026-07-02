@@ -23,6 +23,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from .policy import CORE_FLOOR
+
 
 class PClass(str, Enum):
     PRICE = "P1"          # OHLCV
@@ -52,6 +54,9 @@ class DataTypeSpec(BaseModel):
     frequency: Frequency
     # ── 깊이(depth) ──
     history_rule: str                     # 룩백 규약(사람이 읽는 규칙). 예: "백테스트 시작일 − 최대 window"
+    floor: Optional[str] = None           # 정책 목표 최소 깊이(ISO). Core=CORE_FLOOR / Enrichment=
+                                          # 소스 자연 floor / None=목표 미정. 실측(manifest first)과
+                                          # 비교해 인벤토리가 "백필 진행중"을 정직 노출.
     point_in_time: bool = False           # as_of(발표/효력 시점) 병기 필수 — 미래누출 방지
     xs_completeness: bool = False         # 횡단 완전성 요구(그날 유니버스 전 종목 값 존재)
     adjustment: Adjustment = "not_applicable"   # 요구 조정 수준
@@ -92,7 +97,7 @@ def data_spec() -> list[dict]:
 register(DataTypeSpec(
     key="ohlcv.kr", pclass=PClass.PRICE, label="한국 주식 OHLCV", frequency="daily",
     history_rule="백테스트 시작일 − 최대 지표 window(예: 200MA→200영업일) 이상 연속",
-    adjustment="split_adjusted", source="FinanceDataReader(KRX)",
+    floor=CORE_FLOOR, adjustment="split_adjusted", source="FinanceDataReader(KRX)",
     provides=["Open", "High", "Low", "Close", "Volume"],
     required_meta=_BASE_META + ["adjustment", "currency", "market"],
     downstream=["universe", "signal", "exit", "fill", "sizing.vol_inverse"],
@@ -102,7 +107,7 @@ register(DataTypeSpec(
 register(DataTypeSpec(
     key="ohlcv.us", pclass=PClass.PRICE, label="미국 주식 OHLCV", frequency="daily",
     history_rule="백테스트 시작일 − 최대 지표 window 이상 연속",
-    adjustment="total_return", source="yfinance(auto_adjust)",
+    floor=CORE_FLOOR, adjustment="total_return", source="yfinance(auto_adjust)",
     provides=["Open", "High", "Low", "Close", "Volume"],
     required_meta=_BASE_META + ["adjustment", "currency", "market"],
     downstream=["universe", "signal", "exit", "fill"],
@@ -112,7 +117,7 @@ register(DataTypeSpec(
 register(DataTypeSpec(
     key="ohlcv.futures", pclass=PClass.PRICE, label="선물·지수 OHLCV(S&P500·WTI·금 등)",
     frequency="daily", history_rule="백테스트 시작일 − 최대 window 이상 연속",
-    adjustment="total_return", source="yfinance / FinanceDataReader",
+    floor=CORE_FLOOR, adjustment="total_return", source="yfinance / FinanceDataReader",
     provides=["Open", "High", "Low", "Close", "Volume"],
     required_meta=_BASE_META + ["adjustment"],
     downstream=["universe", "signal", "study.event"], current_status="present",
@@ -157,19 +162,19 @@ register(DataTypeSpec(
     key="estimate.consensus", pclass=PClass.FUNDAMENTAL,
     label="애널 컨센서스·목표가·투자의견(증권사별 standing 집계)",
     frequency="event", history_rule="리포트 발표일별 이벤트 → 일별 ffill(신선도窓 180일)",
-    point_in_time=True,
+    floor=CORE_FLOOR, point_in_time=True,
     source="한경컨센서스(consensus.hankyung.com)",
     provides=["consensus_target", "consensus_target_median", "analyst_count",
               "consensus_opinion", "target_dispersion", "target_revision_pct",
               "days_since_report"],
     required_meta=_BASE_META + ["as_of"],
     downstream=["signal(컨센서스 ref)", "screener", "study.event(목표가 리비전)"],
-    current_status="absent",
+    current_status="present",
     notes="한경=개별 리포트 스트림(발표일·증권사·목표가·투자의견). 원시 리포트 전건 영구보관 + "
           "증권사별 최신 standing(신선도窓 내 1표) 횡단집계로 일별 컨센서스 산출 — 새 리포트는 해당 "
           "증권사 슬롯만 갱신(덮어쓰기 없음). target_upside(괴리율)는 indicators에서 Close 결합 파생. "
-          "한계: 전 증권사 아님(대표 표본)·소형주 sparse→NaN. 백필+일일증분 cron 적재 시 absent→present. "
-          "P0=계약 선언만(feed·cron·배선은 P1~P3).",
+          "한계: 전 증권사 아님(대표 표본)·소형주 sparse→NaN. "
+          "cron 적재 가동중(10분 역순 백필→floor + 19:00 일일증분, 2026-07 프로덕션 로그 검증).",
 ))
 
 # ── P4 매크로·시장 브로드캐스트 ───────────────────────────────────────────────
@@ -198,7 +203,8 @@ register(DataTypeSpec(
 register(DataTypeSpec(
     key="macro.krx", pclass=PClass.MACRO,
     label="KR 시장지표(V-KOSPI·옵션풋콜비율·KRX채권지수·국고채3/10년·선물 미결제약정·ETF AUM/flow)",
-    frequency="daily", history_rule="2010~", source="공식 KRX Open API(data-dbg.krx.co.kr)",
+    frequency="daily", history_rule="2010~", floor=CORE_FLOOR,
+    source="공식 KRX Open API(data-dbg.krx.co.kr)",
     provides=["Close(=val)"], required_meta=_BASE_META,
     downstream=["study.label(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",
     notes="AUTH_KEY(KRX_API_KEY) 필요·미설정 시 비활성. 매크로형 명명 시계열(MACRO_KRX_SYMBOLS).",
@@ -283,16 +289,17 @@ register(DataTypeSpec(
     key="flow.kr_investor", pclass=PClass.FLOW,
     label="투자자별 수급(기관·외국인 순매수)", frequency="daily",
     history_rule="백테스트 시작일 − 최대 window(예: ts_sum 20일) 이상 연속",
-    point_in_time=True,
+    floor=CORE_FLOOR, point_in_time=True,
     source="KRX 정보데이터시스템(data.krx.co.kr) — pykrx 경유(무료 KRX 계정 로그인)",
     provides=["inst_net_buy", "foreign_net_buy"],
     required_meta=_BASE_META + ["as_of"],
     downstream=["signal(수급 ref)", "screener", "study.event"],
-    current_status="absent",
+    current_status="present",
     notes="기관·외국인 순매수(거래대금·원). 일별 dense, as_of=거래일. 'N일 연속/누적'·'급증'은 ts_sum·rolling·pct "
           "등 기존 시계열 연산자로 조합(원시 일별 컬럼만 — 직교 프리미티브). 소스=pykrx "
           "get_market_trading_value_by_date(KRX 마켓플레이스, ~2010 깊이). KRX가 2025-12-27 로그인 의무화 → "
           "무료 KRX 계정의 KRX_ID/KRX_PW env 필수(브로커리지 아님 — KIS 보안경계 무관). 미설정 시 feed 비활성"
           "(빈결과·골든 무영향). 봇차단된 웹 스크랩이라 취약(버전핀·retry/resume). 외인 보유율은 후속. "
-          "P0=계약 선언(feed=P1·cron=P2).",
+          "cron 적재 가동중(10분 백필→floor + 16:30 일일증분, 2026-07 프로덕션 로그 검증). "
+          "⚠공식 KRX Open API엔 투자자별 엔드포인트 부재(카탈로그 검증) — pykrx가 유일 무료 경로.",
 ))

@@ -21,6 +21,7 @@ import FinanceDataReader as fdr
 from pathlib import Path
 from datetime import datetime, timedelta, date
 
+from .data.policy import CORE_FLOOR, CORE_FLOOR_COMPACT  # noqa: F401 (compact은 서버 cron이 소비)
 from .parquet_io import read_parquet_safe, write_parquet_atomic, quarantine_corrupt
 
 warnings.filterwarnings("ignore")
@@ -375,7 +376,7 @@ def save_user_stocks(stocks: list[dict]):
 
 # ── yfinance (지수/선물/개별종목) ─────────────────────────────────────────────
 
-def fetch_yfinance(symbol_name: str, ticker: str, start: str = "2010-01-01") -> pd.DataFrame:
+def fetch_yfinance(symbol_name: str, ticker: str, start: str = CORE_FLOOR) -> pd.DataFrame:
     existing = _load_existing(symbol_name)
     if not existing.empty:
         last_date = existing.index[-1].date()
@@ -399,20 +400,21 @@ def fetch_yfinance(symbol_name: str, ticker: str, start: str = "2010-01-01") -> 
         df.index = pd.to_datetime(df.index).tz_localize(None)
         merged = _merge(existing, df)
         _save(symbol_name, merged)
+        mark_data_dirty()       # 단독 호출 시에도 라이브 캐시가 stale 유지 않도록(세대 신호)
         return merged
     except Exception as e:
         print(f"  [오류] {symbol_name}: {e}")
         return existing
 
 
-def fetch_stock_price(name: str, ticker: str, start: str = "2000-01-01") -> pd.DataFrame:
+def fetch_stock_price(name: str, ticker: str, start: str = CORE_FLOOR) -> pd.DataFrame:
     """개별종목 가격 데이터 수집 (yfinance 래퍼)."""
     return fetch_yfinance(name, ticker, start)
 
 
 # ── FinanceDataReader (KRX ETF) ───────────────────────────────────────────────
 
-def fetch_fdr(symbol_name: str, ticker: str, start: str = "2010-01-01") -> pd.DataFrame:
+def fetch_fdr(symbol_name: str, ticker: str, start: str = CORE_FLOOR) -> pd.DataFrame:
     existing = _load_existing(symbol_name)
     if not existing.empty:
         start = (existing.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -425,13 +427,14 @@ def fetch_fdr(symbol_name: str, ticker: str, start: str = "2010-01-01") -> pd.Da
         df.index = pd.to_datetime(df.index).tz_localize(None)
         merged = _merge(existing, df)
         _save(symbol_name, merged)
+        mark_data_dirty()       # 세대 신호 — 단독 호출 시 stale 캐시 방지
         return merged
     except Exception as e:
         print(f"  [오류] {symbol_name}: {e}")
         return existing
 
 
-def fetch_korean_stocks(codes: list[str], start: str = "2010-01-01",
+def fetch_korean_stocks(codes: list[str], start: str = CORE_FLOOR,
                          verbose: bool = False) -> dict[str, int]:
     """한국 거래소 종목 OHLC 일괄 수집 (FinanceDataReader, KRX 직접 소스).
 
@@ -533,8 +536,12 @@ def _kr_ohlcv_depth_marker() -> Path:
     return DATA_DIR / "_kr_ohlcv_depth_done.json"
 
 
-def _load_depth_done() -> set[str]:
-    p = _kr_ohlcv_depth_marker()
+def _us_ohlcv_depth_marker() -> Path:
+    return DATA_DIR / "_us_ohlcv_depth_done.json"
+
+
+def _load_marker_set(p: Path) -> set[str]:
+    """완료 마커 집합(JSON 배열) 로드 — KR/US 깊이 백필이 공유하는 단일 규약."""
     if p.exists():
         try:
             return set(json.loads(p.read_text(encoding="utf-8")))
@@ -543,12 +550,19 @@ def _load_depth_done() -> set[str]:
     return set()
 
 
+def _save_marker_set(p: Path, done: set[str]) -> None:
+    p.write_text(json.dumps(sorted(done), ensure_ascii=False), encoding="utf-8")
+
+
+def _load_depth_done() -> set[str]:
+    return _load_marker_set(_kr_ohlcv_depth_marker())
+
+
 def _save_depth_done(done: set[str]) -> None:
-    _kr_ohlcv_depth_marker().write_text(
-        json.dumps(sorted(done), ensure_ascii=False), encoding="utf-8")
+    _save_marker_set(_kr_ohlcv_depth_marker(), done)
 
 
-def backfill_korean_stocks_depth(codes: list[str], floor: str = "2010-01-01",
+def backfill_korean_stocks_depth(codes: list[str], floor: str = CORE_FLOOR,
                                  budget_symbols: int = 150,
                                  verbose: bool = False) -> dict[str, int]:
     """기존 KR 종목 OHLCV 깊이를 floor까지 **소급(prepend)**.
@@ -596,6 +610,103 @@ def backfill_korean_stocks_depth(codes: list[str], floor: str = "2010-01-01",
             done.add(code)                      # floor 도달
         # else: FDR이 한 번에 floor까지 못 줌(드묾) — 마커 보류, 다음 청크 계속
     _save_depth_done(done)
+    if n_deepened:
+        mark_data_dirty()
+    return {"deepened": n_deepened, "young": n_young, "fail": n_fail,
+            "done_total": len(done)}
+
+
+def backfill_overseas_depth(codes: list[str] | None = None, floor: str = CORE_FLOOR,
+                            budget_symbols: int = 200, batch: int = 100,
+                            verbose: bool = False) -> dict[str, int]:
+    """기존 해외(US) 종목 OHLCV 깊이를 floor까지 **소급(prepend)** — KR 깊이 백필의 US 미러.
+
+    과거 fetch_managed_overseas가 backfill_start=2015로 수집한 코호트의 floor 이전 갭을
+    메운다(실측: US 2010 도달 3%·2015 캡 36%). 일일 fetch는 앞으로만 append하므로 이
+    백필 없이는 그 갭이 영영 안 채워진다 — KR과 동일한 이유·동일한 마커 규약.
+
+    KR과의 차이 = 효율: 같은 min_date 그룹을 yf.download **배치 1콜**로 받는다(2015 캡
+    코호트가 min_date를 공유 → 수천 종목이 소수 배치로 처리). 완료 판정은 KR과 동일:
+    merged.min <= floor → done / 빈 결과 → 상장이 floor 이후(young, done) / 부분 소급 →
+    마커 보류(다음 청크가 더 이른 창을 요청 → 빈 결과 → young 수렴).
+
+    ⚠ 빈 응답의 신뢰 규약 = KR(FDR)과 동일: **예외 = 실패(마커 금지·재시도) / 무예외
+    빈 결과 = young(floor 이전 상장 없음)**. yfinance가 무예외로 빈 프레임을 주는 글리치면
+    false-young이 가능하나(외부 API 한계), 그 결과는 해당 종목이 기존 깊이에 머무는 것
+    (오염 아님)이고, 반대로 빈 응답을 불신하면 young 그룹이 영원히 재시도돼 백필이
+    수렴하지 않는다 — 수렴을 택한다.
+    """
+    floor_ts = pd.to_datetime(floor)
+    if codes is None:
+        codes = [s.get("code", "") for s in load_managed_overseas() if s.get("code")]
+    done = _load_marker_set(_us_ohlcv_depth_marker())
+    n_deepened = n_young = n_fail = 0
+
+    # 1) 대상 선별 — 미완료·기존 보유·floor 미달 종목을 min_date별로 그룹(배치 효율).
+    pending: dict[str, list[str]] = {}
+    attempted = 0
+    for code in codes:
+        if attempted >= budget_symbols:
+            break
+        if code in done:
+            continue
+        existing = _load_existing(code)
+        if existing.empty:
+            done.add(code)                      # 신규 — 일일 fetch가 floor부터 직접 받음
+            continue
+        if existing.index.min() <= floor_ts:
+            done.add(code)                      # 이미 충분히 깊음
+            continue
+        min_iso = existing.index.min().strftime("%Y-%m-%d")
+        pending.setdefault(min_iso, []).append(code)
+        attempted += 1
+
+    # 2) 그룹별 배치 fetch — floor ~ (min_date 직전). yf.download의 end는 exclusive.
+    for min_iso, group in pending.items():
+        for i in range(0, len(group), batch):
+            chunk = group[i:i + batch]
+            try:
+                data = yf.download(chunk, start=floor, end=min_iso, auto_adjust=True,
+                                   group_by="ticker", threads=True, progress=False)
+            except Exception as e:
+                n_fail += len(chunk)
+                if verbose:
+                    print(f"  [US 깊이백필 배치 오류] {chunk[0]}…{chunk[-1]}: {e}")
+                continue                        # 마커 안 함 → 다음 청크 재시도
+            if data is None or data.empty:
+                for code in chunk:              # 무예외 빈 응답 = young(KR/FDR와 동일 신뢰 규약)
+                    done.add(code)
+                n_young += len(chunk)
+                time.sleep(1.0)
+                continue
+            multi = isinstance(data.columns, pd.MultiIndex)
+            for code in chunk:
+                try:
+                    if multi:
+                        if code not in data.columns.get_level_values(0):
+                            done.add(code); n_young += 1
+                            continue
+                        df = data[code].copy()
+                    else:
+                        df = data.copy()
+                    df = df[[c for c in _OHLCV_COLS if c in df.columns]].dropna(how="all")
+                    if df.empty:
+                        done.add(code)          # 상장이 floor 이후 — 더 깊이 불가
+                        n_young += 1
+                        continue
+                    df.index = pd.to_datetime(df.index).tz_localize(None)
+                    merged = _merge(_load_existing(code), df)
+                    _save(code, merged)
+                    n_deepened += 1
+                    if merged.index.min() <= floor_ts:
+                        done.add(code)          # floor 도달
+                    # else: 부분 소급 — 마커 보류, 다음 청크가 더 이른 창 요청 → young 수렴
+                except Exception as e:
+                    n_fail += 1
+                    if verbose:
+                        print(f"  [US 깊이백필 오류] {code}: {e}")
+            time.sleep(1.0)                     # 배치 간 rate-limit 완화
+    _save_marker_set(_us_ohlcv_depth_marker(), done)
     if n_deepened:
         mark_data_dirty()
     return {"deepened": n_deepened, "young": n_young, "fail": n_fail,
@@ -704,7 +815,7 @@ def _last_closed_us_date() -> date | None:
 
 
 def fetch_managed_overseas(limit: int | None = None, verbose: bool = False,
-                           batch: int = 200, backfill_start: str = "2015-01-01") -> int:
+                           batch: int = 200, backfill_start: str = CORE_FLOOR) -> int:
     """managed_overseas 해외 종목 OHLCV를 yfinance 배치(yf.download)로 일괄 수집.
 
     종목당 1콜 루프는 미국 마스터 전체(~1만+) 규모에 부적합(수 시간) → 배치로
@@ -796,7 +907,8 @@ def fetch_bitcoin() -> pd.DataFrame:
     start_ts = (
         int((existing.index[-1] + timedelta(days=1)).timestamp() * 1000)
         if not existing.empty
-        else int(datetime(2015, 1, 1).timestamp() * 1000)
+        # CORE_FLOOR부터 요청 — Binance BTCUSDT는 2017-08~라 실제 시작은 소스 floor(정직).
+        else int(datetime.strptime(CORE_FLOOR, "%Y-%m-%d").timestamp() * 1000)
     )
 
     url = "https://api.binance.com/api/v3/klines"
@@ -831,12 +943,13 @@ def fetch_bitcoin() -> pd.DataFrame:
     new_df.index = new_df.index.tz_localize(None)
     merged = _merge(existing, new_df)
     _save(symbol_name, merged)
+    mark_data_dirty()           # 세대 신호 — 단독 호출 시 stale 캐시 방지
     return merged
 
 
 # ── FRED (매크로 지표) ────────────────────────────────────────────────────────
 
-def fetch_fred(symbol_name: str, series_id: str, start: str = "2010-01-01",
+def fetch_fred(symbol_name: str, series_id: str, start: str = CORE_FLOOR,
                lag_days: int = 0) -> pd.DataFrame:
     """FRED 시계열을 CSV로 직접 수집 (API 키 불필요). OHLCV 형식으로 저장.
 
@@ -864,6 +977,7 @@ def fetch_fred(symbol_name: str, series_id: str, start: str = "2010-01-01",
             df.index = df.index + pd.Timedelta(days=lag_days)
         merged = _merge(existing, df)
         _save(symbol_name, merged)
+        mark_data_dirty()       # 세대 신호 — 단독 호출 시 stale 캐시 방지
         return merged
     except Exception as e:
         print(f"  [오류] {symbol_name} (FRED {series_id}): {e}")
@@ -896,6 +1010,7 @@ def fetch_crypto_fng() -> pd.DataFrame:
         df.index = pd.to_datetime(df.index).tz_localize(None)
         merged = _merge(existing, df)
         _save(symbol_name, merged)
+        mark_data_dirty()       # 세대 신호 — 단독 호출 시 stale 캐시 방지
         return merged
     except Exception as e:
         print(f"  [오류] {symbol_name} (alternative.me): {e}")

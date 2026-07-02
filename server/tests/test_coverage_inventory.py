@@ -90,3 +90,53 @@ def test_inventory_renders_to_prompt_text():
     assert isinstance(txt, str) and len(txt) > 50
     assert "옵션풋콜비율" in txt        # 매크로 상세 심볼
     assert "종목" in txt                # 종목수 렌더
+
+
+# ── 드리프트 가드: 필드형 spec ↔ _FIELD_GROUPS/track_fields 정합 ───────────────
+# 심볼형(MACRO/ASSET → data_type_symbols)은 core 가드가 잠근다. 필드형(종목별 컬럼:
+# 펀더/수급/컨센서스)은 이 가드가 잠근다 — 새 필드형 피드(예: flow.us_investor)를
+# spec에 등록하고 _FIELD_GROUPS에 안 배선하면 CI가 실패한다(공급≫소비 갭의 부류 차단).
+
+def test_every_field_type_spec_wired_to_field_groups():
+    from quant_core.data import data_spec
+    field_specs = {s["key"] for s in data_spec() if s["pclass"] in ("P3", "P7")}
+    wired = {k for k, _, _ in dm._FIELD_GROUPS}
+    missing = field_specs - wired
+    assert not missing, (
+        f"필드형 spec(P3/P7) 중 _FIELD_GROUPS 미배선 — 챗 인벤토리·매니페스트 추적에 안 잡힘:"
+        f"\n  {sorted(missing)}\n→ data_manifest._FIELD_GROUPS에 (key, label, cols) 등록하세요."
+    )
+    ghost = wired - field_specs
+    assert not ghost, f"_FIELD_GROUPS에 있으나 spec 미등록(유령 키): {sorted(ghost)}"
+
+
+def test_field_group_cols_match_indicator_meta():
+    """_FIELD_GROUPS의 컬럼들이 INDICATOR_META 그룹과 일치 — 컬럼 추가/삭제 드리프트 차단."""
+    from quant_core.indicators import (FUND_INDICATOR_COLS, FLOW_INDICATOR_COLS,
+                                       CONSENSUS_INDICATOR_COLS)
+    groups = {k: cols for k, _, cols in dm._FIELD_GROUPS}
+    assert groups["fundamental.equity"] == set(FUND_INDICATOR_COLS)
+    assert groups["flow.kr_investor"] == set(FLOW_INDICATOR_COLS)
+    assert groups["estimate.consensus"] == set(CONSENSUS_INDICATOR_COLS)
+    # 매니페스트 추적 대상(TRACK_FIELDS)은 _FIELD_GROUPS에서 파생된 단일 출처.
+    assert set(dm.TRACK_FIELDS) == set().union(*groups.values())
+
+
+def test_target_floor_surfaced_when_backfill_in_progress():
+    """실측 first > spec.floor(Core 2010)이면 target_floor 노출 — 챗이 깊이를 과신하지
+    않고 '백필 진행중'을 정직히 안내(위장 truncate 금지 원칙의 표면화)."""
+    syms = {"코스피200선물": SymbolManifest(symbol="코스피200선물", first_date="2016-05-25",
+                                        last_date="2026-07-01", n_rows=2500,
+                                        field_coverage={})}
+    inv = dm.coverage_inventory(DataManifest(version=1, symbols=syms))
+    fut = next(e for e in inv if e["key"] == "ohlcv.futures")
+    assert fut["target_floor"] == "2010-01-01"
+    assert "백필 진행중" in dm.inventory_for_prompt(inv)
+
+
+def test_no_target_floor_when_floor_reached():
+    """floor 도달(실측 first ≤ floor)이면 target_floor 미노출 — 불필요한 잡음 없음."""
+    inv = dm.coverage_inventory(_manifest())     # 코스피200선물 first=2010-01-04지만
+    fut = next(e for e in inv if e["key"] == "ohlcv.futures")
+    # futures 그룹 min first = S&P500(1990) ≤ 2010 → 미노출.
+    assert "target_floor" not in fut

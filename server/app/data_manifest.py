@@ -88,11 +88,12 @@ def build_dataset_manifest(dataset: dict, *, version: int = 0) -> DataManifest:
                                        "n_symbols": len(fund_syms)}
 
     # has_membership_history=False — 멤버십 이력 미연동(정직). has_pit은 펀더멘털 as_of 실측으로 판정.
-    # track_fields — sourced sparse 필드(펀더/플로우/컨센서스)의 종목별 가용성 측정(null≠0 노출용).
+    # track_fields — sourced sparse 필드의 종목별 가용성 측정(null≠0 노출용). _FIELD_GROUPS에서
+    # 파생(TRACK_FIELDS) = 단일 출처: 새 필드군은 _FIELD_GROUPS 한 곳에 등록하면 매니페스트 추적과
+    # 챗 인벤토리가 함께 배선된다(드리프트 가드가 spec와의 정합을 CI에서 강제).
     # 가격파생 BASE 지표는 가격 있는 곳엔 항상 재계산 가능하므로 추적 제외(편향 무관).
     return build_manifest(dataset, version=version, symbol_meta=sym_meta, feeds=feeds,
-                          track_fields=(list(FUND_INDICATOR_COLS) + list(FLOW_INDICATOR_COLS)
-                                        + list(CONSENSUS_INDICATOR_COLS)),
+                          track_fields=list(TRACK_FIELDS),
                           has_membership_history=False, has_pit=fund_has_asof, delay=1)
 
 
@@ -122,6 +123,12 @@ def _spec_meta(key: str) -> tuple[str, str | None]:
     return s.label, s.source
 
 
+def _spec_floor(key: str) -> str | None:
+    """유형키 → 정책 목표 floor(ISO) — spec.floor. 실측 first와 비교해 백필 진행을 정직 노출."""
+    s = _spec.get(key)
+    return getattr(s, "floor", None) if s is not None else None
+
+
 # 매크로 유형 중 주요 심볼 개별 뎁스를 상세 노출할 유형(챗이 크로스에셋 참조 시 실측 확인).
 _MACRO_DETAIL_KEYS = {"macro.krx"}
 
@@ -136,14 +143,22 @@ _FIELD_GROUPS: list[tuple[str, str, set]] = [
     ("estimate.consensus", "애널 컨센서스(목표가·투자의견)", set(_CONS)),
 ]
 
+# 매니페스트 field_coverage 추적 대상 — _FIELD_GROUPS 유래(단일 출처, 드리프트 가드 대상).
+TRACK_FIELDS: list[str] = [c for _, _, cols in _FIELD_GROUPS for c in sorted(cols)]
+
 
 def _entry(key: str, label: str, depth: str, n_symbols: int,
-           source: str | None, pct: float | None = None, detail: list | None = None) -> dict:
+           source: str | None, pct: float | None = None, detail: list | None = None,
+           first: str | None = None) -> dict:
     e = {"key": key, "label": label, "depth": depth, "n_symbols": n_symbols, "source": source}
     if pct is not None:
         e["pct"] = pct
     if detail:
         e["detail"] = detail
+    # 목표 floor 미달(실측 first > spec.floor)이면 백필 진행중 — 챗이 깊이를 과신하지 않게 노출.
+    floor = _spec_floor(key)
+    if floor and first and first > floor:
+        e["target_floor"] = floor
     return e
 
 
@@ -177,7 +192,7 @@ def coverage_inventory(manifest: DataManifest | None) -> list[dict]:
                 sm = manifest.symbols.get(s)
                 if sm is not None and sm.n_rows and sm.first_date and sm.last_date:
                     detail.append({"symbol": s, "depth": f"{sm.first_date}~{sm.last_date}"})
-        out.append(_entry(key, label, f"{first}~{last}", n, source, detail=detail))
+        out.append(_entry(key, label, f"{first}~{last}", n, source, detail=detail, first=first))
 
     # ② 주식 (동적 유니버스) — 가격 피드가 있는 종목을 KR(숫자6자)/US로 집계.
     kr_syms = [s for s, sm in manifest.symbols.items()
@@ -189,7 +204,7 @@ def coverage_inventory(manifest: DataManifest | None) -> list[dict]:
         if n == 0:
             continue
         label, source = _spec_meta(key)
-        out.append(_entry(key, label, f"{first}~{last}", n, source))
+        out.append(_entry(key, label, f"{first}~{last}", n, source, first=first))
 
     # ③ sparse 필드(펀더/플로우/컨센서스) — coverage_report의 pct + 글로벌 range.
     report = coverage_report(manifest)              # {field: {covered, total, pct, first, last}}
@@ -203,7 +218,8 @@ def coverage_inventory(manifest: DataManifest | None) -> list[dict]:
         pct = max(c["pct"] for c in covered.values())
         n_sym = max(c["covered"] for c in covered.values())
         _, source = _spec_meta(key)
-        out.append(_entry(key, label, f"{min(firsts)}~{max(lasts)}", n_sym, source, pct=pct))
+        out.append(_entry(key, label, f"{min(firsts)}~{max(lasts)}", n_sym, source, pct=pct,
+                          first=min(firsts)))
 
     return out
 
@@ -215,6 +231,8 @@ def inventory_for_prompt(inventory: list[dict]) -> str:
         line = f"- {e['label']}: {e['depth']} · {e['n_symbols']}종목"
         if e.get("pct") is not None:
             line += f"(커버리지 {e['pct']}%)"
+        if e.get("target_floor"):
+            line += f" (목표 {e['target_floor']}~ 백필 진행중)"
         if e.get("source"):
             line += f" [{e['source']}]"
         lines.append(line)

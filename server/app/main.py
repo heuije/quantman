@@ -17,6 +17,8 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from quant_core.data.backfill import DateCursorBackfill
+from quant_core.data.policy import CORE_FLOOR_COMPACT
 
 from . import (calendar_cache, data_cache, kis_master_cache, krx_cache,
                 naver_fundamentals, technical_cache)
@@ -294,36 +296,35 @@ def _initial_kr_fundamentals_refresh():
 
 
 # ── 애널 컨센서스(한경, 무로그인) ─────────────────────────────────────────────
-_CONSENSUS_BACKFILL_START = "20100101"     # 완결 일관 데이터셋 floor(한경은 2006까지 제공·프로브 검증, 2010로 통일)
+# floor=CORE_FLOOR(한경은 2006까지 제공·프로브 검증 — Core 통일 floor 2010 채택).
 _CONSENSUS_WINDOW_DAYS = 90                 # 백필 1청크 윈도우(역순)
 
 
-def _consensus_cursor_path():
+def _consensus_backfill() -> DateCursorBackfill:
     from quant_core import data_fetcher
-    return data_fetcher.CONSENSUS_DIR / "_backfill.cursor"
+    return DateCursorBackfill(cursor_path=data_fetcher.CONSENSUS_DIR / "_backfill.cursor",
+                              floor=CORE_FLOOR_COMPACT,
+                              window_days=_CONSENSUS_WINDOW_DAYS)
 
 
 def _backfill_consensus_chunk() -> None:
-    """한경 컨센서스 과거 백필 — 90일 윈도우를 today→2015로 **역순 1청크**(10분마다).
+    """한경 컨센서스 과거 백필 — 90일 윈도우를 today→floor **역순 1청크**(10분마다).
 
-    날짜축 크롤(per-window)이라 per-symbol freshness 대신 cursor(다음 윈도우 끝 날짜)를 파일에
-    저장해 재배포에도 재개. 2015 도달 시 자연 종료(무비용). 수집 실패 시 cursor 안 옮김→재시도."""
-    from datetime import date, datetime, timedelta
+    날짜축 크롤(per-window)이라 per-symbol freshness 대신 cursor(DateCursorBackfill —
+    KRX 백필과 동일 문법)로 재배포에도 재개. floor 도달 시 자연 종료(무비용).
+    수집 실패 시 cursor 안 옮김→재시도."""
     from quant_core.data.feeds import consensus_kr
-    cur = _consensus_cursor_path()
-    cur.parent.mkdir(parents=True, exist_ok=True)
-    end = (datetime.strptime(cur.read_text().strip(), "%Y%m%d").date()
-           if cur.exists() else date.today())
-    floor = datetime.strptime(_CONSENSUS_BACKFILL_START, "%Y%m%d").date()
-    if end <= floor:
+    bf = _consensus_backfill()
+    win = bf.next_window()
+    if win is None:
         return                                       # 백필 완료 — 무비용
-    start = max(floor, end - timedelta(days=_CONSENSUS_WINDOW_DAYS))
+    start, end = win
     reports, ok = consensus_kr.collect_range(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
     if not ok:
         _log.warning("[altdata] 컨센서스 백필 수집 실패(%s~%s) — cursor 유지·재시도", start, end)
         return
     res = consensus_kr.ingest(reports)
-    cur.write_text(start.strftime("%Y%m%d"))         # cursor 역순 전진
+    bf.advance(start)                                # cursor 역순 전진
     _log.info("[altdata] 컨센서스 백필 청크(한경) %s~%s: %s", start, end, res)
 
 
@@ -361,7 +362,7 @@ def _backfill_flow_chunk() -> None:
     from quant_core import data_fetcher
     from quant_core.data.feeds import flow_kr
     codes = data_fetcher.load_managed_kr_codes()
-    res = flow_kr.fetch(codes, "20100101", date.today().strftime("%Y%m%d"),
+    res = flow_kr.fetch(codes, CORE_FLOOR_COMPACT, date.today().strftime("%Y%m%d"),
                         budget_symbols=120, fresh_days=999999)
     if not res.get("inactive") and (res.get("ok") or res.get("fail")):
         _log.info("[altdata] KR 수급 백필 청크(pykrx): %s", res)
@@ -401,8 +402,7 @@ def _backfill_kr_ohlcv_chunk() -> None:
     안 채워진다. 이 백필이 그 갭만 메운다(종목별 1회 + depth-done 마커로 완료 시 0비용)."""
     from quant_core import data_fetcher
     codes = data_fetcher.load_managed_kr_codes()
-    res = data_fetcher.backfill_korean_stocks_depth(codes, floor="2010-01-01",
-                                                    budget_symbols=150)
+    res = data_fetcher.backfill_korean_stocks_depth(codes, budget_symbols=150)
     if res.get("deepened") or res.get("fail"):
         _log.info("KR OHLCV 깊이 백필 청크(FDR): %s", res)
 
@@ -416,38 +416,53 @@ def _initial_kr_ohlcv_backfill():
         _log.exception("KR OHLCV 깊이 백필 초기 청크 예외 — 10분 cron 재시도")
 
 
+# ── US OHLCV 깊이 백필(yfinance, 무키) — KR 깊이 백필의 US 미러 ────────────────
+
+def _backfill_us_ohlcv_chunk() -> None:
+    """US OHLCV 깊이 백필 청크(10분) — 기존 종목을 CORE_FLOOR(2010)까지 소급 prepend.
+
+    과거 backfill_start=2015 코호트(실측 US 2010 도달 3%)의 floor 이전 갭을 메운다.
+    같은 min_date 그룹 배치 1콜 + depth-done 마커(완주 시 0비용) — KR과 동일 규약."""
+    from quant_core import data_fetcher
+    res = data_fetcher.backfill_overseas_depth(budget_symbols=200)
+    if res.get("deepened") or res.get("fail"):
+        _log.info("US OHLCV 깊이 백필 청크(yfinance): %s", res)
+
+
+def _initial_us_ohlcv_backfill():
+    try:
+        time.sleep(130)            # KR 깊이(100s)와 스태거 — 외부 호출 분산
+        _log.info("US OHLCV 깊이 백필 초기 청크 시작")
+        _backfill_us_ohlcv_chunk()
+    except Exception:
+        _log.exception("US OHLCV 깊이 백필 초기 청크 예외 — 10분 cron 재시도")
+
+
 # ── KR 시장지표 (공식 KRX Open API, KRX_API_KEY) ──────────────────────────────
 # V-KOSPI·옵션풋콜비율·KRX채권지수·국고채3/10년 = 매크로형 명명 시계열. 날짜축 cursor 백필
-# (컨센서스 패턴). 가벼운 지표(3서비스)는 넓은 윈도우, 옵션 풋콜(하루 ~19k행)은 좁은 윈도우.
-_KRX_BACKFILL_FLOOR = "20100101"
+# (DateCursorBackfill — 컨센서스와 동일 문법). 가벼운 지표(3서비스)는 넓은 윈도우,
+# 옵션 풋콜(하루 ~19k행)은 좁은 윈도우.
 _KRX_LIGHT_WINDOW_DAYS = 90
 _KRX_PUTCALL_WINDOW_DAYS = 4        # 옵션 무거움(timeout 90s) — 좁게
 
 
-def _krx_cursor_path(name: str):
-    from quant_core import data_fetcher
-    return data_fetcher.DATA_DIR / f"_krx_{name}.cursor"
-
-
 def _krx_backfill(name: str, window_days: int, fetch_fn) -> None:
-    """공식 KRX API 날짜축 cursor 백필 — today→2010 역순 1청크. 성공 시만 cursor 전진."""
-    from datetime import date, datetime, timedelta
+    """공식 KRX API 날짜축 cursor 백필 — today→CORE_FLOOR 역순 1청크. 성공 시만 cursor 전진."""
+    from quant_core import data_fetcher
     from quant_core.data.feeds import krx_openapi
     if not krx_openapi.is_active():
         return
-    cur = _krx_cursor_path(name)
-    cur.parent.mkdir(parents=True, exist_ok=True)
-    end = (datetime.strptime(cur.read_text().strip(), "%Y%m%d").date()
-           if cur.exists() else date.today())
-    floor = datetime.strptime(_KRX_BACKFILL_FLOOR, "%Y%m%d").date()
-    if end <= floor:
+    bf = DateCursorBackfill(cursor_path=data_fetcher.DATA_DIR / f"_krx_{name}.cursor",
+                            floor=CORE_FLOOR_COMPACT, window_days=window_days)
+    win = bf.next_window()
+    if win is None:
         return                                       # 백필 완료 — 무비용
-    start = max(floor, end - timedelta(days=window_days))
+    start, end = win
     res = fetch_fn(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
     if not res.get("ok"):
         _log.warning("[altdata] KRX %s 백필 실패(%s~%s) — cursor 유지·재시도", name, start, end)
         return
-    cur.write_text(start.strftime("%Y%m%d"))
+    bf.advance(start)
     _log.info("[altdata] KRX %s 백필 청크 %s~%s: %s", name, start, end, res.get("saved"))
 
 
@@ -988,6 +1003,13 @@ def _build_scheduler() -> BackgroundScheduler:
         CronTrigger(minute="7-59/10"),           # :07,:17… — fund(*/10)·consensus(2)·flow(5)와 스태거
         id="kr_ohlcv_depth", replace_existing=True)
 
+    # US OHLCV 깊이 백필(yfinance, 무키) — 10분 청크로 기존 종목을 2010까지 소급 prepend.
+    # 과거 backfill_start=2015 코호트의 floor 이전 갭(KR과 동일 이유·동일 마커 규약).
+    scheduler.add_job(
+        lambda: _run_with_retry("us_ohlcv_depth", _backfill_us_ohlcv_chunk, scheduler),
+        CronTrigger(minute="3-59/10"),           # :03,:13… — 다른 10분 청크들과 스태거
+        id="us_ohlcv_depth", replace_existing=True)
+
     # KR 시장지표(공식 KRX API, KRX_API_KEY) — 10분 청크 백필(가벼운 지표 넓게·옵션 풋콜 좁게)
     # + 09:30 일일 증분. KRX_API_KEY 미설정이면 feed가 no-op(무영향).
     scheduler.add_job(
@@ -1065,6 +1087,8 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_flow_refresh, daemon=True).start()
     _log.info("KR OHLCV 깊이 백필 초기 thread 시작")
     threading.Thread(target=_initial_kr_ohlcv_backfill, daemon=True).start()
+    _log.info("US OHLCV 깊이 백필 초기 thread 시작")
+    threading.Thread(target=_initial_us_ohlcv_backfill, daemon=True).start()
     _log.info("KRX 시장지표(공식API) 초기 백필 thread 시작")
     threading.Thread(target=_initial_krx_market_refresh, daemon=True).start()
     _log.info("기술적 지표 초기 fetch thread 시작")
