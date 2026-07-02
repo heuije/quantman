@@ -82,32 +82,34 @@ def capability_spec() -> dict:
             "use_for": ("선물 = 내재 레버리지·증거금 보유 포지션. 단발 디렉셔널(single+on_signal): 돌파/추세 "
                         "진입 후 보유, take_profit/stop_loss(%)·hold_days로 청산 — 보유형이라 일일 리밸런싱 "
                         "vol drag 없음. 추세추종/팩터: always(보유마스크)·scheduled. 숏은 scheduled+long_short "
-                        "(on_signal은 롱 전용). 만기 롤·연속물·통화환산은 현재 미적용(단일 연속 시계열·단일통화 "
-                        "가정). 신호·청산은 주식과 동일(가격% 기준). 자본=증거금·손익=가격변화×승수×계약수(엔진 처리)."),
+                        "(on_signal은 롱 전용). 만기 롤·연속물 조정은 KOSPI200 등 만기물 패널 보유 선물에 "
+                        "적용(기본 at_expiry·roll_method로 조절). 통화환산은 미적용(단일통화 가정). 신호·청산은 "
+                        "주식과 동일(가격% 기준). 자본=증거금·손익=가격변화×승수×계약수(엔진 처리)."),
         },
         # 선물 연속물 구성 — 선물 심볼에만 적용. 미지정이면 상품 카탈로그 기본값(보통 명시 불필요).
         "roll_method": [
-            {"value": "days_before_5", "does": "만기 5영업일 전 근월→차월 롤(보수적 기본)"},
+            {"value": "at_expiry", "does": "만기일까지 근월 보유 후 롤(무가공 기본 — 만기 정산 꼬리 포함)"},
+            {"value": "days_before_5", "does": "만기 5영업일 전 근월→차월 롤(왜곡된 만기 꼬리 회피)"},
             {"value": "days_before_1", "does": "만기 1영업일 전 롤(만기 직전까지 근월 보유)"},
             {"value": "volume_cross", "does": "거래량이 차월물로 역전될 때 롤(유동성 추종)"},
             {"value": "oi_cross", "does": "미결제약정이 차월물로 역전될 때 롤"},
         ],
         "series_adjust": [
-            {"value": "none", "does": "원본 이어붙임(롤 시점 가격 갭 유지)"},
-            {"value": "back_adjust", "does": "과거를 차감 조정해 연속 수익 일관(연속물 표준)"},
-            {"value": "ratio", "does": "비율 조정 연속물"},
+            {"value": "none", "does": "원본 이어붙임(롤 시점 가격 갭 유지 — 무가공)"},
+            {"value": "back_adjust", "does": "과거를 차감 조정(가격차 보존)"},
+            {"value": "ratio", "does": "비율 조정(수익률 정확 보존·양수 보존)"},
         ],
         "account_currency": [
             {"value": "KRW", "does": "원화 기준 손익(국내선물 — 무환산)"},
             {"value": "USD", "does": "달러 기준(해외선물). ⚠ 현재 엔진은 환율 환산 미구현 — 단일통화 백테스트만 정합."},
         ],
-        # ⚠ 정직성 — roll_method·series_adjust·roll_cost_pct·account_currency는 스키마가 받지만
-        # 엔진이 *아직 적용하지 않는다*(연속물 롤=E2 데이터 의존 보류, FX 환산 미구현). 사용자가
-        # 명시 요청할 때만 설정하되 설명에 "현재 미적용(예약)"을 밝히고, 임의로 채워 넣지 말 것.
-        "futures_continuous_note": ("⚠ roll_method·series_adjust·roll_cost_pct·account_currency는 "
-                                    "스키마 예약 필드 — 엔진이 아직 적용하지 않는다(롤=만기물 데이터 의존 "
-                                    "보류, 환율 환산 미구현). 선물 백테스트는 현재 연속물·단일통화 가정. "
-                                    "사용자가 명시 요청하면 설정하되 '현재 미적용'을 밝히고 임의 추가 금지."),
+        # ⚠ 정직성 — roll_method·series_adjust는 만기물 패널 보유 선물(KOSPI200)에 적용된다(S4/E2).
+        # roll_cost_pct는 패널의 실제 베이시스를 쓰므로 무시(데이터 우선). account_currency(FX)는
+        # 아직 미적용(환율 환산 미구현). 임의로 채워 넣지 말고 사용자 명시 요청 시만 설정한다.
+        "futures_continuous_note": ("roll_method·series_adjust는 만기물 패널 보유 선물(KOSPI200)에 "
+                                    "적용된다(기본 at_expiry+none). roll_cost_pct는 실제 베이시스 우선이라 "
+                                    "무시. account_currency(FX 환산)는 아직 미적용(단일통화 백테스트만 정합). "
+                                    "임의 추가 말고 사용자 명시 요청 시만 설정."),
         "direction": [
             {"value": "long", "does": "매수만", "use_for": "일반 롱 전략 · 선물 롱."},
             {"value": "short", "does": "매도(공매도)만", "use_for": "하락 베팅 · 인버스 · 선물 숏(차입 불필요, 대칭)."},

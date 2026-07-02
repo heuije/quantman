@@ -91,6 +91,38 @@ def _root_type_error(strategy: StrategyIR) -> str | None:
 
 # ── 디스패치 ──────────────────────────────────────────────────────────────────
 
+def _apply_futures_roll(strategy: StrategyIR, dataset: dict) -> dict:
+    """백테스트 선물 롤/조정 적용(E2) — SimSpec.roll_method/series_adjust가 지정되면 선물
+    심볼의 연속물을 만기물 패널에서 재-stitch해 dataset에서 교체한다.
+
+    롤을 데이터에 굽지 않고 백테스트 파라미터로 둔다: 미지정이면 기본 서빙뷰(카탈로그
+    at_expiry+none, 데이터 계층이 이미 생성)를 그대로 쓰고, 지정 시에만 패널에서 재구성.
+    패널 미수집이면 적용 불가 → 기본 서빙뷰 유지(honest boundary, 조용한 오적용 안 함).
+    param_grid(simulation.roll_method) 스윕도 호출마다 재-stitch되어 자연 지원.
+    """
+    sim = strategy.simulation
+    rm, sa = sim.roll_method, sim.series_adjust
+    if rm is None and sa is None:
+        return dataset
+    from ..data.futures_roll import build_continuous
+    from ..data_fetcher import load_futures_panel
+    from ..exec_defaults import instrument_spec, is_futures
+    out = None
+    for sym in list(dataset):
+        if not is_futures(sym):
+            continue
+        panel = load_futures_panel(sym)
+        if panel is None or panel.empty:
+            continue                                  # 패널 미수집 — 기본 서빙뷰 유지
+        cont = build_continuous(
+            panel, rm or instrument_spec(sym).default_roll or "at_expiry", sa or "none")
+        if not cont.empty:
+            if out is None:
+                out = dict(dataset)
+            out[sym] = cont
+    return out if out is not None else dataset
+
+
 def run_strategy_ir(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     """StrategyIR을 백테스트. entry.mode × signal 타입으로 경로 선택.
 
@@ -102,6 +134,7 @@ def run_strategy_ir(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> d
     err = _root_type_error(strategy)
     if err is not None:
         return _empty(err)
+    dataset = _apply_futures_roll(strategy, dataset)    # E2 — 선물 롤/조정(지정 시 패널서 재-stitch)
     # 통합 실행 엔진(§7.6)으로 위임 — 이벤트·스케줄을 단일 포지션 기반 일별 루프로 처리.
     # 이벤트 경로는 기존 run_backtest_ir/run_portfolio_ir와 동치(패리티 고정), 스케줄은
     # 정수주 회계로 전환(롯·현금드래그 반영). 진입×청산·롱숏·refill 임의 조합 가능.

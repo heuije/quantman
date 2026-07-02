@@ -8,7 +8,6 @@ import threading
 from contextlib import asynccontextmanager
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
@@ -467,6 +466,11 @@ def _backfill_krx_etf_chunk() -> None:
     _krx_backfill("etf", _KRX_LIGHT_WINDOW_DAYS, krx_openapi.fetch_etf_flow)
 
 
+def _backfill_krx_futures_panel_chunk() -> None:
+    from quant_core.data.feeds import krx_openapi
+    _krx_backfill("futures_panel", _KRX_LIGHT_WINDOW_DAYS, krx_openapi.fetch_futures_panel)
+
+
 def _refresh_krx_market() -> None:
     """일일 증분 — 최근 7일 재수집(공식 KRX API는 T+1 08시 갱신)·캐시 attach."""
     from datetime import date, timedelta
@@ -491,6 +495,7 @@ def _initial_krx_market_refresh():
         _backfill_krx_market_chunk()
         _backfill_krx_etf_chunk()
         _backfill_krx_putcall_chunk()
+        _backfill_krx_futures_panel_chunk()
     except Exception:
         _log.exception("KRX 시장지표 초기 청크 예외 — 10분 cron 재시도")
 
@@ -537,77 +542,25 @@ def _package_bundle() -> None:
 
 
 def _refresh_kospi_futures() -> None:
-    """KOSPI200 선물 일봉 — 번들 CSV로 깊은 과거(2010+) base 시드 + KIS 최근분 증분 append.
+    """KOSPI200 선물 — 공식 KRX API fut_bydd_trd 만기물 패널 최근분 증분 + 연속물 재구성.
 
-    데이터포인트당 소스 1개(과거=CSV·신규=KIS): 번들 정적 CSV
-    (data/static/kospi200_futures.csv = 투자닷컴 연속선물 2010+ 스냅샷)를 깊은 base로 쓰고, 그
-    마지막 일자 이후만 KIS(FHKIF03020100, 모의 OK)로 채운다. parquet이 이미 깊으면(2010까지) CSV
-    재시드를 건너뛰고 KIS 증분만 — 매 갱신 4천행 재기록 회피. KIS 미설정이어도 CSV 깊은 데이터로
-    백테스트는 동작(fail-safe).
-
-    ⚠ 미검증: 실제 KIS 연결(키·토큰·현행 최근월물 종목코드)은 자격증명 설정 시점에 검증 필요
-    (런북: docs/futures-ir-design.md F2).
-    ⚠ 한계: KIS 증분은 현행 최근월물 *원시가*라, 분기 롤 시 연속물(CSV) 대비 베이시스 점프 가능
-    (최근 꼬리 한정·소폭). 정밀 역조정(back-adjust)은 후속 과제.
+    진실원천 = 만기물별 일봉 패널(2010~, 날짜축 cursor 백필). 백테스트용 단일 연속물은 카탈로그
+    기본 롤(at_expiry)로 파생(rebuild_futures_continuous), 다른 롤/조정은 엔진이 백테스트 시
+    패널서 재-stitch(E2). KRX는 T+1(익일 08시) 확정 데이터라 미확정 당일 봉 문제가 없다(KIS
+    실시간과 달리 — 옛 F1 인시던트 무관). 라이브 체결가는 별도(Naver/브로커) — 이 시리즈는
+    백테스트/신호 전용. 선물분석 탭(futures_config 정적 CSV)은 이 경로와 무관(무변경).
     """
-    import os
+    from datetime import date, timedelta
 
-    from quant_core import data_fetcher as dfm
-
-    from .kis_data_client import get_kis_data_client
-    from .kis_futures_master import resolve_kospi200_front_month
-
-    sym = "코스피200선물"
-    csv_path = Path(__file__).resolve().parent / "data" / "static" / "kospi200_futures.csv"
-
-    # 1) 깊은 base — parquet이 없거나·얕거나·내부 공백이면 CSV로 재구축(덮어쓰기).
-    existing = dfm._load_existing(sym)
-    # ⚠ 내부 공백도 재시드 트리거 — min-date(깊이)만 보면 '깊지만 구멍난' parquet(예: 2021/2023/2024
-    # 구간 결손)이 영구 미복구된다. 인사이트 엔진 백테스트가 그 연도 거래0이던 근본 — 선물분석 탭은
-    # 같은 CSV를 직독해 멀쩡한데 엔진만 parquet 캐시가 갈라졌다.
-    gappy = bool(csv_path.exists() and dfm.csv_coverage_gap(existing, csv_path))
-    needs_deep = (existing is None or existing.empty
-                  or existing.index.min() > datetime(2010, 12, 31) or gappy)
-    if gappy and existing is not None and not existing.empty:
-        _log.warning("KOSPI200 선물 parquet 내부 공백 감지(CSV 대비 결손) — CSV 재시드로 복구")
-    if needs_deep:
-        if not csv_path.exists():
-            _log.error("KOSPI200 선물 깊은 시드 실패 — 번들 CSV 없음: %s", csv_path)
-            return
-        existing = dfm.seed_from_clean_csv(sym, csv_path)
-        _log.info("KOSPI200 선물 깊은 시드(CSV): 총 %d행 (%s~%s)",
-                  len(existing), existing.index[0].date(), existing.index[-1].date())
-
-    # 2) KIS 최근분 증분 — 마지막 보유 일자 이후 → 오늘. 키/코드 없으면 CSV base로 운영(fail-safe).
-    client = get_kis_data_client()
-    if client is None:
-        _log.info("KOSPI200 선물 KIS 증분 skip(데이터키 미설정) — CSV 깊은 데이터로 운영")
-        data_cache.invalidate()
+    from quant_core.data.feeds import krx_openapi
+    if not krx_openapi.is_active():
+        _log.info("KOSPI200 선물 refresh skip(KRX_API_KEY 미설정)")
         return
-    # 종목코드: env 명시 override가 있으면 그것, 없으면 공개 마스터로 최근월물 자동 해석(분기 롤 자동).
-    # 클라이언트가 있을 때만 해석(마스터 네트워크 다운로드를 키 없을 땐 생략).
-    iscd = os.getenv("QP_KIS_KOSPI_FUT_ISCD", "").strip() or (resolve_kospi200_front_month() or "")
-    if not iscd:
-        _log.info("KOSPI200 선물 KIS 증분 skip(최근월물 코드 해석 실패) — CSV 깊은 데이터로 운영")
-        data_cache.invalidate()
-        return
-    # F1(2026-06-11 인시던트): 미확정 당일 봉 차단 — KR선물 정규장 마감(15:45 KST) 전엔
-    # 전일까지만 수집한다. 형성 중 봉이 canonical에 들어가면 '전일 종가' 의미가 깨지고
-    # 장중에 재생성된 preview·백테스트가 미확정 값을 본다. 마감 후(16시~)엔 당일 확정 봉 수집.
-    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
-    end_day = now_kst if now_kst.hour >= 16 else now_kst - timedelta(days=1)
-    today = end_day.strftime("%Y%m%d")
-    since = existing.index.max().strftime("%Y%m%d")
-    if since > today:
-        # 과도기(이전 코드가 형성 중 당일 봉을 이미 저장) — 마감 후 cron이 확정 봉으로 덮어쓴다
-        _log.info("KOSPI200 선물 KIS 증분 보류(장 마감 전, 당일 봉 미확정)")
-        data_cache.invalidate()
-        return
-    merged = dfm.fetch_kis_futures_daily(sym, client.request, iscd=iscd, start=since, end=today)
-    rng = f"{merged.index[0].date()}~{merged.index[-1].date()}" if len(merged) else "-"
-    _log.info("KOSPI200 선물 KIS 증분 append: 총 %d행 (%s, 코드 %s, since %s)",
-              len(merged), rng, iscd, since)
+    end = date.today()
+    s = (end - timedelta(days=7)).strftime("%Y%m%d")     # 최근 7일 재수집(T+1 확정 반영)
+    res = krx_openapi.fetch_futures_panel(s, end.strftime("%Y%m%d"))
     data_cache.invalidate()
+    _log.info("[altdata] KOSPI200 선물 패널 증분 %s~%s: %s", s, end, res.get("saved"))
 
 
 def _refresh_global_dataset() -> None:
@@ -943,11 +896,11 @@ def _build_scheduler() -> BackgroundScheduler:
             CronTrigger(hour=_hh, minute=_mm),
             id=f"industry_prices_{_hh}_{_mm}", replace_existing=True)
 
-    # 16:00 — KOSPI200 선물 일봉 증분 (KIS, 선물 정규장 마감 직후). env(QP_KIS_DATA_APPKEY·
-    # QP_KIS_KOSPI_FUT_ISCD) 미설정이면 fail-safe no-op이라 기존 갱신에 무영향.
+    # 09:35 — KOSPI200 선물 만기물 패널 최근분 증분 + 연속물 재구성 (공식 KRX API, T+1 08시
+    # 갱신 후). KRX_API_KEY 미설정이면 fail-safe no-op. 백필은 krx_futures_panel_chunk(10분)가 담당.
     scheduler.add_job(
         lambda: _run_with_retry("kospi_futures", _refresh_kospi_futures, scheduler),
-        CronTrigger(hour=16, minute=0),
+        CronTrigger(hour=9, minute=35),
         id="kospi_futures", replace_existing=True)
 
     # 17:00 — NAVER 펀더멘털 (publish 비공개, 보수적 추정)
@@ -1049,6 +1002,10 @@ def _build_scheduler() -> BackgroundScheduler:
         lambda: _run_with_retry("krx_etf_chunk", _backfill_krx_etf_chunk, scheduler),
         CronTrigger(minute="6-59/10"),           # :06,:16… 스태거 (ETF AUM/flow)
         id="krx_etf_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("krx_futures_panel_chunk", _backfill_krx_futures_panel_chunk, scheduler),
+        CronTrigger(minute="9-59/10"),           # :09,:19… 스태거 (선물 만기물 패널 2010 백필)
+        id="krx_futures_panel_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("krx_market_daily", _refresh_krx_market, scheduler),
         CronTrigger(hour=9, minute=30),          # 공식 KRX API T+1 08시 갱신 후
