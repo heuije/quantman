@@ -1,33 +1,17 @@
 /**
- * 내 전략 — 통합 카드뷰 + 필터 + 상세 + 실전 승격 모달.
+ * 내 전략 — 백테스트 연구 라이브러리(재설계 2차).
  *
- * 모의↔실전을 별도 페이지로 나누는 대신 한 페이지의 카드 그리드 + 배지로 통합.
- * 헤더 모의/실전 토글과 필터가 동기화돼 사용자가 같은 정신모델로 이동.
- *
- * 승격 모달은 사용자가 진짜 돈을 거는 순간 — 가장 정성스럽게 만들어야 한다.
- * 모의 성과 요약 + 자본 비중 입력 + 명시적 확인의 3단계.
+ * 자동매매 연동 이전, 전략을 백테스트로 연구·검증하는 탭. 카드는 백테스트 성과
+ * (총수익·CAGR·MDD·샤프)만 보여준다. 라이브 평가금액·손익·보유는 트레이딩 탭 전용
+ * (역할 분리). 각 전략의 최신 백테스트를 병렬 fetch해 카드에 바인딩.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
-import type { AccountHandle, IrStrategyDef, StrategyDef, StrategyRow, SyncSnapshot } from "../types";
+import type { BacktestRunSummary, IrStrategyDef, StrategyDef, StrategyRow } from "../types";
 import { parseScreenerKey, parseTradeSymbols } from "../types";
-import { accountLabel } from "../lib/accountLabel";
-
-// IR 전략 카드 표시용 한글 라벨 (operand-free, 표시 전용).
-const IR_SIZING_LABEL: Record<string, string> = {
-  equal_weight: "동일가중", signal_proportional: "신호비례", vol_inverse: "변동성 역가중",
-  target_vol: "목표변동성", fixed_weight: "정적 비중", fixed_amount: "종목당 고정금액",
-  pct_cash: "자본대비 %",
-};
-const IR_ENTRY_LABEL: Record<string, string> = {
-  on_signal: "이벤트", scheduled: "정기 리밸런싱", always: "상시",
-};
-const IR_DIR_LABEL: Record<string, string> = {
-  long: "롱", short: "숏", long_short: "롱숏중립",
-};
 
 /** IR 유니버스를 한 줄로 요약. */
 function summarizeIrUniverse(def: IrStrategyDef): string {
@@ -50,36 +34,46 @@ function summarizeTargets(tradeSymbol: string): string {
 }
 
 type Filter = "all" | "paper" | "live" | "draft";
-
 const FILTER_LABEL: Record<Filter, string> = {
   all: "전체", paper: "모의", live: "실전", draft: "초안",
 };
 
-const pnl = (v?: number | null) =>
-  v == null ? "-" : (v >= 0 ? "+" : "") + v.toLocaleString() + "원";
-const pct = (v?: number | null) =>
-  v == null ? "-" : (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
+// 백테스트 메트릭 스케일 — total_return·cagr·max_drawdown는 분수(→×100 표시), sharpe는 원값.
+// (StrategyDetail 백테스트 내역과 동일 규약. ⚠ 라이브 win_rate가 이미 %였던 것과 반대.)
+const btPct = (v: number | null | undefined) =>
+  v == null ? "—" : (v >= 0 ? "+" : "") + (v * 100).toFixed(1) + "%";
+const btCls = (v: number | null | undefined) => (v == null ? "" : v >= 0 ? "pos" : "neg");
+const shortDate = (iso: string) => iso.slice(0, 10);
 
 export default function Strategies() {
   const navigate = useNavigate();
   const [rows, setRows] = useState<StrategyRow[]>([]);
-  const [snap, setSnap] = useState<SyncSnapshot | null>(null);
+  const [btByStrategy, setBtByStrategy] = useState<Record<number, BacktestRunSummary | null>>({});
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
-  const [filter, setFilter] = useState<Filter>("paper");
+  const [filter, setFilter] = useState<Filter>("all");
 
   function load() {
     setErr("");
-    Promise.all([
-      api.listStrategies(),
-      api.snapshot().catch(() => null),
-    ])
-      .then(([rs, s]) => { setRows(rs); setSnap(s); })
+    api.listStrategies()
+      .then(async (rs) => {
+        setRows(rs);
+        // 전략별 최신 백테스트(병렬 · 요약 엔드포인트라 저비용). 실패한 전략은 null.
+        const entries = await Promise.all(rs.map(async (s) => {
+          try {
+            const bts = await api.listStrategyBacktests(s.id);
+            const latest = bts.slice().sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+            return [s.id, latest ?? null] as const;
+          } catch {
+            return [s.id, null] as const;
+          }
+        }));
+        setBtByStrategy(Object.fromEntries(entries));
+      })
       .catch((e) => setErr((e as Error).message))
       .finally(() => setLoaded(true));
   }
-  // 데이터 패칭은 의도적 effect — react-hooks/set-state-in-effect는 적절한 dependencies로
-  // 해소되지 않는 사용자 트리거 fetch에 대해선 disable.
+  // 데이터 패칭 effect — 사용자 트리거 fetch라 정적 규칙 비활성.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(load, []);
 
@@ -95,16 +89,12 @@ export default function Strategies() {
     draft: rows.filter((r) => r.run_mode === "draft").length,
   }), [rows]);
 
-  const strategyPnl = snap?.payload.strategy_pnl;
-  const positions = snap?.payload.positions ?? [];
-  // P5-4 — 비민감 계좌 핸들(로컬앱이 snapshot에 실어 보고). 카드에 바인딩 계좌 표시용.
-  const accountHandles = snap?.payload.health?.account_handles ?? [];
-
   return (
     <div>
       <h1 className="page-title">내 전략</h1>
       <p className="page-sub">
-        전략을 모의로 검증하고, 충분히 안정되면 실전으로 승격하세요.
+        백테스트로 연구·검증하고, 준비되면 트레이딩에 연동하세요.
+        <span className="muted"> (실행 손익은 트레이딩 탭에서)</span>
       </p>
 
       {err && <div className="error">{err}</div>}
@@ -115,7 +105,6 @@ export default function Strategies() {
           <div className="empty-title">아직 저장된 전략이 없습니다</div>
           <p className="muted">
             전략 연구소에서 블록을 조립해 신호·진입·청산을 만들고 백테스트로 검증한 뒤 저장하세요.
-            저장한 전략을 모의로 두면 로컬앱이 매일 09:00 자동 실행합니다.
           </p>
           <Link to="/lab"><button>전략 연구소로 이동</button></Link>
         </div>
@@ -123,138 +112,89 @@ export default function Strategies() {
 
       {loaded && rows.length > 0 && (
         <>
-          {/* 필터 탭 */}
           <div className="filter-tabs">
-            {(["all", "paper", "live", "draft"] as const).map((f) => (
-              <button
-                key={f}
-                className={"filter-tab" + (filter === f ? " on" : "")}
-                onClick={() => setFilter(f)}
-              >
+            {(["all", "live", "paper", "draft"] as const).map((f) => (
+              <button key={f} className={"filter-tab" + (filter === f ? " on" : "")}
+                onClick={() => setFilter(f)}>
                 {FILTER_LABEL[f]} <span className="count">{counts[f]}</span>
               </button>
             ))}
           </div>
 
           {filtered.length === 0 && (
-            <div className="panel empty">
-              {FILTER_LABEL[filter]} 모드에 전략이 없습니다
-            </div>
+            <div className="panel empty">{FILTER_LABEL[filter]} 모드에 전략이 없습니다</div>
           )}
 
-          {/* 카드 그리드 */}
           {filtered.length > 0 && (
             <div className="strategy-grid">
               {filtered.map((s) => (
-                <StrategyCard
-                  key={s.id}
-                  strategy={s}
-                  pnl={strategyPnl?.by_strategy.find(r => r.strategy === s.name)}
-                  positionCount={positions.filter(p => p.strategy_name === s.name).length}
-                  handles={accountHandles}
-                  onClick={() => navigate(`/strategies/${s.id}`)}
-                />
+                <StrategyCard key={s.id} strategy={s}
+                  backtest={btByStrategy[s.id] ?? null}
+                  onClick={() => navigate(`/strategies/${s.id}`)} />
               ))}
             </div>
           )}
         </>
       )}
-
-      {/* 카드 클릭 → /strategies/:id 상세 페이지로 navigate.
-          (Phase 59: 사이드 슬라이드 DetailPanel + PromoteModal은 detail로 이전) */}
     </div>
   );
 }
 
-function StrategyCard({
-  strategy: s, pnl: row, positionCount, handles, onClick,
-}: {
+function StrategyCard({ strategy: s, backtest, onClick }: {
   strategy: StrategyRow;
-  pnl?: { pnl: number; today_pnl: number; trades: number; win_rate: number };
-  positionCount: number;
-  handles: AccountHandle[];
+  backtest: BacktestRunSummary | null;
   onClick: () => void;
 }) {
   const isIr = s.engine === "ir";
-  const account = accountLabel(s.account_ref, handles);
-
-  // 카드 본문(대상·요약)을 engine별로 산출. IR row는 operand 필드가 없으므로 분리.
   let target: ReactNode;
-  let meta: ReactNode;
   if (isIr) {
-    const def = s.definition as IrStrategyDef;
-    const p = def.position ?? ({} as IrStrategyDef["position"]);
-    target = <>{summarizeIrUniverse(def)}</>;
-    meta = (
-      <>
-        {IR_ENTRY_LABEL[p.entry?.mode ?? ""] ?? "이벤트"}
-        {" · "}{IR_DIR_LABEL[p.direction ?? "long"] ?? "롱"}
-        {" · "}{IR_SIZING_LABEL[p.sizing?.mode ?? ""] ?? "동일가중"}
-      </>
-    );
+    target = <>{summarizeIrUniverse(s.definition as IrStrategyDef)}</>;
   } else {
-    const od = s.definition as StrategyDef;   // 레거시 operand row
-    const buyN = od.buy?.conditions?.length ?? 0;
-    // Phase 32 — sell_rules 우선, legacy sell fallback
-    const sellExtraN = od.sell_rules?.conditions?.length
-      ?? od.sell?.conditions?.length ?? 0;
-    const sr = od.sell_rules ?? {};
-    const sellRuleCount = [sr.take_profit, sr.stop_loss, sr.trail_pct,
-                            sr.trail_atr_mult, sr.hold_days]
-      .filter((v) => v != null).length + sellExtraN;
+    const od = s.definition as StrategyDef;
     const screenerKey = parseScreenerKey(od.trade_symbol);
     target = screenerKey
       ? <>자동 선택: <code>{screenerKey}</code></>
       : <>{summarizeTargets(od.trade_symbol)}</>;
-    meta = <>매수 {buyN} · 매도 {sellRuleCount} 규칙 · 자본 {od.amount_pct}%</>;
   }
+  const m = backtest?.metrics ?? null;
+  const connected = s.run_mode === "live" || s.run_mode === "paper";
 
   return (
-    <button className="strategy-card" onClick={onClick}>
-      <div className="sc-head">
-        <span className="sc-name">{s.name}</span>
-        <span className={"sc-badge " + s.run_mode}>
-          {s.run_mode === "live" ? "실전"
-            : s.run_mode === "paper" ? "모의"
-            : "초안"}
-        </span>
-      </div>
-      <div className="sc-target">{target}</div>
-      <div className="sc-meta">{meta}</div>
-      <div className="sc-meta" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        {account ? (
-          <>
-            <span>계좌: {account.nickname}</span>
-            <span className={"sc-badge " + account.mode}>
-              {account.mode === "live" ? "실전" : "모의"}
-            </span>
-          </>
+    <button className="strat-card" onClick={onClick}>
+      <div className="strat-head">
+        <span className="strat-name">{s.name}</span>
+        {s.run_mode === "live" ? (
+          <span className="strat-status connected"><i className="dot dot-green" />트레이딩 연동됨</span>
         ) : (
-          <span>계좌 미선택</span>
+          <span className={"mode-badge " + (s.run_mode === "paper" ? "paper" : "draft")}>
+            {s.run_mode === "paper" ? "모의" : "초안"}
+          </span>
         )}
       </div>
-      <div className="sc-stats">
-        <div className="sc-stat">
-          <span className="sc-stat-label">누적 P&L</span>
-          <span className={"sc-stat-value " +
-            (row?.pnl == null ? "" : row.pnl >= 0 ? "pos" : "neg")}>
-            {row ? pnl(row.pnl) : "-"}
-          </span>
+
+      <div className="strat-target muted">🎯 {target}</div>
+
+      {m ? (
+        <div className="strat-bt">
+          <div><span className="muted">총수익</span><b className={btCls(m.total_return)}>{btPct(m.total_return)}</b></div>
+          <div><span className="muted">CAGR</span><b className={btCls(m.cagr)}>{btPct(m.cagr)}</b></div>
+          <div><span className="muted">MDD</span><b className="neg">{btPct(m.max_drawdown)}</b></div>
+          <div><span className="muted">샤프</span><b>{m.sharpe != null ? m.sharpe.toFixed(2) : "—"}</b></div>
         </div>
-        <div className="sc-stat">
-          <span className="sc-stat-label">보유</span>
-          <span className="sc-stat-value">
-            {positionCount > 0 ? `${positionCount}종목` : "없음"}
-          </span>
-        </div>
-        <div className="sc-stat">
-          <span className="sc-stat-label">승률</span>
-          <span className="sc-stat-value">
-            {row?.win_rate != null ? pct(row.win_rate * 100) : "-"}
-          </span>
-        </div>
+      ) : (
+        <div className="strat-bt-empty muted">아직 백테스트를 실행하지 않았습니다</div>
+      )}
+
+      <div className="strat-foot muted">
+        <span>
+          {backtest?.start && backtest?.end
+            ? `백테스트 ${shortDate(backtest.start)}~${shortDate(backtest.end)} · ` : ""}
+          {backtest ? `실행 ${shortDate(backtest.created_at)}` : "백테스트 필요"}
+        </span>
+        <span className="strat-hint">
+          {connected ? "실행 현황은 트레이딩 →" : s.account_ref ? "연동 대기" : "계좌 미연동"}
+        </span>
       </div>
     </button>
   );
 }
-
