@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pandas as pd
+
 from quant_core.data.feeds import krx_openapi as kx
 from quant_core import data_fetcher as _df
 
@@ -134,3 +136,57 @@ def test_putcall_saves(monkeypatch, tmp_path):
     assert res["saved"]["옵션풋콜비율"] == 2
     pc = _df._load_existing("옵션풋콜비율")
     assert pc["Close"].iloc[0] == 0.77
+
+
+# ── 만기물 패널 (S4) — 라이브 검증된 필드(2026-06-26) ──────────────────────────
+_FUT_PANEL_ROWS = [
+    {"PROD_NM": "코스피200 선물", "ISU_NM": "코스피200 F 202609 (주간)", "TDD_OPNPRC": "1450",
+     "TDD_HGPRC": "1460", "TDD_LWPRC": "1440", "TDD_CLSPRC": "1455", "SETL_PRC": "1455",
+     "ACC_TRDVOL": "180000", "ACC_OPNINT_QTY": "145000"},
+    {"PROD_NM": "코스피200 선물", "ISU_NM": "코스피200 F 202609 (야간)", "TDD_CLSPRC": "1456",
+     "ACC_OPNINT_QTY": "999"},                                    # 야간 제외
+    {"PROD_NM": "코스피200 선물", "ISU_NM": "코스피200 SP 2609-2612 (주간)", "TDD_CLSPRC": "12"},  # 스프레드 제외
+    {"PROD_NM": "미니코스피200 선물", "ISU_NM": "미니코스피200 F 202609 (주간)", "TDD_CLSPRC": "1455"},  # 타상품 제외
+    {"PROD_NM": "코스피200 선물", "ISU_NM": "코스피200 F 202612 (주간)", "TDD_CLSPRC": "1465",
+     "SETL_PRC": "1465", "ACC_TRDVOL": "20", "ACC_OPNINT_QTY": "8000"},
+]
+
+
+def test_extract_futures_panel_outright_only():
+    p = kx.extract_futures_panel(_FUT_PANEL_ROWS, "코스피200 선물")
+    assert sorted(x["contract"] for x in p) == ["202609", "202612"]   # 야간·SP·미니 제외
+    front = next(x for x in p if x["contract"] == "202609")
+    assert front["Close"] == 1455.0 and front["High"] == 1460.0 and front["OI"] == 145000.0
+
+
+def test_fetch_futures_panel_saves_and_rebuilds(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(_df, "FUTURES_PANEL_DIR", tmp_path / "futures_panel")
+
+    def fake(svc, bd, timeout=30):
+        return _FUT_PANEL_ROWS
+
+    res = kx.fetch_futures_panel("20260625", "20260626", fetch=fake)   # 목·금 2일
+    assert res["ok"] and res["rows"] == 4                              # 2계약 × 2일
+    panel = _df.load_futures_panel("코스피200선물")
+    assert sorted(panel["contract"].unique()) == ["202609", "202612"]
+    cont = _df._load_existing("코스피200선물")                          # 연속물 서빙뷰 파생됨
+    assert not cont.empty and cont["Close"].iloc[-1] == 1455.0         # 살아있는 최근월물(202609)
+
+
+def test_rebuild_skips_when_panel_shallower_than_existing(monkeypatch, tmp_path):
+    """마이그레이션 안전: 얕은 패널(백필 진행중)이 기존 깊은 시리즈(옛 CSV 2010~)를 덮어쓰지 않음.
+    (덮어쓰면 백필이 2010 도달 전까지 선물 백테스트가 얕은 데이터로 회귀)"""
+    _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(_df, "FUTURES_PANEL_DIR", tmp_path / "futures_panel")
+    deep = pd.DataFrame({"Open": 1.0, "High": 1.0, "Low": 1.0, "Close": 1.0, "Volume": 0.0},
+                        index=pd.bdate_range("2010-01-04", "2010-03-01"))
+    _df._save("코스피200선물", deep)                                    # 기존 깊은 시리즈
+    panel = pd.DataFrame({"contract": "202609", "Open": 1400.0, "High": 1400.0, "Low": 1400.0,
+                          "Close": 1400.0, "Settle": 1400.0, "Volume": 100.0, "OI": 100.0},
+                         index=pd.to_datetime(["2026-06-25", "2026-06-26"]))
+    _df.save_futures_panel("코스피200선물", panel)                      # 얕은 패널(최근분만)
+
+    assert _df.rebuild_futures_continuous("코스피200선물") == 0         # 얕음 → skip
+    kept = _df._load_existing("코스피200선물")
+    assert kept.index.min() == pd.Timestamp("2010-01-04")             # 기존 깊은 시리즈 유지

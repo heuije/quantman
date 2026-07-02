@@ -149,14 +149,15 @@ class SimSpec(BaseModel):
     start: Optional[str] = None
     end: Optional[str] = None
     # ── 선물 연속물 구성 (equity 심볼이면 무시) ──────────────────────────────────
-    # 선물은 만기물 체인 → 단일 연속 시계열로 이어붙여 백테스트한다. 미지정(None)이면 상품
-    # 카탈로그(exec_defaults.instrument_spec)의 default_roll/조정을 사용. 결과에 영향하는
-    # 백테스트 선택이라 param_grid(path="simulation.roll_method")로 민감도 sweep 가능.
-    #   roll_method: 언제 근월→차월로 옮겨탈지. days_before_N=만기 N영업일 전, volume_cross=
-    #                거래량 역전 시, oi_cross=미결제 역전 시.
+    # 선물은 만기물 체인 → 단일 연속 시계열로 이어붙여 백테스트한다. 만기물 패널 보유 선물
+    # (KOSPI200)은 엔진이 이 설정으로 패널에서 연속물을 재구성한다(E2). 미지정(None)이면 상품
+    # 카탈로그(exec_defaults.instrument_spec)의 default_roll(=at_expiry)·none을 사용. 결과에
+    # 영향하는 백테스트 선택이라 param_grid(path="simulation.roll_method")로 민감도 sweep 가능.
+    #   roll_method: 언제 근월→차월로 옮겨탈지. at_expiry=만기일까지 근월 보유(무가공),
+    #                days_before_N=만기 N영업일 전, volume_cross=거래량 역전 시, oi_cross=미결제 역전 시.
     #   series_adjust: 롤 시점 가격 점프 처리. none=원본 이어붙임(갭 유지), back_adjust=과거를
-    #                  차감 조정(연속 수익 일관), ratio=비율 조정.
-    roll_method: Optional[Literal["days_before_5", "days_before_1",
+    #                  차감 조정(가격차 보존), ratio=비율 조정(수익률 정확 보존).
+    roll_method: Optional[Literal["at_expiry", "days_before_5", "days_before_1",
                                   "volume_cross", "oi_cross"]] = None
     series_adjust: Optional[Literal["none", "back_adjust", "ratio"]] = None
     # 만기물별 term-structure 데이터가 없을 때의 정직한 롤비용 폴백(%/롤, 양수=비용).

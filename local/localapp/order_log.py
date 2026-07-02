@@ -54,17 +54,21 @@ def _append(path, obj: dict) -> None:
 def log_order(event: str, symbol: str, side: str, qty: int,
               order_no: str = "", intended_price: float | None = None,
               limit_price: float | None = None, fill_price: float | None = None,
-              strategy_name: str = "", reason: str = "",
+              strategy_name: str = "", reason: str = "", kind: str = "",
               extra: dict | None = None) -> None:
     """주문 이벤트 한 건을 orders.jsonl에 append.
 
     event: submitted | filled | partial | cancelled | rejected | timeout
+    kind: "진입" | "청산" | "" — 발주 의미(진입/청산). side(매수/매도)만으론 숏 진입=매도·
+      롱 청산=매도라 구분 불가하므로 발주 메서드가 명시(주문 내역 화면 행 색 구분용). 구버전
+      기록엔 이 필드가 없어 화면이 사유(reason)로 폴백 추론한다.
     """
     row = {
         "ts": _now(), "event": event, "side": side, "symbol": symbol,
         "qty": int(qty), "order_no": order_no,
         "intended_price": intended_price, "limit_price": limit_price,
         "fill_price": fill_price, "strategy": strategy_name, "reason": reason,
+        "kind": kind,
     }
     if extra:
         row.update(extra)
