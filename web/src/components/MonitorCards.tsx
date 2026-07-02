@@ -12,10 +12,10 @@ import type {
 } from "../types";
 import { fmt2, wonReadable } from "../format";
 
-// 파이 슬라이스 컬러 — DESIGN.md 따뜻한 톤. accent → 변주.
+// 파이 슬라이스 컬러 — DESIGN.md §8 차트 규칙(네이비 계열·회색 금지·골드는 선 전용).
 const PIE_COLORS = [
-  "#c4982b", "#64748b", "#94a3b8", "#8a6a14", "#64748b",
-  "#e8a87c", "#c38a5a", "#8b6f4e", "#a89077", "#d4b896",
+  "#264a85", "#3a629f", "#1d3a63", "#5578b0", "#0f2342",
+  "#4a6fa5", "#16305a", "#6b8cc0", "#274b8a", "#12294d",
 ];
 
 // ── 1. 위험 한도 banner — 임계 미달 평시엔 표시하지 않는다 ───────────────────
@@ -153,7 +153,9 @@ export function PositionDetailCards({
               </tr>
             </thead>
             <tbody>
-              {positions.map((p) => {
+              {[...positions]
+                .sort((a, b) => (b.cur_return_pct ?? 0) - (a.cur_return_pct ?? 0))
+                .map((p) => {
                 const ret = p.cur_return_pct ?? 0;
                 const ledger = ledgerByKis[p.symbol];
                 const drift = ledger !== undefined ? ledger - p.qty : 0;

@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import {
-  HealthCard, MarketBar,
-  PositionDetailCards, RiskBanner, StrategyCardGrid,
-} from "../components/MonitorCards";
+import { MarketBar, PositionDetailCards } from "../components/MonitorCards";
+import { PerformanceHero, StatusStrip } from "../components/MonitorHero";
+import { StrategyContribution, TodayActivity } from "../components/MonitorActivity";
 import { CsvExportBar } from "../components/MonitorTools";
 import TradeOutcomes from "../components/TradeOutcomes";
 import TradingTimeline from "../components/TradingTimeline";
@@ -100,10 +99,6 @@ export default function Monitor() {
   const positions = p?.positions ?? [];
   const equityNow = p?.balance?.total_eval;
   const autoStatus = p?.auto_status;   // running | paused | stopped (실시간 동기화)
-  // 청산 불가 고아(삭제·구버전 전략 보유분) — 최신 사이클 decisions에서 종목 추출.
-  const orphanSyms = (p?.decisions ?? [])
-    .filter((d) => d.action === "unparseable_orphan")
-    .map((d) => d.symbol);
   const actionDisabled = busy || !paired;
   const pairTooltip = paired ? undefined : "기기 페어링 후 활성화됩니다";
 
@@ -119,126 +114,45 @@ export default function Monitor() {
       {err && <div className="error">{err}</div>}
       {!loaded && <p className="muted">불러오는 중…</p>}
 
-      {/* 자동매매 타임라인 — 다음 cycle·preview까지 남은 시간 + 누락 가시화 */}
-      {loaded && <TradingTimeline />}
+      {loaded && !paired && <PairingOnboarding />}
 
-      {/* 시장 컨텍스트 */}
-      <MarketBar ctx={market} />
-
-      {/* 위험 한도 banner — usagePct>=80 또는 drawdown<=-10일 때만 표시 */}
-      {paired && <RiskBanner ks={ks} dd={p?.drawdown} equityNow={equityNow} />}
-
-      {/* Kill switch banner */}
-      {ks?.active && (
-        <div className="panel" style={{
-          borderLeft: "4px solid var(--red)",
-          background: "var(--red-soft)", marginBottom: 14,
-        }}>
-          <div style={{ display: "flex", alignItems: "center",
-                          justifyContent: "space-between", gap: 12 }}>
-            <div>
-              <div style={{ fontWeight: 700, color: "var(--red)" }}>
-                ⚠ Kill Switch 활성
-              </div>
-              <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
-                사유: {ks.reason || "(없음)"} ·{" "}
-                {ks.since ? new Date(ks.since).toLocaleString() : ""}
-              </div>
-            </div>
-            <button
-              className="ghost sm" disabled={busy}
-              onClick={() => send("RESET_KILL_SWITCH")}
-              style={{ borderColor: "var(--red)", color: "var(--red)" }}
-            >
-              해제
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* 미국 실시간 시세 미신청 경고 — 장중 실시간 손절 미제공 */}
-      {summary?.us_realtime_unavailable && (
-        <div className="panel" style={{
-          /* W-07 — amber 하드코딩 제거. 토큰만 사용(다른 ReconciliationPanel과 동일). */
-          borderLeft: "4px solid var(--amber)",
-          background: "var(--amber-soft)", marginBottom: 14,
-        }}>
-          <div style={{ fontWeight: 700, color: "var(--amber)" }}>
-            ⚠ 미국 실시간 손절 미제공
-          </div>
-          <div className="muted" style={{ fontSize: 13, marginTop: 4, lineHeight: 1.6 }}>
-            미국 해외 실시간 시세가 수신되지 않습니다. KIS HTS <b>[7781] 해외 실시간
-            시세 신청</b> 전까지 미국 종목의 장중 실시간 손절·익절·트레일링이
-            동작하지 않습니다(장 마감 후 사이클에서만 청산 평가). 국내 주식은 영향 없음.
-          </div>
-        </div>
-      )}
-
-      {/* 청산 불가 고아 경고 — 삭제·구버전 전략 보유분(자동 손절·익절 미동작) */}
-      {(summary?.n_unparseable_orphan ?? 0) > 0 && (
-        <div className="panel" style={{
-          borderLeft: "4px solid var(--amber)",
-          background: "var(--amber-soft)", marginBottom: 14,
-        }}>
-          <div style={{ fontWeight: 700, color: "var(--amber)" }}>
-            ⚠ 청산 규칙을 해석할 수 없는 보유 종목 {summary?.n_unparseable_orphan}개
-          </div>
-          <div className="muted" style={{ fontSize: 13, marginTop: 4, lineHeight: 1.6 }}>
-            소속 전략이 삭제됐거나 구버전 형식이라, 보유분의 자동 손절·익절·매도조건이
-            동작하지 않습니다{orphanSyms.length > 0 ? ` (${orphanSyms.join(", ")})` : ""}.
-            안전하게 HTS/MTS에서 직접 매도해 정리하세요.
-          </div>
-        </div>
-      )}
-
-      {/* Action bar */}
-      <div className="panel" style={{ display: "flex", flexWrap: "wrap",
-                                         gap: 8, alignItems: "center" }}>
-        <strong style={{ marginRight: 8 }}>액션:</strong>
-        {paired && autoStatus && (
-          <span className="muted" style={{ fontSize: 12, marginRight: 4 }}
-                title="로컬앱 자동매매 스케줄러 상태(실시간 동기화)">
-            {autoStatus === "running" ? "🟢 자동매매 실행 중"
-              : autoStatus === "paused" ? "⏸ 일시정지됨"
-              : "⚪ 정지됨"}
-          </span>
-        )}
-        <button className="ghost sm" onClick={() => send("PAUSE_AUTO")}
-                disabled={actionDisabled} title={pairTooltip}>
-          일시정지
-        </button>
-        <button className="ghost sm" onClick={() => send("RESUME_AUTO")}
-                disabled={actionDisabled} title={pairTooltip}>
-          재개
-        </button>
-        <button className="ghost sm" onClick={() => {
-          if (confirm("정말 모든 보유 종목을 매도하고 신규 매수를 중지하시겠습니까?")) {
-            send("LIQUIDATE_ALL");
-          }
-        }} disabled={actionDisabled} title={pairTooltip}
-                style={{ color: "var(--red)" }}>
-          전량 매도 후 매수 중지
-        </button>
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-          {paired && <HealthCard snapAt={snap?.received_at}
-                                  heartbeatAt={snap?.last_heartbeat_at}
-                                  health={p?.health} />}
-          <span className="muted" style={{ fontSize: 12 }}>
-            {targetDevice
-              ? `대상 기기: ${targetDevice.name} (#${targetDevice.id})`
-              : "기기 페어링 필요"}
-          </span>
-        </div>
-      </div>
-
-      {!loaded ? (
-        <p className="muted" style={{ textAlign: "center", padding: "32px 0" }}>
-          기기 연결 정보 불러오는 중…
-        </p>
-      ) : !paired ? (
-        <PairingOnboarding />
-      ) : (
+      {loaded && paired && (
         <>
+          {/* ① 성과 히어로 */}
+          <PerformanceHero balance={p?.balance} equity={p?.equity}
+            strategyPnl={p?.strategy_pnl} killSwitch={ks} />
+
+          {/* ② 상태 바 — 상태 칩 + 다음조치 경보(문제 시에만 확장) */}
+          <StatusStrip autoStatus={autoStatus} health={p?.health}
+            receivedAt={snap?.received_at} lastHeartbeatAt={snap?.last_heartbeat_at}
+            killSwitch={ks} drawdown={p?.drawdown} reconciliation={p?.reconciliation}
+            cycleSummary={summary} equityNow={equityNow} onCommand={send} />
+
+          {/* 제어 액션 */}
+          <div className="panel monitor-actions">
+            <button className="ghost sm" onClick={() => send("PAUSE_AUTO")}
+                    disabled={actionDisabled} title={pairTooltip}>일시정지</button>
+            <button className="ghost sm" onClick={() => send("RESUME_AUTO")}
+                    disabled={actionDisabled} title={pairTooltip}>재개</button>
+            <button className="ghost sm" style={{ color: "var(--red)" }}
+                    disabled={actionDisabled} title={pairTooltip}
+                    onClick={() => {
+                      if (confirm("정말 모든 보유 종목을 매도하고 신규 매수를 중지하시겠습니까?")) send("LIQUIDATE_ALL");
+                    }}>전량 매도 후 중지</button>
+            <span className="muted monitor-device">
+              {targetDevice ? `기기: ${targetDevice.name} (#${targetDevice.id})` : "기기 페어링 필요"}
+            </span>
+          </div>
+
+          {/* 시장 컨텍스트 */}
+          <MarketBar ctx={market} />
+
+          {/* ③ 오늘 활동 + 넷팅 */}
+          <TodayActivity cycleSummary={summary} decisions={p?.decisions} />
+
+          {/* ④ 전략별 성과 기여 */}
+          <StrategyContribution strategyPnl={p?.strategy_pnl} positions={positions}
+            nextDayPreview={preview} decisions={p?.decisions} />
           {/* 보유 종목 — 파이차트 + 표 + ledger/KIS 차이 통합 (Phase 40 reconciliation 흡수) */}
           <PositionDetailCards
             positions={positions}
@@ -248,14 +162,12 @@ export default function Monitor() {
             reconcileTooltip={pairTooltip}
           />
 
-      {/* 전략별 카드 그리드 — StrategyPnl + NextDayPreview + 보유 통합 (Step 4) */}
-      <StrategyCardGrid
-        pnl={p?.strategy_pnl}
-        preview={preview}
-        positions={positions}
-      />
+      {/* ⑥ 감사 로그 (접힘) — 타임라인·미체결·주문·사이클·명령 */}
+      <details className="audit-fold">
+        <summary>감사 로그 · 타임라인 · 미체결 · 주문 · 사이클 · 명령</summary>
+        <div className="audit-body">
 
-      {/* ── 하단: 사이클·실행 품질·미체결 등 부수 정보 ───────────────────── */}
+      <TradingTimeline />
 
       {/* 사이클 요약 */}
       {summary && (
@@ -417,6 +329,9 @@ export default function Monitor() {
           </table>
         </div>
       )}
+
+        </div>
+      </details>
 
       {/* Footer — 설정 페이지 안내 (마지막 위치, mental model: 일상 사용엔 불필요) */}
       <div className="panel" style={{ display: "flex", alignItems: "center",
