@@ -29,6 +29,22 @@ def test_system_prompt_exposes_question_vocabulary():
         assert kw in prompt, f"프롬프트에 '{kw}' 어휘 누락 — 컴파일러가 해당 기능을 못 본다"
 
 
+def test_system_prompt_symbol_catalog_lists_cross_asset_symbols():
+    """symbols 인자를 주면 크로스에셋 참조 가능 심볼 카탈로그가 프롬프트에 노출돼야(#B) —
+    매크로 심볼(옵션풋콜비율 등)을 신호 ref로 못 내던 갭을 닫는다."""
+    symbols = {"매크로·시장지표": ["옵션풋콜비율", "코스피200변동성지수", "VIX"],
+               "자산(선물·지수·크립토)": ["S&P500", "코스피200선물"]}
+    prompt = ic._system_prompt(catalog_spec(), capability_spec(), ["pb_ratio"], symbols)
+    assert "크로스에셋 참조 가능 심볼" in prompt
+    assert "옵션풋콜비율" in prompt and "코스피200변동성지수" in prompt
+
+
+def test_system_prompt_symbol_catalog_omitted_when_absent():
+    """symbols 미제공(None)이면 카탈로그 섹션은 생략 — 하위호환·프롬프트 무결."""
+    prompt = ic._system_prompt(catalog_spec(), capability_spec(), ["pb_ratio"])
+    assert "크로스에셋 참조 가능 심볼" not in prompt
+
+
 # ── 단위·비용 스케일 가이드 — 라이브 결함(±0.1%→±0.001 100×축소·commission_pct 환각) 차단 ──
 
 def test_prompt_states_percent_scale_for_pct_fields():

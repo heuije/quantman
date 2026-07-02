@@ -148,6 +148,25 @@ MACRO_SYMBOLS = (list(MACRO_YF_SYMBOLS) + list(MACRO_FRED_SYMBOLS)
                  + MACRO_KRX_SYMBOLS)
 ALL_SYMBOLS = ASSET_SYMBOLS + MACRO_SYMBOLS
 
+
+def data_type_symbols() -> dict[str, list[str]]:
+    """내장 심볼 → DataSpec 유형키 매핑(SSOT). 위 그룹 상수만으로 구성 — 커버리지 인벤토리·
+    드리프트 가드의 공용 진실원천이다(하드코딩 신규 목록 금지).
+
+    유형키는 data/spec.py REGISTRY 키와 일치한다. 주식(KR 숫자코드·US 티커)은 유니버스가
+    동적(사용자 등록)이라 여기 열거하지 않고 매니페스트 per-symbol을 소비층이 KR/US로 집계한다.
+    """
+    return {
+        # 가격형(P1) — feeds.classify_price_feed 분류와 일치.
+        "ohlcv.crypto": ["비트코인"],
+        "ohlcv.futures": (list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + KRX_PANEL_FUTURES),
+        # 매크로 브로드캐스트(P4) — 수집 소스별 그룹.
+        "macro.market": (list(MACRO_YF_SYMBOLS) + MACRO_OTHER + MACRO_DERIVED),
+        "macro.fred": list(MACRO_FRED_SYMBOLS),
+        "macro.fred_lagged": list(MACRO_FRED_LAGGED),
+        "macro.krx": list(MACRO_KRX_SYMBOLS),
+    }
+
 # 종목 카테고리 — 조건 빌더 UI에서 종목 목록을 그룹화하기 위한 분류.
 # 의미 기준 분류(수집 소스와 무관). 미등재 종목(사용자 추가)은 "개별종목".
 SYMBOL_CATEGORY: dict[str, str] = {

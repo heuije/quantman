@@ -46,6 +46,34 @@ def test_chat_prompt_inspect_longterm_window():
     assert "window를 크게" in cp.chat_system_prompt()
 
 
+def test_chat_prompt_builds_without_manifest():
+    """로컬 매니페스트가 없어도(콜드) 프롬프트가 온전히 빌드 — data_inventory 섹션 graceful 생략."""
+    p = cp.chat_system_prompt()
+    assert isinstance(p, str) and len(p) > 500      # 인벤토리 없어도 본체 무결
+
+
+def test_data_inventory_section_renders_when_manifest_present(monkeypatch):
+    """매니페스트가 있으면 <data_inventory> 섹션 + '지어내지 말고' 지시가 노출돼야 —
+    챗봇이 보유 데이터의 검증 뎁스를 화이트리스트로 인지하게(공급≫소비 갭 차단)."""
+    from quant_core.data import DataManifest, SymbolManifest
+    m = DataManifest(version=1, symbols={
+        "옵션풋콜비율": SymbolManifest(symbol="옵션풋콜비율", first_date="2010-01-04",
+                                      last_date="2024-12-27", n_rows=3650),
+        "005930": SymbolManifest(symbol="005930", feed="ohlcv.kr", first_date="2000-01-04",
+                                 last_date="2024-12-30", n_rows=6000),
+    })
+    monkeypatch.setattr("quant_core.data.load_manifest", lambda *a, **k: m)
+    sec = cp._data_inventory_section()
+    assert "<data_inventory>" in sec and "옵션풋콜비율" in sec
+    assert "지어내지 말" in sec          # 없는 데이터 환각 금지 지시
+
+
+def test_data_inventory_section_empty_on_no_manifest(monkeypatch):
+    """매니페스트 None이면 섹션은 빈 문자열(프롬프트에서 완전 생략)."""
+    monkeypatch.setattr("quant_core.data.load_manifest", lambda *a, **k: None)
+    assert cp._data_inventory_section() == ""
+
+
 def test_chat_prompt_surfaces_advanced_analyses():
     """엔진에 이미 있는 고급 분석을 에이전트가 알도록 analysis_menu가 노출돼야(반복 미사용 부류 차단).
     simulate(nl)로 도달 가능한 sweep/extremize/regime/regression/portfolio/연도별을 프롬프트가 명시."""

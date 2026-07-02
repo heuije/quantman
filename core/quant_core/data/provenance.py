@@ -18,8 +18,9 @@ from __future__ import annotations
 # (범주, 소스, 산출방법, 주의/커버리지). 소스는 자산군(KR/US/크립토)별로 다르면 명시.
 DATA_PROVENANCE: list[dict[str, str]] = [
     {"category": "가격(OHLCV·거래량)",
-     "source": "KR=FinanceDataReader · US=yfinance · 크립토=Binance · KR선물=Investing.com+KIS",
-     "method": "원시 일봉 수집(정규장 종가 기준)", "note": "거래일 PIT"},
+     "source": "KR=FinanceDataReader · US=yfinance · 크립토=Binance · KR선물=공식 KRX Open API(만기물 패널→연속물)",
+     "method": "원시 일봉 수집(정규장 종가 기준). KR선물은 KRX fut_bydd_trd 만기물 패널서 연속물 파생(S4)",
+     "note": "거래일 PIT"},
     {"category": "기술지표(이동평균·RSI·모멘텀·변동성·ATR 등)",
      "source": "— (수집 아님·파생계산)",
      "method": "가격 OHLCV에서 계산(순수 함수)", "note": ""},
@@ -44,6 +45,10 @@ DATA_PROVENANCE: list[dict[str, str]] = [
      "source": "FRED + yfinance",
      "method": "원시 시계열 + 파생(VIX 기간구조·구리금비율·버핏지수 등)",
      "note": "월간은 발표지연 보정 PIT"},
+    {"category": "KR 시장지표(V-KOSPI·옵션풋콜비율·KRX채권지수·국고채3/10년·선물 미결제약정·ETF AUM/순자금유입)",
+     "source": "공식 KRX Open API(data-dbg.krx.co.kr)",
+     "method": "원시 일별 시계열(매크로형 브로드캐스트 심볼)",
+     "note": "KR. AUTH_KEY 필요·미설정 시 비활성. 크로스에셋 신호로 참조 가능"},
     {"category": "뉴스(헤드라인)",
      "source": "네이버 뉴스 API",
      "method": "종목명 검색 최신순(on-demand)", "note": "현시점 참고용"},
