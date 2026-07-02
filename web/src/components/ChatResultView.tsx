@@ -150,9 +150,6 @@ function SweepBuckets({ result }: { result: IrStrategyResult }) {
     <div className="chat-result">
       <div className="muted" style={{ fontSize: "0.8em", marginBottom: 4 }}>
         {colLabel}별 성과 (백테스트 손익)</div>
-      {result.warnings?.length ? (
-        <div className="warn-banner">⚠ {result.warnings.map((w) => w.message).join(" · ")}</div>
-      ) : null}
       <SweepChart axis={axis} buckets={buckets} axes={result.axes} />
       <div style={{ overflowX: "auto" }}>
         <table className="sweep-table">
@@ -573,13 +570,21 @@ function ChatResultBody({ result }: Props) {
   const banner = status && status !== "ok"
     ? <StatusBanner status={status} verdict={(r as { verdict?: string }).verdict} /> : null;
 
+  // 결과 경고(데이터 품질·교차달력 carry-forward 등)를 **전 shape에서** 표면화한다. 이전엔
+  // SweepBuckets에만 있어 백테스트/이벤트/관계분석의 warnings가 데이터엔 있어도 화면에 안 떴다
+  // (예: 교차달력 '전일값 유지' 경고 미도달). status와 별개 — status=ok여도 경고는 보여준다.
+  const warns = (r as { warnings?: { message?: string }[] }).warnings;
+  const warnBanner = warns?.length
+    ? <div className="warn-banner">⚠ {warns.map((w) => w.message).filter(Boolean).join(" · ")}</div>
+    : null;
+
   // T2 자기서술 — 백테스트면 방법론 패널(배너 다음·차트 위). 서버가 backtest 결과에만 붙인다.
   const method = r.methodology ? <MethodologyPanel m={r.methodology} /> : null;
 
   // 형상 레지스트리 단일 조회 — 엔진 스탬프(result.shape) 우선, 미스탬프는 deriveShape 폴백.
   const shape = (r as { shape?: string }).shape ?? deriveShape(r);
   const renderer = RENDERERS[shape];
-  if (renderer) return <>{banner}{method}{renderer(result)}</>;
+  if (renderer) return <>{banner}{warnBanner}{method}{renderer(result)}</>;
 
   // fallback: 오류 메시지 or 완료 칩. 배너가 있으면(비ok) 가짜 "분석 완료"를 보이지 않는다.
   if (r.success === false && r.error) {
