@@ -264,6 +264,16 @@ def test_news_research_summary_returns_digest():
     assert summarize_result(res) == "핵심 드라이버[1]…"
 
 
+def test_news_research_summary_surfaces_market_snapshot():
+    """IP1: news_research(시황·"왜 움직였나") 요약에도 시장 스냅샷(지수 현재가)이 표면화 — "오늘 장
+    어때"가 뉴스만으론 지수레벨을 못 받던 배선갭 차단(digest는 유지·context 있을 때만 추가)."""
+    res = {"success": True, "shape": "news_research", "digest": "오늘 시황 요약",
+           "context": {"market": {"코스피": {"price": 3210.5, "chg": 0.42}}, "source": "준실시간"}}
+    s = summarize_result(res)
+    assert "오늘 시황 요약" in s               # digest 유지
+    assert "시장 현재가" in s and "코스피" in s   # 지수 레벨 표면화(IP1)
+
+
 def test_breadth_summary_surfaces_market_snapshot():
     """P6: breadth 요약에 시장 스냅샷(지수·VIX 현재가)이 표면화 — '코스피 왜'에 지수 레벨 제공."""
     res = {"success": True, "shape": "breadth", "n": 5, "n_up": 1, "n_down": 4,

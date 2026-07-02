@@ -96,3 +96,15 @@ def test_attach_context_breadth_market_graceful(monkeypatch):
     monkeypatch.setattr(ctx.live_quote, "market_snapshot", boom)
     out = ctx.attach_context({"success": True, "shape": "breadth", "n": 5})
     assert out["success"] is True and "context" not in out
+
+
+def test_attach_context_news_research_market_snapshot(monkeypatch):
+    """news_research(시황·"왜 움직였나")에도 시장 스냅샷 부착 — "오늘 장 어때"가 뉴스만으론 지수
+    레벨을 못 받던 배선갭(IP1) 차단. 뉴스가 비어도 지수 스냅샷으로 답할 수 있게."""
+    monkeypatch.setattr(ctx.live_quote, "quotes_for", lambda s: {})
+    monkeypatch.setattr(ctx.live_quote, "market_snapshot",
+                        lambda: {"코스피": {"price": 3210.5, "chg": 0.42},
+                                 "나스닥": {"price": 18500.1, "chg": -0.8}})
+    out = ctx.attach_context({"success": True, "shape": "news_research", "digest": "요약"})
+    assert out["context"]["market"]["코스피"]["price"] == 3210.5
+    assert out["context"]["market"]["나스닥"]["chg"] == -0.8

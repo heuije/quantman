@@ -63,8 +63,10 @@ def attach_context(result: dict) -> dict:
         except Exception:   # noqa: BLE001 — 부가 추정실적 실패가 결과를 깨지 않게
             pass
 
-    # breadth("시장이 왜")엔 거시 시장 스냅샷(KR·US 지수+VIX) 부착 — 지수 현재가·변동성 맥락.
-    if result.get("shape") == "breadth":
+    # breadth("시장이 왜")·news_research(시황·"왜 움직였나")엔 거시 시장 스냅샷(KR·US 지수+VIX)
+    # 부착 — "오늘 장 어때"가 뉴스만으론 지수레벨을 못 받던 배선갭(IP1)을 닫는다. 뉴스가 비어도
+    # 스냅샷으로 답하게. 개별종목 뉴스에도 시장 맥락=종목특유 vs 시장전체 구분에 도움.
+    if result.get("shape") in ("breadth", "news_research"):
         try:
             mkt = live_quote.market_snapshot()
             if mkt:
