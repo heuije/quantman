@@ -209,7 +209,7 @@ def test_plan_entries_no_credit_sizes_zero_without_cash(isolated_trader):
     broker._prices["005930"] = 100.0
     by_strat = [{"strategy_id": "B", "candidates": [{"symbol": "005930"}]}]
     strats = [{"id": "B", "name": "B", "definition": _overnight_def(), "account_ref": None}]
-    captured, decisions = t.plan_close_entries(
+    captured, decisions = t.plan_entries_captured(
         by_strat, strats, _ds(prev_close=100.0), 10_000_000.0, [], "KRX", "stock")
     assert captured == [], "현금 0·크레딧 없음 → 진입 의도 없음"
     assert broker.submitted == [], "PLAN은 발주하지 않는다"
@@ -223,7 +223,7 @@ def test_plan_entries_credit_enables_sizing(isolated_trader):
     liq = [_liq("A", "005930", 50, ref=100)]           # A 청산 50주 → 회수 현금 5000
     by_strat = [{"strategy_id": "B", "candidates": [{"symbol": "005930"}]}]
     strats = [{"id": "B", "name": "B", "definition": _overnight_def(), "account_ref": None}]
-    captured, decisions = t.plan_close_entries(
+    captured, decisions = t.plan_entries_captured(
         by_strat, strats, _ds(prev_close=100.0), 10_000_000.0, liq, "KRX", "stock")
     assert broker.submitted == []
     assert len(captured) == 1, decisions
@@ -244,7 +244,7 @@ def test_plan_entries_credit_depletes_across_multiple(isolated_trader):
                 {"strategy_id": "B2", "candidates": [{"symbol": "005930"}]}]
     strats = [{"id": "B1", "name": "B1", "definition": _overnight_def(), "account_ref": None},
               {"id": "B2", "name": "B2", "definition": _overnight_def(), "account_ref": None}]
-    captured, _ = t.plan_close_entries(
+    captured, _ = t.plan_entries_captured(
         by_strat, strats, _ds(prev_close=100.0), 10_000_000.0, liq, "KRX", "stock")
     total = sum(c.qty for c in captured)
     assert total == 50, f"다중 진입 합계가 회수여력(50주)을 넘지 않아야 — 실제 {total}"
@@ -310,4 +310,48 @@ def test_close_netting_killswitch_blocks_entry_liquidates(isolated_trader):
                                   market="KRX", instrument_class="stock", risk_limits={})
     assert any(d["action"] == "skip_killswitch" for d in payload["decisions"])
     assert len(broker.submitted) == 1 and broker.submitted[0]["side"] == "sell"
+    assert payload["cycle_summary"]["n_netted"] == 0
+
+
+# ── Phase 4.2 — 아침 시가창 넷팅(_cycle_body pre-pass) ───────────────────────────
+
+def _seed_overnight(t, sid, symbol, qty, entry):
+    """오버나이트 롱 보유(hold_days=1·held=2 → 익일 시가 청산 due)."""
+    t.ledger[sid] = {"symbol": symbol, "qty": qty, "entry_date": "2026-05-30",
+                     "entry_price": float(entry), "peak_price": float(entry),
+                     "side": "long", "strategy_name": sid, "definition": _overnight_def()}
+
+
+def test_morning_netting_handoff(isolated_trader):
+    """아침 하락일 완전 넷팅: O 오버나이트청산(due) + D 당일진입 → 브로커 0·원장 이관."""
+    t, broker = isolated_trader
+    broker._balance["cash"] = 0
+    broker._prices["005930"] = 100.0
+    broker.set_positions([{"symbol": "005930", "qty": 50, "side": "long"}])
+    _seed_overnight(t, "O", "005930", 50, entry=90)
+    d_def = {**_daytrade_def(), "position": {**_daytrade_def()["position"],
+             "sizing": {"mode": "pct_cash", "amount_pct": 100}}}
+    by_strat = [{"strategy_id": "D", "candidates": [{"symbol": "005930"}]}]
+    strats = [{"id": "D", "name": "D", "definition": d_def, "account_ref": None}]
+    payload = t._cycle_body(strats, _ds(prev_close=100.0), None, by_strat, {}, "KRX")
+    assert broker.submitted == [], "완전 넷팅 → 브로커 주문 0"
+    assert "O" not in t.ledger and t.ledger["D"]["qty"] == 50
+    assert payload["cycle_summary"]["n_netted"] == 50
+
+
+def test_morning_no_overlap_normal_orders(isolated_trader):
+    """겹침 없음(다른 종목): 넷팅 없이 O 청산·D 진입 정상 발주(골든 보존 경로)."""
+    t, broker = isolated_trader
+    broker._balance["cash"] = 1_000_000
+    broker._prices["005930"] = 100.0
+    broker._prices["000660"] = 100.0
+    broker.set_positions([{"symbol": "005930", "qty": 50, "side": "long"}])
+    _seed_overnight(t, "O", "005930", 50, entry=90)
+    ds = {**_ds("005930", 100.0), **_ds("000660", 100.0)}
+    by_strat = [{"strategy_id": "D", "candidates": [{"symbol": "000660"}]}]
+    strats = [{"id": "D", "name": "D", "definition": _daytrade_def("000660"),
+               "account_ref": None}]
+    payload = t._cycle_body(strats, ds, None, by_strat, {}, "KRX")
+    sides = sorted(o["side"] for o in broker.submitted)
+    assert sides == ["buy", "sell"], f"O 청산(sell)+D 진입(buy) 정상 발주 — {broker.submitted}"
     assert payload["cycle_summary"]["n_netted"] == 0

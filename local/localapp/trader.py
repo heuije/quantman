@@ -1655,6 +1655,59 @@ class Trader:
                 currency=spec.currency, definition=pos.get("definition") or {}))
         return out
 
+    def _plan_cycle_liquidations(self, snap_pre: dict, dataset: dict, today: date,
+                                 market: str) -> list:
+        """아침 시가창 넷팅 대상 청산 의도 — **시간기반 due exit(hold_days 도달)만**.
+
+        신호·손절·만기·킬스위치 청산은 넷팅하지 않는다(§2가 정상 발주). hold_days 도달은
+        결정론적이라 §2가 반드시 청산하므로(무드리프트), 이 부분집합만 넷팅해도 §2 잔여 청산과
+        일관된다. 오버나이트 롱(hold_days=1)의 익일 시가 청산이 주 대상. 발주는 안 한다."""
+        from .netting import Intent
+        out: list = []
+        for sid, pos in list(self.ledger.items()):
+            if _market_group_safe(pos["symbol"]) != market:
+                continue
+            if coverage.missing_categories([pos["symbol"]]):
+                continue
+            hold_days = (((pos.get("definition") or {}).get("position") or {})
+                         .get("exit") or {}).get("hold_days")
+            if hold_days is None or hold_days < 1:
+                continue                              # 시간기반 due만(당일매매·상시 제외)
+            try:
+                held = (today - date.fromisoformat(pos["entry_date"])).days
+            except Exception:
+                continue
+            if held < hold_days:
+                continue                              # 아직 보유기간 미도달 → §2도 청산 안 함
+            ref_price = 0.0
+            sdf = dataset.get(pos["symbol"])
+            if sdf is not None and len(sdf) and "Close" in sdf.columns:
+                try:
+                    ref_price = float(sdf["Close"].iloc[-1])
+                except Exception:
+                    ref_price = 0.0
+            if ref_price <= 0:
+                cur = self._safe_price(pos["symbol"])
+                if not cur or cur <= 0:
+                    continue
+                ref_price = cur
+            pos_side = pos.get("side", "long")
+            clamped = clamp_sell_qty(
+                held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side), int(pos["qty"]))
+            if not clamped:
+                continue
+            spec = instrument_spec(pos["symbol"])
+            out.append(Intent(
+                sid=sid, strategy_id=sid, strategy_name=pos.get("strategy_name", ""),
+                contract_key=(pos.get("contract_code") or pos["symbol"])
+                if qc.is_futures(pos["symbol"]) else pos["symbol"],
+                symbol=pos["symbol"], kind="exit", position_side=pos_side,
+                order_side=("sell" if pos_side == "long" else "buy"),
+                qty=int(clamped), ref_price=float(ref_price),
+                entry_price=float(pos["entry_price"]), mult=spec.multiplier,
+                currency=spec.currency, definition=pos.get("definition") or {}))
+        return out
+
     def _freed_capacity(self, liq_intents: list) -> dict:
         """청산 의도가 회수할 여력을 상품명별로 합산 — 진입 사이징 크레딧(E1·§5.5).
 
@@ -1666,10 +1719,11 @@ class Trader:
             cap[lg.symbol] = cap.get(lg.symbol, 0) + add
         return cap
 
-    def plan_close_entries(self, by_strategy: list, strategies: list, dataset: dict,
-                           equity_now: float, liq_intents: list, market: str,
-                           instrument_class: str) -> tuple[list, list]:
-        """종가창 진입 '의도'를 산출(발주 안 함) — 넷팅 PLAN(설계 §13).
+    def plan_entries_captured(self, by_strategy: list, strategies: list, dataset: dict,
+                              equity_now: float, liq_intents: list, market: str,
+                              instrument_class: str | None,
+                              entry_window: str = "close") -> tuple[list, list]:
+        """진입 '의도'를 산출(발주 안 함) — 넷팅 PLAN(설계 §13). 종가창(close)·시가창(open) 공용.
 
         _enter_from_preview를 capture 모드로 재사용(fill 라우팅·계좌·커버리지·보유·멱등 게이트와
         사이징을 실주문과 동일하게 통과) + 로컬 여력원장에 같은-종목 청산 회수여력을 시드해
@@ -1680,7 +1734,8 @@ class Trader:
         decisions: list = []
         self._enter_from_preview(by_strategy, strategies, dataset, equity_now,
                                  decisions, set(), market=market,
-                                 entry_window="close", instrument_class=instrument_class,
+                                 entry_window=entry_window,
+                                 instrument_class=instrument_class,
                                  capacity_credit=capacity, capture=captured)
         return captured, decisions
 
@@ -1799,9 +1854,9 @@ class Trader:
                 if self._close_entry_blocked(equity_now, snap_pre, risk_limits, decisions):
                     entry_intents = []
                 else:
-                    entry_intents, plan_decisions = self.plan_close_entries(
+                    entry_intents, plan_decisions = self.plan_entries_captured(
                         by_strategy or [], strategies, dataset, equity_now, liq_intents,
-                        market, instrument_class)
+                        market, instrument_class, entry_window="close")
                     decisions.extend(plan_decisions)
                 # NET — (contract_code, side)별 same-side open↔close 상쇄
                 net = net_window(liq_intents + entry_intents)
@@ -2322,6 +2377,34 @@ class Trader:
                 f"{peak_equity:,.0f}", f"{equity_now:,.0f}",
                 drawdown_pct, float(max_drawdown_limit_pct))
 
+        # ── 넷팅 pre-pass (설계 §13) — 시가창. catch-up 제외(E9). 시간기반 due 청산(오버나이트
+        #   익일 시가 청산 등)과 시가진입이 같은 계약·포지션 side로 겹치면 브로커 왕복 없이 원장
+        #   이관(합성 체결). **실제 상쇄가 있을 때만(book_legs 존재)** 활성화해 §3 진입을 대체한다.
+        #   상쇄가 없으면 dry-run capture를 버려 아래 §2/§3가 현행 그대로 돈다(골든 byte-identical).
+        netting_entries_done = False
+        n_netted = 0
+        commission_saved = 0.0
+        if (not catchup and buy_candidates is not None
+                and not ks_active and not drawdown_active):
+            from .netting import net_window
+            _liq_intents = self._plan_cycle_liquidations(snap_pre, dataset, today, market)
+            if _liq_intents:
+                _entry_intents, _ent_dec = self.plan_entries_captured(
+                    buy_candidates, strategies, dataset, equity_now, _liq_intents,
+                    market, None, entry_window="open")
+                _net = net_window(_liq_intents + _entry_intents)
+                if _net.book_legs:
+                    decisions.extend(_ent_dec)
+                    for _leg in _net.book_legs:
+                        self._apply_netted_leg(_leg, decisions)
+                    commission_saved = self._netting_commission_saved(_net.book_legs)
+                    n_netted = sum(n["netted_qty"] for n in _net.netted)
+                    # 잔여 진입만 실발주(잔여 청산은 아래 §2가 감소된 원장에서 처리)
+                    for _it in _net.broker_orders:
+                        if _it.kind == "entry":
+                            self._submit_residual(_it, decisions)
+                    netting_entries_done = True
+
         # ── 2. 청산 패스 (Phase 38.2: 신호·시간 기반만 — 가격은 intraday가 담당) ──
         sold_this_cycle: set[str] = set()
         for sid, pos in list(self.ledger.items()):
@@ -2415,8 +2498,10 @@ class Trader:
             # sold_this_cycle은 sid 단위 — 같은 cycle 중복 청산 차단.
             sold_this_cycle.add(sid)
 
-        # ── 3. 진입 패스 (kill switch·drawdown 활성 시 건너뜀, preview 전용) ──
-        if ks_active:
+        # ── 3. 진입 패스 (넷팅 pre-pass가 진입을 처리했으면 skip; kill switch·drawdown 시 건너뜀) ──
+        if netting_entries_done:
+            pass   # 진입은 넷팅 pre-pass에서 완료(핸드오프 + 잔여 실주문)
+        elif ks_active:
             decisions.append(order_log.decision(
                 "skip_killswitch", "", "", "",
                 f"신규 진입 차단 — {ks_state.get('reason', '')}"))
@@ -2460,8 +2545,11 @@ class Trader:
             log.warning("미체결 조회 실패: %s", e)
             broker_pending = []
 
-        n_bought_now = sum(1 for d in decisions if d["action"] == "bought")
-        n_sold_now = sum(1 for d in decisions if d["action"] == "sold")
+        # 넷팅 합성 체결(netted)은 실거래 카운트에서 제외한다(N3 — 브로커 미접촉).
+        n_bought_now = sum(1 for d in decisions
+                           if d["action"] == "bought" and not d.get("netted"))
+        n_sold_now = sum(1 for d in decisions
+                         if d["action"] == "sold" and not d.get("netted"))
         # A안(서버 타임라인 '자동매매 시작'이 그날 실제 진입을 반영): 시가 진입 주문은
         # 09:00 개장 단일가 체결 전이라 08:55 사이클 시점엔 n_bought/n_sold(인사이클 체결)에
         # 안 잡히고 pending에 남는다 → 발주 완료분(체결+체결대기)을 side별로 기록한다.
@@ -2486,6 +2574,8 @@ class Trader:
             "n_buy_placed": n_bought_now + n_buy_pending,
             "n_sold": n_sold_now,
             "n_sell_placed": n_sold_now + n_sell_pending,
+            "n_netted": int(n_netted),                   # 넷팅 이관 계약수(시가창)
+            "commission_saved_krw": round(commission_saved, 2),
             "n_skip_held": sum(1 for d in decisions if d["action"] == "skip_held"),
             "n_rejected": sum(1 for d in decisions if d["action"] == "rejected"),
             "n_unfilled": sum(1 for d in decisions if d["action"] == "unfilled"),
