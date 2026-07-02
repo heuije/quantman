@@ -2384,6 +2384,11 @@ class Trader:
         netting_entries_done = False
         n_netted = 0
         commission_saved = 0.0
+        # 넷팅 pre-pass가 이 사이클에 새로 연 opener 슬롯 — §2가 같은 사이클에 재청산하지 않게
+        # 건너뛴다(비넷팅 경로는 §2가 진입보다 먼저 돌아 방금 연 포지션을 §2가 못 봄 → 동일 불변식
+        # 보존; 이 skip이 없으면 opener 전략의 매도조건이 진입 바에 참일 때 방금 넷팅한 포지션을
+        # 실제로 wash 매도하는 divergence 발생).
+        netted_opener_sids: set[str] = set()
         if (not catchup and buy_candidates is not None
                 and not ks_active and not drawdown_active):
             from .netting import net_window
@@ -2397,6 +2402,8 @@ class Trader:
                     decisions.extend(_ent_dec)
                     for _leg in _net.book_legs:
                         self._apply_netted_leg(_leg, decisions)
+                    netted_opener_sids = {_leg.sid for _leg in _net.book_legs
+                                          if _leg.kind == "entry"}
                     commission_saved = self._netting_commission_saved(_net.book_legs)
                     n_netted = sum(n["netted_qty"] for n in _net.netted)
                     # 잔여 진입만 실발주(잔여 청산은 아래 §2가 감소된 원장에서 처리)
@@ -2408,6 +2415,9 @@ class Trader:
         # ── 2. 청산 패스 (Phase 38.2: 신호·시간 기반만 — 가격은 intraday가 담당) ──
         sold_this_cycle: set[str] = set()
         for sid, pos in list(self.ledger.items()):
+            # 넷팅 pre-pass가 이 사이클에 방금 연 opener는 재청산 대상 아님(위 주석 — 불변식 보존).
+            if sid in netted_opener_sids:
+                continue
             # 시장 배칭 — 이번 사이클 시장의 보유분만 청산 (미국 보유분은
             # 미국 정규장 사이클에서만 매도, 그 반대도 동일).
             if _market_group_safe(pos["symbol"]) != market:

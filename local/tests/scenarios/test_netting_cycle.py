@@ -355,3 +355,23 @@ def test_morning_no_overlap_normal_orders(isolated_trader):
     sides = sorted(o["side"] for o in broker.submitted)
     assert sides == ["buy", "sell"], f"O 청산(sell)+D 진입(buy) 정상 발주 — {broker.submitted}"
     assert payload["cycle_summary"]["n_netted"] == 0
+
+
+def test_morning_netting_opener_not_re_liquidated_same_cycle(isolated_trader):
+    """risk#1: 넷팅으로 방금 연 opener를 §2가 같은 사이클에 재청산(wash)하지 않는다.
+
+    opener D의 매도조건(Close>0)이 진입 바에 즉시 참이어도, §2는 이 사이클에 새로 연 슬롯을
+    건너뛴다(비넷팅 경로는 §2가 진입보다 먼저 돌아 방금 연 포지션을 못 봄 — 동일 불변식)."""
+    t, broker = isolated_trader
+    broker._balance["cash"] = 0
+    broker._prices["005930"] = 100.0
+    broker.set_positions([{"symbol": "005930", "qty": 50, "side": "long"}])
+    _seed_overnight(t, "O", "005930", 50, entry=90)
+    d_def = {**_daytrade_def(), "position": {**_daytrade_def()["position"],
+             "sizing": {"mode": "pct_cash", "amount_pct": 100},
+             "exit": {"hold_days": 5, "condition": _DUMMY_SIGNAL}}}  # 매도조건 즉시 참
+    by_strat = [{"strategy_id": "D", "candidates": [{"symbol": "005930"}]}]
+    strats = [{"id": "D", "name": "D", "definition": d_def, "account_ref": None}]
+    t._cycle_body(strats, _ds(prev_close=100.0), None, by_strat, {}, "KRX")
+    assert broker.submitted == [], "방금 넷팅으로 연 opener를 §2가 wash 매도하면 안 됨(risk#1)"
+    assert t.ledger["D"]["qty"] == 50 and "O" not in t.ledger
