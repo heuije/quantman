@@ -1549,6 +1549,60 @@ class Trader:
         self._resolve_pending(decisions)
         return self._state_payload(decisions, today, kind="emergency_liquidation")
 
+    def plan_close_liquidations(self, dataset: dict, instrument_class: str,
+                                market: str, snap_pre: dict) -> list:
+        """종가창 청산 '의도'를 산출(발주 안 함) — 넷팅 PLAN 단계(설계 §13).
+
+        liquidate_day_trades와 **동일 선택·클램프 기준**(hold_days==0·실보유 클램프·종가 참조가)으로
+        청산 Intent 리스트를 만든다. 발주·대기는 하지 않는다 — 넷팅 후 잔여만 실발주(runner).
+        선물은 contract_key=실제 계약코드(원장 contract_code)로 물리 계약을 식별(E6·롤 경계 방어).
+        """
+        from .netting import Intent
+        today = kst_today()
+        out: list = []
+        for sid, pos in list(self.ledger.items()):
+            if _market_group_safe(pos["symbol"]) != market:
+                continue
+            is_fut = qc.is_futures(pos["symbol"])
+            if (instrument_class == "futures") != is_fut:
+                continue
+            hold_days = (((pos.get("definition") or {}).get("position") or {})
+                         .get("exit") or {}).get("hold_days")
+            if hold_days != 0:
+                continue
+            try:
+                held = (today - date.fromisoformat(pos["entry_date"])).days
+                reason, _ = _exit_reason_for(
+                    pos["definition"], held, dataset, pos["symbol"], is_close=True)
+            except Exception as e:
+                log.warning("종가청산 계획 파싱 실패 [%s]: %s", sid, e)
+                continue
+            if not reason:
+                continue
+            ref_price = self._safe_price(pos["symbol"]) or 0.0
+            if ref_price <= 0:
+                sdf = dataset.get(pos["symbol"])
+                if sdf is not None and len(sdf) and "Close" in sdf.columns:
+                    ref_price = float(sdf["Close"].iloc[-1])
+            if ref_price <= 0:
+                continue
+            pos_side = pos.get("side", "long")
+            held_now = held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side)
+            clamped = clamp_sell_qty(held_now, int(pos["qty"]))
+            if not clamped:                       # None(미상)·0(외부매도) → 청산 계획 제외
+                continue
+            spec = instrument_spec(pos["symbol"])
+            out.append(Intent(
+                sid=sid, strategy_id=sid, strategy_name=pos.get("strategy_name", ""),
+                contract_key=(pos.get("contract_code") or pos["symbol"]) if is_fut
+                else pos["symbol"],
+                symbol=pos["symbol"], kind="exit", position_side=pos_side,
+                order_side=("sell" if pos_side == "long" else "buy"),
+                qty=int(clamped), ref_price=float(ref_price),
+                entry_price=float(pos["entry_price"]), mult=spec.multiplier,
+                currency=spec.currency, definition=pos.get("definition") or {}))
+        return out
+
     def liquidate_day_trades(self, dataset: dict, instrument_class: str, *,
                              market: str = "KRX", record_cycle: bool = True) -> dict:
         """당일매매(hold_days==0) 종가 청산 사이클 — 일반 cycle과 독립·additive (Stage B).

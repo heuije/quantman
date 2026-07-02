@@ -16,8 +16,33 @@ _LOCAL = Path(__file__).resolve().parent.parent.parent
 if str(_LOCAL) not in sys.path:
     sys.path.insert(0, str(_LOCAL))
 
+import pandas as pd
+
 from localapp import intents
 from localapp.netting import Intent
+
+_DUMMY_SIGNAL = {
+    "op": "compare", "params": {"op": ">"},
+    "inputs": {"left": {"op": "data", "params": {"ref": "__SELF__.Close"}},
+               "right": {"op": "const", "params": {"value": 0}}},
+}
+
+
+def _daytrade_def(symbol="005930"):
+    return {"name": "dt", "engine": "ir",
+            "universe": {"kind": "single", "symbols": [symbol]},
+            "signal": _DUMMY_SIGNAL,
+            "position": {"direction": "long",
+                         "sizing": {"mode": "pct_cash", "amount_pct": 10},
+                         "entry": {"mode": "on_signal"}, "exit": {"hold_days": 0}},
+            "simulation": {"fill": "next_open"}}
+
+
+def _ds(symbol="005930", prev_close=100.0):
+    idx = pd.date_range("2026-05-01", periods=8, freq="B")
+    return {symbol: pd.DataFrame(
+        {"Open": [prev_close] * 8, "High": [prev_close] * 8,
+         "Low": [prev_close] * 8, "Close": [prev_close] * 8}, index=idx)}
 
 
 def _seed_long(t, sid, symbol, qty, entry, name=None):
@@ -103,3 +128,50 @@ def test_short_handoff(isolated_trader):
     assert broker.submitted == []
     assert "Z" not in t.ledger, "Z 숏 환매(이관)"
     assert t.ledger["W"]["qty"] == 4 and t.ledger["W"]["side"] == "short"
+
+
+# ── Task 3.1 — plan_close_liquidations (의도 산출·발주 안 함) ────────────────────
+
+def _seed_daytrade(t, sid, symbol, qty, entry):
+    t.ledger[sid] = {"symbol": symbol, "qty": qty, "entry_date": "2026-06-01",
+                     "entry_price": float(entry), "peak_price": float(entry),
+                     "side": "long", "strategy_name": sid,
+                     "definition": _daytrade_def(symbol)}
+
+
+def test_plan_liquidations_daytrade(isolated_trader):
+    t, broker = isolated_trader
+    _seed_daytrade(t, "A", "005930", 5, entry=90)
+    broker._prices["005930"] = 100.0
+    broker.set_positions([{"symbol": "005930", "qty": 5, "side": "long"}])
+    snap = broker.account_snapshot()
+    legs = t.plan_close_liquidations(_ds(), "stock", "KRX", snap)
+    assert broker.submitted == [], "PLAN은 발주하지 않는다"
+    assert len(legs) == 1
+    lg = legs[0]
+    assert (lg.sid, lg.kind, lg.position_side, lg.order_side) == ("A", "exit", "long", "sell")
+    assert lg.qty == 5 and lg.ref_price == 100.0 and lg.entry_price == 90.0
+    assert lg.contract_key == "005930"
+
+
+def test_plan_liquidations_excludes_overnight(isolated_trader):
+    t, broker = isolated_trader
+    # hold_days=1(오버나이트) → 종가 당일청산 대상 아님
+    t.ledger["B"] = {"symbol": "005930", "qty": 3, "entry_date": "2026-06-01",
+                     "entry_price": 90.0, "peak_price": 90.0, "side": "long",
+                     "strategy_name": "B",
+                     "definition": {**_daytrade_def(), "position": {
+                         **_daytrade_def()["position"], "exit": {"hold_days": 1}}}}
+    broker._prices["005930"] = 100.0
+    broker.set_positions([{"symbol": "005930", "qty": 3, "side": "long"}])
+    legs = t.plan_close_liquidations(_ds(), "stock", "KRX", broker.account_snapshot())
+    assert legs == []
+
+
+def test_plan_liquidations_clamps_external_sell(isolated_trader):
+    t, broker = isolated_trader
+    _seed_daytrade(t, "A", "005930", 5, entry=90)   # 원장 5
+    broker._prices["005930"] = 100.0
+    broker.set_positions([{"symbol": "005930", "qty": 3, "side": "long"}])  # 실보유 3(외부 2매도)
+    legs = t.plan_close_liquidations(_ds(), "stock", "KRX", broker.account_snapshot())
+    assert len(legs) == 1 and legs[0].qty == 3, "실보유로 클램프(외부매도 초과 방지)"
