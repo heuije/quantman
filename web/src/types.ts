@@ -636,6 +636,9 @@ export interface CycleSummary {
   equity_pre?: number; equity_post?: number;
   // 미국 해외 실시간 시세 미신청 — 장중 실시간 손절 미제공 (P8)
   us_realtime_unavailable?: boolean;
+  // 발주창 넷팅 — 로컬 cycle_summary가 이미 실어 보냄(서버 passthrough). 값>0일 때만 표시.
+  n_netted?: number;
+  commission_saved_krw?: number;
 }
 
 export interface CycleRow {
