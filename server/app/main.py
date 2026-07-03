@@ -438,12 +438,45 @@ def _initial_us_ohlcv_backfill():
         _log.exception("US OHLCV 깊이 백필 초기 청크 예외 — 10분 cron 재시도")
 
 
+# ── US 선물 COT 포지셔닝 (CFTC Socrata, 무키) ─────────────────────────────────
+
+def _refresh_cot() -> None:
+    """COT 전 시장 수집(주간) — 시장당 1콜=전체 이력(멱등 merge)이라 백필·증분이 같은 호출.
+
+    발표: 화요일 마감분을 금요일 15:30 ET(토 새벽 KST) 공개 → 토 09:00 cron. 정정도
+    전체 재수집이 자연 흡수. 실패 시장은 skip·재시도(_run_with_retry)."""
+    from quant_core.data.feeds import cot_cftc
+    res = cot_cftc.fetch_all()
+    if res.get("saved"):
+        data_cache.invalidate()
+    _log.info("[altdata] COT(CFTC) 주간 수집: 시장 %s·실패 %s", res.get("markets"), res.get("fail"))
+
+
+def _initial_cot_refresh():
+    try:
+        time.sleep(140)            # US 깊이(130s)와 스태거
+        _log.info("COT(CFTC) 초기 수집 시작(전체 이력)")
+        _refresh_cot()
+    except Exception:
+        _log.exception("COT 초기 수집 예외 — 주간 cron 재시도")
+
+
+def _initial_shortvol_backfill():
+    try:
+        time.sleep(170)            # COT(140s)와 스태거
+        _log.info("US 공매도량(FINRA) 초기 백필 청크 시작")
+        _backfill_shortvol_chunk()
+    except Exception:
+        _log.exception("US 공매도량 초기 청크 예외 — 30분 cron 재시도")
+
+
 # ── KR 시장지표 (공식 KRX Open API, KRX_API_KEY) ──────────────────────────────
 # V-KOSPI·옵션풋콜비율·KRX채권지수·국고채3/10년 = 매크로형 명명 시계열. 날짜축 cursor 백필
 # (DateCursorBackfill — 컨센서스와 동일 문법). 가벼운 지표(3서비스)는 넓은 윈도우,
 # 옵션 풋콜(하루 ~19k행)은 좁은 윈도우.
 _KRX_LIGHT_WINDOW_DAYS = 90
 _KRX_PUTCALL_WINDOW_DAYS = 4        # 옵션 무거움(timeout 90s) — 좁게
+_KRX_MARKETCAP_WINDOW_DAYS = 60     # sto 2서비스×평일(~86콜/청크) — 30분 케이던스로 quota 관리
 
 
 def _krx_backfill(name: str, window_days: int, fetch_fn) -> None:
@@ -486,6 +519,65 @@ def _backfill_krx_futures_panel_chunk() -> None:
     _krx_backfill("futures_panel", _KRX_LIGHT_WINDOW_DAYS, krx_openapi.fetch_futures_panel)
 
 
+def _backfill_marketcap_chunk() -> None:
+    """KR 시총·거래대금(sto) 백필 청크(30분) — 60일 창 역순, 종목별 parquet 축적.
+
+    ⚠ `sto` 서비스 KRX 포털 미신청이면 에러 페이로드→실패(커서 유지)로 정직히 드러난다
+    (전용 fetcher가 휴장 []와 구분 — 침묵 전진 방지). 신청 완료 즉시 자동 가동."""
+    from quant_core.data.feeds import marketcap_krx
+    _krx_backfill("marketcap", _KRX_MARKETCAP_WINDOW_DAYS, marketcap_krx.fetch_range)
+
+
+def _refresh_marketcap() -> None:
+    """시총·거래대금 일일 증분 — 최근 7일 재수집(09:35 — sto는 T+1 08시 확정, 라이브 실증)."""
+    from datetime import date, timedelta
+    from quant_core.data.feeds import marketcap_krx
+    if not marketcap_krx.is_active():
+        return
+    end = date.today()
+    res = marketcap_krx.fetch_range((end - timedelta(days=7)).strftime("%Y%m%d"),
+                                    end.strftime("%Y%m%d"))
+    if res.get("ok"):
+        data_cache.invalidate()
+    _log.info("[altdata] KR 시총·거래대금 증분(sto): %s", res)
+
+
+# ── US 공매도 거래량 (FINRA Reg SHO, 무키) ────────────────────────────────────
+
+def _backfill_shortvol_chunk() -> None:
+    """US 공매도량 백필 청크(30분) — 90일 창 역순, floor=2018-08-01(consolidated 포맷 시작).
+
+    FINRA 무키 공개 CDN. 커서는 DateCursorBackfill(단일 백필 문법)."""
+    from quant_core import data_fetcher
+    from quant_core.data.feeds import short_volume_us
+    bf = DateCursorBackfill(cursor_path=data_fetcher.DATA_DIR / "_shortvol.cursor",
+                            floor=short_volume_us.SOURCE_FLOOR.replace("-", ""),
+                            window_days=90)
+    win = bf.next_window()
+    if win is None:
+        return                                       # 백필 완료 — 무비용
+    start, end = win
+    res = short_volume_us.fetch_range(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+    if not res.get("ok"):
+        _log.warning("[altdata] US 공매도량 백필 실패(%s~%s) — cursor 유지·재시도", start, end)
+        return
+    bf.advance(start)
+    _log.info("[altdata] US 공매도량 백필 청크(FINRA) %s~%s: %s일·%s종목",
+              start, end, res.get("days"), res.get("stocks"))
+
+
+def _refresh_shortvol() -> None:
+    """US 공매도량 일일 증분 — 최근 5일 재수집(09:40 KST — 당일 18:00 ET 게시 후)."""
+    from datetime import date, timedelta
+    from quant_core.data.feeds import short_volume_us
+    end = date.today()
+    res = short_volume_us.fetch_range((end - timedelta(days=5)).strftime("%Y%m%d"),
+                                      end.strftime("%Y%m%d"))
+    if res.get("ok") and res.get("stocks"):
+        data_cache.invalidate()
+    _log.info("[altdata] US 공매도량 증분(FINRA): %s", res)
+
+
 def _refresh_krx_market() -> None:
     """일일 증분 — 최근 7일 재수집(공식 KRX API는 T+1 08시 갱신)·캐시 attach."""
     from datetime import date, timedelta
@@ -511,6 +603,7 @@ def _initial_krx_market_refresh():
         _backfill_krx_etf_chunk()
         _backfill_krx_putcall_chunk()
         _backfill_krx_futures_panel_chunk()
+        _backfill_marketcap_chunk()
     except Exception:
         _log.exception("KRX 시장지표 초기 청크 예외 — 10분 cron 재시도")
 
@@ -1033,6 +1126,29 @@ def _build_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=9, minute=30),          # 공식 KRX API T+1 08시 갱신 후
         id="krx_market_daily", replace_existing=True)
 
+    # KR 시총·거래대금(공식 KRX API `sto` — 포털 별도 신청) — 30분 청크 백필(60일 창,
+    # 2서비스×평일 ~86콜/청크 → quota 관리) + 16:40 일일 증분. 미신청이면 실패로 정직히
+    # 드러남(전용 fetcher가 에러 페이로드와 휴장을 구분 — 커서 침묵 전진 방지).
+    scheduler.add_job(
+        lambda: _run_with_retry("marketcap_chunk", _backfill_marketcap_chunk, scheduler),
+        CronTrigger(minute="1-59/30"),           # :01,:31 — 10분 청크들과 스태거
+        id="marketcap_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("marketcap_daily", _refresh_marketcap, scheduler),
+        CronTrigger(hour=9, minute=35),          # sto는 T+1 08시 확정(라이브 실증) — 09:30 krx_market 뒤
+        id="marketcap_daily", replace_existing=True)
+
+    # US 공매도 거래량(FINRA Reg SHO, 무키) — 30분 청크 백필(90일 창·floor 2018-08)
+    # + 09:40 일일 증분(당일 18:00 ET 게시 후).
+    scheduler.add_job(
+        lambda: _run_with_retry("shortvol_chunk", _backfill_shortvol_chunk, scheduler),
+        CronTrigger(minute="16-59/30"),          # :16,:46 — marketcap(:01,:31)과 스태거
+        id="shortvol_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("shortvol_daily", _refresh_shortvol, scheduler),
+        CronTrigger(hour=9, minute=40),
+        id="shortvol_daily", replace_existing=True)
+
     # 일요일 08:00 — 미국 S&P500 시가총액 (fast_info). 분기 변동 낮아 주1회.
     scheduler.add_job(
         lambda: _run_with_retry("us_market_caps", _refresh_us_market_caps, scheduler),
@@ -1044,6 +1160,13 @@ def _build_scheduler() -> BackgroundScheduler:
         lambda: _run_with_retry("us_fundamentals", _refresh_us_fundamentals, scheduler),
         CronTrigger(day_of_week="sun", hour=9, minute=0),
         id="us_fundamentals", replace_existing=True)
+
+    # 토요일 09:00 — US 선물 COT(CFTC). 금요일 15:30 ET(토 새벽 KST) 공개 직후 안전 마진.
+    # 시장당 1콜=전체 이력 멱등 merge라 백필·증분·정정 흡수가 같은 호출(주 8콜).
+    scheduler.add_job(
+        lambda: _run_with_retry("cot_weekly", _refresh_cot, scheduler),
+        CronTrigger(day_of_week="sat", hour=9, minute=0),
+        id="cot_weekly", replace_existing=True)
 
     # 03:00 — KR/US 시장 캘린더 일일 재빌드 (Q2+Q8).
     # exchange_calendars 패치(임시공휴일 추가)를 매일 받아서 stale 캘린더 방지.
@@ -1089,6 +1212,10 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_kr_ohlcv_backfill, daemon=True).start()
     _log.info("US OHLCV 깊이 백필 초기 thread 시작")
     threading.Thread(target=_initial_us_ohlcv_backfill, daemon=True).start()
+    _log.info("COT(CFTC) 초기 수집 thread 시작")
+    threading.Thread(target=_initial_cot_refresh, daemon=True).start()
+    _log.info("US 공매도량(FINRA) 초기 백필 thread 시작")
+    threading.Thread(target=_initial_shortvol_backfill, daemon=True).start()
     _log.info("KRX 시장지표(공식API) 초기 백필 thread 시작")
     threading.Thread(target=_initial_krx_market_refresh, daemon=True).start()
     _log.info("기술적 지표 초기 fetch thread 시작")

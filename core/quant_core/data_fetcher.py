@@ -143,10 +143,17 @@ MACRO_KRX_SYMBOLS = ["코스피200변동성지수", "옵션풋콜비율", "KRX�
                      "코스피200선물미결제약정", "코스닥150선물미결제약정",
                      "KRETF순자산총액", "KRETF순자금유입"]
 
+# US 선물 COT 포지셔닝·주간 OI — CFTC 공식 Socrata(data/feeds/cot_cftc.py)가 수집. fetch_all 아님.
+# 시장당 2시리즈({시장}투기순포지션·{시장}미결제약정). 피드 _MARKETS와의 정합은 가드가 잠근다.
+MACRO_COT_SYMBOLS = [m + s
+                     for m in ("원유선물", "천연가스선물", "금선물", "은선물", "구리선물",
+                               "나스닥선물", "S&P500선물", "비트코인선물")
+                     for s in ("투기순포지션", "미결제약정")]
+
 ASSET_SYMBOLS = list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + ["비트코인"] + KRX_PANEL_FUTURES
 MACRO_SYMBOLS = (list(MACRO_YF_SYMBOLS) + list(MACRO_FRED_SYMBOLS)
                  + list(MACRO_FRED_LAGGED) + MACRO_OTHER + MACRO_DERIVED
-                 + MACRO_KRX_SYMBOLS)
+                 + MACRO_KRX_SYMBOLS + MACRO_COT_SYMBOLS)
 ALL_SYMBOLS = ASSET_SYMBOLS + MACRO_SYMBOLS
 
 
@@ -166,6 +173,7 @@ def data_type_symbols() -> dict[str, list[str]]:
         "macro.fred": list(MACRO_FRED_SYMBOLS),
         "macro.fred_lagged": list(MACRO_FRED_LAGGED),
         "macro.krx": list(MACRO_KRX_SYMBOLS),
+        "macro.cot": list(MACRO_COT_SYMBOLS),
     }
 
 # 종목 카테고리 — 조건 빌더 UI에서 종목 목록을 그룹화하기 위한 분류.
@@ -206,6 +214,10 @@ SYMBOL_CATEGORY: dict[str, str] = {
     "코스피200변동성지수": "변동성",
     "KRX채권지수": "금리·환율", "국고채3년": "금리·환율", "국고채10년": "금리·환율",
     "KRETF순자산총액": "거시지표",
+    # US 선물 COT 포지셔닝 (CFTC) — 선물 OI 선례(심리)를 따름.
+    **{s: "심리" for m in ("원유선물", "천연가스선물", "금선물", "은선물", "구리선물",
+                          "나스닥선물", "S&P500선물", "비트코인선물")
+       for s in (m + "투기순포지션", m + "미결제약정")},
 }
 
 

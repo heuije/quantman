@@ -209,6 +209,18 @@ register(DataTypeSpec(
     downstream=["study.label(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",
     notes="AUTH_KEY(KRX_API_KEY) 필요·미설정 시 비활성. 매크로형 명명 시계열(MACRO_KRX_SYMBOLS).",
 ))
+register(DataTypeSpec(
+    key="macro.cot", pclass=PClass.MACRO,
+    label="US 선물 COT 포지셔닝(투기순포지션·주간 미결제약정 — WTI·천연가스·금·은·구리·나스닥·S&P500·비트코인)",
+    frequency="weekly", history_rule="1986~(Legacy Futures-Only)", floor=CORE_FLOOR,
+    point_in_time=True,
+    source="CFTC 공식 Socrata(publicreporting.cftc.gov, Legacy Futures-Only)",
+    provides=["Close(=val)"], required_meta=_BASE_META + ["as_of"],
+    downstream=["study.label(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",
+    notes="무키 공개 API. 화요일 보고분을 금요일 공개 — index=보고일+3일(공개일)로 PIT 반영. "
+          "시장당 2시리즈(투기순포지션=비상업 롱−숏·미결제약정) — US 선물 유일 무료 OI(주간). "
+          "매크로형 명명 시계열(MACRO_COT_SYMBOLS). floor는 정책 최소(실제 1986~ 초과 수집).",
+))
 
 # ── P5 분류·정적 메타 ─────────────────────────────────────────────────────────
 
@@ -241,10 +253,15 @@ register(DataTypeSpec(
 ))
 register(DataTypeSpec(
     key="static.market_cap", pclass=PClass.STATIC, label="시가총액·거래대금",
-    frequency="daily", history_rule="시점별(스크리너·사이징 참조)",
-    source="FinanceDataReader(KRX 스냅샷)", provides=["market_cap", "trade_value"],
-    required_meta=_BASE_META, downstream=["universe.screener", "sizing"], current_status="partial",
-    notes="krx_cache(메모리·스크리너 전용) — 백테스트 store 미부착.",
+    frequency="daily", history_rule="시점별(스크리너·사이징 참조)", floor=CORE_FLOOR,
+    source="공식 KRX Open API sto(이력 2010~, 포털 신청 필요) + FinanceDataReader(현행 스냅샷)",
+    provides=["market_cap", "trade_value", "shares_listed"],
+    required_meta=_BASE_META + ["as_of"], downstream=["universe.screener", "sizing"],
+    current_status="partial",
+    notes="현행 스냅샷=krx_cache(메모리·스크리너 전용). 이력 수집 경로(marketcap_krx 피드·"
+          "종목별 parquet·PIT as_of=거래일) 가동 — `sto` 인가·라이브 응답 검증 완료(2026-07-03: "
+          "KOSPI 945+KOSDAQ 1,821종목/일·ISU_CD 6자·삼성 시총=종가×상장주식수 크로스체크 일치·"
+          "T+1 08시 확정). 엔진 소비(indicators attach) 배선 전까지 partial.",
 ))
 register(DataTypeSpec(
     key="static.calendar", pclass=PClass.STATIC, label="시장별 거래 캘린더",
@@ -302,4 +319,19 @@ register(DataTypeSpec(
           "(빈결과·골든 무영향). 봇차단된 웹 스크랩이라 취약(버전핀·retry/resume). 외인 보유율은 후속. "
           "cron 적재 가동중(10분 백필→floor + 16:30 일일증분, 2026-07 프로덕션 로그 검증). "
           "⚠공식 KRX Open API엔 투자자별 엔드포인트 부재(카탈로그 검증) — pykrx가 유일 무료 경로.",
+))
+register(DataTypeSpec(
+    key="flow.us_short_volume", pclass=PClass.FLOW,
+    label="US 일별 공매도 거래량(off-exchange)", frequency="daily",
+    history_rule="2018-08~(FINRA consolidated 포맷 — 구포맷 병합 시 소급)",
+    floor="2018-08-01", point_in_time=True,
+    source="FINRA Reg SHO daily consolidated(cdn.finra.org, 무키)",
+    provides=["short_volume", "short_exempt_volume", "total_volume"],
+    required_meta=_BASE_META + ["as_of"],
+    downstream=["signal(공매도 ref)", "screener", "study.event"],
+    current_status="partial",
+    notes="⚠off-exchange(TRF 보고분)만 — 시장 전체 아님·공매도 잔고(포지션)와 별개(잔고는 "
+          "2010 floor 불가로 제외). as_of=거래일(당일 18:00 ET 게시 — KR 수급과 동일 규약). "
+          "원시 3컬럼만 적재(비율·급증은 파생). 휴장=404 미게시. **수집 가동·엔진 소비 배선은 "
+          "후속**(marketcap과 함께 — 엔진이 계산 못 하는 컬럼을 컴파일러에 노출하지 않음) → partial.",
 ))

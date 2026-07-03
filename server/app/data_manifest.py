@@ -137,10 +137,14 @@ from quant_core.indicators import (  # noqa: E402
     FUND_INDICATOR_COLS as _FUND, FLOW_INDICATOR_COLS as _FLOW,
     CONSENSUS_INDICATOR_COLS as _CONS,
 )
+from quant_core.data.feeds.short_volume_us import SHORTVOL_COLS as _SHORTVOL  # noqa: E402
 _FIELD_GROUPS: list[tuple[str, str, set]] = [
     ("fundamental.equity", "펀더멘털(밸류·재무)", set(_FUND)),
     ("flow.kr_investor", "수급(기관·외국인 순매수)", set(_FLOW)),
     ("estimate.consensus", "애널 컨센서스(목표가·투자의견)", set(_CONS)),
+    # 수집 가동·엔진 attach 후속(spec partial) — attach 전엔 coverage_report가 빈 값이라
+    # 인벤토리에서 자연 생략(graceful), 추적 대상 선언만 미리 배선(가드 정합).
+    ("flow.us_short_volume", "US 공매도 거래량(off-exchange)", set(_SHORTVOL)),
 ]
 
 # 매니페스트 field_coverage 추적 대상 — _FIELD_GROUPS 유래(단일 출처, 드리프트 가드 대상).
@@ -177,10 +181,9 @@ def coverage_inventory(manifest: DataManifest | None) -> list[dict]:
     out: list[dict] = []
     type_syms = _df.data_type_symbols()
 
-    # ① 가격·매크로 유형 (per-symbol first/last 집계) — data_spec 순서 근사(P1→P4).
-    for key in ("ohlcv.crypto", "ohlcv.futures",
-                "macro.market", "macro.fred", "macro.fred_lagged", "macro.krx"):
-        syms = type_syms.get(key, [])
+    # ① 가격·매크로 유형 (per-symbol first/last 집계) — 키를 data_type_symbols()에서 파생
+    # (하드코딩 열거 금지: 새 유형이 SSOT에 등록되면 인벤토리가 자동 포함·드리프트 가드가 spec 정합 강제).
+    for key, syms in type_syms.items():
         first, last, n = _range_over(manifest, syms)
         if n == 0:
             continue

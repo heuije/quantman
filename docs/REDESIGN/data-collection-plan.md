@@ -264,3 +264,35 @@ P3  실적 캘린더 on-demand facet
 신규 테스트: `test_backfill_cursor.py`(커서 규약 5)·`test_us_ohlcv_depth_backfill.py`(US 미러 6)·가드 6종.
 
 설계 결정 기록: US 깊이백필의 빈 응답 신뢰 규약 = KR(FDR)과 동일(**예외=실패·재시도 / 무예외 빈결과=young**). 빈 응답을 불신하면 young 그룹이 영원히 재시도돼 백필이 수렴하지 않음 — false-young(글리치 오판)의 결과는 기존 깊이 유지(오염 아님)라 수렴을 택함.
+
+---
+
+## 부록 B. Enrichment 신규 피드 착지 (2026-07-03 구현)
+
+### B.1 착지 3종 + 이월 1종
+
+| 피드 | 소스(검증) | 깊이 | tier | 상태 |
+|---|---|---|---|---|
+| **COT 포지셔닝+주간 OI** | CFTC Socrata Legacy Futures-Only(계약코드 8종 라이브 검증) | **1986~** | 심볼(매크로 16종) — 챗 자동 배선 | ✅ 수집+실데이터 e2e(금 1,922행) |
+| **KR 시총·거래대금·상장주식수** | KRX `sto/stk·ksq_bydd_trd` | 2010~ | 필드 | ⚠ 코드 완비·**포털 `sto` 신청 대기**(fail-safe: 에러/휴장 구분 전용 fetcher — 커서 침묵 전진 차단) |
+| **US 공매도 거래량** | FINRA Reg SHO consolidated(실파일 검증) | **2018-08~**(구포맷 병합 시 소급) | 필드 | ✅ 수집+실데이터 e2e(3일·12,552종목) |
+| 13F 기관보유 | SEC 구조화 ZIP(53개·최근 ~86-100MB/분기 실측) | 2013Q2~ | 필드 | 📋 설계 확정(B.2)·구현 이월 |
+
+**필드형 2종(sto·shortvol)의 엔진 소비 배선은 후속 PR** — indicators attach·compute 배관·컴파일러 노출을 라이브 데이터 검증+golden 영향 확인과 함께. 원칙: *엔진이 계산 못 하는 컬럼을 컴파일러에 노출하지 않는다.* 수집은 먼저 가동해 이력을 축적.
+
+### B.2 13F 확정 설계 (구현 이월 — 별도 세션급)
+
+- **소스**: `sec.gov/files/structureddata/data/form-13f-data-sets/` 분기 ZIP 53개(2013Q2~). 구명명 `YYYYqQ_form13f.zip`·신명명 `01mar2026-31may2026_form13f.zip`(인덱스 페이지 스크랩으로 목록 취득). 최근 분기 ~86-100MB(압축).
+- **PIT**: INFOTABLE엔 제출일 없음 → **SUBMISSION.tsv join으로 filing accepted date** = as_of. 45일 lag 실측 반영.
+- **CUSIP→ticker 매핑**: SEC FTD(fails-to-deliver) 파일(반월 ~1.2MB·CUSIP+SYMBOL 공식 병기) 누적으로 매핑 테이블 구축 — openfigi 등 외부 키 불요.
+- **집계**: 분기 ZIP 스트리밍 파싱 → CUSIP별 (총보유가치·주식수·기관수) 합산 → 매핑 → 종목별 분기 시계열(+전분기 차분=순증감).
+- **볼륨·주의**: ZIP 1개씩 내려 처리 후 삭제(Railway 디스크)·분기축 커서 청크. 롱온리 편향·수정신고(13F-HR/A)·2013Q2 이전은 원시 파싱(후순위) 문서화.
+
+### B.3 신규 cron 슬롯 맵
+
+| 슬롯 | 잡 |
+|---|---|
+| 토 09:00 | `cot_weekly`(주 8콜·전체이력 멱등) |
+| :01,:31 | `marketcap_chunk`(60일 창·~86콜/청크 — KRX 10k/일 quota 관리) |
+| :16,:46 | `shortvol_chunk`(90일 창) |
+| 16:40 / 09:40 | `marketcap_daily` / `shortvol_daily` |
