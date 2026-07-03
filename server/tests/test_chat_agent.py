@@ -116,8 +116,10 @@ def test_run_chat_turn_dispatches_and_persists(monkeypatch):
         _Resp([_Block(type="text", text="AAA가 가장 저평가입니다.")],
               stop_reason="end_turn"),
     ]
-    parts = chat_agent.run_chat_turn(s, conv.id, "저평가주 골라줘",
-                                     client=_FakeClient(queue))
+    client = _FakeClient(queue)
+    parts = chat_agent.run_chat_turn(s, conv.id, "저평가주 골라줘", client=client)
+    # Sonnet5 thinking 기본ON→멀티턴 400 회귀 차단: 스트림 호출에 thinking=disabled 강제.
+    assert client.messages.received[0]["thinking"] == {"type": "disabled"}
 
     kinds = [p["type"] for p in parts]
     assert "tool_use" in kinds and "tool_result" in kinds and "text" in kinds
@@ -183,12 +185,19 @@ def test_run_chat_turn_persists_error_reply_on_failure():
 
 # ── T3 (Wave 2 Phase 1): 크래시 fail-soft ─────────────────────────────────────
 def test_classify_failure_transient_vs_analysis():
-    """실패 부류: anthropic API 오류=일시적(재시도 유효) vs 그 외=결정적(조건 조정 필요)."""
+    """실패 부류: *재시도 유효한* 오류(연결·타임아웃·429·5xx)만 transient. BadRequest(400) 등 4xx는
+    재시도 무익→analysis로 표면화(thinking-블록 400을 '일시적 연결 문제'로 은폐하던 부류 회귀 차단)."""
     import anthropic
 
-    class _FakeAPIErr(anthropic.APIError):
-        def __init__(self): pass        # 베이스 __init__(request 요구) 우회 — isinstance만 검사
-    assert chat_agent._classify_failure(_FakeAPIErr()) == "transient"
+    def _mk(cls):
+        class _E(cls):
+            def __init__(self): pass    # 베이스 __init__ 우회 — isinstance만 검사
+        return _E()
+    # 재시도 유효 → transient
+    for c in (anthropic.APIConnectionError, anthropic.RateLimitError, anthropic.InternalServerError):
+        assert chat_agent._classify_failure(_mk(c)) == "transient", c
+    # 지속성 4xx(BadRequest=실제 버그 시그니처) → analysis(표면화)
+    assert chat_agent._classify_failure(_mk(anthropic.BadRequestError)) == "analysis"
     assert chat_agent._classify_failure(RuntimeError("engine boom")) == "analysis"
     assert chat_agent._classify_failure(ValueError()) == "analysis"
 

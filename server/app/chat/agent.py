@@ -93,9 +93,14 @@ _FAILURE_COPY = {
 
 
 def _classify_failure(exc: BaseException) -> str:
-    """예외 → 실패 부류. anthropic API 오류=transient(일시적), 그 외=analysis(결정적)."""
+    """예외 → 실패 부류. *재시도가 유효한* 일시적 오류(연결·타임아웃·429·5xx)만 transient.
+    BadRequest(400) 등 4xx 클라이언트 오류는 재시도 무익 → analysis로 분류해 '잠시 후 다시'로
+    감추지 않고 표면화한다(과거 anthropic.APIError 전부를 transient로 묶어, thinking-블록 400 같은
+    *지속성* 버그를 '일시적 연결 문제'로 은폐한 부류를 차단·메트릭 error로 포착)."""
     import anthropic
-    return "transient" if isinstance(exc, anthropic.APIError) else "analysis"
+    _retryable = (anthropic.APIConnectionError, anthropic.APITimeoutError,
+                  anthropic.RateLimitError, anthropic.InternalServerError)
+    return "transient" if isinstance(exc, _retryable) else "analysis"
 
 
 def _failure_message(klass: str, had_partial: bool) -> str:
@@ -279,6 +284,9 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
     try:
         for _ in range(MAX_TOOL_ROUNDS):
             with client.messages.stream(model=model, max_tokens=4096, system=system,
+                                        thinking={"type": "disabled"},   # Sonnet5는 thinking 기본ON→응답에
+                                        # thinking블록 포함→멀티턴 히스토리 재구성 시 유실되면 400. 오케스트레이터는
+                                        # thinking 불필요(4.6 검증동작)이라 끈다(라운드마다 thinking토큰 낭비도 제거).
                                         tools=TOOL_SCHEMAS, messages=messages) as stream:
                 for delta in stream.text_stream:
                     if delta:
