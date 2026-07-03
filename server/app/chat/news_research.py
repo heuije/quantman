@@ -52,6 +52,7 @@ def _digest(arts: list[dict], queries: list[str]) -> str | None:
                   "기사를 [n]으로 참조하고 숫자·사실은 기사에서만. 추측 금지.")
         resp = client.messages.create(
             model=settings.NL_COMPILE_MODEL, max_tokens=900, system=system,
+            thinking={"type": "disabled"},   # 다이제스트 요약엔 thinking 불필요(Sonnet5 기본ON→토큰·지연 낭비)
             messages=[{"role": "user", "content": f"쿼리: {', '.join(queries)}\n\n" + "\n\n".join(blocks)}])
         txt = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
         return txt or None

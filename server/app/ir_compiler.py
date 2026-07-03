@@ -529,7 +529,10 @@ def compile_nl(
         try:
             resp = client.messages.create(
                 model=settings.NL_COMPILE_MODEL, max_tokens=4096, system=system,
-                temperature=0,        # 결정성(뿌리 R2·A2) — 같은 NL이 다른 shape/n_events로 발산하던 비결정 종식
+                # Sonnet5는 non-default temperature를 400으로 거부하고 thinking이 기본ON이라 repair 루프
+                # (assistant tool_use 재전송) 2회차부터 thinking-블록 유실로 400. 둘 다 제거·비활성화.
+                # 결정성(뿌리 R2·A2)은 이제 forced tool_choice + 검증/repair 루프가 담당(temperature 미지원 대체).
+                thinking={"type": "disabled"},
                 tools=[_EMIT_TOOL], tool_choice={"type": "tool", "name": "emit_strategy"},
                 messages=messages)
         except Exception as e:  # noqa: BLE001 — 외부 API 실패는 사유 반환

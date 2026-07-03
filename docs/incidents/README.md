@@ -11,6 +11,7 @@
 ## 인덱스
 | 일자 | 심각도 | 제목 | 상태 |
 |--|--|--|--|
+| 2026-07-03 | Critical | [챗봇 전면 장애 — Sonnet 5 상향의 thinking·temperature 계약 변경](2026-07-03-chat-sonnet5-thinking-temperature.md) | ✅ 해소 |
 | 2026-06-12 | High | [선물 종가청산 체결 미기록 (θ: 단일 resolve + 정산 cron 역순)](2026-06-12-futures-close-fill-unrecorded.md) | ✅ 해소(머지 대기) |
 | 2026-06-10 | Critical | [자동매매 다중일 무발주 — 주간 회고 원장 (락 컨보이·거짓 kill-switch)](2026-06-10-autotrading-week-retrospective.md) | 🔴 미해소 |
 | 2026-06-10 | High | [Neon 데이터 전송 쿼터 초과 → prod DB 연결 실패](2026-06-10-neon-data-transfer-quota.md) | ✅ 해소 |
