@@ -121,7 +121,7 @@ def test_get_projected_narrows_to_fund_bearing(monkeypatch):
     monkeypatch.setattr(data_cache.data_fetcher, "load_fund_all",
                         lambda: {"A": pd.DataFrame({"pb_ratio": [1.0, 1.1]})})
     monkeypatch.setattr(data_cache, "compute_columns",
-                        lambda df, c, fd, cd, fl: df.assign(pb_ratio=1.0))
+                        lambda df, c, *aux: df.assign(pb_ratio=1.0))
     data_cache._aux_cache.clear()
     try:
         out = data_cache.get_projected(["pb_ratio"], symbols=None)

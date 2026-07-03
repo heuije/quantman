@@ -21,6 +21,14 @@ def test_chat_prompt_forbids_arbitrary_backtest_period():
     assert "임의 백테스트 기간" in cp.chat_system_prompt()
 
 
+def test_chat_prompt_enrichment_tool_guidance():
+    """Enrichment 신규 필드가 도구 가이드에 노출 — 거래대금 필터/랭킹·공매도비중(잔고 아님) 조회."""
+    p = cp.chat_system_prompt()
+    assert "거래대금" in p                          # screen 유동성 필터·랭킹
+    assert "short_volume_ratio" in p                # inspect 공매도비중
+    assert "잔고 아님" in p                          # 잔고 혼동 방지(고위험 정직 라벨)
+
+
 def test_chat_prompt_requires_reading_fold_and_cost_results():
     """결과(buckets·explanation·warnings·ir)를 읽어 답하라는 규율이 프롬프트에 실제 노출돼야."""
     p = cp.chat_system_prompt()

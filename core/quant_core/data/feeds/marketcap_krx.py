@@ -155,6 +155,20 @@ def fetch_range(sdate: str, edate: str, fetch=_fetch_day) -> dict:
 
 
 def load_marketcap(code: str) -> pd.DataFrame:
-    """종목별 시총·거래대금 이력 로드(소비층 진입점 — 후속 배선이 사용). 없으면 빈 DF."""
-    df = read_parquet_safe(MARKETCAP_DIR / f"{code}.parquet")
+    """종목별 시총·거래대금 이력 로드(indicators.add_marketcap 입력). 없으면 빈 DF."""
+    p = MARKETCAP_DIR / f"{code}.parquet"
+    if not p.exists():
+        return pd.DataFrame()
+    df = read_parquet_safe(p)
     return df if df is not None else pd.DataFrame()
+
+
+def load_marketcap_all() -> dict[str, pd.DataFrame]:
+    """전 종목 시총·거래대금 패널 — data_cache aux 캐시(load_fund_all과 동형·디렉터리 주도)."""
+    out: dict[str, pd.DataFrame] = {}
+    if MARKETCAP_DIR.exists():
+        for p in MARKETCAP_DIR.glob("*.parquet"):
+            df = read_parquet_safe(p)
+            if df is not None and not df.empty:
+                out[p.stem] = df
+    return out

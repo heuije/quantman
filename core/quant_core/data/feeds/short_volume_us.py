@@ -125,6 +125,20 @@ def fetch_range(sdate: str, edate: str, fetch=_fetch_day) -> dict:
 
 
 def load_short_volume(sym: str) -> pd.DataFrame:
-    """종목별 공매도량 이력 로드(소비층 진입점 — 후속 배선이 사용). 없으면 빈 DF."""
-    df = read_parquet_safe(SHORTVOL_DIR / f"{sym.replace('/', '_')}.parquet")
+    """종목별 공매도량 이력 로드(indicators.add_short_volume 입력). 없으면 빈 DF."""
+    p = SHORTVOL_DIR / f"{sym.replace('/', '_')}.parquet"
+    if not p.exists():
+        return pd.DataFrame()
+    df = read_parquet_safe(p)
     return df if df is not None else pd.DataFrame()
+
+
+def load_shortvol_all() -> dict[str, pd.DataFrame]:
+    """전 종목 공매도량 패널 — data_cache aux 캐시(디렉터리 주도·요청 시에만 로드)."""
+    out: dict[str, pd.DataFrame] = {}
+    if SHORTVOL_DIR.exists():
+        for p in SHORTVOL_DIR.glob("*.parquet"):
+            df = read_parquet_safe(p)
+            if df is not None and not df.empty:
+                out[p.stem] = df
+    return out

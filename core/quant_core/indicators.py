@@ -349,6 +349,10 @@ INDICATOR_META = {
     "fcf_yield":          {"label": "FCF Yield(%)",      "unit": "%",  "decimals": 2},
     "altman_z":           {"label": "Altman Z-Score",    "unit": "",   "decimals": 2},
     "market_cap":         {"label": "시가총액",           "unit": "",   "decimals": 0},
+    # ── KRX 공식 시총·거래대금 (static.market_cap 피드, KR 종목) ──
+    "trade_value":        {"label": "거래대금(원)",       "unit": "원", "decimals": 0},
+    # ── US 공매도 거래량 (flow.us_short_volume 피드) ──
+    "short_volume_ratio": {"label": "공매도비중(%, off-exchange)", "unit": "%", "decimals": 1},
 }
 
 # 항상 존재하는 가격 기반 지표 (지수/ETF/코인 포함)
@@ -378,6 +382,15 @@ CONSENSUS_FEED_COLS = ["consensus_target", "consensus_target_median", "analyst_c
                        "days_since_report"]
 CONSENSUS_INDICATOR_COLS = CONSENSUS_FEED_COLS + ["target_upside"]
 
+# KRX 공식 시총·거래대금 (static.market_cap 피드, KR 종목·2010~ 이력).
+# market_cap은 FUND와 공유 — KR은 거래소 공식이 정본(add_marketcap이 combine_first로
+# 펀더멘털 파생값을 덮음·US/미커버는 기존 유지). trade_value(거래대금·원)는 신규.
+MARKETCAP_INDICATOR_COLS = ["market_cap", "trade_value"]
+
+# US 공매도 거래량 (flow.us_short_volume 피드) — 노출 지표는 파생 비중 하나(%, 0~100).
+# ⚠ off-exchange(TRF 보고분) 기준·시장 전체 아님·공매도 잔고(short interest)와 별개.
+SHORTVOL_INDICATOR_COLS = ["short_volume_ratio"]
+
 # 지표 소분류 — 조건 빌더 UI에서 드롭다운을 그룹화하기 위한 분류
 INDICATOR_GROUPS: dict[str, list[str]] = {
     "가격·수익률": ["price_level", "pct_change_1d", "pct_change_5d",
@@ -388,9 +401,9 @@ INDICATOR_GROUPS: dict[str, list[str]] = {
     "변동성·기술적": ["bb_width", "bb_pct", "rsi_14", "rsi_bear_div",
                    "atr_14_pct", "realized_vol_20d", "realized_vol_60d"],
     "통계":        ["zscore_20d", "zscore_60d"],
-    "거래량":      ["volume_ratio", "adv_20d"],
+    "거래량":      ["volume_ratio", "adv_20d", "trade_value"],
     "펀더멘털":     list(FUND_INDICATOR_COLS),
-    "수급":         list(FLOW_INDICATOR_COLS),
+    "수급":         list(FLOW_INDICATOR_COLS) + list(SHORTVOL_INDICATOR_COLS),
     "컨센서스":     list(CONSENSUS_INDICATOR_COLS),
 }
 
@@ -414,6 +427,42 @@ def add_flow(df: pd.DataFrame, flow_df: Optional[pd.DataFrame]) -> pd.DataFrame:
     return df
 
 
+def add_marketcap(df: pd.DataFrame, mc_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """KRX 공식 시총·거래대금(일별) 병합 — market_cap 정본 교체 + trade_value 신규.
+
+    market_cap은 KR=KRX 공식이 정본: combine_first로 펀더멘털 파생값(연간 보고서 주식수×
+    Close — 연중 증자·소각 미반영 창 존재)을 덮는다. mc_df 없는 종목(US·미커버)은 기존
+    유지 — add_fundamentals **뒤에** 호출돼야 한다. reindex-ffill(as_of=거래일, add_flow 규약).
+    """
+    if mc_df is None or mc_df.empty:
+        return df
+    df = df.copy()
+    m = mc_df.reindex(df.index, method="ffill")
+    if "market_cap" in m.columns:
+        krx = m["market_cap"]
+        df["market_cap"] = (krx.combine_first(df["market_cap"])
+                            if "market_cap" in df.columns else krx)
+    if "trade_value" in m.columns:
+        df["trade_value"] = m["trade_value"]
+    return df
+
+
+def add_short_volume(df: pd.DataFrame, sv_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """공매도비중(%) = short_volume / total_volume × 100 — 파생 1컬럼만 노출.
+
+    ⚠ off-exchange(TRF 보고분) 거래량 기준 — 시장 전체 아님·공매도 잔고(short interest)와
+    별개(컴파일러 필드가이드에 동일 라벨). reindex-ffill(as_of=거래일, add_flow 규약).
+    """
+    if sv_df is None or sv_df.empty:
+        return df
+    df = df.copy()
+    s = sv_df.reindex(df.index, method="ffill")
+    if {"short_volume", "total_volume"} <= set(s.columns):
+        df["short_volume_ratio"] = (s["short_volume"]
+                                    / s["total_volume"].replace(0, np.nan)) * 100
+    return df
+
+
 def add_consensus(df: pd.DataFrame, consensus_df: Optional[pd.DataFrame]) -> pd.DataFrame:
     """애널 컨센서스(변경점 패널) reindex-ffill 병합 + target_upside(종가 괴리율) 파생.
 
@@ -433,7 +482,9 @@ def add_consensus(df: pd.DataFrame, consensus_df: Optional[pd.DataFrame]) -> pd.
 
 def compute_all(df: pd.DataFrame, fund_df: Optional[pd.DataFrame] = None,
                 consensus_df: Optional[pd.DataFrame] = None,
-                flow_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                flow_df: Optional[pd.DataFrame] = None,
+                marketcap_df: Optional[pd.DataFrame] = None,
+                shortvol_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     df = add_returns(df)
     df = add_ma_deviation(df)
     df = add_ma_cross(df)
@@ -450,10 +501,14 @@ def compute_all(df: pd.DataFrame, fund_df: Optional[pd.DataFrame] = None,
     df = add_momentum_12_1m(df)
     if fund_df is not None and not fund_df.empty:
         df = add_fundamentals(df, fund_df)
+    if marketcap_df is not None and not marketcap_df.empty:
+        df = add_marketcap(df, marketcap_df)     # fund 뒤 — market_cap 정본(KRX) 교체
     if consensus_df is not None and not consensus_df.empty:
         df = add_consensus(df, consensus_df)
     if flow_df is not None and not flow_df.empty:
         df = add_flow(df, flow_df)
+    if shortvol_df is not None and not shortvol_df.empty:
+        df = add_short_volume(df, shortvol_df)
     return df
 
 
@@ -490,7 +545,9 @@ _COL_TO_PRODUCER_IDX: dict[str, int] = {
 def compute_columns(df: pd.DataFrame, columns,
                     fund_df: Optional[pd.DataFrame] = None,
                     consensus_df: Optional[pd.DataFrame] = None,
-                    flow_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                    flow_df: Optional[pd.DataFrame] = None,
+                    marketcap_df: Optional[pd.DataFrame] = None,
+                    shortvol_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """요청한 지표 컬럼만 계산해 부착(컬럼 프로젝션). OHLCV는 항상 보존.
 
     compute_all(45컬럼 전부)의 부분집합 버전. 반환 DataFrame의 **요청 컬럼 값은
@@ -521,10 +578,15 @@ def compute_columns(df: pd.DataFrame, columns,
     # 펀더멘털 컬럼이 하나라도 요청되면 add_fundamentals 1회(Close+fund_df의 순수 함수)
     if (wanted & set(FUND_INDICATOR_COLS)) and fund_df is not None and not fund_df.empty:
         out = add_fundamentals(out, fund_df)
+    # fund 뒤 — market_cap 정본(KRX) 교체 규약(add_marketcap docstring)
+    if (wanted & set(MARKETCAP_INDICATOR_COLS)) and marketcap_df is not None and not marketcap_df.empty:
+        out = add_marketcap(out, marketcap_df)
     if (wanted & set(CONSENSUS_INDICATOR_COLS)) and consensus_df is not None and not consensus_df.empty:
         out = add_consensus(out, consensus_df)
     if (wanted & set(FLOW_INDICATOR_COLS)) and flow_df is not None and not flow_df.empty:
         out = add_flow(out, flow_df)
+    if (wanted & set(SHORTVOL_INDICATOR_COLS)) and shortvol_df is not None and not shortvol_df.empty:
+        out = add_short_volume(out, shortvol_df)
     return out
 
 
@@ -539,8 +601,10 @@ def get_all_indicator_columns() -> list[str]:
     챗봇 reference_data·NL 컴파일러 valid-ref·블록빌더 목록의 **단일 출처(SSOT)**.
     수급(FLOW)·컨센서스(CONSENSUS)는 KR 종목 라이브 데이터(main #149) — 그 외 종목은 NaN.
     """
-    return (list(BASE_INDICATOR_COLS) + list(FUND_INDICATOR_COLS)
-            + list(FLOW_INDICATOR_COLS) + list(CONSENSUS_INDICATOR_COLS))
+    return list(dict.fromkeys(                    # market_cap이 FUND·MARKETCAP 공유 — dedupe
+        list(BASE_INDICATOR_COLS) + list(FUND_INDICATOR_COLS)
+        + list(FLOW_INDICATOR_COLS) + list(CONSENSUS_INDICATOR_COLS)
+        + list(MARKETCAP_INDICATOR_COLS) + list(SHORTVOL_INDICATOR_COLS)))
 
 
 def get_indicator_label(col: str) -> str:

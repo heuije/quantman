@@ -29,6 +29,36 @@ def test_add_flow_reindex_ffill_no_lookahead():
     assert out.loc["2024-01-08", "foreign_net_buy"] == -5
 
 
+def test_add_marketcap_overrides_and_trade_value():
+    """KRX sto가 market_cap 정본으로 combine_first 덮음 + trade_value 신규(look-ahead 0)."""
+    df = _price(["2024-01-03", "2024-01-04", "2024-01-05"], [100, 101, 102])
+    df["market_cap"] = [1e12, 1e12, 1e12]        # 펀더 파생(add_fundamentals 산물 모사)
+    mc = pd.DataFrame({"market_cap": [2e12, 3e12], "trade_value": [5e8, 7e8]},
+                      index=pd.Index(pd.to_datetime(["2024-01-04", "2024-01-05"]), name="as_of"))
+    out = ind.add_marketcap(df, mc)
+    # 01-03: sto 이전값 없음 → 기존 펀더값 보존(combine_first·미래 안 당김)
+    assert out.loc["2024-01-03", "market_cap"] == 1e12
+    # 01-04~: KRX sto가 정본으로 덮음
+    assert out.loc["2024-01-04", "market_cap"] == 2e12
+    assert out.loc["2024-01-05", "market_cap"] == 3e12
+    assert pd.isna(out.loc["2024-01-03", "trade_value"])   # 신규 컬럼도 look-ahead 0
+    assert out.loc["2024-01-05", "trade_value"] == 7e8
+
+
+def test_add_short_volume_ratio_pct():
+    """공매도비중(%) = short_volume/total_volume×100 파생, reindex-ffill(look-ahead 0)."""
+    df = _price(["2024-01-03", "2024-01-04", "2024-01-05"], [100, 101, 102])
+    sv = pd.DataFrame({"short_volume": [300.0, 0.0], "short_exempt_volume": [1.0, 1.0],
+                       "total_volume": [1000.0, 500.0]},
+                      index=pd.Index(pd.to_datetime(["2024-01-04", "2024-01-05"]), name="as_of"))
+    out = ind.add_short_volume(df, sv)
+    assert pd.isna(out.loc["2024-01-03", "short_volume_ratio"])   # 이전 없음
+    assert out.loc["2024-01-04", "short_volume_ratio"] == pytest.approx(30.0)  # 300/1000×100
+    assert out.loc["2024-01-05", "short_volume_ratio"] == pytest.approx(0.0)
+    # 원시 3컬럼은 df에 부착 안 함(파생 비중만 노출) — 매니페스트/인벤토리 규약
+    assert "short_volume" not in out.columns
+
+
 def test_add_consensus_target_upside():
     df = _price(["2024-01-03", "2024-01-05"], [100, 80])
     panel = pd.DataFrame({"consensus_target": [120.0], "consensus_target_median": [120.0],
@@ -69,9 +99,11 @@ def test_compute_all_without_sidecars_adds_nothing():
 
 
 def test_groups_registered():
-    assert ind.INDICATOR_GROUPS["수급"] == ["inst_net_buy", "foreign_net_buy"]
+    # 수급 그룹 = KR 순매수(flow.kr_investor) + US 공매도비중(파생). 둘 다 "수급" 성격.
+    assert ind.INDICATOR_GROUPS["수급"] == ["inst_net_buy", "foreign_net_buy", "short_volume_ratio"]
     assert "target_upside" in ind.INDICATOR_GROUPS["컨센서스"]
     # spec.provides(피드 7) ⊂ 컨센서스 그룹(8=7+target_upside)
     from quant_core.data import spec
     assert set(spec.get("estimate.consensus").provides) <= set(ind.INDICATOR_GROUPS["컨센서스"])
-    assert ind.INDICATOR_GROUPS["수급"] == spec.get("flow.kr_investor").provides
+    # KR 순매수 provides ⊂ 수급 그룹(공매도비중은 별 피드라 그룹만 공유)
+    assert set(spec.get("flow.kr_investor").provides) <= set(ind.INDICATOR_GROUPS["수급"])

@@ -132,19 +132,20 @@ def _spec_floor(key: str) -> str | None:
 # 매크로 유형 중 주요 심볼 개별 뎁스를 상세 노출할 유형(챗이 크로스에셋 참조 시 실측 확인).
 _MACRO_DETAIL_KEYS = {"macro.krx"}
 
-# 필드 커버리지(sparse) → 유형키·라벨. coverage_report의 필드는 펀더/플로우/컨센서스 컬럼.
+# 필드 커버리지(sparse) → 유형키·라벨. 추적 컬럼 = **컴퓨티드 데이터셋에 실제 부착되는
+# 지표 컬럼**(원시 피드 컬럼 아님) — coverage_report가 compute 후 dataset에서 세므로.
+# 공매도량은 파생 short_volume_ratio(원시 3컬럼은 df에 안 붙음), 시총은 trade_value
+# (market_cap은 펀더 그룹에서 이미 추적 — 중복 회피).
 from quant_core.indicators import (  # noqa: E402
     FUND_INDICATOR_COLS as _FUND, FLOW_INDICATOR_COLS as _FLOW,
-    CONSENSUS_INDICATOR_COLS as _CONS,
+    CONSENSUS_INDICATOR_COLS as _CONS, SHORTVOL_INDICATOR_COLS as _SHORTVOL,
 )
-from quant_core.data.feeds.short_volume_us import SHORTVOL_COLS as _SHORTVOL  # noqa: E402
 _FIELD_GROUPS: list[tuple[str, str, set]] = [
     ("fundamental.equity", "펀더멘털(밸류·재무)", set(_FUND)),
     ("flow.kr_investor", "수급(기관·외국인 순매수)", set(_FLOW)),
     ("estimate.consensus", "애널 컨센서스(목표가·투자의견)", set(_CONS)),
-    # 수집 가동·엔진 attach 후속(spec partial) — attach 전엔 coverage_report가 빈 값이라
-    # 인벤토리에서 자연 생략(graceful), 추적 대상 선언만 미리 배선(가드 정합).
-    ("flow.us_short_volume", "US 공매도 거래량(off-exchange)", set(_SHORTVOL)),
+    ("flow.us_short_volume", "US 공매도 거래량(off-exchange·잔고 아님)", set(_SHORTVOL)),
+    ("static.market_cap", "거래대금(유동성, KRX 공식)", {"trade_value"}),
 ]
 
 # 매니페스트 field_coverage 추적 대상 — _FIELD_GROUPS 유래(단일 출처, 드리프트 가드 대상).

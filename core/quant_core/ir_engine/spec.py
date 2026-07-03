@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from ..blocks.catalog import get, has
 from ..blocks.integrity import DatasetMeta, integrity_issues
-from ..blocks.node import Node, referenced_columns, referenced_symbols
+from ..blocks.node import OP_DATA, Node, referenced_columns, referenced_symbols
 from ..blocks.validate import (SEV_ERROR, SEV_INTEGRITY_WARN, Issue, has_market_source,
                                meaningfulness_issues, prioritize, validate)
 from ..exec_defaults import FX_USDKRW_SYMBOL, instrument_spec, is_futures
@@ -302,6 +302,57 @@ class StrategyIR(BaseModel):
                                   if k not in ("period_split", "split_dates")}
         data["study"] = study
         return data
+
+    @model_validator(mode="after")
+    def _normalize_bare_symbol_refs(self) -> "StrategyIR":
+        """점 없는 심볼 ref("금선물투기순포지션")를 "SYM.Close"로 정규화 — 파싱 경계 부류 마감.
+
+        NL 컴파일러가 매크로 크로스참조를 dotted("SYM.Close")와 bare("SYM") 두 형태로
+        산출한다(실측: 국고채3년·금선물투기순포지션). bare는 4계층 정합이 깨져 있었다:
+        검증기(_ref_ok)는 dataset 키로 절반 인정, 로더(needed_symbols→referenced_symbols)는
+        '.' 필수라 미수집 → R0 "데이터 없음"(챗 COT 실측), 로드돼도 평가기(resolve_data)는
+        컬럼으로 해석해 NaN. 여기(모든 진입점이 지나는 StrategyIR 검증)서 한 번 정규화해
+        bare 심볼 ref를 dotted의 공식 축약으로 만든다 — 이후 계층은 dotted만 본다.
+
+        known = 내장 심볼(자산+매크로, ALL_SYMBOLS)+PRICE_ALIAS+이 전략의 universe.symbols.
+        심볼명(한글/지수명)과 컬럼명(영문 지표)은 어휘가 겹치지 않아 오정규화 없음 —
+        미지의 bare ref(컬럼·오타)는 건드리지 않는다(기존 의미·R0 진단 보존, 멱등).
+        """
+        from .. import data_fetcher as _df       # lazy — 모듈 순환 회피
+        known = (set(_df.ALL_SYMBOLS) | set(_df.PRICE_ALIAS)
+                 | set(self.universe.symbols))
+
+        def _norm_node(nd: Optional[Node]) -> None:
+            if nd is None:
+                return
+            if nd.op == OP_DATA:
+                ref = nd.params.get("ref")
+                if isinstance(ref, str) and ref and "." not in ref and ref in known:
+                    nd.params["ref"] = ref + ".Close"
+            for child in nd.inputs.values():
+                _norm_node(child)
+
+        def _norm_dict(d) -> None:               # screener condition은 raw dict 트리
+            if not isinstance(d, dict):
+                return
+            if d.get("op") == OP_DATA:
+                params = d.get("params")
+                if isinstance(params, dict):
+                    ref = params.get("ref")
+                    if isinstance(ref, str) and ref and "." not in ref and ref in known:
+                        params["ref"] = ref + ".Close"
+            inputs = d.get("inputs")
+            if isinstance(inputs, dict):
+                for child in inputs.values():
+                    _norm_dict(child)
+
+        for nd in (self.signal, self.position.exit.condition,
+                   self.position.overlays.group_label,
+                   self.study.label, self.study.event, self.study.target_node):
+            _norm_node(nd)
+        if self.universe.screener:
+            _norm_dict(self.universe.screener.get("condition"))
+        return self
 
 
 # ── 스키마 인트로스펙션 (LLM 교정 피드백용) ──────────────────────────────────────

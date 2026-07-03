@@ -98,12 +98,18 @@ def test_inventory_renders_to_prompt_text():
 # spec에 등록하고 _FIELD_GROUPS에 안 배선하면 CI가 실패한다(공급≫소비 갭의 부류 차단).
 
 def test_every_field_type_spec_wired_to_field_groups():
+    from quant_core import get_all_indicator_columns
     from quant_core.data import data_spec
-    field_specs = {s["key"] for s in data_spec() if s["pclass"] in ("P3", "P7")}
+    ind = set(get_all_indicator_columns())
+    # 필드형 = per-symbol 지표 컬럼을 제공하는 spec. 판정: pclass P3/P7(펀더·수급 — provides가
+    # 참조문자열이어도 필드형) ∪ provides가 실제 지표컬럼과 교집합(예: static.market_cap의
+    # trade_value·market_cap). 새 필드형 피드를 spec에 넣고 _FIELD_GROUPS에 안 배선하면 CI 실패.
+    field_specs = {s["key"] for s in data_spec()
+                   if s["pclass"] in ("P3", "P7") or (set(s.get("provides", [])) & ind)}
     wired = {k for k, _, _ in dm._FIELD_GROUPS}
     missing = field_specs - wired
     assert not missing, (
-        f"필드형 spec(P3/P7) 중 _FIELD_GROUPS 미배선 — 챗 인벤토리·매니페스트 추적에 안 잡힘:"
+        f"필드형 spec 중 _FIELD_GROUPS 미배선 — 챗 인벤토리·매니페스트 추적에 안 잡힘:"
         f"\n  {sorted(missing)}\n→ data_manifest._FIELD_GROUPS에 (key, label, cols) 등록하세요."
     )
     ghost = wired - field_specs
@@ -111,15 +117,21 @@ def test_every_field_type_spec_wired_to_field_groups():
 
 
 def test_field_group_cols_match_indicator_meta():
-    """_FIELD_GROUPS의 컬럼들이 INDICATOR_META 그룹과 일치 — 컬럼 추가/삭제 드리프트 차단."""
+    """_FIELD_GROUPS의 컬럼들이 지표 컬럼과 일치 — 컬럼 추가/삭제 드리프트 차단.
+
+    추적 컬럼은 **컴퓨티드 데이터셋에 부착되는 지표 컬럼**(원시 피드 컬럼 아님): 공매도는 파생
+    short_volume_ratio·시총은 trade_value(market_cap은 펀더 그룹에서 추적)."""
     from quant_core.indicators import (FUND_INDICATOR_COLS, FLOW_INDICATOR_COLS,
-                                       CONSENSUS_INDICATOR_COLS)
+                                       CONSENSUS_INDICATOR_COLS, SHORTVOL_INDICATOR_COLS)
     groups = {k: cols for k, _, cols in dm._FIELD_GROUPS}
     assert groups["fundamental.equity"] == set(FUND_INDICATOR_COLS)
     assert groups["flow.kr_investor"] == set(FLOW_INDICATOR_COLS)
     assert groups["estimate.consensus"] == set(CONSENSUS_INDICATOR_COLS)
-    # 매니페스트 추적 대상(TRACK_FIELDS)은 _FIELD_GROUPS에서 파생된 단일 출처.
+    assert groups["flow.us_short_volume"] == set(SHORTVOL_INDICATOR_COLS)
+    assert groups["static.market_cap"] == {"trade_value"}
+    # 추적 대상(TRACK_FIELDS)은 컴퓨티드 데이터셋에 실재하는 지표 컬럼만(원시 피드 컬럼 금지).
     assert set(dm.TRACK_FIELDS) == set().union(*groups.values())
+    assert "short_volume" not in dm.TRACK_FIELDS      # 원시 피드 컬럼은 df에 안 붙음
 
 
 def test_target_floor_surfaced_when_backfill_in_progress():

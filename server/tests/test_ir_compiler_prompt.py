@@ -39,6 +39,17 @@ def test_system_prompt_symbol_catalog_lists_cross_asset_symbols():
     assert "옵션풋콜비율" in prompt and "코스피200변동성지수" in prompt
 
 
+def test_system_prompt_enrichment_field_guides():
+    """Enrichment 신규 필드 의미 가이드 — 거래대금 단위·공매도 정직라벨·COT 심볼 노출.
+    (과거 stale 브랜치가 라우팅/필드가이드를 조용히 잃은 부류 차단.)"""
+    prompt = ic._system_prompt(catalog_spec(), capability_spec(),
+                               ["trade_value", "short_volume_ratio", "market_cap"])
+    assert "거래대금" in prompt and "원" in prompt          # trade_value 단위 명시
+    # 공매도비중 = 잔고 아님(off-exchange 거래량) — 혼동 시 고위험 오답 차단
+    assert "잔고" in prompt and "off-exchange" in prompt
+    assert "투기순포지션" in prompt                          # COT 심볼 크로스참조 안내
+
+
 def test_system_prompt_symbol_catalog_omitted_when_absent():
     """symbols 미제공(None)이면 카탈로그 섹션은 생략 — 하위호환·프롬프트 무결."""
     prompt = ic._system_prompt(catalog_spec(), capability_spec(), ["pb_ratio"])
