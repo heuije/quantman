@@ -202,6 +202,9 @@ export const api = {
   // Phase 59 — 버전·현황·백테스트 내역
   listStrategyVersions: (id: number) =>
     req<StrategyVersionRow[]>(`/strategies/${id}/versions`),
+  // 단일 버전 — definition 포함(버전 diff용). 서버 엔드포인트는 기존.
+  getStrategyVersion: (id: number, versionNo: number) =>
+    req<StrategyVersionRow>(`/strategies/${id}/versions/${versionNo}`),
   restoreStrategyVersion: (id: number, versionNo: number) =>
     req<StrategyRow>(`/strategies/${id}/restore`, {
       method: "POST", body: JSON.stringify({ version_no: versionNo }),

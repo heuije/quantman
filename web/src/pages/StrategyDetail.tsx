@@ -36,6 +36,86 @@ const TAB_LABEL: Record<TabKey, string> = {
 const pct = (v: number | null | undefined, sign = true) =>
   v == null ? "—"
     : (sign && v >= 0 ? "+" : "") + v.toFixed(2) + "%";
+
+// ── 재설계 후속 헬퍼: 버전 diff · 연동 준비도 · capability 선표시 ──────────────
+
+/** 정의 객체를 leaf 경로:값 맵으로 평탄화(버전 diff용). */
+function flattenDef(obj: unknown, prefix = "", out: Record<string, string> = {}): Record<string, string> {
+  if (obj === null || typeof obj !== "object") {
+    if (prefix) out[prefix] = obj === undefined ? "∅" : JSON.stringify(obj);
+    return out;
+  }
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) { if (prefix) out[prefix] = "[]"; return out; }
+    obj.forEach((v, i) => flattenDef(v, `${prefix}[${i}]`, out));
+    return out;
+  }
+  const entries = Object.entries(obj as Record<string, unknown>);
+  if (entries.length === 0) { if (prefix) out[prefix] = "{}"; return out; }
+  for (const [k, v] of entries) flattenDef(v, prefix ? `${prefix}.${k}` : k, out);
+  return out;
+}
+
+type DefDiff = {
+  changed: { path: string; from: string; to: string }[];
+  onlyCurrent: { path: string; val: string }[];
+  onlyVersion: { path: string; val: string }[];
+};
+/** 현재 정의 vs 특정 버전 정의 차이(무엇이 바뀌었나). */
+function diffDefs(current: unknown, version: unknown): DefDiff {
+  const cur = flattenDef(current), ver = flattenDef(version);
+  const d: DefDiff = { changed: [], onlyCurrent: [], onlyVersion: [] };
+  for (const k of new Set([...Object.keys(cur), ...Object.keys(ver)])) {
+    const inCur = k in cur, inVer = k in ver;
+    if (inCur && inVer) { if (cur[k] !== ver[k]) d.changed.push({ path: k, from: ver[k], to: cur[k] }); }
+    else if (inCur) d.onlyCurrent.push({ path: k, val: cur[k] });
+    else d.onlyVersion.push({ path: k, val: ver[k] });
+  }
+  const bp = (x: { path: string }, y: { path: string }) => (x.path < y.path ? -1 : 1);
+  d.changed.sort(bp); d.onlyCurrent.sort(bp); d.onlyVersion.sort(bp);
+  return d;
+}
+
+/** paper→live 연동 준비도(최신 백테스트 기준 휴리스틱). live는 이미 연동. */
+function computeReadiness(strategy: StrategyRow, backtests: BacktestRunSummary[]):
+  { level: "ready" | "improve" | "none"; reasons: string[] } {
+  if (strategy.run_mode === "live") return { level: "ready", reasons: [] };
+  const latest = [...backtests].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+  if (!latest) return { level: "none", reasons: ["백테스트를 먼저 실행하세요"] };
+  const m = latest.metrics ?? {};
+  const reasons: string[] = [];
+  if (latest.start && latest.end) {
+    const days = (new Date(latest.end).getTime() - new Date(latest.start).getTime()) / 86400000;
+    if (days < 365) reasons.push("백테스트 기간 1년 미만");
+  }
+  if (m.sharpe != null && m.sharpe < 0.8) reasons.push(`샤프 ${m.sharpe.toFixed(2)} (권장 ≥ 0.8)`);
+  if (m.max_drawdown != null && m.max_drawdown < -0.25)
+    reasons.push(`MDD ${(m.max_drawdown * 100).toFixed(0)}% (권장 ≥ −25%)`);
+  if (m.n_trades != null && m.n_trades < 10) reasons.push(`거래 ${m.n_trades}건 (표본 부족)`);
+  return { level: reasons.length ? "improve" : "ready", reasons };
+}
+
+/** 이 전략 자산군에 대해 사용자 계좌들의 미충족 capability(모달 전 선표시·중복 제거). */
+function capabilityIssues(caps: CapabilityMatrix | undefined, handles: AccountHandle[], assetClasses: string[]):
+  { key: string; text: string }[] {
+  if (!caps || assetClasses.length === 0) return [];
+  const out: { key: string; text: string }[] = [];
+  const seen = new Set<string>();
+  for (const h of handles) {
+    const byMode = caps[h.broker]?.[h.mode];
+    if (!byMode) continue;
+    for (const ac of assetClasses) {
+      const cap = byMode[ac];
+      if (cap && cap.status !== "ok") {
+        const key = `${h.broker}:${h.mode}:${ac}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ key, text: `${h.nickname}(${h.mode === "live" ? "실전" : "모의"})·${ac} — ${cap.reason || cap.status}` });
+      }
+    }
+  }
+  return out;
+}
 const dateOnly = (iso?: string | null) => (iso ?? "").slice(0, 10);
 
 export default function StrategyDetail() {
@@ -161,6 +241,8 @@ export default function StrategyDetail() {
   if (err) return <div className="error">{err}</div>;
   if (!strategy) return <div className="error">전략을 찾을 수 없습니다.</div>;
 
+  const readiness = computeReadiness(strategy, backtests);
+
   return (
     <div>
       <div className="strategy-detail-head">
@@ -173,6 +255,14 @@ export default function StrategyDetail() {
             {strategy.run_mode === "live" ? "실전"
               : strategy.run_mode === "paper" ? "모의" : "초안"}
           </span>
+          {strategy.run_mode !== "live" && (
+            <span className={"readiness-badge " + readiness.level}
+                  title={readiness.reasons.join(" · ") || "백테스트 기준 실전 연동 권장"}>
+              {readiness.level === "ready" ? "✓ 실전 연동 준비됨"
+                : readiness.level === "improve" ? "연동 전 보완 권장"
+                  : "백테스트 먼저"}
+            </span>
+          )}
           <span className="muted small">
             생성 {dateOnly(strategy.created_at)} · 최근 수정 {dateOnly(strategy.updated_at)}
           </span>
@@ -205,7 +295,8 @@ export default function StrategyDetail() {
                          onRemove={remove} onDemote={demote} />
       ))}
       {tab === "versions" && (
-        <VersionsTab versions={versions} backtests={backtests} onRestore={restoreVersion} />
+        <VersionsTab versions={versions} backtests={backtests} onRestore={restoreVersion}
+                     strategyId={sid} currentDef={strategy.definition} />
       )}
       {tab === "stats" && (
         <StatsTab
@@ -498,11 +589,16 @@ function LegacyConfigTab({ runMode, execSummary, onRemove, onDemote }: {
 
 // ── 탭 2: 버전 ────────────────────────────────────────────────────────────────
 
-function VersionsTab({ versions, backtests, onRestore }: {
+function VersionsTab({ versions, backtests, onRestore, strategyId, currentDef }: {
   versions: StrategyVersionRow[];
   backtests: BacktestRunSummary[];
   onRestore: (versionNo: number) => void;
+  strategyId: number;
+  currentDef: unknown;
 }) {
+  const [diff, setDiff] = useState<{ versionNo: number; d: DefDiff } | null>(null);
+  const [diffErr, setDiffErr] = useState("");
+
   if (versions.length === 0) {
     return <p className="muted">아직 저장된 버전이 없습니다.</p>;
   }
@@ -511,39 +607,101 @@ function VersionsTab({ versions, backtests, onRestore }: {
   for (const b of [...backtests].sort((a, z) => (a.created_at < z.created_at ? -1 : 1))) {
     if (b.version_no != null) retByVersion.set(b.version_no, b.metrics?.total_return ?? null);
   }
+
+  async function compare(versionNo: number) {
+    setDiffErr("");
+    if (diff?.versionNo === versionNo) { setDiff(null); return; }   // 토글
+    try {
+      const v = await api.getStrategyVersion(strategyId, versionNo);
+      setDiff({ versionNo, d: diffDefs(currentDef, v.definition ?? {}) });
+    } catch (e) { setDiffErr((e as Error).message); }
+  }
+
   return (
     <div className="strategy-detail-body">
       <p className="muted small">
         매 저장마다 자동 스냅샷. 최대 50건 또는 30일까지 보관 — 그 이전 버전은 자동 회전.
-        각 버전의 백테스트 수익률을 함께 표시합니다.
+        “현재와 비교”로 무엇이 바뀌었는지 확인한 뒤 복원하세요.
       </p>
+      {diffErr && <div className="error">{diffErr}</div>}
       <div className="version-list">
         {versions.map((v) => {
           const ret = retByVersion.get(v.version_no);
+          const open = diff?.versionNo === v.version_no;
           return (
-            <div key={v.version_no} className="version-row">
-              <div className="version-no">v{v.version_no}</div>
-              <div className="version-meta">
-                <div className="version-name">{v.name}</div>
-                <div className="muted small">
-                  {dateOnly(v.created_at)} · {labelReason(v.created_reason)}
+            <div key={v.version_no} className="version-row-wrap">
+              <div className="version-row">
+                <div className="version-no">v{v.version_no}</div>
+                <div className="version-meta">
+                  <div className="version-name">{v.name}</div>
+                  <div className="muted small">
+                    {dateOnly(v.created_at)} · {labelReason(v.created_reason)}
+                  </div>
+                </div>
+                <div className="version-actions">
+                  {ret != null && (
+                    <span className={"sc-stat " + (ret >= 0 ? "pos" : "neg")}
+                          title="이 버전으로 실행한 가장 최근 백테스트 누적수익률">
+                      백테스트 {ret >= 0 ? "+" : ""}{(ret * 100).toFixed(1)}%
+                    </span>
+                  )}
+                  <button className="ghost sm" onClick={() => compare(v.version_no)}>
+                    {open ? "비교 닫기" : "현재와 비교"}
+                  </button>
+                  <button className="ghost sm" onClick={() => onRestore(v.version_no)}>
+                    이 버전 적용
+                  </button>
                 </div>
               </div>
-              <div className="version-actions">
-                {ret != null && (
-                  <span className={"sc-stat " + (ret >= 0 ? "pos" : "neg")}
-                        title="이 버전으로 실행한 가장 최근 백테스트 누적수익률">
-                    백테스트 {ret >= 0 ? "+" : ""}{ret.toFixed(1)}%
-                  </span>
-                )}
-                <button className="ghost sm" onClick={() => onRestore(v.version_no)}>
-                  이 버전 적용
-                </button>
-              </div>
+              {open && diff && <VersionDiffView diff={diff.d} versionNo={v.version_no} />}
             </div>
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/** 현재 정의 vs 버전 diff — leaf 경로별 변경/추가/삭제. */
+function VersionDiffView({ diff, versionNo }: { diff: DefDiff; versionNo: number }) {
+  const empty = !diff.changed.length && !diff.onlyCurrent.length && !diff.onlyVersion.length;
+  return (
+    <div className="version-diff">
+      {empty ? (
+        <span className="muted small">현재 정의와 동일합니다.</span>
+      ) : (
+        <>
+          {diff.changed.length > 0 && (
+            <div className="vdiff-group">
+              <div className="vdiff-h">변경 <span className="muted">(v{versionNo} → 현재)</span></div>
+              {diff.changed.map((c) => (
+                <div key={c.path} className="vdiff-row">
+                  <code>{c.path}</code>
+                  <span className="vdiff-from">{c.from}</span>
+                  <span className="vdiff-arrow">→</span>
+                  <span className="vdiff-to">{c.to}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {diff.onlyCurrent.length > 0 && (
+            <div className="vdiff-group">
+              <div className="vdiff-h">현재에만 있음 <span className="muted">(복원 시 사라짐)</span></div>
+              {diff.onlyCurrent.map((c) => (
+                <div key={c.path} className="vdiff-row"><code>{c.path}</code><span className="vdiff-to">{c.val}</span></div>
+              ))}
+            </div>
+          )}
+          {diff.onlyVersion.length > 0 && (
+            <div className="vdiff-group">
+              <div className="vdiff-h">v{versionNo}에만 있음 <span className="muted">(복원 시 추가됨)</span></div>
+              {diff.onlyVersion.map((c) => (
+                <div key={c.path} className="vdiff-row"><code>{c.path}</code><span className="vdiff-from">{c.val}</span></div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -639,6 +797,22 @@ function AccountBindingSection({ strategy, handles, activeIds, capabilities, ass
         <span style={{ flex: 1 }} />
         <button className="ghost sm" onClick={() => setShowPicker(true)}>전환</button>
       </div>
+
+      {(() => {
+        const issues = capabilityIssues(capabilities, handles, assetClasses);
+        if (issues.length === 0) return null;
+        return (
+          <div className="cap-issues">
+            <div className="cap-issues-h">⚠ 실행 전 확인 필요 — 계좌·자산군 제약</div>
+            {issues.slice(0, 4).map((i) => (
+              <div key={i.key} className="cap-issue">{i.text}</div>
+            ))}
+            {issues.length > 4 && (
+              <div className="muted small">외 {issues.length - 4}건 — [전환]에서 상세 확인</div>
+            )}
+          </div>
+        );
+      })()}
 
       {showPicker && (
         <AccountPicker
