@@ -99,9 +99,12 @@ def extract_rows(rows: list[dict]) -> dict[str, tuple]:
 
 
 def _merge_save(code: str, df_new: pd.DataFrame) -> None:
-    """종목별 parquet에 as_of 기준 merge(신규 우선·정정 반영) 후 atomic write."""
+    """종목별 parquet에 as_of 기준 merge(신규 우선·정정 반영) 후 atomic write.
+
+    존재 체크 후 read — read_parquet_safe는 '손상 격리'용이지 '부재 허용'이 아니라서
+    부재 파일에 부르면 격리 시도 소음 로그가 신규 종목 수만큼 쏟아진다(프로덕션 실측)."""
     p = MARKETCAP_DIR / f"{code}.parquet"
-    existing = read_parquet_safe(p)
+    existing = read_parquet_safe(p) if p.exists() else None
     if existing is not None and not existing.empty:
         merged = pd.concat([existing[~existing.index.isin(df_new.index)], df_new]).sort_index()
     else:
@@ -146,7 +149,9 @@ def fetch_range(sdate: str, edate: str, fetch=_fetch_day) -> dict:
             df_new = pd.DataFrame(recs).set_index("as_of")[_COLS].astype("float64")
             _merge_save(code, df_new)
         _df.mark_data_dirty()
-    return {"ok": True, "days": days, "fail": 0, "stocks": len(per_code)}
+    # "saved" — _krx_backfill 성공 로그가 res.get("saved")를 찍으므로 정보성으로 병기.
+    return {"ok": True, "days": days, "fail": 0, "stocks": len(per_code),
+            "saved": len(per_code)}
 
 
 def load_marketcap(code: str) -> pd.DataFrame:

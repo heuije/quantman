@@ -39,15 +39,18 @@ _COLS = SHORTVOL_COLS
 def _fetch_day(bd: str, timeout: int = 30) -> str | None:
     """하루치 파일 텍스트. 404=비거래일(빈 문자열 반환과 구분해 ''), 그 외 실패=None.
 
-    FINRA는 휴장일 파일을 게시하지 않는다(404) — 비거래일로 취급('').
+    FINRA CDN은 부재 파일에 **403**(S3 AccessDenied)을, 때로 404를 반환한다 — 2026-07-03
+    프로덕션 실측: 게시=200·미게시(당일/주말)=403(111바이트). 공개 CDN(무인증)이라 403의
+    유일 의미=객체 부재 → 404와 함께 비거래일/미게시('')로 취급. 이걸 실패로 취급하면
+    최신일 포함 창이 항상 실패해 백필이 wedged된다(프로덕션 첫 청크 실측).
     네트워크/5xx는 None(호출자 실패 처리·커서 유지·재시도).
     """
     try:
         r = requests.get(_URL.format(d=bd), timeout=timeout)
     except Exception:
         return None
-    if r.status_code == 404:
-        return ""                          # 비거래일 — 정상(빈 하루)
+    if r.status_code in (403, 404):
+        return ""                          # 비거래일/미게시 — 정상(빈 하루)
     if r.status_code != 200:
         return None
     return r.text
@@ -75,9 +78,12 @@ def parse_file(text: str) -> dict[str, tuple]:
 
 
 def _merge_save(sym: str, df_new: pd.DataFrame) -> None:
-    """종목별 parquet에 as_of 기준 merge(신규 우선) 후 atomic write. '/'는 '_' 치환."""
+    """종목별 parquet에 as_of 기준 merge(신규 우선) 후 atomic write. '/'는 '_' 치환.
+
+    존재 체크 후 read — read_parquet_safe는 '손상 격리'용이지 '부재 허용'이 아니라서
+    부재 파일에 부르면 격리 시도 소음 로그가 신규 종목 수만큼 쏟아진다(프로덕션 실측)."""
     p = SHORTVOL_DIR / f"{sym.replace('/', '_')}.parquet"
-    existing = read_parquet_safe(p)
+    existing = read_parquet_safe(p) if p.exists() else None
     if existing is not None and not existing.empty:
         merged = pd.concat([existing[~existing.index.isin(df_new.index)], df_new]).sort_index()
     else:

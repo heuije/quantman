@@ -19,6 +19,20 @@ _FILE = ("Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market\n"
          "trailer garbage line\n")                   # 비정형 → skip
 
 
+class _Resp:
+    def __init__(self, status_code, text=""):
+        self.status_code, self.text = status_code, text
+
+
+def test_fetch_day_treats_403_as_unpublished(monkeypatch):
+    """FINRA CDN 부재 파일=403(S3 AccessDenied, 프로덕션 실측) — 404와 함께 ''(비거래일/
+    미게시). 실패(None) 취급하면 최신일 포함 창이 항상 실패해 백필 wedged(회귀 방지)."""
+    for status, want in ((403, ""), (404, ""), (500, None), (200, "body")):
+        monkeypatch.setattr(sv.requests, "get",
+                            lambda url, timeout=30, s=status: _Resp(s, "body"))
+        assert sv._fetch_day("20260703") == want
+
+
 def test_parse_file_pure():
     out = sv.parse_file(_FILE)
     assert set(out) == {"AAPL", "MSFT"}
