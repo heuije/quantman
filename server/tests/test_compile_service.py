@@ -68,3 +68,29 @@ def test_compile_strategy_failure(monkeypatch):
         out = cs.compile_strategy(s, uid, "표현 불가")
     assert out["success"] is False and "생성하지 못" in out["error"]
     assert out["explanation"] is None
+
+
+def test_compile_strategy_releases_connection_before_llm(monkeypatch):
+    """compile_nl(Haiku·repair 루프)의 LLM 왕복 진입 시 세션이 트랜잭션(=풀 커넥션)을 쥐고 있지
+    않아야 한다 — TradableSymbol 읽기 직후 커밋해 반납(챗·/ir/compile 공유 경로의 커넥션 격리).
+
+    수정 전: 읽기 트랜잭션을 쥔 채 compile_nl을 호출 → 동시 부하 시 풀 고갈(P1). in_transaction()으로
+    "LLM 왕복 진입 시 미점유"를 직접 단언(preview C1 테스트와 동형).
+    """
+    import app.compile_service as cs
+    seen: dict = {}
+    holder: dict = {}
+
+    def _spy_compile_nl(nl, **kw):     # noqa: ARG001 — LLM 왕복 진입 시점의 커넥션 점유 여부 기록
+        seen["in_txn"] = holder["s"].in_transaction()
+        return {"success": True,
+                "ir": {"universe": {"kind": "single", "symbols": ["005930"]},
+                       "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}}},
+                "assumptions": [], "issues": [], "repair_count": 0}
+
+    monkeypatch.setattr(cs, "compile_nl", _spy_compile_nl)
+    eng, uid = _engine_user()
+    with Session(eng) as s:
+        holder["s"] = s
+        cs.compile_strategy(s, uid, "삼성전자 종가 전략")
+    assert seen.get("in_txn") is False, "compile_strategy가 compile_nl LLM 왕복 동안 DB 커넥션 점유"

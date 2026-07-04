@@ -422,3 +422,92 @@ def test_autotitle_does_not_overwrite_renamed(monkeypatch):
                 json={"conversation_id": cid, "message": "두 번째여도 덮지 않음"})
     rows = client.get("/chat/conversations", headers=_auth(tok)).json()
     assert next(c for c in rows if c["id"] == cid)["title"] == "내 제목"
+
+
+# ── P1 (커넥션 격리): LLM 왕복·백테스트 compute 동안 DB 커넥션(트랜잭션)을 쥐지 않는다 ──────
+# 멀티턴 챗 평가(2026-07-04)에서 발견 — 도구가 연 txn을 미커밋한 채 다음 LLM 왕복을 돌면
+# 요청 세션이 턴 내내 풀 커넥션을 점유해, 동시 챗 부하가 풀(5+10)을 고갈시키고 /auth·/health
+# 포함 전 엔드포인트가 500난다. preview cron의 C1 선례(계산 중 커넥션 반납)를 챗 경로로 확장.
+# in_transaction()으로 "slow work 진입 시 커넥션 미점유"를 직접 단언(C1 테스트와 동형).
+
+def _conn_test_engine():
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                        poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+    return eng
+
+
+def test_agent_releases_connection_before_each_llm_round():
+    """도구 라운드 후 다음 LLM 왕복 진입 시 세션이 트랜잭션(=풀 커넥션)을 쥐고 있지 않아야 한다.
+
+    adjust_analysis 도구는 _dispatch_tool의 session.get(Conversation) + run_adjust의 읽기로
+    txn을 연다. 수정 전엔 미커밋이라 2라운드 stream 진입 시 in_transaction()=True(red).
+    """
+    from app.chat import agent as chat_agent
+    from app.models import Conversation
+
+    eng = _conn_test_engine()
+    with Session(eng) as s:
+        u = User(email="conn@example.com"); s.add(u); s.commit(); s.refresh(u)
+        conv = Conversation(user_id=u.id); s.add(conv); s.commit(); s.refresh(conv)
+        cid = conv.id
+
+    seen_in_txn: list[bool] = []
+
+    class _SpyMsgs:
+        def __init__(self, session, queue):
+            self._session, self._queue = session, queue
+
+        def stream(self, **kw):  # noqa: ARG002 — 각 LLM 왕복 진입 시점의 커넥션 점유 여부 기록
+            seen_in_txn.append(self._session.in_transaction())
+            return _Stream(self._queue.pop(0))
+
+    class _SpyClient:
+        def __init__(self, session):
+            self.messages = _SpyMsgs(session, [
+                _Msg([_B(type="text", text="조정할게요"),
+                      _B(type="tool_use", id="t1", name="adjust_analysis",
+                         input={"changes": [{"path": "x", "value": 1}]})], "tool_use"),
+                _Msg([_B(type="text", text="완료")], "end_turn"),
+            ])
+
+    with Session(eng) as session:
+        chat_agent.run_chat_turn(session, cid, "조정해줘", client=_SpyClient(session))
+
+    # 라운드1은 persist(user) 커밋 직후라 항상 False; 라운드2가 회귀 지점(도구가 연 txn 반납 여부).
+    assert seen_in_txn == [False, False], \
+        f"커넥션 격리 위반: LLM 왕복 진입 시 세션이 DB 커넥션을 점유 중 {seen_in_txn}"
+
+
+def test_run_simulate_releases_connection_before_backtest(monkeypatch):
+    """run_simulate: compile(읽기) 직후·strategy_from_spec(백테스트 compute) 진입 전 커넥션 반납.
+
+    compile_strategy가 연 txn을 쥔 채 백테스트를 돌리면(수정 전) 무거운 계산 내내 커넥션 점유 →
+    in_transaction()=True(red). 백테스트 compute 진입 시점을 spy로 직접 단언(C1 preview와 동형).
+    """
+    from app.chat import tools as chat_tools
+
+    eng = _conn_test_engine()
+    with Session(eng) as s:
+        u = User(email="sim@example.com"); s.add(u); s.commit(); s.refresh(u); uid = u.id
+
+    holder: dict = {}
+    seen: dict = {}
+
+    def _fake_compile(session, user_id, nl):     # 실제 DB 읽기로 txn을 연다(원인 재현) + 성공 IR
+        session.get(User, user_id)
+        return {"success": True, "ir": {"query": "describe"}, "explanation": "x", "assumptions": []}
+
+    def _spy_spec(ir, dataset, **kw):            # 백테스트 compute 진입 — 이 시점 커넥션 점유 여부
+        seen["in_txn"] = holder["session"].in_transaction()
+        return {"success": False, "error": "stub"}   # success=False → serialize 경로 회피(엔진 불필요)
+
+    monkeypatch.setattr(chat_tools, "compile_strategy", _fake_compile)
+    monkeypatch.setattr(chat_tools, "strategy_from_spec", _spy_spec)
+    monkeypatch.setattr(chat_tools, "_load_dataset", lambda ir: None)
+
+    with Session(eng) as session:
+        holder["session"] = session
+        chat_tools.run_simulate(session, uid, {"nl": "삼성 설명해줘"})
+
+    assert seen.get("in_txn") is False, "run_simulate가 백테스트 compute 동안 DB 커넥션 점유"

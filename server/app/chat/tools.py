@@ -305,6 +305,10 @@ def run_simulate(session, user_id, tool_input: dict) -> dict:
     if not comp.get("success"):
         return {"success": False, "error": comp.get("error") or "전략을 IR로 컴파일하지 못했습니다."}
     ir = comp["ir"]
+    # DB 커넥션 반납 — 백테스트 compute(_load_dataset·strategy_from_spec, 수 초) 동안 커넥션을
+    # 쥐지 않는다(preview C1과 동일 부류·agent 루프의 LLM 왕복 반납과 짝). compile_strategy가 연
+    # 읽기 트랜잭션을 여기서 커밋해 반납하고, 이후는 DB 미접근 순수 계산이다.
+    session.commit()
     dataset = _load_dataset(ir)
     res = strategy_from_spec(ir, dataset, manifest=_manifest(dataset))
     if isinstance(res, dict) and res.get("success"):
@@ -485,6 +489,8 @@ def run_adjust(session, conversation_id, tool_input: dict) -> dict:
         StrategyIR.model_validate(ir)                  # 조정 후 유효성 재검(부류 가드)
     except ValidationError as e:
         return {"success": False, "error": f"조정된 IR이 유효하지 않습니다: {e}"}
+    # DB 커넥션 반납 — 백테스트 compute 진입 전(위 _last_simulate_ir 읽기 트랜잭션 반납). run_simulate와 동일 부류.
+    session.commit()
     dataset = _load_dataset(ir)
     res = strategy_from_spec(ir, dataset, manifest=_manifest(dataset))
     if isinstance(res, dict) and res.get("success"):
