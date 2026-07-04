@@ -571,3 +571,48 @@ def plan_orphan_adjustments(orphans: list[dict]) -> list[dict]:
                 "fully_closed": new_q == 0,
             })
     return plans
+
+
+def emergency_liquidation_summary(payload: dict) -> dict:
+    """비상청산(LIQUIDATE_ALL) payload → 유저용 결과 요약 (웹 ack + 데스크탑 배너 공용).
+
+    투명성 근본수정: 청산이 거부(예: "모의투자 영업일이 아닙니다")됐는데도 성공처럼
+    보이던 문제. 킬스위치 ON(=자동매매 중지)과 실제 청산 성공은 별개이므로 메시지가
+    둘을 분리해 명시한다. 순수 함수 — Tk 무의존, 단위 테스트 대상.
+
+    반환: {ok, message, n_liquidated, n_rejected, n_errors, rejected_reasons, kill_switch}
+      · ok=False면 거부/오류가 있어 포지션이 남아 있을 수 있음(웹은 red 배너로 표시).
+    """
+    cs = payload.get("cycle_summary") or {}
+    decisions = payload.get("decisions") or []
+    n_sold = int(cs.get("n_sold") or 0)
+    n_rejected = int(cs.get("n_rejected") or 0)
+    n_errors = int(cs.get("n_errors") or 0)
+    # 거부·오류 사유(중복 제거·발생 순서 유지) — "왜 안 됐는지"를 유저에게.
+    reasons: list[str] = []
+    for d in decisions:
+        if d.get("action") in ("rejected", "error"):
+            r = str(d.get("reason") or "").strip()
+            if r and r not in reasons:
+                reasons.append(r)
+    ok = (n_rejected == 0 and n_errors == 0)
+    if n_sold == 0 and n_rejected == 0 and n_errors == 0:
+        message = "전량 매도 — 청산할 보유 종목이 없습니다. (자동매매 중지됨)"
+    elif ok:
+        message = f"전량 매도 완료 — {n_sold}건 청산. 자동매매 중지됨(킬스위치)."
+    else:
+        rj = f" · {n_rejected}건 거부" if n_rejected else ""
+        er = f" · {n_errors}건 오류" if n_errors else ""
+        why = (" — " + " / ".join(reasons[:2])) if reasons else ""
+        message = (f"⚠ 전량 매도: {n_sold}건 청산{rj}{er}{why}. "
+                   "미청산 포지션은 그대로입니다 — 시장이 열린 뒤 다시 시도하세요. "
+                   "(자동매매는 중지됨)")
+    return {
+        "ok": ok,
+        "message": message,
+        "n_liquidated": n_sold,
+        "n_rejected": n_rejected,
+        "n_errors": n_errors,
+        "rejected_reasons": reasons,
+        "kill_switch": bool(cs.get("kill_switch")),
+    }
