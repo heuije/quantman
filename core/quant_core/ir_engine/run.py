@@ -520,16 +520,26 @@ def _run_signal_study(strategy: StrategyIR, dataset: dict) -> dict:
     panel = evaluate(node, ctx)
     if not isinstance(panel, pd.DataFrame):
         return _empty("분석 노드가 패널(시계열)을 산출하지 않습니다.")
+    # 분석 대상(target)은 숫자 신호여야 분포가 성립 — 범주형(섹터 등)이 target에 오면
+    # numpy 깊은 곳의 ValueError 대신 여기서 행동 가능한 안내로 거부한다.
+    if not all(pd.api.types.is_numeric_dtype(dt) for dt in panel.dtypes):
+        return _empty("분석 노드(target_node)는 숫자 신호여야 합니다. 섹터·업종 등 분류별 "
+                      "분포는 분류를 study.label에 두고 target_node에는 숫자 신호를 두세요.")
     pv = panel.to_numpy(dtype=float)
     overall = distribution(pd.Series(pv.ravel()), pct=False)
     by_regime = None
     if strategy.study.label is not None:
         lp = evaluate(strategy.study.label, ctx)
         if isinstance(lp, pd.DataFrame):
-            lv = lp.reindex(index=panel.index, columns=panel.columns).to_numpy(dtype=float)
-            mask = np.isfinite(pv) & np.isfinite(lv)
-            parts = {str(r): pd.Series(pv[mask & (lv == r)])
-                     for r in np.unique(lv[mask])}
+            # 라벨은 범주형 계약(숫자 레짐·문자열 섹터 무관) — capabilities가 광고하는
+            # label=attribute('Sector')를 이행한다. float 강제(np.unique)가 섹터 라벨에서
+            # ValueError('자동차')로 터지던 것을 dtype-무관 동등비교 그룹핑으로 대체
+            # (simulate axis=label의 compare_by_partition과 동일 관용구). _label_panel이
+            # 시간축(단일컬럼 broadcast)·종목축(attribute) 라벨을 (일×종목)으로 통일.
+            lv = _label_panel(lp, panel.index, list(panel.columns)).to_numpy(dtype=object)
+            valid = np.isfinite(pv) & pd.notna(lv)
+            parts = {str(g): pd.Series(pv[valid & (lv == g)])
+                     for g in pd.unique(lv[valid])}
             parts = {k: v for k, v in parts.items() if len(v)}
             by_regime = compare_partition(parts, pct=False) if parts else None
     return {"success": True, "axis": "signal",
@@ -564,7 +574,14 @@ def _run_ic_study(strategy: StrategyIR, dataset: dict) -> dict:
     if strategy.study.label is not None:
         lp = evaluate(strategy.study.label, ctx)
         if isinstance(lp, pd.DataFrame) and len(lp.columns):
-            label_series = lp[lp.columns[0]]        # 국면은 시장 전역(브로드캐스트) 가정
+            # IC는 날짜별 횡단 통계라 국면분할 라벨은 시간축(전 종목 동일)이어야 한다.
+            # 옛 코드는 첫 컬럼을 전 시장 국면으로 *가정*해 섹터 같은 종목축 라벨이
+            # 조용히 오답(첫 종목의 섹터=전 시장 국면)이 됐다 — 가정을 검증으로 바꿔 fail-loud.
+            if bool((lp.nunique(axis=1, dropna=True) > 1).any()):
+                return _empty("IC 국면분할 라벨은 시간축(날짜의 함수 — 예: bucket·calendar)이어야 "
+                              "합니다. 섹터·업종별 비교는 섹터별 신호 분포(describe+label)나 "
+                              "유니버스를 섹터로 나눈 IC 재실행으로 분석하세요.")
+            label_series = lp[lp.columns[0]]        # 시간축 검증됨 — 어느 컬럼이든 동일
     by_window: dict = {}
     for w in windows:
         fwd = close.shift(-int(w)) / close - 1.0    # forward수익(미래참조, 분석 전용)
@@ -1232,7 +1249,10 @@ def _collect_event_rows(strategy: StrategyIR, dataset: dict) -> dict:
     label_panel = None
     if strategy.study.label is not None:
         lp = evaluate(strategy.study.label, ctx)
-        label_panel = lp if isinstance(lp, pd.DataFrame) else None
+        if isinstance(lp, pd.DataFrame):
+            # 시간축(단일컬럼)·종목축(attribute 섹터) 라벨을 (일×종목)으로 통일 —
+            # 옛 코드는 원패널 그대로라 시간축 라벨이 종목 컬럼 부재 시 조용히 무시됐다.
+            label_panel = _label_panel(lp, ev_panel.index, list(ev_panel.columns))
 
     market = _market_index(dataset, syms) if basis == "excess" else None
     sim = strategy.simulation
@@ -1255,7 +1275,9 @@ def _collect_event_rows(strategy: StrategyIR, dataset: dict) -> dict:
         mvals = (market.reindex(idx).ffill().to_numpy(dtype=float)
                  if market is not None else None)
         ev = ev_panel[sym].reindex(idx, fill_value=False).to_numpy(dtype=bool)
-        reg = (label_panel[sym].reindex(idx).to_numpy(dtype=float)
+        # dtype 보존(object) — 라벨은 범주형 계약(문자열 섹터 포함). float 강제가 이 부류의
+        # 크래시(ValueError '자동차') 원인이었다.
+        reg = (label_panel[sym].reindex(idx).to_numpy(dtype=object)
                if (label_panel is not None and sym in label_panel.columns) else None)
         for p in np.flatnonzero(ev):
             d = idx[p]
@@ -1264,7 +1286,11 @@ def _collect_event_rows(strategy: StrategyIR, dataset: dict) -> dict:
             n_events += 1
             by_symbol[sym] += 1
             by_year[int(d.year)] += 1
-            r = (float(reg[p]) if reg is not None and np.isfinite(reg[p]) else None)
+            rv = reg[p] if reg is not None else None
+            # 숫자 레짐은 기존대로 float(하류 str(k) 버킷 키 "1.0" 형식 보존), 문자열은 그대로.
+            r = (None if rv is None or pd.isna(rv)
+                 else float(rv) if isinstance(rv, (int, float, np.integer, np.floating))
+                 else str(rv))
             ends: dict[int, float] = {}
             for w in windows:
                 got = _event_paths(ca, oa, p, w, basis, mvals)
