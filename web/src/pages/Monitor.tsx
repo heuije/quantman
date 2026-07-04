@@ -44,6 +44,16 @@ function describeCommandResult(cmd: CommandRow): { text: string; ok: boolean | n
   return { text: `${label} 완료`, ok: true };
 }
 
+// 명령 상태 배지 (T5 — 전송/실행/완료/실패를 유저가 추적).
+function cmdStatusMeta(s: CommandRow["status"]): { text: string; color: string } {
+  switch (s) {
+    case "done": return { text: "완료", color: "var(--green)" };
+    case "failed": return { text: "실패", color: "var(--red)" };
+    case "delivered": return { text: "실행 중", color: "var(--amber)" };
+    default: return { text: "전송됨", color: "var(--muted)" };
+  }
+}
+
 export default function Monitor() {
   const [snap, setSnap] = useState<SyncSnapshot | null>(null);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
@@ -198,7 +208,12 @@ export default function Monitor() {
             <button className="ghost sm" style={{ color: "var(--red)" }}
                     disabled={actionDisabled} title={pairTooltip}
                     onClick={() => {
-                      if (confirm("정말 모든 보유 종목을 매도하고 신규 매수를 중지하시겠습니까?")) send("LIQUIDATE_ALL");
+                      // T4 — 장 마감·비영업일이면 청산이 거부되므로 확정 전에 현재 시장
+                      // 단계를 노출한다(phase는 서버가 준 사람용 문자열 — 취약한 디코딩 회피).
+                      const phase = market?.session?.phase;
+                      const note = "\n\n" + (phase ? `현재 시장: ${phase}\n` : "")
+                        + "장 마감·비영업일에는 청산 주문이 거부됩니다(거부 시 결과에 사유가 표시됩니다).";
+                      if (confirm("정말 모든 보유 종목을 매도하고 신규 매수를 중지하시겠습니까?" + note)) send("LIQUIDATE_ALL");
                     }}>전량 매도 후 중지</button>
             <span className="muted monitor-device">
               {targetDevice ? `기기: ${targetDevice.name} (#${targetDevice.id})` : "기기 페어링 필요"}
@@ -238,6 +253,33 @@ export default function Monitor() {
         <div className="audit-body">
 
       <TradingTimeline />
+
+      {/* 최근 명령 (T5 투명성) — 보낸 명령의 상태·결과를 유저가 추적 */}
+      {cmds.length > 0 && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>최근 명령</h3>
+          <table className="cmd-log-table">
+            <tbody>
+              {cmds.slice(0, 8).map((c) => {
+                const st = cmdStatusMeta(c.status);
+                const acked = c.status === "done" || c.status === "failed";
+                const outcome = acked ? describeCommandResult(c).text : "실행 대기 중…";
+                return (
+                  <tr key={c.id}>
+                    <td>{labelForCommand(c.type)}</td>
+                    <td style={{ color: st.color, fontWeight: 600, whiteSpace: "nowrap" }}>{st.text}</td>
+                    <td className="muted">{outcome}</td>
+                    <td className="muted" style={{ whiteSpace: "nowrap" }}>
+                      {new Date(c.created_at).toLocaleTimeString("ko-KR",
+                        { hour: "2-digit", minute: "2-digit" })}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* 사이클 요약 */}
       {summary && (

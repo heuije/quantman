@@ -1158,6 +1158,11 @@ thead th { color: var(--muted); font-weight: 600; }
 .cmd-result.ok  { background: var(--green-soft); border-left-color: var(--green); color: var(--text); }
 .cmd-result.bad { background: var(--red-soft);   border-left-color: var(--red);   color: var(--text); }
 .cmd-result.pending { background: var(--amber-soft); border-left-color: var(--amber); color: var(--muted); }
+
+/* 최근 명령 이력 표 (트레이딩 감사로그 — 투명성 T5) */
+.cmd-log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cmd-log-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.cmd-log-table tr:last-child td { border-bottom: none; }
 .center-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
 .auth-box { width: 360px; }
 .auth-box .brand { font-size: 22px; }
