@@ -91,6 +91,14 @@ tolerance는 **미국 전용 라이브 버퍼**(국내 무시)·default ±3%·�
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [진행중] 자동매매 명령 투명성 UX (2026-07-05 착수, `feat/autotrade-transparency-ux`)
+
+**의도.** 유저가 비상청산(LIQUIDATE_ALL)을 눌렀는데 "모의투자 영업일이 아닙니다"로 거부됐지만 실패 신호가 안 가고 킬스위치만 ON이던 문제. 근본=데이터(n_rejected·사유)는 로컬→서버까지 오는데 웹 `send()`가 명령 ack(result)를 버리고 스냅샷만 리로드, 거부지표는 접힌 감사로그에만. 부류(T1~T6)로 웹·로컬 양쪽 표면화.
+
+**구현(3커밋).** ①로컬: `analytics.emergency_liquidation_summary`(순수·거부사유 요약, ok/message) + gui LIQUIDATE_ALL ack 강화 + 데스크탑 결과배너(green/red). ②웹: `send()`가 `listCommands` 폴링→결과배너(T1), 확정 다이얼로그에 시장 phase 노출(T4), 감사로그 "최근 명령" 표(T5), StatusStrip에 `reconcile_blocked`·`n_daytrade_unclosed` 경보(T6·v0.9.65 신호), 킬스위치 "미청산 잔존" 표면화(T2b). **T2b 무조건 자동 재청산은 자금경로 위험이라 미채택**(기존 인트라데이 `_on_ks_trigger`가 실행+장중 케이스 담당).
+
+**남은 것.** 커밋 완료(4f0f904·5088402·230c3cd)·미push. PR/머지/릴리스는 사용자 허락 대기. 검증=local 745 green·web tsc/eslint/build green(라이브 렌더는 프로덕션 로그인+페어링 필요).
+
 ### [진행중] 포지션 정합성 구조 재설계 — 원장↔브로커 분기 인시던트 (2026-07-04 착수, `fix/autotrade-position-integrity`)
 
 **의도.** 라이브(모의·LS 국내선물)에서 원장↔브로커가 완전 분기한 인시던트(06-30~07-03, `docs/incidents/2026-07-03-futures-ledger-divergence.md`)의 구조 뿌리 4개를 부류 단위로 닫는다: R1 reconcile 파괴적 자동삭제(매칭 실패를 "외부 매도"로 단정) · R2 LS 잔고 KRX형 계약코드(101T9000) 정규화 조용한 실패 · R3 정합 불변식 부재 · R4 종가창 미실행 무감지. 서버/웹 무변경, R5 commingle·결함C(오버나이트 롱 hold0 서버측)는 후속.
