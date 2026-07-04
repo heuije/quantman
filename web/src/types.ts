@@ -522,6 +522,8 @@ export interface IrStrategyResult extends BacktestResult {
     initial_capital?: number | null;
     confirmed?: { label: string; value: string }[];
     assumed?: { label: string; value: string }[];
+    // 데이터 출처 — 서버가 답변에 쓴 원천(예: "KRX·FDR 거래소 종가 + FDR 업종분류(KSIC)"). 있을 때만 표시.
+    data_source?: string;
   };
   // Wave 2 T7 — 이벤트 풀 구성 분해(섹터 무차별 pooling 투명화). 엔진이 산출.
   composition?: { by_symbol?: Record<string, number>; by_year?: Record<string, number> };

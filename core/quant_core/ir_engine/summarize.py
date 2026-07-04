@@ -334,6 +334,20 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
             lines.append(f"  섹터 약세: {worst} · 강세: {best}")
         return "\n".join(lines) + _context_block(result)   # 시장 스냅샷(지수·VIX 현재가) 표면화
 
+    if shape == "heatmap":                 # 범용 히트맵(섹터 순환매 등) — 행×열 격자 + 기간별 선두
+        rows = result.get("rows") or []
+        cols = result.get("cols") or []
+        r_ax, c_ax = result.get("row_axis", "행"), result.get("col_axis", "열")
+        lines = [f"[{r_ax}×{c_ax} 히트맵] {len(rows)} {r_ax} × {len(cols)} {c_ax} · "
+                 f"{result.get('value_label', '값')}({result.get('value_unit', '')})"]
+        leaders = result.get("leaders") or []
+        if leaders:
+            path = " → ".join(f"{lab} {sec}({v:+.1f}%)" for lab, sec, v in leaders)
+            lines.append(f"  기간별 선두(순환): {path}")
+        if result.get("n_symbols"):
+            lines.append(f"  {result['n_symbols']}종목을 {len(rows)}개 {r_ax}로 집계.")
+        return "\n".join(lines) + _context_block(result)
+
     if shape == "prescribe":
         objs = result.get("objectives") or {}
         rec = result.get("recommended") or "max_sharpe"

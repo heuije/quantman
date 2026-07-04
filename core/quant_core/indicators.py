@@ -358,6 +358,9 @@ INDICATOR_META = {
     "institutional_shares":     {"label": "기관보유주식수(13F)",   "unit": "주", "decimals": 0},
     "institutional_holders":    {"label": "보유기관수(13F)",       "unit": "",  "decimals": 0},
     "institutional_qoq_change": {"label": "기관보유 전분기증감(%)", "unit": "%", "decimals": 1},
+    # ── 기관·외국인 수급 (flow.kr_investor 피드, KR 종목·일별 순매수 거래대금) ──
+    "inst_net_buy":       {"label": "기관 순매수(원)",   "unit": "원", "decimals": 0},
+    "foreign_net_buy":    {"label": "외국인 순매수(원)", "unit": "원", "decimals": 0},
 }
 
 # 항상 존재하는 가격 기반 지표 (지수/ETF/코인 포함)
@@ -400,6 +403,14 @@ SHORTVOL_INDICATOR_COLS = ["short_volume_ratio"]
 # 원시 3컬럼(가치·주식수·기관수) + qoq(주식수 전분기 대비 %, 파생). reindex-ffill 병합.
 INSTITUTIONAL_INDICATOR_COLS = ["institutional_value", "institutional_shares",
                                 "institutional_holders", "institutional_qoq_change"]
+
+# 외부 피드 원자료 컬럼 — OHLCV로 재계산 불가(수급·컨센서스·펀더·시총·공매도·13F). 증빙 엑셀은
+# 이들을 원시 컬럼으로 제공해야 백테스트를 독립 검증할 수 있다(BASE_INDICATOR_COLS=가격 파생은
+# 원자료 OHLCV에서 수식으로 재현되므로 원시 컬럼 불필요). excel_export 원자료 시트가 이 집합으로
+# IR 참조 컬럼을 걸러 원시값을 싣는다.
+EXTERNAL_FEED_COLS = frozenset(
+    FUND_INDICATOR_COLS + FLOW_INDICATOR_COLS + CONSENSUS_INDICATOR_COLS
+    + MARKETCAP_INDICATOR_COLS + SHORTVOL_INDICATOR_COLS + INSTITUTIONAL_INDICATOR_COLS)
 
 # 지표 소분류 — 조건 빌더 UI에서 드롭다운을 그룹화하기 위한 분류
 INDICATOR_GROUPS: dict[str, list[str]] = {

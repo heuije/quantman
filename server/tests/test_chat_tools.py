@@ -224,12 +224,16 @@ def test_attach_methodology_for_backtest():
     assert m["assumed"]                                  # 수수료·슬리피지 등 가정
 
 
-def test_attach_methodology_skips_non_backtest():
+def test_attach_methodology_data_source_non_backtest():
+    """비백테스트(select)도 **데이터 출처**는 붙는다(신뢰 소스 표면화) — 단 기간·기준자본·실행가정
+    같은 백테스트 전용 방법론 필드는 붙지 않는다(그건 simulate/sweep에만)."""
     res = {"success": True, "shape": "select", "ir": {"universe": {"kind": "all"},
            "signal": {"op": "data", "params": {"ref": "x"}}, "query": "select",
            "select": {"top_n": 3}}}
     out = chat_tools.attach_methodology(res)
-    assert "methodology" not in out                      # 스크린은 방법론 패널 미부착
+    meth = out.get("methodology") or {}
+    assert meth.get("data_source")                       # 데이터 출처는 명시(뉴스 아닌 신뢰 소스)
+    assert "period" not in meth and "initial_capital" not in meth   # 백테스트 전용 필드는 미부착
 
 
 def test_load_dataset_invalid_ir_returns_empty():

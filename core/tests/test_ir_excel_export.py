@@ -298,3 +298,41 @@ def test_excel_formula_math_reproduces_engine_metrics(built) -> None:
     assert cagr == pytest.approx(float(m["cagr"]), rel=1e-9, abs=1e-6)
     assert sharpe == pytest.approx(float(m["sharpe"]), rel=1e-9, abs=1e-6)
     assert mdd == pytest.approx(float(m["mdd"]), rel=1e-9, abs=1e-6)
+
+
+# ── 외부 피드 원자료(수급) 회귀 — OHLCV만 싣던 누락 부류 (기관/외인 순매수) ────────────
+def test_raw_sheet_includes_referenced_external_flow_column():
+    """원자료 시트가 IR이 참조한 외부 피드 원자료(기관 순매수)를 원시값으로 포함하는지.
+
+    이전엔 원자료 시트가 대상 OHLC + 신호 종가만 실어, '기관 순매수일 매수' 전략의 순매수
+    데이터가 엑셀에 없어 백테스트를 독립 검증할 수 없었다(재현: OHLCV로 재계산 불가한 외부
+    피드가 누락). 이제 EXTERNAL_FEED_COLS ∩ IR참조 ∩ 데이터존재 컬럼을 원시값으로 싣는다.
+    """
+    from quant_core import indicators
+    bars = _bars(0.002)
+    flow_df = pd.DataFrame({"inst_net_buy": np.linspace(-1e11, 1e11, len(bars)),
+                            "foreign_net_buy": np.linspace(1e11, -1e11, len(bars))},
+                           index=bars.index)
+    df = indicators.compute_all(bars, flow_df=flow_df)         # 실경로(load_dataset_for)와 동형 병합
+    assert "inst_net_buy" in df.columns
+    ds = {"AAA": df}
+    ir = StrategyIR(
+        name="기관 순매수 진입",
+        signal=Node(op="compare", params={"op": ">"},
+                    inputs={"left": data("inst_net_buy"), "right": const(0)}),
+        universe=Universe(kind="single", symbols=["AAA"]),
+        position=PositionSpec(direction="long", sizing=Sizing(mode="pct_cash", amount_pct=50.0),
+                              entry=Entry(mode="on_signal"), exit=Exit(hold_days=5)),
+        simulation=SimSpec(initial_capital=1e7, commission=0.0, slippage=0.0, sell_tax=0.0))
+    res = run_strategy_ir(ir, ds)
+    assert res.get("success"), res.get("error")
+    wb = load_workbook(io.BytesIO(build_strategy_excel(ir, ds, res)))
+    raw = wb["원자료"]
+    headers = [raw.cell(5, c).value for c in range(1, raw.max_column + 1)]
+    flow_col = next((c for c, h in enumerate(headers, 1) if h and "기관 순매수" in str(h)), None)
+    assert flow_col is not None, f"원자료에 기관 순매수 컬럼 없음: {headers}"
+    # 참조 안 한 외인 순매수는 싣지 않는다(참조 컬럼만 — 시트 비대 방지).
+    assert not any(h and "외국인 순매수" in str(h) for h in headers), headers
+    # 원시값(정적 수치)이 실제로 실렸는지.
+    vals = [raw.cell(r, flow_col).value for r in range(6, raw.max_row + 1)]
+    assert any(isinstance(v, (int, float)) and v != 0 for v in vals), "기관 순매수 값이 비어있음"
