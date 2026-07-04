@@ -11,6 +11,7 @@ import re
 import quant_core as qc
 from quant_core.futures_contract import (
     instrument_spec, roll_lead_days, OVERSEAS_ROOTS, _DOMESTIC_SPEC,
+    dataset_for_contract,
 )
 
 _KOSPI200 = "코스피200선물"
@@ -152,16 +153,20 @@ class LsContractResolver:
 
     @staticmethod
     def dataset_for_code_static(code: str) -> str | None:
-        """LS 계약코드 → 데이터셋 심볼(역매핑). 국내선물 A01…→정규 코스피200선물·A05…→미니.
-        주식/미등록 → None. I-2: A05 라이브 포지션이 None을 반환해 ledger에서 누수하던 결함을 닫는다."""
-        for sym, prefix in _DOMESTIC_PREFIX.items():   # 국내 prefix(A01 정규·A05 미니) — core 단일출처
-            if code and code.startswith(prefix):
+        """LS 계약코드 → 데이터셋 심볼(역매핑). shcode 매칭 후 core dataset_for_contract 위임.
+
+        LS는 코드공간이 셋 — 주문/마스터 shcode "A0166000"(A01/A05 prefix)·ISIN expcode
+        "KR4A01660005"·**잔고(t0441) KRX 상품코드형 "101T9000"**. 종전엔 shcode prefix만
+        인식해 잔고 코드가 None → 라우터가 조용히 정규화 스킵 → reconcile이 자기 포지션을
+        "외부 매도"로 오판·원장 삭제했다(2026-07 분기 인시던트). KRX형(101/105)·globex
+        역매핑은 core dataset_for_contract 단일출처에 위임한다(역매핑 지식 한 곳).
+        I-2: A05 라이브 포지션이 None을 반환해 ledger에서 누수하던 결함도 계속 닫는다."""
+        if not code:
+            return None
+        for sym, prefix in _DOMESTIC_PREFIX.items():   # LS shcode prefix(A01 정규·A05 미니)
+            if code.startswith(prefix):
                 return sym
-        for sym, root in OVERSEAS_ROOTS.items():
-            if code and code.startswith(root) and len(code) >= len(root) + 3 \
-                    and code[len(root)] in _CME_MONTHS:
-                return sym
-        return None
+        return dataset_for_contract(code)              # KRX형(101/105)·globex — core 단일출처
 
     def dataset_for_code(self, code: str) -> str | None:
         return self.dataset_for_code_static(code)

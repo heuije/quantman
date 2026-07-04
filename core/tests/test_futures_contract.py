@@ -242,3 +242,19 @@ def test_regular_resolves_a01_via_resolve_contract():
 def test_dataset_for_contract_splits_regular_mini():
     assert dataset_for_contract("A01606") == "코스피200선물"
     assert dataset_for_contract("A05606") == "미니코스피200선물"
+
+
+# ── dataset_for_contract — KRX 상품코드형(브로커 잔고 코드공간) ─────────────────────
+# LS 잔고(t0441)는 포지션을 단축코드(A01…)가 아니라 KRX 상품코드형 8자("101T9000")로
+# 보고한다. 이 형태 미인식 → 라우터 정규화 조용한 실패 → reconcile이 자기 포지션을
+# "외부 매도"로 오판·원장 삭제가 2026-07 원장↔브로커 분기 인시던트다.
+def test_dataset_for_contract_krx_numeric_form():
+    assert dataset_for_contract("101T9000") == "코스피200선물"   # LS 가이드 t0441 실측 형식
+    assert dataset_for_contract("101V6000") == "코스피200선물"
+    assert dataset_for_contract("105V6000") == "미니코스피200선물"
+
+
+def test_dataset_for_contract_krx_form_guards():
+    assert dataset_for_contract("101000") is None      # 6자 = 주식 코드공간(오매칭 방지 가드)
+    assert dataset_for_contract("201T9000") is None    # 옵션(콜) 상품코드 — 미등록 → None(호출부 표면화)
+    assert dataset_for_contract("106T9000") is None    # 코스닥150 — 카탈로그 미등록(등록 시 한 줄 추가)
