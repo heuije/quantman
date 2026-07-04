@@ -288,6 +288,7 @@ export default function StrategyDetail() {
       {tab === "config" && (strategy.engine === "ir" ? (
         <IrConfigTab strategy={strategy}
                      isFutures={assetClasses.some((ac) => ac.endsWith("_futures"))}
+                     assetClasses={assetClasses}
                      catalog={catalog} symbols={symbols} indicatorCatalog={indicatorCatalog}
                      onRemove={remove} onDemote={demote} />
       ) : (
@@ -394,6 +395,37 @@ function summarizeIrExit(ex: IrStrategyDef["position"]["exit"]): string {
   return parts.length ? parts.join(" · ") : "없음 (정기 리밸런싱 교체 또는 무청산)";
 }
 
+// ── 진입/청산 시점·가격 요약 (설정값 투명화) ──────────────────────────────────
+// 진입 시점: simulation.fill이 라이브 진입창(아침 시가창 vs 종가창)을 결정한다
+// (close/typical → 종가창, 그 외 → 아침 시가창). 백테스트 가정이자 라이브 SSOT.
+function entryTimingDesc(fill?: string): string {
+  return (fill === "close" || fill === "typical")
+    ? "당일 마감 — 종가 (종가단일가)"
+    : "다음 개장 — 시가 (동시호가)";   // next_open 또는 미지정(기본)
+}
+
+// 주문 방식(시장가/지정가)은 자산군(지역)이 결정한다 — 국내=시장가 동시호가·미국=지정가.
+// 전략의 실제 시장에 맞춰 표시(혼동 방지). 미해석 유니버스(KRX 스크리너 등)는 국내 기본.
+function orderPriceDesc(assetClasses: string[]): string {
+  const hasKr = assetClasses.some((ac) => ac.startsWith("kr_"));
+  const hasUs = assetClasses.some((ac) => ac.startsWith("us_"));
+  if (hasUs && hasKr) return "국내 시장가(동시호가) · 미국 지정가(현재가±버퍼)";
+  if (hasUs) return "지정가 — 신선한 현재가 ±버퍼";
+  return "시장가 — 동시호가 단일가";
+}
+
+// 청산 시점: 보유기간(개장/마감) + 조건 달성. hold_days=0 종가청산·≥1 익일 시가청산.
+function exitTimingDesc(ex: IrStrategyDef["position"]["exit"]): string {
+  const parts: string[] = [];
+  if (ex?.hold_days === 0) parts.push("당일 마감 — 종가 청산");
+  else if (ex?.hold_days != null && ex.hold_days >= 1)
+    parts.push(`보유 ${ex.hold_days}일 후 다음 개장 — 시가 청산`);
+  const hasCond = ex?.take_profit != null || ex?.stop_loss != null
+    || ex?.trail_pct != null || ex?.trail_atr_mult != null || ex?.condition != null;
+  if (hasCond) parts.push("조건 달성 시 (익절·손절·트레일·매도신호)");
+  return parts.length ? parts.join(" · 또는 ") : "정기 리밸런싱 교체 또는 무청산";
+}
+
 // 설정값 그룹 헤더 — 라이브(자동매매 실사용)는 골드 강조, 백테스트 가정은 muted.
 // (DESIGN.md: 빨강 --up은 방향성 숫자 전용 → 그룹 강조엔 골드 --accent 사용)
 function SettingsGroupHeader({ live, title, note }: { live: boolean; title: string; note: string }) {
@@ -415,9 +447,10 @@ function SettingsGroupHeader({ live, title, note }: { live: boolean; title: stri
 // 라이브 실제 계약수는 모델 A(브로커 실시간 주문가능수량)로 산정되므로 이 상수와 무관.
 const KOSPI200_MARGIN_RATE = 0.195;
 
-function IrConfigTab({ strategy, isFutures, catalog, symbols, indicatorCatalog, onRemove, onDemote }: {
+function IrConfigTab({ strategy, isFutures, assetClasses, catalog, symbols, indicatorCatalog, onRemove, onDemote }: {
   strategy: StrategyRow;
   isFutures: boolean;
+  assetClasses: string[];
   catalog: Catalog;
   symbols: SymbolInfo[];
   indicatorCatalog: IndicatorInfo[];
@@ -501,6 +534,8 @@ function IrConfigTab({ strategy, isFutures, catalog, symbols, indicatorCatalog, 
         {entry.mode === "scheduled" && (
           <Rule label="리밸런싱" v={IR_REBALANCE_LABEL[entry.rebalance ?? "monthly"] ?? "매월"} />
         )}
+        <Rule label="진입 시점" v={entryTimingDesc(sim.fill)} />
+        <Rule label="진입 가격" v={orderPriceDesc(assetClasses)} />
         <Rule label="방향" v={IR_DIR_LABEL[p.direction ?? "long"] ?? "롱"} />
         {isFutures ? (
           <>
@@ -512,7 +547,7 @@ function IrConfigTab({ strategy, isFutures, catalog, symbols, indicatorCatalog, 
                   v={`약 ${marginRatePct.toFixed(1)}% — 브로커·거래소 결정(유저 미설정), 라이브는 실시간`} />
           </>
         ) : (
-          <Rule label="사이징" v={sizingDetail} />
+          <Rule label="진입 사이즈" v={sizingDetail} />
         )}
         {entry.mode !== "on_signal" && entry.top_n != null && (
           <Rule label="상위 N" v={`${entry.top_n}종목`} />
@@ -524,7 +559,10 @@ function IrConfigTab({ strategy, isFutures, catalog, symbols, indicatorCatalog, 
 
       <section className="panel" style={{ marginTop: 12 }}>
         <h4>청산</h4>
-        <Rule label="규칙" v={summarizeIrExit(p.exit)} />
+        <Rule label="청산 시점" v={exitTimingDesc(p.exit)} />
+        <Rule label="청산 규칙" v={summarizeIrExit(p.exit)} />
+        <Rule label="청산 가격" v={orderPriceDesc(assetClasses)} />
+        <Rule label="청산 사이즈" v="전량 (100%)" />
       </section>
 
       {/* 🧪 백테스트 전용 가정값 — 라이브 발주에 영향 없음 */}
