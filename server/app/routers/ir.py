@@ -18,7 +18,7 @@ from sqlmodel import Session, select
 import quant_core as qc
 from quant_core.blocks import DatasetMeta, available_refs, catalog_spec
 from quant_core.blocks.node import Node, referenced_symbols
-from quant_core.data.feeds import estimate_kr, news_kr
+from quant_core.data.feeds import earnings_calendar, estimate_kr, news_kr
 from quant_core.ir_engine import (StrategyIR, backtest_from_spec, build_strategy_excel,
                                   needed_columns, needed_symbols, select_recent_days,
                                   strategy_from_spec,
@@ -233,6 +233,22 @@ def _attach_symbol_estimates(out: dict) -> dict:
     return out
 
 
+def _attach_symbol_earnings(out: dict) -> dict:
+    """단일 360 리포트에 실적 발표일 facet(earnings_calendar·yfinance)을 붙인다.
+
+    과거 확정 발표일(+실적·서프라이즈)·미래 예정일. 라이브 네트워크 의존이라 결정적 엔진
+    (run_describe_report) 밖 서버 엣지에서 조회(골든 불변·뉴스 facet 규약 동형). 미제공 시
+    미부착(가짜 0 금지). 미래 예정일은 현시점 스냅샷(변경 가능·PIT 백테스트 아님). US=티커·
+    KR=6자리 코드 자동판별. 단일 리포트가 아니면 무변경.
+    """
+    if out.get("report") != "single":
+        return out
+    cal = earnings_calendar.fetch_earnings(str(out.get("symbol") or ""))
+    if cal.get("past") or cal.get("upcoming"):
+        out["earnings_calendar"] = cal
+    return out
+
+
 @router.post("/strategy")
 def ir_strategy(body: dict, user: User = Depends(get_current_user),
                 session: Session = Depends(get_session)):
@@ -264,6 +280,7 @@ def ir_strategy(body: dict, user: User = Depends(get_current_user),
     if kind == "analysis":
         _attach_symbol_news(payload)
         _attach_symbol_estimates(payload)
+        _attach_symbol_earnings(payload)
     elif kind == "backtest":
         _persist_ir_backtest(session, user, body, payload)
     return payload

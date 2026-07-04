@@ -335,3 +335,22 @@ register(DataTypeSpec(
           "원시 3컬럼만 적재(비율·급증은 파생). 휴장=404 미게시. **수집 가동·엔진 소비 배선은 "
           "후속**(marketcap과 함께 — 엔진이 계산 못 하는 컬럼을 컴파일러에 노출하지 않음) → partial.",
 ))
+register(DataTypeSpec(
+    key="flow.institutional_13f", pclass=PClass.FLOW,
+    label="US 기관 13F 보유(총보유가치·보유주식수·보유기관수·전분기 순증감)", frequency="quarterly",
+    history_rule="2013Q2~(SEC 구조화 Form 13F Data Sets — 2013Q1↓ 원시파싱 후속)",
+    floor="2013-04-01", point_in_time=True,
+    source="SEC Form 13F Data Sets 분기 ZIP(구조화) + SEC FTD로 CUSIP→ticker(무키)",
+    provides=["institutional_value", "institutional_shares", "institutional_holders",
+              "institutional_qoq_change"],
+    required_meta=_BASE_META + ["as_of"],
+    downstream=["signal(기관보유 ref)", "screener", "study.event"],
+    current_status="partial",
+    notes="전 신고자 INFOTABLE을 CUSIP별 합산 → 종목별 분기 시계열(institutional/{ticker}.parquet). "
+          "as_of=보고분기말+45일(제출기한=집계 공개확정) → 미래참조 0. PIT=(CIK,분기) 최신신고만"
+          "(수정신고 supersede). 필러 오기입(값 단위·자릿수)은 CUSIP별 내재가격 중앙값 5배 밖 제외로 "
+          "정제(value·shares 동시·MSFT/AAPL 실측 가격 일치 검증). 옵션(PUTCALL)/비주식 제외=주식 롱 "
+          "보유만(13F 롱온리). institutional_qoq_change=institutional_shares 전분기 대비 %(소비층 파생). "
+          "미매핑 CUSIP(FTD 미등재 비유동주)·holders=1 종목 value 잔여오류는 정직 한계(신호는 "
+          "holders·qoq 우선). floor=구조화 자연 floor(2010 Core 미달분 정직 노출). 백필 진행중 → partial.",
+))

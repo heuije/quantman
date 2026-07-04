@@ -470,6 +470,29 @@ def _initial_shortvol_backfill():
         _log.exception("US 공매도량 초기 청크 예외 — 30분 cron 재시도")
 
 
+# ── US 13F 기관보유 (SEC 구조화 Form 13F Data Sets, 무키) ──────────────────────
+
+def _backfill_13f_chunk() -> None:
+    """US 13F 기관보유 백필 청크(30분) — 분기 ZIP 1개씩 최신→과거(다운로드→CUSIP 집계→종목별 저장).
+
+    CUSIP→ticker 맵 없으면 최초 1회 FTD로 구축. 실패 ZIP은 마커 금지·재시도. 전 분기 소진 후
+    무비용 no-op(신규 분기 자동 픽업). ZIP은 RAM(BytesIO) 처리 후 해제 — run당 1개(메모리 상한)."""
+    from quant_core.data.feeds import institutional_13f
+    res = institutional_13f.backfill_13f(limit=1)
+    if res.get("processed"):
+        data_cache.invalidate()
+    _log.info("[altdata] US 13F 백필 청크(SEC): %s", res)
+
+
+def _initial_13f_backfill():
+    try:
+        time.sleep(200)            # 공매도(170s)와 스태거
+        _log.info("US 13F(SEC) 초기 백필 청크 시작")
+        _backfill_13f_chunk()
+    except Exception:
+        _log.exception("US 13F 초기 청크 예외 — 30분 cron 재시도")
+
+
 # ── KR 시장지표 (공식 KRX Open API, KRX_API_KEY) ──────────────────────────────
 # V-KOSPI·옵션풋콜비율·KRX채권지수·국고채3/10년 = 매크로형 명명 시계열. 날짜축 cursor 백필
 # (DateCursorBackfill — 컨센서스와 동일 문법). 가벼운 지표(3서비스)는 넓은 윈도우,
@@ -1168,6 +1191,13 @@ def _build_scheduler() -> BackgroundScheduler:
         CronTrigger(day_of_week="sat", hour=9, minute=0),
         id="cot_weekly", replace_existing=True)
 
+    # US 13F 기관보유(SEC 구조화·무키) — 30분 청크 백필(분기 ZIP 1개/run·최신→과거·메모리 상한).
+    # 전 분기 소진 후 무비용 no-op(신규 분기 자동 픽업). CUSIP→ticker 맵은 최초 1회 FTD로 구축.
+    scheduler.add_job(
+        lambda: _run_with_retry("institutional_13f_chunk", _backfill_13f_chunk, scheduler),
+        CronTrigger(minute="23-59/30"),          # :23,:53 — marketcap(:01)·shortvol(:16)과 스태거
+        id="institutional_13f_chunk", replace_existing=True)
+
     # 03:00 — KR/US 시장 캘린더 일일 재빌드 (Q2+Q8).
     # exchange_calendars 패치(임시공휴일 추가)를 매일 받아서 stale 캘린더 방지.
     # 시각: 한국·미국 모두 새벽 — 사이클·시장 시간과 무관.
@@ -1216,6 +1246,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_initial_cot_refresh, daemon=True).start()
     _log.info("US 공매도량(FINRA) 초기 백필 thread 시작")
     threading.Thread(target=_initial_shortvol_backfill, daemon=True).start()
+    threading.Thread(target=_initial_13f_backfill, daemon=True).start()
     _log.info("KRX 시장지표(공식API) 초기 백필 thread 시작")
     threading.Thread(target=_initial_krx_market_refresh, daemon=True).start()
     _log.info("기술적 지표 초기 fetch thread 시작")

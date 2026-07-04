@@ -353,6 +353,11 @@ INDICATOR_META = {
     "trade_value":        {"label": "거래대금(원)",       "unit": "원", "decimals": 0},
     # ── US 공매도 거래량 (flow.us_short_volume 피드) ──
     "short_volume_ratio": {"label": "공매도비중(%, off-exchange)", "unit": "%", "decimals": 1},
+    # ── US 기관 13F 보유 (flow.institutional_13f 피드) ──
+    "institutional_value":      {"label": "기관보유가치(13F, $)",  "unit": "$", "decimals": 0},
+    "institutional_shares":     {"label": "기관보유주식수(13F)",   "unit": "주", "decimals": 0},
+    "institutional_holders":    {"label": "보유기관수(13F)",       "unit": "",  "decimals": 0},
+    "institutional_qoq_change": {"label": "기관보유 전분기증감(%)", "unit": "%", "decimals": 1},
 }
 
 # 항상 존재하는 가격 기반 지표 (지수/ETF/코인 포함)
@@ -391,6 +396,11 @@ MARKETCAP_INDICATOR_COLS = ["market_cap", "trade_value"]
 # ⚠ off-exchange(TRF 보고분) 기준·시장 전체 아님·공매도 잔고(short interest)와 별개.
 SHORTVOL_INDICATOR_COLS = ["short_volume_ratio"]
 
+# US 기관 13F 보유 (flow.institutional_13f 피드, US 종목·분기 PIT·2013Q2~).
+# 원시 3컬럼(가치·주식수·기관수) + qoq(주식수 전분기 대비 %, 파생). reindex-ffill 병합.
+INSTITUTIONAL_INDICATOR_COLS = ["institutional_value", "institutional_shares",
+                                "institutional_holders", "institutional_qoq_change"]
+
 # 지표 소분류 — 조건 빌더 UI에서 드롭다운을 그룹화하기 위한 분류
 INDICATOR_GROUPS: dict[str, list[str]] = {
     "가격·수익률": ["price_level", "pct_change_1d", "pct_change_5d",
@@ -405,6 +415,7 @@ INDICATOR_GROUPS: dict[str, list[str]] = {
     "펀더멘털":     list(FUND_INDICATOR_COLS),
     "수급":         list(FLOW_INDICATOR_COLS) + list(SHORTVOL_INDICATOR_COLS),
     "컨센서스":     list(CONSENSUS_INDICATOR_COLS),
+    "기관보유(13F)": list(INSTITUTIONAL_INDICATOR_COLS),
 }
 
 _COL_TO_GROUP = {col: grp for grp, cols in INDICATOR_GROUPS.items() for col in cols}
@@ -463,6 +474,27 @@ def add_short_volume(df: pd.DataFrame, sv_df: Optional[pd.DataFrame]) -> pd.Data
     return df
 
 
+def add_institutional_holdings(df: pd.DataFrame, inst_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """US 기관 13F 보유(분기 PIT 패널) reindex-ffill 병합 + qoq(전분기 순증감%) 파생.
+
+    qoq는 reindex **전** 분기 패널에서 pct_change 산출 — ffill 후 산출하면 비분기 거래일이
+    전부 0이 되어 오도. as_of=보고분기말+45일이라 그 시점 이후에만 노출(look-ahead 0).
+    US 종목만 존재(그 외 NaN) — add_flow 규약 동형.
+    """
+    if inst_df is None or inst_df.empty:
+        return df
+    df = df.copy()
+    panel = inst_df.sort_index()
+    if "institutional_shares" in panel.columns:
+        panel = panel.assign(institutional_qoq_change=(
+            panel["institutional_shares"].pct_change(fill_method=None) * 100))
+    i = panel.reindex(df.index, method="ffill")
+    for col in INSTITUTIONAL_INDICATOR_COLS:
+        if col in i.columns:
+            df[col] = i[col]
+    return df
+
+
 def add_consensus(df: pd.DataFrame, consensus_df: Optional[pd.DataFrame]) -> pd.DataFrame:
     """애널 컨센서스(변경점 패널) reindex-ffill 병합 + target_upside(종가 괴리율) 파생.
 
@@ -484,7 +516,8 @@ def compute_all(df: pd.DataFrame, fund_df: Optional[pd.DataFrame] = None,
                 consensus_df: Optional[pd.DataFrame] = None,
                 flow_df: Optional[pd.DataFrame] = None,
                 marketcap_df: Optional[pd.DataFrame] = None,
-                shortvol_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                shortvol_df: Optional[pd.DataFrame] = None,
+                institutional_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     df = add_returns(df)
     df = add_ma_deviation(df)
     df = add_ma_cross(df)
@@ -509,6 +542,8 @@ def compute_all(df: pd.DataFrame, fund_df: Optional[pd.DataFrame] = None,
         df = add_flow(df, flow_df)
     if shortvol_df is not None and not shortvol_df.empty:
         df = add_short_volume(df, shortvol_df)
+    if institutional_df is not None and not institutional_df.empty:
+        df = add_institutional_holdings(df, institutional_df)
     return df
 
 
@@ -547,7 +582,8 @@ def compute_columns(df: pd.DataFrame, columns,
                     consensus_df: Optional[pd.DataFrame] = None,
                     flow_df: Optional[pd.DataFrame] = None,
                     marketcap_df: Optional[pd.DataFrame] = None,
-                    shortvol_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                    shortvol_df: Optional[pd.DataFrame] = None,
+                    institutional_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """요청한 지표 컬럼만 계산해 부착(컬럼 프로젝션). OHLCV는 항상 보존.
 
     compute_all(45컬럼 전부)의 부분집합 버전. 반환 DataFrame의 **요청 컬럼 값은
@@ -587,6 +623,8 @@ def compute_columns(df: pd.DataFrame, columns,
         out = add_flow(out, flow_df)
     if (wanted & set(SHORTVOL_INDICATOR_COLS)) and shortvol_df is not None and not shortvol_df.empty:
         out = add_short_volume(out, shortvol_df)
+    if (wanted & set(INSTITUTIONAL_INDICATOR_COLS)) and institutional_df is not None and not institutional_df.empty:
+        out = add_institutional_holdings(out, institutional_df)
     return out
 
 
@@ -604,7 +642,8 @@ def get_all_indicator_columns() -> list[str]:
     return list(dict.fromkeys(                    # market_cap이 FUND·MARKETCAP 공유 — dedupe
         list(BASE_INDICATOR_COLS) + list(FUND_INDICATOR_COLS)
         + list(FLOW_INDICATOR_COLS) + list(CONSENSUS_INDICATOR_COLS)
-        + list(MARKETCAP_INDICATOR_COLS) + list(SHORTVOL_INDICATOR_COLS)))
+        + list(MARKETCAP_INDICATOR_COLS) + list(SHORTVOL_INDICATOR_COLS)
+        + list(INSTITUTIONAL_INDICATOR_COLS)))
 
 
 def get_indicator_label(col: str) -> str:

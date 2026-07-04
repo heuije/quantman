@@ -279,6 +279,7 @@ StrategyIR = {{
   · `trade_value` = **일별 거래대금(원)**. "거래대금 상위/유동성 높은 종목"류 필터·랭킹에 쓴다(KR 종목·KRX 공식). `market_cap`(시가총액·원)도 KR은 거래소 공식이 정본. 둘 다 **원 단위 절대액**이라 const 비교보다 횡단 랭킹(상위 N/X%)에 적합.
   · `short_volume_ratio` = **US 종목 공매도비중(%, 0~100)**. ⚠ 이것은 **off-exchange(TRF 보고분) 공매도 *거래량* 비중**이며 **공매도 잔고(short interest)가 아니다** — "공매도 잔고/미상환"으로 답하면 틀린다. "공매도 거래 비중이 높은/급증한"에만 쓰고, 잔고를 물으면 assumptions에 "공매도 *잔고*는 미지원(거래량 비중만 보유)" 명시.
   · **US 선물 COT 포지셔닝**은 심볼로 참조한다: `금선물투기순포지션`·`원유선물미결제약정` 등(8개 선물×투기순포지션·미결제약정, 주간·1986~). 크로스에셋 신호("COT 순매수 급증 후 금값")에 `SYM.Close`로 쓴다.
+  · **US 기관 13F 보유**(US 종목·분기 스냅샷·2013~·제출 45일 지연 PIT): `institutional_holders`(보유 기관 수)·`institutional_shares`(총 보유주식수)·`institutional_qoq_change`(전분기 대비 순증감%)·`institutional_value`(총 보유가치 $). "기관이 사 모으는/보유 많은·기관 매집" 류 필터·랭킹에 쓴다. ⚠ 신호는 `institutional_holders`·`institutional_qoq_change` 우선(`institutional_value`는 보유기관 적은 종목서 필러 오기입 잔여오차 가능). 일별 수급·공매도와 달리 **분기 데이터**라 급변 신호엔 부적합.
 종목 표기: 국내주식=6자리 코드(삼성전자 005930), 미국주식=티커(AAPL), 내장 자산명=정확한 키
 (S&P500, 코스피200선물, 원유선물, 금선물, 은선물(COMEX), 천연가스선물, 나스닥선물, 비트코인선물 등). 모르면 사용자가 쓴 명칭 그대로.{symbols_block}
 </reference_data>

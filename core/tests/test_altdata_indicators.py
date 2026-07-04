@@ -94,7 +94,8 @@ def test_compute_all_without_sidecars_adds_nothing():
     """사이드카 미전달 시 신규 컬럼 0 — 골든 byte-identical 안전망."""
     df = _price(["2024-01-03", "2024-01-04"], [100, 101])
     out = ind.compute_all(df)
-    for c in ind.FLOW_INDICATOR_COLS + ind.CONSENSUS_INDICATOR_COLS:
+    for c in (ind.FLOW_INDICATOR_COLS + ind.CONSENSUS_INDICATOR_COLS
+              + ind.INSTITUTIONAL_INDICATOR_COLS):
         assert c not in out.columns
 
 
@@ -102,6 +103,24 @@ def test_groups_registered():
     # 수급 그룹 = KR 순매수(flow.kr_investor) + US 공매도비중(파생). 둘 다 "수급" 성격.
     assert ind.INDICATOR_GROUPS["수급"] == ["inst_net_buy", "foreign_net_buy", "short_volume_ratio"]
     assert "target_upside" in ind.INDICATOR_GROUPS["컨센서스"]
+    # 13F 기관보유는 별도 그룹(수급=KR 일별과 분리)
+    assert ind.INDICATOR_GROUPS["기관보유(13F)"] == list(ind.INSTITUTIONAL_INDICATOR_COLS)
+
+
+def test_add_institutional_holdings_qoq_and_lookahead():
+    """13F 분기 패널 reindex-ffill + qoq(전분기 순증감%) 파생·look-ahead 0."""
+    dates = pd.date_range("2024-01-01", "2024-07-01").strftime("%Y-%m-%d")
+    df = _price(dates, [100.0] * len(dates))
+    panel = pd.DataFrame(
+        {"institutional_value": [1e9, 1.2e9], "institutional_shares": [1e6, 1.2e6],
+         "institutional_holders": [50.0, 55.0]},
+        index=pd.Index(pd.to_datetime(["2024-02-14", "2024-05-15"]), name="as_of"))
+    out = ind.add_institutional_holdings(df, panel)
+    assert pd.isna(out.loc["2024-01-15", "institutional_shares"])       # 첫 as_of 이전=look-ahead 0
+    assert out.loc["2024-03-01", "institutional_holders"] == 50.0
+    # qoq = (1.2M/1.0M−1)×100 = 20 (분기 패널에서 산출 — 비분기일 0 오도 방지)
+    assert out.loc["2024-06-01", "institutional_qoq_change"] == pytest.approx(20.0)
+    assert pd.isna(out.loc["2024-03-01", "institutional_qoq_change"])   # 첫 분기=전분기 없음
     # spec.provides(피드 7) ⊂ 컨센서스 그룹(8=7+target_upside)
     from quant_core.data import spec
     assert set(spec.get("estimate.consensus").provides) <= set(ind.INDICATOR_GROUPS["컨센서스"])

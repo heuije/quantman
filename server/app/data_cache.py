@@ -21,9 +21,11 @@ import quant_core as qc
 from quant_core import data_fetcher
 from quant_core.data.feeds.marketcap_krx import load_marketcap_all
 from quant_core.data.feeds.short_volume_us import load_shortvol_all
+from quant_core.data.feeds.institutional_13f import load_institutional_all
 from quant_core.indicators import (FUND_INDICATOR_COLS, CONSENSUS_INDICATOR_COLS,
                                     FLOW_INDICATOR_COLS, MARKETCAP_INDICATOR_COLS,
-                                    SHORTVOL_INDICATOR_COLS, compute_columns)
+                                    SHORTVOL_INDICATOR_COLS, INSTITUTIONAL_INDICATOR_COLS,
+                                    compute_columns)
 
 _log = logging.getLogger("app.data_cache")
 _lock = threading.Lock()
@@ -145,6 +147,7 @@ def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataF
     want_flow = bool(cols & set(FLOW_INDICATOR_COLS))
     want_mcap = bool(cols & set(MARKETCAP_INDICATOR_COLS))
     want_shortvol = bool(cols & set(SHORTVOL_INDICATOR_COLS))
+    want_inst = bool(cols & set(INSTITUTIONAL_INDICATOR_COLS))
     # market_cap은 FUND·MARKETCAP 공유 — 정본(KRX sto) 반영 위해 요청 시 fund도 로드
     # (add_fundamentals가 파생 market_cap을 만든 뒤 add_marketcap이 combine_first로 덮는다).
     if want_mcap:
@@ -154,6 +157,7 @@ def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataF
     flow = _aux_all("flow", data_fetcher.load_flow_all) if want_flow else {}
     mcap = _aux_all("mcap", load_marketcap_all) if want_mcap else {}
     shortvol = _aux_all("shortvol", load_shortvol_all) if want_shortvol else {}
+    inst = _aux_all("inst", load_institutional_all) if want_inst else {}
     _t_aux = time.monotonic()
     keys = list(raw.keys()) if symbols is None else [s for s in symbols if s in raw]
     # 전 유니버스 요청이고 모든 컬럼이 보조 지표(펀더/컨센서스/수급)면, 그 데이터가 *있는* 종목만
@@ -163,10 +167,12 @@ def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataF
     # (그 컬럼은 전 종목 유효 — 펀더 없는 종목도 랭킹 대상).
     if symbols is None and cols and cols <= (set(FUND_INDICATOR_COLS)
             | set(CONSENSUS_INDICATOR_COLS) | set(FLOW_INDICATOR_COLS)
-            | set(MARKETCAP_INDICATOR_COLS) | set(SHORTVOL_INDICATOR_COLS)):
+            | set(MARKETCAP_INDICATOR_COLS) | set(SHORTVOL_INDICATOR_COLS)
+            | set(INSTITUTIONAL_INDICATOR_COLS)):
         have = ((set(funds) if want_fund else set()) | (set(cons) if want_cons else set())
                 | (set(flow) if want_flow else set()) | (set(mcap) if want_mcap else set())
-                | (set(shortvol) if want_shortvol else set()))
+                | (set(shortvol) if want_shortvol else set())
+                | (set(inst) if want_inst else set()))
         keys = [s for s in keys if s in have]
     out: dict[str, pd.DataFrame] = {}
     for s in keys:
@@ -180,12 +186,14 @@ def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataF
         fl = flow.get(s) if want_flow else None
         mc = mcap.get(s) if want_mcap else None
         sv = shortvol.get(s) if want_shortvol else None
+        it = inst.get(s) if want_inst else None
         out[s] = compute_columns(df, cols,
                                  fd if (fd is not None and not fd.empty) else None,
                                  cd if (cd is not None and not cd.empty) else None,
                                  fl if (fl is not None and not fl.empty) else None,
                                  mc if (mc is not None and not mc.empty) else None,
-                                 sv if (sv is not None and not sv.empty) else None)
+                                 sv if (sv is not None and not sv.empty) else None,
+                                 it if (it is not None and not it.empty) else None)
     # 계측(뿌리④) — 스크리닝 3-10분 병목이 raw 콜드로드/보조데이터/compute 중 어디인지 분해.
     _end = time.monotonic()
     _log.info("get_projected: n=%d cols=%d recent_days=%s raw=%.2fs aux=%.2fs compute=%.2fs total=%.2fs",
