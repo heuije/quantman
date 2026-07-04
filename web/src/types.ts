@@ -632,6 +632,9 @@ export interface CycleSummary {
   n_skip_held?: number;
   n_rejected?: number; n_unfilled?: number; n_errors?: number;
   n_unparseable_orphan?: number;   // 청산 규칙 파싱 불가 고아(삭제·구버전 전략 보유분)
+  // v0.9.65 — 정산 시점 당일매매(hold_days=0) 미청산 잔존. >0이면 종가창 미실행 의심
+  // (의도치 않은 오버나이트 노출) — 서버 passthrough로 웹까지 전달.
+  n_daytrade_unclosed?: number;
   kill_switch?: boolean;
   equity_pre?: number; equity_post?: number;
   // 미국 해외 실시간 시세 미신청 — 장중 실시간 손절 미제공 (P8)
@@ -909,6 +912,13 @@ export interface ReconciliationResult {
   external_extras_count?: number;
   has_drift?: boolean;
   error?: string;
+  // v0.9.65 — 선물 신원계층 이상(잔고 조회 실패/코드 미매핑) 시 파괴적 자동 정정을
+  // 차단했음을 표면화(fail-safe). 존재하면 정합성 점검을 신뢰할 수 없다는 신호.
+  reconcile_blocked?: {
+    fetch_failed: string[];
+    unmapped_codes: string[];
+    blocked_futures_orphans: number;
+  };
 }
 
 /** 내일 매매 미리보기 — 각 데이터 cron 후 서버가 평가해 sync snapshot에 merge */

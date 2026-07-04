@@ -120,7 +120,7 @@ type Alert = {
 
 export function StatusStrip({
   autoStatus, health, receivedAt, lastHeartbeatAt,
-  killSwitch, drawdown, reconciliation, cycleSummary, equityNow, onCommand,
+  killSwitch, drawdown, reconciliation, cycleSummary, equityNow, heldCount, onCommand,
 }: {
   autoStatus?: "running" | "paused" | "stopped";
   health?: LocalHealth;
@@ -131,6 +131,7 @@ export function StatusStrip({
   reconciliation?: ReconciliationResult;
   cycleSummary?: CycleSummary;
   equityNow?: number;
+  heldCount?: number;   // 현재 보유 종목 수 — 킬스위치 발동 상태의 "미청산 잔존" 표면화용
   onCommand: (type: CommandType) => void;
 }) {
   const now = new Date();
@@ -168,8 +169,14 @@ export function StatusStrip({
 
   const alerts: Alert[] = [];
   if (killSwitch?.active) {
+    // T2b — 킬스위치가 켜졌는데 보유가 남아 있으면 "청산 미완료"(예: 장 마감으로 거부).
+    // 무조건 자동 재청산은 자금경로 위험이라 하지 않고, 미완료 상태를 명확히 표면화한다.
+    const held = heldCount ?? 0;
+    const act = held > 0
+      ? `신규 진입 차단 중 · 미청산 보유 ${held}건 (청산 미완료) — 장중 [전량 매도]로 완료하세요`
+      : "신규 진입 차단 중 · 보유 없음(청산 완료)";
     alerts.push({ tone: "red", main: `킬스위치 발동: ${killSwitch.reason || "일일 손실 한도"}`,
-      act: "신규 진입 차단 중 · 청산은 계속", cmd: "RESET_KILL_SWITCH", cmdLabel: "해제" });
+      act, cmd: "RESET_KILL_SWITCH", cmdLabel: "해제" });
   }
   const depth = drawdown?.depth_pct;
   if (depth != null && depth <= -10) {
@@ -188,11 +195,28 @@ export function StatusStrip({
         act: "100% 도달 시 신규 진입 자동 차단" });
     }
   }
-  if (reconciliation?.has_drift) {
+  // v0.9.65 — 선물 신원계층 이상으로 파괴적 자동 정정을 차단한 경우(fail-safe). 이땐
+  // has_drift도 켜지지만, "자동 정리됨"이 아니라 "점검 불가"라 별도 red 경보로 우선 표시.
+  if (reconciliation?.reconcile_blocked) {
+    const rb = reconciliation.reconcile_blocked;
+    const why = rb.unmapped_codes?.length ? `미매핑 코드 ${rb.unmapped_codes.join(", ")}`
+      : rb.fetch_failed?.length ? `잔고 조회 실패 (${rb.fetch_failed.join(", ")})`
+      : "선물 신원계층 이상";
+    alerts.push({ tone: "red", main: `정합성 점검 불가 — ${why}`,
+      act: "안전을 위해 자동 정정을 차단했습니다 · 로컬앱 최신 버전 확인 후 다시 점검",
+      cmd: "RECONCILE_NOW", cmdLabel: "다시 점검" });
+  } else if (reconciliation?.has_drift) {
     const n = (reconciliation.ledger_orphans?.length ?? 0)
       + (reconciliation.external_extras?.length ?? 0);
     alerts.push({ tone: "amber", main: `${n}종목이 증권사 잔고와 내부 기록 불일치 (수동 매매 추정)`,
       act: "지금 점검하면 자동 정리됩니다", cmd: "RECONCILE_NOW", cmdLabel: "지금 점검" });
+  }
+  // v0.9.65 — 정산 시점 당일매매 미청산 잔존(종가창 미실행 감지). 의도치 않은 오버나이트.
+  const dtUnclosed = cycleSummary?.n_daytrade_unclosed ?? 0;
+  if (dtUnclosed > 0) {
+    alerts.push({ tone: "red",
+      main: `당일매매 미청산 ${dtUnclosed}건 — 종가창 미실행 의심(의도치 않은 오버나이트 노출)`,
+      act: "익일 아침 사이클이 청산 예정 · 필요 시 [전량 매도]로 즉시 청산" });
   }
   const orphan = cycleSummary?.n_unparseable_orphan ?? 0;
   if (orphan > 0) {

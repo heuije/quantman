@@ -17,9 +17,9 @@ from datetime import datetime
 import webbrowser
 from tkinter import font as tkfont, messagebox, ttk
 
-from . import (__version__, auto_state, gui_format, killswitch, kis_health,
-                onboarding, order_log, pairing, secrets_store, sync_client,
-                updater)
+from . import (__version__, analytics, auto_state, gui_format, killswitch,
+                kis_health, onboarding, order_log, pairing, secrets_store,
+                sync_client, updater)
 from .commands_client import CommandClient
 from .config import (EQUITY_PATH, LEDGER_PATH, PENDING_ORDERS_PATH,
                        PLATFORM_URL)
@@ -226,6 +226,22 @@ class SettingsApp:
             command=self._dismiss_catchup_banner)
         self.catchup_banner_btn.pack(side="right", padx=12, pady=6)
         # 평소엔 숨김. _check_catchup_result_polling이 5초 후 첫 체크 시작.
+
+        # 명령 결과 배너 — 웹 명령(비상청산 등) 실행 결과를 데스크탑 앱에도 표면화.
+        # 투명성: 청산이 거부(예: 영업일 아님)됐는데 성공처럼 보이던 문제 — 성공 green·
+        # 문제 red로 분리 표시. _handle_command가 _show_cmd_result_banner로 노출.
+        self.cmd_result_banner = tk.Frame(self.root, bg=RED)
+        self.cmd_result_label = tk.Label(
+            self.cmd_result_banner, text="", bg=RED, fg="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+            justify="left", anchor="w", wraplength=900)
+        self.cmd_result_label.pack(side="left", padx=12, pady=8, fill="x",
+                                    expand=True)
+        self.cmd_result_btn = ttk.Button(
+            self.cmd_result_banner, text="확인",
+            command=self._dismiss_cmd_result_banner)
+        self.cmd_result_btn.pack(side="right", padx=12, pady=6)
+        # 평소엔 숨김.
 
         # 상태 히어로 — 한눈에 현재 상태를 보여준다
         self.hero = tk.Frame(self.root, bg=SLATE)
@@ -1496,10 +1512,22 @@ class SettingsApp:
             from .runner import run_emergency_liquidation
             payload = run_emergency_liquidation()
             self.root.after(100, self.refresh_status)
-            cs = payload.get("cycle_summary", {})
-            return {"liquidated_positions": len(payload.get("positions", [])),
-                    "n_sold": cs.get("n_sold", 0),
-                    "n_rejected": cs.get("n_rejected", 0)}
+            # 투명성 — 결과 요약(거부 사유 포함)을 웹 ack로 반환 + 데스크탑 배너로 표면화.
+            # 청산이 거부(영업일 아님 등)돼도 성공처럼 보이던 문제를 닫는다. 킬스위치
+            # ON(자동매매 중지)과 실제 청산 성공은 별개임을 메시지가 분리 명시한다.
+            result = analytics.emergency_liquidation_summary(payload)
+            self.root.after(0, lambda r=result:
+                            self._show_cmd_result_banner(r["message"], ok=r["ok"]))
+            return {
+                "ok": result["ok"],
+                "message": result["message"],
+                "liquidated_positions": len(payload.get("positions", [])),
+                "n_liquidated": result["n_liquidated"],
+                "n_rejected": result["n_rejected"],
+                "n_errors": result["n_errors"],
+                "rejected_reasons": result["rejected_reasons"],
+                "kill_switch": result["kill_switch"],
+            }
 
         if t == "CANCEL_ORDER":
             order_no = params.get("order_no")
@@ -2618,6 +2646,21 @@ class SettingsApp:
             catchup.CATCHUP_RESULT_PATH.unlink(missing_ok=True)
         except Exception:
             pass
+
+    # ── 명령 결과 배너 (웹 명령 실행 결과 데스크탑 표면화) ────────────────────────
+    def _show_cmd_result_banner(self, text: str, ok: bool):
+        """웹 명령(비상청산 등) 실행 결과를 상단 배너로 — 성공 green·문제 red.
+
+        Tk 위젯 변경이라 반드시 메인 스레드에서 호출(_handle_command은 CommandClient
+        스레드 → root.after(0, ...)로 마샬링). 유저 투명성: 거부/오류를 명시한다."""
+        color = GREEN if ok else RED
+        self.cmd_result_banner.config(bg=color)
+        self.cmd_result_label.config(text=text, bg=color)
+        # hero 위에 노출(다른 배너와 동일 위치 규약).
+        self.cmd_result_banner.pack(side="top", fill="x", before=self.hero)
+
+    def _dismiss_cmd_result_banner(self):
+        self.cmd_result_banner.pack_forget()
 
     def _start_update(self):
         """진행률 다이얼로그 + background 다운로드/설치."""

@@ -1147,6 +1147,22 @@ thead th { color: var(--muted); font-weight: 600; }
 .error { color: var(--red); font-size: 13px; margin: 8px 0; }
 .ok { color: var(--green); font-size: 13px; margin: 8px 0; }
 .muted { color: var(--muted); font-size: 13px; }
+
+/* 명령 결과 배너 (트레이딩 — 투명성 T1) — 성공 green·문제 red·대기 amber */
+.cmd-result {
+  display: flex; align-items: flex-start; gap: 10px; justify-content: space-between;
+  margin: 8px 0; padding: 10px 14px; border-radius: 8px;
+  font-size: 13px; line-height: 1.55; border-left: 3px solid var(--muted);
+}
+.cmd-result span { flex: 1; }
+.cmd-result.ok  { background: var(--green-soft); border-left-color: var(--green); color: var(--text); }
+.cmd-result.bad { background: var(--red-soft);   border-left-color: var(--red);   color: var(--text); }
+.cmd-result.pending { background: var(--amber-soft); border-left-color: var(--amber); color: var(--muted); }
+
+/* 최근 명령 이력 표 (트레이딩 감사로그 — 투명성 T5) */
+.cmd-log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cmd-log-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.cmd-log-table tr:last-child td { border-bottom: none; }
 .center-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
 .auth-box { width: 360px; }
 .auth-box .brand { font-size: 22px; }

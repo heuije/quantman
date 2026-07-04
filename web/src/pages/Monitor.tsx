@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { MarketBar, PositionDetailCards } from "../components/MonitorCards";
 import { PerformanceHero, StatusStrip } from "../components/MonitorHero";
@@ -16,6 +16,44 @@ import type {
 // ETag/304 결합으로 egress·DB 부담 60~80% 감소 예상.
 const REFRESH_MS = 15000;
 
+// ── 명령 결과 사람용 표현 (투명성 T1 — 유저가 성공/실패/거부를 즉시 안다) ──────────
+function labelForCommand(t: CommandType): string {
+  switch (t) {
+    case "LIQUIDATE_ALL": return "전량 매도 후 중지";
+    case "PAUSE_AUTO": return "일시정지";
+    case "RESUME_AUTO": return "재개";
+    case "RESET_KILL_SWITCH": return "킬스위치 해제";
+    case "RECONCILE_NOW": return "정합성 점검";
+    case "RUN_CYCLE_NOW": return "지금 실행";
+    case "CANCEL_ORDER": return "주문 취소";
+    default: return t;
+  }
+}
+
+// 로컬앱 ack 결과(status·result) → 배너 텍스트 + ok(성공 green·문제 red·대기 null).
+// 로컬앱이 사람용 message를 준 경우(비상청산: 거부 사유·미청산 안내 포함) 그대로 쓴다.
+function describeCommandResult(cmd: CommandRow): { text: string; ok: boolean | null } {
+  const label = labelForCommand(cmd.type);
+  const r = (cmd.result ?? {}) as Record<string, unknown>;
+  if (cmd.status === "failed" || typeof r.error === "string") {
+    return { text: `${label} 실패 — ${(r.error as string) || "로컬앱 오류"}`, ok: false };
+  }
+  if (typeof r.message === "string" && r.message) {
+    return { text: r.message, ok: r.ok === undefined ? true : Boolean(r.ok) };
+  }
+  return { text: `${label} 완료`, ok: true };
+}
+
+// 명령 상태 배지 (T5 — 전송/실행/완료/실패를 유저가 추적).
+function cmdStatusMeta(s: CommandRow["status"]): { text: string; color: string } {
+  switch (s) {
+    case "done": return { text: "완료", color: "var(--green)" };
+    case "failed": return { text: "실패", color: "var(--red)" };
+    case "delivered": return { text: "실행 중", color: "var(--amber)" };
+    default: return { text: "전송됨", color: "var(--muted)" };
+  }
+}
+
 export default function Monitor() {
   const [snap, setSnap] = useState<SyncSnapshot | null>(null);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
@@ -25,6 +63,11 @@ export default function Monitor() {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // 투명성(T1) — 마지막 명령 실행 결과 배너. activeCmdRef는 stale 폴링이 새 명령
+  // 결과를 덮지 않도록 현재 추적 중인 명령 id를 들고 있다.
+  const [cmdResult, setCmdResult] =
+    useState<{ text: string; ok: boolean | null } | null>(null);
+  const activeCmdRef = useRef<number>(0);
 
   async function load() {
     try {
@@ -74,13 +117,41 @@ export default function Monitor() {
   // 명령(재개·전량매도·킬스위치 해제)이 살아있는 기기로 가게 한다.
   const targetDevice = devices.find((d) => d.id === snap?.device_id) ?? devices[0];
 
+  // 명령 ack 폴링 — 거부는 즉시, 실체결은 로컬앱 _wait_pending 대기라 넉넉히(~80s).
+  async function pollCommandResult(deviceId: number, cmdId: number): Promise<CommandRow | null> {
+    for (let i = 0; i < 40; i++) {
+      await new Promise((res) => setTimeout(res, 2000));
+      if (activeCmdRef.current !== cmdId) return null;   // 더 새 명령 시작 → 폐기
+      try {
+        const list = await api.listCommands(deviceId, false);
+        const c = list.find((x) => x.id === cmdId);
+        if (c && (c.status === "done" || c.status === "failed")) return c;
+      } catch { /* 폴링 실패는 재시도 */ }
+    }
+    return null;
+  }
+
   async function send(type: CommandType,
                       params: Record<string, string | number> = {}) {
     if (!targetDevice) { setErr("기기 페어링이 필요합니다."); return; }
-    setBusy(true);
+    const dev = targetDevice.id;
+    setBusy(true); setCmdResult(null);
     try {
-      await api.createCommand(targetDevice.id, type, params);
+      const cmd = await api.createCommand(dev, type, params);
+      activeCmdRef.current = cmd.id;
+      setCmdResult({ text: `${labelForCommand(type)} 전송됨 — 로컬앱 실행 대기 중…`, ok: null });
       await load();
+      // 백그라운드 추적(UI 블록 안 함) — acked되면 결과 배너로 갱신. 투명성 T1/T2:
+      // 청산이 거부(영업일 아님 등)돼도 성공처럼 보이게 두지 않는다.
+      void (async () => {
+        const done = await pollCommandResult(dev, cmd.id);
+        if (activeCmdRef.current !== cmd.id) return;
+        if (done) { setCmdResult(describeCommandResult(done)); load(); }
+        else setCmdResult({
+          text: `${labelForCommand(type)}: 로컬앱 응답이 없습니다 — 데스크탑 앱이 켜져 있는지 확인하세요.`,
+          ok: false,
+        });
+      })();
     } catch (e) {
       setErr((e as Error).message);
     } finally { setBusy(false); }
@@ -126,7 +197,8 @@ export default function Monitor() {
           <StatusStrip autoStatus={autoStatus} health={p?.health}
             receivedAt={snap?.received_at} lastHeartbeatAt={snap?.last_heartbeat_at}
             killSwitch={ks} drawdown={p?.drawdown} reconciliation={p?.reconciliation}
-            cycleSummary={summary} equityNow={equityNow} onCommand={send} />
+            cycleSummary={summary} equityNow={equityNow} heldCount={positions.length}
+            onCommand={send} />
 
           {/* 제어 액션 */}
           <div className="panel monitor-actions">
@@ -137,12 +209,26 @@ export default function Monitor() {
             <button className="ghost sm" style={{ color: "var(--red)" }}
                     disabled={actionDisabled} title={pairTooltip}
                     onClick={() => {
-                      if (confirm("정말 모든 보유 종목을 매도하고 신규 매수를 중지하시겠습니까?")) send("LIQUIDATE_ALL");
+                      // T4 — 장 마감·비영업일이면 청산이 거부되므로 확정 전에 현재 시장
+                      // 단계를 노출한다(phase는 서버가 준 사람용 문자열 — 취약한 디코딩 회피).
+                      const phase = market?.session?.phase;
+                      const note = "\n\n" + (phase ? `현재 시장: ${phase}\n` : "")
+                        + "장 마감·비영업일에는 청산 주문이 거부됩니다(거부 시 결과에 사유가 표시됩니다).";
+                      if (confirm("정말 모든 보유 종목을 매도하고 신규 매수를 중지하시겠습니까?" + note)) send("LIQUIDATE_ALL");
                     }}>전량 매도 후 중지</button>
             <span className="muted monitor-device">
               {targetDevice ? `기기: ${targetDevice.name} (#${targetDevice.id})` : "기기 페어링 필요"}
             </span>
           </div>
+
+          {/* 명령 결과 (T1 투명성) — 성공/실패/거부/대기를 즉시 표시.
+              비상청산이 영업일 아님으로 거부돼도 성공처럼 보이던 문제를 닫는다. */}
+          {cmdResult && (
+            <div className={`cmd-result ${cmdResult.ok === null ? "pending" : cmdResult.ok ? "ok" : "bad"}`}>
+              <span>{cmdResult.text}</span>
+              <button className="x-btn" onClick={() => setCmdResult(null)} aria-label="닫기">×</button>
+            </div>
+          )}
 
           {/* 시장 컨텍스트 */}
           <MarketBar ctx={market} />
@@ -168,6 +254,33 @@ export default function Monitor() {
         <div className="audit-body">
 
       <TradingTimeline />
+
+      {/* 최근 명령 (T5 투명성) — 보낸 명령의 상태·결과를 유저가 추적 */}
+      {cmds.length > 0 && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>최근 명령</h3>
+          <table className="cmd-log-table">
+            <tbody>
+              {cmds.slice(0, 8).map((c) => {
+                const st = cmdStatusMeta(c.status);
+                const acked = c.status === "done" || c.status === "failed";
+                const outcome = acked ? describeCommandResult(c).text : "실행 대기 중…";
+                return (
+                  <tr key={c.id}>
+                    <td>{labelForCommand(c.type)}</td>
+                    <td style={{ color: st.color, fontWeight: 600, whiteSpace: "nowrap" }}>{st.text}</td>
+                    <td className="muted">{outcome}</td>
+                    <td className="muted" style={{ whiteSpace: "nowrap" }}>
+                      {new Date(c.created_at).toLocaleTimeString("ko-KR",
+                        { hour: "2-digit", minute: "2-digit" })}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* 사이클 요약 */}
       {summary && (
