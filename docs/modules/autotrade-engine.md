@@ -91,6 +91,14 @@ tolerance는 **미국 전용 라이브 버퍼**(국내 무시)·default ±3%·�
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [진행중] 포지션 정합성 구조 재설계 — 원장↔브로커 분기 인시던트 (2026-07-04 착수, `fix/autotrade-position-integrity`)
+
+**의도.** 라이브(모의·LS 국내선물)에서 원장↔브로커가 완전 분기한 인시던트(06-30~07-03, `docs/incidents/2026-07-03-futures-ledger-divergence.md`)의 구조 뿌리 4개를 부류 단위로 닫는다: R1 reconcile 파괴적 자동삭제(매칭 실패를 "외부 매도"로 단정) · R2 LS 잔고 KRX형 계약코드(101T9000) 정규화 조용한 실패 · R3 정합 불변식 부재 · R4 종가창 미실행 무감지. 서버/웹 무변경, R5 commingle·결함C(오버나이트 롱 hold0 서버측)는 후속.
+
+**계획·구현(설계서 `docs/REDESIGN/autotrade-position-integrity-redesign.md`).** D1 core `dataset_for_contract`에 KRX 숫자형 프리픽스(101/105·8자 가드) 역매핑 → D2 LS 역매퍼 core 위임 + 라우터 정규화 실패 fail-loud(`symbol_unmapped`) → D3 reconcile fail-safe(`fetch_failed`/`symbol_unmapped` 시 선물 orphan 파괴 차단·`reconcile_blocked` 표면화·주식 차감 유지) → D4 정산 불변식 I5(당일매매 잔존 감지 `n_daytrade_unclosed`). 인시던트 재현 회귀 포함 테스트 5파일, local+core 1404 green(1 fail=선재 캘린더 테스트 격리 플레이크·별도 태스크).
+
+**남은 것.** PR·머지(허락 게이트) → 로컬앱 릴리스 → 모의 재검증(reconcile in_sync·n_daytrade_unclosed=0·주식 수동매도 차감 유지) 후 [완료] 전환·교훈 distill.
+
 ### [완료-draft] LS증권 2번째 REST 브로커 — 국내주식 토대 (2026-06-17)
 
 **의도.** KIS에 이어 LS증권(구 이베스트)을 자동매매 실행계층 2번째 REST 브로커로 추가. 국내주식 범위, 계좌·키 발급 전이라 draft(필드 미검증). 전략IR·백테스트·데이터 무변경(실행계층 국소 추가).

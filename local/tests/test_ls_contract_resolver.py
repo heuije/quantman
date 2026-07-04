@@ -27,6 +27,18 @@ def test_dataset_for_code_reverse():
     assert LsContractResolver.dataset_for_code_static("005930") is None
 
 
+def test_dataset_for_code_krx_balance_form():
+    # LS 잔고(t0441)는 KRX 상품코드형("101T9000")으로 보고 — shcode(A01…)와 다른 코드공간.
+    # 미인식 → 조용한 정규화 실패 → reconcile 원장 오삭제가 2026-07 분기 인시던트
+    # (core dataset_for_contract 위임으로 해소).
+    from localapp.ls_futures_contracts import LsContractResolver
+    assert LsContractResolver.dataset_for_code_static("101T9000") == "코스피200선물"
+    assert LsContractResolver.dataset_for_code_static("101V6000") == "코스피200선물"
+    assert LsContractResolver.dataset_for_code_static("105T9000") == "미니코스피200선물"
+    assert LsContractResolver.dataset_for_code_static("201T9000") is None   # 옵션 — 미등록
+    assert LsContractResolver.dataset_for_code_static("") is None
+
+
 # ── F5: 해외선물 resolver ─────────────────────────────────────────────────────
 from localapp import ls_futures_contracts as lfc
 

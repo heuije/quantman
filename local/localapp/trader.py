@@ -322,11 +322,27 @@ class Trader:
             log.error("reconcile: KIS 잔고 조회 실패 — skip: %s", e)
             return {"error": f"KIS 잔고 조회 실패: {e}"}
 
+        # I2(정합성 fail-safe) — 선물 신원계층이 비정상이면 선물 orphan의 파괴적 정정을
+        # 차단한다. "원장에 있는데 브로커에 없음 = 외부 매도"라는 추론은 매칭이 신뢰
+        # 가능할 때만 성립하는데, 다음 두 경우는 매칭 자체가 깨져 있다:
+        #  ① balance.fetch_failed — 구성된 선물 leg 조회 실패로 그 포지션들이 스냅샷에
+        #     없음 → 원장 선물 전부가 orphan처럼 보여 전량 삭제 사고로 직결.
+        #  ② symbol_unmapped — 잔고 계약코드 정규화 실패(2026-07 분기 인시던트의 방아쇠:
+        #     LS t0441 KRX형 코드 미인식) → (symbol,side) 키가 브로커 쪽에서 원시 코드로
+        #     남아 원장(상품명)과 절대 일치하지 않음.
+        # 이때는 무동작+표면화가 유일하게 안전하다. 주식은 symbol=종목코드로 양쪽 동일
+        # (정규화 무관)이라 주식 orphan 자동 차감(승인된 수동매도 대응)은 종전대로 유지.
+        fetch_failed = list((snap.get("balance") or {}).get("fetch_failed") or [])
+        unmapped = sorted({str(p.get("symbol", "")) for p in snap.get("positions", [])
+                           if p.get("symbol_unmapped")})
+        futures_identity_broken = bool(fetch_failed or unmapped)
+
         # M3: self.ledger 비교(reconcile_ledger)부터 차감·_save까지 단일 락 안에서
         # — 같은 락을 쓰는 cycle·WS 체결이 비교와 변경 사이에 ledger를 바꿔
         # stale 계획으로 차감하는 race를 막는다. account_snapshot(네트워크)은
         # self.ledger를 읽지 않으므로 락 밖에 둔다. (settlement 경로는 이미 이
         # 락을 쥐고 들어오며 RLock이라 재진입 안전, GUI 수동 호출 경로를 닫는다.)
+        blocked_futures_orphans = 0
         with _CYCLE_LOCK:
             # M9 참고: reconcile 호출자는 전부 ephemeral 인스턴스(settlement·gui가
             # 매번 새 Trader 생성 = 디스크 최신 적재)라 여기서 reload하지 않는다 —
@@ -334,6 +350,16 @@ class Trader:
             result = analytics.reconcile_ledger(snap.get("positions", []), self.ledger)
             orphans = result.get("ledger_orphans", [])
             applied: list[dict] = []
+
+            if futures_identity_broken:
+                fut_orphans = [o for o in orphans if qc.is_futures(o.get("symbol", ""))]
+                if fut_orphans:
+                    log.error(
+                        "reconcile: 선물 신원계층 비정상(fetch_failed=%s, unmapped=%s) — "
+                        "선물 orphan %d건 자동 차감 차단(외부 매도 추론 신뢰 불가·표면화만)",
+                        fetch_failed, unmapped, len(fut_orphans))
+                blocked_futures_orphans = len(fut_orphans)
+                orphans = [o for o in orphans if not qc.is_futures(o.get("symbol", ""))]
 
             if orphans:
                 plans = analytics.plan_orphan_adjustments(orphans)
@@ -370,8 +396,36 @@ class Trader:
 
         result["applied"] = applied
         result["external_extras_count"] = len(result.get("external_extras", []))
-        result["has_drift"] = bool(applied) or bool(result.get("external_extras"))
+        if futures_identity_broken:
+            # 표면화 — cycle summary→서버→웹으로 전달돼 "정합성 점검 불가" 상태를 알린다.
+            result["reconcile_blocked"] = {
+                "fetch_failed": fetch_failed, "unmapped_codes": unmapped,
+                "blocked_futures_orphans": blocked_futures_orphans,
+            }
+        result["has_drift"] = (bool(applied) or bool(result.get("external_extras"))
+                               or futures_identity_broken)
         return result
+
+    def daytrade_unclosed(self, market: str) -> list[dict]:
+        """정산 시점에 남아 있는 당일매매(hold_days==0) 포지션 — 불변식 I5 감시용.
+
+        당일매매 포지션은 그날 종가창이 청산해야 하므로, **장 마감 후 정산**(post_close_
+        settlement) 시점에 하나라도 남아 있으면 원인 무관(종가창 미실행·발주 거부·부분
+        체결)하게 "당일 청산 실패 = 의도치 않은 오버나이트 노출"이다. 2026-07-02 종가창
+        cron 미발화가 이 상태를 무감지로 지나가 익일에야 드러났다 — 이 감시가 당일 15:50에
+        표면화한다. 잡 실행 여부가 아니라 **상태**를 검사해 부류 전체를 잡는다.
+        ⚠ 개장 직후 reconcile(post_open_reconcile)에선 호출 금지 — 당일매매 보유가 정상."""
+        out = []
+        for sid, pos in self.ledger.items():
+            if _market_group_safe(pos.get("symbol", "")) != market:
+                continue
+            hd = (((pos.get("definition") or {}).get("position") or {})
+                  .get("exit") or {}).get("hold_days")
+            if hd == 0 and int(pos.get("qty") or 0) > 0:
+                out.append({"sid": sid, "symbol": pos.get("symbol", ""),
+                            "qty": int(pos.get("qty") or 0),
+                            "strategy_name": pos.get("strategy_name", "")})
+        return out
 
     def _safe_price(self, symbol: str) -> float | None:
         try:

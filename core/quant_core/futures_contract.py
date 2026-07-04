@@ -45,6 +45,16 @@ _DOMESTIC_SPEC: dict[str, tuple[str, str]] = {
 }
 _DOMESTIC = tuple(_DOMESTIC_SPEC)
 
+# 국내 선물 KRX 표준 숫자형 상품코드 prefix — 브로커 **잔고**가 쓰는 코드공간.
+# 주문/마스터의 단축코드(A01606)와 달리 LS 잔고(t0441 expcode)는 KRX 상품코드형
+# "101T9000"(8자)으로 포지션을 보고한다. 이 형태를 역매핑 못 해 reconcile이 자기
+# 포지션을 "외부 매도"로 오판·원장 삭제한 것이 2026-07 원장↔브로커 분기 인시던트의
+# 방아쇠였다. 상품코드 지식은 여기 한 곳 — 새 국내선물(코스닥150 등)은 여기 한 줄.
+_DOMESTIC_KRX_PREFIX: dict[str, str] = {
+    "코스피200선물":     "101",
+    "미니코스피200선물": "105",
+}
+
 
 def _second_thursday(y: int, m: int) -> date:
     """KOSPI200 선물 최종거래일 = 그 달 2번째 목요일. (futures_expiry 단일출처 위임)"""
@@ -144,8 +154,10 @@ def dataset_for_contract(code: str) -> str | None:
     정규화해 기존 (symbol,side) 매칭 로직을 그대로 쓴다. **roll 독립**(root 파싱 — 만기/마스터 불요).
 
     해외: globex = root + 월코드(1) + YY(2) → root = code[:-3] → OVERSEAS_ROOTS 역.
-    국내: 단축코드 prefix로 상품 구분 — A01→정규 코스피200선물·A05→미니. _DOMESTIC_SPEC 역.
-    미매칭(미등록 코드) → None.
+    국내: 단축코드 prefix(A01 정규·A05 미니, _DOMESTIC_SPEC 역) + KRX 숫자형 상품코드
+          prefix(101 정규·105 미니, _DOMESTIC_KRX_PREFIX 역 — LS 잔고 t0441 "101T9000" 형태).
+    미매칭(미등록 코드) → None. 호출부는 None을 조용히 삼키지 말고 표면화해야 한다
+    (silent skip이 2026-07 분기 인시던트를 수 주간 은닉했다).
     """
     if not code:
         return None
@@ -156,6 +168,10 @@ def dataset_for_contract(code: str) -> str | None:
     for sym, (_root, prefix) in _DOMESTIC_SPEC.items():   # 국내 단축코드 prefix(A01 정규·A05 미니)
         if code.startswith(prefix):
             return sym
+    if len(code) == 8:      # KRX 상품코드형은 8자 — 주식 6자 종목코드(005930) 오매칭 방지 가드
+        for sym, prefix in _DOMESTIC_KRX_PREFIX.items():
+            if code.startswith(prefix):
+                return sym
     return None
 
 

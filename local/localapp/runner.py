@@ -555,6 +555,26 @@ def _run_settlement_locked(market: str, kind: str, label: str) -> dict:
         log.warning("reconcile drift 감지 — applied=%d, external_extras=%d",
                      len(reconcile_result.get("applied") or []),
                      reconcile_result.get("external_extras_count", 0))
+    if reconcile_result.get("reconcile_blocked"):
+        log.error("reconcile 자동 정정 차단됨(선물 신원계층 비정상): %s",
+                  reconcile_result["reconcile_blocked"])
+
+    # 불변식 I5 — 장 마감 후 정산 시점에 당일매매(hold_days==0) 포지션이 남아 있으면 안
+    # 된다. 종가창 미실행(2026-07-02 cron 미발화 실측)·발주 거부 등 원인 무관하게 상태로
+    # 감지·당일 표면화한다(익일 아침 청산은 기존 보장 — 이 감시는 인지 목적). 개장 직후
+    # reconcile(post_open_reconcile)은 당일매매 보유가 정상이라 검사하지 않는다.
+    daytrade_open: list[dict] = []
+    if kind == "post_close_settlement":
+        from . import order_log as _ol
+        daytrade_open = trader.daytrade_unclosed(market)
+        for p in daytrade_open:
+            log.error("[정산] 당일매매 미청산 잔존 [%s] %s %d — 종가창 미실행/발주 실패 "
+                      "의심(의도치 않은 오버나이트 노출). 익일 아침 사이클이 청산 예정",
+                      p["sid"], p["symbol"], p["qty"])
+            decisions.append(_ol.decision(
+                "error", p["sid"], p.get("strategy_name", ""), p["symbol"],
+                f"당일매매 미청산 잔존 {p['qty']} — 종가창 미실행/발주 실패 의심"
+                "(오버나이트 노출). 익일 아침 청산 예정"))
 
     try:
         snap = broker.account_snapshot()
@@ -576,6 +596,8 @@ def _run_settlement_locked(market: str, kind: str, label: str) -> dict:
             # N2 — 정산 후에도 남은 미체결(장 마감 뒤라 전부 비정상 잔존).
             # 서버 타임라인이 0이 아니면 ⚠로 표면화한다.
             "n_pending_unresolved": len(trader.pending),
+            # I5 — 정산 시점 당일매매 미청산 잔존(0이 정상). 종가창 미실행 감지.
+            "n_daytrade_unclosed": len(daytrade_open),
         },
     }
     # post_close_settlement은 cycle entry처럼 cycles.jsonl에 명시적 기록.

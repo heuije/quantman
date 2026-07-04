@@ -218,6 +218,15 @@ class BrokerRouter:
                 if ds:                               # 계약코드 → 데이터셋 심볼(ledger 매칭 키)
                     np["contract_code"] = code
                     np["symbol"] = ds
+                else:
+                    # 정규화 실패는 조용히 지나가면 안 된다 — 원장(상품명)과 매칭이 깨져
+                    # reconcile이 자기 포지션을 "외부 매도"로 오판·삭제하는 사고 부류(2026-07
+                    # 분기 인시던트, LS 잔고 KRX형 코드 미인식)가 수 주간 은닉됐다. 표식은
+                    # reconcile fail-safe(파괴적 정정 차단)의 신호이고, 원시 코드는 symbol로
+                    # 유지해 웹 표시·external 집계는 계속된다.
+                    np["symbol_unmapped"] = True
+                    log.error("선물 포지션 심볼 정규화 실패 — 계약코드 %r 미등록 형식. "
+                              "원장 매칭 불가 → reconcile 자동 정정 차단(표면화만)", code)
                 np.setdefault("asset_class", "futures")
                 out["positions"].append(np)
         if fetch_failed:
