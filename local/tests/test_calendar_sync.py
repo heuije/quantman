@@ -28,20 +28,25 @@ if str(_LOCAL_DIR) not in sys.path:
 
 @pytest.fixture
 def isolated(monkeypatch, tmp_path):
-    """USER_CACHE_DIR 격리 + device token mock."""
-    user_dir = tmp_path / "calendars"
-    monkeypatch.setenv("QUANTMAN_CALENDAR_DIR", str(user_dir))
+    """USER_CACHE_DIR 격리 + device token mock.
 
-    import importlib
+    reload 금지 — reload는 공유 모듈 객체에 tmp 경로·빈 lru_cache를 구워넣고
+    teardown 없이 남겨 뒤이은 테스트 파일(예: test_market_calendar_kr)을
+    오염시킨다. core/tests/test_market_calendar_sync.py의 isolated_cache와 동일하게
+    setattr(자동 복원) + _load.cache_clear(진입·퇴장)로 격리한다.
+    """
     from quant_core import market_calendar
-    importlib.reload(market_calendar)
     from localapp import calendar_sync
-    importlib.reload(calendar_sync)
+
+    user_dir = tmp_path / "calendars"
+    monkeypatch.setattr(market_calendar, "USER_CACHE_DIR", user_dir)
+    market_calendar._load.cache_clear()
 
     # device token mock
     monkeypatch.setattr(calendar_sync, "load_device_token",
                          lambda: "dev-token-123")
     yield user_dir, calendar_sync, market_calendar
+    market_calendar._load.cache_clear()
 
 
 def _make_response(status_code: int, json_data: dict | None = None):
