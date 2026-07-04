@@ -981,6 +981,88 @@ export function CorrelationHeatmap({ symbols, matrix }: {
   );
 }
 
+// ── 범용 라벨 히트맵 (shape "heatmap") — rows×cols 라벨 격자, diverging 값색(한국식 방향색) ──
+// CorrelationHeatmap이 심볼×심볼 정사각 상관행렬 전용인 데 반해, 이건 임의의 2D 격자(섹터×월·
+// 팩터×horizon·수익 캘린더 등)를 렌더한다. 값이 [-1,1]에 갇히지 않으므로 불투명도를 행렬
+// 최대 절대값(p95 캡)으로 정규화한다 — 소수 이상치가 나머지를 다 옅게 만드는 것을 막는다.
+export interface HeatmapResult {
+  rows: string[];
+  cols: string[];
+  matrix: (number | null)[][];
+  row_axis: string;
+  col_axis: string;
+  value_label: string;
+  value_unit: string;
+  color_scale: "diverging";
+  n_symbols?: number;
+  n_periods?: number;
+  leaders?: [string, string, number][];   // [colLabel, rowLabel, value]
+  note?: string;
+}
+
+export function HeatmapPanel({ r }: { r: HeatmapResult }) {
+  const rows = r.rows ?? [];
+  const cols = r.cols ?? [];
+  const matrix = r.matrix ?? [];
+  if (!rows.length || !cols.length) return null;
+
+  // 색 정규화 기준 = 절대값 p95(이상치 캡). 전부 0이면 1로(0 나눗셈 방지).
+  const absVals = matrix.flat()
+    .filter((v): v is number => v != null && !Number.isNaN(v))
+    .map(Math.abs).sort((a, b) => a - b);
+  const norm = absVals.length
+    ? Math.max(absVals[Math.floor(absVals.length * 0.95)] ?? absVals[absVals.length - 1], 1e-9)
+    : 1;
+
+  const unit = r.value_unit ?? "";
+  const fmtVal = (v: number): string => {
+    const dec = Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2;
+    return `${v.toFixed(dec)}${unit}`;
+  };
+  const cellColor = (v: number | null): string => {
+    if (v == null || Number.isNaN(v)) return "transparent";
+    const t = Math.max(0, Math.min(1, Math.abs(v) / norm));
+    const a = (0.1 + 0.6 * t).toFixed(3);
+    return v >= 0 ? `rgba(222,48,51,${a})` : `rgba(22,104,196,${a})`;   // up=빨강·down=파랑
+  };
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table className="corr-heatmap">
+        <thead>
+          <tr><th />{cols.map((c) => <th key={c} title={c}>{c}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={row}>
+              <th title={row} style={{ textAlign: "left" }}>{row}</th>
+              {cols.map((col, j) => {
+                const v = matrix[i]?.[j] ?? null;
+                return (
+                  <td key={col} style={{ background: cellColor(v) }}
+                      title={`${row} · ${col}: ${v == null ? "무데이터" : fmtVal(v)}`}>
+                    {v == null ? "—" : fmtVal(v)}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+        {r.row_axis} × {r.col_axis} · {r.value_label}({unit})
+      </div>
+      {r.leaders && r.leaders.length > 0 && (
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+          기간별 선두: {r.leaders.map(([col, row, v]) =>
+            `${col}: ${row} (${v >= 0 ? "+" : ""}${fmtVal(v)})`).join(" · ")}
+        </div>
+      )}
+      {r.note && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{r.note}</div>}
+    </div>
+  );
+}
+
 // ── PRESCRIBE 비중 추천 (P5b) — 추천 목적의 비중 트리맵 + 목적별 비교표 ──────────
 const OBJ_LABEL: Record<string, string> = {
   min_variance: "최소분산", max_sharpe: "최대샤프", risk_parity: "리스크패리티", equal_weight: "동일가중",

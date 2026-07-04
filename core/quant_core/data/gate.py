@@ -28,6 +28,10 @@ if TYPE_CHECKING:
 
 _ADJ_REQUIRED = {"split_adjusted", "total_return"}
 
+# 생존편향(D-surv)이 정의상 없는 현재-스냅샷 쿼리 — "오늘의 유니버스"만 보므로 상폐 종목 누락이
+# 결과를 왜곡하지 않는다. 역사적 백테스트/관계분석(simulate·relate·prescribe)만 경고 대상.
+_SNAPSHOT_QUERIES = {"breadth", "select", "describe"}
+
 
 def _price_feeds(strategy, manifest) -> set[str]:
     """유니버스가 의존하는 가격 피드 키 집합 (조정수준 검사 대상)."""
@@ -79,9 +83,13 @@ def evaluate_data_soundness(strategy: "StrategyIR", manifest: "DataManifest",
                              "섹터 분류 미수급 — 그룹 블록 실행 불가.", "signal"))
 
     # 4) 생존편향 — 전체/스크리너 유니버스 + 멤버십 이력 없음(편향).
+    #    역사적 백테스트가 변화하는 유니버스를 소급 평가할 때만 왜곡된다 — 현재-스냅샷 쿼리
+    #    (breadth 장세·select 스크리닝·describe 지표)는 "오늘의 유니버스"만 보므로 생존편향이
+    #    정의상 없어 경고를 억제한다(과잉발화 방지: KOSPI 장세 질문마다 뜨던 노이즈 근본 제거).
     #    종목별 delisting_date는 manifest에 수집돼 있으나, 완전한 생존편향 해소는 상장폐지 종목의
     #    OHLCV를 유니버스에 편입해야 가능 — 후속 백로그. 현재는 u.kind로 정직히 경고.
-    if u.kind == "all" and not manifest.has_membership_history:
+    if (u.kind == "all" and not manifest.has_membership_history
+            and strategy.query not in _SNAPSHOT_QUERIES):
         out.append(Issue("D-surv", bias,
                          "지수 구성 이력 없음 — 생존편향 가능(상장폐지 종목 누락).", "universe"))
 

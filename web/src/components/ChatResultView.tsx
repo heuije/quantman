@@ -26,9 +26,10 @@ import EquityChart from "./EquityChart";
 import ExcelExportButton from "./ExcelExportButton";
 import ParamControls, { type AdjustableParam } from "./ParamControls";
 import {
-  BreadthPanel, CorrelationHeatmap, DiagnosisPanel, EventStudyChart, ExtremizeChart, ICChart,
+  BreadthPanel, CorrelationHeatmap, DiagnosisPanel, EventStudyChart, ExtremizeChart, HeatmapPanel, ICChart,
   NewsDigest, PrescribePanel, RankedListChart, RegressionChart, ReportCards, SignalDistChart, SweepChart,
 } from "./ResultCharts";
+import type { HeatmapResult } from "./ResultCharts";
 import type {
   BreadthResult, IrDistribution, IrEventStat, IrExtremizeResult, IrICStat, IrPartition,
   IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrStrategyResult, NewsDigestResult,
@@ -488,6 +489,9 @@ const RENDERERS: Record<string, (result: Record<string, unknown>) => ReactElemen
       </div>
     );
   },
+  heatmap: (result) => (
+    <div className="chat-result"><HeatmapPanel r={result as unknown as HeatmapResult} /></div>
+  ),
   event_study: (result) => <EventStudy result={result as unknown as IrStrategyResult} />,
   signal_dist: (result) => <SignalStudy result={result as unknown as IrStrategyResult} />,
   sweep: (result) => <SweepBuckets result={result as unknown as IrStrategyResult} />,
@@ -524,7 +528,7 @@ function MethodologyPanel({ m }: { m: NonNullable<IrStrategyResult["methodology"
   const cap = m.initial_capital != null ? Math.round(m.initial_capital).toLocaleString() : null;
   const head = [m.period ? `기간 ${m.period}` : null, cap ? `기준자본 ${cap}원` : null]
     .filter(Boolean).join(" · ");
-  if (items.length === 0 && !head) return null;
+  if (items.length === 0 && !head && !m.data_source) return null;
   return (
     <details className="chat-methodology" style={{
       border: "1px solid var(--border)", background: "var(--panel)",
@@ -537,6 +541,13 @@ function MethodologyPanel({ m }: { m: NonNullable<IrStrategyResult["methodology"
         display: "grid", gridTemplateColumns: "auto 1fr", gap: "3px 10px",
         marginTop: 6, color: "var(--text)",
       }}>
+        {/* 데이터 출처 — 데이터 기반 답변의 원천 표면화(서버 populated). 없으면 렌더 안 함. */}
+        {m.data_source && (
+          <Fragment>
+            <span style={{ color: "var(--muted)" }}>데이터 출처</span>
+            <span>{m.data_source}</span>
+          </Fragment>
+        )}
         {items.map((it, i) => (
           <Fragment key={i}>
             <span style={{ color: "var(--muted)" }}>{it.label}</span>

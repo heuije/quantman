@@ -247,7 +247,7 @@ StrategyIR = {{
   "signal": <블록트리>,          // 신호. {{op, params, inputs:{{slot: 자식블록}}}} 재귀. 잎: data{{ref}}, const{{value}}
   "position": {{"direction":.., "sizing":{{"mode":..}}, "entry":{{"mode":..}}, "exit":{{..}}, "overlays":{{..}}}},
   "simulation": {{"initial_capital":.., "fill":.., "leverage":.., "start":"YYYY-MM-DD", "end":"YYYY-MM-DD", ...}},
-  "query": "simulate|select|describe|relate|prescribe|breadth",   // 무엇을 묻는가(기본 simulate=손익 백테스트). select=현시점 스크리닝, describe=살펴보기(단일종목 리포트·포트폴리오 진단·신호 분포), relate=관계/이벤트/상관, prescribe=포트폴리오 비중 추천(최적화), breadth=시장 폭(장세).
+  "query": "simulate|select|describe|relate|prescribe|breadth|rotation",   // 무엇을 묻는가(기본 simulate=손익 백테스트). select=현시점 스크리닝, describe=살펴보기(단일종목 리포트·포트폴리오 진단·신호 분포), relate=관계/이벤트/상관, prescribe=포트폴리오 비중 추천(최적화), breadth=시장 폭(장세), rotation=섹터 순환매(섹터×월 히트맵).
   "prescribe": {{"max_weight":0~1|null, "window":N|null}},   // query="prescribe" 전용 — 종목당 비중 상한·추정 거래일수(생략 가능)
   "study": {{"axis":"none|parameter|entity|label|time_fold", "reduction":"enumerate|contrast|consistency|extremize", "param_grid":[{{"path":점경로,"values":[..]}}], "assets":[..], "label":<블록>, "split_period":"year|quarter|month", "folds":N, "split_dates":["YYYY-MM-DD",..], "target_node":<블록>, "relation_kind":"ic|regression|correlation", "factors":[<블록>,..], "windows":[..], "event":<블록>, "objective":{{"metric":..,"direction":"max|min","oos_guard":bool}}}}  // objective는 extremize 전용
 }}
@@ -381,6 +381,12 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
     → by_regime로 분리 비교. signal은 명목(data Close — 분석 동사).
     ⚠ 단일종목의 "예측력/오를까/방향"은 횡단 IC(종목 2+ 필요)가 **아니라** 이벤트 스터디다(한 종목으로 가능).
     ⚠ 과대약속 금지 — 표본(이벤트 수)이 적으면 신뢰구간이 넓고 유의성이 약하다(엔진이 정직히 표면화).
+16. [섹터 순환매] "순환매·섹터 로테이션·업종 순환·섹터별 자금 이동"·"자금이 어느 업종/섹터로 도나/이동하나"·
+    "요즘 어떤 섹터가 주도하나(시간에 걸쳐)"처럼 *섹터 리더십의 시간적 이동*이 답이면 → query="rotation"
+    + universe.kind="all"(전체) 또는 list. 섹터(행)×최근 월(열) 평균수익률 **히트맵**으로 리더십 순환을
+    결정적으로 보여준다 — 뉴스가 아니라 거래소 종가+업종분류(FDR KRX-DESC) 기반. signal은 명목(data Close).
+    *왜 도는지*(거시·수급 인과)는 해석이 보강. ⚠ '지금 시장 폭·오늘 장세'=breadth(레시피 14)이고,
+    '시간에 걸친 섹터 순환'=rotation — 구분한다.
 </idioms>
 
 <process>

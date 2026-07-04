@@ -180,6 +180,8 @@ def _dispatch_query(strategy: StrategyIR, dataset: dict) -> dict:
         return run_prescribe(strategy, dataset)
     if q == "breadth":
         return run_breadth(strategy, dataset)
+    if q == "rotation":
+        return run_rotation(strategy, dataset)
     if q == "describe":
         u = strategy.universe
         if u.kind == "single":
@@ -1072,6 +1074,80 @@ def run_breadth(strategy: StrategyIR, dataset: dict) -> dict:
             "top_gainers": [[x["symbol"], round(x["r1"], 4)] for x in ranked[:5]],
             "top_losers": [[x["symbol"], round(x["r1"], 4)] for x in ranked[-5:][::-1]],
             "sector_breakdown": sector_avg[:12]}
+
+
+# ── 섹터 순환매 (범용 heatmap 형상의 첫 소비자) ────────────────────────────────
+
+_ROTATION_MAX_MONTHS = 8      # 히트맵 열(가독) 상한 — 최근 N개월
+_ROTATION_MAX_SECTORS = 15    # 히트맵 행(가독) 상한 — 종목수 상위 N개 섹터
+
+
+def run_rotation(strategy: StrategyIR, dataset: dict) -> dict:
+    """섹터 순환매 — 섹터(행)×최근 월(열) 평균 수익률 히트맵. '자금이 어느 업종으로 도는가'.
+
+    각 종목의 월말 종가 수익률을 섹터별로 평균해 섹터×월 행렬을 만든다. 발산색 히트맵으로
+    렌더(양수=빨강·음수=파랑)해, '순환매'의 본질인 **리더십의 시간적 이동**을 드러낸다.
+    데이터=거래소 종가 + 업종분류(FDR KRX-DESC 등) — 결정적·뉴스 무관(신뢰 데이터 소스 명시).
+    범용 `shape="heatmap"` 계약(rows·cols·matrix·축라벨)을 emit — 렌더러/소비자는 형상만 본다.
+    """
+    from collections import Counter
+    from ..expression_parser import get_symbol_group
+    syms = _universe_symbols(strategy, dataset)
+    monthly: dict[str, "pd.Series"] = {}    # symbol → 월별 수익률(index=PeriodIndex[M])
+    sector_of: dict[str, str] = {}
+    for s in syms:
+        df = dataset.get(s)
+        if df is None or df.empty or "Close" not in df.columns:
+            continue
+        c = df["Close"].astype(float).dropna()
+        if len(c) < 25 or not isinstance(c.index, pd.DatetimeIndex):
+            continue
+        m_last = c.groupby(c.index.to_period("M")).last()      # 월말 종가(resample 대체·비-deprecated)
+        r = m_last.pct_change().dropna()
+        if r.empty:
+            continue
+        monthly[s] = r
+        sector_of[s] = get_symbol_group(s, "Sector")           # 표준 테마(반도체·2차전지…)·KSIC 폴백
+    if len(monthly) < 2:
+        return _empty("섹터 순환매는 가용 종목이 2개 이상이어야 합니다.")
+    all_months = sorted(set().union(*[set(r.index) for r in monthly.values()]))
+    cols_idx = all_months[-_ROTATION_MAX_MONTHS:]
+    if len(cols_idx) < 2:
+        return _empty("순환매 분석에 충분한 월별 이력이 없습니다(최소 2개월).")
+    # 섹터 집합 = 종목수(≥2) 상위 N개(가독) · 폴백 버킷(기타/Other)은 분류가 있으면 제외.
+    counts = Counter(sector_of[s] for s in monthly)
+    ranked = [sec for sec, c in counts.most_common() if c >= 2 and sec not in ("기타", "Other")]
+    if not ranked:
+        ranked = [sec for sec, _ in counts.most_common()]      # 분류 전무 시 폴백 버킷이라도
+    sectors = ranked[:_ROTATION_MAX_SECTORS]
+    sec_syms = {sec: [s for s in monthly if sector_of[s] == sec] for sec in sectors}
+    matrix: list[list] = []
+    for sec in sectors:
+        row = []
+        for mo in cols_idx:
+            vals = [float(monthly[s].loc[mo]) for s in sec_syms[sec]
+                    if mo in monthly[s].index and pd.notna(monthly[s].loc[mo])]
+            row.append(round(sum(vals) / len(vals) * 100, 2) if vals else None)
+        matrix.append(row)
+    # 최근월 수익률 내림차순으로 섹터 정렬(리더가 위로 — 순환 가독).
+    def _last(i):
+        return matrix[i][-1] if matrix[i][-1] is not None else float("-inf")
+    order = sorted(range(len(sectors)), key=_last, reverse=True)
+    sectors = [sectors[i] for i in order]
+    matrix = [matrix[i] for i in order]
+    col_labels = [str(mo) for mo in cols_idx]                  # "2026-06"
+    leaders = []
+    for j, lab in enumerate(col_labels):
+        cand = [(sectors[i], matrix[i][j]) for i in range(len(sectors)) if matrix[i][j] is not None]
+        if cand:
+            top = max(cand, key=lambda t: t[1])
+            leaders.append([lab, top[0], round(top[1], 2)])
+    return {"success": True, "query": "rotation", "shape": "heatmap",
+            "rows": sectors, "cols": col_labels, "matrix": matrix,
+            "row_axis": "섹터", "col_axis": "기간(월)",
+            "value_label": "월 평균수익률", "value_unit": "%", "color_scale": "diverging",
+            "n_symbols": len(monthly), "n_periods": len(col_labels), "leaders": leaders,
+            "note": f"{len(monthly)}개 종목을 {len(sectors)}개 섹터로 집계한 월별 평균수익률."}
 
 
 # ── 이벤트 스터디 (비전 §4 시간축) ────────────────────────────────────────────

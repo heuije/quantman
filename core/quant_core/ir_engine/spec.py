@@ -234,7 +234,8 @@ class StrategyIR(BaseModel):
     signal: Node                        # condition(룰) 또는 score(팩터)
     position: PositionSpec = Field(default_factory=PositionSpec)
     simulation: SimSpec = Field(default_factory=SimSpec)
-    query: Literal["select", "describe", "relate", "simulate", "prescribe", "breadth"] = "simulate"
+    query: Literal["select", "describe", "relate", "simulate", "prescribe", "breadth",
+                   "rotation"] = "simulate"
     study: Study = Field(default_factory=Study)
     select: Optional[SelectSpec] = None    # query="select" 전용
     prescribe: Optional[PrescribeSpec] = None   # query="prescribe" 전용
@@ -473,7 +474,7 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     # 포지션·진입·청산·사이징·오버레이·선물 규칙은 simulate 전용 — 리서치에 적용하면 유효 IR이
     # 거짓 거부돼 NL repair가 simulate로 후퇴한다. signal 타입/시장참조·유니버스 구조·스크리너
     # 유효성·질의별 규칙(S-SEL/S-PORT/S-target/S-REG/S-event)은 전 질의 공통으로 유지.
-    is_research = s.query in ("select", "describe", "relate", "prescribe", "breadth")
+    is_research = s.query in ("select", "describe", "relate", "prescribe", "breadth", "rotation")
 
     # 최상위 신호는 매매 가능한 타입이어야 — condition(룰 트리거) 또는 score(팩터 알파).
     # label(bucket·calendar)·scalar는 그룹라벨·국면 등 보조 역할일 뿐 신호 자체가 될 수 없다.
@@ -725,6 +726,10 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     if s.query == "breadth" and s.universe.kind == "single":
         issues.append(Issue("S-BREADTH", SEV_ERROR,
                             "시장 breadth는 종목군이 필요합니다(universe.kind=all/list).", "universe"))
+    # rotation(섹터 순환매) — 섹터별 집계라 다수 종목(가급적 전체)이 필요.
+    if s.query == "rotation" and s.universe.kind == "single":
+        issues.append(Issue("S-ROTATION", SEV_ERROR,
+                            "섹터 순환매는 종목군이 필요합니다(universe.kind=all/list).", "universe"))
     describe_dist = s.query == "describe" and u.kind in ("all", "list")
     if describe_dist or is_ic:
         tn = st.target_node

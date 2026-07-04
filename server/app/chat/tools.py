@@ -542,13 +542,66 @@ def _methodology_header(result: dict) -> str:
     return f"{line}\n" if line else ""
 
 
+def _collect_ref_cols(node, out: set) -> None:
+    """신호/조건 트리에서 data-ref 컬럼명 수집(심볼 prefix 제거) — 출처 판별용."""
+    if not isinstance(node, dict):
+        return
+    if node.get("op") == "data":
+        ref = str((node.get("params") or {}).get("ref") or "")
+        col = ref.split(".", 1)[1] if "." in ref else ref
+        if col:
+            out.add(col)
+    for v in (node.get("inputs") or {}).values():
+        _collect_ref_cols(v, out)
+
+
+def data_source_line(result: dict) -> str:
+    """분석이 실제 사용한 데이터의 출처 라인 — '뉴스가 아닌 신뢰 데이터 소스'임을 사용자에게 명시.
+
+    가격은 항상, 섹터/외부피드는 분석 유형·IR 참조에 따라 추가. 문자열은 core DATA_PROVENANCE와
+    일관되게 유지한다(피드 소스가 바뀌면 여기와 provenance.py를 함께 고침 — 드리프트 방지).
+    """
+    from quant_core.indicators import (CONSENSUS_INDICATOR_COLS, FLOW_INDICATOR_COLS,
+                                        FUND_INDICATOR_COLS, INSTITUTIONAL_INDICATOR_COLS,
+                                        MARKETCAP_INDICATOR_COLS, SHORTVOL_INDICATOR_COLS)
+    shape = result.get("shape") or result_shape(result)
+    if shape == "news_research":
+        return ""                                    # 뉴스 출처는 context.source가 담당
+    parts = ["거래소 일별 종가(KR=FinanceDataReader/KRX·US=yfinance)"]
+    if shape == "heatmap" or result.get("query") in ("rotation", "breadth") \
+            or shape in ("breadth", "describe_portfolio"):
+        parts.append("업종분류(FinanceDataReader KRX-DESC·KSIC 기반)")
+    ir = result.get("ir")
+    if isinstance(ir, dict):
+        cols: set = set()
+        _collect_ref_cols(ir.get("signal"), cols)
+        _collect_ref_cols(((ir.get("position") or {}).get("exit") or {}).get("condition"), cols)
+        for colset, src in (
+            (set(FLOW_INDICATOR_COLS), "기관·외국인 수급(KRX pykrx)"),
+            (set(CONSENSUS_INDICATOR_COLS), "애널 컨센서스(한경컨센서스)"),
+            (set(FUND_INDICATOR_COLS), "재무·밸류(KR=전자공시 OpenDART·US=SEC EDGAR)"),
+            (set(MARKETCAP_INDICATOR_COLS), "시총·거래대금(KRX Open API)"),
+            (set(SHORTVOL_INDICATOR_COLS), "공매도 거래량(FINRA)"),
+            (set(INSTITUTIONAL_INDICATOR_COLS), "기관 13F 보유(SEC EDGAR)"),
+        ):
+            if cols & colset:
+                parts.append(src)
+    return " + ".join(dict.fromkeys(parts))          # 순서보존 dedup
+
+
 def attach_methodology(result: dict) -> dict:
-    """백테스트 결과에 structured 방법론(execution_summary 4분류 + 기간 + 기준자본)을 붙여 **웹이
-    방법론 패널을 렌더**하게 한다 — provenance.ir_summary의 사용자 표면(증상 #7·#1). 사실 출처는
-    core execution_summary 단일(TS에 가정값·로직 중복 금지 → 드리프트 방지). 비백테스트·IR 없음은
-    무동작. 주석 실패가 결과를 깨지 않도록 격리(best-effort)."""
+    """결과에 structured 방법론을 붙여 **웹이 방법론 패널을 렌더**하게 한다. **데이터 출처**는 모든
+    데이터형 결과에 붙이고(신뢰 소스 표면화·#순환매 출처요구), 기간·기준자본·실행가정은 백테스트
+    (simulate/sweep)에만. 사실 출처는 core execution_summary 단일(TS 중복 금지). best-effort 격리."""
     if not isinstance(result, dict):
         return result
+    # 데이터 출처 — 모든 데이터형 결과(순환매·시장폭·스크리닝·백테스트)에 명시. 뉴스-only는 제외.
+    try:
+        src = data_source_line(result)
+        if src:
+            result.setdefault("methodology", {})["data_source"] = src
+    except Exception:   # noqa: BLE001 — 출처 주석 실패가 결과를 깨면 안 됨
+        pass
     ir = result.get("ir")
     if not isinstance(ir, dict) or result_shape(result) not in ("simulate", "sweep"):
         return result
@@ -557,12 +610,14 @@ def attach_methodology(result: dict) -> dict:
         cap = StrategyIR.model_validate(ir).simulation.initial_capital
     except Exception:   # noqa: BLE001 — 방법론 주석 실패가 결과를 깨면 안 됨
         return result
-    result["methodology"] = {
+    meth = result.get("methodology") or {}           # data_source 보존하며 병합
+    meth.update({
         "period": _equity_period(result),
         "initial_capital": cap,
         "confirmed": spec.get("confirmed") or [],
         "assumed": spec.get("assumed") or [],
-    }
+    })
+    result["methodology"] = meth
     return result
 
 

@@ -176,6 +176,52 @@ def test_breadth_passes_full_validation():
     assert res["shape"] == "breadth"
 
 
+# ── 5d 섹터 순환매 (범용 heatmap 형상) ─────────────────────────────────────────
+
+def _ds_rotation() -> dict:
+    """6종목·~9개월 일봉 — 반도체 3종(상승)·자동차 3종(하락). 월별 섹터 순환의 결정적 케이스."""
+    idx = pd.date_range("2024-01-02", periods=190, freq="B")
+    up, down = np.linspace(100, 160, 190), np.linspace(160, 100, 190)
+    ds = {f"SEMI{i}": _ohlc(up * (1 + 0.001 * i), idx) for i in range(3)}
+    ds.update({f"AUTO{i}": _ohlc(down * (1 - 0.001 * i), idx) for i in range(3)})
+    return ds
+
+
+def _rotation_ir() -> dict:
+    return {"universe": {"kind": "all"}, "signal": _SIG, "query": "rotation"}
+
+
+def _patch_sectors(monkeypatch):
+    import quant_core.expression_parser as ep
+    monkeypatch.setattr(ep, "get_symbol_group",
+                        lambda sym, gt="Industry": "반도체" if str(sym).startswith("SEMI") else "자동차")
+
+
+def test_rotation_heatmap_shape(monkeypatch):
+    _patch_sectors(monkeypatch)
+    res = run_query(StrategyIR.model_validate(_rotation_ir()), _ds_rotation())
+    assert res.get("success"), res.get("error")
+    assert res["shape"] == "heatmap" == result_shape(res)          # 범용 히트맵 형상
+    assert set(res["rows"]) == {"반도체", "자동차"}
+    assert len(res["cols"]) >= 2 and len(res["matrix"]) == len(res["rows"])
+    row = {sec: r for sec, r in zip(res["rows"], res["matrix"])}
+    assert row["반도체"][-1] is not None and row["자동차"][-1] is not None
+    assert row["반도체"][-1] > row["자동차"][-1]                    # 상승 섹터 > 하락 섹터(최근월)
+    assert res["leaders"] and res["leaders"][-1][1] == "반도체"     # 최근월 선두=반도체
+
+
+def test_rotation_summary(monkeypatch):
+    _patch_sectors(monkeypatch)
+    s = summarize_result(run_query(StrategyIR.model_validate(_rotation_ir()), _ds_rotation()))
+    assert "히트맵" in s and "선두" in s
+
+
+def test_rotation_rejects_single_symbol():
+    ir = {**_rotation_ir(), "universe": {"kind": "single", "symbols": ["SEMI0"]}}
+    res = strategy_from_spec(ir, _ds_rotation())
+    assert not res.get("success")                                  # S-ROTATION
+
+
 def test_correlation_excel_rejected():
     """상관(correlation)은 엑셀 비대상 — _build_relation(ic/regression용)으로 흘리지 않고 거부."""
     import pytest

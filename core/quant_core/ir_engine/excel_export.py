@@ -29,6 +29,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side as XlSide
 from openpyxl.utils import get_column_letter
 
+from ..indicators import EXTERNAL_FEED_COLS, INDICATOR_META
 from .spec import StrategyIR
 
 # 디자인 토큰 (네이비/골드 — DESIGN.md 계열, 인쇄 가독 우선 라이트)
@@ -216,6 +217,25 @@ def _collect_data_refs(node, out: list[str]) -> None:
         out.append(str((node.get("params") or {}).get("ref")))
     for v in (node.get("inputs") or {}).values():
         _collect_data_refs(v, out)
+
+
+def _referenced_external_cols(ir) -> list[str]:
+    """IR이 참조하는 외부 피드 원자료 컬럼(기관/외인 순매수·컨센서스·펀더 등) — 등장 순서 보존.
+
+    OHLCV로 재계산 불가한 외부 데이터(EXTERNAL_FEED_COLS)만 — 이 컬럼들은 원자료 시트에
+    원시값으로 실려야 백테스트를 독립 검증할 수 있다(가격 파생지표는 수식으로 재현되므로 제외).
+    신호 + 매도조건 트리에서 data-ref를 수집, 심볼 prefix를 벗겨 외부 피드 컬럼만 남긴다.
+    """
+    d = _ir_dict(ir)
+    refs: list[str] = []
+    _collect_data_refs(d.get("signal"), refs)
+    _collect_data_refs(((d.get("position") or {}).get("exit") or {}).get("condition"), refs)
+    cols: list[str] = []
+    for ref in refs:
+        col = ref.split(".", 1)[1] if ref and "." in ref else ref
+        if col in EXTERNAL_FEED_COLS and col not in cols:
+            cols.append(col)
+    return cols
 
 
 def _signal_to_excel(node, ref_to_col, raw_of, r):
@@ -534,10 +554,18 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
     raw.cell(1, 1, f"원자료 — 입력 데이터 ({disp})").font = title_font
     raw.cell(2, 1, "전략이 소비한 데이터 전부. 대상=OHLC(거래·마킹 기준)·신호=종가(결정 입력). 거래 안 해도 신호면 포함.").font = italic
     # 컬럼 계획: 날짜 | 대상 OHLC… | 신호 종가… (역할 라벨)
-    plan: list[tuple[str, str, str]] = []   # (헤더라벨, 심볼, OHLC 필드)
+    plan: list[tuple[str, str, str]] = []   # (헤더라벨, 심볼, 필드)
+    ext_cols = _referenced_external_cols(ir)   # IR 참조 외부 피드 원자료(수급 등) — OHLC로 재현 불가
     for s in roles["subject"]:
         for field, fl in (("Open", "시가"), ("High", "고가"), ("Low", "저가"), ("Close", "종가")):
             plan.append((f"{s} {fl}(대상)", s, field))
+        # 대상 종목의 외부 피드 원자료(기관/외인 순매수 등)를 원시값으로 — 증빙(독립 검증) 필수.
+        df_s = dataset.get(s)
+        if isinstance(df_s, pd.DataFrame):
+            for col in ext_cols:
+                if col in df_s.columns:
+                    lab = INDICATOR_META.get(col, {}).get("label", col)
+                    plan.append((f"{s} {lab}", s, col))
     for s in roles["signal"]:
         plan.append((f"{s} 종가(신호)", s, "Close"))
     raw.cell(5, 1, "날짜").font = bold

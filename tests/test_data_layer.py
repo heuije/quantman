@@ -236,6 +236,20 @@ def test_gate_survivorship_all_warns_then_rejects_strict():
     assert any(i.rule == "D-surv" and i.is_error for i in evaluate_data_soundness(s, m, strict=True))
 
 
+def test_gate_survivorship_suppressed_for_snapshot_queries():
+    """생존편향(D-surv)은 역사적 백테스트에만 — 현재-스냅샷(breadth 장세·describe 지표)엔 억제.
+    KOSPI 장세 질문마다 '지수 구성 이력 없음'이 뜨던 과잉발화 근본 제거(스냅샷은 오늘 유니버스만 봄)."""
+    m = _mani(feeds={"ohlcv.kr": {"adjustment": "split_adjusted"}}, has_membership_history=False)
+    for q in ("breadth", "describe"):
+        s = StrategyIR(signal=Node(op="rank", inputs={"signal": data("momentum_12_1m")}),
+                       universe=Universe(kind="all"),
+                       position=PositionSpec(entry=Entry(mode="scheduled", rebalance="monthly", top_n=20)),
+                       query=q)
+        assert not any(i.rule == "D-surv" for i in evaluate_data_soundness(s, m)), f"{q}에 D-surv 오발화"
+        # 스냅샷 쿼리는 실전 배포 대상이 아니므로 strict에서도 억제 유지.
+        assert not any(i.rule == "D-surv" for i in evaluate_data_soundness(s, m, strict=True)), f"{q} strict D-surv 오발화"
+
+
 def test_gate_adjustment_raw_warns():
     s = _rule()
     m = _mani(symbols={"005930": {"n_rows": 100, "feed": "ohlcv.kr"}},
