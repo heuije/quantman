@@ -16,7 +16,9 @@ from pathlib import Path
 
 import requests
 
-from quant_core.market_calendar import USER_CACHE_DIR
+# USER_CACHE_DIR는 값 복사 import 대신 모듈 속성으로 참조 — 테스트가 reload 없이
+# monkeypatch.setattr(market_calendar, "USER_CACHE_DIR", ...)로 격리할 수 있어야 한다.
+from quant_core import market_calendar
 
 from .config import PLATFORM_URL
 from .secrets_store import load_device_token
@@ -47,8 +49,8 @@ def pull_one(market: str) -> bool:
         return False
 
     try:
-        USER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path = USER_CACHE_DIR / f"{market.lower()}_sessions.json"
+        market_calendar.USER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = market_calendar.USER_CACHE_DIR / f"{market.lower()}_sessions.json"
         # Atomic write: tmp + replace
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -59,11 +61,7 @@ def pull_one(market: str) -> bool:
         return False
 
     # 캐시 무효화 — 다음 _load 호출이 새 파일을 읽도록
-    try:
-        from quant_core import market_calendar
-        market_calendar._load.cache_clear()
-    except Exception:
-        pass
+    market_calendar._load.cache_clear()
 
     n_sessions = len(data.get("sessions", {}))
     log.info("[%s] 캘린더 sync 성공: %d 세션, %s",
