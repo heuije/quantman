@@ -32,11 +32,8 @@ _BUNDLE_FILES = {
     "KR": _BUNDLE_DIR / "krx_sessions.json",
 }
 
-# Q2+Q8 — 사용자 캐시 (서버 pull 결과 저장). 환경변수로 override 가능 (테스트용).
-import os as _os
-_USER_CACHE_ENV = _os.environ.get("QUANTMAN_CALENDAR_DIR")
-USER_CACHE_DIR = (Path(_USER_CACHE_ENV) if _USER_CACHE_ENV
-                    else Path.home() / ".quantman" / "calendars")
+# Q2+Q8 — 사용자 캐시 (서버 pull 결과 저장). 테스트는 monkeypatch.setattr로 격리.
+USER_CACHE_DIR = Path.home() / ".quantman" / "calendars"
 
 
 class CalendarError(RuntimeError):

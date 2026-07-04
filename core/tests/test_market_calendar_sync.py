@@ -7,7 +7,7 @@
   반환. raise X. 호출자(runner)가 로그만 남기고 사이클은 계속 진행 (AL-3).
 
 검증:
-1. 환경변수 QUANTMAN_CALENDAR_DIR로 USER_CACHE_DIR override
+1. USER_CACHE_DIR를 monkeypatch.setattr로 tmp 격리 (isolated_cache fixture)
 2. 사용자 캐시 있으면 그것이 로드됨 (번들과 다른 내용으로 검증)
 3. 사용자 캐시 없으면 번들 fallback
 4. 사용자 캐시 손상 시 번들 fallback (조용히 무시 아님, 명시적 폴백)
