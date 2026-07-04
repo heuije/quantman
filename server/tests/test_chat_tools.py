@@ -8,6 +8,15 @@ from quant_core.ir_engine import StrategyIR
 from app.chat.tools import assemble_ir, TOOL_SCHEMAS
 
 
+class _NoDbSession:
+    """순수-로직 도구 테스트용 세션 스텁 — DB 접근(_last_simulate_ir·compile_strategy 등)은 전부
+    monkeypatch로 대체되므로 commit()만 제공한다. run_simulate/run_adjust가 백테스트 compute 전
+    커넥션을 반납(session.commit·C1 부류 수정)한 이후 이 경로도 세션 객체를 요구한다
+    (프로덕션 세션은 항상 실제 요청 세션이라 None이 아니다)."""
+    def commit(self):
+        pass
+
+
 def test_tool_schemas_present():
     names = {t["name"] for t in TOOL_SCHEMAS}
     assert names == {"screen", "simulate", "save_strategy", "describe", "inspect",
@@ -316,7 +325,7 @@ def test_run_adjust_one_field_diff(monkeypatch):
     monkeypatch.setattr(chat_tools, "strategy_from_spec",
                         lambda ir, ds, **kw: seen.update(ir=ir) or {"success": True, "equity": [1, 2],
                                                                     "metrics": {"cagr": 1.0}})
-    out = chat_tools.run_adjust(None, 1, {"changes": [{"path": "simulation.commission", "value": 0}]})
+    out = chat_tools.run_adjust(_NoDbSession(), 1, {"changes": [{"path": "simulation.commission", "value": 0}]})
     assert out["success"] is True
     assert seen["ir"]["simulation"]["commission"] == 0                  # 바뀜
     assert seen["ir"]["simulation"]["initial_capital"] == 100000000.0   # 그대로
@@ -344,7 +353,7 @@ def test_run_adjust_clamps_to_range(monkeypatch):
     seen = {}
     monkeypatch.setattr(chat_tools, "strategy_from_spec",
                         lambda ir, ds, **kw: seen.update(ir=ir) or {"success": True, "equity": [1]})
-    chat_tools.run_adjust(None, 1, {"changes": [{"path": "simulation.commission", "value": 5}]})
+    chat_tools.run_adjust(_NoDbSession(), 1, {"changes": [{"path": "simulation.commission", "value": 5}]})
     assert seen["ir"]["simulation"]["commission"] == 0.01              # max로 클램프
 
 
@@ -416,7 +425,7 @@ def test_run_simulate_delegates_to_compiler(monkeypatch):
     monkeypatch.setattr(tools, "_load_dataset", lambda ir: {})
     monkeypatch.setattr(tools, "strategy_from_spec",
                         lambda ir, ds, **kw: {"success": True, "metrics": {"cagr": 0.1}})
-    out = tools.run_simulate(session=None, user_id=1, tool_input={"nl": "삼성전자 종가 전략"})
+    out = tools.run_simulate(session=_NoDbSession(), user_id=1, tool_input={"nl": "삼성전자 종가 전략"})
     assert out["success"] is True and out["metrics"]["cagr"] == 0.1
     assert out["ir"]["universe"]["symbols"] == ["005930"]   # 검증 IR 동봉(저장 재사용·표시)
     assert out["explanation"]["summary"] == "단일종목 백테스트"
@@ -565,6 +574,6 @@ def test_run_simulate_attaches_adjustable_manifest(monkeypatch):
     monkeypatch.setattr(tools, "_load_dataset", lambda ir: {})
     monkeypatch.setattr(tools, "strategy_from_spec",
                         lambda ir, ds, **kw: {"success": True, "metrics": {"cagr": 0.1}})
-    out = tools.run_simulate(session=None, user_id=1, tool_input={"nl": "모멘텀"})
+    out = tools.run_simulate(session=_NoDbSession(), user_id=1, tool_input={"nl": "모멘텀"})
     paths = {p["path"] for p in out["adjustable"]}
     assert {"position.entry.top_n", "simulation.commission", "simulation.initial_capital"} <= paths

@@ -283,6 +283,14 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
     turn_shape: str | None = None        # 학습 hook(P4) — 이 턴이 선택한 첫 분석법(result_shape)
     try:
         for _ in range(MAX_TOOL_ROUNDS):
+            # ── DB 커넥션 반납 — LLM 왕복(수 초~수 분) 동안 어떤 풀 커넥션도 쥐지 않는다 ──────
+            # 직전 라운드의 도구(simulate/adjust/save)가 session.get·읽기로 연 트랜잭션을 여기서
+            # 커밋해 반납한다. 이 반납이 없으면 요청 세션이 턴 내내 커넥션을 점유해, 동시 챗 부하가
+            # 풀(size 5+overflow 10)을 고갈시키고 /auth·/health 포함 전 엔드포인트가 30s 타임아웃→500
+            # 난다(챗 부하가 전 서비스를 죽이는 격리 실패). preview cron의 C1(preview_engine.py)과
+            # 동일 부류 — 도구 내부가 커밋하든 말든 여기서 무조건 반납해 부류를 한 곳에서 닫는다.
+            # 다음 DB 접근은 fresh checkout이라 pool_pre_ping(db.py)이 stale 연결을 자동 보호한다.
+            session.commit()
             with client.messages.stream(model=model, max_tokens=4096, system=system,
                                         thinking={"type": "disabled"},   # Sonnet5는 thinking 기본ON→응답에
                                         # thinking블록 포함→멀티턴 히스토리 재구성 시 유실되면 400. 오케스트레이터는

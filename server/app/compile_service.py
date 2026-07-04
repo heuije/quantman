@@ -98,6 +98,14 @@ def compile_strategy(session: Session, user_id: int | None, nl: str) -> dict:
     # 매크로 별칭 병합 — 사용자 표현(풋콜비율·VKOSPI·국고채금리)을 정식 심볼키로 해석(#B).
     name_map = {**_MACRO_ALIASES, **name_map}   # 사용자 등록이 별칭보다 우선
 
+    # ── DB 커넥션 반납 — compile_nl(Haiku·내부 repair 루프)의 LLM 왕복 동안 커넥션을 쥐지 않는다 ──
+    # 위 TradableSymbol 읽기(이 함수의 유일한 세션 접근)로 연 트랜잭션을 여기서 커밋해 반납한다.
+    # 이게 없으면 이 공유 컴파일 경로를 쓰는 챗(simulate/save)·/ir/compile 양쪽이 LLM 왕복 내내
+    # 풀 커넥션을 점유 → 동시 부하 시 풀(5+10) 고갈 → 인증 포함 전 엔드포인트 500(preview C1과 동일
+    # 부류를 단일 진입점에서 닫음). name_map은 plain dict이라 반납 후에도 안전하고, 호출자의 이후
+    # 쓰기(CompileLog·백테스트 결과)는 fresh checkout이라 pool_pre_ping(db.py)이 보호한다.
+    session.commit()
+
     # 컴파일러 심볼 카탈로그(#B) — 크로스에셋 신호 참조가 가능한 심볼을 프롬프트에 노출.
     # 매크로 그룹 + 주요 자산심볼. 개별주식(동적 유니버스)은 제외(name_map/valid_keys가 흡수).
     symbols_catalog: dict[str, list[str]] = {
