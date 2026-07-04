@@ -120,7 +120,7 @@ type Alert = {
 
 export function StatusStrip({
   autoStatus, health, receivedAt, lastHeartbeatAt,
-  killSwitch, drawdown, reconciliation, cycleSummary, equityNow, onCommand,
+  killSwitch, drawdown, reconciliation, cycleSummary, equityNow, heldCount, onCommand,
 }: {
   autoStatus?: "running" | "paused" | "stopped";
   health?: LocalHealth;
@@ -131,6 +131,7 @@ export function StatusStrip({
   reconciliation?: ReconciliationResult;
   cycleSummary?: CycleSummary;
   equityNow?: number;
+  heldCount?: number;   // 현재 보유 종목 수 — 킬스위치 발동 상태의 "미청산 잔존" 표면화용
   onCommand: (type: CommandType) => void;
 }) {
   const now = new Date();
@@ -168,8 +169,14 @@ export function StatusStrip({
 
   const alerts: Alert[] = [];
   if (killSwitch?.active) {
+    // T2b — 킬스위치가 켜졌는데 보유가 남아 있으면 "청산 미완료"(예: 장 마감으로 거부).
+    // 무조건 자동 재청산은 자금경로 위험이라 하지 않고, 미완료 상태를 명확히 표면화한다.
+    const held = heldCount ?? 0;
+    const act = held > 0
+      ? `신규 진입 차단 중 · 미청산 보유 ${held}건 (청산 미완료) — 장중 [전량 매도]로 완료하세요`
+      : "신규 진입 차단 중 · 보유 없음(청산 완료)";
     alerts.push({ tone: "red", main: `킬스위치 발동: ${killSwitch.reason || "일일 손실 한도"}`,
-      act: "신규 진입 차단 중 · 청산은 계속", cmd: "RESET_KILL_SWITCH", cmdLabel: "해제" });
+      act, cmd: "RESET_KILL_SWITCH", cmdLabel: "해제" });
   }
   const depth = drawdown?.depth_pct;
   if (depth != null && depth <= -10) {

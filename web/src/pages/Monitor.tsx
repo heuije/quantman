@@ -197,7 +197,8 @@ export default function Monitor() {
           <StatusStrip autoStatus={autoStatus} health={p?.health}
             receivedAt={snap?.received_at} lastHeartbeatAt={snap?.last_heartbeat_at}
             killSwitch={ks} drawdown={p?.drawdown} reconciliation={p?.reconciliation}
-            cycleSummary={summary} equityNow={equityNow} onCommand={send} />
+            cycleSummary={summary} equityNow={equityNow} heldCount={positions.length}
+            onCommand={send} />
 
           {/* 제어 액션 */}
           <div className="panel monitor-actions">
