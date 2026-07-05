@@ -85,8 +85,12 @@ def fetch(code: str) -> dict | None:
         try:
             fs = dfs.fs.extract(corp_code=cc, bgn_de=bgn, separate=False, report_tp="annual", dataset="web")
         except Exception as e:  # noqa: BLE001
-            _log.warning("dart-fss extract 실패 %s: %s", code, e)
-            continue
+            # 연결 미작성 법인(카카오뱅크 등 종속회사 없음) — 별도(separate)로 폴백.
+            try:
+                fs = dfs.fs.extract(corp_code=cc, bgn_de=bgn, separate=True, report_tp="annual", dataset="web")
+            except Exception as e2:  # noqa: BLE001
+                _log.warning("dart-fss extract 실패(연결·별도 모두) %s: %s / %s", code, e, e2)
+                continue
         out = {}
         pl = _conv(fs["is"] if fs["is"] is not None else fs["cis"])
         if pl:

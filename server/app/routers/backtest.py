@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import logging
+import threading
+
 import quant_core as qc
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
@@ -40,7 +43,34 @@ router = APIRouter(tags=["symbols"])
 # /symbols 응답 캐시 — (dataset 버전, 마스터 갱신시각) 키로 1회 빌드·직렬화 후 재사용.
 # 데이터가 실제로 바뀔 때(=키 변동)만 재빌드되므로 하루 몇 번 갱신돼도 항상 최신.
 # 큰 페이로드라 dict가 아닌 인코딩된 bytes를 캐시해 재직렬화 비용까지 없앤다.
+#
+# ⚠ stale-while-revalidate — 배포/재시작 직후 startup job들이 dataset 세대를 연쇄 bump하는
+# 동안 키가 매 요청 달라져 요청 경로에서 풀 리빌드(심볼 인덱스 22k 스캔+직렬화, 실측 47~101s)가
+# 반복됐다(첫 로그인 2~3분의 주범). 키가 낡아도 **기존 본문을 즉시 반환**하고 재빌드는 백그라운드
+# 1개(in-flight 가드)로만 수행한다. 종목 목록은 세션 중 낡아도 무해(다음 요청에서 새 본문).
+_log = logging.getLogger("app.symbols")
 _symbols_cache: tuple[tuple[int, int], bytes] | None = None
+_symbols_build_lock = threading.Lock()     # 첫 빌드 stampede 가드(동시 첫 요청 1회만 빌드)
+_symbols_refresh_gate = threading.Lock()   # 백그라운드 재빌드 in-flight 가드
+
+
+def _rebuild_symbols_cache(key: tuple[int, int]) -> None:
+    """캐시 본문을 빌드해 교체. 호출측이 gate/lock으로 동시성 제어."""
+    global _symbols_cache
+    body = JSONResponse(_build_symbols_payload()).body
+    _symbols_cache = (key, body)
+
+
+def prewarm_symbols() -> None:
+    """부팅 직후 1회 캐시 프리워밍(백그라운드) — 첫 사용자의 첫 /symbols도 블로킹 없이."""
+    try:
+        key = _symbols_version_key()
+        with _symbols_build_lock:
+            if _symbols_cache is None:
+                _rebuild_symbols_cache(key)
+        _log.info("/symbols 캐시 프리워밍 완료")
+    except Exception:
+        _log.exception("/symbols 프리워밍 실패 — 첫 요청에서 빌드")
 
 
 def _symbols_version_key() -> tuple[int, int]:
@@ -146,14 +176,25 @@ def list_symbols(request: Request, user: User = Depends(get_current_user)):
     같은 데이터에 대해선 서버가 재계산·재직렬화를 건너뛰고, 브라우저는
     If-None-Match가 일치하면 304(본문 없음)로 받아 전송 비용도 사라진다.
     """
-    global _symbols_cache
     key = _symbols_version_key()
-    if _symbols_cache is None or _symbols_cache[0] != key:
-        body = JSONResponse(_build_symbols_payload()).body
-        _symbols_cache = (key, body)
-    body = _symbols_cache[1]
+    if _symbols_cache is None:
+        # 첫 빌드만 블로킹(부팅 프리워밍이 대부분 흡수). stampede 가드로 1회만 빌드.
+        with _symbols_build_lock:
+            if _symbols_cache is None:
+                _rebuild_symbols_cache(key)
+    elif _symbols_cache[0] != key and _symbols_refresh_gate.acquire(blocking=False):
+        # 낡은 캐시 — 즉시 낡은 본문을 서빙하고 재빌드는 백그라운드 1개만.
+        def _bg():
+            try:
+                _rebuild_symbols_cache(key)
+            except Exception:
+                _log.exception("/symbols 백그라운드 재빌드 실패 — 기존 캐시 유지")
+            finally:
+                _symbols_refresh_gate.release()
+        threading.Thread(target=_bg, daemon=True).start()
 
-    etag = f'W/"symbols-{key[0]}-{key[1]}"'
+    served_key, body = _symbols_cache
+    etag = f'W/"symbols-{served_key[0]}-{served_key[1]}"'
     headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)

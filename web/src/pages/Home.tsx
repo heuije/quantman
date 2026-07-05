@@ -21,7 +21,8 @@ function ProfileBlock({ ticker, name }: { ticker: string; name: string }) {
     let alive = true; setP(null); setD(null);
     // 시총=shares×현재가, 주요사업=business 모두 /profile이 제공 → 종목무관 산업표 하드코딩 폴백 제거(C6).
     api.companyProfile(ticker).then((x) => { if (alive) setP(x); }).catch(() => { /* 무시 */ });
-    api.symbolDetail(ticker, "1y").then((x) => { if (alive) setD(x); }).catch(() => { /* 무시 */ });
+    // light — 개요는 last(현재가·베타·52주)만 쓰므로 보조지표 38종 계산 생략(콜드 14.6s→0.7s)
+    api.symbolDetail(ticker, "1y", true).then((x) => { if (alive) setD(x); }).catch(() => { /* 무시 */ });
     return () => { alive = false; };
   }, [ticker]);
   const num = (v: number | null | undefined) => v == null ? "—" : v.toLocaleString();

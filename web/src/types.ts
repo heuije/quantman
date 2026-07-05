@@ -1213,6 +1213,14 @@ export interface UpcomingEcon {
 }
 export interface GlobalEcon { events: EconEvent[]; upcoming?: UpcomingEcon[]; span?: number[]; }
 
+// 국가별 국채 금리 커브 (FRED·일본 MOF·ECB)
+export interface BondCurve {
+  country: string; name: string; freq: string; maturities: string[];
+  series: Record<string, number | string | null>[];   // [{date, "1M": v, "10Y": v, …}]
+  latest: Record<string, { yield: number | null; chg_bp: number | null }>;
+  asof: string | null;
+}
+
 // 배터리·핵심광물 (KOMIS 한국광해광업공단) — Yahoo에 없는 LME/현물 계약
 export interface BatteryMetal {
   name: string; code: string; crtr: string; hp: string;

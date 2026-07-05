@@ -9,7 +9,7 @@ import type {
   CompareResult, KrExtras, IndustryData,
   OpinionList, StockOpinion, OpinionComment,
   SectorNews, CompanyProfile, FinancialsData,
-  GlobalIndices, GlobalCommodities, GlobalEcon, GlobalBattery, BatterySeries,
+  GlobalIndices, GlobalCommodities, GlobalEcon, GlobalBattery, BatterySeries, BondCurve,
   ScreenerField, ScreenerMatch, ScreenerPreset, ScreenerSpecIO, ScreenerUserPreset,
   StrategyDef, StrategyRow, StrategyStats, StrategyVersionRow,
   SymbolInfo, SyncSnapshot, TradingTimeline, UserSettingsIO,
@@ -304,6 +304,26 @@ export const api = {
   globalBattery: () => req<GlobalBattery>("/market/global/battery"),
   globalBatteryChart: (code: string, crtr: string, hp: string) =>
     req<BatterySeries>(`/market/global/battery/chart?code=${encodeURIComponent(code)}&crtr=${encodeURIComponent(crtr)}&hp=${encodeURIComponent(hp)}`),
+  globalBonds: (cc: string) => req<BondCurve>(`/market/global/bonds/${encodeURIComponent(cc)}`),
+  globalBondsExcel: async () => {
+    const t = tokenStore.get();
+    const res = await fetch(`${BASE}/market/global/bonds-export.xlsx`, {
+      headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}) },
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      throw new Error(b.detail || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "bond_yields.xlsx";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
   companyProfile: (ticker: string) =>
     req<CompanyProfile>(`/market/profile/${encodeURIComponent(ticker)}`),
   financials: (ticker: string) =>

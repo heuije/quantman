@@ -119,17 +119,25 @@ def _parse_rpt_date(d: str):
         return None
 
 
+def _fetch_rpt_page(code: str, page: int) -> str:
+    r = requests.get("https://finance.naver.com/research/company_list.naver",
+                     params={"searchType": "itemCode", "itemCode": code, "page": page},
+                     headers=_H, verify=_C, timeout=15)
+    r.encoding = "euc-kr"
+    return r.text
+
+
 @lru_cache(maxsize=256)
 def _reports(code: str, _day: str) -> list[dict]:
-    # 네이버 리서치 목록을 페이지네이션하며 최근 12개월치 수집(30건/page).
+    # 네이버 리서치 목록에서 최근 12개월치 수집(30건/page).
+    # 페이지 fetch는 병렬(순차 8페이지 ≈ 8s가 Summary 탭 병목이었음) — 파싱·경계 판단은 순서대로.
+    from concurrent.futures import ThreadPoolExecutor
     cutoff = date.today() - timedelta(days=365)
     out = []
-    for page in range(1, _RPT_MAX_PAGES + 1):
-        r = requests.get("https://finance.naver.com/research/company_list.naver",
-                         params={"searchType": "itemCode", "itemCode": code, "page": page},
-                         headers=_H, verify=_C, timeout=15)
-        r.encoding = "euc-kr"
-        soup = BeautifulSoup(r.text, "html.parser")
+    with ThreadPoolExecutor(max_workers=_RPT_MAX_PAGES) as ex:
+        pages = list(ex.map(lambda p: _fetch_rpt_page(code, p), range(1, _RPT_MAX_PAGES + 1)))
+    for html in pages:
+        soup = BeautifulSoup(html, "html.parser")
         page_rows, stop = 0, False
         for tr in soup.select("tr"):
             a = tr.find("a", href=lambda h: h and "company_read" in h)  # 제목→상세 링크 행만
@@ -226,13 +234,8 @@ def consensus(code: str) -> list[dict]:
         return []
 
 
-# ── 추정 실적 (FnGuide 연간 Financial Highlight) ─────────────────────────────
-# 손익(억원)·멀티플(PER·PBR)·수익성(ROE)·EPS(PEG 계산용). 라벨 시작 일치로 추출.
-_EARNINGS_ITEMS = ("매출액", "영업이익", "당기순이익", "지배주주", "EBITDA",
-                   "PER", "PBR", "ROE", "EPS")
-
-
-_YEAR_RE = re.compile(r"(\d{4}/\d{2}(?:\(E\))?)$")  # '2025/12' 또는 '2026/12(E)'
+# ── 추정 실적 (FnGuide 스냅샷 JSON — wcomp.fnguide.com) ──────────────────────
+# 손익(억원)·멀티플(PER·PBR)·수익성(ROE)·EPS(PEG 계산용). 연간 5년 확정 + 3년 추정(E).
 
 
 def _num_cell(s: str):
@@ -247,32 +250,41 @@ def _num_cell(s: str):
 
 @lru_cache(maxsize=256)
 def _earnings(code: str, _day: str) -> dict:
-    # FnGuide 연간 Financial Highlight(highlight_D_Y) — 5년 확정 + 3년 추정(E).
+    # FnGuide 신 사이트(wcomp, 2026-06말 개편) 스냅샷 JSON — 5년 확정 + 3년 추정(E).
+    # ⚠ 구 comp.fnguide.com/SVO2/ASP/SVD_Main.asp 는 302(도메인 이전)로 폐지 — HTML 파싱이
+    #   전 종목 빈 결과를 내던 원인. 신 API는 구조화 JSON이라 파싱도 강건.
     # 출처 그대로 표시: 일부 종목(삼성전자 등)은 FnGuide 원본 추정치가 비정상일 수
     # 있으나 우리 크롤링은 정확. 데이터 제공처 이슈는 출처 명시로 대응한다.
-    r = requests.get("https://comp.fnguide.com/SVO2/ASP/SVD_Main.asp",
-                     params={"pGB": "1", "gicode": f"A{code}", "cID": "",
-                             "MenuYn": "Y", "ReportGB": "", "NewMenuID": "11",
-                             "stkGb": "701"}, headers=_H, verify=_C, timeout=20)
-    soup = BeautifulSoup(r.text, "html.parser")
-    div = soup.find(id="highlight_D_Y")          # 연간 전용 (분기 혼입 없음)
-    if div is None:
+    def _snp(consol: str) -> dict:
+        r = requests.get("https://wcomp.fnguide.com/CompanyInfo/getSnpFinancial",
+                         params={"cmp_cd": code, "consol_typ": consol, "freq_typ": "Y"},
+                         headers=_H, verify=_C, timeout=20)
+        return r.json().get("dataset") or {}
+
+    ds = _snp("C")                                   # 연결 우선
+    if not (ds.get("data") or []):
+        ds = _snp("I")                               # 연결 미작성 법인 — 별도 폴백
+    hdr = [h for h in (ds.get("header") or []) if h.get("YYMM")]
+    data = ds.get("data") or []
+    if not hdr or not data:
         return {"years": [], "rows": {}}
-    years = [m.group(1) for th in div.select("thead th")
-             if (m := _YEAR_RE.search(th.get_text(strip=True)))]
-    if not years:
-        return {"years": [], "rows": {}}
+    years = [h["YYMM"] + ("(E)" if (h.get("EP_CHK") or "").strip() == "E" else "") for h in hdr]
+    # 새 표 계정명 → 기존 rows 키. '영업이익'은 확정만 있고 추정(E)은 '영업이익(발표기준)'
+    # 행에 담기는 종목이 있어, 같은 키의 두 행 중 **값이 더 많은 행**을 채택한다.
+    name_map = {"매출액": "매출액", "영업이익": "영업이익", "영업이익(발표기준)": "영업이익",
+                "당기순이익": "당기순이익", "당기순이익(지배)": "지배주주",
+                "PER": "PER", "PBR": "PBR", "ROE": "ROE", "EPS": "EPS"}
     rows: dict[str, list] = {}
-    for tr in div.select("tbody tr"):
-        head = tr.find("th")
-        if head is None:
+    for rr in data:
+        nm = (rr.get("NAME") or "").strip()
+        key = name_map.get(nm)
+        if not key:
             continue
-        item = head.get_text(strip=True).replace(" ", "")
-        # 부분일치(in)는 'ROE/EPS 행 라벨에 지배주주가 들어가' 오매칭 → 라벨 시작 일치로 정확히.
-        key = next((k for k in _EARNINGS_ITEMS if item.startswith(k.replace(" ", ""))), None)
-        if key and key not in rows:
-            vals = [_num_cell(td.get_text(strip=True)) for td in tr.find_all("td")]
-            rows[key] = vals[:len(years)]
+        vals = [_num_cell("" if rr.get(f"VAL{i + 1}") is None else str(rr.get(f"VAL{i + 1}")))
+                for i in range(len(hdr))]
+        old = rows.get(key)
+        if old is None or sum(v is not None for v in vals) > sum(v is not None for v in old):
+            rows[key] = vals
     # 영업이익률·당기순이익률(%) — 최초 1회 계산해 함께 저장(렌더마다 재계산 X). 매출액 대비.
     rev = rows.get("매출액")
     if rev:
@@ -322,6 +334,14 @@ def earnings(code: str) -> dict:
                 return json.load(f)["data"]
         except Exception:
             return {"years": [], "rows": {}}
+    if not data.get("years"):
+        # 빈 결과는 저장하지 않는다 — 일시 실패(사이트 이전·차단)의 빈 dict가 7일 캐시로
+        # 박혀 "컨센서스 있는데 미표시"가 지속되던 원인. 기존 저장본이 있으면 그걸 서빙.
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)["data"]
+        except Exception:
+            return data
     try:
         os.makedirs(_EARN_DIR, exist_ok=True)
         tmp = path + ".tmp"
@@ -470,7 +490,8 @@ def _translate_one(text: str) -> str | None:
 
 def _translate_many(texts: list[str]) -> list[str | None]:
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    # I/O bound(구글 무료번역 HTTP) — 워커 16으로 100건 ≈ 4~5s(6워커 ~15s가 뉴스탭 병목이었음)
+    with ThreadPoolExecutor(max_workers=16) as ex:
         return list(ex.map(_translate_one, texts))
 
 

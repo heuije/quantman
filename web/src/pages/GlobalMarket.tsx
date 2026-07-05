@@ -3,7 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
 import { api } from "../api";
-import type { GlobalIndices, GlobalCommodities, GlobalCommodity, GlobalEcon, GlobalBattery, BatteryMetal } from "../types";
+import type { GlobalIndices, GlobalCommodities, GlobalCommodity, GlobalEcon, GlobalBattery, BatteryMetal, BondCurve } from "../types";
 import { SectorNewsPanel, CompanyPriceChart } from "./IndustryAnalysis";
 
 const UP = "#de3033", DOWN = "#1668c4";
@@ -127,6 +127,129 @@ function KomisChart({ metal }: { metal: BatteryMetal }) {
   );
 }
 
+// 국채 금리 서브페이지 — 국가 선택 → 만기별 시계열 차트(토글·기간 컨트롤) + 최신 커브 표 + 엑셀.
+function BondsPage() {
+  const [cc, setCc] = useState("US");
+  const [cache, setCache] = useState<Record<string, BondCurve>>({});
+  const [busy, setBusy] = useState(false);
+  const [xlBusy, setXlBusy] = useState(false);
+  const [hidden, setHidden] = useState<Record<string, boolean>>({});
+  const cur = cache[cc];
+  useEffect(() => {
+    if (cache[cc]) return;
+    let alive = true; setBusy(true);
+    api.globalBonds(cc)
+      .then((d) => { if (alive) setCache((m) => ({ ...m, [cc]: d })); })
+      .catch(() => { /* 무시 */ })
+      .finally(() => { if (alive) setBusy(false); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cc]);
+
+  const dates = (cur?.series || []).map((s) => String(s.date));
+  const range = usePeriodRange(dates);
+  const view = (cur?.series || []).filter((s) => {
+    const d = String(s.date); return d >= range.lo && d <= range.hi;
+  });
+  const mats = cur?.maturities || [];
+  const COUNTRY_TABS: [string, string][] = [["US", "미국"], ["JP", "일본"], ["EU", "유로존(AAA)"], ["KR", "한국"], ["CN", "중국"]];
+  const tailRows = (cur?.series || []).slice(-15).reverse();   // 최근 15영업일 시계열 표
+
+  return (
+    <div className="panel">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <h3 style={{ margin: 0 }}>국가별 국채 금리 <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>(단기~장기 전 만기{cur ? ` · ${cur.freq}` : ""}{cur?.asof ? ` · 기준일 ${cur.asof}` : ""})</span></h3>
+        <button type="button" className="ghost sm" disabled={xlBusy} style={{ fontSize: 12, padding: "4px 12px" }}
+          onClick={() => { setXlBusy(true); api.globalBondsExcel().catch(() => { /* 무시 */ }).finally(() => setXlBusy(false)); }}>
+          {xlBusy ? "엑셀 생성 중…" : "⬇ 엑셀 다운로드 (전체 국가·전체 기간)"}</button>
+      </div>
+      {/* 국가 탭 */}
+      <div style={{ display: "flex", gap: 6, margin: "10px 0" }}>
+        {COUNTRY_TABS.map(([k, label]) => (
+          <button key={k} type="button" onClick={() => { setCc(k); setHidden({}); }}
+            style={{ fontSize: 12, fontWeight: 700, padding: "5px 14px", borderRadius: 8, cursor: "pointer",
+              border: `1px solid ${cc === k ? "#4f8ff5" : "var(--border)"}`,
+              background: cc === k ? "rgba(79,143,245,0.16)" : "transparent",
+              color: cc === k ? "#4f8ff5" : "var(--muted)" }}>{label}</button>
+        ))}
+      </div>
+      {busy && !cur ? (
+        <p style={{ color: "var(--muted)", fontSize: 13 }}>국채 금리 불러오는 중…</p>
+      ) : !cur || cur.maturities.length === 0 ? (
+        <p style={{ color: "var(--muted)", fontSize: 13 }}>데이터가 없습니다.</p>
+      ) : (
+        <>
+          {/* 만기 토글 칩 — 최신 수익률·전기 대비(bp) */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+            {mats.map((m, i) => {
+              const lt = cur.latest[m];
+              const chg = lt?.chg_bp;
+              return (
+                <button key={m} type="button" onClick={() => setHidden((h) => ({ ...h, [m]: !h[m] }))}
+                  title="클릭하여 그래프에서 켜고 끄기"
+                  style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "4px 10px",
+                    border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer",
+                    background: "transparent", opacity: hidden[m] ? 0.4 : 1 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 2, background: LINE_COLORS[i % LINE_COLORS.length] }} />
+                  <b>{m}</b>
+                  <span>{lt?.yield != null ? `${lt.yield.toFixed(3)}%` : "—"}</span>
+                  {chg != null && (
+                    <span style={{ color: chg >= 0 ? UP : DOWN, fontWeight: 700 }}>
+                      {chg >= 0 ? "+" : ""}{chg.toFixed(1)}bp</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          {range.controls}
+          <div ref={range.box} style={{ touchAction: "none" }}>
+            <ResponsiveContainer width="100%" height={400}>
+              <LineChart data={view} margin={{ top: 5, right: 16, bottom: 5, left: 4 }}>
+                <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={48} />
+                <YAxis tick={{ fontSize: 11 }} width={46} domain={["auto", "auto"]} tickFormatter={(v) => `${v}%`} />
+                <Tooltip {...TIP} formatter={(v) => `${Number(v).toFixed(3)}%`} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {mats.map((m, i) => (
+                  <Line key={m} type="monotone" dataKey={m} stroke={LINE_COLORS[i % LINE_COLORS.length]}
+                    strokeWidth={1.4} dot={false} connectNulls hide={!!hidden[m]} />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          {/* 최근 시계열 표 (만기 × 최근 15일) */}
+          <div style={{ overflowX: "auto", marginTop: 12 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, whiteSpace: "nowrap" }}>
+              <thead>
+                <tr style={{ borderBottom: "2px solid var(--border)" }}>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>일자</th>
+                  {mats.map((m) => <th key={m} style={{ textAlign: "right", padding: "6px 8px" }}>{m}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {tailRows.map((r, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                    <td style={{ padding: "5px 8px", color: "var(--muted)" }}>{String(r.date)}</td>
+                    {mats.map((m) => (
+                      <td key={m} style={{ padding: "5px 8px", textAlign: "right" }}>
+                        {r[m] != null ? Number(r[m]).toFixed(3) : "—"}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p style={{ fontSize: 11, color: "var(--muted)", margin: "8px 2px 0" }}>
+            Source: 미국·한국·중국 = FRED(세인트루이스 연준) · 일본 = 재무성(MOF) · 유로존 = ECB 산출
+            AAA등급 유로지역 국채 스팟커브(독일 등 최고등급국 국채 기반 — 단일 국가 아님·정책금리 아님).
+            한국·중국은 월별 시리즈(FRED 제공 범위){cc === "CN" ? " · 중국 장기물은 무료 신뢰 소스 부재로 3M만 제공(시리즈 2023-11 중단)" : ""}.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function GlobalMarket() {
   const [idx, setIdx] = useState<GlobalIndices | null>(null);
   const [com, setCom] = useState<GlobalCommodities | null>(null);
@@ -136,6 +259,7 @@ export default function GlobalMarket() {
   const [selCom, setSelCom] = useState<string | null>(null);   // 차트로 펼친 원자재 심볼
   const [selBat, setSelBat] = useState<BatteryMetal | null>(null);   // 차트로 펼친 배터리광물
   const [econPage, setEconPage] = useState(0);   // 경제지표 과거 페이지네이션
+  const [page, setPage] = useState<"summary" | "bonds">("summary");   // 서브페이지
   const [showSrc, setShowSrc] = useState(false);   // 데이터 출처 — 좌측 통합·접기(기본 숨김)
 
   useEffect(() => {
@@ -258,12 +382,26 @@ export default function GlobalMarket() {
   const eView = econEvents.slice(eCur * EPER, eCur * EPER + EPER);
 
   return (
-    <div className="dashboard-fullwidth">
+    /* mod-std — HOME과 동일 스케일 체계(zoom 0.67 + 22/16/12pt). 공용 패널(뉴스 등)이 절대단위(pt)
+       하드코딩이라, 래퍼가 다르면 페이지마다 시각 크기가 어긋난다(글자크기 불일치 재발의 근본 원인). */
+    <div className="dashboard-fullwidth mod-std">
       <h1>글로벌 시장 분석</h1>
       <p style={{ color: "var(--muted)", marginTop: 0, fontSize: 13 }}>
-        세계 주요 지수·원자재 선물·미국 경제지표(컨센서스 대비)를 한 화면에. 출처: FinanceDataReader · TradingView 경제캘린더.
+        세계 주요 지수·원자재 선물·미국 경제지표·국채 금리를 한 화면에. Source: FinanceDataReader · TradingView · FRED · MOF · ECB.
       </p>
+      {/* 서브페이지 탭 — Summary(기존 화면) / 국채 금리 */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+        {([["summary", "Summary"], ["bonds", "국채 금리"]] as const).map(([k, label]) => (
+          <button key={k} type="button" onClick={() => setPage(k)}
+            style={{ fontSize: 13, fontWeight: 700, padding: "6px 18px", borderRadius: 8, cursor: "pointer",
+              border: `1px solid ${page === k ? "#4f8ff5" : "var(--border)"}`,
+              background: page === k ? "rgba(79,143,245,0.16)" : "transparent",
+              color: page === k ? "#4f8ff5" : "var(--muted)" }}>{label}</button>
+        ))}
+      </div>
 
+      {page === "bonds" && <BondsPage />}
+      {page === "summary" && (<>
       {/* 1. 세계 10대 지수 */}
       <div className="panel">
         <h3 style={{ marginTop: 0 }}>세계 10대 지수 <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>(선택 구간 시작점 대비 %)</span></h3>
@@ -430,6 +568,7 @@ export default function GlobalMarket() {
         <h3 style={{ marginTop: 0 }}>금리 · 연준 · 물가 뉴스</h3>
         <SectorNewsPanel kw={MACRO_KW} />
       </div>
+      </>)}
     </div>
   );
 }

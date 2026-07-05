@@ -691,7 +691,7 @@ export function OpinionBoard({ ticker, name }: { ticker: string; name: string })
       .then((d) => { if (alive) setList(d.opinions); })
       .catch(() => { if (alive) setList([]); })
       .finally(() => { if (alive) setBusy(false); });
-    api.symbolDetail(ticker, "1y")
+    api.symbolDetail(ticker, "1y", true)   // light — 현재가만 필요(보조지표 계산 생략)
       .then((d) => { if (alive) setCur(d.last?.close ?? null); })
       .catch(() => { /* 무시 */ });
     return () => { alive = false; };
@@ -948,7 +948,7 @@ export function RatingsSummary({ ticker, name, onOpen }:
   useEffect(() => {
     let alive = true; setBusy(true); setList([]);
     api.opinions(ticker).then((d) => { if (alive) setList(d.opinions); }).catch(() => { /* 무시 */ }).finally(() => { if (alive) setBusy(false); });
-    api.symbolDetail(ticker, "1y").then((d) => { if (alive) setCur(d.last?.close ?? null); }).catch(() => { /* 무시 */ });
+    api.symbolDetail(ticker, "1y", true).then((d) => { if (alive) setCur(d.last?.close ?? null); }).catch(() => { /* 무시 */ });   // light — 현재가만
     return () => { alive = false; };
   }, [ticker]);
   const visible = list.filter((o) => o.status === "approved" || o.is_mine);
@@ -1027,8 +1027,37 @@ const INDUSTRY_NEWS_KW: Record<string, { kr: string[]; glob: string[] }> = {
       "클린뷰티", "리들샷", "뷰티 디바이스", "브랜드", "올리브영", "아마존", "역직구"],
     glob: ["K-beauty", "cosmetics", "skincare", "beauty"],
   },
+  "건강기능식품": {
+    kr: ["건강기능식품", "건기식", "홍삼", "프로바이오틱스", "비타민", "콜라겐", "유산균", "오메가3",
+      "다이어트 보조제", "이너뷰티", "건기식 수출", "개별인정형", "기능성 원료", "식약처 인증"],
+    glob: ["dietary supplement", "probiotics", "health functional food", "nutraceutical"],
+  },
+  "식음료": {
+    kr: ["식품", "음료", "라면", "K푸드", "식품 수출", "간편식", "HMR", "제과", "주류", "음식료",
+      "곡물가", "원재료 가격", "식품 가격 인상", "냉동식품", "베이커리"],
+    glob: ["K-food", "food export", "instant noodles", "food beverage"],
+  },
+  "미디어엔터테인먼트": {
+    kr: ["엔터테인먼트", "K팝", "아이돌", "콘서트", "음반", "드라마", "콘텐츠", "OTT", "웹툰", "팬덤",
+      "월드투어", "굿즈", "기획사", "스트리밍", "제작사"],
+    glob: ["K-pop", "entertainment", "OTT content", "concert tour"],
+  },
+  "교육출판업": {
+    kr: ["교육", "에듀테크", "출판", "학원", "인강", "사교육", "교재", "AI 교육", "디지털 교과서",
+      "학령인구", "입시", "온라인 교육"],
+    glob: ["edtech", "education", "online learning"],
+  },
+  "유틸리티": {
+    kr: ["전력", "전기요금", "가스요금", "한전", "발전", "원전", "재생에너지", "전력망", "송전",
+      "SMP", "전력 수요", "가스공사", "요금 인상", "에너지 정책"],
+    glob: ["utility", "electricity price", "nuclear power", "power grid"],
+  },
 };
-const DEFAULT_NEWS_KW = { kr: ["증시", "코스피", "코스닥", "실적", "공시"], glob: ["Korea stocks", "KOSPI"] };
+// 산업 미인식 종목 — 증시 일반 키워드(대형주 기사 도배)를 쓰지 말고 **종목명 중심**으로 검색.
+// (건기식 종목에 반도체 뉴스가 노출되던 원인: 미매핑 산업 → 아래 구 DEFAULT의 "증시·코스피" 검색.)
+const nameNewsKw = (name?: string) =>
+  name ? { kr: [`${name} 실적`, `${name} 주가`, `${name} 공시`, name], glob: [name] }
+       : { kr: ["증시", "코스피", "코스닥", "실적", "공시"], glob: ["Korea stocks", "KOSPI"] };
 
 export function SectorNewsPanel({ ticker, name, kw: kwOverride }:
   { ticker?: string; name?: string; kw?: { kr: string[]; glob: string[] } }) {
@@ -1050,8 +1079,8 @@ export function SectorNewsPanel({ ticker, name, kw: kwOverride }:
       run(kwOverride);                    // 매크로 뉴스 등 — 키워드 직접 지정
     } else if (ticker) {
       api.industryOf(ticker)
-        .then((r) => run(INDUSTRY_NEWS_KW[r.industry || ""] || DEFAULT_NEWS_KW))
-        .catch(() => run(DEFAULT_NEWS_KW));
+        .then((r) => run(INDUSTRY_NEWS_KW[r.industry || ""] || nameNewsKw(name)))
+        .catch(() => run(nameNewsKw(name)));
     } else {
       run(INDUSTRY_NEWS_KW["2차전지"]);   // 산업분석 페이지 등 종목 미지정 시
     }
