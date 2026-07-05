@@ -18,6 +18,7 @@
 - **정책 상수(floor 등)는 SSOT 모듈 + 시그니처 가드로.** "2010-01-01"류 리터럴을 수집 경로마다 하드코딩하면 반드시 드리프트한다 — 실측: US 신규종목만 `backfill_start="2015-01-01"`로 남아 **US 2010 도달 3%**(KR은 백필 가동중인데). `data/policy.py CORE_FLOOR` 하나로 모으고, `inspect.signature` 가드가 fetch 기본값들을 CI에서 잠근다. 메타(spec current_status)도 같은 부류 — 실측·가드로 결속하지 않은 선언은 낡는다(flow/consensus가 "absent"로 남아 오진 유발). (2026-07-02 2010 Core floor)
 - **외부 소스 빈 응답의 신뢰 규약을 소스마다 명시적으로 결정하라 — 기본값은 "무예외 빈=진짜 없음(수렴)".** US 깊이백필에서 빈 응답을 "글리치 의심·마커 금지"로 짰다가 young 그룹(상장 늦은 종목)이 영원히 재시도돼 백필이 수렴하지 않는 결함(테스트가 잡음). 예외=실패(재시도) / 무예외 빈=genuine(마커)이 KR·US 공통 규약 — false-negative의 결과가 "기존 깊이 유지(무해)"라면 수렴을 택한다. 역방향 함정도 있다: generic fetcher가 **에러 페이로드를 휴장 빈응답으로 접으면**(krx `_fetch_day`) 미신청 서비스에서 커서가 데이터 없이 침묵 전진(거짓 완료) — 응답의 기대 블록 존재를 명시 검사해 에러/휴장을 구분할 것(marketcap_krx 전용 fetcher). (2026-07-02~03)
 - **데이터를 엔진에 넣는 것 ≠ 챗봇이 그걸 아는 것 (공급≫소비 갭).** P2-B/S4로 매크로(V-KOSPI·풋콜·국고채·선물OI·ETF flow)를 공급했으나 챗 LLM·NL→IR 컴파일러가 존재를 몰라 활용 불가였다 — `capability_spec` 선물심볼은 하드코딩·매크로 누락, `get_all_indicator_columns` SSOT는 BASE+FUND+FLOW+CONSENSUS만 태우고 매크로 심볼·커버리지 뎁스는 안 태움, `data_spec()` 자기서술은 "문서/프론트"만 소비·LLM 미도달. **닫는 법=하드코딩 신규 카탈로그가 아니라 기존 SSOT를 LLM에 배선**: ①커버리지는 **검증 매니페스트 실측 파생**(`coverage_inventory`=build_manifest per-symbol first/last + coverage_report pct — 하드코딩 "2010~" 금지, 백필 중 실제 뎁스 반영) ②챗 프롬프트에 화이트리스트 인벤토리+*"여기 없으면 미지원, 지어내지 말라"* 지시(미지원 열거=블록리스트는 무한·유지불가 → 보유+뎁스 인지→그외 미지원) ③컴파일러엔 `MACRO_SYMBOLS` 심볼카탈로그+별칭 name_map(풋콜비율→옵션풋콜비율) ④**드리프트 가드 테스트**(MACRO_SYMBOLS⊆data_type_symbols⊆data_spec)로 부류 재발 차단. 검증은 배선(실조립)뿐 아니라 **구독 $0 LLM eval로 행동까지**(매크로 NL 3/3→실제 매크로 심볼 IR 참조 실증). (2026-07-02 챗 커버리지 인지)
+- **스크래핑 소스는 *요청 패턴*이 차단을 부른다 — 종목별 반복 대신 '하루 1콜 전종목'.** pykrx 수급을 종목별(`get_market_trading_value_by_date`·전종목 3,579콜)로 돌리면 KRX MDC 봇차단(`get_stock_ticker_isin: NoneType`→이후 전부 빈응답·조용한 영구결손). 같은 데이터를 **일별 전종목 1콜/시장/투자자**(`get_market_net_purchases_of_equities_by_ticker`)로 받으면 요청 수·형태가 달라 차단 0(prod 2,698종목·fail=0 실증) — marketcap이 일별로 무리없던 것과 동일 원리. 저장·소비 계약은 그대로 두고 **수집 함수만 `marketcap_krx.fetch_range` 동형 날짜커서로 통일**→엔진/컴파일러/웹 무변경 교체. ⚠함정: 옛 `fetch_one`이 **봇차단 빈응답을 genuine 무데이터로 오판→`.empty` 마커→그 종목 영구 skip**(차단↔무데이터 미구분)=조용한 결손의 뿌리 — 날짜커서 전환이 부류째 제거. 휴장일 pykrx `Length mismatch`(0 elements)는 빈 df로 접어 fail 오판 방지(pykrx가 콘솔에 "Error occurred" 찍지만 무해). (2026-07-05 PR#311)
 
 ## 현재 구조 (안정)
 
@@ -34,9 +35,15 @@
 
 **현황.**
 - **partial(되지만 위험):** 한국 시세 분할조정 표기 미검증 / 시총·종목마스터가 백테스트 store 미부착(스크리너 메모리에만) / 소스별 조정정책 혼재.
-- **present(2026-07 프로덕션 로그 검증):** 애널 컨센서스·목표가(한경)·수급(기관/외국인, pykrx) — cron 적재 가동중(10분 백필→2010 floor + 일일증분 16:30/19:00). 공매도·KR 지수 멤버십 이력은 여전히 absent.
+- **present(2026-07 프로덕션 로그 검증):** 애널 컨센서스·목표가(한경)·수급(기관/외국인, pykrx **일별 전종목**·날짜커서) — cron 적재 가동중(10분 백필→2010 floor + 일일증분 16:30/19:00). KR 지수 멤버십 이력은 여전히 absent.
 
 ## 작업계획 로그 (누적·최신 우선)
+
+### [2026-07-05] flow_kr 수급 수집 종목별→일별 전종목 전환 (KRX 봇차단 근절) [완료]
+- 의도: 국내 기관·외국인 수급(`flow_kr`) 수집이 종목별 `get_market_trading_value_by_date`(전종목 3,579콜)를 반복해 KRX MDC 봇차단을 유발(대량 백필 시 `get_stock_ticker_isin: NoneType`→이후 전부 빈응답·조용한 영구결손). 저장형식·소비계약(`flow/{code}.parquet`·`inst_net_buy`/`foreign_net_buy`·spec provides)을 그대로 두고 **수집 경로만** 일별 전종목 1콜/시장/투자자로 근본 전환. 로컬 실증(별도 세션)=2010~2026 전종목 blocked=0(핸드오프 `flow_kr_daily_handoff.md`).
+- 계획: `flow_kr.fetch_range` 재작성(`marketcap_krx.fetch_range` 동형·날짜커서·부분전진금지·거짓 무데이터 마커 제거·휴장 `Length mismatch` 처리) → `main.py` cron 2개(`_backfill_flow_chunk`·`_refresh_flow`)를 `DateCursorBackfill`(`_flow.cursor`·floor 2010)화 → 테스트 재작성.
+- 결과: **PR#311 squash 머지(f64d862)·Railway 배포·프로덕션 검증 완료(2026-07-05).** 실 KRX(`railway run`): 005930 기관 2026-07-03=1,306,315,309,750 **정확 일치**·`fetch_range` 5거래일 blocked=0. prod 첫 백필 청크 `{ok:True, days:43, fail:0, stocks:2698}`(60일 창 2026-05-06~07-05)·10분 cron이 2010까지 소급. core 687 green.
+- 시행착오: 휴장일 pykrx가 `Length mismatch: 0 elements`를 던지며 콘솔에 "Error occurred"를 찍는데, 이를 차단(fail)으로 오판하면 커서가 헛돎 → 그 예외만 빈 df로 접어 skip(prod fail=0 실증). 옛 `fetch_one`의 `.empty` 마커(차단↔무데이터 미구분→영구 skip)는 날짜커서 전환으로 부류째 제거. 교훈은 §교훈 distill. ⚠KRX Open API엔 투자자별 서비스 부재(공식 확인)라 marketcap처럼 OpenAPI 이관 불가·pykrx MDC가 유일 경로 — 요청 패턴만 교체.
 
 ### [2026-07-03] Enrichment 신규 피드 3종 — COT·KR 시총·거래대금·US 공매도량 (+13F 설계) [진행중]
 - 의도: 수집 로드맵(`docs/REDESIGN/data-collection-plan.md` P2·Q4)의 신규 데이터 착지. ①US 선물 COT 포지셔닝+주간 OI(CFTC Socrata Legacy·1986~)를 **매크로형 명명 시계열 16종**으로 — 심볼 tier라 챗 카탈로그·인벤토리·가드 자동 배선. ②KR 시총·거래대금·상장주식수 이력(KRX `sto`·2010~·PIT) — ⚠포털 서비스 신청 선행(fail-safe 선구현). ③US 일별 공매도량(FINRA Reg SHO consolidated·2018-08~). ④13F는 프로브·설계 확정 후 구현 이월(별도 세션급 규모).
