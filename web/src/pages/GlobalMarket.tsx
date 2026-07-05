@@ -152,7 +152,7 @@ function BondsPage() {
     const d = String(s.date); return d >= range.lo && d <= range.hi;
   });
   const mats = cur?.maturities || [];
-  const COUNTRY_TABS: [string, string][] = [["US", "미국"], ["JP", "일본"], ["EU", "유럽"], ["KR", "한국"], ["CN", "중국"]];
+  const COUNTRY_TABS: [string, string][] = [["US", "미국"], ["JP", "일본"], ["EU", "유로존(AAA)"], ["KR", "한국"], ["CN", "중국"]];
   const tailRows = (cur?.series || []).slice(-15).reverse();   // 최근 15영업일 시계열 표
 
   return (
@@ -240,7 +240,8 @@ function BondsPage() {
             </table>
           </div>
           <p style={{ fontSize: 11, color: "var(--muted)", margin: "8px 2px 0" }}>
-            Source: 미국·한국·중국 = FRED(세인트루이스 연준) · 일본 = 재무성(MOF) · 유럽 = ECB 유로존 AAA 스팟커브.
+            Source: 미국·한국·중국 = FRED(세인트루이스 연준) · 일본 = 재무성(MOF) · 유로존 = ECB 산출
+            AAA등급 유로지역 국채 스팟커브(독일 등 최고등급국 국채 기반 — 단일 국가 아님·정책금리 아님).
             한국·중국은 월별 시리즈(FRED 제공 범위){cc === "CN" ? " · 중국 장기물은 무료 신뢰 소스 부재로 3M만 제공(시리즈 2023-11 중단)" : ""}.
           </p>
         </>
