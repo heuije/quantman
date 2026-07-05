@@ -369,6 +369,19 @@ def refresh(code: str) -> dict:
     return data
 
 
+def _quality_ok(cached: dict) -> bool:
+    """저장본 품질 — 연간 5개년 + 분기 8개 이상이어야 '완전'으로 취급.
+
+    DART 일시 실패(연결 리셋·rate-limit)나 CFS 하드코딩 시절(연결 미작성 법인 실패)의
+    FnGuide 3개년 폴백이 저장되면 _FRESH_DAYS(80일) 동안 그대로 서빙돼 코드 수정이
+    반영되지 않았다(1주간 미해결의 원인). 품질 미달본은 신선해도 하루 1회 재크롤한다.
+    (재크롤 결과가 같아도 fetched=오늘로 저장 → 당일 재시도 없음 — 신생 상장사처럼
+    원천이 3개년뿐인 종목의 무한 재크롤 방지.)"""
+    a = ((cached.get("annual") or {}).get("PL") or {}).get("periods") or []
+    q = ((cached.get("quarterly") or {}).get("PL") or {}).get("periods") or []
+    return len(a) >= 5 and len(q) >= 8
+
+
 def _load_or_fetch(code: str) -> dict:
     path = _path(code)
     try:
@@ -377,7 +390,8 @@ def _load_or_fetch(code: str) -> dict:
                 cached = json.load(f)
             fetched = cached.get("fetched", "")
             if fetched and (date.today() - date.fromisoformat(fetched)).days < _FRESH_DAYS:
-                return cached
+                if _quality_ok(cached) or fetched == date.today().isoformat():
+                    return cached
     except Exception:
         pass
     try:

@@ -559,6 +559,24 @@ def global_battery_chart(code: str, crtr: str, hp: str, user: User = Depends(get
     return komis.battery_chart(code, crtr, hp)
 
 
+@router.get("/global/bonds/{cc}")
+def global_bonds(cc: str, user: User = Depends(get_current_user)):
+    """국가별 국채 금리 — 단기~장기 전 만기 시계열 + 최신 커브(FRED·MOF·ECB)."""
+    from .. import bonds
+    return bonds.country(cc)
+
+
+@router.get("/global/bonds-export.xlsx")
+def global_bonds_xlsx(user: User = Depends(get_current_user)):
+    """국채 금리 전체(전 국가·전 기간·전 만기) 엑셀 다운로드."""
+    from fastapi.responses import Response as FResponse
+    from .. import bonds
+    data = bonds.to_xlsx()
+    return FResponse(content=data,
+                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     headers={"Content-Disposition": 'attachment; filename="bond_yields.xlsx"'})
+
+
 @router.get("/news")
 def sector_news(kr: str = "", glob: str = "", user: User = Depends(get_current_user)):
     """섹터 키워드 뉴스 — Google News RSS(키 불필요). kr/glob = 쉼표구분 키워드. 국내·해외 구분 반환."""

@@ -195,23 +195,31 @@ def corp_code(ticker: str):
 
 
 def _fetch_report(cc: str, year: int, reprt_code: str):
-    """fnlttSinglAcntAll 연결(CFS) 1콜. reprt_code: 11013(1Q)·11012(반기)·11014(3Q)·11011(사업).
+    """fnlttSinglAcntAll 1콜. reprt_code: 11013(1Q)·11012(반기)·11014(3Q)·11011(사업).
+
+    연결(CFS) 우선, **연결 미작성 법인(카카오뱅크 등 종속회사 없음 — status 013)은 별도(OFS)로
+    폴백**한다. CFS 하드코딩 시절엔 이런 회사가 전부 실패해 FnGuide 3개년으로 떨어졌다(재무제표
+    계정이 안 나오던 근본 원인). 연결 작성 회사는 전 연도 CFS, 미작성 회사는 전 연도 OFS라
+    연도 간 연결/별도가 섞이지 않는다.
 
     일시적 연결 리셋(ConnectionError)은 1회 재시도 — 연도×보고서 다회 호출 시 끊김 대비."""
     import time
-    for attempt in range(2):
-        try:
-            r = requests.get(f"{_BASE}/fnlttSinglAcntAll.json", params={
-                "crtfc_key": _key(), "corp_code": cc, "bsns_year": str(year),
-                "reprt_code": reprt_code, "fs_div": "CFS"}, headers=_UA, timeout=20)
-            d = r.json()
-            return d.get("list", []) if d.get("status") == "000" else None
-        except requests.exceptions.RequestException as e:
-            if attempt == 0:
-                time.sleep(0.5)
-                continue
-            _log.warning("DART fnlttSinglAcntAll 실패 %s/%s/%s: %s", cc, year, reprt_code, e)
-            return None
+    for fs_div in ("CFS", "OFS"):
+        for attempt in range(2):
+            try:
+                r = requests.get(f"{_BASE}/fnlttSinglAcntAll.json", params={
+                    "crtfc_key": _key(), "corp_code": cc, "bsns_year": str(year),
+                    "reprt_code": reprt_code, "fs_div": fs_div}, headers=_UA, timeout=20)
+                d = r.json()
+                if d.get("status") == "000" and d.get("list"):
+                    return d.get("list")
+                break                      # 013(데이터 없음) 등 — 다음 fs_div 시도
+            except requests.exceptions.RequestException as e:
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                _log.warning("DART fnlttSinglAcntAll 실패 %s/%s/%s/%s: %s", cc, year, reprt_code, fs_div, e)
+    return None
 
 
 def _fetch_year(cc: str, year: int):

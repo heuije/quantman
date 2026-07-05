@@ -1235,48 +1235,51 @@ async def lifespan(app: FastAPI):
     create_db_and_tables()
 
     # ── 시작 시 1회 초기 fetch (백그라운드 thread, 부팅 차단 방지) ─────────────
-    _log.info("KIS 마스터 초기 다운로드 thread 시작")
-    threading.Thread(target=_initial_master_refresh, daemon=True).start()
-    # Q2+Q8: 캘린더 빌드는 매우 빠르고(<1s) 다른 fetch와 의존성 없어 별도 지연 없이 시작
-    _log.info("캘린더 초기 빌드 thread 시작 (KR/US)")
-    threading.Thread(target=_initial_calendar_refresh, daemon=True).start()
-    _log.info("KRX 스냅샷 초기 fetch thread 시작")
-    threading.Thread(target=_initial_krx_refresh, daemon=True).start()
-    _log.info("NAVER 펀더멘털 초기 fetch thread 시작")
-    threading.Thread(target=_initial_naver_refresh, daemon=True).start()
-    _log.info("KR 펀더멘털(OpenDART) 초기 fetch thread 시작")
-    threading.Thread(target=_initial_kr_fundamentals_refresh, daemon=True).start()
-    _log.info("컨센서스(한경) 초기 백필 thread 시작")
-    threading.Thread(target=_initial_consensus_refresh, daemon=True).start()
-    _log.info("KR 수급(pykrx) 초기 백필 thread 시작")
-    threading.Thread(target=_initial_flow_refresh, daemon=True).start()
-    _log.info("KR OHLCV 깊이 백필 초기 thread 시작")
-    threading.Thread(target=_initial_kr_ohlcv_backfill, daemon=True).start()
-    _log.info("US OHLCV 깊이 백필 초기 thread 시작")
-    threading.Thread(target=_initial_us_ohlcv_backfill, daemon=True).start()
-    _log.info("COT(CFTC) 초기 수집 thread 시작")
-    threading.Thread(target=_initial_cot_refresh, daemon=True).start()
-    _log.info("US 공매도량(FINRA) 초기 백필 thread 시작")
-    threading.Thread(target=_initial_shortvol_backfill, daemon=True).start()
-    threading.Thread(target=_initial_13f_backfill, daemon=True).start()
-    _log.info("KRX 시장지표(공식API) 초기 백필 thread 시작")
-    threading.Thread(target=_initial_krx_market_refresh, daemon=True).start()
-    _log.info("기술적 지표 초기 fetch thread 시작")
-    threading.Thread(target=_initial_technical_refresh, daemon=True).start()
-    _log.info("정적 메타 초기 fetch thread 시작 (섹터·상장폐지일)")
-    threading.Thread(target=_initial_static_meta_refresh, daemon=True).start()
-    _log.info("dataset 초기 갱신 thread 시작")
-    threading.Thread(target=_initial_dataset_refresh, daemon=True).start()
+    # ⚠ 폭주 가드 — 20개 job을 동시에 돌리면 배포 직후 CPU가 포화돼 첫 로그인 요청이
+    # 2~3분씩 밀렸다(실측: 폭풍 중 /symbols 47~101s·1y 상세 13s → 폭풍 후 0.02~0.5s).
+    # 세마포어(동시 2)로 직렬화 + 사용자 경험 비크리티컬 백필은 계층 지연 뒤 시작한다.
+    # 데이터 신선도는 그대로(순서만 뒤로) — 어차피 전부 백그라운드 갱신이다.
+    _bg_sem = threading.BoundedSemaphore(2)
+
+    def _bg(name: str, target, delay: float = 0.0) -> None:
+        def _run():
+            if delay:
+                time.sleep(delay)
+            with _bg_sem:
+                _log.info("startup job 시작: %s", name)
+                target()
+        threading.Thread(target=_run, daemon=True, name=f"init-{name}").start()
+
+    # 계층 0 — 첫 로그인 크리티컬(종목 목록·달력·시세 기반). 즉시.
+    # /symbols 프리워밍은 세마포어 **밖**·즉시 — 마스터 파싱(GIL-heavy)과 직렬화하면
+    # 캐시 준비가 수십 초 밀려 첫 유저가 그대로 블로킹된다(실측 96s). 순수 빌드는 ~4s이고
+    # 마스터 도착으로 키가 바뀌면 요청 경로의 stale-while-revalidate가 알아서 재빌드한다.
+    threading.Thread(target=backtest.prewarm_symbols, daemon=True, name="init-symbols").start()
+    _bg("kis_master", _initial_master_refresh)
+    _bg("calendar", _initial_calendar_refresh)                 # <1s
+    # 계층 1 — 화면 데이터 소스(홈·산업). 1분 뒤.
+    _bg("krx", _initial_krx_refresh, delay=60)
+    _bg("naver_fund", _initial_naver_refresh, delay=60)
+    _bg("technical", _initial_technical_refresh, delay=90)
+    _bg("industry_prewarm", _initial_industry_prewarm, delay=90)
+    _bg("static_meta", _initial_static_meta_refresh, delay=120)
+    # 계층 2 — 백테스트/스크리너 백필(무거움). 5분 뒤.
+    _bg("kr_fundamentals", _initial_kr_fundamentals_refresh, delay=300)
+    _bg("consensus", _initial_consensus_refresh, delay=300)
+    _bg("flow", _initial_flow_refresh, delay=330)
+    _bg("krx_market", _initial_krx_market_refresh, delay=330)
+    _bg("dataset_refresh", _initial_dataset_refresh, delay=360)
     # bundle packaging은 _refresh_global_dataset/_refresh_kr_dataset 끝에서
     # refresh '완료' 이벤트로 수행 — _package_bundle docstring 참조.
-    _log.info("미국 시가총액 초기 fetch thread 시작")
-    threading.Thread(target=_initial_us_market_caps, daemon=True).start()
-    _log.info("재무제표 프리워밍 thread 시작")
-    threading.Thread(target=_initial_financials_prewarm, daemon=True).start()
-    _log.info("산업 트리맵 프리워밍 thread 시작")
-    threading.Thread(target=_initial_industry_prewarm, daemon=True).start()
-    _log.info("원시 데이터셋 캐시 프리워밍 thread 시작")
-    threading.Thread(target=_initial_dataset_cache_prewarm, daemon=True).start()
+    _bg("us_market_caps", _initial_us_market_caps, delay=360)
+    _bg("dataset_cache_prewarm", _initial_dataset_cache_prewarm, delay=420)
+    # 계층 3 — 대용량·저빈도 백필(OHLCV 깊이·COT·공매도·13F·재무 XBRL). 10분 뒤.
+    _bg("kr_ohlcv_backfill", _initial_kr_ohlcv_backfill, delay=600)
+    _bg("us_ohlcv_backfill", _initial_us_ohlcv_backfill, delay=600)
+    _bg("cot", _initial_cot_refresh, delay=660)
+    _bg("shortvol", _initial_shortvol_backfill, delay=660)
+    _bg("13f", _initial_13f_backfill, delay=720)
+    _bg("financials_prewarm", _initial_financials_prewarm, delay=720)
     _log.info("선물 grid 워머 thread 시작")
     futures.start_grid_warmer()
 
