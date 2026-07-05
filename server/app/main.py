@@ -351,36 +351,48 @@ def _initial_consensus_refresh():
         _log.exception("컨센서스 초기 청크 예외 — 10분 cron 재시도")
 
 
-# ── 기관·외국인 수급(KRX, pykrx 로그인) ───────────────────────────────────────
+# ── 기관·외국인 수급(KRX pykrx 로그인, 일별 전종목) ───────────────────────────
+# 종목별 반복(get_market_trading_value_by_date·3,579콜)이 KRX MDC 봇차단을 유발 → 일별 전종목
+# (get_market_net_purchases_of_equities_by_ticker·1콜/시장/투자자)로 근본 전환(로컬 blocked=0 실증).
+# 수집은 marketcap_krx와 동일하게 날짜축 cursor 백필(DateCursorBackfill — 컨센서스·KRX와 동일 문법).
+_FLOW_WINDOW_DAYS = 60      # 일별 4콜/평일 × ~43평일 ≈ 172콜·throttle 0.2s → ~40s/청크
+
 
 def _backfill_flow_chunk() -> None:
-    """KR 기관·외국인 수급 과거 백필 청크(10분) — 미수집 종목의 전체이력(pykrx).
+    """KR 기관·외국인 수급 백필 청크 — 일별 전종목(pykrx) 60일 창 today→2010 역순 1청크.
 
-    KRX_ID/PW 미설정 시 flow_kr.fetch가 no-op(비활성·로그 침묵). fresh_days 크게 → 한번 받은
-    종목은 백필서 재호출 안 함(증분은 _refresh_flow). budget_symbols로 청크 분할·재개."""
-    from datetime import date
+    KRX_ID/PW 미설정 시 no-op(비활성·로그 침묵). 성공 시만 cursor 전진(부분 전진 금지 — 실패면
+    커서 유지·같은 윈도우 재시도). floor(2010) 도달 시 자연 종료(무비용)."""
     from quant_core import data_fetcher
     from quant_core.data.feeds import flow_kr
-    codes = data_fetcher.load_managed_kr_codes()
-    res = flow_kr.fetch(codes, CORE_FLOOR_COMPACT, date.today().strftime("%Y%m%d"),
-                        budget_symbols=120, fresh_days=999999)
-    if not res.get("inactive") and (res.get("ok") or res.get("fail")):
-        _log.info("[altdata] KR 수급 백필 청크(pykrx): %s", res)
+    if not flow_kr._has_login():
+        return
+    bf = DateCursorBackfill(cursor_path=data_fetcher.DATA_DIR / "_flow.cursor",
+                            floor=CORE_FLOOR_COMPACT, window_days=_FLOW_WINDOW_DAYS)
+    win = bf.next_window()
+    if win is None:
+        return                                       # 백필 완료 — 무비용
+    start, end = win
+    res = flow_kr.fetch_range(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+    if not res.get("ok"):
+        _log.warning("[altdata] KR 수급 백필 실패(%s~%s) — cursor 유지·재시도", start, end)
+        return
+    bf.advance(start)
+    _log.info("[altdata] KR 수급 백필(pykrx 일별전종목) %s~%s: %s", start, end, res)
 
 
 def _refresh_flow() -> None:
-    """일일 수급 증분 — 최근 30일 윈도우 merge(16:30 KST, KRX 마감 후). fresh_days=1로 stalest부터."""
+    """일일 수급 증분 — 최근 7일 재수집·merge(16:30 KST, KRX 마감 후). 일별 전종목 경로."""
     from datetime import date, timedelta
-    from quant_core import data_fetcher
     from quant_core.data.feeds import flow_kr
-    codes = data_fetcher.load_managed_kr_codes()
+    if not flow_kr._has_login():
+        return
     end = date.today()
-    start = end - timedelta(days=30)
-    res = flow_kr.fetch(codes, start.strftime("%Y%m%d"), end.strftime("%Y%m%d"),
-                        budget_symbols=600, fresh_days=1)
-    if not res.get("inactive"):
+    res = flow_kr.fetch_range((end - timedelta(days=7)).strftime("%Y%m%d"),
+                              end.strftime("%Y%m%d"))
+    if res.get("ok"):
         data_cache.invalidate()
-        _log.info("[altdata] KR 수급 증분(pykrx) %s~%s: %s", start, end, res)
+        _log.info("[altdata] KR 수급 증분(pykrx 일별전종목) ~%s: %s", end, res)
 
 
 def _initial_flow_refresh():
