@@ -91,6 +91,16 @@ tolerance는 **미국 전용 라이브 버퍼**(국내 무시)·default ±3%·�
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [진행중] 비상청산 sid-미스매치 고아 (R6/D6) (2026-07-06 착수, `fix/emergency-liquidation-orphan`)
+
+**의도.** 07-06 모의(LS 국내선물): 사용자가 계좌 킬스위치(LIQUIDATE_ALL)로 청산했는데 **원장에 반대방향 유령 롱4**가 새로 생김(`docs/incidents/2026-07-06-emergency-liquidation-sid-orphan.md`). 근본=`_apply_fill`이 체결 open/close를 **전략 id(sid)로 판정**하는데, 비상청산(`liquidate_all_held`)은 브로커를 **종목 단위**로 청산하며 매칭 안 되는 **합성 sid `liquidate:{symbol}`**로 주문 → BUY가 신규 롱으로 오기록. v0.9.65/66(R1 reconcile·R2 정규화)이 못 덮은 같은 부류 다른 진입점(=R6). 자금경로라 설계서 선제출→승인→구현.
+
+**구현(설계서 §6 R6/D6).** `liquidation=True` 플래그를 발주→booking 전파(`_submit_sell`/`_submit_close_short`→`_after_submit`→`p["liquidation"]`→`_apply_fill`). 신규 `_book_liquidation_fill`: sid 무시하고 **(종목, 반대 side)** 매칭 차감(commingle 결정적 순서)·매칭 없으면 `external_liquidated` 기록만·**신규 포지션 절대 생성 금지(I7)**. `liquidate_all_held`이 `liquidation=True` 전달. 기존 `netted` 플래그 선례(기본 False=byte-identical). **경로 구분 확정:** 인트라데이 daily-loss 킬스위치(`_on_ks_trigger`)는 `trader.cycle` 청산 패스로 **원장 실 sid 청산** → R6 무관(D6은 웹 LIQUIDATE_ALL 경로만 수정). 서버/웹 무변경. 07-06 재현 회귀 포함 신규 5종 + local+core **1437 passed·회귀 0**.
+
+**교훈(distill 대기).** 종목 단위 브로커 청산 ↔ 전략 단위 원장 판정의 seam — 비상/reconcile 등 **sid-무관 경로가 sid-키 booking을 재사용**할 때 조용한 전제 붕괴(2026-07-03 R2와 동형). 비상 booking은 "닫기만·절대 열지 않기" 불변식으로 강제.
+
+**남은 것.** push·PR·머지(허락 게이트) → 로컬앱 릴리스 → 모의 재검증(비상청산 후 원장 유령 없음·브로커 정합) 후 [완료] 전환·§교훈 distill. 별도(R6 밖): 비상청산 BUY가 브로커 숏 실청산인지(norm_side 오판 시 2배 확대) 모의 HTS 실측.
+
 ### [진행중] 자동매매 명령 투명성 UX (2026-07-05 착수, `feat/autotrade-transparency-ux`)
 
 **의도.** 유저가 비상청산(LIQUIDATE_ALL)을 눌렀는데 "모의투자 영업일이 아닙니다"로 거부됐지만 실패 신호가 안 가고 킬스위치만 ON이던 문제. 근본=데이터(n_rejected·사유)는 로컬→서버까지 오는데 웹 `send()`가 명령 ack(result)를 버리고 스냅샷만 리로드, 거부지표는 접힌 감사로그에만. 부류(T1~T6)로 웹·로컬 양쪽 표면화.

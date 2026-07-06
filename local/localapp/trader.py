@@ -663,7 +663,12 @@ class Trader:
 
             pxs = f"${fill_price:,.2f}" if spec.currency == "USD" else f"{fill_price:,.2f}"
 
-            if side == "buy":
+            if bool(p.get("liquidation")):
+                # R6/D6 — 비상청산 booking: sid 무시, (종목, 반대 side) 매칭 차감,
+                # 신규 포지션 절대 생성 금지(I7·I8). 2026-07-06 고아 부류 차단.
+                self._book_liquidation_fill(symbol, side, filled_qty, fill_price,
+                                            spec, mult, is_fut, p, decisions)
+            elif side == "buy":
                 lg = self.ledger.get(sid)
                 if lg is not None and lg.get("side", "long") == "short":
                     # 숏 환매(close/축소) — 선물만 숏 보유 가능. 정산 = (진입−청산)×계약×승수.
@@ -788,6 +793,72 @@ class Trader:
                     self._ks_trigger_hook("apply_fill")
                 except Exception as e:
                     log.error("[ks-hook] apply_fill 트리거 핸들러 실패: %s", e)
+
+    def _book_liquidation_fill(self, symbol: str, side: str, filled_qty: int,
+                               fill_price: float, spec, mult: float, is_fut: bool,
+                               p: dict, decisions: list[dict]) -> None:
+        """비상청산(kill-switch) 체결 booking — R6/D6 불변식 I7·I8.
+
+        비상청산은 브로커 실보유를 *종목 단위*로 청산하지만 booking 계층은 전략 id(sid)로
+        open/close를 판정한다. 합성 sid(`liquidate:{symbol}`)는 원장과 매칭되지 않아 기존
+        경로에선 청산이 신규 반대 포지션으로 오기록됐다(2026-07-06 고아). 여기서는 sid를
+        무시하고 (종목, 반대 side)로 원장을 매칭해 차감하며, **신규 포지션은 절대 만들지
+        않는다**(I7). 매칭 없는 브로커 외부 보유분은 external_liquidated로 기록만 한다.
+        """
+        strat_name = p.get("strategy_name", "")
+        # buy=숏 환매, sell=롱 청산 — 청산 대상 side.
+        target_side = "short" if side == "buy" else "long"
+        # 결정적 순서(entry_date→sid)로 매칭 포지션 차감 (commingle 안전·I8).
+        keys = sorted(
+            (k for k, v in self.ledger.items()
+             if v.get("symbol") == symbol and v.get("side", "long") == target_side),
+            key=lambda k: (self.ledger[k].get("entry_date", ""), k))
+        remaining = filled_qty
+        realized_total = 0.0
+        n_closed = 0
+        for k in keys:
+            if remaining <= 0:
+                break
+            lg = self.ledger[k]
+            take = min(remaining, int(lg.get("qty", 0)))
+            if take <= 0:
+                continue
+            if target_side == "short":
+                realized_total += (lg["entry_price"] - fill_price) * take * mult
+            else:
+                realized_total += (fill_price - lg["entry_price"]) * take * mult
+            lg["qty"] -= take
+            if lg["qty"] <= 0:
+                del self.ledger[k]
+            remaining -= take
+            n_closed += take
+        external = remaining  # 원장 미추적 브로커 보유분 — I7: 신규 오픈 금지, 기록만.
+
+        unit = "계약" if is_fut else "주"
+        pxs = f"${fill_price:,.2f}" if spec.currency == "USD" else f"{fill_price:,.2f}"
+        ev = {"ts": kst_today().isoformat(), "action": side, "symbol": symbol,
+              "qty": filled_qty, "price": fill_price, "strategy": strat_name,
+              "reason": "비상청산", "liquidation": True,
+              "closed_qty": n_closed, "external_qty": external}
+        if n_closed:
+            ev["realized_pnl"] = round(realized_total, 2)
+        self._log_trade(ev)
+
+        parts: list[str] = []
+        if n_closed:
+            seg = f"{n_closed}{unit} 청산 @ {pxs}"
+            if is_fut:
+                seg += f" 정산 {realized_total:+,.0f}"
+            parts.append(seg)
+        if external:
+            parts.append(f"외부보유 {external}{unit} 청산(원장 미추적)")
+        if not parts:
+            parts.append("청산 대상 없음")
+        decisions.append(order_log.decision(
+            "liquidated" if n_closed else "external_liquidated",
+            p.get("strategy_id", ""), strat_name, symbol, " · ".join(parts),
+            {"closed": n_closed, "external": external,
+             "realized": round(realized_total, 2)}))
 
     def _apply_netted_leg(self, leg, decisions: list[dict]) -> None:
         """넷팅 핸드오프 1건(진입/청산 leg)을 합성 체결로 원장 반영 — 브로커 미호출·수수료 0.
@@ -1005,7 +1076,7 @@ class Trader:
 
     def _submit_sell(self, sid: str, strat_name: str, symbol: str, qty: int,
                      ref_price: float, policy: dict, reason: str,
-                     decisions: list[dict]) -> None:
+                     decisions: list[dict], liquidation: bool = False) -> None:
         # L-01: 매도 멱등 단일 게이트(모든 매도 경로 공유) — 오늘 같은 (sid, symbol)
         # 매도 intent가 활성이면 재발주 차단. EOD cycle·장중 tick 손절·catch-up이
         # 첫 매도 미체결(KIS 잔고 미감소)인 동안 같은 포지션을 동시 평가해도 이중매도를
@@ -1058,11 +1129,12 @@ class Trader:
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, None, symbol, "sell", qty,
                             ref_price, limit, policy, decisions, reason=reason,
-                            today_iso=today_iso, intent_id=intent_id, kind="청산")
+                            today_iso=today_iso, intent_id=intent_id, kind="청산",
+                            liquidation=liquidation)
 
     def _submit_close_short(self, sid: str, strat_name: str, symbol: str, qty: int,
                             ref_price: float, policy: dict, reason: str,
-                            decisions: list[dict]) -> None:
+                            decisions: list[dict], liquidation: bool = False) -> None:
         """숏 포지션 환매(buy-to-close) — 청산이므로 매수 주문이나 의미는 청산.
 
         _submit_sell의 매수판. 선물 전용(숏은 선물만)이라 예약주문 분기 없음(선물은 즉시주문).
@@ -1088,7 +1160,8 @@ class Trader:
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
         self._after_submit(r, sid, strat_name, None, symbol, "buy", qty,
                             ref_price, limit, policy, decisions, reason=reason,
-                            today_iso=today_iso, intent_id=intent_id, kind="청산")
+                            today_iso=today_iso, intent_id=intent_id, kind="청산",
+                            liquidation=liquidation)
 
     def _submit_open_short(self, sid: str, strat_name: str, strat_def: dict,
                            symbol: str, qty: int, ref_price: float, policy: dict,
@@ -1122,7 +1195,7 @@ class Trader:
                       intended_price: float, limit_price: int,
                       policy: dict, decisions: list[dict], reason: str,
                       today_iso: str = "", intent_id: str = "",
-                      kind: str = "") -> None:
+                      kind: str = "", liquidation: bool = False) -> None:
         """submit 결과를 후처리: pending 등록 / 즉시 체결 반영 / 거부 로깅.
 
         kind: "진입"|"청산" — 발주 메서드가 명시(_submit_buy·_submit_open_short=진입,
@@ -1157,6 +1230,9 @@ class Trader:
             # 더 이상 사용하지 않음. KIS DAY 정책으로 마감 시 자동 cancel.
             "definition": strat_def or {}, "reason": reason, "kind": kind,
             "filled_so_far": 0,
+            # R6/D6 — 비상청산 체결이면 booking이 신규 포지션을 만들지 않고 종목 기준
+            # 청산하도록 표식(즉시체결·pending 양 경로·재기동 후에도 유지).
+            "liquidation": liquidation,
             # δ: 미국 예약주문 여부 — 접수번호와 체결행 odno의 번호공간이 달라
             # (실측 448 vs 10자리) _resolve_pending이 종목+사이드+수량 매칭으로
             # 전환하는 분기 키. 발주 분기(_is_reserved_us)와 같은 시점 동일 값.
@@ -1647,10 +1723,12 @@ class Trader:
             sid = f"liquidate:{symbol}"
             if side == "short":
                 self._submit_close_short(sid, "비상청산", symbol, qty,
-                                         ref_price, policy, "kill-switch", decisions)
+                                         ref_price, policy, "kill-switch", decisions,
+                                         liquidation=True)
             else:
                 self._submit_sell(sid, "비상청산", symbol, qty,
-                                  ref_price, policy, "kill-switch", decisions)
+                                  ref_price, policy, "kill-switch", decisions,
+                                  liquidation=True)
         # 즉시 체결/거부 반영(시장가 체결·장마감 거부를 결과에 표면화).
         self._resolve_pending(decisions)
         return self._state_payload(decisions, today, kind="emergency_liquidation")

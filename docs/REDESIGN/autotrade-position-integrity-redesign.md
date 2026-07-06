@@ -143,3 +143,91 @@ catch-up 미추가 근거: KRX 종가창을 놓치면 장이 이미 닫혀(선�
    **모의 재검증 체크리스트**: LS 선물 진입 후 reconcile `in_sync=1`(웹 정합성 경보 없음)·
    수동 매도 시나리오에서 주식 차감 유지·정산 15:50 `n_daytrade_unclosed=0`.
 3. 인시던트 기록: `docs/incidents/2026-07-03-futures-ledger-divergence.md`(발생·대응·결과).
+
+---
+
+## 6. 2026-07-06 후속 — R6: 비상청산 sid-미스매치 고아 (D6)
+
+〔작성: 조대표〕 트리거: 2026-07-06 모의(LS 국내선물) — 사용자가 계좌 킬스위치(LIQUIDATE_ALL)로
+청산했는데 **원장에 반대방향 유령 롱이 새로 생김**. 인시던트: `docs/incidents/2026-07-06-emergency-liquidation-sid-orphan.md`.
+
+이 문서 §2의 D1~D4는 reconcile 파괴적 삭제(R1)·LS 코드 정규화(R2)를 닫았지만, **비상청산의 원장
+기록 경로**는 손대지 않았다. 07-06에 그 경로에서 **새 부류(R6)**가 발화했다 — 같은 정합성 부류(장부↔브로커)의
+다른 진입점.
+
+### 6.1 R6 — 근본 (아티팩트 확정)
+
+**증상**: 비상청산이 브로커 숏을 BUY(환매)로 닫았으나, 그 체결이 원장에 **신규 롱 포지션**으로 기록돼
+`liquidate:코스피200선물` 고아가 생겼다.
+
+**실측(07-06 · `~/.quant-platform`)**:
+- `orders.jsonl` 12:31:05→06: `청산 buy 4 코스피200선물 (kill-switch)` 제출·체결.
+- `cycles.jsonl` 12:31:13 결정: `{"action":"bought", "strategy_id":"liquidate:코스피200선물",
+  "strategy_name":"비상청산", ... 정산손익 없음}` — 숏청산(정산 표기)이 아니라 **순수 신규 롱**으로 booked.
+- `ledger.json`: `liquidate:코스피200선물` **롱4** 생성 → 이후 매 사이클 `unparseable_orphan`
+  (definition={} → 자동청산 불가·수동정리). D3 fail-safe가 파괴는 막았으나 고아는 잔존.
+
+**근본 원인**: `_apply_fill`이 체결의 open/close 여부를 **`strategy_id`(sid)로 원장을 조회**해 판단한다
+(trader.py:666~692). 전략 사이클에선 sid=원장 키라 정상. 그러나 **비상청산**(`liquidate_all_held`,
+trader.py:1647)은 브로커 실보유(sid 무관)를 청산하며 **합성 sid `liquidate:{symbol}`**로 주문한다 →
+`_apply_fill`이 그 sid로 매칭 실패 → BUY가 `else`(신규 롱 진입) 분기로 떨어짐.
+
+> 구조적 seam: **비상청산은 종목(instrument) 단위로 브로커를 청산하는데, 기록 계층은 전략(sid) 단위로
+> open/close를 판정한다.** `_submit_close_short`의 주석(1069: "buy → ledger 숏 차감")이 가정하는
+> "sid가 원장 숏과 매칭" 전제가 비상 경로에서 조용히 깨진다(R2와 동형의 *조용한 전제 붕괴*).
+
+### 6.2 D6 — 결정: 비상청산 체결은 종목 기준 청산 + 절대 신규 오픈 금지
+
+**핵심 불변식(신설)**: *비상청산(liquidation) 체결은 원장 포지션을 열 수 없다. 종목의 반대 방향 보유를
+닫거나(감소), 매칭이 없으면 외부청산으로 기록만 한다.*
+
+**구현 seam** (기존 `netted` 플래그 선례와 동형 — 기본 False = byte-identical):
+- `liquidation=True` 플래그를 `_submit_close_short`/`_submit_sell` → `_after_submit` → pending →
+  `_apply_fill`로 전달(비상청산 경로에서만 set).
+- `_apply_fill(liquidation=True)`: 체결을 **passed sid가 아니라 (symbol, 청산 대상 side) 기준으로 원장
+  매칭**:
+  1. 매칭되는 원장 포지션 있으면 → 기존 청산 로직으로 **차감**(정산손익 동일 산식). 한 종목을 여러 sid가
+     보유(commingle)하면 결정적 순서(entry_date→sid)로 fill 수량 소진까지 순차 차감.
+  2. 매칭 없으면(브로커 외부/미추적 보유) → **외부청산으로 기록만**(trade 로그 + `external_liquidated`
+     decision) 하고 **신규 포지션 생성 금지**. ← R6 재발 차단점.
+- `liquidate_all_held`은 종전대로 브로커 실보유를 청산 대상으로 읽되, 위 booking 불변식이 sid-무관하게
+  올바름을 보장한다(호출부는 단순 유지·불변식은 booking seam에 집중 — 원칙 3).
+
+**경로 구분(범위 확정)**: 킬스위치 청산 경로는 둘 — ① 웹 LIQUIDATE_ALL/계좌 킬스위치 →
+`run_emergency_liquidation`→`liquidate_all_held`(브로커 스냅샷 기반·합성 sid) = **R6 발화 경로**,
+② 인트라데이 daily-loss 자동 킬스위치(`intraday_loop._on_ks_trigger`) → `trader.cycle(strategies=[])`의
+청산 패스(**원장 실 sid로 청산**). ②는 sid가 원장 키와 일치해 고아가 안 생긴다 — R6은 ① 전용이고
+D6은 ①만 고친다(②는 무변경·회귀 가드로 확인).
+
+**대안 기각**:
+- (A) `liquidate_all_held`에서 실 sid를 미리 해석해 넘기기 — 외부(미추적) 보유분은 여전히 넘길 sid가 없어
+  별도 close-only 처리가 필요 → 결국 booking seam 수정이 불가피. 두 곳(호출부+booking)을 고치느니 한 곳
+  (booking)에 불변식을 두는 편이 단순·견고.
+- (B) 계약별 net을 진실로 두는 전면 재설계(R5) — 이번 결함 해결에 과함. R6는 그 위가 아니라 **현행 sid-키
+  원장 위에서** 국소 불변식으로 닫힌다.
+
+### 6.3 불변식 (추가)
+
+| # | 불변식 | 강제 지점 |
+|---|---|---|
+| I7 | `liquidation=True` 체결은 신규 원장 포지션을 생성하지 않는다(감소 또는 외부청산 기록만) | trader._apply_fill |
+| I8 | 비상청산은 종목의 (symbol, 반대 side) 원장 보유를 청산 대상으로 매칭한다(합성 sid 아님) | trader._apply_fill / liquidate_all_held |
+
+### 6.4 테스트 계획 (R6) — 구현·검증 완료
+
+- `local/tests/scenarios/test_liquidation_no_phantom.py` 신규 — **07-06 재현 회귀**:
+  - 원장에 sid=17 숏10 보유 + 비상청산 buy4 → 매칭 차감(숏6 잔존)·정산손익 기록·**신규 롱 생성 안 됨**(I7).
+  - 원장 빈 상태 + 브로커 외부보유 청산(buy/sell) → `external_liquidated` 기록·**원장 무변화·유령 없음**(I7).
+  - commingle(같은 종목 sid17 숏6 + sid20 숏4) + 비상청산 buy10 → 둘 다 청산·순서 결정적(I8).
+  - 회귀 가드: 전략 사이클의 정상 close(`liquidation=False`)는 byte-identical(기존 테스트 green 유지).
+- 전체: `PYTHONPATH=core python -m pytest local/tests core/tests -q` → **1437 passed, 2 skipped**
+  (신규 5 포함·회귀 0). 구현 seam: `trader._book_liquidation_fill` + `liquidation` 플래그
+  (`_submit_sell`/`_submit_close_short`/`_after_submit`→`p["liquidation"]`→`_apply_fill`),
+  `liquidate_all_held`이 `liquidation=True` 전달. 서버/웹 무변경.
+
+### 6.5 범위 밖 (R6에서 분리)
+
+- **norm_side 오판(2배 확대) 검증**: 비상청산이 "브로커 숏"이라 판정하고 BUY를 냈다 — 실제가 롱이었다면
+  노출 확대. 07-06 건은 브로커 실포지션 실측(모의 HTS)으로 별도 확인. 코드 방어(D5-3 norm_side)는 이미
+  존재하나, R6 수정과 **독립**이라 이 PR 범위 밖(분리 검증).
+- 이미 생긴 고아 복원 불요(모의·사용자 결정: 초기화·재실행).
