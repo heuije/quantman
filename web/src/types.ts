@@ -1089,9 +1089,9 @@ export interface TradingTimeline {
 // ── 한국 종목 부가 데이터 (Company Analysis) — /market/kr/{symbol} ──
 export interface KrInvestorPoint {
   date: string;
-  inst: number;        // 기관 순매매 (주)
-  foreign: number;     // 외국인 순매매 (주)
-  indiv: number;       // 개인 순매매 (주, ≈ −(기관+외국인))
+  inst: number;        // 기관 순매수 거래대금 (원) — flow_kr 볼륨(옛 네이버 주식수에서 전환)
+  foreign: number;     // 외국인 순매수 거래대금 (원)
+  indiv: number;       // 개인 순매수 거래대금 (원, ≈ −(기관+외국인))
 }
 export interface KrReport {
   date: string;        // 작성일 (YY.MM.DD)

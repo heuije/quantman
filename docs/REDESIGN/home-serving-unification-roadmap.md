@@ -78,11 +78,12 @@
 - **트레이드오프(수용됨)**: 당일 신규 리포트 최대 반나절~하루 lag(19:30 cron·사용자 승인). 목표가는 목록 소스에 없어 생략(컨센 목표가는 한경 담당·web `target=null→"—"` 비파괴).
 - **모듈**: 조대표(피드+서버 서빙). **`market.py`·web 무변경**(krdata.reports 스왑 투명). 검증: core 4 + server 4 신규·서버 500 green·실데이터 E2E. 잔여: railway 최초 백필·배포 후 브라우저 커버리지 검증.
 
-### Phase 2 — flow·컨센서스 HOME 서빙 일원화 **[hygiene/SSOT · 성능 무관]**
-- **내용**: HOME `krdata.investor`(네이버)→`flow_kr` parquet, `krdata.consensus`(네이버 wisereport)→`consensus_kr` 패널.
-- **효과**: 이중 크롤 제거·SSOT·유저간 캐시부재 degrade 해소. **로딩 개선 아님**(이미 0.5초).
-- **⚠ 선행 결정**: flow **단위계약** — 데이터엔진=거래대금(원) vs HOME=주식수(주). **HOME 프론트를 거래대금으로 전환**(주식수 근사변환은 PIT 오염·4원칙 위반). consensus는 소스 이원화(한경 vs 네이버) 표본 차이 UX 수용 확인.
-- **모듈**: 희제(웹 계약) + 조대표(리더). 이미 unification-redesign §5 Phase 2로 스코프됨.
+### Phase 2 — flow(수급)·컨센서스 카드 HOME 서빙 일원화 **[hygiene/SSOT · draft PR]**
+- **내용**: `krdata.investor`(네이버 frgn)→`flow_kr` 볼륨(거래대금·원), `krdata.consensus`(네이버 wisereport)→`reports_kr` raw 증권사별 standing. 둘 다 데이터엔진 우선(원칙6).
+- **효과**: 이중 크롤 제거·SSOT·유저간 캐시부재 degrade 해소. **로딩 개선 아님**(이미 0.5~2초).
+- **결정(사용자 승인)**: flow **단위=거래대금(원)** — 웹 수급 차트 "단위 주"→"단위 억원" 전환(주식수 근사변환은 PIT 오염·4원칙 위반). ⚠ 그 결과 **수급 라이브 폴백 없음**(네이버=주식수라 단위 불일치) — flow_kr 미커버(신규상장 ≤1일)는 빈 수급. consensus는 네이버 동일 단위라 라이브 폴백 유지.
+- **모듈**: 조대표(krdata 서빙) + 희제 웹(StockDashboard 수급 차트 단위 label/format). market.py 무변경(krdata 스왑 투명). 검증: server 4 신규·507 green·web tsc 0.
+- **잔여**: 배포 후 브라우저 검증(수급 억원 표시·컨센 standing). flow_kr는 KRX_ID/PW 필요(prod 가동중 실증).
 
 ### Phase 3 — estimate_kr URL 복구 + krdata SSOT 단일화 ✅ **draft PR (구현·검증 완료)**
 - **내용**: `estimate_kr.py` 죽은 소스(`comp.fnguide SVD_Main` 302→wcomp 루트 리다이렉트·`highlight_D_Y` 소멸) →

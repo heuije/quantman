@@ -700,7 +700,7 @@ function KrSections({ kr, close }: { kr: KrExtras; close: number | null }) {
         return (
           <div className="panel" style={{ marginTop: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-              <h3 style={{ margin: 0 }}>투자자별 순매매 (단위 주)</h3>
+              <h3 style={{ margin: 0 }}>투자자별 순매수 (단위 억원)</h3>
               <div style={{ display: "flex", gap: 4 }}>
                 {wins.map((w) => (
                   <button key={w} type="button" className="ghost sm" onClick={() => setInvWin(w)}
@@ -720,7 +720,7 @@ function KrSections({ kr, close }: { kr: KrExtras; close: number | null }) {
                   <div key={lbl}>
                     <div style={{ fontSize: 12, color: "var(--muted)" }}>{lbl} · 최근 {win}일 누적</div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: v >= 0 ? UP : DOWN }}>
-                      {v >= 0 ? "+" : ""}{v.toLocaleString()}주
+                      {v >= 0 ? "+" : ""}{(v / 1e8).toLocaleString(undefined, { maximumFractionDigits: 0 })}억원
                     </div>
                   </div>
                 );
@@ -731,8 +731,8 @@ function KrSections({ kr, close }: { kr: KrExtras; close: number | null }) {
                 <CartesianGrid stroke="#e3e8ef" strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={win > 60 ? 24 : 12} />
                 <YAxis tick={{ fontSize: 11 }} width={56}
-                  tickFormatter={(v) => `${Math.round(Number(v) / 10000)}만`} />
-                <Tooltip formatter={(v) => Number(v).toLocaleString() + "주"}
+                  tickFormatter={(v) => `${Math.round(Number(v) / 1e8)}억`} />
+                <Tooltip formatter={(v) => (Number(v) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 1 }) + "억원"}
                   contentStyle={TIP_STYLE} labelStyle={TIP_LABEL} itemStyle={TIP_ITEM} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <ReferenceLine y={0} stroke="#94a3b8" />

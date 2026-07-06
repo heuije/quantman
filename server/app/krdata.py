@@ -64,44 +64,36 @@ def _norm_opinion(s) -> str:
     return _OPINION_MAP.get(t.lower(), t.upper())
 
 
-# ── 투자자별 순매매 (네이버 frgn) ────────────────────────────────────────────
-# 1/5/20/60/120일 창 집계를 위해 최대 120 거래일 확보(페이지당 ~20일 → 페이지네이션).
+# ── 투자자별 순매수 거래대금 — 데이터엔진 우선 서빙(flow_kr 볼륨) ──────────────────
+# 데이터엔진 우선 서빙 원칙(CLAUDE.md §2): flow_kr(전종목 일별 순매수 거래대금·원) 볼륨에서 서빙.
+# ⚠ 옛 네이버 frgn 라이브 크롤(단위=주식수)은 은퇴 — flow_kr는 전종목 커버(KRX_ID/PW)이고 단위가
+# 거래대금(원)이라, 주식수 라이브를 폴백으로 쓸 수 없다(단위 불일치=오표시). 미커버(신규상장 ≤1일)는 빈 결과.
 @lru_cache(maxsize=256)
-def _investor(code: str, _day: str) -> list[dict]:
+def _investor_cached(code: str, _day: str) -> list[dict]:
+    from quant_core import data_fetcher
+    df = data_fetcher.load_stock_flow(code)
+    if df is None or df.empty:
+        return []
+    df = df.copy()
+    df.index = pd.to_datetime(df.index, errors="coerce")
+    df = df[df.index.notna()].sort_index(ascending=False).head(120)   # 최신 120거래일(원본 오래된→최신)
     out: list[dict] = []
-    seen: set[str] = set()
-    for page in range(1, 8):              # 7페이지면 120거래일 충분히 커버
-        r = requests.get("https://finance.naver.com/item/frgn.naver",
-                         params={"code": code, "page": page}, headers=_H, verify=_C, timeout=15)
-        r.encoding = "euc-kr"
-        tables = pd.read_html(r.text)
-        df = next((t for t in tables if t.shape[1] >= 9 and t.shape[0] > 3), None)
-        if df is None:
-            break
-        added = 0
-        for _, row in df.iterrows():
-            v = row.tolist()
-            d = str(v[0])
-            if "." not in d or d in seen:     # 날짜 행만 + 페이지 간 중복 제거
-                continue
-            inst, foreign = _int(v[5]), _int(v[6])
-            if inst is None and foreign is None:
-                continue
-            inst, foreign = inst or 0, foreign or 0
-            seen.add(d)
-            out.append({"date": d, "inst": inst, "foreign": foreign,
-                        "indiv": -(inst + foreign)})  # 개인 ≈ −(기관+외국인)
-            added += 1
-        if added == 0 or len(out) >= 120:     # 새 행 없으면 마지막 페이지
-            break
-    return out[:120]
+    for ts, row in df.iterrows():
+        inst, foreign = _int(row.get("inst_net_buy")), _int(row.get("foreign_net_buy"))
+        if inst is None and foreign is None:
+            continue
+        inst, foreign = inst or 0, foreign or 0
+        out.append({"date": ts.strftime("%Y.%m.%d"), "inst": inst, "foreign": foreign,
+                    "indiv": -(inst + foreign)})   # 개인 ≈ −(기관+외국인) 거래대금
+    return out
 
 
 def investor(code: str) -> list[dict]:
+    """flow_kr 볼륨 → 투자자 순매수 거래대금(원) 최근 120거래일 [{date, inst, foreign, indiv}]. 미커버는 []."""
     try:
-        return _investor(code, date.today().isoformat())
+        return _investor_cached(code, date.today().isoformat())
     except Exception as e:
-        _log.warning("투자자별 fetch 실패 %s: %s", code, e)
+        _log.warning("수급 피드 서빙 실패 %s: %s", code, e)
         return []
 
 
@@ -266,12 +258,61 @@ def _consensus(code: str, _day: str) -> list[dict]:
     return out
 
 
-def consensus(code: str) -> list[dict]:
+# ── 컨센서스 카드 — 데이터엔진 우선(reports_kr raw 증권사별 standing) + 라이브 폴백 ──────────
+_OPINION_STR = {1: "BUY", 0: "HOLD", -1: "SELL"}
+
+
+@lru_cache(maxsize=256)
+def _consensus_from_feed(code: str, _day: str) -> list[dict]:
+    """reports_kr raw → 증권사별 최신 목표가/투자의견 standing.
+
+    [{broker, date, target, prev_target, change_pct, opinion}]. 각 증권사 최신 리포트=현 standing·
+    직전 리포트=prev_target. 목표가 없는(None) 리포트 제외. 최신 리포트 증권사 우선 12건.
+    """
+    from quant_core import data_fetcher
+    df = data_fetcher.load_stock_reports(code)
+    if df is None or df.empty or "target" not in df.columns:
+        return []
+    df = df.copy()
+    df = df[df["target"].notna()]
+    df["_dt"] = pd.to_datetime(df["as_of"], errors="coerce")
+    df = df[df["_dt"].notna()]
+    if df.empty:
+        return []
+    rows: list[dict] = []
+    for broker, g in df.sort_values("_dt").groupby("broker"):
+        latest = g.iloc[-1]
+        target = _int(latest["target"])
+        prev_target = _int(g.iloc[-2]["target"]) if len(g) > 1 else None
+        change_pct = (round((target - prev_target) / prev_target * 100, 2)
+                      if target and prev_target else None)
+        op = latest.get("opinion")
+        rows.append({
+            "broker": str(broker), "date": latest["_dt"].strftime("%Y.%m.%d"),
+            "target": target, "prev_target": prev_target, "change_pct": change_pct,
+            "opinion": (_OPINION_STR.get(_int(op), "") if pd.notna(op) else ""),
+        })
+    rows.sort(key=lambda r: r["date"], reverse=True)   # 최신 리포트 증권사 우선
+    return rows[:12]
+
+
+def _consensus_live(code: str) -> list[dict]:
+    """폴백 전용 — reports_kr 미커버 코드용 네이버 wisereport 라이브(목표가 단위 동일=원)."""
     try:
         return _consensus(code, date.today().isoformat())
     except Exception as e:
-        _log.warning("컨센서스 fetch 실패 %s: %s", code, e)
+        _log.warning("컨센서스 라이브 폴백 실패 %s: %s", code, e)
         return []
+
+
+def consensus(code: str) -> list[dict]:
+    # 데이터엔진 우선(원칙6): reports_kr 증권사별 standing. 비면 네이버 wisereport 라이브 폴백(동일 단위).
+    try:
+        feed = _consensus_from_feed(code, date.today().isoformat())
+    except Exception as e:
+        _log.warning("컨센서스 피드 서빙 실패 %s: %s", code, e)
+        feed = []
+    return feed if feed else _consensus_live(code)
 
 
 # ── 추정 실적 (FnGuide 스냅샷 JSON — 데이터엔진 estimate_kr 피드 SSOT) ──────────────
