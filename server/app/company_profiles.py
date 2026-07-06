@@ -11,9 +11,11 @@ import os
 from datetime import date, datetime
 
 from . import krdata
+from .serving_cache import serving_cache_path
 
 _log = logging.getLogger("app.company_profiles")
-_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "company_profiles.json")
+# 영속 볼륨 하위(prod) — 재배포에도 프로필 저장본 생존(에페메랄 앱폴더 → 매 배포 라이브 폴백 방지).
+_PATH = serving_cache_path("company_profiles.json")
 _REFRESH_DAYS = 90   # 분기 1회
 
 _EMPTY = {"established": "", "homepage": "", "ceo": "", "employees": ""}

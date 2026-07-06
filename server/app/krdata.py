@@ -26,6 +26,8 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
+from .serving_cache import serving_cache_path
+
 _log = logging.getLogger("app.krdata")
 _H = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 _C = certifi.where()
@@ -304,7 +306,8 @@ def _earnings(code: str, _day: str) -> dict:
 
 
 # 추정실적 디스크 캐시 — historical은 안 변하니 저장본을 즉시 서빙, 주 1회만 재조회.
-_EARN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "earnings")
+# 영속 볼륨 하위(prod) — 재배포에도 저장본 생존(에페메랄 앱폴더 → 매 배포 재크롤 방지).
+_EARN_DIR = serving_cache_path("earnings")
 _EARN_FRESH_DAYS = 7
 
 

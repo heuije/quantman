@@ -27,6 +27,15 @@
 **핵심 원리:** 엔진은 폴더와 1:1이 아니라 **layer로 나뉜다** — 로직은 `core/`에 정의되고
 `server/`(서빙)·`web/`(UI)·`local/`(실행)에 배선된다. 모듈별 기능·구조·작업이력은 §3의 문서에.
 
+**데이터 서빙 SSOT 원칙 (웹 전역·필수·담당 무관).** 웹앱이 소비하는 시장·기업 데이터는
+**데이터엔진이 수집한 볼륨(`/srv/data`) SSOT에서 서빙**한다 — HOME(개별종목분석) 포함 전 화면.
+종목당 외부 라이브 크롤(네이버·DART·FnGuide·KRX)을 **서빙 primary로 새로 추가하지 않는다**
+(재배포 warmup·중복 수집·유저간 캐시부재 degrade의 근본원인). 라이브 크롤이 정당한 경우는
+**① 장중 실시간 현재가처럼 본질적으로 실시간인 값**, **② 데이터엔진이 아직 안 덮는
+롱테일·신규상장·우선주 폴백** 둘뿐 — 그때도 primary가 아니라 폴백으로 명시한다. 데이터엔진에
+없는 데이터가 필요하면 **먼저 피드로 수집**(조대표 협의)한 뒤 볼륨에서 읽는다. HOME도 이 원칙으로
+데이터엔진 서빙에 수렴 중 — 로드맵 [docs/REDESIGN/home-serving-unification-roadmap.md](docs/REDESIGN/home-serving-unification-roadmap.md).
+
 **배포 토폴로지:**
 - **웹앱:** Vercel (production + preview) — `origin/main` push → 자동 deploy
 - **서버:** Railway (Neon Postgres) — `origin/main` push → 자동 deploy

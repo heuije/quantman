@@ -20,8 +20,11 @@ import pandas as pd  # noqa: F401  (bs4가 주 파서지만 환경 일치 위해
 import requests
 from bs4 import BeautifulSoup
 
+from .serving_cache import serving_cache_path
+
 _log = logging.getLogger("app.financials")
-_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "financials")
+# 영속 볼륨 하위(prod) — 재배포에도 저장본이 살아남아 종목당 XBRL 재크롤을 1회로 줄인다.
+_DIR = serving_cache_path("financials")
 _FRESH_DAYS = 80          # 분기 주기(≈91일)보다 짧게 — 마감일 cron이 우선 갱신
 _UA = {"User-Agent": "Mozilla/5.0"}
 
