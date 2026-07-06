@@ -295,68 +295,17 @@ def _initial_kr_fundamentals_refresh():
         _log.exception("KR 펀더멘털 초기 청크 중 예외 — 10분 cron 재시도")
 
 
-# ── 애널 컨센서스(한경, 무로그인) ─────────────────────────────────────────────
-# floor=CORE_FLOOR(한경은 2006까지 제공·프로브 검증 — Core 통일 floor 2010 채택).
-_CONSENSUS_WINDOW_DAYS = 90                 # 백필 1청크 윈도우(역순)
+# ── 애널 컨센서스 — reports_kr(네이버)가 담당(옛 한경 consensus_kr 은퇴 2026-07) ──────────────
+# 컨센서스 지표 패널(consensus/{code}.parquet)은 reports_kr.ingest가 원시에서 재산출한다 → **별도 cron 불필요**.
+# reports_chunk/reports_daily가 목록·목표가·투자의견을 수집할 때 패널까지 함께 갱신. load_stock_consensus 소비.
+# (은퇴 이유: 네이버가 커버리지 2배·대형 증권사 포함·이력 2007까지로 한경 대비 전 축 우위 — reports_kr docstring.)
 
 
-def _consensus_backfill() -> DateCursorBackfill:
-    from quant_core import data_fetcher
-    return DateCursorBackfill(cursor_path=data_fetcher.CONSENSUS_DIR / "_backfill.cursor",
-                              floor=CORE_FLOOR_COMPACT,
-                              window_days=_CONSENSUS_WINDOW_DAYS)
-
-
-def _backfill_consensus_chunk() -> None:
-    """한경 컨센서스 과거 백필 — 90일 윈도우를 today→floor **역순 1청크**(10분마다).
-
-    날짜축 크롤(per-window)이라 per-symbol freshness 대신 cursor(DateCursorBackfill —
-    KRX 백필과 동일 문법)로 재배포에도 재개. floor 도달 시 자연 종료(무비용).
-    수집 실패 시 cursor 안 옮김→재시도."""
-    from quant_core.data.feeds import consensus_kr
-    bf = _consensus_backfill()
-    win = bf.next_window()
-    if win is None:
-        return                                       # 백필 완료 — 무비용
-    start, end = win
-    reports, ok = consensus_kr.collect_range(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-    if not ok:
-        _log.warning("[altdata] 컨센서스 백필 수집 실패(%s~%s) — cursor 유지·재시도", start, end)
-        return
-    res = consensus_kr.ingest(reports)
-    bf.advance(start)                                # cursor 역순 전진
-    _log.info("[altdata] 컨센서스 백필 청크(한경) %s~%s: %s", start, end, res)
-
-
-def _refresh_consensus() -> None:
-    """일일 컨센서스 증분 — 최근 7일 신규 리포트 수집·ingest·캐시 attach(19:00 KST)."""
-    from datetime import date, timedelta
-    from quant_core.data.feeds import consensus_kr
-    end = date.today()
-    start = end - timedelta(days=7)
-    reports, ok = consensus_kr.collect_range(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-    if ok and reports:
-        res = consensus_kr.ingest(reports)
-        data_cache.invalidate()
-        _log.info("[altdata] 컨센서스 증분(한경) %s~%s: %s", start, end, res)
-
-
-def _initial_consensus_refresh():
-    import time
-    try:
-        time.sleep(90)
-        _log.info("컨센서스(한경) 초기 백필 청크 시작")
-        _backfill_consensus_chunk()
-    except Exception:
-        _log.exception("컨센서스 초기 청크 예외 — 10분 cron 재시도")
-
-
-# ── 애널 리포트 목록(네이버, 무로그인) ────────────────────────────────────────
-# HOME 리포트 목록 서빙 소스(reports_kr 피드). consensus_kr(한경)와 *별도* — 한경은 컨센 지표(목표가
-# 인라인·대표 표본), 네이버는 리포트 목록(커버리지 2배·대형 증권사 포함·목표가 없음). 두 화면의 요구가
-# 달라 소스도 다르다. 상세: core/quant_core/data/feeds/reports_kr.py docstring.
+# ── 애널 리포트(네이버, 무로그인) — 목록 AND 컨센서스 지표의 유일 소스(한경 consensus_kr 은퇴) ──────
+# reports_kr 피드가 목록·목표가·투자의견을 수집하고 컨센서스 패널까지 재산출(ingest). 상세:
+# core/quant_core/data/feeds/reports_kr.py docstring.
 # 네이버는 날짜윈도우 파라미터를 무시하고 페이지 newest-first만 지원 → 날짜 cursor 대신 page cutoff-stop.
-_REPORTS_FLOOR = "2010-01-01"         # 백필 바닥(CORE_FLOOR과 동일 — 한경 컨센서스 대체 목표 깊이)
+_REPORTS_FLOOR = "2010-01-01"         # 백필 바닥(CORE_FLOOR과 동일 — 컨센서스 이력 깊이)
 _REPORTS_CHUNK_PAGES = 10             # 백필 1청크 페이지 수(상세 fetch 있어 작게 — 여러 날 분산·봇차단 완화)
 
 
@@ -419,10 +368,21 @@ def _initial_reports_refresh():
     import time
     try:
         time.sleep(120)
+        # 한경→네이버 컨센서스 컷오버(1회): 백필로 이미 수집된 원시에서 컨센서스 패널 재산출(재fetch 없음).
+        # 없으면 백필이 지나간 종목의 패널이 옛 한경 값으로 남는다 → 플래그로 1회만.
+        from quant_core import data_fetcher
+        from quant_core.data.feeds import reports_kr
+        flag = data_fetcher.REPORTS_DIR / "_panels_rebuilt.flag"
+        if not flag.exists():
+            n = reports_kr.rebuild_all_panels()
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            flag.write_text("1", encoding="utf-8")
+            _reports_cache_clear()
+            _log.info("[altdata] 컨센서스 패널 초기 재산출(네이버 원시→패널): %s종목", n)
         _log.info("리포트(네이버) 초기 증분")
         _refresh_reports()                        # 최근분 즉시 채움(과거 백필은 10분 chunk cron이 분산 수행)
     except Exception:
-        _log.exception("리포트 초기 증분 예외 — cron 재시도")
+        _log.exception("리포트 초기 증분/재산출 예외 — cron 재시도")
 
 
 # ── 기관·외국인 수급(KRX pykrx 로그인, 일별 전종목) ───────────────────────────
@@ -1179,15 +1139,8 @@ def _build_scheduler() -> BackgroundScheduler:
         CronTrigger(hour=17, minute=30),
         id="kr_fundamentals", replace_existing=True)
 
-    # 한경 컨센서스(무로그인) — 10분 백필 청크(역순 90일窓→2015) + 19:00 일일 증분.
-    scheduler.add_job(
-        lambda: _run_with_retry("consensus_chunk", _backfill_consensus_chunk, scheduler),
-        CronTrigger(minute="2-59/10"),           # :02,:12… — 펀더멘털(*/10)과 스태거
-        id="consensus_chunk", replace_existing=True)
-    scheduler.add_job(
-        lambda: _run_with_retry("consensus_daily", _refresh_consensus, scheduler),
-        CronTrigger(hour=19, minute=0),
-        id="consensus_daily", replace_existing=True)
+    # 애널 컨센서스 cron은 별도로 없다 — reports_kr(네이버)가 목록·목표가·투자의견 수집 시 컨센서스 패널까지
+    # 재산출(한경 consensus_kr 은퇴). 아래 reports_chunk/reports_daily가 그 역할을 겸한다.
     # 애널 리포트(네이버, 무로그인) — 10분 백필 청크(페이지 커서→2010·상세 목표가/투자의견 부착) + 19:30 증분.
     scheduler.add_job(
         lambda: _run_with_retry("reports_chunk", _backfill_reports_chunk, scheduler),
@@ -1211,7 +1164,7 @@ def _build_scheduler() -> BackgroundScheduler:
     # 일일 dataset_kr 증분은 앞으로만 가서 과거를 못 채움 → 별도 백필이 그 갭만 메움(완료 시 0비용).
     scheduler.add_job(
         lambda: _run_with_retry("kr_ohlcv_depth", _backfill_kr_ohlcv_chunk, scheduler),
-        CronTrigger(minute="7-59/10"),           # :07,:17… — fund(*/10)·consensus(2)·flow(5)와 스태거
+        CronTrigger(minute="7-59/10"),           # :07,:17… — fund(*/10)·flow(5)·reports(9)와 스태거
         id="kr_ohlcv_depth", replace_existing=True)
 
     # US OHLCV 깊이 백필(yfinance, 무키) — 10분 청크로 기존 종목을 2010까지 소급 prepend.
@@ -1348,8 +1301,7 @@ async def lifespan(app: FastAPI):
     _bg("static_meta", _initial_static_meta_refresh, delay=120)
     # 계층 2 — 백테스트/스크리너 백필(무거움). 5분 뒤.
     _bg("kr_fundamentals", _initial_kr_fundamentals_refresh, delay=300)
-    _bg("consensus", _initial_consensus_refresh, delay=300)
-    _bg("reports", _initial_reports_refresh, delay=690)        # 최초 백필 ~325p·1회(볼륨 플래그)
+    _bg("reports", _initial_reports_refresh, delay=690)        # 네이버 리포트 초기 증분(백필은 10분 chunk cron)
     _bg("flow", _initial_flow_refresh, delay=330)
     _bg("krx_market", _initial_krx_market_refresh, delay=330)
     _bg("dataset_refresh", _initial_dataset_refresh, delay=360)

@@ -163,18 +163,18 @@ register(DataTypeSpec(
     label="애널 컨센서스·목표가·투자의견(증권사별 standing 집계)",
     frequency="event", history_rule="리포트 발표일별 이벤트 → 일별 ffill(신선도窓 180일)",
     floor=CORE_FLOOR, point_in_time=True,
-    source="한경컨센서스(consensus.hankyung.com)",
+    source="네이버 금융 리서치(finance.naver.com/research)",
     provides=["consensus_target", "consensus_target_median", "analyst_count",
               "consensus_opinion", "target_dispersion", "target_revision_pct",
               "days_since_report"],
     required_meta=_BASE_META + ["as_of"],
     downstream=["signal(컨센서스 ref)", "screener", "study.event(목표가 리비전)"],
     current_status="present",
-    notes="한경=개별 리포트 스트림(발표일·증권사·목표가·투자의견). 원시 리포트 전건 영구보관 + "
-          "증권사별 최신 standing(신선도窓 내 1표) 횡단집계로 일별 컨센서스 산출 — 새 리포트는 해당 "
-          "증권사 슬롯만 갱신(덮어쓰기 없음). target_upside(괴리율)는 indicators에서 Close 결합 파생. "
-          "한계: 전 증권사 아님(대표 표본)·소형주 sparse→NaN. "
-          "cron 적재 가동중(10분 역순 백필→floor + 19:00 일일증분, 2026-07 프로덕션 로그 검증).",
+    notes="네이버=개별 리포트 스트림(reports_kr 피드: 발표일·증권사·목표가·투자의견). 원시 리포트 전건 "
+          "영구보관 + 증권사별 최신 standing(신선도窓 내 1표) 횡단집계로 일별 컨센서스 산출 — 새 리포트는 "
+          "해당 증권사 슬롯만 갱신(덮어쓰기 없음). target_upside(괴리율)는 indicators에서 Close 결합 파생. "
+          "옛 한경(consensus_kr) 은퇴(2026-07): 네이버가 커버리지 2배·대형 증권사 포함·이력 2007까지로 우위. "
+          "목표가는 리포트 상세 fetch로 부착(chunked 백필 2010까지·진행따라 이력 채워짐).",
 ))
 
 # ── P4 매크로·시장 브로드캐스트 ───────────────────────────────────────────────

@@ -37,16 +37,17 @@
 
 **현황.**
 - **partial(되지만 위험):** 한국 시세 분할조정 표기 미검증 / 시총·종목마스터가 백테스트 store 미부착(스크리너 메모리에만) / 소스별 조정정책 혼재.
-- **present(2026-07 프로덕션 로그 검증):** 애널 컨센서스·목표가(한경)·수급(기관/외국인, pykrx **일별 전종목**·날짜커서) — cron 적재 가동중(10분 백필→2010 floor + 일일증분 16:30/19:00). KR 지수 멤버십 이력은 여전히 absent.
+- **present(2026-07 프로덕션 로그 검증):** 애널 리포트목록·컨센서스·목표가·투자의견(**네이버 reports_kr** — 옛 한경 consensus_kr 은퇴)·수급(기관/외국인, pykrx **일별 전종목**·날짜커서) — cron 적재 가동중(10분 백필→2010 floor + 일일증분 16:30/19:30). KR 지수 멤버십 이력은 여전히 absent.
 
 ## 작업계획 로그 (누적·최신 우선)
 
-### [2026-07-06] reports_kr — 네이버 전종목 리포트 피드(목록+목표가/투자의견)로 한경 대체 [진행중]
+### [2026-07-06] reports_kr — 네이버 전종목 리포트 피드로 한경 완전 대체(목록+컨센서스 지표) [코드완료·백필진행]
 - 의도: HOME 리포트 목록 로딩 병목 = 라이브 크롤 6.4초(목록8p+상세15콜)·in-memory lru(재시작마다 재크롤). 서빙 일원화 Phase 1. 당초 한경 `consensus_kr` raw 재활용안이 **실측으로 폐기**(한경 커버리지 대형주 절반·대형 증권사 누락) → 네이버 피드 신설. **이어 실측으로 네이버가 한경을 전 축에서 압도 확인**(커버리지 2배·목표가/투자의견 상세페이지서 정확 추출·이력 2007까지 vs 한경 2015) → **방향: 네이버 단일 소스로 한경 은퇴**(2010 백필). 한경의 유일 잔존 이점은 목표가 목록-인라인(값싼 깊은 수집)뿐 — 네이버는 상세 fetch 필요.
 - 계획(A 수집 = 이 PR): `feeds/reports_kr.py`(목록 page 크롤·종목명→코드·nid dedup + `enrich()`가 상세 `.money`서 목표가·투자의견 부착) → `data_fetcher.load_stock_reports` 리더 → `krdata.reports` 피드우선+라이브폴백(원칙6·`_reports` 폴백강등) → `main.py` cron(**10분 chunked 백필** `_backfill_reports_chunk`·페이지커서→2010·여러날 분산 + 19:30 증분 `_refresh_reports`). (B 한경대체 = 후속 PR: 네이버 raw로 컨센서스 패널 재산출→한경 parity 검증→estimate.consensus 전환→consensus_kr 은퇴.)
 - 결과(A): 구현·검증 완료(draft [PR#320](https://github.com/MercKR/quantman/pull/320)). **실데이터 E2E**: 목록 수집→`enrich` 목표가 48/60(나머지 Not Rated=정직 None)→ingest→`krdata.reports` 서빙에 목표가 부활(기아 290,000 실측)·웹 계약 `{date,title,broker,url,target}` 정확. core 7 + server 4 신규·**서버 500 passed 무회귀**. 종목명→코드 100%(90/90)·`.money`와 헤더정규식 목표가 100% 일치(추출 견고).
 - 시행착오: ①네이버 크로스목록 날짜윈도우 파라미터 무시(page newest-first만)→date cursor 대신 **page cursor 백필**. ②목표가/투자의견이 목록엔 없고 상세에만 → 백필=리포트당 상세 fetch(수만 건·chunked로 여러 날 분산·봇차단 완화). ③목표가 값이 stale 가격 기억으론 이상해 보였으나 `.money` 구조필드 정확추출·2026 랠리 레짐(SK하이닉스 220만) 정합 — [[feedback_market_data_verify_current_price]] 함정 회피. 교훈은 §교훈 distill.
-- 잔여: **railway 백필**(10분 chunk가 2010까지 여러 날 자동 소급·수동 트리거 가능) → 배포 후 **브라우저 목표가·커버리지 시각검증**. **B단계(한경 대체)**: 백필 데이터 쌓인 후 네이버 컨센서스 parity 검증→consensus_kr 은퇴.
+- 결과(B 한경 완전 대체): 사용자 지시로 백필 미완이어도 **코드 정합성 우선** 착수. `_build_panel`(증권사별 standing 180일窓·report_idx→nid)을 reports_kr로 이전 → `ingest`가 원시(reports/{code}.parquet) + **컨센서스 패널(consensus/{code}.parquet) 동시 산출**. `load_stock_consensus` 무변경(경로 동일). `consensus_kr.py`+테스트 삭제·main.py 한경 cron 제거(consensus_chunk/daily)·spec `estimate.consensus` source 네이버로·docstring 정합. **E2E**: 네이버 raw→ingest→패널→`load_stock_consensus` 서빙 정합(삼성100+미래120=110·삼성갱신110+미래120=115 standing 보존). core 694 + server 503 green. 데이터는 백필 진행따라 self-heal(패널 재산출 멱등). draft PR.
+- 잔여: **railway 백필**(10분 chunk가 2010까지 여러 날 자동 소급 — 진행중 종목부터 컨센 패널 채워짐) → 배포 후 **브라우저 목표가·커버리지 시각검증**. 옛 `consensus/{code}_raw.parquet`(한경 잔재)는 orphan(무해·미소비).
 
 ### [2026-07-05] flow_kr 수급 수집 종목별→일별 전종목 전환 (KRX 봇차단 근절) [완료]
 - 의도: 국내 기관·외국인 수급(`flow_kr`) 수집이 종목별 `get_market_trading_value_by_date`(전종목 3,579콜)를 반복해 KRX MDC 봇차단을 유발(대량 백필 시 `get_stock_ticker_isin: NoneType`→이후 전부 빈응답·조용한 영구결손). 저장형식·소비계약(`flow/{code}.parquet`·`inst_net_buy`/`foreign_net_buy`·spec provides)을 그대로 두고 **수집 경로만** 일별 전종목 1콜/시장/투자자로 근본 전환. 로컬 실증(별도 세션)=2010~2026 전종목 blocked=0(핸드오프 `flow_kr_daily_handoff.md`).

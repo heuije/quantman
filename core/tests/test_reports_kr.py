@@ -1,10 +1,11 @@
-"""reports_kr 피드 — 파싱·종목명해결·nid dedup·ingest (무네트워크).
+"""reports_kr 피드 — 파싱·종목명해결·nid dedup·ingest·목표가/투자의견·컨센서스 패널 (무네트워크).
 
-핵심 검증: 네이버 크로스종목 목록 HTML → 종목명→코드 해결 → nid dedup 원시 아카이브.
-목표가·투자의견은 이 피드 대상 아님(목록 표시 전용 — 컨센 지표는 consensus_kr/한경 담당).
+한경 consensus_kr 은퇴 → 이 피드가 리포트 목록 AND 컨센서스 지표의 유일 소스.
 
     cd core && pytest tests/test_reports_kr.py -v
 """
+import math
+
 import pandas as pd
 import pytest
 
@@ -78,6 +79,7 @@ def test_name_to_code_from_ticker_db(monkeypatch):
 
 def _isolate(monkeypatch, tmp_path):
     monkeypatch.setattr(rk, "_reports_path", lambda c: tmp_path / f"{c}.parquet")
+    monkeypatch.setattr(rk, "_panel_path", lambda c: tmp_path / f"{c}_panel.parquet")
 
 
 def test_ingest_dedup_append_only_and_sorted(monkeypatch, tmp_path):
@@ -132,3 +134,78 @@ def test_enrich_attaches_target_opinion(monkeypatch):
     out = rk.enrich(recs)
     assert out[0]["target"] == 760000 and out[0]["opinion"] == 1
     assert out[1]["target"] is None and out[1]["opinion"] is None
+
+
+# ── 컨센서스 지표 패널 (한경 consensus_kr 은퇴 → reports_kr가 유일 소스) ──────────────
+# 증권사별 최신 standing(180일窓) 횡단집계 — 한 증권사 새 리포트는 그 슬롯만 갱신(덮어쓰기 없음).
+
+def _raw(rows):
+    return pd.DataFrame(rows, columns=["nid", "as_of", "code", "broker", "target", "opinion"])
+
+
+def test_build_panel_per_broker_latest_no_overwrite():
+    raw = _raw([
+        (1, "2020-01-01", "005930", "A증권", 100.0, 1),
+        (2, "2020-02-01", "005930", "B증권", 120.0, 1),
+        (3, "2020-03-01", "005930", "A증권", 110.0, 0),   # A 갱신(100→110)
+    ])
+    p = rk._build_panel(raw)
+    assert p.loc["2020-01-01", "consensus_target"] == pytest.approx(100.0)
+    assert p.loc["2020-01-01", "analyst_count"] == 1
+    assert math.isnan(p.loc["2020-01-01", "target_revision_pct"])
+    # 2/1: A100 + B120 → 평균 110, 2사, std 10, 리비전 +10%
+    assert p.loc["2020-02-01", "consensus_target"] == pytest.approx(110.0)
+    assert p.loc["2020-02-01", "analyst_count"] == 2
+    assert p.loc["2020-02-01", "target_dispersion"] == pytest.approx(10.0)
+    assert p.loc["2020-02-01", "target_revision_pct"] == pytest.approx(10.0)
+    # 3/1: A→110 갱신, B120 유지 → 115 (덮어쓰기였으면 110)
+    assert p.loc["2020-03-01", "consensus_target"] == pytest.approx(115.0)
+    assert p.loc["2020-03-01", "analyst_count"] == 2
+    assert p.loc["2020-03-01", "consensus_opinion"] == pytest.approx(0.5)   # mean([0,1])
+
+
+def test_build_panel_freshness_window_expires():
+    raw = _raw([(1, "2020-01-01", "005930", "A증권", 100.0, 1)])
+    p = rk._build_panel(raw)
+    assert p.iloc[0]["consensus_target"] == pytest.approx(100.0)
+    assert p.iloc[0]["analyst_count"] == 1
+    assert p.iloc[-1]["analyst_count"] == 0                # 만료일(+180d) → 커버리지 소멸
+    assert math.isnan(p.iloc[-1]["consensus_target"])
+
+
+def test_build_panel_empty_when_no_target_column():
+    # enrich 전(목표가 미부착) 원시 → 컨센 없음(KeyError 아님)
+    assert rk._build_panel(pd.DataFrame({"nid": [1], "as_of": ["2026-01-01"], "broker": ["A"]})).empty
+
+
+def test_panel_cols_match_spec_contract():
+    from quant_core.data import spec
+    assert list(rk.PANEL_COLS) == spec.get("estimate.consensus").provides
+
+
+def test_ingest_writes_consensus_panel(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    reports = [
+        {"nid": 1, "as_of": "2026-06-01", "code": "005930", "broker": "A증권",
+         "title": "t1", "url": "u1", "target": 100.0, "opinion": 1},
+        {"nid": 2, "as_of": "2026-06-05", "code": "005930", "broker": "B증권",
+         "title": "t2", "url": "u2", "target": 120.0, "opinion": 1},
+    ]
+    rk.ingest(reports)
+    panel = pd.read_parquet(tmp_path / "005930_panel.parquet")
+    assert list(panel.columns) == list(rk.PANEL_COLS)
+    assert panel["analyst_count"].max() == 2               # 2 증권사 집계
+
+
+def test_rebuild_all_panels_from_existing_raw(monkeypatch, tmp_path):
+    # 한경→네이버 컷오버: 저장된 원시에서 패널 재산출(재fetch 없음)
+    monkeypatch.setenv("QP_CORE_DATA_DIR", str(tmp_path))
+    (tmp_path / "reports").mkdir(parents=True)
+    for code, tgt in [("005930", 100000.0), ("000660", 200000.0)]:
+        pd.DataFrame([{"nid": 1, "as_of": "2026-06-01", "code": code, "broker": "A증권",
+                       "title": "t", "url": "u", "target": tgt, "opinion": 1}]
+                     ).to_parquet(tmp_path / "reports" / f"{code}.parquet")
+    assert rk.rebuild_all_panels() == 2
+    panel = pd.read_parquet(tmp_path / "consensus" / "005930.parquet")
+    assert list(panel.columns) == list(rk.PANEL_COLS)
+    assert panel["consensus_target"].dropna().iloc[0] == pytest.approx(100000.0)

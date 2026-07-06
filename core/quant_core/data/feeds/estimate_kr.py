@@ -5,11 +5,11 @@
 서버 `app/krdata.py:_earnings`의 검증된 파싱을 core로 이전·정제(영문 키·`is_estimate` 플래그).
 
 **왜 엔진에 두나(뿌리① 단일화):** 기존 엔진은 forward 추정치를 못 만든다 — OpenDART는 과거
-공시만, `consensus_kr`(한경)은 목표*주가*만(추정 이익 아님). FnGuide highlight가 유일한 무료
+공시만, `reports_kr`(네이버 애널 컨센서스)은 목표*주가*만(추정 이익 아님). FnGuide highlight가 유일한 무료
 forward 이익 소스다. 이 feed로 챗(describe)·웹·엑셀이 동일 소스의 추정실적을 읽는다.
 
-**명명 주의:** `estimate_kr`=forward **이익 추정**(FnGuide) vs 기존 `consensus_kr`=목표**주가**
-컨센서스(한경). 별개 데이터·상보적.
+**명명 주의:** `estimate_kr`=forward **이익 추정**(FnGuide) vs `reports_kr`=목표**주가**
+컨센서스(네이버 애널 리포트). 별개 데이터·상보적.
 
 **현재 스냅샷 only:** FnGuide highlight는 *현재* 추정만 준다(과거 추정 아카이브 없음) → 종목별
 parquet 1개를 덮어쓴다. as_of=fetch일. **현시점 분석(describe/screen)엔 적합, PIT 백테스트엔
