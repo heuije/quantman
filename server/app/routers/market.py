@@ -490,11 +490,15 @@ def market_compare(symbols: str, range: str = "1y",
 @router.get("/kr/{symbol}")
 def kr_extras(symbol: str, user: User = Depends(get_current_user)):
     """한국 종목 부가 데이터 — 투자자별 순매매·애널리스트 리포트·컨센서스·추정
-    실적·최근 공시. 무료 공개 소스(네이버/FnGuide/DART) 크롤링, 6자리 국내 종목만.
+    실적·공매도 잔고. 데이터엔진 볼륨(수급·리포트·컨센·추정) + 라이브(공매도).
 
     5개 소스를 병렬 fetch(첫 호출 지연 최소화). 각 소스는 krdata 내부에서
     독립적으로 실패를 흡수(빈 결과)하므로 한 소스가 죽어도 나머지는 제공된다.
     종목·소스별 lru_cache(일자 키)로 같은 날 재요청은 즉시 응답.
+
+    ⚠ 최근 공시(DART)는 제거됨 — 응답에 담겼으나 웹 어디서도 렌더하지 않는 dead
+    field였다(StockDashboard 주석: 다른 탭과 중복). 매 요청 DART 왕복만 유발해 summary
+    로딩을 지연시켜 팬아웃에서 뺐다(2026-07-07).
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -506,7 +510,7 @@ def kr_extras(symbol: str, user: User = Depends(get_current_user)):
     sources = {
         "investor": krdata.investor, "reports": krdata.reports,
         "consensus": krdata.consensus, "earnings": krdata.earnings,
-        "disclosures": krdata.disclosures, "shorting": krdata.shorting,
+        "shorting": krdata.shorting,
     }
     with ThreadPoolExecutor(max_workers=len(sources)) as ex:
         futures = {k: ex.submit(fn, code) for k, fn in sources.items()}

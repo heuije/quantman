@@ -349,39 +349,10 @@ def earnings(code: str) -> dict:
     return _earnings_cached(code, date.today().isoformat())
 
 
-# ── 최근 공시 (DART OpenDart API) ────────────────────────────────────────────
-# 서버 env(OPENDART_API_KEY) 전용 — 키 없으면 빈 결과(로컬/미설정 시 자연 비활성).
-@lru_cache(maxsize=256)
-def _disclosures(code: str, _day: str) -> list[dict]:
-    key = os.environ.get("OPENDART_API_KEY")
-    if not key:
-        return []
-    import OpenDartReader
-    dart = OpenDartReader(key)
-    end = date.today()
-    # 최근 1개월(30일) 전체 공시 — 건수 제한 없음(사용자 요청).
-    df = dart.list(code, start=(end - timedelta(days=30)).isoformat(),
-                   end=end.isoformat(), final=True)
-    if df is None or df.empty:
-        return []
-    out = []
-    for _, row in df.iterrows():
-        rcept = str(row.get("rcept_no", ""))
-        out.append({
-            "date": str(row.get("rcept_dt", "")),
-            "title": str(row.get("report_nm", "")).strip(),
-            "submitter": str(row.get("flr_nm", "")).strip(),
-            "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept}" if rcept else "",
-        })
-    return out
-
-
-def disclosures(code: str) -> list[dict]:
-    try:
-        return _disclosures(code, date.today().isoformat())
-    except Exception as e:
-        _log.warning("공시 fetch 실패 %s: %s", code, e)
-        return []
+# ── 최근 공시(DART) 제거됨(2026-07-07): kr_extras 응답에 담겼으나 웹 어디서도 렌더하지
+# 않던 dead field. 매 요청 DART 왕복만 유발해 summary 로딩을 지연시켜 소스에서 제거.
+# 다시 필요하면 git 이력(krdata._disclosures)에서 복원 — DART list.json은 전종목 1콜형이라
+# 재도입 시엔 종목당 크롤 아닌 데이터엔진 피드로(원칙6·Phase 4 참조).
 
 
 # ── 공매도 잔고 (KRX 정보데이터시스템 — OTP→CSV 다운로드) ──────────────────────

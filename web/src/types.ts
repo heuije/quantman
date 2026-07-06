@@ -1112,12 +1112,6 @@ export interface KrEarnings {
   years: string[];                          // 연도 헤더 ['2024/12','2025/12','2026/12(E)',…]
   rows: Record<string, (number | null)[]>;  // 항목별 값 (매출액/영업이익/당기순이익/지배주주, 억원)
 }
-export interface KrDisclosure {
-  date: string;        // 접수일 (YYYYMMDD)
-  title: string;       // 보고서명
-  submitter: string;   // 제출인
-  url: string;         // DART 원문 링크
-}
 export interface KrShortPoint {
   date: string;                  // 일자
   bal_qty: number | null;        // 공매도 잔고수량 (주)
@@ -1129,7 +1123,6 @@ export interface KrExtras {
   reports: KrReport[];
   consensus: KrConsensus[];
   earnings: KrEarnings;
-  disclosures: KrDisclosure[];
   shorting: KrShortPoint[];
 }
 
