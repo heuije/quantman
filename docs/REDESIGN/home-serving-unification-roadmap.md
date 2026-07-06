@@ -135,8 +135,13 @@
   형식·계정 순서 무변경**(FnGuide 중복 크롤·재배포 warmup 제거).
 - **6c — 산업분석(시총 treemap·EBITDA/D&A) 서빙 일원화.** `industry.py` 시총·등락(네이버 realtime+FDR)→
   `marketcap_krx`, EBITDA/D&A(FnGuide 8병렬 크롤)→`fundamental_kr` 서빙. 중복 크롤 제거.
-- **6d — dead 수집 코드 정리.** `naver_fundamentals.py`(매일 2,700종목 긁어 krx_cache 메모리에만·웹 엔드포인트
-  없음·재시작 증발)·`hankyung.py`(수집하나 라우터 미노출) — 소비처 없는 수집 제거(4원칙 over-engineering).
+- **6d — dead 수집 코드 정리 ✅ 부분 완료(hankyung만·2026-07-07).** `hankyung.py`(markets.hankyung.com
+  financial-summary 크롤·**import·cron·라우터·소비처 0 실측확인** → 확정 dead) **삭제.** ⚠ **`naver_fundamentals.py`는
+  삭제 대상 아님(로드맵 오진 정정):** 삭제 전 전수 감사 결과 dead가 아니라 **종목 스크리너의 라이브 필수 입력**이었다 —
+  main.py cron(17:30)이 매일 2,700종목 NAVER 펀더멘털(dividend_yield·foreign_rate·dps·bps·52주고저)을 긁어
+  `krx_cache`에 merge하고, `screener.py`가 그 필드를 소비·서빙(배당수익률·외국인보유율 필터·정렬·`include_router`
+  마운트됨). "웹 엔드포인트 없음"은 *직접* 엔드포인트가 없다는 뜻이었을 뿐, 데이터는 스크리너 경유로 소비된다. **교훈:
+  dead 판정은 import뿐 아니라 캐시 merge→소비 사슬까지 추적**(삭제 전 감사가 오진을 잡음·4원칙 검증된 해결책만).
 - **6e — 종목상세 OHLCV 볼륨 서빙 ✅ 구현·검증 완료 [HOME summary 로딩 최우선·사용자 재우선순위].**
   `market.py:symbol_detail`의 `_raw_ohlcv`(종목)·`_raw_bench`(벤치마크)가 요청당 라이브 `fdr.DataReader`
   (직렬 ~4s·range별 재fetch·lru만→재배포 warmup)로 HOME summary 지배 병목. 데이터엔진이 이미 KR 전종목
