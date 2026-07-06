@@ -8,7 +8,8 @@ import ChatResultView from "../components/ChatResultView";
 // 재렌더하지 않는다(델타마다 차트 재렌더되는 렉 회피).
 const PartView = memo(function PartView({ part }: { part: ChatPart }) {
   if (part.type === "text") return <p className="chat-text">{part.text}</p>;
-  if (part.type === "tool_use") return <div className="chat-tool">🔧 {part.name} 실행 중…</div>;
+  if (part.type === "tool_use")
+    return <div className="chat-tool">{part.progress ? `${part.progress}…` : `🔧 ${part.name} 실행 중…`}</div>;
   if (part.type === "tool_result") return <ChatResultView result={part.result} />;
   return null;
 });

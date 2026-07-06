@@ -183,6 +183,42 @@ def test_run_chat_turn_persists_error_reply_on_failure():
     assert [r.role for r in rows] == ["user", "assistant"]
 
 
+def test_round_cap_forces_partial_synthesis(monkeypatch):
+    """상한(MAX_TOOL_ROUNDS) 소진 시 '분석이 길어졌습니다' 비답변이 아니라, **도구 없는 1콜로
+    부분결과를 강제 종합**해 실제 답변을 낸다(chat-latency Phase 1a·무응답 방지). heuije conv#40
+    (8라운드 전부 tool_use→비답변) 재현 케이스."""
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    monkeypatch.setattr(chat_tools, "run_tool",
+                        lambda name, inp: {"success": True, "query": "select", "as_of": "2026-06-17",
+                                           "universe_size": 5, "results": [{"symbol": "AAA", "score": 0.8}]})
+    monkeypatch.setattr(chat_agent, "run_tool", chat_tools.run_tool, raising=False)
+    # 8라운드 전부 tool_use → 상한 소진(최종 답변 없음) → 9번째=강제 종합(도구 없이 텍스트).
+    queue = [_Resp([_Block(type="tool_use", id=f"t{i}", name="screen",
+                           input={"score_ref": "__SELF__.pb_ratio", "top_n": 3})], "tool_use")
+             for i in range(chat_agent.MAX_TOOL_ROUNDS)]
+    queue.append(_Resp([_Block(type="text", text="지금까지 확인한 범위로는 AAA가 가장 저평가입니다.")], "end_turn"))
+    fc = _FakeClient(queue)
+    parts = chat_agent.run_chat_turn(s, conv.id, "복잡한 피어 비교", client=fc)
+
+    texts = [p["text"] for p in parts if p["type"] == "text"]
+    assert any("가장 저평가" in t for t in texts), texts          # 강제 종합 답변이 실제로 나옴
+    assert not any("좁혀 다시" in t for t in texts), texts        # 최종 비답변 폴백은 미발동
+    assert len(fc.messages.received) == chat_agent.MAX_TOOL_ROUNDS + 1   # 8라운드 + 1 종합콜
+    assert "tools" not in fc.messages.received[-1]                 # 종합콜은 도구 없이 호출
+
+
+def test_progress_line_is_human_readable():
+    """진행 스트리밍(Phase 1b): 도구 호출 → 결정적 진행 라인(도구명·입력 반영·LLM 미사용)."""
+    pl = chat_agent._progress_line
+    assert "005930" in pl("describe", {"symbol": "005930"})
+    assert "반도체" in pl("screen", {"sectors": ["반도체"]})
+    assert "스크리닝" in pl("screen", {})
+    assert pl("inspect", {"symbol": "AAA", "columns": ["rsi_14"]}).startswith("📈")
+    assert "백테스트" in pl("simulate", {"nl": "x"})
+    assert pl("unknown_tool", {})                     # 미지 도구도 폴백 라벨
+
+
 # ── T3 (Wave 2 Phase 1): 크래시 fail-soft ─────────────────────────────────────
 def test_classify_failure_transient_vs_analysis():
     """실패 부류: *재시도 유효한* 오류(연결·타임아웃·429·5xx)만 transient. BadRequest(400) 등 4xx는
@@ -527,7 +563,9 @@ def test_loop_exhaustion_yields_fallback_text(monkeypatch):
         u = User(email="t@e.com"); s.add(u); s.commit(); s.refresh(u)
         c = Conversation(user_id=u.id); s.add(c); s.commit(); s.refresh(c)
         parts = ag.run_chat_turn(s, c.id, "분석해줘", client=_C())
-    assert any(p["type"] == "text" and "완료하지 못" in p["text"] for p in parts)
+    # 상한 소진 → 강제 종합 시도. 이 mock은 종합콜도 빈 텍스트(text_stream=())라 종합 실패 →
+    # 최종 graceful 폴백이 뜬다(Phase 1a: 종합 성공 시엔 test_round_cap_forces_partial_synthesis).
+    assert any(p["type"] == "text" and "완결하지 못" in p["text"] for p in parts)
 
 
 def test_tool_result_nan_sanitized_to_valid_json(monkeypatch):
