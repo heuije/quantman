@@ -189,12 +189,52 @@ def _reports(code: str, _day: str) -> list[dict]:
     return out
 
 
-def reports(code: str) -> list[dict]:
+# ── 애널 리포트 목록: 데이터엔진 우선 서빙(reports_kr 피드) + 라이브 폴백 ──────────────
+# 웹 서빙은 데이터엔진 볼륨 SSOT를 primary로 읽는다(CLAUDE.md §2 데이터엔진 우선 서빙 원칙).
+# reports_kr(네이버 전종목 피드)를 우선 서빙하고, 피드 미커버(신규상장·종목명 미해결·미백필)
+# 코드만 종목당 라이브 크롤로 폴백. 라이브(_reports)는 6.4초(목록8p+상세15콜)라 폴백 전용 강등.
+@lru_cache(maxsize=256)
+def _reports_from_feed(code: str, _day: str) -> list[dict]:
+    """reports_kr 피드 parquet → 웹 KrReport 목록(최근 12개월·최신순).
+
+    각 항목 {date(YY.MM.DD)·title·broker·url(PDF)·target}. 목표가는 피드가 상세에서 수집(enrich)한
+    값 — 미수집(백필 진행분·Not Rated)은 None. 파일 없거나 12개월 내 0건이면 [] → 호출자가 라이브 폴백.
+    """
+    from quant_core import data_fetcher
+
+    df = data_fetcher.load_stock_reports(code)
+    if df is None or df.empty:
+        return []
+    df = df.copy()
+    df["_dt"] = pd.to_datetime(df["as_of"], errors="coerce")
+    cutoff = pd.Timestamp(date.today() - timedelta(days=365))
+    df = df[df["_dt"].notna() & (df["_dt"] >= cutoff)].sort_values("_dt", ascending=False)
+    return [{
+        "date": r["_dt"].strftime("%y.%m.%d"),
+        "title": str(r.get("title", "")),
+        "broker": str(r.get("broker", "")),
+        "url": str(r.get("url", "")),
+        "target": _int(r.get("target")),      # 피드 상세 수집값(없으면 None)
+    } for _, r in df.iterrows()]
+
+
+def _reports_live(code: str) -> list[dict]:
+    """폴백 전용 — reports_kr 피드가 안 덮는 코드(신규상장·종목명 미해결·미백필)용 네이버 종목당 라이브."""
     try:
         return _reports(code, date.today().isoformat())
     except Exception as e:
-        _log.warning("리포트 fetch 실패 %s: %s", code, e)
+        _log.warning("리포트 라이브 폴백 실패 %s: %s", code, e)
         return []
+
+
+def reports(code: str) -> list[dict]:
+    # 데이터엔진 우선(원칙6): 피드 파생뷰가 비면 네이버 종목당 라이브 폴백.
+    try:
+        feed = _reports_from_feed(code, date.today().isoformat())
+    except Exception as e:
+        _log.warning("리포트 피드 서빙 실패 %s: %s", code, e)
+        feed = []
+    return feed if feed else _reports_live(code)
 
 
 # ── 컨센서스 목표가·투자의견 (wisereport) ────────────────────────────────────

@@ -20,13 +20,15 @@
 - **데이터를 엔진에 넣는 것 ≠ 챗봇이 그걸 아는 것 (공급≫소비 갭).** P2-B/S4로 매크로(V-KOSPI·풋콜·국고채·선물OI·ETF flow)를 공급했으나 챗 LLM·NL→IR 컴파일러가 존재를 몰라 활용 불가였다 — `capability_spec` 선물심볼은 하드코딩·매크로 누락, `get_all_indicator_columns` SSOT는 BASE+FUND+FLOW+CONSENSUS만 태우고 매크로 심볼·커버리지 뎁스는 안 태움, `data_spec()` 자기서술은 "문서/프론트"만 소비·LLM 미도달. **닫는 법=하드코딩 신규 카탈로그가 아니라 기존 SSOT를 LLM에 배선**: ①커버리지는 **검증 매니페스트 실측 파생**(`coverage_inventory`=build_manifest per-symbol first/last + coverage_report pct — 하드코딩 "2010~" 금지, 백필 중 실제 뎁스 반영) ②챗 프롬프트에 화이트리스트 인벤토리+*"여기 없으면 미지원, 지어내지 말라"* 지시(미지원 열거=블록리스트는 무한·유지불가 → 보유+뎁스 인지→그외 미지원) ③컴파일러엔 `MACRO_SYMBOLS` 심볼카탈로그+별칭 name_map(풋콜비율→옵션풋콜비율) ④**드리프트 가드 테스트**(MACRO_SYMBOLS⊆data_type_symbols⊆data_spec)로 부류 재발 차단. 검증은 배선(실조립)뿐 아니라 **구독 $0 LLM eval로 행동까지**(매크로 NL 3/3→실제 매크로 심볼 IR 참조 실증). (2026-07-02 챗 커버리지 인지)
 - **스크래핑 소스는 *요청 패턴*이 차단을 부른다 — 종목별 반복 대신 '하루 1콜 전종목'.** pykrx 수급을 종목별(`get_market_trading_value_by_date`·전종목 3,579콜)로 돌리면 KRX MDC 봇차단(`get_stock_ticker_isin: NoneType`→이후 전부 빈응답·조용한 영구결손). 같은 데이터를 **일별 전종목 1콜/시장/투자자**(`get_market_net_purchases_of_equities_by_ticker`)로 받으면 요청 수·형태가 달라 차단 0(prod 2,698종목·fail=0 실증) — marketcap이 일별로 무리없던 것과 동일 원리. 저장·소비 계약은 그대로 두고 **수집 함수만 `marketcap_krx.fetch_range` 동형 날짜커서로 통일**→엔진/컴파일러/웹 무변경 교체. ⚠함정: 옛 `fetch_one`이 **봇차단 빈응답을 genuine 무데이터로 오판→`.empty` 마커→그 종목 영구 skip**(차단↔무데이터 미구분)=조용한 결손의 뿌리 — 날짜커서 전환이 부류째 제거. 휴장일 pykrx `Length mismatch`(0 elements)는 빈 df로 접어 fail 오판 방지(pykrx가 콘솔에 "Error occurred" 찍지만 무해). (2026-07-05 PR#311)
 
+- **같은 도메인이라도 소스 선택은 *소비 목적*에 따라 갈린다 — 커버리지는 실측하고 지어내지 마라.** 애널 리포트를 이미 수집된 `consensus_kr`(한경) raw로 서빙(신규 크롤 0)하려다 실측하니 대형주 리포트 절반·삼성/미래에셋/신한/하나/키움 등 대형 증권사 누락(한경=컨센 *지표*용 "대표 표본", 강점은 목록 인라인 목표가·투자의견). 리포트 *목록* 표시엔 커버리지가 본질 → 네이버가 2배(전종목 1콜형 수집도 가능·단 목표가 컬럼 없음·종목명→코드 필요). **한 소스가 지표엔 옳고 목록엔 나쁠 수 있다** — 재사용 전 *실측 프로브*로 소비 목적 대비 검증(원안 뒤집힘). 종목명→코드는 `ticker_db`(FDR 공식명)로 실측 100% 매칭. 네이버 크로스목록은 날짜윈도우 파라미터 무시(page newest-first만)→날짜커서 대신 page cutoff-stop. (2026-07-06 reports_kr)
+
 ## 현재 구조 (안정)
 
 **기능.** 백테스트·인사이트가 쓰는 모든 데이터를 한 곳에서 정의·수집·검증해 공급. 출처는 데이터포인트당 **1개 원칙**(no-backup). 지원 현황(present/partial/absent)의 **진실원천 = `core/quant_core/data/spec.py`** — 새 데이터 추가/상태 확인은 여기부터.
 
 **폴더.**
 - `core/quant_core/data/spec.py` — 데이터 종류 등록부(진실원천). 무엇을 지원/미지원하는지
-- `core/quant_core/data/feeds/` — **소스별 수집 모듈**(새 데이터 = 여기에 모듈 1개 추가): `fundamental_kr.py`(OpenDART)·`fundamental_us.py`(SEC)·`classification.py`(섹터/FDR)·`listing.py`(상장폐지)·`news_kr.py`(뉴스/네이버 검색 API)
+- `core/quant_core/data/feeds/` — **소스별 수집 모듈**(새 데이터 = 여기에 모듈 1개 추가): `fundamental_kr.py`(OpenDART)·`fundamental_us.py`(SEC)·`classification.py`(섹터/FDR)·`listing.py`(상장폐지)·`news_kr.py`(뉴스/네이버 검색 API)·`consensus_kr.py`(컨센 지표/한경)·`reports_kr.py`(애널 리포트 목록/네이버 — 목록 표시 전용, 지표는 consensus_kr)
 - `core/quant_core/data_fetcher.py`(가격 OHLCV: FDR·yfinance)·`indicators.py`(기술지표 24종 자체산출)·`dataset.py`(조립)
 - `core/quant_core/data/gate.py`·`deps.py`·`manifest.py` — 무결성 게이트(PIT·생존편향)·의존성 도출·수집 기록
 - **서빙(server/app)**: `data_cache.py` = **Store A**(canonical parquet 시계열 — 백테스트·360리포트·SELECT 공급) · `krx_cache.py` = **Store B**(스크리너 인메모리 스냅샷, 빠른 조회 전용) · `naver_fundamentals.py`·`technical_cache.py`·`us_metrics_cache.py`(보조 캐시) · `main.py`(cron 오케스트레이션 — KR 펀더멘털 매일 17:30 KST 등)
@@ -38,6 +40,13 @@
 - **present(2026-07 프로덕션 로그 검증):** 애널 컨센서스·목표가(한경)·수급(기관/외국인, pykrx **일별 전종목**·날짜커서) — cron 적재 가동중(10분 백필→2010 floor + 일일증분 16:30/19:00). KR 지수 멤버십 이력은 여전히 absent.
 
 ## 작업계획 로그 (누적·최신 우선)
+
+### [2026-07-06] reports_kr — 네이버 전종목 리포트 피드(목록+목표가/투자의견)로 한경 대체 [진행중]
+- 의도: HOME 리포트 목록 로딩 병목 = 라이브 크롤 6.4초(목록8p+상세15콜)·in-memory lru(재시작마다 재크롤). 서빙 일원화 Phase 1. 당초 한경 `consensus_kr` raw 재활용안이 **실측으로 폐기**(한경 커버리지 대형주 절반·대형 증권사 누락) → 네이버 피드 신설. **이어 실측으로 네이버가 한경을 전 축에서 압도 확인**(커버리지 2배·목표가/투자의견 상세페이지서 정확 추출·이력 2007까지 vs 한경 2015) → **방향: 네이버 단일 소스로 한경 은퇴**(2010 백필). 한경의 유일 잔존 이점은 목표가 목록-인라인(값싼 깊은 수집)뿐 — 네이버는 상세 fetch 필요.
+- 계획(A 수집 = 이 PR): `feeds/reports_kr.py`(목록 page 크롤·종목명→코드·nid dedup + `enrich()`가 상세 `.money`서 목표가·투자의견 부착) → `data_fetcher.load_stock_reports` 리더 → `krdata.reports` 피드우선+라이브폴백(원칙6·`_reports` 폴백강등) → `main.py` cron(**10분 chunked 백필** `_backfill_reports_chunk`·페이지커서→2010·여러날 분산 + 19:30 증분 `_refresh_reports`). (B 한경대체 = 후속 PR: 네이버 raw로 컨센서스 패널 재산출→한경 parity 검증→estimate.consensus 전환→consensus_kr 은퇴.)
+- 결과(A): 구현·검증 완료(draft [PR#320](https://github.com/MercKR/quantman/pull/320)). **실데이터 E2E**: 목록 수집→`enrich` 목표가 48/60(나머지 Not Rated=정직 None)→ingest→`krdata.reports` 서빙에 목표가 부활(기아 290,000 실측)·웹 계약 `{date,title,broker,url,target}` 정확. core 7 + server 4 신규·**서버 500 passed 무회귀**. 종목명→코드 100%(90/90)·`.money`와 헤더정규식 목표가 100% 일치(추출 견고).
+- 시행착오: ①네이버 크로스목록 날짜윈도우 파라미터 무시(page newest-first만)→date cursor 대신 **page cursor 백필**. ②목표가/투자의견이 목록엔 없고 상세에만 → 백필=리포트당 상세 fetch(수만 건·chunked로 여러 날 분산·봇차단 완화). ③목표가 값이 stale 가격 기억으론 이상해 보였으나 `.money` 구조필드 정확추출·2026 랠리 레짐(SK하이닉스 220만) 정합 — [[feedback_market_data_verify_current_price]] 함정 회피. 교훈은 §교훈 distill.
+- 잔여: **railway 백필**(10분 chunk가 2010까지 여러 날 자동 소급·수동 트리거 가능) → 배포 후 **브라우저 목표가·커버리지 시각검증**. **B단계(한경 대체)**: 백필 데이터 쌓인 후 네이버 컨센서스 parity 검증→consensus_kr 은퇴.
 
 ### [2026-07-05] flow_kr 수급 수집 종목별→일별 전종목 전환 (KRX 봇차단 근절) [완료]
 - 의도: 국내 기관·외국인 수급(`flow_kr`) 수집이 종목별 `get_market_trading_value_by_date`(전종목 3,579콜)를 반복해 KRX MDC 봇차단을 유발(대량 백필 시 `get_stock_ticker_isin: NoneType`→이후 전부 빈응답·조용한 영구결손). 저장형식·소비계약(`flow/{code}.parquet`·`inst_net_buy`/`foreign_net_buy`·spec provides)을 그대로 두고 **수집 경로만** 일별 전종목 1콜/시장/투자자로 근본 전환. 로컬 실증(별도 세션)=2010~2026 전종목 blocked=0(핸드오프 `flow_kr_daily_handoff.md`).

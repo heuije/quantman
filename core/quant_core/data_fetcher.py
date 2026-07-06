@@ -33,6 +33,7 @@ FUNDAMENTALS_DIR = DATA_DIR / "fundamentals"
 CONSENSUS_DIR = DATA_DIR / "consensus"      # 애널 컨센서스 패널 (consensus_kr 피드, KR 한정)
 FLOW_DIR = DATA_DIR / "flow"                # 기관·외국인 수급 (flow_kr 피드, KR 한정)
 FUTURES_PANEL_DIR = DATA_DIR / "futures_panel"  # 선물 만기물별 일봉 패널 (krx_openapi 피드)
+REPORTS_DIR = DATA_DIR / "reports"          # 애널 리포트 목록 아카이브 (reports_kr 피드, 네이버, KR)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 FUNDAMENTALS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1133,6 +1134,18 @@ def load_stock_fundamentals(name: str) -> pd.DataFrame:
 def load_stock_consensus(name: str) -> pd.DataFrame:
     """저장된 컨센서스 패널 parquet 로드 (consensus_kr 피드). 없으면 빈 DataFrame."""
     p = CONSENSUS_DIR / f"{name.replace('/', '_')}.parquet"
+    if not p.exists():
+        return pd.DataFrame()
+    df = read_parquet_safe(p)
+    return df if df is not None else pd.DataFrame()
+
+
+def load_stock_reports(name: str) -> pd.DataFrame:
+    """저장된 애널 리포트 목록 아카이브 parquet 로드 (reports_kr 피드, 네이버). 없으면 빈 DataFrame.
+
+    컬럼: [nid, as_of(ISO), code, broker, title, url]. HOME 리포트 목록 서빙용(nid dedup 원시).
+    """
+    p = REPORTS_DIR / f"{name.replace('/', '_')}.parquet"
     if not p.exists():
         return pd.DataFrame()
     df = read_parquet_safe(p)

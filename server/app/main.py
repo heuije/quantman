@@ -351,6 +351,80 @@ def _initial_consensus_refresh():
         _log.exception("컨센서스 초기 청크 예외 — 10분 cron 재시도")
 
 
+# ── 애널 리포트 목록(네이버, 무로그인) ────────────────────────────────────────
+# HOME 리포트 목록 서빙 소스(reports_kr 피드). consensus_kr(한경)와 *별도* — 한경은 컨센 지표(목표가
+# 인라인·대표 표본), 네이버는 리포트 목록(커버리지 2배·대형 증권사 포함·목표가 없음). 두 화면의 요구가
+# 달라 소스도 다르다. 상세: core/quant_core/data/feeds/reports_kr.py docstring.
+# 네이버는 날짜윈도우 파라미터를 무시하고 페이지 newest-first만 지원 → 날짜 cursor 대신 page cutoff-stop.
+_REPORTS_FLOOR = "2010-01-01"         # 백필 바닥(CORE_FLOOR과 동일 — 한경 컨센서스 대체 목표 깊이)
+_REPORTS_CHUNK_PAGES = 10             # 백필 1청크 페이지 수(상세 fetch 있어 작게 — 여러 날 분산·봇차단 완화)
+
+
+def _reports_cache_clear() -> None:
+    """서버 리포트 서빙 lru(day 키)를 비워 방금 ingest한 신규 리포트를 같은 날 즉시 반영."""
+    try:
+        from . import krdata
+        krdata._reports_from_feed.cache_clear()
+    except Exception:                 # noqa: BLE001 — 캐시 클리어 실패는 무해(day 키가 익일 자연 갱신)
+        pass
+
+
+def _refresh_reports() -> None:
+    """일일 리포트 증분 — 최근 3일 네이버 신규 리포트 수집·상세 목표가/투자의견 부착·ingest(19:30 KST)."""
+    from datetime import date, timedelta
+    from quant_core.data.feeds import reports_kr
+    floor = (date.today() - timedelta(days=3)).isoformat()
+    reports, ok, _ = reports_kr.collect_pages(start_page=1, max_pages=60, floor=floor)
+    if ok and reports:
+        reports_kr.enrich(reports)                    # 소량(최근분) — 상세 목표가 부착
+        res = reports_kr.ingest(reports)
+        _reports_cache_clear()
+        _log.info("[altdata] 리포트 증분(네이버) floor=%s: %s", floor, res)
+
+
+def _backfill_reports_chunk() -> None:
+    """네이버 리포트 과거 백필 — 목록 페이지를 chunked로 전진하며 상세(목표가·투자의견) 부착·적재.
+
+    페이지 커서(reports/_backfill.json)로 재개 → 수천 페이지를 **여러 날 분산**(상세 fetch가 있어 청크는 작게).
+    2010 floor 또는 빈 페이지 도달 시 done(무비용). 수집 transient 실패 시 커서 유지·재시도(dedup로 안전)."""
+    import json
+    from quant_core import data_fetcher
+    from quant_core.data.feeds import reports_kr
+    cur_path = data_fetcher.REPORTS_DIR / "_backfill.json"
+    try:
+        state = json.loads(cur_path.read_text(encoding="utf-8")) if cur_path.exists() else {}
+    except Exception:                             # noqa: BLE001 — 손상 커서는 처음부터(dedup로 안전)
+        state = {}
+    if state.get("done"):
+        return                                    # 백필 완료 — 무비용
+    start = int(state.get("next_page", 1))
+    reports, ok, done = reports_kr.collect_pages(start_page=start,
+                                                 max_pages=_REPORTS_CHUNK_PAGES,
+                                                 floor=_REPORTS_FLOOR)
+    if reports:
+        reports_kr.enrich(reports)
+        reports_kr.ingest(reports)
+        _reports_cache_clear()
+    if not ok:                                    # transient — 커서 미전진(다음 cron 재시도)
+        _log.warning("[altdata] 리포트 백필 청크 p%s~ transient — 커서 유지", start)
+        return
+    new_state = {"done": True} if done else {"next_page": start + _REPORTS_CHUNK_PAGES}
+    cur_path.parent.mkdir(parents=True, exist_ok=True)
+    cur_path.write_text(json.dumps(new_state), encoding="utf-8")
+    _log.info("[altdata] 리포트 백필 청크(네이버) p%s-%s: reports=%s done=%s",
+              start, start + _REPORTS_CHUNK_PAGES - 1, len(reports), done)
+
+
+def _initial_reports_refresh():
+    import time
+    try:
+        time.sleep(120)
+        _log.info("리포트(네이버) 초기 증분")
+        _refresh_reports()                        # 최근분 즉시 채움(과거 백필은 10분 chunk cron이 분산 수행)
+    except Exception:
+        _log.exception("리포트 초기 증분 예외 — cron 재시도")
+
+
 # ── 기관·외국인 수급(KRX pykrx 로그인, 일별 전종목) ───────────────────────────
 # 종목별 반복(get_market_trading_value_by_date·3,579콜)이 KRX MDC 봇차단을 유발 → 일별 전종목
 # (get_market_net_purchases_of_equities_by_ticker·1콜/시장/투자자)로 근본 전환(로컬 blocked=0 실증).
@@ -1114,6 +1188,15 @@ def _build_scheduler() -> BackgroundScheduler:
         lambda: _run_with_retry("consensus_daily", _refresh_consensus, scheduler),
         CronTrigger(hour=19, minute=0),
         id="consensus_daily", replace_existing=True)
+    # 애널 리포트(네이버, 무로그인) — 10분 백필 청크(페이지 커서→2010·상세 목표가/투자의견 부착) + 19:30 증분.
+    scheduler.add_job(
+        lambda: _run_with_retry("reports_chunk", _backfill_reports_chunk, scheduler),
+        CronTrigger(minute="9-59/10"),             # :09,:19… — 다른 10분 cron과 스태거
+        id="reports_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("reports_daily", _refresh_reports, scheduler),
+        CronTrigger(hour=19, minute=30),           # 컨센서스(19:00) 후 스태거
+        id="reports_daily", replace_existing=True)
     # KR 기관·외국인 수급(pykrx, KRX_ID/PW 필요) — 10분 백필 청크 + 16:30 일일 증분(KRX 마감 후).
     scheduler.add_job(
         lambda: _run_with_retry("flow_chunk", _backfill_flow_chunk, scheduler),
@@ -1266,6 +1349,7 @@ async def lifespan(app: FastAPI):
     # 계층 2 — 백테스트/스크리너 백필(무거움). 5분 뒤.
     _bg("kr_fundamentals", _initial_kr_fundamentals_refresh, delay=300)
     _bg("consensus", _initial_consensus_refresh, delay=300)
+    _bg("reports", _initial_reports_refresh, delay=690)        # 최초 백필 ~325p·1회(볼륨 플래그)
     _bg("flow", _initial_flow_refresh, delay=330)
     _bg("krx_market", _initial_krx_market_refresh, delay=330)
     _bg("dataset_refresh", _initial_dataset_refresh, delay=360)
