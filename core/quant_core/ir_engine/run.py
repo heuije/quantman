@@ -715,6 +715,68 @@ def _run_regression_study(strategy: StrategyIR, dataset: dict) -> dict:
 
 # ── 선택 (SELECT 동사 — as-of 횡단 랭킹 스크리닝) ─────────────────────────────
 
+_COMPARE_MAX = 30    # 비교표 행 상한(가독) — 초과 시 sort_by(또는 market_cap) 상위만
+
+
+def _run_compare(strategy: StrategyIR, dataset: dict) -> dict:
+    """SELECT compare 모드 — 지정 종목을 display 지표로 나란히 비교(랭킹 아님·score 불요).
+
+    '피어 비교' 같은 표형 질문이 종목마다 describe로 폭발(N콜×N라운드)하던 것을 **1콜로 접는다**.
+    as_of PIT 스냅샷에서 각 종목의 display 컬럼 최신값을 뽑아 한 표로. 정렬은 sort_by(기본
+    market_cap→display[0]→유니버스 순)로 중립('승자' 함의 없음). forward 추정은 서버 엣지가 덧댄다(P1).
+    """
+    from ..expression_parser import get_symbol_group, symbol_name
+    from .columns import select_columns
+
+    sel = strategy.select
+    syms = _universe_symbols(strategy, dataset)
+    if not syms:
+        return _empty("비교할 종목이 없습니다.")
+    cutoff = pd.Timestamp(sel.as_of) if (sel.as_of and sel.as_of != "latest") else None
+
+    def _last(df, col):
+        if df is None or col not in df.columns:
+            return None
+        s = df[col]
+        if cutoff is not None:
+            s = s.loc[s.index <= cutoff]
+        s = s.dropna()
+        return float(s.iloc[-1]) if len(s) else None
+
+    def _build(sym: str) -> dict:
+        df = dataset.get(sym)
+        return {"symbol": sym, "code": sym, "name": symbol_name(sym),
+                "sector": get_symbol_group(sym, "Sector"), "score": None,
+                "last_price": _last(df, "Close"),   # forward 추정(P1·forward_pe) 계산용 — 서버 엣지가 소비
+                "metrics": {col: _last(df, col) for col in sel.display}}
+
+    rows = [_build(s) for s in syms]
+    sort_col = sel.sort_by
+    if sort_col is None:
+        if any(r["metrics"].get("market_cap") is not None for r in rows):
+            sort_col = "market_cap"
+        elif sel.display:
+            sort_col = sel.display[0]
+    if sort_col:
+        rows.sort(key=lambda r: (r["metrics"].get(sort_col) is not None,
+                                 r["metrics"].get(sort_col) or 0.0), reverse=True)
+    note = None
+    if len(rows) > _COMPARE_MAX:
+        note = f"{len(rows)}종목 중 상위 {_COMPARE_MAX}개만 표시(정렬: {sort_col or '유니버스 순'})."
+        rows = rows[:_COMPARE_MAX]
+    # 비교는 랭킹이 아니므로 score 컬럼 제외(빈 열 방지) — identity + display 지표만.
+    cols = [c for c in select_columns(list(sel.display)) if c.get("kind") != "score"]
+    out = {"success": True, "query": "select", "mode": "compare",
+           "as_of": (str(cutoff)[:10] if cutoff is not None else "latest"),
+           "universe_size": len(syms), "eligible_size": len(rows),
+           "results": rows, "columns": cols, "sort_by": sort_col,
+           "scoring": {"recipe": (f"비교 — {sort_col} 정렬" if sort_col else "비교 — 유니버스 순"),
+                       "mode": "compare"}}
+    if note:
+        out["note"] = note
+    return out
+
+
 def run_select(strategy: StrategyIR, dataset: dict) -> dict:
     """SELECT 동사 — as-of 스냅샷에서 score를 횡단 랭크해 상위 종목 선별(스크리닝).
 
@@ -728,6 +790,8 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
     sel = strategy.select
     if sel is None:
         return _empty("select 질의는 select 설정이 필요합니다.")
+    if sel.mode == "compare":
+        return _run_compare(strategy, dataset)          # 지정 종목 나란히 비교(score 불요)
     if _out_type(strategy.signal) != "score":
         return _empty("select(스크리닝)은 랭킹용 score 신호가 필요합니다.")
     syms = _universe_symbols(strategy, dataset)

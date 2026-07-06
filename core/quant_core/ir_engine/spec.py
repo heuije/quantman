@@ -216,6 +216,10 @@ class SelectSpec(BaseModel):
     display: list[str] = Field(default_factory=list)   # 결과에 붙일 지표 컬럼(pb_ratio 등)
     group_by: Optional[str] = None      # 설정 시 그룹(예: "Sector"/"Industry")별로 top_n 선별
                                         # (예: 섹터별 3종목 = group_by="Sector", top_n=3)
+    mode: Literal["rank", "compare"] = "rank"   # rank=score 횡단 랭킹 스크리닝(기본) /
+                                        # compare=지정 종목을 지표로 나란히 비교(랭킹 score 불요·top 불요).
+                                        # 표형 '피어 비교' 질문이 종목마다 describe로 폭발하던 것을 1콜로 접는다.
+    sort_by: Optional[str] = None       # compare 정렬 기준 컬럼(없으면 market_cap→display[0]→유니버스 순)
 
 
 # ── 처방 (PRESCRIBE 동사 — 포트폴리오 비중 최적화·추천) ───────────────────────
@@ -523,18 +527,20 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                             "자동매매가 한 계약도 발주하지 않습니다.", "position.sizing"))
 
     # SELECT 동사 — 랭킹이므로 score 신호 필요 + select 설정 정합.
+    #   단 compare 모드(지정 종목 나란히 비교)는 랭킹이 아니라 score·top 불요(전체 비교).
     if s.query == "select":
-        if st != "score":
+        sel = s.select
+        is_compare = sel is not None and sel.mode == "compare"
+        if not is_compare and st != "score":
             issues.append(Issue("S-SEL", SEV_ERROR,
                                 "select(스크리닝)은 랭킹용 score 신호가 필요합니다(condition 불가).",
                                 "signal"))
-        sel = s.select
         if sel is None:
             issues.append(Issue("S-SEL", SEV_ERROR,
                                 "select 질의는 select 설정(top_n 또는 top_pct)이 필요합니다.",
                                 "select"))
         else:
-            if (sel.top_n is None) == (sel.top_pct is None):
+            if not is_compare and (sel.top_n is None) == (sel.top_pct is None):
                 issues.append(Issue("S-SEL", SEV_ERROR,
                                     "top_n과 top_pct 중 정확히 하나를 지정하세요.", "select"))
             if sel.top_n is not None and sel.top_n < 1:

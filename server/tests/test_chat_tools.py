@@ -19,8 +19,23 @@ class _NoDbSession:
 
 def test_tool_schemas_present():
     names = {t["name"] for t in TOOL_SCHEMAS}
-    assert names == {"screen", "simulate", "save_strategy", "describe", "inspect",
+    assert names == {"screen", "compare", "simulate", "save_strategy", "describe", "inspect",
                      "adjust_analysis", "research_news"}
+
+
+def test_assemble_compare_makes_valid_compare_ir():
+    """compare 도구 → select mode=compare IR(랭킹 score 불요·지정 종목 나란히). 검증 통과해야."""
+    ir = assemble_ir("compare", {"symbols": ["005930", "000660"],
+                                 "metrics": ["trailing_pe", "pb_ratio", "market_cap"],
+                                 "sort_by": "market_cap"})
+    s = StrategyIR.model_validate(ir)          # 예외 없이 유효
+    assert s.query == "select" and s.select.mode == "compare"
+    assert s.select.display == ["trailing_pe", "pb_ratio", "market_cap"]
+    assert s.select.sort_by == "market_cap"
+    assert s.universe.kind == "list" and s.universe.symbols == ["005930", "000660"]
+    import pytest
+    with pytest.raises(ValueError):            # 종목 1개는 비교 불가
+        assemble_ir("compare", {"symbols": ["005930"], "metrics": ["pb_ratio"]})
 
 
 def test_assemble_screen_makes_valid_select_ir():

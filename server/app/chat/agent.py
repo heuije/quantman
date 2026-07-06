@@ -105,6 +105,9 @@ def _progress_line(name: str, inp: dict) -> str:
         secs = inp.get("sectors") or ([inp["sector"]] if inp.get("sector") else [])
         where = ("·".join(str(s) for s in secs) + " ") if secs else ""
         return f"🔎 {where}종목 스크리닝"
+    if name == "compare":
+        n = len(inp.get("symbols") or [])
+        return f"📊 {n}종목 나란히 비교"
     if name == "simulate":
         return "🧪 백테스트·분석 실행"
     if name == "adjust_analysis":

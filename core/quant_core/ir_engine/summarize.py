@@ -261,6 +261,19 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
                 f"최적={best.get('label', '?')}(목적값 {_f(best.get('metric_value'), 4)})"
                 + guard + "\n" + "\n".join(lines))
 
+    if shape == "select" and result.get("mode") == "compare":   # 비교표 — 종목×지표를 모델이 읽게 전개
+        rows = result.get("results") or []
+        mcols = [c for c in (result.get("columns") or []) if c.get("kind") == "metric"]
+        keys = [c.get("key") for c in mcols]
+        lbl = {c.get("key"): c.get("label", c.get("key")) for c in mcols}
+        lines = [f"[비교] {len(rows)}종목 × {len(keys)}지표 (as-of {result.get('as_of', '?')} · "
+                 f"정렬 {result.get('sort_by') or '유니버스순'})"]
+        for r in rows[:max_rows]:
+            m = r.get("metrics") or {}
+            cells = " · ".join(f"{lbl[k]} {_f(m.get(k))}" for k in keys)
+            lines.append(f"  {r.get('name') or r.get('symbol')}: {cells}")
+        return "\n".join(lines) + _context_block(result)
+
     if shape == "select":
         rows = result.get("results") or []
         top = ", ".join(f"{r.get('symbol')}({_f(r.get('score'), 3)})" for r in rows[:max_rows])
