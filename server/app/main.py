@@ -958,6 +958,13 @@ def _refresh_financials() -> None:
     Financials 탭은 이 저장본을 즉시 서빙(로딩 없음). 출처 FnGuide(전자공시 집계·키 불필요)."""
     from . import financials
     financials.refresh_all(_industry_tickers())
+
+
+def _refresh_bonds() -> None:
+    """국가별 국채 수익률곡선(미·일·유·한·중, FRED·MOF·ECB·무키) 일일 갱신 → 볼륨(bonds/{cc}.parquet).
+    GlobalMarket 국채 탭은 이 저장본을 즉시 서빙(재배포 warmup·요청당 크롤 제거·미스 시 서버 self-heal)."""
+    from quant_core.data.feeds import bonds
+    _log.info("[altdata] 국채금리 수집(FRED/MOF/ECB): %s", bonds.refresh_all())
     financials.clear_cache()                   # 새 저장본이 즉시 반영되도록 메모리 캐시 무효화
 
 
@@ -1057,6 +1064,12 @@ def _build_scheduler() -> BackgroundScheduler:
         lambda: _run_with_retry("dataset_global", _refresh_global_dataset, scheduler),
         CronTrigger(hour=7, minute=30),
         id="dataset_global", replace_existing=True)
+
+    # 07:40 — 국가별 국채 수익률곡선(FRED/MOF/ECB, 무키·5개국) 일일 갱신. dataset_global 직후 스태거.
+    scheduler.add_job(
+        lambda: _run_with_retry("bonds_daily", _refresh_bonds, scheduler),
+        CronTrigger(hour=7, minute=40),
+        id="bonds_daily", replace_existing=True)
 
     # 15:45 — KRX 정규장 1차 (15:40 publish 직후)
     scheduler.add_job(

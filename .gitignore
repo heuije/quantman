@@ -43,6 +43,7 @@ Output/
 # 자동 갱신 데이터 캐시 — 서버 cron이 fetch하므로 git 저장 불필요.
 # ticker_db.json·user_stocks.json은 작은 metadata라 tracked 유지.
 core/data/*.parquet
+core/data/**/*.parquet          # 피드 하위 디렉터리 생성물(bonds·flow·marketcap·reports·estimates 등) 전부
 core/data/fundamentals/*.parquet
 core/data/managed_kr_stocks.json
 core/data/managed_overseas_stocks.json

@@ -118,10 +118,15 @@
 > (estimate_kr↔krdata와 동일 부류). 신규 수집이 아니라 **서빙 재배선**이 과제. 원칙6을 HOME→웹 전역으로 확장.
 > 감사 원문: 세션 산출물(bypass 인벤토리). legitimate-live(현재가·공시·공매도·경제캘린더·KOMIS)는 유지.
 
-- **6a — GlobalMarket 탭(국채금리·글로벌지수·원자재) → dataset 서빙.** `bonds.py`(FRED/MOF/ECB 라이브·lru만·재배포
-  증발)·`globalmarket.py`(indices·commodities FDR 요청당 라이브)를 데이터엔진 dataset(이미 present: 국채 FRED 16종·
-  지수·원자재 가격·COT)에서 읽도록 재배선. ⚠ JP MOF·ECB 유로존 커브·US 전만기는 엔진 미수집 **갭** → 필요 시 매크로
-  feed 소폭 확장(국채 커브 전만기). 경제캘린더(TradingView)·배터리금속(KOMIS)은 legitimate-live 유지.
+- **6a — GlobalMarket 탭(국채금리·글로벌지수·원자재) → dataset 서빙 ✅ 구현·검증 완료.**
+  - **국채(bonds)**: `feeds/bonds.py` 신설(FRED/MOF/ECB 수집 단독소유·볼륨). 서버 `bonds.py`는 볼륨 서빙(get·self-heal·
+    lru 제거→warmup 근절). **+전만기 매크로화(단일 SSOT)**: US11·JP15·EU10·CN1=37 만기물을 매크로 심볼(`macro.bonds`)로
+    발행→챗/백테스트 참조. 겹치던 DGS2/30/3M/5·^TNX(미국채10년)를 FRED/YF에서 제거해 국채 피드로 이관. KR은 KRX 국고채가 SSOT라 표시전용.
+  - **지수·원자재**: 세계지수 8·원자재 8을 `YFINANCE_SYMBOLS`로 추가(dataset_global cron 수집)→`globalmarket.py`
+    dataset-first 서빙 + 미수집 라이브 FDR 폴백(원칙6). 16심볼 `ohlcv.futures`→챗 커버리지 인벤토리.
+  - **결정(사용자)**: 표시=챗 사용가능(1 자산계열 통일·2 국채 단일SSOT). 경제캘린더(TradingView)·KOMIS는 legitimate-live 유지.
+  - **검증**: 출력동일 국채 5개국·globalmarket 지수9+원자재13 실측·라이브 스모크(bond tenor load_dataset_for)·드리프트 가드·core702/server511 green.
+  - **모듈/PR**: 조대표(feeds+서버). 커밋 3(bonds서빙·지수/원자재·bonds매크로). 잔여: 배포 후 GlobalMarket 브라우저 검증.
 - **6b — 재무제표 상세(HOME Financials) 데이터엔진 흡수 [사용자 지정 방향].** `financials.py`가 FnGuide
   SVD_Finance를 요청당 라이브 크롤(+DART 폴백)하는 것을, **희제 의도(DART 재무제표 금액·계정 양식을 최대한 원본
   그대로)를 보존**하며 데이터엔진 피드로 흡수. 데이터엔진 `fundamental_kr`은 *계산 지표*(마진·ROIC 등)만 저장하고
@@ -191,7 +196,7 @@ grep으로 전수 확인해 마무리. ④ 모두 희제 웹 모듈 → PR 협�
 | 3 | estimate_kr URL 복구 + krdata SSOT 단일화 | 결함복구+SSOT | 조대표 | ✅ draft PR (검증완료) |
 | 4 | 공시·공매도 실측→편입 | 확인 | 조대표 | 실측 대기 |
 | 5 | 재무 상세 전종목화(bulk) | 조건부 | 조대표 | 게이트 뒤 |
-| 6 | GlobalMarket·산업·재무 서빙 일원화(웹 전역) | 감사도출 SSOT | 조대표 | 진행(6a→6c→6b→6d) |
+| 6 | GlobalMarket·산업·재무 서빙 일원화(웹 전역) | 감사도출 SSOT | 조대표 | 6a✅(국채·지수·원자재)→6c→6b→6d |
 
 ---
 

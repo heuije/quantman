@@ -180,17 +180,26 @@ register(DataTypeSpec(
 # ── P4 매크로·시장 브로드캐스트 ───────────────────────────────────────────────
 
 register(DataTypeSpec(
-    key="macro.market", pclass=PClass.MACRO, label="시장 지표(VIX·달러지수·^TNX·MOVE 등)",
+    key="macro.market", pclass=PClass.MACRO, label="시장 지표(VIX·달러지수·구리·MOVE 등)",
     frequency="daily", history_rule="백테스트 기간 + ffill 가능 길이",
     source="yfinance", provides=["Close(=val)"], required_meta=_BASE_META,
     downstream=["study.label(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",
     notes="종목과 캘린더 달라 ffill 브로드캐스트(resolve_data)로 정렬.",
 ))
 register(DataTypeSpec(
-    key="macro.fred", pclass=PClass.MACRO, label="거시 시리즈(금리·신용·환율 일간 16종)",
+    key="macro.fred", pclass=PClass.MACRO, label="거시 시리즈(스프레드·기대인플레·신용·환율·SOFR 일간)",
     frequency="daily", history_rule="백테스트 기간", source="FRED CSV",
     provides=["Close(=val)"], required_meta=_BASE_META,
     downstream=["study.label", "signal(브로드캐스트 ref)"], current_status="present",
+))
+register(DataTypeSpec(
+    key="macro.bonds", pclass=PClass.MACRO,
+    label="국가별 국채 수익률(미·일·유·중 전만기 커브·1M~40Y)",
+    frequency="daily", history_rule="백테스트 기간",
+    source="FRED(미·중)·재무성MOF(일)·ECB(유)", provides=["Close(=val)"],
+    required_meta=_BASE_META,
+    downstream=["study.label(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",
+    notes="국채 피드(data/feeds/bonds.py)가 만기별 명명 시계열 발행. KR 국고채는 macro.krx(KRX 일별).",
 ))
 register(DataTypeSpec(
     key="macro.fred_lagged", pclass=PClass.MACRO,

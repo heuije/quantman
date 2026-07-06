@@ -59,6 +59,24 @@ YFINANCE_SYMBOLS = {
     "나스닥선물":     "NQ=F",
     "은선물(COMEX)":  "SI=F",
     "비트코인선물":   "BTC=F",
+    # 세계 주요 지수 — GlobalMarket 탭 표시 + 챗 크로스에셋 참조(서빙 일원화 Phase 6a·표시=챗 사용가능).
+    "나스닥지수":     "^IXIC",
+    "다우지수":       "^DJI",
+    "코스피지수":     "^KS11",
+    "닛케이225":      "^N225",
+    "항셍":          "^HSI",
+    "FTSE100":       "^FTSE",
+    "DAX":           "^GDAXI",
+    "유로스톡스50":   "^STOXX50E",
+    # 원자재 선물 — GlobalMarket 탭 표시 + 챗 참조(에너지·귀금속·산업금속·철강 밸류체인).
+    "Brent원유":      "BZ=F",
+    "가솔린":         "RB=F",
+    "난방유":         "HO=F",
+    "백금":          "PL=F",
+    "팔라듐":         "PA=F",
+    "알루미늄":       "ALI=F",
+    "철광석":         "TIO=F",
+    "철강":          "HRC=F",
 }
 
 FDR_SYMBOLS = {
@@ -89,7 +107,7 @@ MACRO_YF_SYMBOLS = {
     "나스닥변동성":  "^VXN",
     "달러지수":      "DX-Y.NYB",
     "구리선물":      "HG=F",
-    "미국채10년":    "^TNX",
+    # 미국채10년은 국채 피드(data/feeds/bonds.py·전만기 커브)가 소유 → MACRO_BONDS_SYMBOLS (Phase 6a 단일 SSOT).
 }
 
 # 매크로 지표 — FRED (https://fred.stlouisfed.org, API 키 불필요)
@@ -100,16 +118,12 @@ MACRO_FRED_SYMBOLS = {
     "하이일드스프레드":   "BAMLH0A0HYM2",
     "투자등급스프레드":   "BAMLC0A0CM",
     "금융여건지수":       "NFCI",
-    # 금리·신용 일간 시리즈
-    "미국채2년":          "DGS2",
-    "미국채30년":         "DGS30",
+    # 금리·신용 일간 시리즈 (국채 만기물 DGS*는 국채 피드로 이관 → MACRO_BONDS_SYMBOLS·단일 SSOT)
     "기대인플레이션10년":  "T10YIE",
     "실효기준금리":        "DFF",
     "회사채AAA금리":       "DAAA",
     "회사채BAA금리":       "DBAA",
     # 그룹 A-1 — 추가 금리·환율 일간 시리즈
-    "미국채3개월":        "DGS3MO",
-    "미국채5년":          "DGS5",
     "기대인플레이션5년":   "T5YIE",
     "SOFR금리":           "SOFR",
     "무역가중달러지수":    "DTWEXBGS",
@@ -151,10 +165,22 @@ MACRO_COT_SYMBOLS = [m + s
                                "나스닥선물", "S&P500선물", "비트코인선물")
                      for s in ("투기순포지션", "미결제약정")]
 
+# 국가별 국채 수익률 만기물 — 국채 피드(data/feeds/bonds.py)가 발행(US/JP/EU/CN 전만기·KR은
+# KRX 국고채가 매크로 SSOT라 제외). {접두}{만기} 명명. 피드 bonds.macro_symbols()와의 정합은
+# 드리프트 가드가 잠근다(test_bonds_macro_catalog_matches_feed).
+_BOND_TENORS = {
+    "미국채": ["1개월", "3개월", "6개월", "1년", "2년", "3년", "5년", "7년", "10년", "20년", "30년"],
+    "일본국채": ["1년", "2년", "3년", "4년", "5년", "6년", "7년", "8년", "9년", "10년",
+                 "15년", "20년", "25년", "30년", "40년"],
+    "유로존국채": ["3개월", "6개월", "1년", "2년", "3년", "5년", "7년", "10년", "20년", "30년"],
+    "중국국채": ["3개월"],
+}
+MACRO_BONDS_SYMBOLS = [pre + t for pre, ts in _BOND_TENORS.items() for t in ts]
+
 ASSET_SYMBOLS = list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + ["비트코인"] + KRX_PANEL_FUTURES
 MACRO_SYMBOLS = (list(MACRO_YF_SYMBOLS) + list(MACRO_FRED_SYMBOLS)
                  + list(MACRO_FRED_LAGGED) + MACRO_OTHER + MACRO_DERIVED
-                 + MACRO_KRX_SYMBOLS + MACRO_COT_SYMBOLS)
+                 + MACRO_KRX_SYMBOLS + MACRO_COT_SYMBOLS + MACRO_BONDS_SYMBOLS)
 ALL_SYMBOLS = ASSET_SYMBOLS + MACRO_SYMBOLS
 
 
@@ -175,6 +201,7 @@ def data_type_symbols() -> dict[str, list[str]]:
         "macro.fred_lagged": list(MACRO_FRED_LAGGED),
         "macro.krx": list(MACRO_KRX_SYMBOLS),
         "macro.cot": list(MACRO_COT_SYMBOLS),
+        "macro.bonds": list(MACRO_BONDS_SYMBOLS),
     }
 
 # 종목 카테고리 — 조건 빌더 UI에서 종목 목록을 그룹화하기 위한 분류.
@@ -186,13 +213,17 @@ SYMBOL_CATEGORY: dict[str, str] = {
     "나스닥100선물": "자산", "은선물": "자산",
     "구리선물": "자산", "비트코인": "자산",
     "나스닥선물": "자산", "은선물(COMEX)": "자산", "비트코인선물": "자산",
+    # 세계 지수 (Phase 6a — GlobalMarket 표시 + 챗 참조)
+    "나스닥지수": "지수", "다우지수": "지수", "코스피지수": "지수", "닛케이225": "지수",
+    "항셍": "지수", "FTSE100": "지수", "DAX": "지수", "유로스톡스50": "지수",
+    # 원자재 (Phase 6a — 에너지·귀금속·산업금속·철강)
+    "Brent원유": "자산", "가솔린": "자산", "난방유": "자산", "백금": "자산",
+    "팔라듐": "자산", "알루미늄": "자산", "철광석": "자산", "철강": "자산",
     # 변동성
     "VIX": "변동성", "VIX 3개월": "변동성", "VIX 9일": "변동성", "VVIX": "변동성",
     "MOVE 지수": "변동성", "SKEW 지수": "변동성", "나스닥변동성": "변동성",
     "VIX 기간구조": "변동성",
-    # 금리·환율
-    "미국채2년": "금리·환율", "미국채3개월": "금리·환율", "미국채5년": "금리·환율",
-    "미국채10년": "금리·환율", "미국채30년": "금리·환율",
+    # 금리·환율 (국채 만기물은 아래 MACRO_BONDS_SYMBOLS comprehension으로 일괄)
     "기대인플레이션5년": "금리·환율", "기대인플레이션10년": "금리·환율",
     "SOFR금리": "금리·환율", "실효기준금리": "금리·환율", "실질기준금리": "금리·환율",
     "달러지수": "금리·환율", "무역가중달러지수": "금리·환율", "원달러환율": "금리·환율",
@@ -219,6 +250,8 @@ SYMBOL_CATEGORY: dict[str, str] = {
     **{s: "심리" for m in ("원유선물", "천연가스선물", "금선물", "은선물", "구리선물",
                           "나스닥선물", "S&P500선물", "비트코인선물")
        for s in (m + "투기순포지션", m + "미결제약정")},
+    # 국채 만기물 (Phase 6a — 국채 피드 발행·US/JP/EU/CN 전만기)
+    **{s: "금리·환율" for s in MACRO_BONDS_SYMBOLS},
 }
 
 
