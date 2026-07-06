@@ -1310,9 +1310,9 @@ def load_fund_all() -> dict[str, pd.DataFrame]:
 
 
 def load_consensus_all() -> dict[str, pd.DataFrame]:
-    """컨센서스 패널 parquet 전체 로드 (KR 종목 한정 — 한경 소스). 키=dataset 키.
+    """컨센서스 패널 parquet 전체 로드 (KR 종목 한정 — 네이버 리포트 집계·reports_kr). 키=dataset 키.
 
-    해외(US)는 한경 컨센서스 없음 → managed_kr + user_stocks만 순회(파일 없으면 자연 skip).
+    해외(US)는 컨센서스 없음 → managed_kr + user_stocks만 순회(파일 없으면 자연 skip).
     """
     result = {}
     for code in load_managed_kr_codes():

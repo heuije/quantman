@@ -619,7 +619,7 @@ def data_source_line(result: dict) -> str:
             cols.add(c["key"])
     for colset, src in (
         (set(FLOW_INDICATOR_COLS), "기관·외국인 수급(KRX pykrx)"),
-        (set(CONSENSUS_INDICATOR_COLS), "애널 컨센서스(한경컨센서스)"),
+        (set(CONSENSUS_INDICATOR_COLS), "애널 컨센서스(네이버 증권 리포트 집계)"),
         (set(FUND_INDICATOR_COLS), "재무·밸류(KR=전자공시 OpenDART·US=SEC EDGAR)"),
         (set(MARKETCAP_INDICATOR_COLS), "시총·거래대금(KRX Open API)"),
         (set(SHORTVOL_INDICATOR_COLS), "공매도 거래량(FINRA)"),

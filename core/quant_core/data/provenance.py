@@ -7,7 +7,7 @@
   · 기술지표=가격 파생계산(수집 아님)
   · trailing 밸류(PBR·PER·EV/EBITDA)·재무 KR=전자공시(OpenDART) · US=SEC EDGAR
   · 추정실적(forward)=FnGuide(현재 스냅샷·trailing과 별개)
-  · 컨센서스(목표주가)=한경 · 수급=KRX(pykrx) · 섹터=FDR KRX-DESC · 매크로=FRED+yfinance
+  · 컨센서스(목표주가)=네이버 증권 리포트(reports_kr) · 수급=KRX(pykrx) · 섹터=FDR KRX-DESC · 매크로=FRED+yfinance
   · 뉴스=네이버
 
 ⚠ 큐레이션 레지스트리다 — 피드 소스가 바뀌면 여기도 함께 고친다(드리프트 방지).
@@ -33,8 +33,9 @@ DATA_PROVENANCE: list[dict[str, str]] = [
      "method": "애널리스트 컨센서스 현재 스냅샷(연 5년 확정 + 3년 추정E)",
      "note": "위 trailing 밸류와 **별개 소스·별개 용도**. 과거 추정 아카이브 없음(백테스트 부적합)"},
     {"category": "애널 컨센서스(목표주가·투자의견·상승여력·괴리율)",
-     "source": "한경컨센서스",
-     "method": "증권사 리포트 집계(180일 신선도 standing)", "note": "KR. 소형주는 sparse"},
+     "source": "네이버 증권 리포트(reports_kr 집계)",
+     "method": "증권사 리포트 집계(180일 신선도 standing)",
+     "note": "KR 한정(US 미제공). 소형주는 sparse"},
     {"category": "수급(기관·외국인 순매수)",
      "source": "KRX(pykrx)", "method": "일별 순매수 대금", "note": "KR 한정"},
     {"category": "섹터·업종 분류",
