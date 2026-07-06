@@ -84,11 +84,22 @@
 - **⚠ 선행 결정**: flow **단위계약** — 데이터엔진=거래대금(원) vs HOME=주식수(주). **HOME 프론트를 거래대금으로 전환**(주식수 근사변환은 PIT 오염·4원칙 위반). consensus는 소스 이원화(한경 vs 네이버) 표본 차이 UX 수용 확인.
 - **모듈**: 희제(웹 계약) + 조대표(리더). 이미 unification-redesign §5 Phase 2로 스코프됨.
 
-### Phase 3 — estimate_kr URL 복구 **[결함복구 · 조대표 단독 가능]**
-- **내용**: `estimate_kr.py` 죽은 소스(`comp.fnguide SVD_Main` 302) → HOME이 쓰는 신 API(`wcomp.fnguide getSnpFinancial` JSON)로 전환 + JSON 파서 core 이전.
-- **효과**: describe/compare 추정실적 실데이터 회복(현 0건). 뿌리 단일화.
-- **⚠ over-engineering 가드**: **bulk cron 부착 보류** — 설계문서가 "on-demand 7일캐시로 충분·대부분 미열람" 명시. 전종목 screen 실수요 트리거 시만 cron.
-- **모듈**: 조대표(데이터엔진). HOME 무관(온디맨드 유지).
+### Phase 3 — estimate_kr URL 복구 + krdata SSOT 단일화 ✅ **draft PR (구현·검증 완료)**
+- **내용**: `estimate_kr.py` 죽은 소스(`comp.fnguide SVD_Main` 302→wcomp 루트 리다이렉트·`highlight_D_Y` 소멸) →
+  신 API `wcomp.fnguide.com/CompanyInfo/getSnpFinancial`(JSON·`cmp_cd`/`consol_typ=C→I 폴백`/`freq_typ=Y`)로 전환.
+  HTML 스크래핑→JSON 파싱 교체하되 다운스트림 뷰 계약(`{years,is_estimate,metrics}`→frame→forward/annual)은 보존.
+- **⚠ 실측 재진단(로드맵 원안 정정)**: 로드맵은 "HOME이 신 API를 이미 쓴다"고 봤으나 그건 stale 체크아웃 착시 — origin/main의
+  `krdata._earnings`는 **이미 wcomp JSON으로 이전**돼 있었다(희제, 2026-06말). 진짜 결함은 ①`estimate_kr`(챗 describe/compare
+  소스)가 여전히 죽은 URL(→0건) ②`krdata._earnings`↔`estimate_kr`가 **같은 wcomp JSON을 이중 파싱**(§5.5 잔재). 하나의 죽은-URL
+  부류가 둘을 갈라놓음 → **구조적 근본수정 = estimate_kr 복구 + krdata를 그 피드로 SSOT 단일화**(estimate_kr가 krdata의 검증
+  로직=C→I·발표기준 max-non-null·rev대비 마진 계승).
+- **효과**: (1) 챗 describe/compare 추정실적 실데이터 회복(현 0건). (2) 중복 wcomp 파서·별도 json 캐시 제거 → 단일 소스(챗·웹·엑셀 공유).
+- **검증**: core estimate_kr 12 + krdata 어댑터 2 + serving_cache 회귀 갱신. 전체 core 695·server 505 green. **라이브 스모크 5종목**
+  (현대차·카카오·셀트리온 forward 정상·삼성/SK하이닉스 메모리 대형주 FnGuide 컨센 이상은 출처표기로 대응·과거확정 정확).
+  **출력동일 검증 10종목**(옛 krdata._earnings vs 새 어댑터 byte-identical → 웹 Estimates 탭 무드리프트).
+- **⚠ over-engineering 가드**: **bulk cron 부착 보류** — on-demand 7일 parquet 캐시(estimate_kr.get)로 충분·대부분 미열람. 전종목 screen 실수요 시만.
+- **모듈**: 조대표(estimate_kr 코어 + krdata 서빙). 웹 KrEarnings 계약(`{years(E), 한글 rows}`) **무변경**(어댑터가 동일 형태 산출)
+  → 희제 웹 코드 무변경(Estimates 탭=IndustryAnalysis CompanyReport). 잔여: 배포 후 브라우저 Estimates 탭 시각검증.
 
 ### Phase 4 — 공시·공매도 전종목 API 실측 → 편입 **[확인]**
 - **내용**: `railway run`으로 ① DART `list.json` 날짜별 전종목 공시 1콜·quota ② KRX/pykrx 공매도잔고 전종목 엔드포인트 실존 확인.
@@ -98,7 +109,30 @@
 ### Phase 5 — 재무제표 상세 전종목화 **[조건부 · 실수요 게이트]**
 - **기본 판정 = 하지 않음.** HOME은 이미 industry ~402 + 온디맨드로 충분. "4300 전종목 상세를 실제 누가 여는가"를 실측 제시 전 착수 금지.
 - **착수 시 제약**: 경량 `dart.py fnlttSinglAcntAll.json`만·**dart_fss(XBRL) 전종목 절대 배제**(2026-05 Railway OOM). 별도 OPENDART 키 or fundamental_kr 예산 분할(20k/일 경합). 예산 4.3일(별키)~8.6일+(경합). fundamental_kr 증분 마커 패턴 재사용.
-- **모듈**: 조대표.
+- **모듈**: 조대표. (⚠ HOME Financials 탭의 *표시용* 원본 재무제표는 Phase 6b가 **on-demand→볼륨**으로 흡수 — 이 Phase의 *전종목 bulk*와는 별개 경로.)
+
+### Phase 6 — GlobalMarket·산업·재무 서빙 일원화 (웹 전역 확장) **[감사 도출 · 조대표]**
+> **2026-07-07 서빙 bypass 전수 감사**(9-에이전트 워크플로·적대적 재검증) 도출. HOME 밖에서도 데이터엔진을
+> 우회해 라이브 크롤하는 경로 다수 확인 — **대부분 데이터엔진이 이미 중앙 수집 중인데 웹이 안 읽고 재크롤**
+> (estimate_kr↔krdata와 동일 부류). 신규 수집이 아니라 **서빙 재배선**이 과제. 원칙6을 HOME→웹 전역으로 확장.
+> 감사 원문: 세션 산출물(bypass 인벤토리). legitimate-live(현재가·공시·공매도·경제캘린더·KOMIS)는 유지.
+
+- **6a — GlobalMarket 탭(국채금리·글로벌지수·원자재) → dataset 서빙.** `bonds.py`(FRED/MOF/ECB 라이브·lru만·재배포
+  증발)·`globalmarket.py`(indices·commodities FDR 요청당 라이브)를 데이터엔진 dataset(이미 present: 국채 FRED 16종·
+  지수·원자재 가격·COT)에서 읽도록 재배선. ⚠ JP MOF·ECB 유로존 커브·US 전만기는 엔진 미수집 **갭** → 필요 시 매크로
+  feed 소폭 확장(국채 커브 전만기). 경제캘린더(TradingView)·배터리금속(KOMIS)은 legitimate-live 유지.
+- **6b — 재무제표 상세(HOME Financials) 데이터엔진 흡수 [사용자 지정 방향].** `financials.py`가 FnGuide
+  SVD_Finance를 요청당 라이브 크롤(+DART 폴백)하는 것을, **희제 의도(DART 재무제표 금액·계정 양식을 최대한 원본
+  그대로)를 보존**하며 데이터엔진 피드로 흡수. 데이터엔진 `fundamental_kr`은 *계산 지표*(마진·ROIC 등)만 저장하고
+  *원본 재무제표 계정·금액·양식*은 미보관 → **원본 재무제표(raw statement) 수집을 데이터엔진이 추가**(on-demand→
+  볼륨, estimate_kr 패턴: 열람된 종목만 lazy 수집·볼륨 캐시·SSOT). financials.py는 볼륨 서빙으로 전환하되 **웹 표시
+  형식·계정 순서 무변경**(FnGuide 중복 크롤·재배포 warmup 제거).
+- **6c — 산업분석(시총 treemap·EBITDA/D&A) 서빙 일원화.** `industry.py` 시총·등락(네이버 realtime+FDR)→
+  `marketcap_krx`, EBITDA/D&A(FnGuide 8병렬 크롤)→`fundamental_kr` 서빙. 중복 크롤 제거.
+- **6d — dead 수집 코드 정리.** `naver_fundamentals.py`(매일 2,700종목 긁어 krx_cache 메모리에만·웹 엔드포인트
+  없음·재시작 증발)·`hankyung.py`(수집하나 라우터 미노출) — 소비처 없는 수집 제거(4원칙 over-engineering).
+- **모듈**: 조대표(데이터엔진 피드+서버 서빙). 웹 표시 계약 보존(희제 코드 무변경 목표) — 불가피한 웹 변경은 협의.
+  검증: 각 재배선 전후 **출력동일 대조**(Phase 3 방식) + 배포 후 브라우저. 순서: 6a(엔진 present·최소위험) → 6c → 6b(신규 feed) → 6d.
 
 ---
 
@@ -113,7 +147,7 @@
 | `_reports`(네이버 목록8p+상세15콜) | `krdata.py:130` | reports_kr 피드로 교체 후 **폴백 전용 강등**(주석 완료·PR#320) | Phase 1 ✅ |
 | `_investor`(네이버 frgn 수급) | `krdata.py` | flow_kr 서빙으로 교체 후 **제거** | Phase 2 |
 | `_consensus`(네이버 wisereport) | `krdata.py` | consensus_kr 패널 서빙으로 교체 후 **제거** | Phase 2 |
-| estimate 라이브 경로 중복 | `krdata._earnings`↔`estimate_kr` | estimate_kr URL 복구 후 서빙 SSOT 단일화·중복 크롤 제거 | Phase 3 |
+| estimate 라이브 경로 중복 | `krdata._earnings`↔`estimate_kr` | estimate_kr URL 복구 후 `krdata.earnings`가 피드로 위임·중복 wcomp 파서/json 캐시 **제거**(출력동일 검증) | Phase 3 ✅ |
 | `market.py` `/kr` ThreadPoolExecutor 6소스 팬아웃 | `market.py:461` | 소스별 교체에 맞춰 워커 목록 축소, 볼륨 리드로 대체 | Phase 1·2 |
 
 **규칙**: ① 재배선과 잔재 제거는 **같은 PR**에 묶어 dead code가 유예 없이 사라지게 한다(반쪽 상태 방지).
@@ -152,10 +186,11 @@ grep으로 전수 확인해 마무리. ④ 모두 희제 웹 모듈 → PR 협�
 |---|---|---|---|---|
 | 0 | 캐시 볼륨 영속화 + 원칙 명문화 | 성능(warmup) | 서버 | ✅ draft PR #319 |
 | 1 | 리포트목록 네이버 피드 신설 | **성능(6.4s)+커버리지2배** | 조대표 | ✅ draft PR #320 |
-| 2 | flow·컨센 서빙 일원화 | hygiene/SSOT | 희제+조대표 | 대기 |
-| 3 | estimate_kr URL 복구 | 결함복구 | 조대표 | 즉시 가능 |
+| 2 | flow·컨센 서빙 일원화 | hygiene/SSOT | 희제+조대표 | ✅ draft PR #322 |
+| 3 | estimate_kr URL 복구 + krdata SSOT 단일화 | 결함복구+SSOT | 조대표 | ✅ draft PR (검증완료) |
 | 4 | 공시·공매도 실측→편입 | 확인 | 조대표 | 실측 대기 |
-| 5 | 재무 상세 전종목화 | 조건부 | 조대표 | 게이트 뒤 |
+| 5 | 재무 상세 전종목화(bulk) | 조건부 | 조대표 | 게이트 뒤 |
+| 6 | GlobalMarket·산업·재무 서빙 일원화(웹 전역) | 감사도출 SSOT | 조대표 | 진행(6a→6c→6b→6d) |
 
 ---
 

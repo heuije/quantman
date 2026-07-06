@@ -22,6 +22,8 @@
 
 - **같은 도메인이라도 소스 선택은 *소비 목적*에 따라 갈린다 — 커버리지는 실측하고 지어내지 마라.** 애널 리포트를 이미 수집된 `consensus_kr`(한경) raw로 서빙(신규 크롤 0)하려다 실측하니 대형주 리포트 절반·삼성/미래에셋/신한/하나/키움 등 대형 증권사 누락(한경=컨센 *지표*용 "대표 표본", 강점은 목록 인라인 목표가·투자의견). 리포트 *목록* 표시엔 커버리지가 본질 → 네이버가 2배(전종목 1콜형 수집도 가능·단 목표가 컬럼 없음·종목명→코드 필요). **한 소스가 지표엔 옳고 목록엔 나쁠 수 있다** — 재사용 전 *실측 프로브*로 소비 목적 대비 검증(원안 뒤집힘). 종목명→코드는 `ticker_db`(FDR 공식명)로 실측 100% 매칭. 네이버 크로스목록은 날짜윈도우 파라미터 무시(page newest-first만)→날짜커서 대신 page cutoff-stop. (2026-07-06 reports_kr)
 
+- **FnGuide `comp`→`wcomp` SPA 이전 = 옛 HTML 스크래퍼 전멸(302).** `comp.fnguide.com/SVO2/ASP/SVD_Main.asp`(highlight_D_Y 표)가 2026 wcomp SPA로 이전되며 302로 루트 리다이렉트·표 소멸 → HTML 파서가 전종목 빈결과. 후신 = `wcomp.fnguide.com/CompanyInfo/getSnpFinancial`(JSON·`cmp_cd`=6자리 **A접두 없이**·`consol_typ`=C(연결)→I(별도) 폴백·`freq_typ`=Y 연간 5확정+3추정·헤더 `EP_CHK`='E'=추정·SPA JS 번들에서 엔드포인트/파라미터명 추출). ⚠**stale 체크아웃이 죽은-URL 착시를 만든다** — `platform/`이 옛 브랜치면 옛 SVD_Main 코드가 보여 "HOME도 죽음"으로 오진 → **origin/main 워크트리에서 실측**(진단은 산출물에서). ⚠**영업이익 이원행**(2024 IFRS 정의변경): 순수 '영업이익'은 확정만·forward 추정은 '영업이익(발표기준)'에만 담기는 종목이 있어 같은 컬럼 두 행 중 **값 많은 행 채택**(발표기준·순수영업이익-only 종목 모두 커버). 삼성/SK하이닉스 등 메모리 대형주 forward는 FnGuide 원본이 2~6배 부풀 수 있으나(과거 확정은 정확) 우리 크롤링은 정확 → **출처표기로 대응**(가짜 보정 금지). ⚠**중복 파서 제거는 출력동일 검증 후**: `krdata._earnings`↔`estimate_kr` 이중 wcomp 파싱을 estimate_kr SSOT로 단일화할 때, 옛 krdata 출력 vs 새 어댑터 출력을 표본 종목으로 **byte-identical 대조**해 웹(Estimates 탭) 무드리프트를 증명한 뒤 제거. (2026-07-06 estimate_kr wcomp·서빙일원화 Phase 3)
+
 ## 현재 구조 (안정)
 
 **기능.** 백테스트·인사이트가 쓰는 모든 데이터를 한 곳에서 정의·수집·검증해 공급. 출처는 데이터포인트당 **1개 원칙**(no-backup). 지원 현황(present/partial/absent)의 **진실원천 = `core/quant_core/data/spec.py`** — 새 데이터 추가/상태 확인은 여기부터.

@@ -26,8 +26,6 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-from .serving_cache import serving_cache_path
-
 _log = logging.getLogger("app.krdata")
 _H = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 _C = certifi.where()
@@ -276,124 +274,38 @@ def consensus(code: str) -> list[dict]:
         return []
 
 
-# ── 추정 실적 (FnGuide 스냅샷 JSON — wcomp.fnguide.com) ──────────────────────
+# ── 추정 실적 (FnGuide 스냅샷 JSON — 데이터엔진 estimate_kr 피드 SSOT) ──────────────
 # 손익(억원)·멀티플(PER·PBR)·수익성(ROE)·EPS(PEG 계산용). 연간 5년 확정 + 3년 추정(E).
+# wcomp getSnpFinancial 파싱은 core estimate_kr가 단독 소유(챗 describe·엑셀과 동일 소스) —
+# 옛 krdata 로컬 파싱·중복 크롤·별도 json 캐시를 제거하고 여기서 웹 {years(E)/한글 rows}로 어댑트만 한다.
 
-
-def _num_cell(s: str):
-    s = s.replace(",", "").strip()
-    if not s or s in ("-", "N/A", "완전잠식"):
-        return None
-    try:
-        return float(s)
-    except ValueError:
-        return None
+# estimate_kr 프레임 컬럼 → 웹 KrEarnings 한글 행 키(억원 손익·멀티플·마진).
+_EARN_COL2KR = {"rev": "매출액", "op": "영업이익", "ni": "당기순이익", "controlling_ni": "지배주주",
+                "per": "PER", "pbr": "PBR", "roe": "ROE", "eps": "EPS",
+                "op_margin": "영업이익률", "net_margin": "당기순이익률"}
 
 
 @lru_cache(maxsize=256)
-def _earnings(code: str, _day: str) -> dict:
-    # FnGuide 신 사이트(wcomp, 2026-06말 개편) 스냅샷 JSON — 5년 확정 + 3년 추정(E).
-    # ⚠ 구 comp.fnguide.com/SVO2/ASP/SVD_Main.asp 는 302(도메인 이전)로 폐지 — HTML 파싱이
-    #   전 종목 빈 결과를 내던 원인. 신 API는 구조화 JSON이라 파싱도 강건.
-    # 출처 그대로 표시: 일부 종목(삼성전자 등)은 FnGuide 원본 추정치가 비정상일 수
-    # 있으나 우리 크롤링은 정확. 데이터 제공처 이슈는 출처 명시로 대응한다.
-    def _snp(consol: str) -> dict:
-        r = requests.get("https://wcomp.fnguide.com/CompanyInfo/getSnpFinancial",
-                         params={"cmp_cd": code, "consol_typ": consol, "freq_typ": "Y"},
-                         headers=_H, verify=_C, timeout=20)
-        return r.json().get("dataset") or {}
-
-    ds = _snp("C")                                   # 연결 우선
-    if not (ds.get("data") or []):
-        ds = _snp("I")                               # 연결 미작성 법인 — 별도 폴백
-    hdr = [h for h in (ds.get("header") or []) if h.get("YYMM")]
-    data = ds.get("data") or []
-    if not hdr or not data:
+def _earnings_cached(code: str, _day: str) -> dict:
+    from quant_core.data.feeds import estimate_kr
+    df = estimate_kr.get(code)                        # 7일 parquet 캐시·연결(C)→별도(I) 폴백
+    if df is None or df.empty:
         return {"years": [], "rows": {}}
-    years = [h["YYMM"] + ("(E)" if (h.get("EP_CHK") or "").strip() == "E" else "") for h in hdr]
-    # 새 표 계정명 → 기존 rows 키. '영업이익'은 확정만 있고 추정(E)은 '영업이익(발표기준)'
-    # 행에 담기는 종목이 있어, 같은 키의 두 행 중 **값이 더 많은 행**을 채택한다.
-    name_map = {"매출액": "매출액", "영업이익": "영업이익", "영업이익(발표기준)": "영업이익",
-                "당기순이익": "당기순이익", "당기순이익(지배)": "지배주주",
-                "PER": "PER", "PBR": "PBR", "ROE": "ROE", "EPS": "EPS"}
-    rows: dict[str, list] = {}
-    for rr in data:
-        nm = (rr.get("NAME") or "").strip()
-        key = name_map.get(nm)
-        if not key:
-            continue
-        vals = [_num_cell("" if rr.get(f"VAL{i + 1}") is None else str(rr.get(f"VAL{i + 1}")))
-                for i in range(len(hdr))]
-        old = rows.get(key)
-        if old is None or sum(v is not None for v in vals) > sum(v is not None for v in old):
-            rows[key] = vals
-    # 영업이익률·당기순이익률(%) — 최초 1회 계산해 함께 저장(렌더마다 재계산 X). 매출액 대비.
-    rev = rows.get("매출액")
-    if rev:
-        def _margin(num_key: str):
-            num = rows.get(num_key)
-            if not num:
-                return None
-            return [round(n / d * 100, 1) if (n is not None and d) else None
-                    for n, d in zip(num, rev)]
-        m = _margin("영업이익")
-        if m:
-            rows["영업이익률"] = m
-        m = _margin("당기순이익")
-        if m:
-            rows["당기순이익률"] = m
+    est = df["is_estimate"].astype(bool).tolist() if "is_estimate" in df.columns else [False] * len(df)
+    years = [f"{y}(E)" if e else str(y) for y, e in zip(df.index, est)]   # 추정 연도 (E) 접미
+    rows = {kr: [None if pd.isna(v) else float(v) for v in df[col]]
+            for col, kr in _EARN_COL2KR.items() if col in df.columns}
     return {"years": years, "rows": rows}
 
 
-# 추정실적 디스크 캐시 — historical은 안 변하니 저장본을 즉시 서빙, 주 1회만 재조회.
-# 영속 볼륨 하위(prod) — 재배포에도 저장본 생존(에페메랄 앱폴더 → 매 배포 재크롤 방지).
-_EARN_DIR = serving_cache_path("earnings")
-_EARN_FRESH_DAYS = 7
-
-
-def _earn_path(code: str) -> str:
-    return os.path.join(_EARN_DIR, f"{code}.json")
-
-
 def earnings(code: str) -> dict:
-    """추정실적(컨센서스). 저장본이 신선(7일 이내)하면 즉시 반환(재조회 X), 아니면 FnGuide 조회 후 저장."""
-    import json
-    path = _earn_path(code)
-    try:
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                cached = json.load(f)
-            fetched = cached.get("fetched", "")
-            if fetched and (date.today() - date.fromisoformat(fetched)).days < _EARN_FRESH_DAYS:
-                return cached["data"]
-    except Exception:
-        pass
-    try:
-        data = _earnings(code, date.today().isoformat())
-    except Exception as e:
-        _log.warning("추정실적 fetch 실패 %s: %s", code, e)
-        try:                                            # 만료됐어도 저장본 있으면 fallback
-            with open(path, encoding="utf-8") as f:
-                return json.load(f)["data"]
-        except Exception:
-            return {"years": [], "rows": {}}
-    if not data.get("years"):
-        # 빈 결과는 저장하지 않는다 — 일시 실패(사이트 이전·차단)의 빈 dict가 7일 캐시로
-        # 박혀 "컨센서스 있는데 미표시"가 지속되던 원인. 기존 저장본이 있으면 그걸 서빙.
-        try:
-            with open(path, encoding="utf-8") as f:
-                return json.load(f)["data"]
-        except Exception:
-            return data
-    try:
-        os.makedirs(_EARN_DIR, exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"fetched": date.today().isoformat(), "data": data}, f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except Exception:
-        pass
-    return data
+    """추정실적(FnGuide 컨센서스) — 데이터엔진 estimate_kr 피드 SSOT(원칙6).
+
+    wcomp getSnpFinancial JSON 파싱은 core estimate_kr가 단독 소유(챗 describe·엑셀과 동일
+    소스) — 옛 krdata 로컬 파싱·별도 json 캐시는 중복이라 제거하고 프레임을 웹 형태로 어댑트만
+    한다. estimate_kr.get이 7일 parquet 캐시·연결(C)→별도(I) 폴백 담당. 무데이터면 빈 결과(가짜
+    0 금지·라이브 폴백 없음: wcomp가 유일 forward 이익 소스)."""
+    return _earnings_cached(code, date.today().isoformat())
 
 
 # ── 최근 공시 (DART OpenDart API) ────────────────────────────────────────────

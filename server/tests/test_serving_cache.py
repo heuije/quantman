@@ -18,8 +18,8 @@ def test_falls_back_to_app_data_when_unset(monkeypatch):
 
 
 def test_home_caches_point_under_serving_cache():
-    """재배포 warmup 근본수정 회귀 가드 — 3개 HTTP 서빙 캐시가 영속 네임스페이스를 가리킨다."""
-    from app import company_profiles, financials, krdata
+    """재배포 warmup 근본수정 회귀 가드 — HTTP 서빙 캐시가 영속 네임스페이스를 가리킨다.
+    (추정실적 earnings는 데이터엔진 estimate_kr 피드 SSOT로 이관 — serving_cache 미사용.)"""
+    from app import company_profiles, financials
     assert os.path.join("serving_cache", "financials") in financials._DIR
-    assert os.path.join("serving_cache", "earnings") in krdata._EARN_DIR
     assert os.path.join("serving_cache", "company_profiles.json") in company_profiles._PATH
