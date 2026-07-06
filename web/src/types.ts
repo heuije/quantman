@@ -1258,6 +1258,6 @@ export interface FinancialsData {
 // ── 전략 연구소 챗봇 (P0b) ───────────────────────────────────────────────────
 export type ChatPart =
   | { type: "text"; text: string }
-  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown>; progress?: string }
   | { type: "tool_result"; tool_use_id: string; name: string; result: Record<string, unknown> };
 export type ChatMessage = { role: "user" | "assistant"; parts: ChatPart[] };

@@ -72,6 +72,49 @@ def _history_to_wire(session: Session, conversation_id: int) -> list[dict]:
 
 MAX_TOOL_ROUNDS = 8     # 한 사용자 턴당 도구 라운드 상한(무한루프·비용 가드)
 
+# 상한 소진 시 부분결과 강제 종합 지시(Phase 1a) — 도구 없는 마지막 1콜에 주입.
+_SYNTH_DIRECTIVE = (
+    "도구를 더 쓰지 말고, 지금까지 모은 결과만으로 사용자 질문에 최선의 답을 종합해 주세요. "
+    "확인된 것부터 결론을 제시하고, 부족한 부분은 무엇이 왜 부족한지 한 줄로 밝힌 뒤 가능한 다음 단계를 제안하세요.")
+
+
+def _inject_directive(messages: list[dict], text: str) -> None:
+    """마지막 user 턴에 지시 텍스트를 덧붙인다 — 역할 교대(user→user 금지) 유지.
+    상한 소진 직후 마지막 메시지는 user(tool_result 리스트)라 그 안에 text 블록을 더한다."""
+    if messages and messages[-1].get("role") == "user":
+        c = messages[-1]["content"]
+        if isinstance(c, list):
+            c.append({"type": "text", "text": text})
+            return
+        if isinstance(c, str):
+            messages[-1]["content"] = [{"type": "text", "text": c + "\n\n" + text}]
+            return
+    messages.append({"role": "user", "content": text})
+
+
+def _progress_line(name: str, inp: dict) -> str:
+    """도구 호출 → 사람이 읽는 진행 라인(결정적·LLM 미사용·$0). 긴 턴의 침묵을 '무응답'으로
+    오인하지 않게 '지금 무엇을 하는지'를 계속 보여준다(Phase 1b·④ 진행 스트리밍)."""
+    inp = inp or {}
+    if name == "describe":
+        return f"📄 {inp.get('symbol', '종목')} 종합 리포트 조회"
+    if name == "inspect":
+        cols = [str(c) for c in (inp.get("columns") or [])][:3]
+        return f"📈 {inp.get('symbol', '종목')} 지표 조회" + (f" ({', '.join(cols)})" if cols else "")
+    if name == "screen":
+        secs = inp.get("sectors") or ([inp["sector"]] if inp.get("sector") else [])
+        where = ("·".join(str(s) for s in secs) + " ") if secs else ""
+        return f"🔎 {where}종목 스크리닝"
+    if name == "simulate":
+        return "🧪 백테스트·분석 실행"
+    if name == "adjust_analysis":
+        return "🔧 직전 분석 값 조정·재계산"
+    if name == "research_news":
+        return "📰 뉴스 조사"
+    if name == "save_strategy":
+        return "💾 전략 저장"
+    return f"⚙️ {name} 실행"
+
 # 결과 품질 계약 — 턴 메트릭에 '가장 나쁜' 결과상태를 기록(모니터링·error_rate 품질 반영).
 _STATUS_RANK = {"ok": 0, "empty": 1, "data_insufficient": 2, "degenerate": 3, "infeasible": 4}
 
@@ -323,7 +366,8 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                     continue
                 inp = dict(b.input or {})
                 acc["tools"].append(b.name)
-                yield ("tool_use", {"id": b.id, "name": b.name, "input": inp})
+                yield ("tool_use", {"id": b.id, "name": b.name, "input": inp,
+                                    "progress": _progress_line(b.name, inp)})
                 try:
                     full = _dispatch_tool(session, conversation_id, b.name, inp)
                     # P4 context 사이드카 — describe/select 결과를 준실시간 시세·뉴스로 enrich
@@ -375,11 +419,33 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
         assistant_parts.append({"type": "text", "text": err})
         yield ("delta", {"text": err})
     if ok and not completed:
-        # 라운드 상한을 도구호출로 소진 — 최종 답변 없이 끝나는 무응답 방지(graceful).
-        # 위임 후 simulate가 1라운드로 성공해 이 경로는 드묾(방어선·추가 LLM콜 0).
-        msg = "요청을 완료하지 못했어요(분석이 길어졌습니다). 조금 더 구체적으로 말씀해 주시겠어요?"
-        assistant_parts.append({"type": "text", "text": msg})
-        yield ("delta", {"text": msg})
+        # 라운드 상한을 도구호출로 소진 — 비답변("분석이 길어졌습니다")이 아니라 **지금까지 모은
+        # 결과로 부분결과를 강제 종합**한다(무응답 방지·chat-latency-context-redesign Phase 1a).
+        # 도구 없는 1콜(tools 미전달 → 모델이 텍스트만 낼 수밖에 없음)로 최선의 답을 짓게 한다.
+        # 상한 소진은 드문 경로라 이 추가 1콜은 무시할 만하다(무응답 > 1콜의 비용).
+        _inject_directive(messages, _SYNTH_DIRECTIVE)
+        try:
+            synth_text = ""
+            with client.messages.stream(model=model, max_tokens=4096, system=system,
+                                        thinking={"type": "disabled"}, messages=messages) as stream:
+                for delta in stream.text_stream:
+                    if delta:
+                        synth_text += delta
+                        yield ("delta", {"text": delta})
+                fin = stream.get_final_message()
+            _accumulate_usage(acc, getattr(fin, "usage", None))
+            acc["rounds"] += 1
+            acc["stop"] = getattr(fin, "stop_reason", None)
+            if synth_text.strip():
+                assistant_parts.append({"type": "text", "text": synth_text})
+                completed = True
+        except Exception:   # noqa: BLE001 — 종합 콜마저 실패하면 최소 안내로 폴백(막다른길 방지)
+            _log.exception("[chat] 부분결과 종합 콜 실패 conv=%s", conversation_id)
+        if not completed:
+            msg = ("분석이 예상보다 길어져 완결하지 못했어요. 지금까지 확인한 범위로 답을 드리려 했으나 "
+                   "그마저 어려워, 종목·기간·비교 기준을 조금 좁혀 다시 여쭤봐 주시면 바로 완성하겠습니다.")
+            assistant_parts.append({"type": "text", "text": msg})
+            yield ("delta", {"text": msg})
     _persist(session, conversation_id, "assistant", assistant_parts)
     _persist_turn_metric(session, conversation_id, model, acc, ttft_ms,
                          int((time.perf_counter() - t0) * 1000), ok, worst_status, turn_shape)
