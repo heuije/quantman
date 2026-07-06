@@ -48,7 +48,7 @@
 
 | 데이터 | 데이터엔진 수집 | HOME 서빙 현재 | 목표 서빙 | 성격 |
 |---|---|---|---|---|
-| OHLCV 주가 | ✅ 전종목(3566·오늘) | 라이브 FDR | 볼륨 parquet + 현재가 오버레이 | perf(부분) |
+| OHLCV 주가 | ✅ 전종목(3566·오늘) | ✅ **볼륨 우선+FDR 폴백** | 볼륨 parquet(EOD 일봉·오버레이 불요) | **perf ✅ (summary 4s→수십ms·아래 6e)** |
 | flow 수급 | ✅ 전종목(3636) | 라이브 네이버 | flow_kr parquet | hygiene |
 | 컨센서스 | ✅ 전종목(4657) | 라이브 네이버 | consensus_kr 패널 | hygiene |
 | **리포트목록** | ✅ **reports_kr 피드 신설(네이버 전종목)** | **라이브 네이버(6.4초·병목)** | **reports_kr 파켓** | **perf ⭐ PR#320** |
@@ -137,8 +137,17 @@
   `marketcap_krx`, EBITDA/D&A(FnGuide 8병렬 크롤)→`fundamental_kr` 서빙. 중복 크롤 제거.
 - **6d — dead 수집 코드 정리.** `naver_fundamentals.py`(매일 2,700종목 긁어 krx_cache 메모리에만·웹 엔드포인트
   없음·재시작 증발)·`hankyung.py`(수집하나 라우터 미노출) — 소비처 없는 수집 제거(4원칙 over-engineering).
+- **6e — 종목상세 OHLCV 볼륨 서빙 ✅ 구현·검증 완료 [HOME summary 로딩 최우선·사용자 재우선순위].**
+  `market.py:symbol_detail`의 `_raw_ohlcv`(종목)·`_raw_bench`(벤치마크)가 요청당 라이브 `fdr.DataReader`
+  (직렬 ~4s·range별 재fetch·lru만→재배포 warmup)로 HOME summary 지배 병목. 데이터엔진이 이미 KR 전종목
+  OHLCV(`{code}.parquet`·FDR 백필)·지수를 볼륨에 수집 중 → **볼륨 우선+FDR 폴백**으로 교체(수십ms). 백필과
+  동일 FDR 소스라 **출력동일**(symbol_detail 두 경로 series 380바 byte-대조 FULLY identical 실증). 신선도
+  무회귀(FDR·볼륨 둘 다 EOD 일봉·현재가=마지막 일봉종가·오버레이 불요). **부수=버그복구**: FDR ^KS11/^KQ11
+  (캐럿형)이 NaN이라 깨졌던 국내 벤치마크·베타를 볼륨(코스피/코스닥지수) 실값으로 복구. **코스닥지수(^KQ11)
+  데이터엔진 매크로 정식 편입**. core702/server520 green. 잔여: 배포 후 브라우저(summary 로딩·국내 벤치마크
+  오버레이). ⚠ 산업분석·재무제표(6c·6b) 탭은 사용자 지시로 미터치.
 - **모듈**: 조대표(데이터엔진 피드+서버 서빙). 웹 표시 계약 보존(희제 코드 무변경 목표) — 불가피한 웹 변경은 협의.
-  검증: 각 재배선 전후 **출력동일 대조**(Phase 3 방식) + 배포 후 브라우저. 순서: 6a(엔진 present·최소위험) → 6c → 6b(신규 feed) → 6d.
+  검증: 각 재배선 전후 **출력동일 대조**(Phase 3 방식) + 배포 후 브라우저. 순서: 6a→6e(summary perf)✅. (6c·6b 보류·사용자 재우선순위)
 
 ---
 

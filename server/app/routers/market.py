@@ -114,15 +114,50 @@ def _tier_for(span: int) -> int:
     return next((t for t in _FETCH_TIERS if t >= need), _FETCH_TIERS[-1])
 
 
+def _volume_ohlcv(key: str, fetch_days: int):
+    """데이터엔진 볼륨(전종목 수집 parquet)에서 원시 OHLCV를 읽는다 — FDR 라이브 재크롤 없이.
+
+    데이터엔진은 KR 전종목 OHLCV({code}.parquet)·지수를 FDR로 이미 수집·저장한다. 웹이 그걸 안
+    읽고 종목당 재크롤(FDR DataReader ~2s·재배포마다 warmup)하던 것을 볼륨 parquet read(수십ms)로
+    대체한다(원칙6). 백필과 동일 FDR 소스라 출력동일. 미커버(신규상장·롱테일·US 미수집)면 None →
+    호출부가 FDR 폴백. FDR과 동일하게 (today - fetch_days) 이후만 슬라이스해 창·캐시크기를 맞춘다."""
+    try:
+        import pandas as pd
+        from quant_core.dataset import load_dataset_for
+        df = load_dataset_for([key], with_indicators=False).get(key)
+    except Exception:
+        return None
+    if df is None or df.empty or "Close" not in df.columns:
+        return None
+    start = pd.Timestamp(datetime.now().date() - timedelta(days=fetch_days))
+    return df[df.index >= start]
+
+
 @lru_cache(maxsize=1024)
 def _raw_ohlcv(sym: str, _day: str, fetch_days: int):
+    """원시 일봉 — 데이터엔진 볼륨 우선(원칙6), 미커버만 FDR 라이브 폴백."""
+    df = _volume_ohlcv(sym, fetch_days)
+    if df is not None and not df.empty:
+        return df
     import FinanceDataReader as fdr
     start = (datetime.now().date() - timedelta(days=fetch_days)).isoformat()
     return fdr.DataReader(sym, start)
 
 
+# 종목 추종 벤치마크 지수(FDR 심볼) → 데이터엔진 볼륨 심볼명. FDR ^KS11/^KQ11(캐럿형)은 최근
+# NaN을 반환해 국내 벤치마크 오버레이·베타가 조용히 실패했다 — 볼륨(yfinance 수집) 실값으로 복구.
+_BENCH_VOLUME = {"^KS11": "코스피지수", "^KQ11": "코스닥지수",
+                 "^IXIC": "나스닥지수", "^GSPC": "S&P500"}
+
+
 @lru_cache(maxsize=64)
 def _raw_bench(bench_sym: str, _day: str, fetch_days: int):
+    """벤치마크 지수 일봉 — 볼륨 우선(원칙6·깨진 FDR 캐럿형 대체), 미커버만 FDR 폴백."""
+    vol_name = _BENCH_VOLUME.get(bench_sym)
+    if vol_name:
+        df = _volume_ohlcv(vol_name, fetch_days)
+        if df is not None and not df.empty:
+            return df
     import FinanceDataReader as fdr
     start = (datetime.now().date() - timedelta(days=fetch_days)).isoformat()
     return fdr.DataReader(bench_sym, start)
