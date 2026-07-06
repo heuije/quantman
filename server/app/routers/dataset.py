@@ -32,9 +32,25 @@ _MANIFEST_CACHE: dict[str, dict] = {}
 # Phase 58-C — Dataset bundle (tar.zst). main.py가 dataset refresh 완료 시 호출한다.
 _BUNDLE_LOCK = threading.Lock()
 
+# 번들 스코프 → 포함 서브디렉터리. top-level *.parquet + _classification/_listing은 공통.
+#   trading — 자동매매 로컬앱이 실제 소비하는 것만(price + 펀더멘털). 배포된 로컬앱의
+#             다운로드 대상 = 이 스코프. 파일명·내용 불변(하위호환).
+#   full    — 위 + 서버 챗봇 전용 피드(flow·시총·공매도·13F). dev 테스트환경(localhost
+#             챗봇)이 프로덕션 볼륨과 동일 데이터로 pull하는 스코프. 로컬앱은 이 피드를
+#             소비하지 않으므로 trading에 넣지 않는다(불필요 다운로드·번들 비대 방지).
+_BUNDLE_SUBDIRS: dict[str, tuple[str, ...]] = {
+    "trading": ("fundamentals",),
+    "full": ("fundamentals", "flow", "marketcap", "short_volume", "institutional"),
+}
 
-def _bundle_path() -> Path:
-    """bundle 파일 경로 — DATA_DIR **안**(영속 볼륨 위)에 dataset-bundle.tar.zst.
+
+def _bundle_stem(scope: str) -> str:
+    # trading은 기존 파일명(dataset-bundle) 유지 — 배포된 로컬앱 하위호환.
+    return "dataset-bundle" if scope == "trading" else f"dataset-bundle-{scope}"
+
+
+def _bundle_path(scope: str = "trading") -> Path:
+    """bundle 파일 경로 — DATA_DIR **안**(영속 볼륨 위)에 dataset-bundle[-<scope>].tar.zst.
 
     Railway 영속 볼륨은 DATA_DIR(/srv/data)에 마운트돼 있는데, 이전 코드는
     bundle을 `DATA_DIR.parent`(=/srv, 컨테이너 휘발 영역)에 둬 **재배포마다
@@ -44,24 +60,32 @@ def _bundle_path() -> Path:
     build_bundle은 *.parquet만 tar에 담으므로(.tar.zst·.meta는 비포함) DATA_DIR
     안에 둬도 자기 자신을 포함하지 않는다.
     """
-    return _data_dir() / "dataset-bundle.tar.zst"
+    return _data_dir() / f"{_bundle_stem(scope)}.tar.zst"
 
 
-def _bundle_meta_path() -> Path:
-    return _data_dir() / "dataset-bundle.meta"
+def _bundle_meta_path(scope: str = "trading") -> Path:
+    return _data_dir() / f"{_bundle_stem(scope)}.meta"
 
 
-def build_bundle() -> dict:
-    """모든 parquet을 tar.zst로 묶고 ETag(md5) 저장. dataset update cron 끝에서 호출.
+def build_bundle(scope: str = "trading") -> dict:
+    """스코프별 parquet을 tar.zst로 묶고 ETag(md5) 저장. dataset update cron 끝에서 호출.
+
+    scope="trading"(기본): top-level *.parquet + _classification/_listing + fundamentals/.
+        자동매매 로컬앱 소비분. 파일명·내용 불변(배포된 로컬앱 하위호환).
+    scope="full": 위 + flow/·marketcap/·short_volume/·institutional/(서버 챗봇 전용 피드).
+        dev 테스트환경이 프로덕션 볼륨과 동일 데이터로 pull하는 스코프.
 
     동시 호출 lock — 패키징 중 다른 호출이 같은 작업 안 하도록.
     """
+    subdirs = _BUNDLE_SUBDIRS.get(scope)
+    if subdirs is None:
+        raise ValueError(f"알 수 없는 bundle scope: {scope!r}")
     with _BUNDLE_LOCK:
         base = _data_dir()
         if not base.exists():
             _log.warning("bundle: DATA_DIR 없음 (%s) — skip", base)
             return {"ok": False, "reason": "DATA_DIR 없음"}
-        bp = _bundle_path()
+        bp = _bundle_path(scope)
         tmp = bp.with_suffix(".tmp")
         t0 = time.time()
         n_files = 0
@@ -78,11 +102,14 @@ def build_bundle() -> dict:
                 if sp.exists():
                     tar.add(sp, arcname=sp.name)
                     n_files += 1
-            # 펀더멘털 parquet 서브디렉터리(SEC US·OpenDART KR) — 로컬 백테스트·조건평가가 소비.
-            fdir = base / "fundamentals"
-            if fdir.exists():
-                for p in sorted(fdir.glob("*.parquet")):
-                    tar.add(p, arcname=f"fundamentals/{p.name}")
+            # 스코프별 parquet 서브디렉터리. trading=fundamentals(SEC US·OpenDART KR,
+            # 로컬 조건평가), full=+서버 챗봇 피드(flow·시총·공매도·13F). 없으면 skip(멱등).
+            for sub in subdirs:
+                sdir = base / sub
+                if not sdir.exists():
+                    continue
+                for p in sorted(sdir.glob("*.parquet")):
+                    tar.add(p, arcname=f"{sub}/{p.name}")
                     n_files += 1
         size_mb = tmp.stat().st_size / 1024 / 1024
         # ETag = md5 of bundle (강력함, 안전한 cache invalidation)
@@ -92,16 +119,16 @@ def build_bundle() -> dict:
                 h.update(chunk)
         etag = h.hexdigest()
         tmp.replace(bp)   # atomic rename
-        _bundle_meta_path().write_text(etag, encoding="utf-8")
+        _bundle_meta_path(scope).write_text(etag, encoding="utf-8")
         elapsed = time.time() - t0
-        _log.info("dataset bundle 갱신: %d files, %.1f MB, etag=%s, %.1fs",
-                  n_files, size_mb, etag[:12], elapsed)
-        return {"ok": True, "n_files": n_files, "size_mb": size_mb,
+        _log.info("dataset bundle(%s) 갱신: %d files, %.1f MB, etag=%s, %.1fs",
+                  scope, n_files, size_mb, etag[:12], elapsed)
+        return {"ok": True, "scope": scope, "n_files": n_files, "size_mb": size_mb,
                 "etag": etag, "elapsed_sec": elapsed}
 
 
-def _current_bundle_etag() -> str | None:
-    p = _bundle_meta_path()
+def _current_bundle_etag(scope: str = "trading") -> str | None:
+    p = _bundle_meta_path(scope)
     if not p.exists():
         return None
     try:
@@ -187,20 +214,27 @@ def manifest(device: Device = Depends(get_current_device)) -> dict:
 
 
 @router.get("/bundle")
-def get_bundle(request: Request, device: Device = Depends(get_current_device)):
-    """Phase 58-C — dataset 전체 tar.zst 단일 파일 다운로드.
+def get_bundle(request: Request, scope: str = "trading",
+               device: Device = Depends(get_current_device)):
+    """Phase 58-C — dataset tar.zst 단일 파일 다운로드.
+
+    scope="trading"(기본): 자동매매 로컬앱 소비분(price+펀더멘털). 배포된 로컬앱은
+        scope 쿼리를 보내지 않으므로 항상 이 기본을 받는다(하위호환).
+    scope="full": + 서버 챗봇 전용 피드(flow·시총·공매도·13F). dev 테스트환경 pull용.
 
     매일 dataset update cron이 build_bundle()으로 packaging. 로컬앱이 ETag 비교로
     변경 시만 다운로드 → 종목별 4445 req 직렬 다운로드(~114분) → 단일 ~1분으로 단축.
 
     fallback: bundle 없으면 410 Gone — 로컬앱은 기존 manifest 경로로 폴백.
     """
-    bp = _bundle_path()
-    etag_val = _current_bundle_etag()
+    if scope not in _BUNDLE_SUBDIRS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"알 수 없는 scope: {scope}")
+    bp = _bundle_path(scope)
+    etag_val = _current_bundle_etag(scope)
     if not bp.exists() or not etag_val:
         raise HTTPException(
             status.HTTP_410_GONE,
-            "dataset bundle 미준비 — 다음 cron 갱신 후 가능")
+            f"dataset bundle({scope}) 미준비 — 다음 cron 갱신 후 가능")
     etag = f'"{etag_val}"'
     # If-None-Match 헤더로 클라가 같은 ETag 들고 있으면 304.
     # v0.9.14 fix — client(sync_client.fetch_dataset_bundle)는 응답 ETag를 strip('"')
@@ -214,7 +248,7 @@ def get_bundle(request: Request, device: Device = Depends(get_current_device)):
         return Response(status_code=304, headers={"ETag": etag})
     return FileResponse(
         bp, media_type="application/zstd",
-        filename="dataset-bundle.tar.zst",
+        filename=f"{_bundle_stem(scope)}.tar.zst",
         headers={"ETag": etag, "Cache-Control": "private, max-age=0"},
     )
 

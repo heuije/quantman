@@ -761,9 +761,19 @@ def _package_bundle() -> None:
     `_REFRESH_LOCK` 컨보이로 발주 사이클이 통째로 블록되는 사고를 유발했다
     (2026-06-10 무발주 인시던트 RC-1/D4-1·D4-6,
     docs/incidents/2026-06-10-autotrading-week-retrospective.md).
+
+    두 스코프를 빌드한다:
+      trading — 자동매매 로컬앱 다운로드 대상(하위호환·필수 경로). 먼저·항상 빌드.
+      full    — dev 테스트환경(localhost 챗봇)이 프로덕션 볼륨과 동일 데이터로 pull하는
+                스코프(+flow·시총·공매도·13F). best-effort: full 빌드가 실패해도 로컬앱
+                경로(trading bundle)엔 영향이 없도록 격리한다.
     """
     from .routers import dataset as dataset_router
-    dataset_router.build_bundle()
+    dataset_router.build_bundle("trading")
+    try:
+        dataset_router.build_bundle("full")
+    except Exception:
+        _log.exception("full bundle 패키징 실패 (dev 테스트환경 pull만 영향 — 로컬앱 무영향)")
 
 
 def _refresh_kospi_futures() -> None:

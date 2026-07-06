@@ -55,11 +55,16 @@ def push_snapshot(payload: dict) -> None:
     r.raise_for_status()
 
 
-def fetch_dataset_bundle(local_data_dir: Path) -> dict:
+def fetch_dataset_bundle(local_data_dir: Path, scope: str = "trading") -> dict:
     """Phase 58-C — server tar.zst bundle 단일 다운로드 + 압축 해제.
 
     단일 파일(~150MB, 1분) 다운로드. ETag로 변경 시만 다운로드, 동일 ETag면
     server 304 → skip.
+
+    scope="trading"(기본): 자동매매 로컬앱 소비분(price+펀더멘털). 배포된 로컬앱은
+        이 기본으로 호출 → scope 쿼리 미전송 → 서버 wire 요청·파일명 불변(하위호환).
+    scope="full": +서버 챗봇 전용 피드(flow·시총·공매도·13F). dev 테스트환경
+        (pull_prod_data)이 프로덕션 볼륨과 동일 데이터로 pull할 때만 사용.
 
     실패 시(410 포함) 예외 raise → 호출자(datafetch)가 기존 로컬 캐시로 진행.
     종목별 manifest 폴백은 제거됨 — 2026-06-10 무발주 인시던트(D1-2) 참조.
@@ -77,7 +82,9 @@ def fetch_dataset_bundle(local_data_dir: Path) -> dict:
 
     import zstandard
 
-    etag_cache = local_data_dir.parent / "dataset-bundle.etag"
+    # scope별 etag 캐시 분리 — trading은 기존 파일명 유지(하위호환), full은 별도.
+    _stem = "dataset-bundle" if scope == "trading" else f"dataset-bundle-{scope}"
+    etag_cache = local_data_dir.parent / f"{_stem}.etag"
     cached_etag = ""
     if etag_cache.exists():
         try:
@@ -92,8 +99,10 @@ def fetch_dataset_bundle(local_data_dir: Path) -> dict:
     t0 = time.time()
     log.info("dataset bundle 다운로드 시도 (etag=%s)...",
              cached_etag[:12] if cached_etag else "(없음)")
+    # trading(기본)은 params 미전송 → 배포된 로컬앱 wire 요청 불변. full만 ?scope=full.
+    params = None if scope == "trading" else {"scope": scope}
     r = requests.get(
-        f"{PLATFORM_URL}/dataset/bundle", headers=headers, stream=True,
+        f"{PLATFORM_URL}/dataset/bundle", headers=headers, params=params, stream=True,
         timeout=(_BUNDLE_CONNECT_TIMEOUT_SEC, _BUNDLE_READ_TIMEOUT_SEC))
     if r.status_code == 304:
         log.info("dataset bundle: 변경 없음 (ETag 일치) — skip")
