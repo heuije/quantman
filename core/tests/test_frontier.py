@@ -222,6 +222,41 @@ def test_rotation_rejects_single_symbol():
     assert not res.get("success")                                  # S-ROTATION
 
 
+# ── 5e SELECT compare 모드 (표형 피어 비교 — N종목×M지표 1콜) ──────────────────
+
+def _ds_compare() -> dict:
+    idx = pd.date_range("2024-01-02", periods=60, freq="B")
+
+    def mk(price, pe, pb):
+        df = _ohlc(np.linspace(price, price * 1.1, 60), idx)
+        df["trailing_pe"], df["pb_ratio"], df["market_cap"] = pe, pb, price * 1e9
+        return df
+    return {"AAA": mk(100, 20.0, 3.0), "BBB": mk(50, 8.0, 0.8), "CCC": mk(200, 15.0, 1.5)}
+
+
+def _compare_ir() -> dict:
+    return {"universe": {"kind": "list", "symbols": ["AAA", "BBB", "CCC"]},
+            "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}},   # nominal
+            "query": "select",
+            "select": {"mode": "compare", "display": ["trailing_pe", "pb_ratio", "market_cap"]}}
+
+
+def test_compare_mode_shape_sort_and_no_score():
+    res = strategy_from_spec(_compare_ir(), _ds_compare())          # 검증경로(S-SEL 완화 포함)
+    assert res.get("success"), res.get("error")
+    assert res["shape"] == "select" and res["mode"] == "compare"
+    assert {r["symbol"] for r in res["results"]} == {"AAA", "BBB", "CCC"}
+    assert all(c.get("kind") != "score" for c in res["columns"])    # 비교는 score 컬럼 없음
+    assert [r["symbol"] for r in res["results"]] == ["CCC", "AAA", "BBB"]   # market_cap desc
+    assert res["results"][0]["metrics"]["trailing_pe"] == 15.0      # 지표 실측
+    assert res["results"][0].get("last_price") is not None          # forward 브릿지용
+
+
+def test_compare_summary_expands_table():
+    s = summarize_result(strategy_from_spec(_compare_ir(), _ds_compare()))
+    assert "[비교]" in s and "PER" in s                             # 모델이 표를 읽게 전개
+
+
 def test_correlation_excel_rejected():
     """상관(correlation)은 엑셀 비대상 — _build_relation(ic/regression용)으로 흘리지 않고 거부."""
     import pytest

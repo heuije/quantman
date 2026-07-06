@@ -171,8 +171,31 @@ RESEARCH_NEWS_TOOL = {
     },
 }
 
-TOOL_SCHEMAS = [SCREEN_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL, ADJUST_TOOL,
-                RESEARCH_NEWS_TOOL]
+COMPARE_TOOL = {
+    "name": "compare",
+    "description": ("여러 종목을 지표로 **나란히 비교표**로 낸다 — 종목마다 describe를 여러 번 부르지 말고 "
+                    "이 도구 **한 번**으로. '피어/경쟁사 비교'·'A vs B vs C'·'이 종목들 PER·PBR·시총·배당 비교'처럼 "
+                    "지정 종목 여러 개를 같은 지표들로 견줄 때 쓴다(한 번의 호출로 표 완성 — 빠름). "
+                    "symbols(2개+)·metrics(비교할 지표 컬럼, reference_data 참조). 정렬은 sort_by(기본 시총). "
+                    "⚠ 조건으로 *상위를 선별*(스크리닝)하는 건 screen, 특정 종목들을 *나란히 견주는* 건 compare."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "symbols": {"type": "array", "items": {"type": "string"},
+                        "description": "비교할 종목 코드 2개 이상(예: ['005930','000660'])."},
+            "metrics": {"type": "array", "items": {"type": "string"},
+                        "description": ("나란히 비교할 지표 컬럼(예: ['trailing_pe','pb_ratio','market_cap',"
+                                        "'dividend_yield','op_margin','roic']). reference_data의 컬럼명 사용.")},
+            "sort_by": {"type": "string",
+                        "description": "정렬 기준 컬럼(생략=시가총액). 비교라 '승자' 함의는 없다 — 가독용 순서."},
+            "as_of": {"type": "string", "description": "기준 시점(생략=최신). 과거 특정일 비교 시 'YYYY-MM-DD'."},
+        },
+        "required": ["symbols", "metrics"],
+    },
+}
+
+TOOL_SCHEMAS = [SCREEN_TOOL, COMPARE_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL,
+                ADJUST_TOOL, RESEARCH_NEWS_TOOL]
 
 
 # ── IR 조립 ──────────────────────────────────────────────────────────────────
@@ -245,6 +268,20 @@ def assemble_ir(tool_name: str, tool_input: dict) -> dict:
         if tool_input.get("group_by"):
             select["group_by"] = str(tool_input["group_by"])
         return {"universe": universe, "signal": signal, "query": "select", "select": select}
+    if tool_name == "compare":
+        # 지정 종목 나란히 비교 → select mode=compare(랭킹 아님·score 불요). 종목별 describe 폭발을 1콜로.
+        symbols = [str(s).strip() for s in (tool_input.get("symbols") or []) if str(s).strip()]
+        metrics = [str(m).strip() for m in (tool_input.get("metrics") or []) if str(m).strip()]
+        if len(symbols) < 2:
+            raise ValueError("compare는 종목 2개 이상이 필요합니다.")
+        select: dict = {"mode": "compare", "display": metrics}
+        if tool_input.get("sort_by"):
+            select["sort_by"] = str(tool_input["sort_by"])
+        if tool_input.get("as_of"):
+            select["as_of"] = str(tool_input["as_of"])
+        return {"universe": {"kind": "list", "symbols": symbols},
+                "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}},   # nominal(비교는 미평가)
+                "query": "select", "select": select}
     # simulate는 run_simulate가 compile_strategy로 IR을 만든다(assemble 불필요).
     if tool_name == "describe":
         # 단일종목 360 리포트. signal은 리포트가 미사용하나 StrategyIR 스키마 충족용 placeholder.
@@ -571,21 +608,28 @@ def data_source_line(result: dict) -> str:
     if shape == "heatmap" or result.get("query") in ("rotation", "breadth") \
             or shape in ("breadth", "describe_portfolio"):
         parts.append("업종분류(FinanceDataReader KRX-DESC·KSIC 기반)")
+    # 사용 컬럼 = IR 신호/조건 참조 ∪ 결과 표시 지표(select·compare·screen의 display) — 둘 다 출처 판별.
+    cols: set = set()
     ir = result.get("ir")
     if isinstance(ir, dict):
-        cols: set = set()
         _collect_ref_cols(ir.get("signal"), cols)
         _collect_ref_cols(((ir.get("position") or {}).get("exit") or {}).get("condition"), cols)
-        for colset, src in (
-            (set(FLOW_INDICATOR_COLS), "기관·외국인 수급(KRX pykrx)"),
-            (set(CONSENSUS_INDICATOR_COLS), "애널 컨센서스(한경컨센서스)"),
-            (set(FUND_INDICATOR_COLS), "재무·밸류(KR=전자공시 OpenDART·US=SEC EDGAR)"),
-            (set(MARKETCAP_INDICATOR_COLS), "시총·거래대금(KRX Open API)"),
-            (set(SHORTVOL_INDICATOR_COLS), "공매도 거래량(FINRA)"),
-            (set(INSTITUTIONAL_INDICATOR_COLS), "기관 13F 보유(SEC EDGAR)"),
-        ):
-            if cols & colset:
-                parts.append(src)
+    for c in (result.get("columns") or []):
+        if isinstance(c, dict) and c.get("key"):
+            cols.add(c["key"])
+    for colset, src in (
+        (set(FLOW_INDICATOR_COLS), "기관·외국인 수급(KRX pykrx)"),
+        (set(CONSENSUS_INDICATOR_COLS), "애널 컨센서스(한경컨센서스)"),
+        (set(FUND_INDICATOR_COLS), "재무·밸류(KR=전자공시 OpenDART·US=SEC EDGAR)"),
+        (set(MARKETCAP_INDICATOR_COLS), "시총·거래대금(KRX Open API)"),
+        (set(SHORTVOL_INDICATOR_COLS), "공매도 거래량(FINRA)"),
+        (set(INSTITUTIONAL_INDICATOR_COLS), "기관 13F 보유(SEC EDGAR)"),
+    ):
+        if cols & colset:
+            parts.append(src)
+    if cols & {"forward_pe", "eps_forward", "rev_growth", "op_growth", "ni_growth",
+               "op_margin_forward", "roe_forward"}:
+        parts.append("추정실적(FnGuide 컨센서스)")
     return " + ".join(dict.fromkeys(parts))          # 순서보존 dedup
 
 

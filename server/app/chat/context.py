@@ -27,6 +27,39 @@ def _target_symbols(result: dict) -> list[str]:
     return [s for s in syms if s]
 
 
+# forward-estimate 컬럼(FnGuide 추정 스냅샷) — 저장 컬럼이 아니라 estimate_block로 on-demand 브릿지.
+_FORWARD_ESTIMATE_KEYS = {"forward_pe", "eps_forward", "rev_growth", "op_growth", "ni_growth",
+                          "op_margin_forward", "roe_forward"}
+
+
+def _fill_forward_estimates(result: dict) -> None:
+    """compare 결과 행의 요청된 forward-estimate 지표(forward_pe 등)를 estimate_block로 채운다.
+
+    엔진이 None으로 둔(저장 컬럼 아님) 값만 채우고 실측 값은 덮지 않는다. 종목별 on-demand
+    (get=load-or-fetch·캐시)·실패/무추정은 None 유지(가짜 0 금지). 이 서버측 팬아웃이 '종목마다
+    describe' LLM 왕복 폭발을 비교 1콜 안으로 흡수하는 핵심(FnGuide 컨센서스 KR).
+    """
+    rows = result.get("results") or []
+    wanted = {c.get("key") for c in (result.get("columns") or [])} & _FORWARD_ESTIMATE_KEYS
+    if not rows or not wanted:
+        return
+    for row in rows:
+        metrics = row.get("metrics")
+        if not isinstance(metrics, dict) or all(metrics.get(k) is not None for k in wanted):
+            continue
+        code = str(row.get("code") or row.get("symbol") or "")
+        if not code:
+            continue
+        try:
+            blk = estimate_kr.estimate_block(code, last_price=row.get("last_price"))
+        except Exception:   # noqa: BLE001 — 종목 하나의 추정 실패가 표 전체를 깨지 않게
+            continue
+        fwd = (blk or {}).get("forward") or {}
+        for k in wanted:
+            if metrics.get(k) is None and fwd.get(k) is not None:
+                metrics[k] = fwd[k]
+
+
 def attach_context(result: dict) -> dict:
     """성공한 분석 결과에 준실시간 시세·뉴스 context를 best-effort로 붙인다(엔진 밖·골든 무누출).
 
@@ -45,6 +78,12 @@ def attach_context(result: dict) -> dict:
                 ctx["quotes"] = quotes
         except Exception:   # noqa: BLE001 — 부가 시세 실패가 결과를 깨지 않게
             pass
+
+    # 비교표(select mode=compare)에 forward 추정(P1) — 사용자가 metrics에 forward_pe 등 forward-estimate
+    # 컬럼을 요청하면 엔진은 저장 컬럼이 아니라 None을 낸다. FnGuide 추정 스냅샷(estimate_block)으로
+    # 종목별 채운다(서버 엣지·on-demand·N종목을 이 1콜 안에서 — LLM 왕복 폭발을 서버로 흡수). best-effort.
+    if result.get("mode") == "compare":
+        _fill_forward_estimates(result)
 
     if result.get("shape") == "describe_single":
         try:

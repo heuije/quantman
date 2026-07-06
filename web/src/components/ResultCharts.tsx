@@ -409,13 +409,15 @@ function _selFmt(v: unknown, col: SelCol): string {
 const _selLeft = (key: string) => key === "name" || key === "code" || key === "sector" || key === "symbol";
 
 export function RankedListChart({ results, columns, scoring, groups, as_of, universe_size, eligible_size }: {
-  results: SelRow[]; columns?: SelCol[]; scoring?: { recipe?: string };
+  results: SelRow[]; columns?: SelCol[]; scoring?: { recipe?: string; mode?: string };
   groups?: { group: string; results: SelRow[] }[];
   as_of?: string; universe_size?: number; eligible_size?: number;
 }) {
   const rows = results ?? [];
+  const compare = scoring?.mode === "compare";   // 비교표(랭킹 아님) — '순위/점수' 대신 '비교' 프레이밍
+  const title = compare ? "종목 비교" : "저평가 선별";
   if (!rows.length) {
-    return <Box title="저평가 선별" sub="조건을 만족하는 종목이 없습니다."><div /></Box>;
+    return <Box title={title} sub={compare ? "비교할 종목이 없습니다." : "조건을 만족하는 종목이 없습니다."}><div /></Box>;
   }
   // 계약 columns 우선, 없으면 폴백(이름·코드·섹터·점수 + metric 합집합).
   const cols: SelCol[] = columns?.length ? columns : (() => {
@@ -425,8 +427,10 @@ export function RankedListChart({ results, columns, scoring, groups, as_of, univ
             { key: "sector", label: "섹터" }, { key: "score", label: "점수" },
             ...mk.map((k) => ({ key: k, label: mlabel(k) }))];
   })();
-  const cap = `${as_of ?? "—"} 기준 · 전체 ${universe_size ?? "—"} 중 자격 ${eligible_size ?? "—"} → 상위 ${rows.length}`
-    + (scoring?.recipe ? ` · 점수: ${scoring.recipe}` : "");
+  const cap = compare
+    ? `${as_of ?? "—"} 기준 · ${rows.length}종목 비교` + (scoring?.recipe ? ` · ${scoring.recipe}` : "")
+    : `${as_of ?? "—"} 기준 · 전체 ${universe_size ?? "—"} 중 자격 ${eligible_size ?? "—"} → 상위 ${rows.length}`
+      + (scoring?.recipe ? ` · 점수: ${scoring.recipe}` : "");
 
   const Tbl = ({ rs, hideSector }: { rs: SelRow[]; hideSector?: boolean }) => {
     const cs = hideSector ? cols.filter((c) => c.key !== "sector") : cols;
@@ -434,7 +438,7 @@ export function RankedListChart({ results, columns, scoring, groups, as_of, univ
       <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
           <thead><tr>
-            <th style={thStyle}>순위</th>
+            <th style={thStyle}>{compare ? "#" : "순위"}</th>
             {cs.map((c) => (
               <th key={c.key} style={{ ...thStyle, textAlign: _selLeft(c.key) ? "left" : "right" }}>{c.label}</th>
             ))}
@@ -457,7 +461,7 @@ export function RankedListChart({ results, columns, scoring, groups, as_of, univ
   };
 
   return (
-    <Box title="저평가 선별" sub={cap}>
+    <Box title={title} sub={cap}>
       {groups?.length
         ? groups.map((g) => (
             <div key={g.group} style={{ marginBottom: 14 }}>

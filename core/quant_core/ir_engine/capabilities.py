@@ -188,9 +188,17 @@ def capability_spec() -> dict:
         # SELECT 동사 전용 설정 — query="select"일 때만. as-of 단면 랭킹 스크리닝의 모양 제어.
         "select": {
             "field": "select",
-            "does": "SELECT 동사 설정 — as_of(기준시점·기본 latest)·top_n|top_pct·descending·display(근거 지표).",
+            "does": "SELECT 동사 설정 — as_of(기준시점·기본 latest)·top_n|top_pct·descending·display(근거 지표)·mode.",
             "use_for": "스크리닝 결과 모양 제어. 저PBR=descending:false, 고배당=descending:true 등.",
         },
+        "select_mode": [
+            {"value": "rank", "does": "score를 횡단 랭크해 상위 N 선별(기본 — 스크리닝)",
+             "use_for": "조건 맞는 상위 종목 선별."},
+            {"value": "compare",
+             "does": "지정 종목을 display 지표로 나란히 비교(랭킹 아님·score·top 불요)",
+             "use_for": "'피어·A vs B vs C 비교'. universe.kind=list + select.display=[지표] + sort_by(가독 정렬). "
+                        "종목마다 describe로 폭발하던 표형 비교를 1콜로 접는다."},
+        ],
         # 스터디(study) — 질문을 한 축(axis)으로 펼치고 환원(reduction)한다. axis·reduction은 직교.
         # 기본은 단일 실행(axis='none'·reduction='enumerate'). 펼침은 명시 요청 시에만.
         "study_axis": [
