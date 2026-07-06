@@ -390,6 +390,7 @@ def _initial_reports_refresh():
 # (get_market_net_purchases_of_equities_by_ticker·1콜/시장/투자자)로 근본 전환(로컬 blocked=0 실증).
 # 수집은 marketcap_krx와 동일하게 날짜축 cursor 백필(DateCursorBackfill — 컨센서스·KRX와 동일 문법).
 _FLOW_WINDOW_DAYS = 60      # 일별 4콜/평일 × ~43평일 ≈ 172콜·throttle 0.2s → ~40s/청크
+_SHORTBAL_WINDOW_DAYS = 60  # 공매도 잔고: 일별 2콜/평일(시장) × ~43평일 ≈ 86콜/청크(flow의 절반)
 
 
 def _backfill_flow_chunk() -> None:
@@ -437,6 +438,53 @@ def _initial_flow_refresh():
         _backfill_flow_chunk()
     except Exception:
         _log.exception("KR 수급 초기 청크 예외 — 10분 cron 재시도")
+
+
+# ── 공매도 잔고(KRX pykrx 로그인, 일별 전종목) ────────────────────────────────
+# 옛 웹 경로(krdata._shorting: KRX MDC OTP→CSV·종목당 1콜·재배포마다 콜드 재크롤)를 대체.
+# flow_kr와 동형(일별 전종목·날짜 cursor 백필·부분 전진 금지). 웹 kr_extras가 피드 우선 서빙.
+def _backfill_shortbal_chunk() -> None:
+    """KR 공매도 잔고 백필 청크 — 일별 전종목(pykrx) 60일 창 today→2010 역순 1청크.
+    KRX_ID/PW 미설정 시 no-op. 성공 시만 cursor 전진(실패면 커서 유지·같은 윈도우 재시도)."""
+    from quant_core import data_fetcher
+    from quant_core.data.feeds import short_balance_kr
+    if not short_balance_kr._has_login():
+        return
+    bf = DateCursorBackfill(cursor_path=data_fetcher.DATA_DIR / "_shortbal.cursor",
+                            floor=CORE_FLOOR_COMPACT, window_days=_SHORTBAL_WINDOW_DAYS)
+    win = bf.next_window()
+    if win is None:
+        return                                       # 백필 완료 — 무비용
+    start, end = win
+    res = short_balance_kr.fetch_range(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+    if not res.get("ok"):
+        _log.warning("[altdata] KR 공매도 잔고 백필 실패(%s~%s) — cursor 유지·재시도", start, end)
+        return
+    bf.advance(start)
+    _log.info("[altdata] KR 공매도 잔고 백필(pykrx 일별전종목) %s~%s: %s", start, end, res)
+
+
+def _refresh_shortbal() -> None:
+    """일일 공매도 잔고 증분 — 최근 7일 재수집·merge(16:30 KST, KRX 마감 후·T+2 잔고 반영)."""
+    from datetime import date, timedelta
+    from quant_core.data.feeds import short_balance_kr
+    if not short_balance_kr._has_login():
+        return
+    end = date.today()
+    res = short_balance_kr.fetch_range((end - timedelta(days=7)).strftime("%Y%m%d"),
+                                       end.strftime("%Y%m%d"))
+    if res.get("ok"):
+        _log.info("[altdata] KR 공매도 잔고 증분(pykrx 일별전종목) ~%s: %s", end, res)
+
+
+def _initial_shortbal_refresh():
+    import time
+    try:
+        time.sleep(90)
+        _log.info("KR 공매도 잔고(pykrx) 초기 백필 청크 시작")
+        _backfill_shortbal_chunk()
+    except Exception:
+        _log.exception("KR 공매도 잔고 초기 청크 예외 — 10분 cron 재시도")
 
 
 # ── KR OHLCV 깊이 백필(FDR, 무키) ─────────────────────────────────────────────
@@ -1172,6 +1220,15 @@ def _build_scheduler() -> BackgroundScheduler:
         lambda: _run_with_retry("flow_daily", _refresh_flow, scheduler),
         CronTrigger(hour=16, minute=30),
         id="flow_daily", replace_existing=True)
+    # KR 공매도 잔고(pykrx, KRX_ID/PW 필요) — 10분 백필 청크 + 16:35 일일 증분(KRX 마감 후).
+    scheduler.add_job(
+        lambda: _run_with_retry("shortbal_chunk", _backfill_shortbal_chunk, scheduler),
+        CronTrigger(minute="7-59/10"),           # :07,:17… — 다른 10분 cron과 스태거
+        id="shortbal_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("shortbal_daily", _refresh_shortbal, scheduler),
+        CronTrigger(hour=16, minute=35),
+        id="shortbal_daily", replace_existing=True)
 
     # KR OHLCV 깊이 백필(FDR, 무키) — 10분 청크로 기존 종목을 2010까지 소급 prepend.
     # 일일 dataset_kr 증분은 앞으로만 가서 과거를 못 채움 → 별도 백필이 그 갭만 메움(완료 시 0비용).
@@ -1316,6 +1373,7 @@ async def lifespan(app: FastAPI):
     _bg("kr_fundamentals", _initial_kr_fundamentals_refresh, delay=300)
     _bg("reports", _initial_reports_refresh, delay=690)        # 네이버 리포트 초기 증분(백필은 10분 chunk cron)
     _bg("flow", _initial_flow_refresh, delay=330)
+    _bg("shortbal", _initial_shortbal_refresh, delay=420)      # 공매도 잔고 초기 백필(flow 뒤 스태거)
     _bg("krx_market", _initial_krx_market_refresh, delay=330)
     _bg("dataset_refresh", _initial_dataset_refresh, delay=360)
     # bundle packaging은 _refresh_global_dataset/_refresh_kr_dataset 끝에서

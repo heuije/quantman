@@ -427,11 +427,42 @@ def _shorting(code: str, _day: str) -> list[dict]:
     return out[:30]
 
 
+@lru_cache(maxsize=256)
+def _shorting_from_feed(code: str, _day: str) -> list[dict]:
+    """short_balance_kr 볼륨 → 공매도 잔고 최근 30거래일 [{date, bal_qty, bal_amt, bal_ratio}].
+    newest-first(웹 shorting[0]=최신·date.slice(5) 계약). 미커버는 []."""
+    from quant_core.data.feeds import short_balance_kr
+    df = short_balance_kr.load_short_balance(code)
+    if df is None or df.empty:
+        return []
+    df = df.copy()
+    df.index = pd.to_datetime(df.index, errors="coerce")
+    df = df[df.index.notna()].sort_index(ascending=False).head(30)
+    out: list[dict] = []
+    for ts, row in df.iterrows():
+        out.append({
+            "date": ts.strftime("%Y-%m-%d"),
+            "bal_qty": _int(row.get("bal_qty")),
+            "bal_amt": _int(row.get("bal_amt")),
+            "bal_ratio": _num(row.get("bal_ratio")),
+        })
+    return out
+
+
 def shorting(code: str) -> list[dict]:
+    """공매도 잔고 최근 시계열 [{date, bal_qty, bal_amt, bal_ratio}]. 데이터엔진 피드(short_balance_kr
+    볼륨·재배포 생존) 우선 + 라이브 KRX(MDC OTP→CSV) 폴백(미커버·신규상장). 옛 매 요청 라이브 크롤
+    (in-memory lru·재배포마다 콜드 재크롤)을 볼륨 서빙으로 대체 — kr_extras/summary 로딩 단축."""
     try:
-        return _shorting(code, date.today().isoformat())
+        rows = _shorting_from_feed(code, date.today().isoformat())
+        if rows:
+            return rows
     except Exception as e:
-        _log.warning("공매도 fetch 실패 %s: %s", code, e)
+        _log.warning("공매도 피드 서빙 실패 %s: %s", code, e)
+    try:
+        return _shorting(code, date.today().isoformat())            # 라이브 폴백(볼륨 미커버)
+    except Exception as e:
+        _log.warning("공매도 라이브 폴백 실패 %s: %s", code, e)
         return []
 
 
