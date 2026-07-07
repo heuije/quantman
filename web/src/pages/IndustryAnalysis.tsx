@@ -1792,7 +1792,7 @@ export default function IndustryAnalysis() {
         if (extras.length) groups.push({ label: "기타", items: extras });
         const cur = groups.find((g) => g.label === openSector) || groups.find((g) => groupIndustries(g).length) || groups[0];
         // 그레이 네이비 팔레트 — 대분류 탭/패널 공용(활성 탭이 패널과 같은 색으로 '연결')
-        const GN_BG = "#1a2436", GN_BD = "#33425e";
+        const GN_BG = "var(--gn-bg)", GN_BD = "var(--gn-bd)";   // 테마 토큰(라이트=밝은 네이비 틴트+어두운 글자)
         // 대분류 = 그레이 네이비 직사각형 탭. 클릭 시 펼침 + 단일 산업이면 바로 로드.
         const secBtn = (g: IndustryGroup) => {
           const on = !!cur && g.label === cur.label;

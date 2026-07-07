@@ -4,6 +4,23 @@ import type { CompileQuota } from "../api";
 import type { ChatMessage, ChatPart } from "../types";
 import ChatResultView from "../components/ChatResultView";
 
+// 라인 아이콘(상단 네비와 동일 스타일 — currentColor stroke)
+const SIc = ({ d }: { d: string }) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
+);
+
+// 빈 화면 스타터 — 어시스턴트의 실제 역량 3갈래(분석·스크리닝·백테스트)를 구체 예시 프롬프트로.
+// 클릭하면 그대로 전송된다(무엇을 물어야 할지 모르는 첫 사용자의 진입 장벽 제거).
+const STARTERS: { label: string; icon: string; prompts: string[] }[] = [
+  { label: "종목 분석", icon: "M3 3v18h18 M7 14l3-4 4 3 5-7",
+    prompts: ["삼성전자 실적과 밸류에이션을 요약해줘", "최근 외국인이 많이 사는 종목 알려줘"] },
+  { label: "조건 스크리닝", icon: "M3 4h18 M6 9h12 M9 14h6 M11 19h2",
+    prompts: ["PER 10배 이하·ROE 15% 이상 저평가주 골라줘", "52주 신고가를 돌파한 코스닥 종목"] },
+  { label: "전략 백테스트", icon: "M4 19V5 M4 19h16 M8 16l3-5 3 2 4-7",
+    prompts: ["20일선 돌파 매수·5% 익절 전략을 백테스트해줘", "RSI 30 이하 매수 전략의 최근 3년 성과"] },
+];
+
 // memo — 스트리밍 중 텍스트 델타로 메시지가 갱신돼도 참조가 안 바뀐 tool_result(차트) 파트는
 // 재렌더하지 않는다(델타마다 차트 재렌더되는 렉 회피).
 const PartView = memo(function PartView({ part }: { part: ChatPart }) {
@@ -112,8 +129,8 @@ export default function ChatLab() {
     } catch { setError("삭제에 실패했습니다."); }
   }
 
-  async function send() {
-    const text = input.trim();
+  async function send(preset?: string) {
+    const text = (preset ?? input).trim();
     if (!text || busy) return;
     setBusy(true); setError(null);
     setInput("");
@@ -177,12 +194,23 @@ export default function ChatLab() {
         ))}
       </aside>
       <div className="chat-lab">
-      <h1 className="chat-title">전략 연구소 <span className="chat-beta">챗봇 베타</span></h1>
-      <p className="chat-sub muted">자연어로 종목 분석·백테스트를 요청하고 대화하세요.</p>
       <div className="chat-thread" ref={threadRef}>
         {messages.length === 0 && (
-          <div className="chat-empty muted">
-            예: "저평가 반도체주 3개 골라줘" · "삼성전자 20일선 돌파 매수 전략 백테스트해줘"
+          <div className="chat-welcome">
+            <div className="chat-welcome-eyebrow">AI 리서치 어시스턴트</div>
+            <h2 className="chat-welcome-title">무엇을 리서치할까요?</h2>
+            <p className="chat-welcome-lead">아래 예시로 시작하거나, 원하는 종목·조건·전략을 직접 입력하세요.</p>
+            <div className="chat-starters">
+              {STARTERS.map((s) => (
+                <div key={s.label} className="chat-starter">
+                  <div className="chat-starter-head"><span className="chat-starter-ic"><SIc d={s.icon} /></span>{s.label}</div>
+                  {s.prompts.map((p) => (
+                    <button key={p} type="button" className="chat-starter-chip"
+                      onClick={() => void send(p)} disabled={busy}>{p}</button>
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
         )}
         {messages.map((m, i) => {

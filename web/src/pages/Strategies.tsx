@@ -92,10 +92,6 @@ export default function Strategies() {
   return (
     <div>
       <h1 className="page-title">내 전략</h1>
-      <p className="page-sub">
-        백테스트로 연구·검증하고, 준비되면 트레이딩에 연동하세요.
-        <span className="muted"> (실행 손익은 트레이딩 탭에서)</span>
-      </p>
 
       {err && <div className="error">{err}</div>}
       {!loaded && <p className="muted">불러오는 중…</p>}
@@ -103,9 +99,6 @@ export default function Strategies() {
       {loaded && rows.length === 0 && (
         <div className="panel empty-state">
           <div className="empty-title">아직 저장된 전략이 없습니다</div>
-          <p className="muted">
-            전략 연구소에서 블록을 조립해 신호·진입·청산을 만들고 백테스트로 검증한 뒤 저장하세요.
-          </p>
           <Link to="/lab"><button>전략 연구소로 이동</button></Link>
         </div>
       )}

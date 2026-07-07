@@ -373,16 +373,31 @@ def refresh(code: str) -> dict:
 
 
 def _quality_ok(cached: dict) -> bool:
-    """저장본 품질 — 연간 5개년 + 분기 8개 이상이어야 '완전'으로 취급.
+    """저장본 품질 — 연간 5개년 + 분기 8개 이상 + 주요계정 값 온전이어야 '완전'으로 취급.
 
     DART 일시 실패(연결 리셋·rate-limit)나 CFS 하드코딩 시절(연결 미작성 법인 실패)의
     FnGuide 3개년 폴백이 저장되면 _FRESH_DAYS(80일) 동안 그대로 서빙돼 코드 수정이
     반영되지 않았다(1주간 미해결의 원인). 품질 미달본은 신선해도 하루 1회 재크롤한다.
     (재크롤 결과가 같아도 fetched=오늘로 저장 → 당일 재시도 없음 — 신생 상장사처럼
     원천이 3개년뿐인 종목의 무한 재크롤 방지.)"""
-    a = ((cached.get("annual") or {}).get("PL") or {}).get("periods") or []
+    an = (cached.get("annual") or {}).get("PL") or {}
+    a = an.get("periods") or []
     q = ((cached.get("quarterly") or {}).get("PL") or {}).get("periods") or []
-    return len(a) >= 5 and len(q) >= 8
+    if len(a) < 5 or len(q) < 8:
+        return False
+    # 열화 탐지: 당기순이익이 '법인세차감전순이익이 있는 기간'에 비어 있으면 계정 병합버그로
+    # 과거연도가 유실된 저장본(placeholder account_id 수정 前 캐시)이다 — 재크롤 대상.
+    # 신생 상장사처럼 원천이 짧아 둘 다 비는 경우는 열화가 아니다(둘 다 None → 통과).
+    rows = an.get("rows") or []
+    def _vals(canon):
+        for r in rows:
+            if r.get("canon") == canon:
+                return r.get("values") or []
+        return []
+    ni, pre = _vals("당기순이익"), _vals("법인세비용차감전순이익")
+    if ni and pre and any(p is not None and n is None for n, p in zip(ni, pre)):
+        return False
+    return True
 
 
 def _load_or_fetch(code: str) -> dict:
