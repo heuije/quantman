@@ -86,7 +86,13 @@ class _Stream:
 
     @property
     def text_stream(self):
-        return iter(())
+        # 최종 메시지의 text 블록을 delta로 흘려보낸다 → agent 루프의 `for delta in text_stream:
+        # yield ("delta",…)`가 실행돼 웹(onDelta)에 최종 텍스트가 표시된다(프로덕션 실 API 스트리밍과
+        # 동일한 관찰가능 동작). tool_use 블록은 제외 → 도구 라운드는 안 흘리고 텍스트 라운드만.
+        # (shim은 claude -p 블로킹 후 전체 텍스트를 한 번에 확보 → 한 델타로 방출.)
+        for b in self._m.content:
+            if getattr(b, "type", None) == "text" and b.text:
+                yield b.text
 
     def get_final_message(self) -> _Message:
         return self._m
@@ -101,7 +107,7 @@ def _model_alias(model: str | None) -> str:
         return "haiku"
     if "opus" in m:
         return "opus"
-    return "sonnet"   # CHAT_MODEL(claude-sonnet-5) 등 기본
+    return "claude-sonnet-5"   # 프로덕션 CHAT_MODEL과 티어 일치. "sonnet" 별칭은 Sonnet 4.6로 풀려 프로덕션(Sonnet 5)과 어긋남(로컬 검증용 정합).
 
 
 def _join_system(system) -> str:
