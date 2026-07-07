@@ -98,7 +98,7 @@ def serialize_ir_result(res: dict) -> tuple[dict, str]:
         out = {"success": True, "axis": res["axis"], "warnings": res.get("warnings", [])}
         for k in ("buckets", "overall", "axes", "metrics", "compare", "consistency", "windows",
                   "by_regime", "n_events", "basis", "by_window", "relation", "factor_names",
-                  "composition", "shape"):
+                  "composition", "shape", "n_symbols", "query"):
             if k in res and res[k] is not None:
                 out[k] = res[k]
         return clean_json(out), "axis"

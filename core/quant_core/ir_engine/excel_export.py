@@ -138,6 +138,8 @@ def build_strategy_excel(
         return _build_extremize(ir, dataset, result, disp)
     if axis == "period_split":
         return _build_period_split(ir, dataset, result, disp)
+    if result.get("shape") == "cohort":   # 종목 코호트(다종목 이벤트스터디) — axis="asset"지만 버킷이
+        return _build_cohort(ir, dataset, result, disp)   # 이벤트스터디값(n_events·overall) → sweep보다 먼저
     if axis in ("parameter", "asset"):
         return _build_sweep(ir, dataset, result, disp)
     if axis == "condition":
@@ -335,13 +337,79 @@ def _signal_lag(node, raw_of) -> int:
     return max([_signal_lag(v, raw_of) for v in ins.values()], default=0)
 
 
-def _signal_panel(wb: "Workbook", ird: dict, equity, roles: dict,
-                  raw_col_map: dict, disp: str) -> str | None:
-    """신호·결정 라이브 패널 — 신호값·포지션을 입력(원자료)에서 셀로 독립 재현.
+def _raw_data_sheet(wb: "Workbook", ir, dataset: dict, roles: dict, index, disp: str) -> dict:
+    """원자료 시트 — 전략이 소비한 **전체 일별 시계열**(대상 OHLC + 외부피드 + 신호 종가). 역할 태깅.
+
+    index=일별 DatetimeIndex(SIMULATE=equity.index·EVENT=대상 종목 원본 인덱스). 반환 raw_col_map
+    {(sym,field): 열문자} — 신호패널이 셀 참조에 쓴다. **SIMULATE·EVENT 공용** — 증빙 요구('전체
+    시계열 + 어느 행이 신호를 켰나')를 두 분석이 동일하게 받도록(P3-b GAP-1)."""
+    bold = Font(bold=True)
+    title_font = Font(bold=True, size=14, color="20201D")
+    italic = Font(italic=True, color=_NOTE)
+    head_fill = PatternFill("solid", fgColor=_HEAD_BG)
+    border = _thin_border()
+    center = Alignment(horizontal="center")
+    n = len(index)
+    idx_list = list(index)
+
+    raw = wb.create_sheet("원자료")
+    raw.cell(1, 1, f"원자료 — 입력 데이터 ({disp})").font = title_font
+    raw.cell(2, 1, "전략이 소비한 데이터 전부. 대상=OHLC(거래·마킹 기준)·신호=종가(결정 입력). 거래 안 해도 신호면 포함.").font = italic
+    # 컬럼 계획: 날짜 | 대상 OHLC… | 신호 종가… (역할 라벨)
+    plan: list[tuple[str, str, str]] = []   # (헤더라벨, 심볼, 필드)
+    ext_cols = _referenced_external_cols(ir)   # IR 참조 외부 피드 원자료(수급 등) — OHLC로 재현 불가
+    for s in roles["subject"]:
+        for field, fl in (("Open", "시가"), ("High", "고가"), ("Low", "저가"), ("Close", "종가")):
+            plan.append((f"{s} {fl}(대상)", s, field))
+        # 대상 종목의 외부 피드 원자료(기관/외인 순매수 등)를 원시값으로 — 증빙(독립 검증) 필수.
+        df_s = dataset.get(s)
+        if isinstance(df_s, pd.DataFrame):
+            for col in ext_cols:
+                if col in df_s.columns:
+                    lab = INDICATOR_META.get(col, {}).get("label", col)
+                    plan.append((f"{s} {lab}", s, col))
+    for s in roles["signal"]:
+        plan.append((f"{s} 종가(신호)", s, "Close"))
+    raw.cell(5, 1, "날짜").font = bold
+    raw.cell(5, 1).fill = head_fill
+    raw.cell(5, 1).border = border
+    series: dict[int, pd.Series] = {}
+    for j, (label, s, field) in enumerate(plan):
+        c = raw.cell(5, 2 + j, label)
+        c.font = bold
+        c.fill = head_fill
+        c.border = border
+        c.alignment = center
+        df = dataset.get(s)
+        if isinstance(df, pd.DataFrame) and field in df.columns:
+            series[j] = df[field].reindex(index)
+    for i in range(n):
+        r = 6 + i
+        raw.cell(r, 1, pd.Timestamp(idx_list[i]).to_pydatetime()).number_format = "yyyy-mm-dd"
+        for j in range(len(plan)):
+            ser = series.get(j)
+            v = ser.iloc[i] if ser is not None else None
+            cell = raw.cell(r, 2 + j, None if v is None or pd.isna(v) else float(v))
+            cell.number_format = "#,##0.00"
+    raw.column_dimensions["A"].width = 12
+    for j in range(len(plan)):
+        raw.column_dimensions[get_column_letter(2 + j)].width = 12
+    raw.freeze_panes = "B6"
+    return {(s, field): get_column_letter(2 + j)
+            for j, (_lab, s, field) in enumerate(plan)}
+
+
+def _signal_panel(wb: "Workbook", signal_node, index, roles: dict,
+                  raw_col_map: dict, disp: str, *, sheet_name: str = "신호·결정",
+                  note: str | None = None, decision_label: str = "포지션 점수(룰)",
+                  decision_wrap=None, decision_fmt: str = "0.00") -> str | None:
+    """신호·결정 라이브 패널 — 신호값·결정을 입력(원자료)에서 셀로 독립 재현.
 
     렌더 성공→None, 불가→**사유 문자열**(F4: 지표·설명에 구체 표면화). 단일 대상 전략·지원 지표·
-    지원 op만(다중대상·미지원 지표/연산은 셀 재현 불가 → 생략). 틀린 수식은 없느니만 못함(원칙1)."""
-    sig = ird.get("signal")
+    지원 op만(다중대상·미지원 지표/연산은 셀 재현 불가 → 생략). 틀린 수식은 없느니만 못함(원칙1).
+    signal_node=재현할 신호 트리(SIMULATE=전략 signal·EVENT=study.event 조건). decision_wrap이
+    있으면 결정 수식을 감싼다(EVENT: `IF(조건,1,0)` = 어느 행이 신호를 켰나 · P3-b GAP-1)."""
+    sig = signal_node
     subjects = list(roles.get("subject") or [])
     if not isinstance(sig, dict):
         return "신호 정의 없음"
@@ -363,7 +431,7 @@ def _signal_panel(wb: "Workbook", ird: dict, equity, roles: dict,
             return f"원자료 열 없음 — '{ref}'"
         raw_of[ref] = (col, _IND_LAG.get(ind, 0), ind)
     ref_to_col = {ref: get_column_letter(2 + i) for i, ref in enumerate(refs)}
-    n = len(equity)
+    n = len(index)
     first = 6
     maxlag = _signal_lag(sig, raw_of)
     if n <= maxlag:
@@ -377,13 +445,13 @@ def _signal_panel(wb: "Workbook", ird: dict, equity, roles: dict,
     head_fill = PatternFill("solid", fgColor=_HEAD_BG)
     border = _thin_border()
     center = Alignment(horizontal="center")
-    idx_list = list(equity.index)
+    idx_list = list(index)
     pos_col_i = 2 + len(refs)
-    ps = wb.create_sheet("신호·결정")
-    ps.cell(1, 1, f"신호·결정 (라이브 재현) — {disp}").font = title_font
-    ps.cell(2, 1, "신호값·포지션을 입력(원자료)에서 셀 수식으로 독립 재현 — 엔진과 별개 검산. "
+    ps = wb.create_sheet(sheet_name)
+    ps.cell(1, 1, f"{sheet_name} (라이브 재현) — {disp}").font = title_font
+    ps.cell(2, 1, note or "신호값·포지션을 입력(원자료)에서 셀 수식으로 독립 재현 — 엔진과 별개 검산. "
                   "실제 체결(신호→주문 지연·청산 룰)은 '거래내역'이 정본. 점수 양수=롱·음수=숏·0=관망.").font = italic
-    headers = ["날짜", *[f"{ref} (신호값)" for ref in refs], "포지션 점수(룰)"]
+    headers = ["날짜", *[f"{ref} (신호값)" for ref in refs], decision_label]
     for j, h in enumerate(headers):
         c = ps.cell(5, 1 + j, h)
         c.font = bold
@@ -398,7 +466,8 @@ def _signal_panel(wb: "Workbook", ird: dict, equity, roles: dict,
         for j, ref in enumerate(refs):
             col, _lg, ind = raw_of[ref]
             ps.cell(r, 2 + j, _ind_excel(ind, col, r)).number_format = "0.0000"
-        ps.cell(r, pos_col_i, "=" + _signal_to_excel(sig, ref_to_col, raw_of, r)).number_format = "0.00"
+        body = _signal_to_excel(sig, ref_to_col, raw_of, r)
+        ps.cell(r, pos_col_i, "=" + (decision_wrap(body) if decision_wrap else body)).number_format = decision_fmt
     ps.column_dimensions["A"].width = 12
     for j in range(len(refs) + 1):
         ps.column_dimensions[get_column_letter(2 + j)].width = 18
@@ -546,58 +615,12 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
         tr.column_dimensions[col].width = w
     tr.freeze_panes = "A5"
 
-    # ── 시트 3: 원자료 (입력 데이터 — 대상 OHLC + 신호 종가, 역할 태깅) ──────────
-    # ★ 재설계(excel-export-redesign): 출력(거래종목 _held_symbols)이 아니라 '전략이 쓴 데이터
-    #   전부'(입력). 신호 참조 종목(크로스에셋 등)은 거래 안 해도 입력이므로 포함 — 신호 검증 가능.
+    # ── 시트 3: 원자료 + 시트 4: 신호·결정 (입력 전체 시계열 + 신호 라이브 재현) ──────
+    # ★ 재설계(excel-export-redesign): 출력(거래종목)이 아니라 '전략이 쓴 데이터 전부'(입력).
+    #   추출: _raw_data_sheet·_signal_panel은 SIMULATE·EVENT 공용(P3-b GAP-1 증빙 동등 대우).
     roles = _input_symbols_by_role(ir, dataset)
-    raw = wb.create_sheet("원자료")
-    raw.cell(1, 1, f"원자료 — 입력 데이터 ({disp})").font = title_font
-    raw.cell(2, 1, "전략이 소비한 데이터 전부. 대상=OHLC(거래·마킹 기준)·신호=종가(결정 입력). 거래 안 해도 신호면 포함.").font = italic
-    # 컬럼 계획: 날짜 | 대상 OHLC… | 신호 종가… (역할 라벨)
-    plan: list[tuple[str, str, str]] = []   # (헤더라벨, 심볼, 필드)
-    ext_cols = _referenced_external_cols(ir)   # IR 참조 외부 피드 원자료(수급 등) — OHLC로 재현 불가
-    for s in roles["subject"]:
-        for field, fl in (("Open", "시가"), ("High", "고가"), ("Low", "저가"), ("Close", "종가")):
-            plan.append((f"{s} {fl}(대상)", s, field))
-        # 대상 종목의 외부 피드 원자료(기관/외인 순매수 등)를 원시값으로 — 증빙(독립 검증) 필수.
-        df_s = dataset.get(s)
-        if isinstance(df_s, pd.DataFrame):
-            for col in ext_cols:
-                if col in df_s.columns:
-                    lab = INDICATOR_META.get(col, {}).get("label", col)
-                    plan.append((f"{s} {lab}", s, col))
-    for s in roles["signal"]:
-        plan.append((f"{s} 종가(신호)", s, "Close"))
-    raw.cell(5, 1, "날짜").font = bold
-    raw.cell(5, 1).fill = head_fill
-    raw.cell(5, 1).border = border
-    series: dict[int, pd.Series] = {}
-    for j, (label, s, field) in enumerate(plan):
-        c = raw.cell(5, 2 + j, label)
-        c.font = bold
-        c.fill = head_fill
-        c.border = border
-        c.alignment = center
-        df = dataset.get(s)
-        if isinstance(df, pd.DataFrame) and field in df.columns:
-            series[j] = df[field].reindex(equity.index)
-    for i in range(n):
-        r = 6 + i
-        raw.cell(r, 1, pd.Timestamp(idx_list[i]).to_pydatetime()).number_format = "yyyy-mm-dd"
-        for j in range(len(plan)):
-            ser = series.get(j)
-            v = ser.iloc[i] if ser is not None else None
-            cell = raw.cell(r, 2 + j, None if v is None or pd.isna(v) else float(v))
-            cell.number_format = "#,##0.00"
-    raw.column_dimensions["A"].width = 12
-    for j in range(len(plan)):
-        raw.column_dimensions[get_column_letter(2 + j)].width = 12
-    raw.freeze_panes = "B6"
-
-    # ── 시트: 신호·결정 (L2 — 신호값·포지션을 원자료에서 라이브 재현, 공통 지표·단일대상 한정) ──
-    raw_col_map = {(s, field): get_column_letter(2 + j)
-                   for j, (_lab, s, field) in enumerate(plan)}
-    panel_reason = _signal_panel(wb, _ir_dict(ir), equity, roles, raw_col_map, disp)
+    raw_col_map = _raw_data_sheet(wb, ir, dataset, roles, equity.index, disp)
+    panel_reason = _signal_panel(wb, _ir_dict(ir).get("signal"), equity.index, roles, raw_col_map, disp)
 
     # ── 시트 4: 일별비중 (엔진 EOD 기여 비중) · 패널 있을 때만 생성 ───────────────
     # 단일종목/방향성 백테스트는 엔진이 weight 패널을 내지 않음 → 빈 시트 대신 생략(죽은 시트 제거).
@@ -1246,6 +1269,62 @@ def _build_relation(ir, dataset, result, disp: str) -> bytes:
     return _save(wb)
 
 
+def _build_cohort(ir, dataset, result, disp: str) -> bytes:
+    """종목 코호트(다종목 동일 이벤트스터디 per-symbol 비교) 증빙 — 종목×윈도 forward 수익 + 종목별
+    연도 편중(P3-b GAP-2). axis="asset"이나 버킷이 백테스트 perf가 아닌 이벤트스터디값(n_events·
+    overall)이라 _build_sweep(빈 표)이 아닌 전용 빌더. 버킷: {name, n_events, overall:{w:{mean,
+    prob_positive,...}}, composition:{by_year}}."""
+    S = _styles()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "종목비교"
+    buckets = result.get("buckets") or {}
+    windows = [str(w) for w in (result.get("windows") or [])]
+    _title(ws, f"{disp} — 종목 코호트 이벤트 스터디 ({result.get('n_symbols', len(buckets))}종목 · "
+               "종목별 forward 수익 비교)", S)
+    hdr = ["종목", "표본(이벤트수)"]
+    for w in windows:
+        hdr += [f"+{w}일 평균%", f"+{w}일 양(+)%"]
+    hdr += ["최다연도", "최다연도 비중%"]
+    _header(ws, 3, hdr, S)
+    r = 4
+    for sym, b in buckets.items():
+        if not isinstance(b, dict):
+            continue
+        name = b.get("name") or sym
+        ws.cell(r, 1, f"{name}({sym})" if name != sym else sym).font = S["bold"]
+        if b.get("error"):
+            ws.cell(r, 2, f"실행 실패: {b['error']}").font = S["italic"]
+            r += 1
+            continue
+        ws.cell(r, 2, _num(b.get("n_events"))).number_format = "#,##0"
+        overall = b.get("overall") or {}
+        c = 3
+        for w in windows:
+            ov = overall.get(w) or {}
+            ws.cell(r, c, _num(ov.get("mean"))).number_format = "0.00"
+            ws.cell(r, c + 1, _num(ov.get("prob_positive"))).number_format = "0.0"
+            c += 2
+        by_year = (b.get("composition") or {}).get("by_year") or {}
+        if by_year:
+            tot = sum(int(x) for x in by_year.values() if isinstance(x, (int, float))) or 1
+            py = max(by_year, key=lambda k: by_year[k])
+            ws.cell(r, c, str(py))
+            ws.cell(r, c + 1, round(int(by_year[py]) / tot * 100, 1)).number_format = "0.0"
+        r += 1
+    ws.freeze_panes = "B4"
+    ws.column_dimensions["A"].width = 18
+    for j in range(1, len(hdr)):
+        ws.column_dimensions[get_column_letter(1 + j)].width = 13
+
+    _methodology(wb, ir, f"{disp} — 종목 코호트 방법론", [
+        ("종목 코호트", "동일 이벤트스터디를 종목별로 각각 실행해 per-symbol 비교(pool 아님). 표본=종목별 이벤트수."),
+        ("연도 편중", "종목마다 이벤트가 한 시기(예: 강세장)에 몰리면 forward 통계가 그 국면에 지배됨"
+                   "(상승장 전용 과대추정 함정) — '최다연도 비중%'로 점검."),
+    ], S, result=result)
+    return _save(wb)
+
+
 def _build_event(ir, dataset, result, disp: str) -> bytes:
     """RELATE event-study — 윈도별 요약 + 이벤트 원자료(집계 전 증빙) + 원자료 재계산 라이브 수식(#4b).
 
@@ -1313,9 +1392,57 @@ def _build_event(ir, dataset, result, disp: str) -> bytes:
             ws.cell(vrr, 4, f"=IFERROR(COUNTIF({rng},\">0\")/COUNT({rng})*100,0)").number_format = "0.0"
         vrr += 1
 
-    _methodology(wb, ir, f"{disp} — 이벤트 스터디 방법론", [
+    # ── 연도분포 블록 (레짐 편중 점검 — P3-a 함정 verdict의 raw 근거·P3-b GAP-3) ──
+    by_year = ((result.get("composition") or {}).get("by_year")) or {}
+    yr = vrr + 1
+    if by_year:
+        tot = sum(int(c) for c in by_year.values() if isinstance(c, (int, float))) or 1
+        peak_y = max(by_year, key=lambda k: by_year[k])
+        ws.cell(yr, 1, "연도별 이벤트 분포 (레짐 편중 점검)").font = S["accent"]
+        _header(ws, yr + 1, ["연도", "이벤트수", "비중%"], S)
+        yrr = yr + 2
+        for y in sorted(by_year):
+            c = int(by_year[y])
+            ws.cell(yrr, 1, str(y))
+            ws.cell(yrr, 2, c).number_format = "#,##0"
+            ws.cell(yrr, 3, round(c / tot * 100, 1)).number_format = "0.0"
+            if y == peak_y:
+                for cc in range(1, 4):
+                    ws.cell(yrr, cc).font = S["bold"]
+            yrr += 1
+        verdict = result.get("verdict")
+        if verdict:
+            ws.cell(yrr, 1, "판정").font = S["accent"]
+            ws.cell(yrr, 2, str(verdict)).alignment = S["wrap"]
+
+    # ── 전체 시계열 + 이벤트 발생 수식 (P3-b GAP-1 — simulate와 동등 증빙, 단일 대상 한정) ──
+    # '어느 행이 신호를 켰나'를 전체 일별 시계열 위에서 셀 수식으로 매일 평가(1=발생). 이벤트원자료가
+    # 추출된 이벤트 행만 보이던 갭을 닫는다. 다중 대상(pool)은 종목별 전체 시계열·결정을 1시트로
+    # 표현 불가 → '이벤트원자료'(집계 전 종목·일자)가 raw 증빙(단일 대상 전용 확장).
+    roles = _input_symbols_by_role(ir, dataset)
+    subs = roles.get("subject") or []
+    event_node = (_ir_dict(ir).get("study") or {}).get("event")
+    panel_reason = None
+    if len(subs) == 1 and isinstance(event_node, dict):
+        sub_df = dataset.get(subs[0])
+        if isinstance(sub_df, pd.DataFrame) and not sub_df.empty:
+            rcm = _raw_data_sheet(wb, ir, dataset, roles, sub_df.index, disp)
+            panel_reason = _signal_panel(
+                wb, event_node, sub_df.index, roles, rcm, disp,
+                sheet_name="신호·발생", decision_label="이벤트(1=발생)",
+                decision_wrap=lambda f: f"IF({f},1,0)", decision_fmt="0",
+                note="이벤트 조건을 원자료에서 셀 수식으로 매일 평가 — 1=그 날 발생. '이벤트원자료'의 "
+                     "발생일과 대조(어느 행이 신호를 켰나 · 전체 시계열 증빙).")
+
+    notes = [
         ("이벤트 스터디", "이벤트(조건 충족) 발생 후 forward 윈도 수익 분포. MAE=구간내 최대손실, MFE=최대이익."),
         ("원자료 + 재계산 (증빙)", "'이벤트원자료' 시트에 이벤트별 종목·일자·윈도수익을 그대로 싣고, "
          "표본·평균·양(+)비율을 셀 수식(COUNT·AVERAGE·COUNTIF)으로 재계산 → 엔진 요약과 일치 확인."),
-    ], S, result=result)
+    ]
+    if by_year:
+        notes.append(("연도 편중 점검", "'이벤트분석'의 연도별 분포 — 이벤트가 한 시기(예: 강세장)에 몰리면 "
+                                    "forward 통계가 그 국면에 지배돼 다른 국면 재현성이 낮다(상승장 전용 과대추정 함정)."))
+    if len(subs) == 1 and panel_reason:
+        notes.append(("신호 재현 생략", f"이벤트 발생 셀 수식 재현 불가: {panel_reason}. 요약·원자료는 정본."))
+    _methodology(wb, ir, f"{disp} — 이벤트 스터디 방법론", notes, S, result=result)
     return _save(wb)

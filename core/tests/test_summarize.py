@@ -83,6 +83,25 @@ def test_result_shape_prefers_stamped_over_derivation():
     assert result_shape(res) == "describe_single"
 
 
+def test_cohort_summary_shows_per_symbol_table():
+    """#A P1: 코호트 결과는 종목별 n_events·per-window 유의성을 한 표로 요약 — 모델이 '어느 종목에
+    통하나'를 한 번에 읽는다(pool 통계 아닌 종목별 개별 비교). 프로덕션 실측 팬아웃의 근본 대체."""
+    res = {"success": True, "shape": "cohort", "axis": "asset", "query": "relate",
+           "n_symbols": 2, "windows": ["5", "20"], "buckets": {
+               "005930": {"n_events": 35, "overall": {
+                   "5": {"mean": 1.88, "p_value": 0.074, "prob_positive": 62.0},
+                   "20": {"mean": 5.95, "p_value": 0.0005, "prob_positive": 66.0}}},
+               "247540": {"n_events": 88, "overall": {
+                   "5": {"mean": -0.41, "p_value": 0.70, "prob_positive": 41.0},
+                   "20": {"mean": 0.38, "p_value": 0.835, "prob_positive": 43.0}}}}}
+    assert result_shape(res) == "cohort"
+    out = summarize_result(res)
+    assert "종목 코호트" in out
+    assert "005930" in out and "247540" in out and "n=35" in out and "n=88" in out
+    assert "5.95%" in out                         # 삼성 20일 평균수익
+    assert out.count("+20일") == 2                # 종목별 개별 라인(pool 아님)
+
+
 def test_warning_cap_collapses_bulk_data_quality():
     """'all' 유니버스가 쏟아내는 stale_data/data_gap 수십~수백 줄을 모델 요약에서 캡한다 — bulk는
     소수만 보이고 나머지는 한 줄 요약(컨텍스트 범람 차단). 비-bulk 경고(사이징 등)는 전부 보존."""

@@ -391,6 +391,28 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
             out += f"\n  최저(분산·헤지 후보): {lc[0]}↔{lc[1]} {_f(lc[2], 3)}"
         return out
 
+    if shape == "cohort":
+        # #A P1: 다종목 동일 이벤트스터디 per-symbol 비교표(pool 아님) — 모델이 종목별 유의성을
+        # 한 번에 보고 "어느 종목에 통하나"를 답한다(프로덕션 실측: 종목당 1콜 팬아웃의 근본).
+        buckets = result.get("buckets") or {}
+        windows = result.get("windows") or []
+        lines = []
+        for sym, b in buckets.items():
+            nm = (b or {}).get("name") if isinstance(b, dict) else None
+            who = f"{nm}({sym})" if nm and nm != sym else str(sym)   # 종목명(코드) — 식별
+            if not isinstance(b, dict) or b.get("error"):
+                lines.append(f"  {who}: 실행 실패({(b or {}).get('error', '오류')})")
+                continue
+            ov = b.get("overall") or {}
+            wins = " · ".join(
+                f"+{w}일 {_f(_win(ov, w).get('mean'))}%"
+                f"(p{_f(_win(ov, w).get('p_value'), 3)}·양{_f(_win(ov, w).get('prob_positive'), 0)}%)"
+                for w in windows)
+            lines.append(f"  {who}: n={b.get('n_events')} · {wins}")
+        head = (f"[종목 코호트 이벤트스터디] {result.get('n_symbols', len(buckets))}종목 · "
+                "종목별 forward 수익 비교")
+        return head + "\n" + "\n".join(lines)
+
     if shape == "event_study":
         overall = result.get("overall") or {}
         lines = []

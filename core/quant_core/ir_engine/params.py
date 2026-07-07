@@ -75,4 +75,38 @@ def param_manifest(ir: StrategyIR | dict) -> list[dict[str, Any]]:
             add("select.top_n", "상위 N 종목", "number", sel["top_n"], min=1, max=100, step=1)
         add("select.descending", "내림차순 (큰 값 우선)", "bool", bool(sel.get("descending", True)))
 
+    elif q == "relate":
+        # 이벤트 스터디·코호트(#C P2·D5): 이벤트 조건의 const 임계를 값 조정 노브로 — 이전엔 relate가
+        # 브랜치 없어 adjustable=[]였다(프로덕션 실측: adjust_analysis 'study.window.end' → '가능:[]'라
+        # 재컴파일 강제·비결정 발산). 임계만 바꿔 재실행(LLM·재컴파일 없음)하면 결정적이다.
+        for i, t in enumerate(_collect_event_thresholds(study.get("event")), 1):
+            lbl = f"이벤트 임계: {t['ref']}" if t["ref"] else f"이벤트 임계 {i}"
+            add(t["path"], f"{lbl}", "number", t["value"], step=0.5)
+
+    return out
+
+
+def _collect_event_thresholds(node: Any, path: str = "study.event") -> list[dict[str, Any]]:
+    """study.event 트리에서 compare의 상수 임계(const)를 수집 → [{path, value, ref}].
+
+    이벤트 조건은 임의 블록트리라, compare 노드의 const 쪽을 조정 대상으로 노출한다(반대쪽 data ref로
+    라벨). 웹 setPath가 이 점경로로 IR을 재구성해 재실행한다(재컴파일 없음). 단일·다조건(AND/OR) 모두 처리.
+    """
+    out: list[dict[str, Any]] = []
+    if not isinstance(node, dict):
+        return out
+    if node.get("op") == "compare":
+        inp = node.get("inputs") or {}
+        for side, other_key in (("right", "left"), ("left", "right")):
+            c = inp.get(side) or {}
+            if c.get("op") == "const":
+                v = (c.get("params") or {}).get("value")
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    other = inp.get(other_key) or {}
+                    ref = (other.get("params") or {}).get("ref", "") if other.get("op") == "data" else ""
+                    out.append({"path": f"{path}.inputs.{side}.params.value", "value": v,
+                                "ref": ref.split(".")[-1] if ref else ""})
+                    break                          # compare당 임계 1개(양쪽 const는 비정형이라 첫쪽만)
+    for k, v in (node.get("inputs") or {}).items():
+        out += _collect_event_thresholds(v, f"{path}.inputs.{k}")
     return out

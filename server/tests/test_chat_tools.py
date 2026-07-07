@@ -125,6 +125,49 @@ def test_run_tool_bad_input_returns_error_not_raises(monkeypatch):
     assert out["success"] is False and "error" in out
 
 
+# ── P0 (구조 재설계): 엔진 예외 계약화(#C) + 심볼 별칭(#D) ─────────────────────
+def test_run_engine_contracts_engine_exception(monkeypatch):
+    """#C: 엔진의 예기치 못한 raise를 정직한 infeasible 결과로 수렴 — agent 캐치올의 일반 오귀인
+    ('조건을 단순하게 하거나 종목·기간을 좁혀')을 없애고 종목·예외타입을 진단에 보존한다. 프로덕션 실측:
+    삼성전자 이벤트스터디가 같은 조건인데 첫 호출은 infeasible·재시도는 성공(비결정 예외)이라 '조건 문제'가
+    아니었는데 사용자에게 조건 단순화를 요구하던 부류를 닫는다."""
+    monkeypatch.setattr(chat_tools, "_manifest", lambda ds: None)
+
+    def boom(ir, dataset, **kw):
+        raise RuntimeError("simulated engine crash")
+
+    monkeypatch.setattr(chat_tools, "strategy_from_spec", boom)
+    out = chat_tools._run_engine({"universe": {"symbols": ["005930", "000660"]},
+                                  "query": "relate"}, {"005930": object()})
+    assert out["success"] is False and out["status"] == "infeasible"
+    assert out["diagnostics"]["symbols"] == ["005930", "000660"]
+    assert out["diagnostics"]["exc"] == "RuntimeError"
+    assert "005930" in out["error"] and "RuntimeError" in out["error"]
+    assert "조건을 단순하게" not in out["error"]           # 오귀인 제거(#D2)
+
+
+def test_run_engine_passes_success_through(monkeypatch):
+    """정상 결과는 그대로 통과 — 계약이 성공 경로를 왜곡하지 않는다."""
+    monkeypatch.setattr(chat_tools, "_manifest", lambda ds: None)
+    monkeypatch.setattr(chat_tools, "strategy_from_spec",
+                        lambda ir, ds, **kw: {"success": True, "query": "relate"})
+    out = chat_tools._run_engine({"universe": {"symbols": ["005930"]}}, {"005930": object()})
+    assert out["success"] is True and out["query"] == "relate"
+
+
+def test_symbol_alias_resolves_fx_and_passes_through():
+    """#D: 통용 티커(USDKRW·DXY)를 정식 수집명(원달러환율·무역가중달러지수)으로 — 프로덕션 실측에서
+    봇이 inspect(USDKRW)로 4연속 조회 실패했으나 데이터는 '원달러환율'로 이미 수집돼 있었다(데이터 갭
+    아닌 해상도 갭). 비매크로(개별종목)는 원문 유지."""
+    from app.compile_service import resolve_symbol_alias
+    assert resolve_symbol_alias("USDKRW") == "원달러환율"
+    assert resolve_symbol_alias("usd/krw") == "원달러환율"
+    assert resolve_symbol_alias("KRW=X") == "원달러환율"
+    assert resolve_symbol_alias("DXY") == "무역가중달러지수"
+    assert resolve_symbol_alias("005930") == "005930"     # 개별종목 코드 pass-through
+    assert resolve_symbol_alias("AAPL") == "AAPL"
+
+
 # ── Task 5: compact_summary ──────────────────────────────────────────────────
 from app.chat.tools import compact_summary
 
@@ -159,6 +202,16 @@ def test_compact_ok_no_warning_header():
            "equity": [100, 110], "metrics": {"cagr": 5.0, "total_return": 10.0, "n_trades": 50}}
     out = compact_summary("simulate", res)
     assert "결과상태" not in out and "백테스트" in out
+
+
+def test_compact_surfaces_ok_caveat_verdict():
+    """P3-c: status=ok지만 verdict에 정량 caveat(P3-a 레짐 편중 등)가 있으면 compact_summary가
+    '[참고: …]'로 모델에 노출한다 — ok라고 caveat가 조용히 드롭되면 함정 경고가 사용자에 미도달."""
+    res = {"success": True, "shape": "event_study", "status": "ok", "n_events": 25,
+           "verdict": "주의(레짐 편중) — 이벤트 25건 중 20건(80%)이 2023년에 집중됐습니다.",
+           "diagnostics": {"top_year_share": 0.8}, "overall": {}, "windows": []}
+    out = compact_summary("relate", res)
+    assert "[참고:" in out and "레짐 편중" in out and "80%" in out   # 편중 경고가 모델 식단 맨 앞에
 
 
 def test_compact_simulate_period_surfaces_buckets():

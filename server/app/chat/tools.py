@@ -7,6 +7,7 @@ simulate/save_strategy는 NL을 compile_strategy에 위임해 모델이 IR을 �
 from __future__ import annotations
 
 import copy
+import logging
 
 import quant_core as qc
 from pydantic import ValidationError
@@ -15,11 +16,13 @@ from quant_core.ir_engine import (StrategyIR, needed_columns, needed_symbols,
                                    summarize_result)
 from quant_core.ir_engine.execution_summary import execution_summary, methodology_brief
 
-from ..compile_service import compile_strategy
+from ..compile_service import compile_strategy, resolve_symbol_alias
 from ..models import Message
 from ..routers.strategies import save_ir_draft
 from ..serialize import serialize_ir_result
 from ..data_manifest import build_dataset_manifest
+
+logger = logging.getLogger(__name__)
 
 # ── 도구 스키마 ──────────────────────────────────────────────────────────────
 
@@ -327,6 +330,31 @@ def _manifest(dataset: dict):
     return build_dataset_manifest(dataset) if dataset else None
 
 
+def _run_engine(ir: dict, dataset: dict) -> dict:
+    """엔진 실행 + 예외 계약화(#C). strategy_from_spec의 예기치 못한 raise를 정직한 infeasible
+    결과로 수렴시킨다 — agent 캐치올의 일반 오귀인('조건을 단순하게 하거나 종목·기간을 좁혀')을
+    제거하고, 실제 예외를 서버 로그에 남겨 진단을 복구한다.
+
+    프로덕션 실측(#C·#D2): 삼성전자 이벤트스터디가 같은 조건인데 첫 호출은 infeasible·재시도는 성공
+    (비결정 예외) — '조건 문제'가 아니었는데 사용자에게 '조건을 단순화하라'고 오귀인했다. 예상된 실패는
+    엔진이 {success:False}로 이미 반환하므로 여기 오는 건 가드를 빠져나간 *예기치 못한* raise뿐이다."""
+    try:
+        manifest = _manifest(dataset)   # manifest 빌드도 엔진 실행의 일부 — 함께 계약 안에서 보호
+        return strategy_from_spec(ir, dataset, manifest=manifest)
+    except Exception as e:  # noqa: BLE001 — 엔진 raise 계약화(정직 사유·로그·재현 가능성)
+        syms = (ir.get("universe") or {}).get("symbols") or []
+        logger.exception("chat engine exec failed: query=%s symbols=%s",
+                         ir.get("query"), syms)
+        who = "·".join(str(s) for s in syms[:5]) or "대상"
+        return {"success": False, "status": "infeasible",
+                "error": (f"{who} 분석 실행 중 엔진 오류({type(e).__name__})가 발생했습니다 — "
+                          "일시적일 수 있으니 다시 시도하거나 다른 종목·기간으로 시도해 보세요"
+                          "(조건 자체 문제가 아닐 수 있습니다)."),
+                "verdict": f"엔진 실행 오류({type(e).__name__}) — 재시도 권장",
+                "diagnostics": {"stage": "engine", "symbols": list(syms),
+                                "exc": type(e).__name__}}
+
+
 # ── 도구 실행 ─────────────────────────────────────────────────────────────────
 
 def run_simulate(session, user_id, tool_input: dict) -> dict:
@@ -347,7 +375,7 @@ def run_simulate(session, user_id, tool_input: dict) -> dict:
     # 읽기 트랜잭션을 여기서 커밋해 반납하고, 이후는 DB 미접근 순수 계산이다.
     session.commit()
     dataset = _load_dataset(ir)
-    res = strategy_from_spec(ir, dataset, manifest=_manifest(dataset))
+    res = _run_engine(ir, dataset)
     if isinstance(res, dict) and res.get("success"):
         res, _ = serialize_ir_result(res)        # pandas→JSON(백테스트 영속/렌더) — 추가필드 前 직렬화
         res["ir"] = ir
@@ -366,9 +394,10 @@ def run_inspect(tool_input: dict) -> dict:
     window = int(tool_input.get("window") or 120)
     if not symbol or not columns:
         return {"success": False, "error": "inspect: symbol·columns가 필요합니다."}
-    df = qc.load_dataset_for([symbol]).get(symbol)
+    resolved = resolve_symbol_alias(symbol)   # USDKRW→원달러환율 등(#D 별칭 — 프로덕션 실측 해상도 갭)
+    df = qc.load_dataset_for([resolved]).get(resolved)
     if df is None or len(df) == 0:
-        return {"success": False, "error": f"데이터가 없습니다: {symbol}"}
+        return {"success": False, "error": f"데이터가 없습니다: {resolved}"}
     have = [c for c in columns if c in df.columns]
     if not have:
         avail = ", ".join(list(df.columns)[:40])   # 앞 40개면 모델 자가수정에 충분(넓은 DF 덤프 방지)
@@ -380,7 +409,7 @@ def run_inspect(tool_input: dict) -> dict:
     for c in have:
         col = pd.to_numeric(sub[c], errors="coerce")     # 비수치 컬럼은 None으로(라인차트 안전)
         series[c] = [None if pd.isna(v) else float(v) for v in col]
-    return {"success": True, "query": "inspect", "symbol": symbol,
+    return {"success": True, "query": "inspect", "symbol": resolved,
             "columns": have, "dates": dates, "series": series}
 
 
@@ -403,7 +432,7 @@ def run_tool(tool_name: str, tool_input: dict) -> dict:
     except (ValueError, KeyError, TypeError) as e:
         return {"success": False, "error": f"도구 입력 오류({tool_name}): {e}"}
     dataset = _load_dataset(ir)
-    res = strategy_from_spec(ir, dataset, manifest=_manifest(dataset))   # 게이트·커버리지 가동
+    res = _run_engine(ir, dataset)   # 게이트·커버리지 가동
     # 결과에 IR + 조정가능 변수 동봉 → 챗 결과뷰의 '엑셀로 내보내기'(증빙)·'변수 조정'(실시간 재실행).
     if isinstance(res, dict) and res.get("success"):
         res, _ = serialize_ir_result(res)        # 모든 챗 도구 결과를 JSON-안전하게(부류 가드)
@@ -529,7 +558,7 @@ def run_adjust(session, conversation_id, tool_input: dict) -> dict:
     # DB 커넥션 반납 — 백테스트 compute 진입 전(위 _last_simulate_ir 읽기 트랜잭션 반납). run_simulate와 동일 부류.
     session.commit()
     dataset = _load_dataset(ir)
-    res = strategy_from_spec(ir, dataset, manifest=_manifest(dataset))
+    res = _run_engine(ir, dataset)
     if isinstance(res, dict) and res.get("success"):
         res, _ = serialize_ir_result(res)        # pandas→JSON(조정 재실행도 백테스트일 수 있음)
         res["ir"] = ir

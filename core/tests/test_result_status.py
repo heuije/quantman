@@ -84,6 +84,47 @@ def test_event_study_ok():
     assert r["status"] == "ok" and not r["verdict"]
 
 
+# ── P3-a (E 뿌리): 백테스트 함정 — 이벤트 연도 편중 자동 verdict ───────────────
+# 프로덕션(floo.korea)서 봇이 '특정 해 집중'을 수동으로 눈치채던 상승장-전용 과대추정 함정을
+# composition.by_year(엔진이 이미 산출)를 소비해 구조가 자동 경고한다. status는 ok(caveat).
+def _event(n_events, by_year):
+    return {"success": True, "shape": "event_study", "axis": "time",
+            "n_events": n_events, "composition": {"by_year": by_year}}
+
+
+def test_event_study_year_concentration_warns():
+    # 이벤트 20건 중 15건(75%)이 2026년에 집중 → 레짐 편중 경고(그 국면이 통계 지배).
+    r = classify_status(_event(20, {"2023": 2, "2024": 3, "2026": 15}))
+    assert r["status"] == "ok"                                   # 실패 아님 — 정직한 caveat
+    assert "편중" in r["verdict"] and "75%" in r["verdict"] and "2026" in r["verdict"]
+    assert r["diagnostics"]["top_year_share"] == 0.75            # 정량 근거(사용자 요청 ①)
+
+
+def test_event_study_single_year_all_events_warns():
+    # 전 이벤트가 단일 연도 → share 100% → 편중(교차연도 증거 0).
+    r = classify_status(_event(30, {"2026": 30}))
+    assert r["status"] == "ok" and "100%" in r["verdict"]
+
+
+def test_event_study_balanced_years_no_warning():
+    # 여러 해에 고르게 분산(최다 40% < 60%) → 편중 경고 없음(오탐 방지).
+    r = classify_status(_event(50, {"2022": 20, "2023": 15, "2024": 15}))
+    assert r["status"] == "ok" and not r["verdict"]
+    assert r["diagnostics"]["top_year_share"] == 0.4
+
+
+def test_event_study_low_sample_suppresses_concentration():
+    # 소표본(<5)에선 연도 편중이 노이즈 → 저신뢰 caveat만, 편중 경고로 겹치지 않는다.
+    r = classify_status(_event(3, {"2026": 3}))
+    assert r["status"] == "ok" and "표본" in r["verdict"] and "편중" not in r["verdict"]
+
+
+def test_event_study_no_composition_stays_clean():
+    # composition 없으면(구형 결과) 편중 판정 불가 → 기존 동작 보존(verdict 없음).
+    r = classify_status({"success": True, "shape": "event_study", "axis": "time", "n_events": 100})
+    assert r["status"] == "ok" and not r["verdict"] and "top_year_share" not in r["diagnostics"]
+
+
 def test_sweep_all_inactive_empty():
     r = classify_status({"success": True, "shape": "sweep", "axis": "period_split",
                          "buckets": {"2010": {"n": 0}, "2011": {"error": "무거래"}}})

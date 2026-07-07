@@ -132,6 +132,30 @@ def test_run_chat_turn_dispatches_and_persists(monkeypatch):
     assert any(p["type"] == "tool_result" for p in rows[1].parts)
 
 
+def test_aborted_turn_leaves_metric_and_log(caplog):
+    """#P2-c 관측 백스톱: 클라이언트 끊김/타임아웃으로 스트림이 중단(제너레이터 close→GeneratorExit)
+    돼도 반드시 흔적을 남긴다 — '중단' 메트릭(ok=False·status=aborted) + 경고 로그. 이전엔 assistant·
+    metric을 남기는 코드가 실행조차 못 돼 user 메시지만 있고 아무 흔적 없이 죽었다(conv#43 무응답 드롭)."""
+    import logging
+    from app.models import ChatTurnMetric
+    s = _mem_session()
+    conv = Conversation(user_id=7); s.add(conv); s.commit(); s.refresh(conv)
+    queue = [_Resp([_Block(type="text", text="분석 중입니다…")], stop_reason="tool_use")]
+    client = _FakeClient(queue)
+    gen = chat_agent.stream_chat_turn(s, conv.id, "US·KR 섹터별 연도별 대형 다축 쿼리", client=client, model="x")
+    kind, _ = next(gen)                 # 첫 델타 소비 → 제너레이터가 loop 안 yield에서 suspend
+    assert kind == "delta"
+    with caplog.at_level(logging.WARNING, logger="app.chat.agent"):
+        gen.close()                     # 클라이언트 끊김 시뮬레이션 → GeneratorExit
+    mets = s.exec(select(ChatTurnMetric).where(ChatTurnMetric.conversation_id == conv.id)).all()
+    assert len(mets) == 1                                    # 중단인데도 메트릭 1행(무흔적 아님)
+    assert mets[0].ok is False and mets[0].result_status == "aborted" and mets[0].stop_reason == "aborted"
+    # user 메시지는 시작에 영속됨(흔적 존재)
+    roles = [r.role for r in s.exec(select(Message).where(Message.conversation_id == conv.id)).all()]
+    assert "user" in roles
+    assert any("aborted" in r.getMessage() for r in caplog.records)   # 근본원인 조회용 경고 로그
+
+
 def test_dup_simulate_warns_model(monkeypatch):
     """③제어: 한 턴에 같은 IR로 simulate를 재호출하면 모델에 가는 요약에 '동일한 분석' 경고가 붙는다
     (conv#8식 표현만 바꾼 재실행 헛돌이 차단). 첫 호출엔 경고 없음."""

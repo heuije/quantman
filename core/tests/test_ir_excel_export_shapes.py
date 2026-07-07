@@ -17,7 +17,7 @@ import pytest
 from openpyxl import load_workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))          # analysis_corpus
-from analysis_corpus import BASE_CASES, SIG_C, ds_pf              # 단일 진실원천(중복 제거)
+from analysis_corpus import BASE_CASES, EVENT, SIG_C, ds_factor, ds_pf   # 단일 진실원천(중복 제거)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # quant_core
 from quant_core.ir_engine import StrategyIR, build_strategy_excel, run_query
@@ -89,3 +89,55 @@ def test_event_study_excel_has_raw_evidence_and_recompute_formula() -> None:
     assert "라이브 검증" in summary_text                       # 재계산 블록
     assert "AVERAGE(이벤트원자료!" in summary_text             # 평균 재계산이 원자료 참조
     assert "COUNTIF(이벤트원자료!" in summary_text             # 양(+)비율 재계산이 원자료 참조
+
+
+# ── P3-b (E 뿌리): raw 증빙 엑셀 — GAP-1 전체시계열+신호수식 · GAP-2 코호트 · GAP-3 연도편중 ──
+def _single_event_ir():
+    """단일종목 이벤트스터디(Close>MA5) — 셀 재현 가능한 단순 이벤트(신호·발생 패널 렌더)."""
+    return {"universe": {"kind": "single", "symbols": ["AAA"]}, "signal": SIG_C, "query": "relate",
+            "study": {"event": EVENT, "windows": [5, 10], "event_basis": "close"}}
+
+
+def test_single_event_excel_has_full_series_and_signal_formula():
+    """GAP-1: 단일 이벤트스터디가 simulate처럼 전체 일별 시계열('원자료')과 '어느 행이 신호를 켰나'를
+    셀 수식으로 매일 평가하는 '신호·발생'(=IF(조건,1,0)) 시트를 갖는다 — 추출 이벤트 행만 보이던 갭 종결."""
+    ir, ds, res, xlsx = _build(ds_factor, _single_event_ir())
+    wb = load_workbook(io.BytesIO(xlsx))
+    assert {"원자료", "신호·발생"} <= set(wb.sheetnames), wb.sheetnames
+    raw_text = _sheet_text(wb["원자료"])
+    assert "AAA 종가(대상)" in raw_text                        # 전체 OHLCV 시계열(신호값 아님)
+    assert len(list(wb["원자료"].iter_rows())) > 200            # 추출 이벤트가 아닌 전체 일수
+    panel = _sheet_text(wb["신호·발생"])
+    assert "이벤트(1=발생)" in panel                            # 결정 컬럼 = 발생 여부
+    assert "=IF(" in panel and "원자료!" in panel               # 이벤트 조건을 원자료 참조 셀 수식으로
+
+
+def test_cohort_excel_has_per_symbol_comparison_not_blank_sweep():
+    """GAP-2: 종목 코호트(axis=asset)가 _build_sweep의 빈 백테스트 표가 아니라 전용 '종목비교'
+    (종목×윈도 forward 수익 + n_events + 최다연도)로 렌더된다 — P1 shape의 엑셀 배선 누락 종결."""
+    syms = ["AAA", "BBB", "CCC"]
+    ir_d = {"universe": {"kind": "list", "symbols": syms}, "signal": SIG_C, "query": "relate",
+            "study": {"axis": "entity", "assets": syms, "event": EVENT,
+                      "windows": [5, 10], "event_basis": "close"}}
+    ir, ds, res, xlsx = _build(ds_factor, ir_d)
+    assert res.get("shape") == "cohort"
+    wb = load_workbook(io.BytesIO(xlsx))
+    assert "종목비교" in wb.sheetnames and "스윕결과" not in wb.sheetnames, wb.sheetnames
+    text = _sheet_text(wb["종목비교"])
+    assert "표본(이벤트수)" in text and "+5일 평균%" in text and "최다연도" in text
+    # 실제 per-symbol 데이터가 채워졌는지(빈 표 회귀 차단) — 옛 오라우팅은 전 셀 None이었다.
+    # 이제 n_events가 숫자로 채워지고(0-이벤트 종목 포함), 최소 2종목은 이벤트>0.
+    ws = wb["종목비교"]
+    filled = [ws.cell(r, 2).value for r in range(4, 4 + len(syms))]
+    assert all(isinstance(v, (int, float)) for v in filled), filled   # None(빈표) 회귀 차단
+    assert sum(1 for v in filled if v and v > 0) >= 2, filled
+
+
+def test_event_excel_surfaces_year_concentration_block():
+    """GAP-3(P3-a 연계): 이벤트 엑셀이 composition.by_year를 '연도별 이벤트 분포(레짐 편중 점검)'
+    블록으로 실어, P3-a 함정 verdict의 raw 근거를 사용자가 직접 검산하게 한다."""
+    ir, ds, res, xlsx = _build(ds_factor, _single_event_ir())
+    wb = load_workbook(io.BytesIO(xlsx))
+    text = _sheet_text(wb["이벤트분석"])
+    assert "연도별 이벤트 분포" in text                         # 편중 점검 블록
+    assert "2020" in text                                      # ds_factor는 2020~ 데이터 → 연도 표기

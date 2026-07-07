@@ -191,6 +191,8 @@ def _dispatch_query(strategy: StrategyIR, dataset: dict) -> dict:
         return _run_signal_study(strategy, dataset)
     if q == "relate":
         st = strategy.study
+        if st.axis == "entity":                       # 다종목 코호트(#A P1) — pool 아닌 per-symbol 비교
+            return _run_entity_cohort(strategy, dataset)
         if st.event is not None:
             return _run_event_study(strategy, dataset)
         if st.relation_kind == "regression":
@@ -359,6 +361,41 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
                 "metrics": res["metrics"], "equity": res["equity"]}
 
     return _empty(f"미지원 펼침 축: {st.axis}")
+
+
+def _run_entity_cohort(strategy: StrategyIR, dataset: dict) -> dict:
+    """동일 관계분석(이벤트스터디 등)을 종목 집합에 각각 실행 → per-symbol 나란히 비교(#A P1).
+
+    프로덕션 실측(floo.korea): 다종목 이벤트스터디가 종목당 relate 1콜로 순차 팬아웃해 N종목=N
+    LLM라운드(최대 5.5분·컴파일 실패 재시도까지 폭발)했다. axis=entity로 한 번에 펼쳐 per-symbol
+    결과를 collate한다. ⚠ relate가 list 유니버스를 *pool*(합쳐 하나의 통계)하던 것과 구분 — cohort는
+    종목별 *개별* 비교(각 종목의 n_events·forward수익·유의성·구성). 각 종목은 axis=none 단일 실행이라
+    재귀 없음. compare(현시점 지표 표)의 이벤트스터디 판 — '집합-값 실행 프리미티브'의 일반화."""
+    from ..expression_parser import symbol_name         # 코드→종목명(#C P2 식별·시각화에 종목명)
+
+    st = strategy.study
+    assets = list(st.assets) if st.assets else list(strategy.universe.symbols)
+    assets = list(dict.fromkeys(a for a in assets if a))          # 순서보존 dedup
+    if len(assets) < 2:
+        return _empty("종목 코호트 비교는 종목 2개 이상이 필요합니다(단일종목은 일반 이벤트스터디).")
+    base = strategy.model_dump()
+    buckets: dict = {}
+    windows = None
+    for a in assets:
+        d = copy.deepcopy(base)
+        d["study"] = {**(base.get("study") or {}), "axis": "none", "assets": []}
+        d["universe"] = {"kind": "single", "symbols": [a],
+                         "screener": None, "exclude_macro": True}
+        res = run_query(StrategyIR.model_validate(d), dataset)
+        nm = symbol_name(a)                              # 코드만 아니라 종목명도(모델·UI 식별)
+        if res.get("success"):
+            windows = windows or res.get("windows")
+            buckets[a] = {"name": nm, "n_events": res.get("n_events"), "overall": res.get("overall"),
+                          "composition": res.get("composition"), "by_regime": res.get("by_regime")}
+        else:
+            buckets[a] = {"name": nm, "error": res.get("error"), "n_events": 0}
+    return {"success": True, "shape": "cohort", "axis": "asset", "query": strategy.query,
+            "windows": windows, "n_symbols": len(assets), "buckets": buckets}
 
 
 # ── 최적화 (extremize 환원 — 최적해 + 과최적화 OOS 가드) ────────────────────────

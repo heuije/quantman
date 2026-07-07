@@ -316,6 +316,9 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
     _mark_cache_breakpoint(messages)      # ① 히스토리 prompt caching(멀티턴 입력 캐시 재사용)
     messages.append({"role": "user", "content": user_text})
     _persist(session, conversation_id, "user", [{"type": "text", "text": user_text}])
+    # 관측성(#P2-c) — 턴 시작을 즉시 로그. 턴이 무흔적으로 죽어도(워커 OOM·하드킬로 finally조차 못 돎)
+    # 최소한 '언제 어떤 질문으로 시작했는지'는 남는다(conv#43형 무응답 드롭 재발 시 근본원인 조회 기점).
+    _log.info("[chat] turn start conv=%s msg=%r", conversation_id, (user_text or "")[:120])
 
     assistant_parts: list[dict] = []      # full payload(영속·렌더용)
     # ── 성능 계측(chat-perf) — 턴 종료 시 ChatTurnMetric 1행 ──
@@ -409,6 +412,25 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                     seen_sigs.add(sig)
                 tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": content})
             messages.append({"role": "user", "content": tool_results})
+    except GeneratorExit:
+        # 관측 백스톱(#P2-c) — 클라이언트 끊김/타임아웃으로 스트림이 중단되면 제너레이터가 close되어
+        # GeneratorExit가 현재 yield로 던져진다(BaseException이라 아래 except Exception 미포착). 이때
+        # assistant·metric을 남기는 :452~454가 실행되지 못해 **아무 흔적 없이 죽던 부류**(conv#43:
+        # user 메시지만 있고 assistant·metric 0)의 근본. 경고 로그 + 부분결과 영속 + '중단' 메트릭을
+        # 남기고 GeneratorExit를 재raise한다(제너레이터 규약 — 여기서 yield 금지).
+        elapsed = int((time.perf_counter() - t0) * 1000)
+        _log.warning("[chat] turn aborted (client disconnect/timeout) conv=%s rounds=%s tools=%s "
+                     "elapsed=%sms parts=%s", conversation_id, acc["rounds"], acc["tools"],
+                     elapsed, len(assistant_parts))
+        try:
+            if assistant_parts:
+                _persist(session, conversation_id, "assistant", assistant_parts)   # 부분 흔적 보존
+            acc["stop"] = acc["stop"] or "aborted"
+            _persist_turn_metric(session, conversation_id, model, acc, ttft_ms, elapsed,
+                                 False, worst_status or "aborted", turn_shape)      # 항상 메트릭 1행
+        except Exception:   # noqa: BLE001 — 중단 트레이스 영속 실패가 GeneratorExit를 가리지 않게
+            _log.exception("[chat] abort 트레이스 영속 실패 conv=%s", conversation_id)
+        raise
     except Exception as exc:   # noqa: BLE001 — 도구 밖(LLM 스트림·영속 등) 예기치 못한 실패의 최후
         # 방어선. 막다른 '잠시 후 다시' 대신 실패 부류별 복구 + (있으면) 부분결과 안내를 표면화하고,
         # 메트릭에 'error'로 분류해 bad_result_rate가 크래시를 포착하게 한다(#4a).

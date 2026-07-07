@@ -24,6 +24,7 @@ from .summarize import result_shape
 _COVERAGE_INSUFFICIENT = 0.80   # 공통구간 데이터 밀도 < 이 값이면 data_insufficient
 _MIN_EVENTS = 5                 # 이벤트스터디 표본 하한(미만이면 저신뢰 — verdict 명시, status는 ok)
 _LOSS_IMPOSSIBLE = -100.0       # 누적수익(%)·MDD(%)가 이 값 미만이면 퇴화(무레버리지 -100% 한계 위반)
+_YEAR_CONCENTRATION = 0.60      # 이벤트의 이 비율 이상이 단일 연도에 몰리면 레짐 편중 경고(상승장 전용 과대추정 함정)
 
 _GAP_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*일")   # 'data_gap' 메시지의 '404/498일' 밀도
 
@@ -44,6 +45,25 @@ def _coverage(warnings: list) -> float | None:
 def _stale(warnings: list) -> list[str]:
     return [str(w.get("message", "")).split(":")[0]
             for w in warnings if isinstance(w, dict) and w.get("code") == "stale_data"]
+
+
+def _year_concentration(composition: Any) -> dict | None:
+    """이벤트의 연도 분포(composition.by_year)에서 최다 연도 집중도. 없으면 None.
+
+    시계열 이벤트스터디의 forward 통계가 단일 시기 국면(예: 최근 강세장)에 지배되는지를 구조가
+    스스로 판정하기 위한 순수 함수 — 프로덕션(floo.korea)서 봇이 '16건 중 8건이 특정 해 집중'을
+    수동으로 눈치채던 편중을 자동 verdict로 승격한다(E 뿌리: 증빙·인사이트). by_year는 엔진이
+    이미 산출(run.py `_run_event_study`)하므로 신규 계산 없이 소비만 한다."""
+    by_year = composition.get("by_year") if isinstance(composition, dict) else None
+    if not isinstance(by_year, dict) or not by_year:
+        return None
+    counts = {y: int(c) for y, c in by_year.items() if isinstance(c, (int, float))}
+    total = sum(counts.values())
+    if total <= 0:
+        return None
+    year, count = max(counts.items(), key=lambda kv: kv[1])
+    return {"year": year, "count": count, "total": total,
+            "share": count / total, "n_years": len(counts)}
 
 
 def classify_status(result: Any) -> dict:
@@ -118,8 +138,18 @@ def classify_status(result: Any) -> dict:
         diag["n_events"] = ne
         if ne == 0:
             return done("empty", "이벤트 0건 — 조건이 너무 가혹합니다(임계값 완화 필요).")
+        conc = _year_concentration(result.get("composition"))
+        if conc:
+            diag["top_year_share"] = round(conc["share"], 3)
+        # 표본 하한 미달이면 그게 지배적 caveat — 소표본에서 연도 편중은 노이즈라 겹쳐 알리지 않는다.
         if ne is not None and ne < _MIN_EVENTS:
             return done("ok", f"이벤트 {ne}건으로 표본이 적어 통계 신뢰도가 제한적입니다.")
+        if conc and conc["share"] >= _YEAR_CONCENTRATION:
+            return done("ok",
+                        f"주의(레짐 편중) — 이벤트 {conc['total']}건 중 {conc['count']}건"
+                        f"({conc['share'] * 100:.0f}%)이 {conc['year']}년에 집중됐습니다. 그 시기의 시장 "
+                        f"국면이 forward 통계를 지배하므로 다른 국면(하락·횡보장)에서는 재현되지 않을 수 "
+                        f"있습니다 — 기간을 나눠 재현성을 확인하세요(상승장 전용 과대추정 함정).")
         return done("ok")
 
     # ── 분할(sweep: 파라미터·종목·국면·기간) ──
@@ -135,6 +165,20 @@ def classify_status(result: Any) -> dict:
             return done("empty", "전 구간이 무거래입니다 — 분할 기준·데이터를 점검하세요.")
         if cov is not None and cov < _COVERAGE_INSUFFICIENT:
             return done("data_insufficient", f"데이터 밀도 {cov * 100:.0f}%로 부족합니다.")
+        return done("ok")
+
+    # ── 종목 코호트(#A P1: 다종목 동일분석 per-symbol 비교) — 버킷값은 n_events(sweep의 n과 다름) ──
+    if shape == "cohort":
+        buckets = result.get("buckets") or {}
+        active = [k for k, b in buckets.items()
+                  if isinstance(b, dict) and not b.get("error") and (b.get("n_events") or 0) > 0]
+        errored = [k for k, b in buckets.items() if isinstance(b, dict) and b.get("error")]
+        diag["n_symbols"] = len(buckets)
+        diag["n_active"] = len(active)
+        if errored:
+            diag["errored_symbols"] = errored
+        if not active:
+            return done("empty", "코호트 전 종목에서 이벤트 0건 또는 실행 실패 — 조건 완화·종목 점검이 필요합니다.")
         return done("ok")
 
     # ── 관계 분석(IC·회귀·상관) — 횡단 표본 0이면 무의미한 NaN을 ok로 흘려보내지 않는다 ──

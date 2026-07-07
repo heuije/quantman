@@ -72,3 +72,44 @@ def test_describe_has_no_adjustable_params():
         "universe": {"kind": "single", "symbols": ["A"]},
         "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}}, "query": "describe"})
     assert param_manifest(ir) == []
+
+
+def test_relate_event_study_exposes_threshold_knobs():
+    """#C P2·D5: 이벤트스터디(relate)가 이벤트 조건의 const 임계를 값 조정 노브로 노출 — 이전엔
+    relate 브랜치가 없어 adjustable=[]였고(프로덕션 실측: adjust_analysis 'study.window.end' →
+    '가능:[]'라 재컴파일 강제·비결정 발산). 단일·다조건(AND) 각 임계를 IR 점경로로 노출."""
+    ev = {"op": "logic", "params": {"logic": "AND"}, "inputs": {
+        "a": {"op": "compare", "params": {"op": ">="}, "inputs": {
+            "left": {"op": "data", "params": {"ref": "__SELF__.ma_dev_60d"}},
+            "right": {"op": "const", "params": {"value": 5}}}},
+        "b": {"op": "compare", "params": {"op": "<="}, "inputs": {
+            "left": {"op": "data", "params": {"ref": "__SELF__.ma_dev_20d"}},
+            "right": {"op": "const", "params": {"value": -2}}}}}}
+    ir = StrategyIR.model_validate({
+        "universe": {"kind": "single", "symbols": ["005930"]}, "signal": _SIG,
+        "query": "relate", "study": {"event": ev, "windows": [5, 20], "event_basis": "close"}})
+    m = param_manifest(ir)
+    by = {p["path"]: p for p in m}
+    pa = "study.event.inputs.a.inputs.right.params.value"
+    pb = "study.event.inputs.b.inputs.right.params.value"
+    assert pa in by and pb in by and len(m) == 2
+    assert by[pa]["value"] == 5 and by[pb]["value"] == -2
+    assert all(p["type"] == "number" for p in m)
+    # 점경로가 IR의 실제 const를 가리킴(웹 setPath 유효)
+    cur = ir.model_dump()
+    for k in pa.split("."):
+        cur = cur[k]
+    assert cur == 5
+
+
+def test_single_compare_event_exposes_one_threshold():
+    """logic 래핑 없는 단일 compare 이벤트도 임계 1개 노출(래핑 유무 무관)."""
+    ev = {"op": "compare", "params": {"op": ">"}, "inputs": {
+        "left": {"op": "data", "params": {"ref": "__SELF__.rsi_14"}},
+        "right": {"op": "const", "params": {"value": 70}}}}
+    ir = StrategyIR.model_validate({
+        "universe": {"kind": "single", "symbols": ["005930"]}, "signal": _SIG,
+        "query": "relate", "study": {"event": ev, "windows": [5], "event_basis": "close"}})
+    m = param_manifest(ir)
+    assert len(m) == 1 and m[0]["value"] == 70
+    assert m[0]["path"] == "study.event.inputs.right.params.value"

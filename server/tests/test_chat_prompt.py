@@ -48,6 +48,23 @@ def test_chat_prompt_high_stakes_clarify_gate():
     assert "과도한 되묻기 금지" in p            # 약한 모호성은 여전히 기본값+가정(원칙2 균형)
 
 
+def test_chat_prompt_align_before_act_gate():
+    """#F(대화제어): 모델이 실제 선택지(2+ 실질 갈래)를 제시했으면 그 턴에 도구를 실행하지 말고 답을
+    기다리라는 규칙이 노출돼야 — 프로덕션 실측(floo.korea)에서 봇이 선택지를 제안하자마자 기본값으로
+    스스로 골라 곧장 백테스트를 돌리던 부류(align 무시)를 차단한다."""
+    p = cp.chat_system_prompt()
+    assert "스스로 골라 실행하지 않는다" in p                     # 사용자 선택 의도 → 제시 후 멈춤
+    assert "스스로 기본값으로 답해 곧장 실행하지 말" in p          # 자기 질문에 스스로 답해 실행 금지
+
+
+def test_chat_prompt_cohort_routing():
+    """#A P1: 다종목 이벤트스터디를 종목당 반복 호출하지 말고 한 번의 코호트로 펼치라는 라우팅이
+    노출돼야 — 프로덕션 실측(floo.korea)의 팬아웃 폭발(N종목=N콜·최대 5.5분)의 근본."""
+    p = cp.chat_system_prompt()
+    assert "코호트" in p                                          # 코호트 개념 노출
+    assert "종목마다 따로" in p                                   # 종목당 반복 호출 금지
+
+
 def test_chat_prompt_answer_quality_gates():
     """답변 품질 3게이트가 프롬프트에 노출돼야 — IP1 시황("오늘 장 어때")이 지수 스냅샷(코스피/코스닥/
     나스닥/S&P/VIX)을 앞세우게, IP3 종합 매수/매도 점수는 날조 말고 팩터 순위로, IP4 세금은 일반론+
@@ -56,6 +73,17 @@ def test_chat_prompt_answer_quality_gates():
     assert "시장 스냅샷" in p and "오늘 장 어때" in p          # IP1 시황 지수레벨 앞세우기
     assert "매수/매도 점수" in p                              # IP3 종합점수 미제공 명시
     assert "세무 전문가" in p and "원화환산" in p             # IP4 세금 면책 + 해외주식 FX
+
+
+def test_chat_prompt_quant_grounding():
+    """P3-c: 정량 grounding 2조항이 프롬프트에 노출돼야 — ①평가·의견은 도구결과 수치와 함께(평가형
+    질문은 정량 도구 먼저·prior로 답 금지) ②status=ok여도 '[참고: …]' caveat(레짐 편중·저신뢰
+    표본)는 수치를 답에 녹여 경고('정상'이라 넘기지 말 것). P3-a 함정 verdict가 사용자에 닿게 하는 배선."""
+    p = cp.chat_system_prompt()
+    assert "평가·의견은 반드시 정량 근거와 함께" in p           # 무근거 정성주장 금지
+    assert "정량 도구를 호출" in p                              # 평가형 질문 → 정량 라우팅 먼저
+    assert "[참고: …]" in p and "레짐 편중" in p                # ok caveat surface 지침
+    assert "'정상'이라며 넘기지 말 것" in p
 
 
 def test_chat_prompt_includes_data_provenance():

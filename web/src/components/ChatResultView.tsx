@@ -240,6 +240,58 @@ function EventStudy({ result }: { result: IrStrategyResult }) {
   );
 }
 
+// ── 종목 코호트(#A P1: 다종목 동일 이벤트스터디 per-symbol 비교) — 종목×윈도우 표 ──
+// pool(합쳐 하나의 통계) 아닌 종목별 개별 비교. 프로덕션 실측: 다종목 이벤트스터디가 종목당 1콜로
+// 팬아웃하던 것을 1콜 코호트로 — 각 종목의 유의성을 나란히 보여 "어느 종목에 통하나"를 한눈에.
+function CohortComparison({ result }: { result: IrStrategyResult }) {
+  const windows = result.windows ?? [];
+  const buckets = (result.buckets ?? {}) as Record<string, {
+    name?: string; n_events?: number; overall?: Record<string, IrEventStat>; error?: string }>;
+  const syms = Object.keys(buckets);
+  const nSym = (result as { n_symbols?: number }).n_symbols ?? syms.length;
+  const label = (s: string) => {           // 종목명(코드) — 코드만 뜨던 것 식별 보강(#C P2)
+    const nm = buckets[s]?.name;
+    return nm && nm !== s ? `${nm} (${s})` : s;
+  };
+  return (
+    <div className="chat-result">
+      <div className="muted" style={{ fontSize: "0.8em", marginBottom: 4 }}>
+        종목 코호트 — {nSym}종목 이벤트스터디 비교 (forward 수익, 손익 아님 · p&lt;0.05 강조)
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="sweep-table">
+          <thead><tr><th>종목</th><th>표본</th>
+            {windows.map((w) => <th key={w}>+{w}일 평균%(p)</th>)}</tr></thead>
+          <tbody>
+            {syms.map((s) => {
+              const b = buckets[s] ?? {};
+              if (b.error) return (
+                <tr key={s}><td>{label(s)}</td>
+                  <td colSpan={windows.length + 1} className="muted">실행 실패</td></tr>);
+              const ov = (b.overall ?? {}) as Record<string, IrEventStat>;
+              return (
+                <tr key={s}>
+                  <td>{label(s)}</td><td>{b.n_events ?? "—"}</td>
+                  {windows.map((w) => {
+                    const o = ov[w] ?? ({} as IrEventStat);
+                    const sig = o.p_value != null && o.p_value < 0.05;
+                    return (
+                      <td key={w} className={sig ? "pos" : ((o.mean ?? 0) < 0 ? "neg" : "")}>
+                        {fmt(o.mean, "")}
+                        <span className="muted" style={{ fontSize: "0.85em" }}>
+                          {" "}(p{o.p_value != null ? o.p_value.toFixed(3) : "—"})</span>
+                      </td>);
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ── 신호값 분포(axis="signal") — SignalDistChart + 표 ──
 // IrBuilder SignalStudyPanel(L1459-1508)을 chat 버블용 최소형으로 미러.
 function SignalStudy({ result }: { result: IrStrategyResult }) {
@@ -493,6 +545,7 @@ const RENDERERS: Record<string, (result: Record<string, unknown>) => ReactElemen
     <div className="chat-result"><HeatmapPanel r={result as unknown as HeatmapResult} /></div>
   ),
   event_study: (result) => <EventStudy result={result as unknown as IrStrategyResult} />,
+  cohort: (result) => <CohortComparison result={result as unknown as IrStrategyResult} />,
   signal_dist: (result) => <SignalStudy result={result as unknown as IrStrategyResult} />,
   sweep: (result) => <SweepBuckets result={result as unknown as IrStrategyResult} />,
   inspect: (result) => <InspectChart result={result} />,
