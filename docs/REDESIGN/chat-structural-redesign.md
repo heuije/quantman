@@ -154,7 +154,9 @@
 | P1 ✅(백엔드) | 코호트 프리미티브: 엔진 집합실행 + axis=entity 라우팅 | A·B | 코어·서버·웹 | 조대표 — **백엔드 완료(core698/server508·LLM라우팅 검증)·웹 tsc대기** |
 | P2 ✅ | 결과계약 완성: adjustable(P2-a)·식별(P2-b)·완결 관측성(P2-c) | C | 코어·서버·웹 | 조대표 — **완료(server509)·웹 tsc대기** |
 | P3 ✅ | 증빙·인사이트: **함정 verdict(P3-a)·raw 엑셀(P3-b)·정량 grounding(P3-c)** | E | 코어·서버·웹 | 조대표 — **완결(core708/server511)·웹 tsc대기** |
-| P4 | 카탈로그 노출(매크로/COT/캘린더) + 신규수집 실측 | D | 코어·서버 | 조대표+데이터세션 |
+| P4 ✅ | 카탈로그 노출: **COT·실적캘린더 provenance 추가**(매크로/KR OI는 이미 노출) | D | 코어·서버 | 조대표 — **완료(PR#335·core722/server536)·inspect e2e** |
+
+**P4 상세(별도 브랜치 feat/chat-p4-catalog·PR#335):** 3병렬 조사로 갭 특정 — 매크로·KR 선물 미결제약정은 이미 카탈로그 노출됐고, **COT(US 선물 투기순포지션·미결제약정 8시장)·실적캘린더가 provenance(SSOT) 갭**이었다(수집됐으나 LLM이 존재를 몰라 라우팅 못 함). provenance.py에 2범주 추가 + prompt inspect 안내에 COT 조회 예시. 검증=COT 실존(dev-data 16심볼·prod PR#297)·inspect e2e(원유선물투기순포지션 60행)·불변식 테스트. macro.cot는 이미 스펙 라벨로 인벤토리 집계 노출→개별깊이 중복 생략(원칙2/3).
 
 각 Phase는 독립 PR + 실데이터/로컬 $0 하니스([[project_local_visual_testenv]]) 검증 게이트.
 

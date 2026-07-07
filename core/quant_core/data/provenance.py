@@ -8,6 +8,7 @@
   · trailing 밸류(PBR·PER·EV/EBITDA)·재무 KR=전자공시(OpenDART) · US=SEC EDGAR
   · 추정실적(forward)=FnGuide(현재 스냅샷·trailing과 별개)
   · 컨센서스(목표주가)=네이버 증권 리포트(reports_kr) · 수급=KRX(pykrx) · 섹터=FDR KRX-DESC · 매크로=FRED+yfinance
+  · COT(투기순포지션·미결제약정 US선물)=CFTC Socrata · 실적캘린더(발표일·EPS)=yfinance on-demand
   · 뉴스=네이버
 
 ⚠ 큐레이션 레지스트리다 — 피드 소스가 바뀌면 여기도 함께 고친다(드리프트 방지).
@@ -50,6 +51,14 @@ DATA_PROVENANCE: list[dict[str, str]] = [
      "source": "공식 KRX Open API(data-dbg.krx.co.kr)",
      "method": "원시 일별 시계열(매크로형 브로드캐스트 심볼)",
      "note": "KR. AUTH_KEY 필요·미설정 시 비활성. 크로스에셋 신호로 참조 가능"},
+    {"category": "COT(투기순포지션·미결제약정, US 선물)",
+     "source": "CFTC 공식 Socrata API",
+     "method": "주간 포지셔닝(비상업=투기자 롱−숏) + 미결제약정. 매크로형 심볼(예 '원유선물투기순포지션'·'금선물미결제약정')",
+     "note": "US 선물 8시장(WTI·천연가스·금·은·구리·나스닥·S&P500·비트코인)·1986~·화 마감 금 공개(PIT). inspect/describe로 조회·크로스에셋 신호 참조"},
+    {"category": "실적캘린더(발표일·추정/확정 EPS·서프라이즈)",
+     "source": "yfinance",
+     "method": "종목별 on-demand 조회 — 과거 확정 발표일+EPS 실적+서프라이즈, 미래 예정일",
+     "note": "US·KR. describe 리포트에 facet 포함('실적 언제·다음 실적'). 현시점 스냅샷(과거 예정일 아카이브 없음)"},
     {"category": "뉴스(헤드라인)",
      "source": "네이버 뉴스 API",
      "method": "종목명 검색 최신순(on-demand)", "note": "현시점 참고용"},

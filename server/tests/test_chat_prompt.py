@@ -92,6 +92,14 @@ def test_chat_prompt_includes_data_provenance():
     p = cp.chat_system_prompt()
     assert "data_provenance" in p
     assert "OpenDART" in p and "전자공시" in p     # trailing 밸류 정답 출처
+
+
+def test_chat_prompt_exposes_cot_catalog():
+    """P4: COT(US 선물 투기순포지션·미결제약정)가 챗 카탈로그에 노출돼야 — 수집됐으나 LLM이
+    존재를 몰라 라우팅 못 하던 갭. provenance(SSOT) + inspect 도구 안내(조회 경로) 둘 다 노출."""
+    p = cp.chat_system_prompt()
+    assert "COT" in p and "투기순포지션" in p       # 존재 인지(provenance)
+    assert "원유선물투기순포지션" in p               # inspect 라우팅 예시(어떻게 조회하나)
     assert "FnGuide" in p                            # 추정실적(별개)
     assert "추측하지 말" in p                         # 출처 지어내기 금지 가드
 
