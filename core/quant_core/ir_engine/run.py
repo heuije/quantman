@@ -458,10 +458,15 @@ def run_extremize(strategy: StrategyIR, dataset: dict) -> dict:
 
     cells.sort(key=lambda c: _score(c[1]), reverse=True)
     best_label, best_perf, best_kind, best_payload = cells[0]
+    # 승자의 **단일 실행 전략 IR**(최적 파라미터/종목 적용·펼침 제거) — 챗 '자동매매 연동' 버튼이
+    # 그리드 스펙이 아니라 이 tradable 전략을 draft 저장하도록 노출한다. _build가 백테스트한 바로
+    # 그 StrategyIR이라 실행 정합(별도 재구성 없음).
+    best_ir = _build(best_kind, best_payload).model_dump()
     out = {
         "success": True, "axis": ("asset" if st.axis == "entity" else "parameter"),
         "reduction": "extremize", "objective": obj.model_dump(),
-        "best": {"label": best_label, "metric_value": best_perf.get(obj.metric), "perf": best_perf},
+        "best": {"label": best_label, "metric_value": best_perf.get(obj.metric),
+                 "perf": best_perf, "ir": best_ir},
         "ranked": [{"label": l, "metric_value": p.get(obj.metric)} for l, p, _, _ in cells],
     }
     if obj.oos_guard:

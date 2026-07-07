@@ -94,6 +94,15 @@ def test_chat_prompt_includes_data_provenance():
     assert "OpenDART" in p and "전자공시" in p     # trailing 밸류 정답 출처
 
 
+def test_chat_prompt_aware_of_autotrade_button():
+    """챗봇이 '자동매매 연동하기' 버튼의 존재를 알아야 사용자에게 안내한다(엑셀 버튼 인지 패턴).
+    실제로 굴리려는 의도 신호에 버튼을 안내하되, 봇이 직접 매매를 시작하지 않음을 명확히(보안·책임)."""
+    p = cp.chat_system_prompt()
+    assert "자동매매 연동하기" in p                       # 버튼 존재 인지
+    assert "직접 매매를 시작하지" in p                     # 봇은 실행 주체 아님(버튼→게이트 흐름)
+    assert "모의부터" in p                                 # 실돈 밀어붙이지 말고 모의 우선(측정된 톤)
+
+
 def test_chat_prompt_exposes_cot_catalog():
     """P4: COT(US 선물 투기순포지션·미결제약정)가 챗 카탈로그에 노출돼야 — 수집됐으나 LLM이
     존재를 몰라 라우팅 못 하던 갭. provenance(SSOT) + inspect 도구 안내(조회 경로) 둘 다 노출."""

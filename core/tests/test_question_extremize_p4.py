@@ -103,3 +103,27 @@ def test_extremize_oos_guard_structure():
 def test_extremize_oos_guard_absent_when_off():
     res = run_query(_ext_entity("cum_return", "max", oos=False), _multi())
     assert "oos_guard" not in res
+
+
+# ── 챗 '자동매매 연동' 버튼용: best.ir = 승자의 tradable 단일 실행 전략 ──────────────
+def test_extremize_best_exposes_tradable_winner_ir():
+    """best.ir이 승자의 단일 실행 전략 IR(펼침 제거·승자 종목 단일화)이라 그대로 draft 저장·
+    자동매매로 실행 가능하다 — 챗 결과가 그리드 스펙이 아닌 tradable 전략을 넘기게 하는 계약."""
+    res = run_query(_ext_entity("cum_return", "max"), _multi())   # AAA 승(drift 최고)
+    best_ir = res["best"]["ir"]
+    assert isinstance(best_ir, dict)
+    ir = StrategyIR.model_validate(best_ir)                       # 유효한 StrategyIR로 재검증
+    assert not _errs(ir)                                          # 검증 오류 0(저장 게이트 통과 형태)
+    assert ir.universe.kind == "single" and ir.universe.symbols == ["AAA"]   # 승자 종목 단일화
+    assert ir.study is None or ir.study.axis == "none"           # 펼침(extremize) 제거
+
+
+def test_extremize_best_ir_bakes_winning_parameter():
+    """파라미터 최적화 승자 IR엔 최적 파라미터 값이 적용돼 있다(그리드가 아니라 확정 전략)."""
+    s = _factor()
+    s.study = Study(axis="parameter", reduction="extremize",
+                    param_grid=[ParamAxis(path="simulation.commission", values=[0.0, 0.02])],
+                    objective=Objective(metric="cum_return", direction="max", oos_guard=False))
+    res = run_query(s, _multi())
+    best_ir = StrategyIR.model_validate(res["best"]["ir"])
+    assert best_ir.simulation.commission == 0.0                  # 저비용 승자가 IR에 baked

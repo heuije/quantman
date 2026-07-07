@@ -24,6 +24,7 @@ import { Link } from "react-router-dom";
 import { Fragment, useState, type ReactElement } from "react";
 import EquityChart from "./EquityChart";
 import ExcelExportButton from "./ExcelExportButton";
+import AutotradeLinkButton from "./AutotradeLinkButton";
 import ParamControls, { type AdjustableParam } from "./ParamControls";
 import {
   BreadthPanel, CorrelationHeatmap, DiagnosisPanel, EventStudyChart, ExtremizeChart, HeatmapPanel, ICChart,
@@ -364,6 +365,10 @@ const EXCEL_SHAPES = new Set([
   "extremize", "sweep", "relate_ic", "relate_regression", "event_study", "signal_dist",
 ]);
 
+// 자동매매 연동 대상 — **실행 가능한 단일 전략**만(백테스트·최적화 승자). 이벤트스터디·스크린·
+// 비교 등 분석은 매매 전략이 아니라 제외. simulate=result.ir이 곧 전략, extremize=result.best.ir.
+const AUTOTRADE_SHAPES = new Set(["simulate", "extremize"]);
+
 // P4 맥락 카드 — 사이드카(준실시간 시세·뉴스)를 형상 렌더러와 **직교**하게 결과 아래 표시.
 // context 없으면(엔진 단독·다른 형상) 렌더 안 함. 시세 등락은 한국식 방향색(상승=빨강·하락=파랑).
 function ContextCard({ context }: { context?: IrStrategyResult["context"] }) {
@@ -433,11 +438,19 @@ export default function ChatResultView({ result }: Props) {
   // 엑셀 버튼은 증빙 지원 형상에만 — 시각화 전용 형상(상관 히트맵 등)은 숨김.
   const shape = (live.result as { shape?: string }).shape
     ?? deriveShape(live.result as unknown as IrStrategyResult);
+  // 자동매매 연동 대상 IR — simulate=result.ir(전략 그 자체), extremize=best.ir(승자 단일전략).
+  // 퇴화(불가능 손실 등) 결과는 실돈 연동 부적합이라 버튼 숨김(infeasible은 ir 부재라 자동 숨김).
+  const status = (live.result as { status?: string }).status;
+  const tradableIr = shape === "extremize"
+    ? (live.result as { best?: { ir?: Record<string, unknown> } }).best?.ir
+    : (live.ir ?? ir0);
+  const canLink = AUTOTRADE_SHAPES.has(shape) && status !== "degenerate" && !!tradableIr;
   return (
     <>
       <ChatResultBody result={live.result} />
       <ContextCard context={(live.result as unknown as IrStrategyResult).context} />
       {ir0 && EXCEL_SHAPES.has(shape) && <ExcelExportButton ir={live.ir ?? ir0} />}
+      {canLink && <AutotradeLinkButton ir={tradableIr as Record<string, unknown>} />}
       {ir0 && manifest && manifest.length > 0 && (
         <ParamControls baseIr={ir0} manifest={manifest}
           onRun={(ir, res) => setLive({ ir, result: res })} />
