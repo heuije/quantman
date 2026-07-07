@@ -42,6 +42,14 @@ def _patch(monkeypatch, master_loaded: bool) -> list[str]:
                         lambda: calls.append("invalidate"))
     monkeypatch.setattr(appmain, "_trigger_preview",
                         lambda src: calls.append(f"preview:{src}"))
+    # _package_bundle는 실제로 DATA_DIR(수만 개 parquet)를 tar+zstd로 압축한다.
+    # 이 테스트는 _refresh_global_dataset의 '호출 순서'만 검증하므로 스텁한다 —
+    # 스텁하지 않으면 공유·라이브 볼륨을 실제 압축하느라 (a) 테스트가 수십 초로 느려지고
+    # (b) 데이터엔진 cron·병렬 세션이 압축 중 parquet을 추가/삭제하면 build_bundle의
+    # tar.add가 FileNotFoundError로 터져(_refresh가 단언 전에 raise) 전체 스위트·동시
+    # 실행에서만 깨지는 격리 결함이 된다. _trigger_preview와 동일 이유의 스텁.
+    monkeypatch.setattr(appmain, "_package_bundle",
+                        lambda: calls.append("package_bundle"))
     monkeypatch.setattr(appmain.kis_master_cache, "get_master_set",
                         lambda: ({"AAPL"} if master_loaded else set()))
     monkeypatch.setattr(appmain.kis_master_cache, "refresh",
