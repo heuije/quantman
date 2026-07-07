@@ -89,8 +89,13 @@ def build_bundle(scope: str = "trading") -> dict:
         tmp = bp.with_suffix(".tmp")
         t0 = time.time()
         n_files = 0
+        _log.info("dataset bundle(%s) 압축 시작", scope)   # 웹 지연 상관분석용(끝에 elapsed 로깅)
         # tar.zst — 메모리에서 tar stream을 zstd로 압축. level 3은 빠르고 적당한 압축률.
-        cctx = zstandard.ZstdCompressor(level=3, threads=-1)
+        # threads=0(단일코어) — 옛 threads=-1(전 CPU 코어)은 압축 수십초 동안 전 코어를 점유해,
+        # 같은 프로세스에서 도는 웹 요청이 CPU를 못 얻어 100초+ 행이 났다(대표적 warmup 렉의
+        # 근본). in-process 백그라운드 패키징이라 압축 wall-clock이 좀 늘어도 무방 — 그 대가로
+        # 웹 요청에 코어를 양보해 "어떤 시간에 접속해도 빠른 응답"을 지킨다. (2026-07-07)
+        cctx = zstandard.ZstdCompressor(level=3, threads=0)
         with open(tmp, "wb") as f, cctx.stream_writer(f) as zw, \
                 tarfile.open(fileobj=zw, mode="w|") as tar:
             for p in sorted(base.glob("*.parquet")):

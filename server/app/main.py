@@ -1069,6 +1069,43 @@ def _initial_dataset_cache_prewarm() -> None:
         _log.exception("원시 데이터셋 캐시 프리워밍 예외")
 
 
+def _initial_summary_prewarm() -> None:
+    """기동 시 개별종목분석 summary(종목상세) 경로를 데운다 — 첫 유저가 warmup 비용을 물지 않도록.
+
+    summary는 symbol_detail이 담당하는데 그 첫 호출은 _all_listings_cached가 US StockListing
+    (네트워크)를 콜드로 물고(전 종목 공유 비용·1회), 이어 종목별 원시 시세를 콜드 로드한다. 대표
+    종목 몇 개를 미리 호출해 **공유 목록 캐시 + 그 종목 시세 캐시**를 데워 첫 진입부터 즉시 뜨게
+    한다(트리맵·재무제표 프리워밍과 대칭). 커버 종목의 볼륨 read는 콜드여도 빠르므로 전 종목을
+    데울 필요는 없다 — 공유 목록 캐시 워밍이 핵심(그래야 임의 종목 첫 조회도 목록 콜드를 안 문다)."""
+    try:
+        from .routers import market
+        seeds = ["005930", "000660", "247540", "005380", "035420"]  # 대형·최빈 조회 대표
+        for code in seeds:
+            try:
+                market.symbol_detail(code, range="1y", light=1, user=None)
+            except Exception:
+                _log.exception("summary 프리워밍 실패: %s", code)
+        _log.info("summary(종목상세) 프리워밍 완료 — 공유 목록캐시 + %d종목", len(seeds))
+    except Exception:
+        _log.exception("summary 프리워밍 예외")
+
+
+def _probe_summary_latency() -> None:
+    """summary 응답시간 상시 계측 — 대표 종목상세를 주기적으로 내부 호출해 소요 ms를 로깅한다.
+
+    유저 트래픽이 뜸해도 '어떤 시간에 접속해도 summary가 빠른가'를 연속 신호로 확인한다(번들
+    압축 등 백그라운드 작업이 웹을 굶기면 이 값이 튄다). Railway 로그 `[probe] summary` grep으로
+    추이 관측 — 배포 후 렉이 실제로 사라졌는지 추측 아닌 데이터로 판정하기 위한 측정 세팅."""
+    try:
+        import time as _t
+        from .routers import market
+        t0 = _t.perf_counter()
+        market.symbol_detail("005930", range="1y", light=1, user=None)
+        _log.info("[probe] summary(005930) %.0fms", (_t.perf_counter() - t0) * 1000)
+    except Exception:
+        _log.exception("summary 레이턴시 프로브 예외")
+
+
 def _refresh_industry_prices() -> None:
     """산업분석 트리맵 가격 캐시를 장 마감·정산 후 비우고 공식 종가로 미리 데운다.
 
@@ -1128,6 +1165,14 @@ def _build_scheduler() -> BackgroundScheduler:
         lambda: _run_with_retry("bonds_daily", _refresh_bonds, scheduler),
         CronTrigger(hour=7, minute=40),
         id="bonds_daily", replace_existing=True)
+
+    # 상시 summary 레이턴시 프로브 — 5분마다 대표 종목상세를 내부 호출해 소요 ms를 로깅.
+    # 유저 트래픽과 무관하게 '어떤 시간에도 summary가 빠른가'를 연속 측정(번들 압축 등 배경작업이
+    # 웹을 굶기면 이 값이 튄다). 실패 비크리티컬이라 _run_with_retry 미사용(자체 예외 로깅).
+    scheduler.add_job(
+        _probe_summary_latency,
+        CronTrigger(minute="*/5"),
+        id="summary_probe", replace_existing=True)
 
     # 15:45 — KRX 정규장 1차 (15:40 publish 직후)
     scheduler.add_job(
@@ -1378,6 +1423,7 @@ async def lifespan(app: FastAPI):
     _bg("naver_fund", _initial_naver_refresh, delay=60)
     _bg("technical", _initial_technical_refresh, delay=90)
     _bg("industry_prewarm", _initial_industry_prewarm, delay=90)
+    _bg("summary_prewarm", _initial_summary_prewarm, delay=90)   # 종목상세 첫 진입 콜드 제거(목록캐시+대표종목)
     _bg("static_meta", _initial_static_meta_refresh, delay=120)
     # 계층 2 — 백테스트/스크리너 백필(무거움). 5분 뒤.
     _bg("kr_fundamentals", _initial_kr_fundamentals_refresh, delay=300)
