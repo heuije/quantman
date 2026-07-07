@@ -5,6 +5,16 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MyStock</title>
+    <script>
+      // 테마 초기 적용 — 렌더 전에 실행해 다크/라이트 전환 시 흰 화면 깜빡임(FOUC) 방지.
+      // 기본=다크. 사용자가 고른 값은 qp_theme(localStorage)에 영속.
+      (function () {
+        try {
+          var t = localStorage.getItem("qp_theme");
+          document.documentElement.setAttribute("data-theme", t === "light" ? "light" : "dark");
+        } catch (e) { document.documentElement.setAttribute("data-theme", "dark"); }
+      })();
+    </script>
     <link
       rel="stylesheet"
       as="style"

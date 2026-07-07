@@ -464,8 +464,8 @@ function PairingOnboarding() {
     <div className="panel empty-state">
       <div className="empty-title">기기 페어링 후 사용 가능합니다</div>
       <p className="muted">
-        로컬앱을 PC에 설치하고 이 계정과 페어링하면, 위험 한도·보유 종목·전략별
-        P&L·실행 품질·헬스 등 모니터 섹션이 자동으로 활성화됩니다.
+        로컬앱을 PC에 설치하고 MyStock으로 연결하면 사용자의 수익률, 종목별 펀더멘탈 지표,
+        위험 지수 등 모니터링은 물론 자동매매(트레이딩)까지 한 번에 수행 가능합니다.
       </p>
       <a href="/devices" className="link-btn"
          style={{ display: "inline-block", marginTop: 8 }}>

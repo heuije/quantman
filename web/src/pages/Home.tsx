@@ -391,16 +391,20 @@ function FinancialsTab({ ticker }: { ticker: string; name: string }) {
             <tbody>
               {st.rows.map((r, ri) => {
                 const gkey = `${sKey}|${r.group}`;
-                if (r.child && !openG[gkey]) return null;        // 접힌 자식은 숨김
+                // 접힘 자식 = child면서 **실제 부모 그룹(group)이 있는** 행만. DART/dart-fss(XBRL)는
+                // depth로 child를 붙이지만 부모 토글이 없어(group=null) — 그대로 숨기면 계정이 통째로
+                // 사라진다(삼성전자 PL 20행 중 17행이 사라져 3개만 뜨던 버그). group 있는 자식만 접는다.
+                const collapsible = r.child && r.group != null;
+                if (collapsible && !openG[gkey]) return null;   // 접힌(부모 있는) 자식만 숨김
                 const open = openG[gkey];
-                const indent = r.child ? 26 : r.derived ? 22 : 8;   // 자식·파생(이익률/EBITDA) 들여쓰기
+                const indent = collapsible ? 26 : r.derived ? 22 : 8;   // 자식·파생(이익률/EBITDA) 들여쓰기
                 const hasChg = !r.pct && r.change.some((c) => c != null);   // 증감률 행 표시 대상
                 const showRow = showChg && hasChg;
                 const isEps = r.account.replace(/\s/g, "").includes("주당");   // 주당이익=원 단위
                 return (
                   <Fragment key={ri}>
                     <tr style={{ borderBottom: showRow ? "none" : "1px solid var(--border)",
-                      background: r.child ? "rgba(127,127,127,0.05)" : undefined }}>
+                      background: collapsible ? "rgba(127,127,127,0.05)" : undefined }}>
                       <td style={{ padding: "5px 8px", paddingLeft: indent, whiteSpace: "normal", wordBreak: "keep-all",
                         fontWeight: r.bold ? 700 : r.parent ? 600 : 400,
                         color: r.derived ? "var(--muted)" : "inherit", fontStyle: r.pct ? "italic" : "normal" }}>

@@ -6,6 +6,11 @@
   --navy-900: #0f2342;   /* 헤더·강조 영역 */
   --navy-700: #1d3a63;   /* 보더·활성 강조 */
   --navy-300: #93a4c0;   /* 네이비 배경 위 뮤트 텍스트 */
+  /* 네이비 '바' 위 글자색 — 다크=흰색. 라이트에선 밝은 네이비 위 가독 위해 어둡게 오버라이드. */
+  --on-navy: #ffffff;    /* 상단바 주 글자(브랜드·계정·활성 탭) */
+  --on-navy-2: #aebacf;  /* 상단바 비활성 탭 글자 */
+  --gn-bg: #1a2436;      /* 산업 트리맵 선택 셀 배경(진한 네이비) */
+  --gn-bd: #33425e;      /* 선택 셀 보더 */
 
   /* ── 다크 테마 (Finviz 풍 차콜) ───────────────────────────────────────
      페이지=어두운 차콜, 카드=약간 밝은 차콜, 본문=라이트 그레이. */
@@ -44,9 +49,56 @@
      Arial을 앞에 둬 영문·숫자는 Arial로, 한글 글리프는 맑은 고딕으로 폴백. */
   font-family: Arial, "맑은 고딕", "Malgun Gothic", -apple-system, sans-serif;
   color: var(--text);
+  color-scheme: dark;   /* 네이티브 컨트롤(스크롤바·date input)도 다크 기본 */
   /* 숫자를 고정폭으로 — 표·KPI·수익률이 세로로 정렬됨 */
   font-variant-numeric: tabular-nums;
 }
+
+/* ── 라이트 테마 (data-theme="light") ──────────────────────────────────────
+   위 :root = 다크(기본). 라이트는 색 토큰만 오버라이드 — 구조·간격은 공유.
+   토글: 계정 메뉴 버튼이 html[data-theme]을 바꾼다(qp_theme localStorage 영속). */
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f6f9;            /* 밝은 회색 페이지 배경 */
+  --panel: #ffffff;         /* 카드 = 화이트 */
+  --border: #e3e8ef;        /* 라이트 보더 */
+  --input-border: #cbd3de;
+  --text: #1a2230;          /* 본문 = 진한 잉크 */
+  --muted: #5c6675;         /* 뮤트 = 슬레이트 */
+  --accent: #c4982b;        /* 골드 — 라이트 위 가독 위해 약간 진하게 */
+  --accent-soft: rgba(196,152,43,0.14);
+  --accent-strong: #a67c1a; /* 링크·소형 텍스트 = 진한 골드 */
+  --accent-hover: #a8841f;
+  --ink: #2f5390;
+  --ink-hover: #274677;
+  --up-soft: rgba(222,48,51,0.10);
+  --down-soft: rgba(22,104,196,0.10);
+  --green-soft: rgba(46,166,90,0.12);
+  --red-soft: rgba(224,80,79,0.12);
+  --amber-soft: rgba(208,138,44,0.12);
+
+  /* ── 네이비 계열 — 라이트에선 저채도·밝은·반투명 네이비 틴트(글자 대비 확보) ──
+     상단바·사이드바·산업 트리맵 선택 셀의 딥네이비가 밝아지고, 그 위 글자는 어둡게 뒤집힌다. */
+  --navy-950: #eaeef6;   /* 상단바·사이드바 = 밝은 블루그레이 */
+  --navy-900: #eef2f8;   /* 강조 영역(hero 등) */
+  --navy-700: #ccd7ea;   /* 네이비 보더 */
+  --navy-300: #4a5773;   /* 밝은 네이비 위 뮤트 텍스트 → 어둡게 */
+  --on-navy: #17233c;    /* 밝은 네이비 바 위 주 글자 = 진한 네이비 */
+  --on-navy-2: #41506d;  /* 비활성 탭 글자 */
+  --gn-bg: #dbe4f2;      /* 트리맵 선택 셀 = 밝은 반투명 네이비 틴트 */
+  --gn-bd: #b7c6e0;
+  /* 상단바 버튼(계정·테마 토글) — 밝은 네이비 위 반투명 네이비 */
+  --navy-btn-bg: rgba(47,83,144,0.07);
+  --navy-btn-bd: rgba(47,83,144,0.24);
+  --navy-btn-hover: rgba(47,83,144,0.15);
+}
+
+/* 상단바 탭 hover — 라이트에선 밝은 파랑 글자(#cfe0ff)가 묻히므로 진한 파랑으로. */
+html[data-theme="light"] .navlink:hover { color: #1c4f9e; }
+html[data-theme="light"] .navlink:hover .nav-ic,
+html[data-theme="light"] .navlink.active .nav-ic { color: #2f6fd6; }
+html[data-theme="light"] .auth-cta.login { color: #2f5390; border-color: rgba(47,83,144,0.4); }
+html[data-theme="light"] .topnav { border-bottom-color: rgba(20,40,80,0.10); }
 
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); }
@@ -100,14 +152,23 @@ a:hover { text-decoration: underline; }
 .topnav .nav-ic { display: none; }                       /* 데스크탑 상단바: 텍스트만(깔끔) */
 .topnav .navlink.active { box-shadow: inset 0 -3px 0 #4f8ff5; }   /* 가로바: 하단 인디케이터 */
 /* 우측 계정(로그인) 버튼 + 드롭다운 */
-.topnav-right { position: relative; flex: none; }
+.topnav-right { position: relative; flex: none; display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
+/* 테마 토글 — 상단바 이메일 버튼 바로 아래(항상 노출). 네이비 헤더 위 흰 글자. */
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--navy-btn-bg, rgba(255,255,255,0.06)); color: var(--on-navy); border: 1px solid var(--navy-btn-bd, rgba(255,255,255,0.18));
+  padding: 4px 10px; border-radius: 8px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  transition: background 0.12s ease;
+}
+.theme-toggle:hover { background: var(--navy-btn-hover, rgba(255,255,255,0.16)); color: var(--on-navy); }
+.theme-toggle svg { width: 14px; height: 14px; }
 .account-btn {
   display: inline-flex; align-items: center; gap: 7px;
-  background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(255,255,255,0.18);
+  background: var(--navy-btn-bg, rgba(255,255,255,0.08)); color: var(--on-navy); border: 1px solid var(--navy-btn-bd, rgba(255,255,255,0.18));
   padding: 5px 11px; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer;
   transition: background 0.12s ease;
 }
-.account-btn:hover { background: rgba(255,255,255,0.18); }
+.account-btn:hover { background: var(--navy-btn-hover, rgba(255,255,255,0.18)); }
 .account-email { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-menu {
   position: absolute; right: 0; top: calc(100% + 8px); min-width: 212px;
@@ -134,19 +195,19 @@ a:hover { text-decoration: underline; }
   height: 100vh; overflow-y: auto;
 }
 .brand {
-  font-weight: 700; font-size: 24px; padding: 6px 10px 22px; color: #fff;
+  font-weight: 700; font-size: 24px; padding: 6px 10px 22px; color: var(--on-navy);
   letter-spacing: -0.01em;
 }
 .brand span { color: var(--accent); }
 .navlink {
-  padding: 10px 12px; border-radius: 8px; color: #aebacf;
+  padding: 10px 12px; border-radius: 8px; color: var(--on-navy-2);
   font-size: 14px; cursor: pointer;
   display: flex; align-items: center; gap: 11px;
   transition: background .12s ease, color .12s ease;
 }
 .navlink:hover { background: rgba(79,143,245,0.16); color: #cfe0ff; }  /* 파란 hover */
 .navlink.active {
-  background: rgba(79,143,245,0.22); color: #fff; font-weight: 600;
+  background: rgba(79,143,245,0.22); color: var(--on-navy); font-weight: 600;
   box-shadow: inset 3px 0 0 #4f8ff5;   /* 파란 활성 인디케이터 바 */
 }
 .navlink .nav-ic {
@@ -2958,31 +3019,71 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .chat-session:hover .chat-session-act { opacity: 1; }
 .chat-session-act:hover { color: var(--accent-strong); }
-.chat-title { font-size: 1.4rem; margin: 0 0 2px; }
-.chat-beta {
-  font-size: .7rem; vertical-align: middle;
-  padding: 2px 7px; border-radius: 6px;
-  background: var(--accent-soft); color: var(--accent-strong);
-  border: 1px solid var(--accent);
+.chat-head { padding-bottom: 12px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+.chat-title {
+  font-size: 1.35rem; margin: 0 0 3px; font-weight: 700; letter-spacing: -0.02em;
+  display: flex; align-items: center; gap: 9px;
 }
-.chat-sub { margin: 0 0 12px; font-size: .85rem; }
+.chat-beta {
+  font-size: .62rem; font-weight: 700; letter-spacing: 0.1em;
+  padding: 2px 7px; border-radius: 5px; line-height: 1.5;
+  background: var(--accent-soft); color: var(--accent-strong);
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.chat-sub { margin: 0; font-size: .84rem; }
 .chat-thread {
   flex: 1; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 8px 0;
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 2px 0 14px;
 }
-.chat-empty { text-align: center; margin: auto 0; font-size: .9rem; line-height: 1.7; }
+
+/* ── 빈 화면 = 리서치 스타터 콘솔(첫인상). 상단 정렬(중앙 X). ─────────────── */
+.chat-welcome { margin: 0; padding: 2px 2px 16px; }
+.chat-welcome-eyebrow {
+  display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.16em;
+  color: var(--accent-strong); text-transform: uppercase; margin-bottom: 12px;
+  padding: 3px 10px; border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: 999px; background: var(--accent-soft);
+}
+.chat-welcome-title { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.025em; margin: 0 0 7px; }
+.chat-welcome-lead { font-size: .9rem; color: var(--muted); margin: 0 0 22px; max-width: 540px; line-height: 1.6; }
+.chat-starters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.chat-starter {
+  border: 1px solid var(--border); border-radius: 13px; padding: 14px 14px 12px;
+  background: var(--panel); display: flex; flex-direction: column; gap: 8px;
+}
+.chat-starter-head {
+  display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px;
+  color: var(--text); margin-bottom: 3px;
+}
+.chat-starter-ic {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 7px;
+  background: var(--accent-soft); color: var(--accent-strong);
+}
+.chat-starter-chip {
+  text-align: left; font-size: 12.5px; line-height: 1.4; color: var(--muted);
+  padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px;
+  background: transparent; cursor: pointer; transition: border-color .12s, color .12s, background .12s;
+}
+.chat-starter-chip::before { content: "› "; color: var(--accent-strong); font-weight: 700; }
+.chat-starter-chip:hover { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.chat-starter-chip:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 760px) { .chat-starters { grid-template-columns: 1fr; } }
+
 .chat-msg {
-  max-width: 80%; padding: 10px 14px; border-radius: 12px;
-  word-break: break-word;
+  max-width: 80%; padding: 11px 15px; border-radius: 14px;
+  word-break: break-word; font-size: 14px;
 }
 .chat-msg.user {
   align-self: flex-end;
-  background: var(--accent-soft); border: 1px solid var(--accent);
+  background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  border-bottom-right-radius: 5px;
 }
 .chat-msg.assistant {
   align-self: flex-start;
   background: var(--panel); border: 1px solid var(--border);
+  border-bottom-left-radius: 5px;
 }
 .chat-text { margin: 0; white-space: pre-wrap; line-height: 1.6; font-size: 14px; }
 .chat-tool {
@@ -2994,30 +3095,32 @@ thead th { color: var(--muted); font-weight: 600; }
   color: var(--red); font-size: .85rem;
   padding: 6px 0; border-top: 1px solid var(--red-soft);
 }
+/* 통합 컴포저 — 입력창+전송 버튼을 한 카드에. 포커스는 컨테이너가 골드 링으로 표현. */
 .chat-input-bar {
-  display: flex; gap: 8px; padding-top: 8px;
-  border-top: 1px solid var(--border);
+  display: flex; gap: 8px; align-items: flex-end;
+  margin-top: 10px; padding: 8px 8px 8px 12px;
+  border: 1px solid var(--input-border); border-radius: 14px; background: var(--panel);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.chat-input-bar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .chat-input {
   flex: 1; resize: none;
   font: inherit; font-size: 14px;
-  padding: 9px 12px; border: 1px solid var(--input-border);
-  border-radius: 8px; background: var(--panel); color: var(--text);
-  line-height: 1.5;
-}
-.chat-input:focus {
-  outline: 2px solid var(--accent); outline-offset: 1px;
-  border-color: var(--accent);
+  padding: 6px 2px; border: none; background: transparent; color: var(--text);
+  line-height: 1.55; outline: none;
 }
 .chat-input:disabled { opacity: .55; cursor: not-allowed; }
 .chat-send {
   align-self: flex-end; flex-shrink: 0;
-  padding: 9px 18px; font-weight: 600; font-size: 14px;
+  padding: 8px 17px; font-weight: 600; font-size: 14px;
   background: var(--ink); color: #fff;
-  border: none; border-radius: 8px; cursor: pointer;
-  transition: background .12s ease;
+  border: none; border-radius: 10px; cursor: pointer;
+  transition: background .12s ease, filter .12s ease;
 }
-.chat-send:hover { background: var(--accent-hover); }
+.chat-send:hover { filter: brightness(1.12); }
 .chat-send:disabled {
   background: var(--border); color: var(--muted); cursor: not-allowed;
 }

@@ -93,6 +93,25 @@ _CANON = {n.replace(" ", ""): c for n, c in {
     "기본주당순이익(손실)": "기본주당순이익",
     "지배기업소유지분": "지배기업소유주지분",
     "분기총포괄손익": "총포괄손익", "반기총포괄손익": "총포괄손익",
+    # 공시자 표준코드 미태깅 시 총포괄손익을 이익/손익/당기·분기 접두 등으로 달리 표기 → 통일.
+    "총포괄이익": "총포괄손익", "총포괄이익(손실)": "총포괄손익", "총포괄손익(손실)": "총포괄손익",
+    "당기총포괄이익": "총포괄손익", "당기총포괄손익": "총포괄손익",
+    "분기총포괄이익": "총포괄손익", "반기총포괄이익": "총포괄손익",
+    # 순이익 귀속 분해 명칭 변형 → 표준 귀속명(당기순이익 = 지배 + 비지배 항등식 도출용). ⚠ 반드시
+    # '순이익' 문맥 명칭만 — 포괄손익 귀속(지배주주지분)·자본 지분과 충돌하면 안 되므로 바꾸지 않는다.
+    "지배회사지분순이익": "지배기업소유주지분", "지배회사지분순이익(손실)": "지배기업소유주지분",
+    "지배기업의소유주지분순이익": "지배기업소유주지분", "지배주주지분순이익": "지배기업소유주지분",
+    "지배기업소유주지분순이익": "지배기업소유주지분",
+    "비지배지분순이익": "비지배지분", "비지배지분순이익(손실)": "비지배지분",
+    "비지배주주지분순이익": "비지배지분",
+    # '지배기업의 소유주에게 귀속되는 X순이익' / '비지배지분에 귀속되는 X순이익' — 당기·분기·반기 접두 ×
+    # (손실) 유무. 분기·반기 보고서는 '분기/반기순이익'으로 표기(같은 계정) → 전부 표준 귀속명으로.
+    **{f"지배기업의소유주에게귀속되는{p}순이익{s}": "지배기업소유주지분"
+       for p in ("당기", "분기", "반기") for s in ("", "(손실)")},
+    **{f"지배기업소유주에게귀속되는{p}순이익{s}": "지배기업소유주지분"
+       for p in ("당기", "분기", "반기") for s in ("", "(손실)")},
+    **{f"비지배지분에귀속되는{p}순이익{s}": "비지배지분"
+       for p in ("당기", "분기", "반기") for s in ("", "(손실)")},
 }.items()}
 
 
@@ -134,6 +153,31 @@ def _slot_canon(slot: dict) -> str:
     return _AID_NAME.get(slot.get("aid") or "", "") or _canon_account(slot.get("nm") or "")
 
 
+# DART가 공시자 미태깅 시 account_id에 넣는 placeholder — 진짜 표준코드가 아니므로 병합키로 쓰면 안 된다.
+_AID_PLACEHOLDER = {"", "-", "-표준계정코드 미사용-"}
+# 우리가 정규화·매칭하는 표준 계정명 집합(account_id 맵의 값 + 이름 정규화 맵의 값).
+_STD_NAMES = frozenset(_AID_NAME.values()) | frozenset(_CANON.values())
+
+
+def _merge_key(aid: str, nm: str) -> str:
+    """보고서 간 계정 병합 키. 인식된 표준계정은 canon으로 묶어, 같은 계정이 보고서마다
+    account_id를 다르게 줘도(한 해는 ifrs-full_ProfitLoss, 다른 해는 '-표준계정코드 미사용-')
+    하나로 병합한다 — 안 그러면 옛 보고서가 채우는 과거연도가 통째로 유실(노바렉스 당기순이익
+    2021·2022 근본수정). 미인식 상세계정은 실 account_id 우선(연도별 계정명 변화에 견고),
+    placeholder·누락 id만 계정명으로 — 그래야 placeholder 계정들이 한 키로 뭉치지 않는다."""
+    aid = (aid or "").strip()
+    canon = _AID_NAME.get(aid)
+    if not canon:
+        cn = _canon_account(nm)          # 이름 변형 → 표준명(아니면 원본)
+        if cn in _STD_NAMES:
+            canon = cn
+    if canon:
+        return "canon:" + canon
+    if aid not in _AID_PLACEHOLDER:
+        return aid
+    return "nm:" + (nm or "").strip()
+
+
 def _ordered_slots(sj: str, slots):
     """표시 순서 정렬. BS·CF는 DART 문서순서(ord)가 곧 표시순서·계층(소계 바로 아래 하위계정)
     이라 그대로 — 전자공시 그대로의 구조·합계 일치(유동자산=하위계정 합, 활동현금흐름=하위계정 합).
@@ -142,6 +186,27 @@ def _ordered_slots(sj: str, slots):
     if sj in ("BS", "CF"):
         return sorted(slots, key=lambda s: s["ord"])
     return sorted(slots, key=lambda s: (_order_rank(sj, _slot_canon(s)), s["ord"]))
+
+
+def _fill_ni_from_attribution(pl: dict, field: str) -> None:
+    """포괄손익계산서가 연결 당기순이익 '합계'를 빼고 귀속 분해(지배기업소유주지분+비지배지분)만
+    줄 때(현대차·노바렉스 등, 합계는 자본변동표에만 있어 필터됨) 당기순이익 = 지배 + 비지배
+    회계 항등식으로 빈 기간을 채운다. 반기·분기 보고서뿐 아니라 옛 사업보고서 comparatives도
+    같은 형태라 연간·분기 store 모두에 적용(field='vals' 연간 / 'cum' 분기). 이미 합계가 있는
+    기간은 건드리지 않는다. 지배지분 자체가 없으면(귀속 분해 미제공) 손대지 않는다."""
+    own = pl.get("canon:지배기업소유주지분")
+    if not (own and own.get(field)):
+        return
+    nci = pl.get("canon:비지배지분")
+    ni = pl.get("canon:당기순이익")
+    if ni is None:
+        ni = pl["canon:당기순이익"] = {
+            "nm": "당기순이익", "aid": "ifrs-full_ProfitLoss", "ord": own["ord"], field: {}}
+    tgt = ni.setdefault(field, {})
+    nvals = nci.get(field, {}) if nci else {}
+    for k, ov in own[field].items():
+        if k not in tgt:
+            tgt[k] = ov + nvals.get(k, 0.0)
 
 
 def _num(s):
@@ -265,12 +330,12 @@ def _fetch_quarterly(cc: str, y_lo: int, y_cur: int) -> dict:
             if not sj:
                 continue
             aid = (x.get("account_id") or "").strip()
-            key = aid if (aid and aid != "-") else "nm:" + (x.get("account_nm") or "")
+            nm = (x.get("account_nm") or "").strip()
+            key = _merge_key(aid, nm)
             try:
                 ordn = int(x.get("ord") or 0)
             except (ValueError, TypeError):
                 ordn = 0
-            nm = (x.get("account_nm") or "").strip()
             slot = store.setdefault(sj, {}).setdefault(
                 key, {"nm": nm, "aid": aid, "ord": ordn, "cum": {}, "snap": {}})
             if canon and nm:
@@ -295,6 +360,10 @@ def _fetch_quarterly(cc: str, y_lo: int, y_cur: int) -> dict:
                 ingest(items, y, q, canon=(code == "11011"))
     if not fetched_any:
         return {}
+
+    # 반기·분기 보고서가 연결 당기순이익 합계를 빼고 귀속 분해만 줄 때 항등식으로 채운다(단일분기
+    # = 누적 차감의 전제라 누적 슬롯을 채워야 함). 상세는 _fill_ni_from_attribution 참조.
+    _fill_ni_from_attribution(store.get("PL", {}), "cum")
 
     allqs = sorted({yq for sec in store.values() for slot in sec.values()
                     for yq in list(slot["cum"]) + list(slot["snap"])})
@@ -371,13 +440,14 @@ def fetch(code: str) -> dict | None:
             if not sj:
                 continue
             aid = (x.get("account_id") or "").strip()
-            key = aid if (aid and aid != "-") else "nm:" + (x.get("account_nm") or "")
+            nm = (x.get("account_nm") or "").strip()
+            key = _merge_key(aid, nm)
             try:
                 ordn = int(x.get("ord") or 0)
             except (ValueError, TypeError):
                 ordn = 0
             slot = store.setdefault(sj, {}).setdefault(
-                key, {"nm": (x.get("account_nm") or "").strip(), "aid": aid, "ord": ordn, "vals": {}})
+                key, {"nm": nm, "aid": aid, "ord": ordn, "vals": {}})
             for fld, yr in (("thstrm_amount", bsns_year), ("frmtrm_amount", bsns_year - 1),
                             ("bfefrmtrm_amount", bsns_year - 2)):
                 v = _num(x.get(fld))
@@ -386,6 +456,10 @@ def fetch(code: str) -> dict | None:
 
     ingest(c_hi, y_hi)
     ingest(_fetch_year(cc, y_hi - 2), y_hi - 2)   # 2년 전 콜 → 더 과거 2개년 채움
+
+    # 옛 사업보고서 comparatives도 포괄손익계산서에 연결 당기순이익 합계를 빼고 귀속 분해만 주는
+    # 경우가 있어 과거연도 당기순이익이 빈다 — 지배 + 비지배 항등식으로 채운다(분기와 동일 로직).
+    _fill_ni_from_attribution(store.get("PL", {}), "vals")
 
     years = [y_hi - 4, y_hi - 3, y_hi - 2, y_hi - 1, y_hi]
     periods = [f"{y}/12" for y in years]
