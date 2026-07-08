@@ -451,15 +451,17 @@ class SettingsApp:
         f = ttk.Frame(self.nb)
         self.nb.add(f, text="주문 예정")
         lbl = ttk.Label(f, style="Muted.TLabel", justify="left",
-                        text="현시점 서버 preview + 로컬 사이징 기준 다음 매매 후보입니다. "
-                             "예상 수량은 발주 시점의 자금·현재가·주문가능수량에 따라 달라질 수 "
-                             "있습니다.")
+                        text="현시점 서버 preview + 로컬 사이징 기준 다음 매매 후보(잠정)입니다. "
+                             "방향·수량은 확정이 아니며 실제 발주 시점에 다시 계산됩니다 — 특히 "
+                             "해외 지표(예: S&P500) 기반 전략은 해당 시장 마감 후(새벽) 국장 시작 전에 "
+                             "방향이 확정되므로, 아래 방향이 뒤집힐 수 있습니다. "
+                             "'기준일'은 방향 계산에 쓰인 데이터 날짜입니다(오늘보다 이르면 잠정치).")
         lbl.pack(anchor="w", padx=12, pady=(8, 0), fill="x")
         self._flow(lbl)
         self.tv_upcoming = self._make_tree(f, [
-            ("strategy", "전략", 190), ("symbol", "종목", 110),
-            ("direction", "방향", 80), ("when", "주문예정", 120),
-            ("qty", "예상 수량", 110),
+            ("strategy", "전략", 180), ("symbol", "종목", 100),
+            ("direction", "방향", 80), ("as_of", "기준일", 92),
+            ("when", "주문예정", 120), ("qty", "예상 수량", 100),
         ])
 
     def _build_tab_pending(self):
@@ -1190,6 +1192,9 @@ class SettingsApp:
                         continue
                     side = c.get("direction") or "long"
                     dlabel = {"long": "매수(롱)", "short": "매도(숏)"}.get(side, "—")
+                    # 기준일 — 방향 계산에 쓰인 데이터 날짜(잠정치 판별용). 오늘보다 이르면
+                    # 아직 미확정(예: 해외 지표 전략은 익일 새벽 마감 후 재계산).
+                    as_of = c.get("data_as_of") or "—"
                     when = self._next_order_time_label(sdef, sym, c.get("currency"))
                     qty_txt = "—"
                     if broker is not None and balance is not None:
@@ -1198,7 +1203,7 @@ class SettingsApp:
                             broker, balance, sdef, sym,
                             "sell" if side == "short" else "buy", ref)
                         qty_txt = f"{q:,}{unit}" if q is not None else "—"
-                    rows.append((sname, sym, dlabel, when, qty_txt))
+                    rows.append((sname, sym, dlabel, as_of, when, qty_txt))
             return rows
 
         def done(res, err):
@@ -1210,7 +1215,7 @@ class SettingsApp:
                     self.tv_upcoming.insert("", "end", values=row)
                 if not res:
                     self.tv_upcoming.insert(
-                        "", "end", values=("(다음 매매 후보 없음)", "", "", "", ""))
+                        "", "end", values=("(다음 매매 후보 없음)", "", "", "", "", ""))
             except Exception:
                 pass
         try:
