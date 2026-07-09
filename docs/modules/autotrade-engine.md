@@ -91,6 +91,16 @@ tolerance는 **미국 전용 라이브 버퍼**(국내 무시)·default ±3%·�
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [진행중] 자동매매 전 사이클 크래시 — Close-only 시리즈 × ATR 무가드 (2026-07-10 착수, `fix/indicator-ohlc-guard`)
+
+**의도.** 07-07 22:13~ 로컬앱 전 사이클(아침/종가/미장/장중 loop)이 `KeyError: 'High'`로 크래시해 자동매매 전면 중단(`docs/incidents/2026-07-07-close-only-series-cycle-crash.md`). 근본=PR#325가 발행한 **국채 수익률 37종이 Close-only**인데 dataset_scope **ALL_SYMBOLS 안전망으로 전 사이클에 자동 유입**되고, `compute_all→add_atr`가 `df["High"]` **무가드 접근** → 시리즈 하나가 dataset 로드·사이클 전체를 죽임. 부류="High/Low/Volume 요구 지표의 무가드 접근"(Volume 2곳은 기존에 올바른 관용구 보유).
+
+**구현.** `add_atr`(High/Low)·`add_high_deviation`(High·동일 부류 잠복)에 기존 Volume 관용구 적용 — 컬럼 부재 시 해당 지표만 **NaN 컬럼**(스키마 유지·Close-only에 ATR은 수학적 미정의라 NaN이 올바른 값). 회귀 7종(`test_indicators_ohlc_guard.py`) + **실데이터 재현 검증**(이 PC 실제 dataset·인시던트 동일 호출 130종/국채 37종 → 크래시 소멸·국채 pct 정상·주식/선물 ATR 정상). core만 변경(서버/웹/로컬 배선 무변경) — 서버 백테스트·챗 경로도 동일 가드 보호.
+
+**교훈(distill 대기).** ① 새 매크로 피드는 ALL_SYMBOLS 등록 순간 **모든 로컬 사이클 dataset에 유입** — 데이터 형상(Close-only)이 소비자 암묵 전제(OHLCV)와 어긋나면 전 유저 동시 다운. ② 지표의 컬럼 요구는 가드가 불변식(요구 부재=NaN 컬럼·배치 계속) — "시리즈 하나가 사이클을 죽일 수 없다".
+
+**남은 것.** 전체 스위트 확인 → PR·머지 → 로컬앱 릴리스 v0.9.69(코어가 exe에 번들이라 릴리스 필수) → 사용자 설치 후 다음 사이클 정상 확인 → [완료] 전환·§교훈 distill.
+
 ### [진행중] 비상청산 sid-미스매치 고아 (R6/D6) (2026-07-06 착수, `fix/emergency-liquidation-orphan`)
 
 **의도.** 07-06 모의(LS 국내선물): 사용자가 계좌 킬스위치(LIQUIDATE_ALL)로 청산했는데 **원장에 반대방향 유령 롱4**가 새로 생김(`docs/incidents/2026-07-06-emergency-liquidation-sid-orphan.md`). 근본=`_apply_fill`이 체결 open/close를 **전략 id(sid)로 판정**하는데, 비상청산(`liquidate_all_held`)은 브로커를 **종목 단위**로 청산하며 매칭 안 되는 **합성 sid `liquidate:{symbol}`**로 주문 → BUY가 신규 롱으로 오기록. v0.9.65/66(R1 reconcile·R2 정규화)이 못 덮은 같은 부류 다른 진입점(=R6). 자금경로라 설계서 선제출→승인→구현.

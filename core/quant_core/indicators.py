@@ -78,6 +78,10 @@ def add_ma_cross(df: pd.DataFrame) -> pd.DataFrame:
 def add_high_deviation(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
     """최근 N일 고점 대비 현재 종가의 낙폭(%). 0=신고가, 음수=고점 아래."""
     df = df.copy()
+    # High 없는 시리즈(Close-only 매크로)는 미정의 — NaN 컬럼(add_atr 가드와 동일 부류).
+    if "High" not in df.columns:
+        df["high_dev_20d"] = np.nan
+        return df
     roll_high = df["High"].rolling(window).max()
     df["high_dev_20d"] = (df["Close"] - roll_high) / roll_high.replace(0, np.nan) * 100
     return df
@@ -118,6 +122,13 @@ def add_rsi(df: pd.DataFrame, window: int = 14) -> pd.DataFrame:
 
 def add_atr(df: pd.DataFrame, window: int = 14) -> pd.DataFrame:
     df = df.copy()
+    # High/Low 없는 시리즈(국채 수익률 등 Close-only 매크로)는 ATR 미정의 — NaN 컬럼으로
+    # 스키마만 유지(add_volume_ratio 관용구와 동일). 무가드 df["High"] 접근은 2026-07-07
+    # 자동매매 전면다운의 근본원인(KeyError 하나가 dataset 로드·사이클 전체를 죽임).
+    if "High" not in df.columns or "Low" not in df.columns:
+        df["atr_14"] = np.nan
+        df["atr_14_pct"] = np.nan
+        return df
     high, low, prev_close = df["High"], df["Low"], df["Close"].shift(1)
     tr = pd.concat([
         high - low,
