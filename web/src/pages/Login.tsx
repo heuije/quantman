@@ -5,9 +5,14 @@ import { useAuth } from "../auth";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as
   | string
   | undefined;
+const NAVER_CLIENT_ID = import.meta.env.VITE_NAVER_CLIENT_ID as
+  | string
+  | undefined;
+// Naver 콜백 redirect_uri — 네이버 개발자센터에 등록한 값과 정확히 일치해야 한다.
+const naverRedirectUri = () => `${window.location.origin}/login`;
 
 export default function Login() {
-  const { login, signup, loginWithGoogle } = useAuth();
+  const { login, signup, loginWithGoogle, loginWithNaver } = useAuth();
   const [params] = useSearchParams();
   const [mode, setMode] = useState<"login" | "signup">(
     params.get("mode") === "signup" ? "signup" : "login");
@@ -107,6 +112,38 @@ export default function Login() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Naver OAuth (authorization code) ──────────────────────────────────
+  // 버튼 → 네이버 인가 페이지로 이동. state는 CSRF 방지용(sessionStorage에 저장 후 콜백에서 대조).
+  function startNaverLogin() {
+    if (!NAVER_CLIENT_ID) return;
+    const state = crypto.randomUUID();
+    sessionStorage.setItem("naver_oauth_state", state);
+    const url = "https://nid.naver.com/oauth2.0/authorize?response_type=code"
+      + `&client_id=${encodeURIComponent(NAVER_CLIENT_ID)}`
+      + `&redirect_uri=${encodeURIComponent(naverRedirectUri())}`
+      + `&state=${encodeURIComponent(state)}`;
+    window.location.href = url;
+  }
+
+  // 네이버가 redirect_uri로 code·state를 붙여 돌려보내면 백엔드로 교환 요청 → JWT 발급.
+  useEffect(() => {
+    if (!NAVER_CLIENT_ID) return;
+    const qs = new URLSearchParams(window.location.search);
+    const code = qs.get("code"), state = qs.get("state");
+    if (!code || !state) return;
+    const saved = sessionStorage.getItem("naver_oauth_state");
+    if (saved && saved !== state) { setErr("네이버 로그인 상태 검증에 실패했습니다."); return; }
+    sessionStorage.removeItem("naver_oauth_state");
+    setErr(""); setBusy(true);
+    loginWithNaver(code, state, naverRedirectUri())
+      .catch((ex) => setErr((ex as Error).message))
+      .finally(() => {
+        setBusy(false);
+        window.history.replaceState({}, "", window.location.pathname);   // code·state 흔적 제거
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="center-wrap">
       <div className="panel auth-box">
@@ -173,14 +210,19 @@ export default function Login() {
           </button>
         </form>
 
+        {(GOOGLE_CLIENT_ID || NAVER_CLIENT_ID) && <div className="or-divider">또는</div>}
         {GOOGLE_CLIENT_ID && (
-          <>
-            <div className="or-divider">또는</div>
-            <div
-              ref={googleBtn}
-              style={{ display: "flex", justifyContent: "center" }}
-            />
-          </>
+          <div ref={googleBtn} style={{ display: "flex", justifyContent: "center" }} />
+        )}
+        {NAVER_CLIENT_ID && (
+          <button type="button" onClick={startNaverLogin} disabled={busy}
+            style={{ width: 298, margin: "10px auto 0", display: "flex", alignItems: "center",
+              justifyContent: "center", gap: 8, background: "#03C75A", color: "#fff",
+              border: 0, borderRadius: 4, height: 40, fontSize: 15, fontWeight: 700,
+              cursor: busy ? "default" : "pointer", opacity: busy ? 0.7 : 1 }}>
+            <span style={{ fontWeight: 900, fontSize: 17, fontFamily: "Arial, sans-serif" }}>N</span>
+            네이버 로그인
+          </button>
         )}
 
         <div className="spacer" />

@@ -62,7 +62,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <header className="topnav">
         {/* 1행: 로고(좌·고정) + 회원가입/로그인 또는 계정(우) */}
         <div className="topnav-row1">
-          <div className="brand">My<span>Stock</span></div>
+          <div className="brand" role="button" tabIndex={0} style={{ cursor: "pointer" }}
+            onClick={() => navigate("/dashboard")}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate("/dashboard"); } }}
+          >My<span>Stock</span></div>
           <div className="topnav-row1-right">
             {email && (
               <button type="button" className="topnav-hamburger"

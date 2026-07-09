@@ -2236,12 +2236,14 @@ thead th { color: var(--muted); font-weight: 600; }
   .sidebar-foot .spacer { display: none; }
   .sidebar-foot button { align-self: flex-start; }
 
-  /* drawer 열림 시 배경 dim */
+  /* drawer 열림 시 배경 dim — z-index는 .topnav(sticky·z50 스태킹 컨텍스트)보다 낮게.
+     그래야 topnav 안의 모바일 메뉴(.topnav-links)가 오버레이 위로 올라와 탭이 클릭된다.
+     (오버레이가 z90이면 topnav 전체를 덮어 탭 클릭이 '메뉴 닫기'로 먹히던 버그) */
   .drawer-overlay {
     display: block;
     position: fixed; inset: 0;
     background: rgba(0, 0, 0, 0.4);
-    z-index: 90;
+    z-index: 45;
   }
 
   .main-inner { padding: 18px 16px; }

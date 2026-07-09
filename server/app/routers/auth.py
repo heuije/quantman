@@ -14,7 +14,7 @@ from ..models import (Command, Device, HeartbeatEvent, PairingRequest,
                       SyncSnapshot, User)
 from ..schemas import (DeviceApproveIn, DeviceOut, DeviceStartIn, DeviceStartOut,
                        DeviceTokenIn, DeviceTokenOut, GoogleLoginIn, LoginIn,
-                       SignupIn, TokenOut, UserOut)
+                       NaverLoginIn, SignupIn, TokenOut, UserOut)
 from ..security import (create_access_token, hash_password, hash_token,
                         new_device_code, new_device_token, new_user_code,
                         verify_password)
@@ -78,6 +78,67 @@ def google_login(body: GoogleLoginIn, session: Session = Depends(get_session)):
         session.refresh(user)
     elif user.google_sub is None:          # 기존 비밀번호 계정에 Google 연동
         user.google_sub = sub
+        session.add(user)
+        session.commit()
+    return TokenOut(access_token=create_access_token(user.id))
+
+
+@router.post("/naver", response_model=TokenOut)
+def naver_login(body: NaverLoginIn, session: Session = Depends(get_session)):
+    """Naver authorization code를 access token으로 교환하고 프로필로 사용자를 찾거나 생성한다.
+
+    Google(ID 토큰 직검증)과 달리 Naver는 code→token→profile(server-side) 흐름이라
+    client_secret이 필요하다. 비밀번호/구글 가입자가 같은 이메일로 네이버 로그인하면 연동된다.
+    """
+    if not settings.NAVER_CLIENT_ID or not settings.NAVER_CLIENT_SECRET:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "Naver 로그인이 설정되지 않았습니다.")
+    import requests  # 지연 import — 네이버 로그인 미사용 환경의 의존성 부담 감소
+
+    try:
+        tok = requests.post(
+            "https://nid.naver.com/oauth2.0/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": settings.NAVER_CLIENT_ID,
+                "client_secret": settings.NAVER_CLIENT_SECRET,
+                "code": body.code,
+                "state": body.state,
+                "redirect_uri": body.redirect_uri,
+            },
+            timeout=10,
+        ).json()
+    except Exception:  # noqa: BLE001  — 네트워크·파싱 실패 모두 상위 게이트웨이 오류로
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Naver 토큰 교환에 실패했습니다.")
+    access_token = tok.get("access_token")
+    if not access_token:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Naver 인증에 실패했습니다.")
+
+    try:
+        me = requests.get(
+            "https://openapi.naver.com/v1/nid/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        ).json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Naver 프로필 조회에 실패했습니다.")
+    if me.get("resultcode") != "00":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Naver 프로필을 가져오지 못했습니다.")
+    prof = me.get("response") or {}
+    email = prof.get("email")
+    naver_id = prof.get("id")
+    if not email or not naver_id:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "이메일 제공에 동의하지 않은 Naver 계정입니다.")
+
+    user = session.exec(select(User).where(User.email == email)).first()
+    if user is None:
+        user = User(email=email, password_hash=None, naver_sub=naver_id)
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+    elif user.naver_sub is None:            # 기존 계정에 Naver 연동
+        user.naver_sub = naver_id
         session.add(user)
         session.commit()
     return TokenOut(access_token=create_access_token(user.id))
