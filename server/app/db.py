@@ -47,6 +47,7 @@ engine = create_engine(settings.DB_URL, echo=False,
 # (DOUBLE PRECISION → REAL, BIGINT → INTEGER).
 _NEW_COLS: list[tuple[str, str, str]] = [
     ("user",         "google_sub",                       "VARCHAR"),
+    ("user",         "naver_sub",                        "VARCHAR"),
     ("usersettings", "kill_switch_daily_loss_pct",       "DOUBLE PRECISION"),
     ("usersettings", "max_drawdown_pct",                 "DOUBLE PRECISION"),
     ("usersettings", "preview_missing_streak",           "INTEGER DEFAULT 0"),

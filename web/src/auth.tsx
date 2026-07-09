@@ -7,6 +7,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string) => Promise<void>;
   loginWithGoogle: (credential: string) => Promise<void>;
+  loginWithNaver: (code: string, state: string, redirectUri: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -42,13 +43,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const u = await api.me();
     setEmail(u.email);
   }
+  async function loginWithNaver(code: string, state: string, redirectUri: string) {
+    const { access_token } = await api.naverLogin(code, state, redirectUri);
+    tokenStore.set(access_token);
+    const u = await api.me();
+    setEmail(u.email);
+  }
   function logout() {
     tokenStore.clear();
     setEmail(null);
   }
 
   return (
-    <Ctx.Provider value={{ email, ready, login, signup, loginWithGoogle, logout }}>
+    <Ctx.Provider value={{ email, ready, login, signup, loginWithGoogle, loginWithNaver, logout }}>
       {children}
     </Ctx.Provider>
   );

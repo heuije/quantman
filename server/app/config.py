@@ -39,6 +39,10 @@ class Settings:
     # Google 소셜 로그인 — ID 토큰 검증 시 audience(aud) 확인용. 미설정 시 비활성.
     GOOGLE_CLIENT_ID: str = os.getenv("QP_GOOGLE_CLIENT_ID", "")
 
+    # Naver 소셜 로그인 — OAuth2 authorization-code 교환용(client id/secret). 미설정 시 비활성.
+    NAVER_CLIENT_ID: str = os.getenv("QP_NAVER_CLIENT_ID", "")
+    NAVER_CLIENT_SECRET: str = os.getenv("QP_NAVER_CLIENT_SECRET", "")
+
     # DB
     DB_URL: str = os.getenv("QP_DB_URL", f"sqlite:///{_BASE / 'data.db'}")
 

@@ -45,6 +45,12 @@ class GoogleLoginIn(BaseModel):
     credential: str        # Google Identity Services가 발급한 ID 토큰(JWT)
 
 
+class NaverLoginIn(BaseModel):
+    code: str              # Naver OAuth2 authorization code(콜백 쿼리)
+    state: str             # CSRF 방지용 state(요청 시 생성·콜백에서 대조)
+    redirect_uri: str      # 인가 요청에 쓴 redirect_uri(토큰 교환 시 동일해야 함)
+
+
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"

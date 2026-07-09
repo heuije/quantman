@@ -167,6 +167,10 @@ export const api = {
     req<{ access_token: string }>("/auth/google", {
       method: "POST", body: JSON.stringify({ credential }),
     }),
+  naverLogin: (code: string, state: string, redirect_uri: string) =>
+    req<{ access_token: string }>("/auth/naver", {
+      method: "POST", body: JSON.stringify({ code, state, redirect_uri }),
+    }),
   me: () => req<{ id: number; email: string; created_at: string }>("/auth/me"),
 
   symbols: () => req<{ symbols: SymbolInfo[]; indicator_catalog: IndicatorInfo[]; has_master: boolean }>("/symbols"),
