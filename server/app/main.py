@@ -1097,11 +1097,18 @@ def _probe_summary_latency() -> None:
     압축 등 백그라운드 작업이 웹을 굶기면 이 값이 튄다). Railway 로그 `[probe] summary` grep으로
     추이 관측 — 배포 후 렉이 실제로 사라졌는지 추측 아닌 데이터로 판정하기 위한 측정 세팅."""
     try:
+        import shutil
         import time as _t
+        from quant_core import data_fetcher as _df
         from .routers import market
         t0 = _t.perf_counter()
         market.symbol_detail("005930", range="1y", light=1, user=None)
-        _log.info("[probe] summary(005930) %.0fms", (_t.perf_counter() - t0) * 1000)
+        dt = (_t.perf_counter() - t0) * 1000
+        # 볼륨 디스크 사용률도 함께 로깅 — 재充 조기 감지(2026-07-07 디스크풀 인시던트 재발방지·
+        # `[probe] summary … disk` grep). 디스크풀 시 쓰기 실패로 HOME 조회가 500/행이 됐었다.
+        du = shutil.disk_usage(_df.DATA_DIR)
+        _log.info("[probe] summary(005930) %.0fms · disk %.0f%% (%dMB free/%dMB)",
+                  dt, du.used / du.total * 100, du.free >> 20, du.total >> 20)
     except Exception:
         _log.exception("summary 레이턴시 프로브 예외")
 

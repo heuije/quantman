@@ -71,3 +71,18 @@ def test_unknown_scope_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(data_fetcher, "DATA_DIR", tmp_path)
     with pytest.raises(ValueError):
         ds.build_bundle("bogus")
+
+
+def test_build_cleans_tmp_on_failure(tmp_path, monkeypatch):
+    """빌드 실패(디스크풀·프로세스 중단 등) 시 부분 .tmp를 남기지 않는다.
+
+    2026-07-07 디스크풀 인시던트 재발방지 — orphaned 대형 .tmp(full 스코프 ~1GB)가 볼륨을
+    잠식하던 부류. 압축 도중 예외가 나면 except가 tmp를 unlink하고 re-raise한다."""
+    monkeypatch.setattr(data_fetcher, "DATA_DIR", tmp_path)
+    _seed(tmp_path)
+    # tar 스트림 진입에서 실패 주입 — 이 시점엔 open(tmp)로 .tmp가 이미 디스크에 생성돼 있다.
+    monkeypatch.setattr(ds.tarfile, "open",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        ds.build_bundle("trading")
+    assert not ds._bundle_path("trading").with_suffix(".tmp").exists()   # 부분 .tmp 정리됨

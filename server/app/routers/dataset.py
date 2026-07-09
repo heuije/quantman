@@ -96,40 +96,58 @@ def build_bundle(scope: str = "trading") -> dict:
         # 근본). in-process 백그라운드 패키징이라 압축 wall-clock이 좀 늘어도 무방 — 그 대가로
         # 웹 요청에 코어를 양보해 "어떤 시간에 접속해도 빠른 응답"을 지킨다. (2026-07-07)
         cctx = zstandard.ZstdCompressor(level=3, threads=0)
-        with open(tmp, "wb") as f, cctx.stream_writer(f) as zw, \
-                tarfile.open(fileobj=zw, mode="w|") as tar:
-            for p in sorted(base.glob("*.parquet")):
-                tar.add(p, arcname=p.name)
-                n_files += 1
-            # 정적 메타 사이드카(섹터·상장폐지일) — 로컬 get_symbol_group·매니페스트가 소비.
-            for name in ("_classification.json", "_listing.json"):
-                sp = base / name
-                if sp.exists():
-                    tar.add(sp, arcname=sp.name)
-                    n_files += 1
-            # 스코프별 parquet 서브디렉터리. trading=fundamentals(SEC US·OpenDART KR,
-            # 로컬 조건평가), full=+서버 챗봇 피드(flow·시총·공매도·13F). 없으면 skip(멱등).
-            for sub in subdirs:
-                sdir = base / sub
-                if not sdir.exists():
-                    continue
-                for p in sorted(sdir.glob("*.parquet")):
-                    tar.add(p, arcname=f"{sub}/{p.name}")
-                    n_files += 1
-        size_mb = tmp.stat().st_size / 1024 / 1024
-        # ETag = md5 of bundle (강력함, 안전한 cache invalidation)
-        h = hashlib.md5()
-        with open(tmp, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                h.update(chunk)
-        etag = h.hexdigest()
-        tmp.replace(bp)   # atomic rename
-        _bundle_meta_path(scope).write_text(etag, encoding="utf-8")
-        elapsed = time.time() - t0
-        _log.info("dataset bundle(%s) 갱신: %d files, %.1f MB, etag=%s, %.1fs",
-                  scope, n_files, size_mb, etag[:12], elapsed)
-        return {"ok": True, "scope": scope, "n_files": n_files, "size_mb": size_mb,
-                "etag": etag, "elapsed_sec": elapsed}
+
+        def _safe_add(tar, p, arcname) -> int:
+            """압축 중 데이터엔진 cron·병렬세션이 parquet을 **원자적 교체(write_parquet_atomic의
+            temp→rename, 짧은 unlink 창)**하면 glob 시점엔 있던 파일이 tar.add 시점엔 없을 수 있다
+            → 그 파일만 건너뛴다(다음 빌드가 담음). 무가드면 파일 1개 사라짐이 전체 빌드를
+            FileNotFoundError로 실패시킨다(테스트가 재현·2026-07-07)."""
+            try:
+                tar.add(p, arcname=arcname)
+                return 1
+            except FileNotFoundError:
+                return 0
+
+        try:
+            with open(tmp, "wb") as f, cctx.stream_writer(f) as zw, \
+                    tarfile.open(fileobj=zw, mode="w|") as tar:
+                for p in sorted(base.glob("*.parquet")):
+                    n_files += _safe_add(tar, p, p.name)
+                # 정적 메타 사이드카(섹터·상장폐지일) — 로컬 get_symbol_group·매니페스트가 소비.
+                for name in ("_classification.json", "_listing.json"):
+                    sp = base / name
+                    if sp.exists():
+                        n_files += _safe_add(tar, sp, sp.name)
+                # 스코프별 parquet 서브디렉터리. trading=fundamentals(SEC US·OpenDART KR,
+                # 로컬 조건평가), full=+서버 챗봇 피드(flow·시총·공매도·13F). 없으면 skip(멱등).
+                for sub in subdirs:
+                    sdir = base / sub
+                    if not sdir.exists():
+                        continue
+                    for p in sorted(sdir.glob("*.parquet")):
+                        n_files += _safe_add(tar, p, f"{sub}/{p.name}")
+            size_mb = tmp.stat().st_size / 1024 / 1024
+            # ETag = md5 of bundle (강력함, 안전한 cache invalidation)
+            h = hashlib.md5()
+            with open(tmp, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            etag = h.hexdigest()
+            tmp.replace(bp)   # atomic rename
+            _bundle_meta_path(scope).write_text(etag, encoding="utf-8")
+            elapsed = time.time() - t0
+            _log.info("dataset bundle(%s) 갱신: %d files, %.1f MB, etag=%s, %.1fs",
+                      scope, n_files, size_mb, etag[:12], elapsed)
+            return {"ok": True, "scope": scope, "n_files": n_files, "size_mb": size_mb,
+                    "etag": etag, "elapsed_sec": elapsed}
+        except Exception:
+            # 빌드 실패(디스크풀·프로세스 중단 등) 시 부분 .tmp를 남기지 않는다 — orphaned 대형
+            # .tmp(full 스코프 ~1GB)가 볼륨을 잠식하는 것 방지(2026-07-07 디스크풀 인시던트 재발방지).
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
 
 def _current_bundle_etag(scope: str = "trading") -> str | None:

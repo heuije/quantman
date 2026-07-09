@@ -11,6 +11,7 @@
 ## 인덱스
 | 일자 | 심각도 | 제목 | 상태 |
 |--|--|--|--|
+| 2026-07-07 | High | [프로덕션 볼륨 디스크 풀 → HOME 종목조회 500·수십초 행](2026-07-07-volume-full-disk-space.md) | ✅ 해소(리사이즈·빌드/프로브 검증) |
 | 2026-07-06 | Critical | [비상청산이 원장에 반대방향 유령 포지션 생성 (sid-미스매치·R6)](2026-07-06-emergency-liquidation-sid-orphan.md) | 🟠 수정·로컬검증 완료·모의 재검증 대기 |
 | 2026-07-03 | Critical | [선물 원장↔브로커 분기 — LS 잔고코드 정규화 실패 + reconcile 파괴적 오정정](2026-07-03-futures-ledger-divergence.md) | 🟠 수정구현·모의 재검증 대기 |
 | 2026-07-03 | Critical | [챗봇 전면 장애 — Sonnet 5 상향의 thinking·temperature 계약 변경](2026-07-03-chat-sonnet5-thinking-temperature.md) | ✅ 해소 |
