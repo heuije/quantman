@@ -26,7 +26,7 @@ def test_flow_kr_investor_registered():
 
 
 def test_consensus_contract_columns():
-    """estimate.consensus가 한경 연동으로 일별 컨센서스 컬럼 계약을 선언."""
+    """estimate.consensus가 네이버(reports_kr) 연동으로 일별 컨센서스 컬럼 계약을 선언."""
     s = spec.get("estimate.consensus")
     assert s is not None
     for col in ("consensus_target", "consensus_target_median", "analyst_count",
@@ -35,7 +35,7 @@ def test_consensus_contract_columns():
         assert col in s.provides, f"컨센서스 컬럼 계약 누락: {col}"
     assert s.point_in_time is True
     assert "as_of" in s.required_meta
-    assert s.source and "미연동" not in s.source, "source가 한경으로 갱신돼야"
+    assert s.source and "미연동" not in s.source, "source가 네이버로 갱신돼야"
 
 
 def test_data_spec_serializes_new_feeds():

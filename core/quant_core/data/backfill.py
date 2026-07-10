@@ -1,6 +1,6 @@
 """날짜축 역순 cursor 백필 — 단일 문법(대원칙 5: One backfill grammar).
 
-컨센서스(한경)·KRX 공식 API(시장지표/풋콜/ETF/선물패널)가 같은 패턴을 각자 재구현하던
+컨센서스(네이버 reports_kr)·KRX 공식 API(시장지표/풋콜/ETF/선물패널)가 같은 패턴을 각자 재구현하던
 것을 하나로 통일한다: **today→floor 역순으로 window_days씩**, 진행 커서를 텍스트 파일
 ("%Y%m%d")에 저장, 성공 시에만 전진, floor 도달 시 무비용 no-op.
 

@@ -1,6 +1,6 @@
 """DateCursorBackfill — 날짜축 역순 cursor 백필 단일 문법 단위 테스트.
 
-컨센서스(한경)·KRX 공식 API 백필이 공유하는 커서 규약: today→floor 역순 window,
+컨센서스(네이버 reports_kr)·KRX 공식 API 백필이 공유하는 커서 규약: today→floor 역순 window,
 성공 시만 전진, floor 도달 시 None(무비용), 손상 커서는 fresh 리셋(wedging 방지).
 """
 

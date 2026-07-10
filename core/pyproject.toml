@@ -17,7 +17,7 @@ dependencies = [
     "finance-datareader>=0.9.50",
     "OpenDartReader>=0.2.2",        # KR 펀더멘털(OpenDART 재무제표) — quant_core/data/feeds/fundamental_kr.py
     "requests>=2.31",
-    "beautifulsoup4>=4.12",         # 한경컨센서스 HTML 리포트 테이블 파싱 — quant_core/data/feeds/consensus_kr.py
+    "beautifulsoup4>=4.12",         # 네이버 증권 리포트 HTML 파싱 — quant_core/data/feeds/reports_kr.py
     "pykrx>=1.2.8",                 # KR 기관·외국인 수급(KRX 마켓플레이스 로그인 지원판) — quant_core/data/feeds/flow_kr.py
 ]
 

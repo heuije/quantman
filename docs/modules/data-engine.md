@@ -35,7 +35,7 @@
 
 **폴더.**
 - `core/quant_core/data/spec.py` — 데이터 종류 등록부(진실원천). 무엇을 지원/미지원하는지
-- `core/quant_core/data/feeds/` — **소스별 수집 모듈**(새 데이터 = 여기에 모듈 1개 추가): `fundamental_kr.py`(OpenDART)·`fundamental_us.py`(SEC)·`classification.py`(섹터/FDR)·`listing.py`(상장폐지)·`news_kr.py`(뉴스/네이버 검색 API)·`consensus_kr.py`(컨센 지표/한경)·`reports_kr.py`(애널 리포트 목록/네이버 — 목록 표시 전용, 지표는 consensus_kr)
+- `core/quant_core/data/feeds/` — **소스별 수집 모듈**(새 데이터 = 여기에 모듈 1개 추가): `fundamental_kr.py`(OpenDART)·`fundamental_us.py`(SEC)·`classification.py`(섹터/FDR)·`listing.py`(상장폐지)·`news_kr.py`(뉴스/네이버 검색 API)·`reports_kr.py`(애널 리포트 목록 + 컨센서스 지표·목표가·투자의견 — 네이버, 옛 한경 consensus_kr 대체)
 - `core/quant_core/data_fetcher.py`(가격 OHLCV: FDR·yfinance)·`indicators.py`(기술지표 24종 자체산출)·`dataset.py`(조립)
 - `core/quant_core/data/gate.py`·`deps.py`·`manifest.py` — 무결성 게이트(PIT·생존편향)·의존성 도출·수집 기록
 - **서빙(server/app)**: `data_cache.py` = **Store A**(canonical parquet 시계열 — 백테스트·360리포트·SELECT 공급) · `krx_cache.py` = **Store B**(스크리너 인메모리 스냅샷, 빠른 조회 전용) · `naver_fundamentals.py`·`technical_cache.py`·`us_metrics_cache.py`(보조 캐시) · `main.py`(cron 오케스트레이션 — KR 펀더멘털 매일 17:30 KST 등)
