@@ -7,7 +7,7 @@ const KEY = "qp_theme";
 
 function current(): Theme {
   const t = document.documentElement.getAttribute("data-theme");
-  return t === "light" ? "light" : "dark";
+  return t === "dark" ? "dark" : "light";   // 기본=라이트(index.html init과 일치)
 }
 
 export function useTheme() {
