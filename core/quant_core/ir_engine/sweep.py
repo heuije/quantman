@@ -65,7 +65,7 @@ def run_condition_sweep(
     bt = run_backtest_ir(dataset, trade_symbol, buy_node, **backtest_kw)
     if not bt.get("success"):
         return bt
-    ctx = EvalContext.from_dataset(dataset)
+    ctx = EvalContext.from_dataset(dataset, universe=[trade_symbol])
     label_series = select_symbol(evaluate(label_node, ctx), trade_symbol)
     equity = bt["equity"]
     return {

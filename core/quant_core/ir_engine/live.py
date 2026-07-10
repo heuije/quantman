@@ -54,7 +54,8 @@ def cycle_exit_reason(strategy: StrategyIR, *, held_days: int,
     if cond is not None:
         df = dataset.get(symbol)
         if df is not None and not getattr(df, "empty", True):
-            ctx = EvalContext.from_dataset(_scoped(dataset, [symbol], cond))
+            ctx = EvalContext.from_dataset(_scoped(dataset, [symbol], cond),
+                                           universe=[symbol])
             try:
                 panel = evaluate(cond, ctx)
             except Exception:  # noqa: BLE001 — 평가 실패 시 청산 보류(안전)

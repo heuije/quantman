@@ -77,7 +77,7 @@ def run_backtest_ir(
     if len(trade_df) < 2:
         return _empty("백테스트 기간의 가격 데이터가 부족합니다.")
 
-    ctx = EvalContext.from_dataset(dataset)
+    ctx = EvalContext.from_dataset(dataset, universe=[trade_symbol])
     buy_arr = _ir_mask(buy_node, ctx, trade_symbol, trade_df.index)
     if buy_arr is None:
         return _empty("매수 신호가 비었습니다.")
@@ -323,7 +323,7 @@ def run_portfolio_ir(
     if n < 2:
         return _empty("백테스트 기간의 가격 데이터가 부족합니다.")
 
-    ctx = EvalContext.from_dataset(dataset)
+    ctx = EvalContext.from_dataset(dataset, universe=syms)
     buy_panel = evaluate(buy_node, ctx)
     if not isinstance(buy_panel, pd.DataFrame):
         return _empty("매수 신호가 패널을 산출하지 않습니다.")

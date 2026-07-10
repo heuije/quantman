@@ -251,7 +251,7 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
     filt = (Node.model_validate(screener["condition"])
             if screener.get("condition") else None)
     ds = _scoped(dataset, syms, s.signal, filt, pos.overlays.group_label)
-    ctx = EvalContext.from_dataset(ds)
+    ctx = EvalContext.from_dataset(ds, universe=syms)
     try:
         alpha = evaluate(s.signal, ctx)
     except Exception as e:  # noqa: BLE001

@@ -9,6 +9,9 @@
 
 한 종목 마스크가 필요하면 패널을 평가한 뒤 그 종목 컬럼을 select_symbol로 뽑는다
 (current_symbol 치환 의미론).
+
+패널 격자 = (유니버스 달력 × 유니버스 심볼). 참조전용 심볼("SYM.X" 브로드캐스트)은
+달력·컬럼에 끼지 않고 ffill 조인으로만 합류한다 — from_dataset(universe=...) 참조.
 """
 
 from __future__ import annotations
@@ -32,13 +35,30 @@ class EvalContext:
     delay: int = 0
 
     @classmethod
-    def from_dataset(cls, data: dict[str, pd.DataFrame], delay: int = 0) -> "EvalContext":
+    def from_dataset(cls, data: dict[str, pd.DataFrame], delay: int = 0,
+                     universe: list[str] | None = None) -> "EvalContext":
+        """universe = 평가 주체 심볼(마스터 달력·패널 컬럼의 주인). None이면 전 키.
+
+        마스터 달력은 유니버스 심볼 달력의 합집합으로 한정한다 — 참조전용 심볼
+        (VIX 등 타 달력 매크로)이 달력에 끼면 __SELF__ 시리즈(ffill 없음)에 참조
+        전용 일자마다 NaN 구멍이 생겨 ts_*(rolling, min_periods=window)가 전멸하고
+        신호가 조용히 영구 False(항상 현금)가 된다. 참조 심볼은 data에 남아
+        resolve_data 브로드캐스트(ffill)로만 합류한다.
+        """
+        if universe is None:
+            subjects = list(data.keys())
+        else:
+            subjects = [s for s in dict.fromkeys(universe)
+                        if s in data and data[s] is not None and not data[s].empty]
+            if not subjects:
+                raise ValueError("universe 심볼이 데이터셋에 없어 평가 달력을 만들 수 없습니다.")
         dates: set = set()
-        for df in data.values():
+        for s in subjects:
+            df = data[s]
             if df is not None and not df.empty:
                 dates.update(df.index)
         idx = pd.DatetimeIndex(sorted(dates))
-        return cls(data=data, master_idx=idx, symbols=list(data.keys()), delay=delay)
+        return cls(data=data, master_idx=idx, symbols=subjects, delay=delay)
 
 
 def _col(df: pd.DataFrame, name: str) -> str | None:

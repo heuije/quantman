@@ -346,8 +346,9 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
         sym_ret = closes.reindex(weight.index).pct_change().fillna(0.0)
         contribution = (weight.shift(1).fillna(0.0) * sym_ret).reindex(columns=cols).fillna(0.0)
         # 라벨 노드 → (일×종목) 패널(종목별=섹터, 일별=국면 broadcast). 옛 단일컬럼 붕괴 대체.
+        usyms = _universe_symbols(strategy, dataset)
         lab = evaluate(st.label, EvalContext.from_dataset(
-            _scoped(dataset, _universe_symbols(strategy, dataset), st.label)))
+            _scoped(dataset, usyms, st.label), universe=usyms))
         label_panel = _label_panel(lab, weight.index, cols)
         cmp = compare_by_partition(contribution, weight, label_panel)
         # 버킷 요약 = 고유성과(그 그룹만 거래 시 수익) 시리즈. overall = 마크투마켓 합.
@@ -558,7 +559,8 @@ def _run_signal_study(strategy: StrategyIR, dataset: dict) -> dict:
     node = strategy.study.target_node
     if node is None:
         return _empty("분석 노드(target_node)가 없습니다.")
-    ctx = EvalContext.from_dataset(_scoped(dataset, syms, node, strategy.study.label))
+    ctx = EvalContext.from_dataset(_scoped(dataset, syms, node, strategy.study.label),
+                                   universe=syms)
     panel = evaluate(node, ctx)
     if not isinstance(panel, pd.DataFrame):
         return _empty("분석 노드가 패널(시계열)을 산출하지 않습니다.")
@@ -605,7 +607,8 @@ def _run_ic_study(strategy: StrategyIR, dataset: dict) -> dict:
     if node is None:
         return _empty("분석 노드(target_node)가 없습니다.")
     windows = strategy.study.windows or [21]
-    ctx = EvalContext.from_dataset(_scoped(dataset, syms, node, strategy.study.label))
+    ctx = EvalContext.from_dataset(_scoped(dataset, syms, node, strategy.study.label),
+                                   universe=syms)
     factor = evaluate(node, ctx)
     if not isinstance(factor, pd.DataFrame):
         return _empty("팩터 노드가 패널(시계열)을 산출하지 않습니다.")
@@ -708,7 +711,7 @@ def _run_regression_study(strategy: StrategyIR, dataset: dict) -> dict:
     if not nodes:
         return _empty("다중 회귀는 설명변수(factors)가 1개 이상 필요합니다.")
     windows = strategy.study.windows or [21]
-    ctx = EvalContext.from_dataset(_scoped(dataset, syms, *nodes))
+    ctx = EvalContext.from_dataset(_scoped(dataset, syms, *nodes), universe=syms)
     panels = [evaluate(n, ctx) for n in nodes]
     if any(not isinstance(p, pd.DataFrame) for p in panels):
         return _empty("설명변수가 패널(종목×날짜)을 산출하지 않습니다.")
@@ -842,7 +845,7 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
     screener = strategy.universe.screener or {}
     filt = Node.model_validate(screener["condition"]) if screener.get("condition") else None
     ds = _scoped(dataset, syms, strategy.signal, filt)
-    ctx = EvalContext.from_dataset(ds)
+    ctx = EvalContext.from_dataset(ds, universe=syms)
     score = evaluate(strategy.signal, ctx)
     if not isinstance(score, pd.DataFrame) or score.empty:
         return _empty("score 신호가 패널(종목×날짜)을 산출하지 않습니다.")
@@ -1346,7 +1349,8 @@ def _collect_event_rows(strategy: StrategyIR, dataset: dict) -> dict:
     windows = strategy.study.windows or [5, 10, 20]
     basis = strategy.study.event_basis
     ev_node = strategy.study.event or strategy.signal
-    ctx = EvalContext.from_dataset(_scoped(dataset, syms, ev_node, strategy.study.label))
+    ctx = EvalContext.from_dataset(_scoped(dataset, syms, ev_node, strategy.study.label),
+                                   universe=syms)
     ev_panel = evaluate(ev_node, ctx)
     if not isinstance(ev_panel, pd.DataFrame):
         return {"ok": False, "error": "이벤트 신호가 패널을 산출하지 않습니다."}

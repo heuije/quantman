@@ -278,7 +278,7 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     if n < 2:
         return _empty("백테스트 기간의 가격 데이터가 부족합니다.")
 
-    ctx = EvalContext.from_dataset(ds)
+    ctx = EvalContext.from_dataset(ds, universe=syms)
     buy_panel = _ir_panel(strategy.signal, ctx)
     if not isinstance(buy_panel, pd.DataFrame):
         return _empty("매수 신호가 패널을 산출하지 않습니다.")
@@ -848,7 +848,7 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
                  if screener.get("condition") else None)
     gl = pos.overlays.group_label
     ds = _scoped(dataset, syms, signal, filt_node, gl)
-    ctx = EvalContext.from_dataset(ds)
+    ctx = EvalContext.from_dataset(ds, universe=syms)
     try:
         alpha = evaluate(signal, ctx)
     except Exception as e:  # noqa: BLE001
