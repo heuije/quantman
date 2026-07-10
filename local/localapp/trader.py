@@ -73,6 +73,11 @@ def kst_today() -> date:
     return datetime.now(ZoneInfo("Asia/Seoul")).date()
 
 
+def kst_now() -> datetime:
+    """현재 KST 시각 — kst_today와 같은 이유(L-06)로 PC tz 무관. 테스트가 monkeypatch."""
+    return datetime.now(ZoneInfo("Asia/Seoul"))
+
+
 # ── WS-1(δ): 청구된 해외 체결행 레지스트리 ────────────────────────────────────
 # 미국 예약주문은 접수번호와 체결행 odno의 번호공간이 달라(실측 2026-06-11: 접수
 # 448 vs 체결행 10자리) 종목+사이드+수량으로 매칭한다. 같은 체결행을 두 주문/
@@ -1330,6 +1335,24 @@ class Trader:
                 "skip_managed", strategy_id, strat_name, symbol,
                 "관리·투자위험·투자경고 종목 — 매수 발주 차단"))
             return False
+
+        # R-2(2026-07-10 리뷰) — 국내 당일매매(hold_days==0·개장 진입 설계)는 개장 창에서만
+        # 신규 진입. 낮에 앱을 시작하면 catch-up 사이클이 임의 시각에 진입해(07-06 12:33
+        # 실측) 백테스트(시가 진입→종가 청산)와 어긋난 반쪽 노출이 됐다. 컷오프 09:30은
+        # 아침 사이클 재시도 사다리(08:55+60/300/900s ≈ 최종 09:16)를 포용하는 상한.
+        # 종가매수(fill=close)는 종가창 라우팅이라 대상 아님. 미국 상품은 동적 야간
+        # 플래너가 세션 시작을 판단하므로 대상 아님(KRW만).
+        _exit_cfg = ((strat_def.get("position") or {}).get("exit") or {})
+        _fill = ((strat_def.get("simulation") or {}).get("fill") or "next_open")
+        if (_exit_cfg.get("hold_days") == 0 and _fill != "close"
+                and _currency_of(symbol) == "KRW"):
+            _now = kst_now()
+            if (_now.hour, _now.minute) >= (9, 30):
+                decisions.append(order_log.decision(
+                    "skip_late_daytrade", strategy_id, strat_name, symbol,
+                    "당일매매는 개장 창(~09:30)에만 신규 진입 — 지금 진입하면 백테스트"
+                    "(시가 진입→종가 청산)와 어긋난 반쪽 노출. 다음 개장에 재평가"))
+                return False
 
         # Phase 48 P1-D — 일일 거래 한도 차단 (한도 활성 시만 호출).
         tcount_limit = getattr(self, "_daily_trade_count_limit", 0)

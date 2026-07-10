@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -35,6 +36,11 @@ def isolated_trader(tmp_path, monkeypatch):
         monkeypatch.setattr(order_log, name, tmp_path / f"{name}.jsonl")
     monkeypatch.setattr(intraday_loop, "push_snapshot", lambda *a, **k: None)
     monkeypatch.setattr(tr, "kst_today", lambda: datetime.date(2026, 6, 1))
+    # R-2 당일매매 진입창 가드(kst_now 09:30 컷오프)가 실행 시각에 따라 테스트를
+    # 비결정적으로 만들지 않도록 kst_today와 같은 날 아침(08:56)으로 고정.
+    # 시간 가드 자체를 검증하는 테스트(test_daytrade_entry_window)는 자체 재패치.
+    monkeypatch.setattr(tr, "kst_now", lambda: datetime.datetime(
+        2026, 6, 1, 8, 56, tzinfo=ZoneInfo("Asia/Seoul")))
     # θ: liquidate_day_trades/_cycle_body의 _wait_pending이 SimBroker(상태 unknown
     # 유지) 위에서 운영 기본 60초를 폴링하지 않도록 시나리오 기본 wait=0.
     # 지연 체결을 검증하는 θ 테스트는 자체적으로 재패치한다.
