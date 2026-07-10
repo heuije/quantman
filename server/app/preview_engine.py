@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from quant_core import market_calendar as _mc
+from quant_core.data_fetcher import SYMBOL_CATEGORY
 from quant_core.exec_defaults import DEFAULT_EXECUTION as _DEFAULT_EXECUTION
 from quant_core.exec_defaults import instrument_region as _instrument_region
 from quant_core.exec_defaults import instrument_spec as _instrument_spec
@@ -90,6 +91,29 @@ def _last_session_on_or_before(market: str, today: date) -> date | None:
         except Exception:
             return None
         d = d - timedelta(days=1)
+    return None
+
+
+def _stale_signal_ref(dataset: dict, needed: set[str] | None,
+                      universe_syms: list[str],
+                      now_kst: datetime) -> tuple[str, str] | None:
+    """R-1(2026-07-10 리뷰) — 신호 *참조* 심볼 신선도 검사. stale이면 (symbol, 사유), 정상 None.
+
+    종전 게이트는 거래 후보(longs/shorts)만 per-candidate 검사해, 신호 입력(예: S&P500)이
+    수집 실패로 낡아도 신호가 낡은 데이터로 평가된 채 발주됐다(조용한 오신호). 참조가
+    낡으면 신호 자체가 낡은 것 — 전략 단위로 차단·사유 표면화한다.
+
+    범위는 일봉 가격 자산(SYMBOL_CATEGORY=="자산")만: 주간/월간 캘린더 매크로(COT·미결제
+    약정 등)는 며칠 지연이 정상이라 KR/US 일봉 달력 기준인 _data_freshness_ok를 적용하면
+    영구 오차단된다(과차단 방지). universe kind=all은 needed_symbols가 None → 미적용.
+    """
+    uni = set(universe_syms)
+    for ref in sorted((needed or set()) - uni):
+        if SYMBOL_CATEGORY.get(ref) != "자산":
+            continue
+        fresh, msg = _data_freshness_ok(dataset, ref, now_kst.date(), now_kst=now_kst)
+        if not fresh:
+            return ref, msg
     return None
 
 
@@ -216,6 +240,12 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
     syms = _universe_symbols(s, dataset)
     if not syms:
         out["skipped"].append({"reason": "유니버스에 종목이 없습니다."})
+        return out
+    # R-1 — 신호 참조 심볼(예: S&P500)이 stale이면 평가 전에 전략 단위로 차단(사유 표면화).
+    _stale = _stale_signal_ref(dataset, needed_symbols(s), syms, datetime.now(_KST))
+    if _stale is not None:
+        out["skipped"].append({"symbol": _stale[0],
+                               "reason": f"신호 참조 {_stale[1]}"})
         return out
     screener = u.screener or {}
     filt = (Node.model_validate(screener["condition"])

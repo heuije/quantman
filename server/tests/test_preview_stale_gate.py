@@ -276,3 +276,51 @@ def test_kr_freshness_evening_requires_today_close(monkeypatch):
     ok, _ = preview_engine._data_freshness_ok(
         dataset, "005930", today, now_kst=now_kst)
     assert ok is True
+
+
+# ── R-1 (2026-07-10 리뷰) — 신호 참조 심볼 신선도 게이트 ─────────────────────────
+def test_signal_ref_stale_blocks(monkeypatch):
+    """신호 참조(S&P500)가 stale이면 (symbol, 사유) 반환 — 거래심볼이 fresh여도 차단."""
+    from app import preview_engine
+    now = datetime(2026, 7, 10, 8, 55, tzinfo=ZoneInfo("Asia/Seoul"))
+    monkeypatch.setattr(preview_engine._mc, "is_session_day",
+                        lambda market, d: d.weekday() < 5)
+    dataset = {"코스피200선물": _df_with_last_date("2026-07-09"),
+               "S&P500": _df_with_last_date("2026-07-06")}   # 직전 US 거래일(7/9) 대비 지연
+    hit = preview_engine._stale_signal_ref(
+        dataset, {"S&P500", "코스피200선물"}, ["코스피200선물"], now)
+    assert hit is not None
+    assert hit[0] == "S&P500" and "stale" in hit[1]
+
+
+def test_signal_ref_fresh_passes(monkeypatch):
+    from app import preview_engine
+    now = datetime(2026, 7, 10, 8, 55, tzinfo=ZoneInfo("Asia/Seoul"))
+    monkeypatch.setattr(preview_engine._mc, "is_session_day",
+                        lambda market, d: d.weekday() < 5)
+    dataset = {"코스피200선물": _df_with_last_date("2026-07-09"),
+               "S&P500": _df_with_last_date("2026-07-09")}
+    assert preview_engine._stale_signal_ref(
+        dataset, {"S&P500", "코스피200선물"}, ["코스피200선물"], now) is None
+
+
+def test_signal_ref_non_asset_category_not_gated(monkeypatch):
+    """주간성 매크로(심리 카테고리 — 미결제약정 등)는 게이트 미적용(과차단 방지)."""
+    from app import preview_engine
+    now = datetime(2026, 7, 10, 8, 55, tzinfo=ZoneInfo("Asia/Seoul"))
+    monkeypatch.setattr(preview_engine._mc, "is_session_day",
+                        lambda market, d: d.weekday() < 5)
+    dataset = {"코스피200선물미결제약정": _df_with_last_date("2026-07-01")}
+    assert preview_engine._stale_signal_ref(
+        dataset, {"코스피200선물미결제약정"}, [], now) is None
+
+
+def test_signal_ref_missing_from_dataset_blocks(monkeypatch):
+    """참조 자산이 dataset에 아예 없음 → '데이터 없음'으로 차단(조용한 무신호 방지)."""
+    from app import preview_engine
+    now = datetime(2026, 7, 10, 8, 55, tzinfo=ZoneInfo("Asia/Seoul"))
+    monkeypatch.setattr(preview_engine._mc, "is_session_day",
+                        lambda market, d: d.weekday() < 5)
+    hit = preview_engine._stale_signal_ref(dataset={}, needed={"S&P500"},
+                                           universe_syms=[], now_kst=now)
+    assert hit is not None and hit[0] == "S&P500" and "없음" in hit[1]
