@@ -572,14 +572,19 @@ const STATUS_LABEL: Record<string, string> = {
 };
 function StatusBanner({ status, verdict }: { status: string; verdict?: string }) {
   const danger = status === "degenerate" || status === "infeasible";
+  // status=ok + verdict = 정직한 caveat(레짐 편중·저신뢰 표본 등) — 경고(빈/퇴화) 아닌 정보성.
+  // 골드 accent로 red/amber 경고와 구별한다(DESIGN.md 브랜드 accent).
+  const info = status === "ok";
+  const tone = danger ? "--danger" : info ? "--accent" : "--amber";
+  const soft = danger ? "--red-soft" : info ? "--accent-soft" : "--amber-soft";
   return (
     <div style={{
-      border: `1px solid var(${danger ? "--danger" : "--amber"})`,
-      background: `var(${danger ? "--red-soft" : "--amber-soft"})`,
+      border: `1px solid var(${tone})`,
+      background: `var(${soft})`,
       borderRadius: 8, padding: "8px 11px", marginBottom: 8, fontSize: 13, lineHeight: 1.5,
     }}>
-      <span style={{ color: `var(${danger ? "--danger" : "--amber"})`, fontWeight: 700 }}>
-        ⚠ {STATUS_LABEL[status] ?? status}
+      <span style={{ color: `var(${tone})`, fontWeight: 700 }}>
+        {info ? "📌 참고" : `⚠ ${STATUS_LABEL[status] ?? status}`}
       </span>
       {verdict ? <span style={{ color: "var(--text)", marginLeft: 6 }}>{verdict}</span> : null}
     </div>
@@ -642,10 +647,16 @@ function ChatResultBody({ result }: Props) {
     );
   }
 
-  // 결과 품질 계약 — status≠ok면 경고 배너(빈/퇴화/불가). 배너는 차트 위에 얹어 맥락 보존.
+  // 결과 품질 계약 — status≠ok면 경고 배너(빈/퇴화/불가). status=ok여도 verdict가 있으면
+  // 정보성 caveat 배너(P3-a 레짐 편중·저신뢰 표본) — 함정 경고가 챗 텍스트뿐 아니라 결과 카드
+  // (숫자가 있는 그 자리)에도 닿게 한다. 배너는 차트 위에 얹어 맥락 보존.
   const status = (r as { status?: string }).status;
+  const verdict = (r as { verdict?: string }).verdict;
   const banner = status && status !== "ok"
-    ? <StatusBanner status={status} verdict={(r as { verdict?: string }).verdict} /> : null;
+    ? <StatusBanner status={status} verdict={verdict} />
+    : verdict
+      ? <StatusBanner status="ok" verdict={verdict} />
+      : null;
 
   // 결과 경고(데이터 품질·교차달력 carry-forward 등)를 **전 shape에서** 표면화한다. 이전엔
   // SweepBuckets에만 있어 백테스트/이벤트/관계분석의 warnings가 데이터엔 있어도 화면에 안 떴다

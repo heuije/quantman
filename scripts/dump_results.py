@@ -48,6 +48,21 @@ FIXTURES = [
         "name": "코스피선물 골든크로스 후 수익", "universe": {"kind": "single", "symbols": ["코스피200선물"]},
         "signal": C, "query": "relate",
         "study": {"event": _cross(60), "windows": [5, 20, 60], "event_basis": "close"}}),
+    ("cohort", "종목 코호트 (다종목 이벤트스터디·종목명·#A P1)", {
+        "name": "삼성·에코·현대차 신고가 후 수익 비교",
+        "universe": {"kind": "list", "symbols": ["005930", "247540", "005380"]},
+        "signal": C, "query": "relate",
+        "study": {"axis": "entity", "assets": ["005930", "247540", "005380"],
+                  "event": {"op": "compare", "params": {"op": ">"}, "inputs": {"left": C, "right": _ma(20)}},
+                  "windows": [5, 20], "event_basis": "close"}}),
+    ("event_concentrated", "이벤트 연도편중 (P3-a 함정 verdict·ok+참고배너)", {
+        "name": "에코프로비엠 250일 신고가 후 수익 (2022~)",
+        "universe": {"kind": "single", "symbols": ["247540"]},
+        "signal": C, "query": "relate",
+        "study": {"event": {"op": "compare", "params": {"op": ">"}, "inputs": {
+            "left": C, "right": {"op": "ts_max", "params": {"window": 250}, "inputs": {
+                "signal": {"op": "ts_delay", "params": {"window": 1}, "inputs": {"signal": C}}}}}},
+                  "windows": [5, 20], "event_basis": "close"}}, "2022"),   # 2022~ 슬라이스 → 2023 랠리 편중
     ("cross_calendar", "교차달력 경고 (S&P500→코스피선물·#1)", {
         "name": "S&P 신호 코스피선물", "universe": {"kind": "single", "symbols": ["코스피200선물"]},
         "signal": {"op": "compare", "params": {"op": ">"}, "inputs": {
@@ -121,10 +136,14 @@ def main() -> int:
 
     _OUT.mkdir(parents=True, exist_ok=True)
     manifest = []
-    for name, label, spec in FIXTURES:
+    for entry in FIXTURES:
+        name, label, spec = entry[0], entry[1], entry[2]
+        since = entry[3] if len(entry) > 3 else None   # 선택 슬라이스(예 "2022") — 편중 케이스 재현용
         try:
             StrategyIR.model_validate(spec)     # 조기 검증(픽스처 유효성)
             ds = load_dataset_for(_collect_symbols(spec), with_indicators=True)
+            if since:
+                ds = {s: df.loc[since:] for s, df in ds.items()}
             res = _finalize(strategy_from_spec(spec, ds), spec)
             (_OUT / f"{name}.json").write_text(
                 json.dumps(res, ensure_ascii=False, default=str), encoding="utf-8")
