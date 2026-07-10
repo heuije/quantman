@@ -1792,6 +1792,9 @@ class Trader:
                 if sdf is not None and len(sdf) and "Close" in sdf.columns:
                     ref_price = float(sdf["Close"].iloc[-1])
             if ref_price <= 0:
+                # R-5(2026-07-10 리뷰) — 종전엔 무로그 continue: 청산 계획에서 조용히 빠져
+                # 포지션 잔존이 어디에도 안 보였다. 최소 로그로 표면화(계획 단계라 보류만).
+                log.error("[청산계획] 참조가 없음 [%s] — 이번 창 청산 계획에서 보류", pos["symbol"])
                 continue
             pos_side = pos.get("side", "long")
             held_now = held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side)
@@ -2104,7 +2107,11 @@ class Trader:
                 if sdf is not None and len(sdf) and "Close" in sdf.columns:
                     ref_price = float(sdf["Close"].iloc[-1])
             if ref_price <= 0:
-                log.warning("종가청산 ref_price 없음 [%s] — skip", pos["symbol"])
+                # R-5(2026-07-10 리뷰) — 조용한 청산 보류 금지: error decision으로 웹/타임라인 표면화.
+                log.error("[종가청산] 참조가(현재가·전일종가) 없음 [%s] — 청산 보류", pos["symbol"])
+                decisions.append(order_log.decision(
+                    "error", str(sid), pos.get("strategy_name", ""), pos["symbol"],
+                    "청산 참조가 없음(현재가·전일종가 조회 실패) — 청산 보류, 다음 창에서 재시도"))
                 continue
             policy = _policy(pos.get("definition"))   # 국내=시장가 / 미국=is_resv
             sell_qty = int(pos["qty"])
