@@ -796,6 +796,10 @@ def _refresh_kospi_futures() -> None:
     res = krx_openapi.fetch_futures_panel(s, end.strftime("%Y%m%d"))
     data_cache.invalidate()
     _log.info("[altdata] KOSPI200 선물 패널 증분 %s~%s: %s", s, end, res.get("saved"))
+    # 08:10 수집(#345) 후 preview 스냅샷 재계산 — 이게 없으면 07:30(dataset_global발)에
+    # 계산된 "선물 stale → 후보 0" 스냅샷이 08:55 로컬 pull(온디맨드 재계산)까지 잔존해
+    # 웹 타임라인이 오보되고, 온디맨드 실패 시 stale 캐시 폴백 위험(2026-07-10 후속리뷰).
+    _trigger_preview("kospi_futures")
 
 
 def _refresh_global_dataset() -> None:
