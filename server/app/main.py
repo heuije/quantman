@@ -1196,12 +1196,18 @@ def _build_scheduler() -> BackgroundScheduler:
             CronTrigger(hour=_hh, minute=_mm),
             id=f"industry_prices_{_hh}_{_mm}", replace_existing=True)
 
-    # 09:35 — KOSPI200 선물 만기물 패널 최근분 증분 + 연속물 재구성 (공식 KRX API, T+1 08시
-    # 갱신 후). KRX_API_KEY 미설정이면 fail-safe no-op. 백필은 krx_futures_panel_chunk(10분)가 담당.
-    scheduler.add_job(
-        lambda: _run_with_retry("kospi_futures", _refresh_kospi_futures, scheduler),
-        CronTrigger(hour=9, minute=35),
-        id="kospi_futures", replace_existing=True)
+    # 08:10 + 09:35 — KOSPI200 선물 만기물 패널 최근분 증분 + 연속물 재구성 (공식 KRX API,
+    # T+1 08시 갱신 후). KRX_API_KEY 미설정이면 fail-safe no-op. 백필은 krx_futures_panel_chunk(10분)가 담당.
+    #
+    # 08:10이 주 수집: 아침 자동매매 사이클(08:55)의 preview 신선도 게이트가 어제 선물 봉을
+    # 요구하는데, 종전 09:35 단독으로는 08:55 시점에 항상 1일 지연 → 매일 아침 후보가
+    # 차단됐다(2026-07-08~10 실측 — 선물 소스가 same-day 경로에서 T+1 패널로 전환되며 발생).
+    # 09:35는 KRX 공개 지연일의 재시도로 유지 — fetch가 최근 7일 재수집이라 멱등(이중 실행 무해).
+    for _hh, _mm, _jid in [(8, 10, "kospi_futures_am"), (9, 35, "kospi_futures")]:
+        scheduler.add_job(
+            lambda: _run_with_retry("kospi_futures", _refresh_kospi_futures, scheduler),
+            CronTrigger(hour=_hh, minute=_mm),
+            id=_jid, replace_existing=True)
 
     # 17:00 — NAVER 펀더멘털 (publish 비공개, 보수적 추정)
     scheduler.add_job(
