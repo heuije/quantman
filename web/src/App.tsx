@@ -16,6 +16,7 @@ import Portfolio from "./pages/Portfolio";
 import IndustryAnalysis from "./pages/IndustryAnalysis";
 import GlobalMarket from "./pages/GlobalMarket";
 import ChatLab from "./pages/ChatLab";
+import Admin from "./pages/Admin";
 import DevRender from "./pages/DevRender";
 
 export default function App() {
@@ -62,6 +63,8 @@ export default function App() {
         <Route path="/monitor" element={<Monitor />} />
         <Route path="/futures" element={<FuturesAnalytics />} />
         <Route path="/settings" element={<Settings />} />
+        {/* 운영자 전용 — Admin 페이지가 isAdmin을 재확인하고, 서버도 require_admin으로 게이트 */}
+        <Route path="/admin" element={<Admin />} />
         <Route path="/pair" element={<Pair />} />
         <Route path="/legal/:section" element={<Legal />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

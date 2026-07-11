@@ -1,4 +1,5 @@
 import type {
+  AdminMetrics,
   BacktestRunSummary,
   CapabilityMatrix,
   ChatMessage,
@@ -171,7 +172,11 @@ export const api = {
     req<{ access_token: string }>("/auth/naver", {
       method: "POST", body: JSON.stringify({ code, state, redirect_uri }),
     }),
-  me: () => req<{ id: number; email: string; created_at: string }>("/auth/me"),
+  me: () => req<{ id: number; email: string; created_at: string; is_admin: boolean }>("/auth/me"),
+
+  // 운영자 대시보드 지표 — 가입·활성(DAU/WAU/MAU)·제품 사용·유저별 롤업.
+  // 서버가 require_admin으로 게이트(비운영자 403). 로그인 유저 활동만 집계.
+  adminMetrics: () => req<AdminMetrics>("/admin/metrics"),
 
   symbols: () => req<{ symbols: SymbolInfo[]; indicator_catalog: IndicatorInfo[]; has_master: boolean }>("/symbols"),
 

@@ -13,9 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from ..config import settings
 from ..db import get_session
-from ..deps import get_current_user
+# is_admin: 관리자 식별 SSOT(deps) 재사용 — 중복 정의 제거
+from ..deps import get_current_user, is_admin as _is_admin
 from ..models import OpinionComment, OpinionVote, StockOpinion, User
 
 router = APIRouter(prefix="/opinions", tags=["opinions"])
@@ -24,10 +24,6 @@ _STANCES = {"buy", "neutral", "sell"}
 _MAX_TITLE = 200
 _MAX_BODY = 2_000_000   # 리치 HTML + 인라인(data URL) 이미지 허용을 위해 넉넉히
 _MAX_COMMENT = 1000
-
-
-def _is_admin(user: User) -> bool:
-    return (user.email or "").strip().lower() in settings.ADMIN_EMAILS
 
 
 class OpinionIn(BaseModel):

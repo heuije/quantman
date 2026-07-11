@@ -11,7 +11,8 @@ const Ic = ({ children }: { children: React.ReactNode }) => (
     {children}
   </svg>
 );
-const NAV = [
+type NavItem = { to: string; label: string; icon: React.ReactNode; hide?: boolean; admin?: boolean };
+const NAV: NavItem[] = [
   { to: "/dashboard", label: "HOME", icon: <Ic><path d="M3 3v18h18" /><path d="m19 8-5 5-4-4-4 4" /></Ic> },
   { to: "/industry", label: "산업 분석", icon: <Ic><rect x="3" y="3" width="8" height="12" rx="1" /><rect x="13" y="3" width="8" height="7" rx="1" /><rect x="13" y="13" width="8" height="8" rx="1" /><rect x="3" y="18" width="8" height="3" rx="1" /></Ic> },
   { to: "/global", label: "글로벌 시장", icon: <Ic><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18" /></Ic> },
@@ -24,6 +25,8 @@ const NAV = [
   { to: "/monitor", label: "트레이딩", icon: <Ic><path d="M3 12h4l3 8 4-16 3 8h4" /></Ic> },
   { to: "/futures", label: "선물 분석", hide: true, icon: <Ic><path d="M3 3v18h18" /><rect x="7" y="11" width="3" height="6" rx="0.5" /><rect x="13" y="7" width="3" height="10" rx="0.5" /></Ic> },
   { to: "/settings", label: "설정", icon: <Ic><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" /></Ic> },
+  // 운영자 전용 — isAdmin일 때만 노출(아래 filter). 서버도 require_admin으로 게이트.
+  { to: "/admin", label: "운영", admin: true, icon: <Ic><path d="M12 3l7 3v5c0 4.5-3 7.4-7 8.6-4-1.2-7-4.1-7-8.6V6z" /></Ic> },
 ];
 
 // 계정 메뉴 항목 아이콘
@@ -33,7 +36,7 @@ const MIc = ({ children }: { children: React.ReactNode }) => (
 );
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const { email, logout } = useAuth();
+  const { email, isAdmin, logout } = useAuth();
   const { theme, toggle: toggleTheme } = useTheme();
   const [navOpen, setNavOpen] = useState(false);     // 모바일 네비 드롭다운
   const [acctOpen, setAcctOpen] = useState(false);   // 계정 메뉴
@@ -125,7 +128,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {/* 2행: 네비게이션(로그인 시) — 로고 아래로 이동 */}
         {email && (
           <nav className={"topnav-links" + (navOpen ? " open" : "")}>
-            {NAV.filter((n) => !n.hide).map((n) => (
+            {NAV.filter((n) => !n.hide && (!n.admin || isAdmin)).map((n) => (
               <NavLink key={n.to} to={n.to} end={n.to === "/"}
                 className={({ isActive }) => "navlink" + (isActive ? " active" : "")}>
                 <span className="nav-ic" aria-hidden="true">{n.icon}</span>

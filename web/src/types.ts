@@ -1254,3 +1254,42 @@ export type ChatPart =
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown>; progress?: string }
   | { type: "tool_result"; tool_use_id: string; name: string; result: Record<string, unknown> };
 export type ChatMessage = { role: "user" | "assistant"; parts: ChatPart[] };
+
+// ── 운영자 대시보드 (/admin) — 방문자·사용 활동·운영 지표 ────────────────────
+export interface AdminUserRow {
+  id: number;
+  email: string;
+  created_at: string;
+  last_active_at: string | null;
+  backtests: number;
+  chat_turns: number;
+  strategies: number;
+  live_strategies: number;
+  devices: number;
+  auth: string;             // "google" | "naver" | "password"
+}
+export interface AdminMetrics {
+  generated_at: string;
+  window_days: number;
+  totals: {
+    users: number;
+    strategies: number;
+    live_strategies: number;
+    paper_strategies: number;
+    devices: number;
+    backtests: number;
+    chat_turns: number;
+    compiles: number;
+  };
+  active_users: { dau: number; wau: number; mau: number };
+  signups: { last_24h: number; last_7d: number; last_30d: number };
+  auth_breakdown: { google: number; naver: number; password: number };
+  daily: {
+    date: string;
+    signups: number;
+    active_users: number;
+    backtests: number;
+    chat_turns: number;
+  }[];
+  users: AdminUserRow[];
+}

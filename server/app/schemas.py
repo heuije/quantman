@@ -60,6 +60,7 @@ class UserOut(BaseModel):
     id: int
     email: str
     created_at: UtcDateTime
+    is_admin: bool = False   # 운영자(ADMIN_EMAILS) 여부 — 웹 /admin 대시보드 게이트
 
 
 # ── 기기 페어링 ────────────────────────────────────────────────────────────────

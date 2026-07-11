@@ -9,7 +9,7 @@ from sqlmodel import Session, func, select
 
 from ..config import settings
 from ..db import get_session
-from ..deps import get_current_device, get_current_user
+from ..deps import get_current_device, get_current_user, is_admin
 from ..models import (Command, Device, HeartbeatEvent, PairingRequest,
                       SyncSnapshot, User)
 from ..schemas import (DeviceApproveIn, DeviceOut, DeviceStartIn, DeviceStartOut,
@@ -146,7 +146,8 @@ def naver_login(body: NaverLoginIn, session: Session = Depends(get_session)):
 
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
-    return UserOut(id=user.id, email=user.email, created_at=user.created_at)
+    return UserOut(id=user.id, email=user.email, created_at=user.created_at,
+                   is_admin=is_admin(user))
 
 
 @router.get("/device/me", response_model=UserOut)

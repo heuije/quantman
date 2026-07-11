@@ -14,15 +14,26 @@ from quant_core import data_fetcher
 from sqlmodel import Session, select
 
 from .. import data_cache
+from ..admin_metrics import compute_admin_metrics
 from ..db import get_session
-from ..deps import get_current_user
+from ..deps import require_admin
 from ..models import CompileLog, User
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+@router.get("/metrics")
+def admin_metrics(user: User = Depends(require_admin),
+                  session: Session = Depends(get_session)):
+    """운영자 대시보드 지표 — 가입·활성(DAU/WAU/MAU)·제품 사용·유저별 롤업.
+
+    로그인 유저의 활동만 집계(익명 트래픽은 클라이언트 분석 도구 담당).
+    안전정보 테이블만 읽으며 자격증명·계좌번호·원시주문은 포함하지 않는다."""
+    return compute_admin_metrics(session)
+
+
 @router.post("/invalidate")
-def invalidate_dataset_cache(user: User = Depends(get_current_user)):
+def invalidate_dataset_cache(user: User = Depends(require_admin)):
     """데이터셋 캐시 강제 무효화 + 세대 마커 bump.
 
     수동 데이터 변경(파일 직접 삭제·편집) 후 호출하면 다음 읽기에 parquet에서 재로드한다.
@@ -32,7 +43,7 @@ def invalidate_dataset_cache(user: User = Depends(get_current_user)):
 
 
 @router.get("/compile-stats")
-def compile_stats(user: User = Depends(get_current_user),
+def compile_stats(user: User = Depends(require_admin),
                   session: Session = Depends(get_session)):
     """NL→IR 컴파일 정확도 집계 — 개선 flywheel의 신호.
 

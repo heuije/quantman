@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, Header, HTTPException, status
 from sqlmodel import Session, select
 
+from .config import settings
 from .db import get_session
 from .models import Device, User
 from .security import decode_access_token, hash_token
@@ -40,6 +41,18 @@ def get_current_user(
     user = session.get(User, user_id)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "사용자를 찾을 수 없습니다.")
+    return user
+
+
+def is_admin(user: User) -> bool:
+    """운영자(서비스 운영진) 여부 — ADMIN_EMAILS 허용목록 대조. 관리자 식별 SSOT."""
+    return (user.email or "").strip().lower() in settings.ADMIN_EMAILS
+
+
+def require_admin(user: User = Depends(get_current_user)) -> User:
+    """운영자 전용 게이트 — 대시보드·모더레이션 등 운영 엔드포인트에 붙인다."""
+    if not is_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "운영자 전용입니다.")
     return user
 
 
