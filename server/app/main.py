@@ -24,7 +24,7 @@ from . import (calendar_cache, data_cache, kis_master_cache, krx_cache,
                 naver_fundamentals, technical_cache)
 from .config import settings
 from .db import call_with_disconnect_retry, create_db_and_tables, prune_old_rows
-from .routers import (admin as admin_router, auth, backtest,
+from .routers import (activity as activity_router, admin as admin_router, auth, backtest,
                        calendars as calendars_router, chat as chat_router, commands,
                        dataset, ir as ir_router, ir_compile as ir_compile_router,
                        market, futures, opinions as opinions_router, portfolio,
@@ -1516,6 +1516,7 @@ app.include_router(trading_router.router)
 app.include_router(ir_router.router)
 app.include_router(ir_compile_router.router)   # NL 컴파일러(베타) — 미배포(로컬만), 배포 시 별도 결정
 app.include_router(admin_router.router)
+app.include_router(activity_router.router)
 app.include_router(futures.router)
 
 

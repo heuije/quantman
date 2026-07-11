@@ -191,6 +191,7 @@ def get_session():
 
 HEARTBEAT_RETENTION_DAYS = 30   # timeline 소비처는 24h window만 읽음(trading.WINDOW_HOURS)
 SNAPSHOT_RETENTION_DAYS = 30
+ACTIVITY_RETENTION_DAYS = 30    # 운영자 대시보드는 최근 N일 window만 집계(admin_metrics)
 # 첫 실행 누적분 대량 DELETE가 락을 오래 잡지 않도록 batch 단위 삭제·commit.
 _PRUNE_BATCH = 5000
 
@@ -209,11 +210,12 @@ def prune_old_rows() -> dict[str, int]:
     snapshot은 유저별로 (user_id, received_at) 복합 인덱스(_NEW_INDEXES)를 탄다.
     삭제는 멱등이라 중단·재시도에 안전하다.
     """
-    from .models import HeartbeatEvent, SyncSnapshot  # 순환 회피 — create_db_and_tables와 동일
+    from .models import (ActivityEvent, HeartbeatEvent,  # 순환 회피 — create_db_and_tables와 동일
+                         SyncSnapshot)
 
-    hb, ss = HeartbeatEvent.__table__, SyncSnapshot.__table__
+    hb, ss, ae = HeartbeatEvent.__table__, SyncSnapshot.__table__, ActivityEvent.__table__
     now = datetime.now(timezone.utc)
-    deleted = {"heartbeatevent": 0, "syncsnapshot": 0}
+    deleted = {"heartbeatevent": 0, "syncsnapshot": 0, "activityevent": 0}
 
     cutoff = now - timedelta(days=HEARTBEAT_RETENTION_DAYS)
     while True:
@@ -221,6 +223,16 @@ def prune_old_rows() -> dict[str, int]:
         with engine.begin() as conn:
             n = conn.execute(delete(hb).where(hb.c.id.in_(batch))).rowcount
         deleted["heartbeatevent"] += n
+        if n < _PRUNE_BATCH:
+            break
+
+    # ActivityEvent — heartbeat와 동일하게 at < cutoff 단순 삭제(보존 예외 없음). at 인덱스 경유.
+    cutoff = now - timedelta(days=ACTIVITY_RETENTION_DAYS)
+    while True:
+        batch = select(ae.c.id).where(ae.c.at < cutoff).limit(_PRUNE_BATCH)
+        with engine.begin() as conn:
+            n = conn.execute(delete(ae).where(ae.c.id.in_(batch))).rowcount
+        deleted["activityevent"] += n
         if n < _PRUNE_BATCH:
             break
 
@@ -244,9 +256,9 @@ def prune_old_rows() -> dict[str, int]:
             if n < _PRUNE_BATCH:
                 break
 
-    if deleted["heartbeatevent"] or deleted["syncsnapshot"]:
-        _log.info("pruning 완료: heartbeatevent %d행 · syncsnapshot %d행 삭제",
-                  deleted["heartbeatevent"], deleted["syncsnapshot"])
+    if deleted["heartbeatevent"] or deleted["syncsnapshot"] or deleted["activityevent"]:
+        _log.info("pruning 완료: heartbeatevent %d행 · activityevent %d행 · syncsnapshot %d행 삭제",
+                  deleted["heartbeatevent"], deleted["activityevent"], deleted["syncsnapshot"])
     return deleted
 
 

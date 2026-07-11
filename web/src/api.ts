@@ -1,5 +1,6 @@
 import type {
   AdminMetrics,
+  ChatInputRow,
   BacktestRunSummary,
   CapabilityMatrix,
   ChatMessage,
@@ -177,6 +178,17 @@ export const api = {
   // 운영자 대시보드 지표 — 가입·활성(DAU/WAU/MAU)·제품 사용·유저별 롤업.
   // 서버가 require_admin으로 게이트(비운영자 403). 로그인 유저 활동만 집계.
   adminMetrics: () => req<AdminMetrics>("/admin/metrics"),
+
+  // 활동 계측 — 화면 전환·종목 조회 1건 적재(운영자 대시보드 소스). fire-and-forget:
+  // 호출자는 결과를 기다리지 않고 에러를 무시한다(부가 텔레메트리라 UX 무영향).
+  logActivity: (path: string, symbol?: string) =>
+    req<{ ok: boolean }>("/activity", {
+      method: "POST", body: JSON.stringify({ path, symbol: symbol ?? null }),
+    }),
+
+  // 운영자 — 최근 유저 챗봇 입력 내역(질문 + 봇 답변). 서버 require_admin 게이트.
+  adminChatLog: (limit = 100) =>
+    req<{ messages: ChatInputRow[] }>(`/admin/chat-log?limit=${limit}`),
 
   symbols: () => req<{ symbols: SymbolInfo[]; indicator_catalog: IndicatorInfo[]; has_master: boolean }>("/symbols"),
 

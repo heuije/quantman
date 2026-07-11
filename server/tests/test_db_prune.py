@@ -25,7 +25,7 @@ if str(_SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVER_DIR))
 
 from app import db
-from app.models import HeartbeatEvent, SyncSnapshot, User
+from app.models import ActivityEvent, HeartbeatEvent, SyncSnapshot, User
 
 
 def _now() -> datetime:
@@ -134,12 +134,36 @@ def test_prune_deletes_in_batches(monkeypatch):
 
     result = db.prune_old_rows()
 
-    assert result == {"heartbeatevent": 5, "syncsnapshot": 5}
+    assert result == {"heartbeatevent": 5, "syncsnapshot": 5, "activityevent": 0}
     with Session(engine) as s:
         assert {r.id for r in s.exec(select(HeartbeatEvent)).all()} == set(hb_keep)
         assert {r.id for r in s.exec(select(SyncSnapshot)).all()} == set(snap_keep)
 
 
+def test_prune_activity_deletes_only_rows_older_than_30d(monkeypatch):
+    """ActivityEvent도 heartbeat와 동일 — 30일 초과만 삭제, 경계 안·타유저는 보존."""
+    engine = _engine(monkeypatch)
+    uid, other = _users(engine)
+    now = _now()
+    old_ids = _add(engine, [
+        ActivityEvent(user_id=uid, path="/dashboard", at=now - timedelta(days=31)),
+        ActivityEvent(user_id=uid, path="/chat", at=now - timedelta(days=30, minutes=1)),
+    ])
+    keep_ids = _add(engine, [
+        ActivityEvent(user_id=uid, path="/dashboard", symbol="005930",
+                      at=now - timedelta(days=30) + timedelta(minutes=1)),
+        ActivityEvent(user_id=uid, path="/monitor", at=now),
+        ActivityEvent(user_id=other, path="/strategies", at=now - timedelta(days=1)),
+    ])
+
+    result = db.prune_old_rows()
+
+    assert result["activityevent"] == len(old_ids)
+    with Session(engine) as s:
+        remaining = {r.id for r in s.exec(select(ActivityEvent)).all()}
+    assert remaining == set(keep_ids)
+
+
 def test_prune_empty_tables_is_noop(monkeypatch):
     _engine(monkeypatch)
-    assert db.prune_old_rows() == {"heartbeatevent": 0, "syncsnapshot": 0}
+    assert db.prune_old_rows() == {"heartbeatevent": 0, "syncsnapshot": 0, "activityevent": 0}

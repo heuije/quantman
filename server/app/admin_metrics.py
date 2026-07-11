@@ -17,18 +17,20 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, func, select
 
-from .models import (BacktestRun, ChatTurnMetric, CompileLog, Device,
-                     HeartbeatEvent, Strategy, User)
+from .models import (ActivityEvent, BacktestRun, ChatTurnMetric, CompileLog,
+                     Conversation, Device, HeartbeatEvent, Message, Strategy,
+                     User)
 
 _KST = timezone(timedelta(hours=9))
 
 # 활성 유저·최근활동 판정 소스 — (user_id 컬럼, 타임스탬프 컬럼).
-# 제품 행동(백테스트·챗봇·전략 컴파일) + 로컬앱 alive(heartbeat). Device.last_seen_at는
-# 컬럼명이 달라 별도로 합친다.
+# 제품 행동(백테스트·챗봇·전략 컴파일) + 화면·종목 조회(ActivityEvent) + 로컬앱 alive(heartbeat).
+# Device.last_seen_at는 컬럼명이 달라 별도로 합친다.
 _ACTIVITY = [
     (BacktestRun.user_id, BacktestRun.created_at),
     (ChatTurnMetric.user_id, ChatTurnMetric.created_at),
     (CompileLog.user_id, CompileLog.created_at),
+    (ActivityEvent.user_id, ActivityEvent.at),
     (HeartbeatEvent.user_id, HeartbeatEvent.at),
 ]
 
@@ -175,6 +177,22 @@ def compute_admin_metrics(session: Session, *, now: datetime | None = None,
     # 최근 활동순(활동 없는 유저는 뒤로). last_active_at ISO 문자열 역순 정렬.
     user_rows.sort(key=lambda r: r["last_active_at"] or "", reverse=True)
 
+    # ── 활동 계측(ActivityEvent) — 인기 종목·화면별 사용량 (window 내) ──
+    sym_counts = session.exec(
+        select(ActivityEvent.symbol, func.count())
+        .where(ActivityEvent.symbol.is_not(None), ActivityEvent.at >= window_start)
+        .group_by(ActivityEvent.symbol)).all()
+    top_symbols = sorted(
+        [{"symbol": s, "views": n} for s, n in sym_counts if s is not None],
+        key=lambda r: r["views"], reverse=True)[:20]
+    path_counts = session.exec(
+        select(ActivityEvent.path, func.count())
+        .where(ActivityEvent.at >= window_start)
+        .group_by(ActivityEvent.path)).all()
+    screen_usage = sorted(
+        [{"path": p, "views": n} for p, n in path_counts],
+        key=lambda r: r["views"], reverse=True)[:20]
+
     return {
         "generated_at": now.isoformat(),
         "window_days": days,
@@ -184,4 +202,53 @@ def compute_admin_metrics(session: Session, *, now: datetime | None = None,
         "auth_breakdown": auth_breakdown,
         "daily": daily,
         "users": user_rows[:top_users],
+        "top_symbols": top_symbols,
+        "screen_usage": screen_usage,
     }
+
+
+def _msg_text(parts) -> str:
+    """Message.parts(블록 배열)에서 사람이 읽는 텍스트만 추출(도구 블록 제외)."""
+    return " ".join(
+        p.get("text", "") for p in (parts or [])
+        if isinstance(p, dict) and p.get("type") == "text").strip()
+
+
+def recent_chat_inputs(session: Session, *, limit: int = 100) -> list[dict]:
+    """최근 유저 챗봇 입력 N건 — 시각·이메일·질문 + (있으면) 봇 답변.
+
+    운영자 대시보드용. Message(role='user')를 최신순으로 뽑고, 각 질문의 봇 답변은
+    같은 대화에서 그 질문 바로 다음 assistant 메시지로 페어링한다. 안전정보만
+    (질문·답변 텍스트) — 자격증명·계좌번호 없음.
+    """
+    user_msgs = session.exec(
+        select(Message).where(Message.role == "user")
+        .order_by(Message.id.desc()).limit(limit)).all()
+    if not user_msgs:
+        return []
+    conv_ids = {m.conversation_id for m in user_msgs}
+    convs = {c.id: c for c in session.exec(
+        select(Conversation).where(Conversation.id.in_(conv_ids))).all()}
+    emails = {u.id: u.email for u in session.exec(
+        select(User).where(User.id.in_({c.user_id for c in convs.values()}))).all()}
+    # 답변 페어링 — 관련 대화의 assistant 메시지를 id 오름차순으로 모아, 질문 id 다음의 첫 답변.
+    asst_by_conv: dict[int, list[Message]] = defaultdict(list)
+    for a in session.exec(
+            select(Message).where(Message.role == "assistant",
+                                  Message.conversation_id.in_(conv_ids))
+            .order_by(Message.id)).all():
+        asst_by_conv[a.conversation_id].append(a)
+
+    rows = []
+    for m in user_msgs:
+        conv = convs.get(m.conversation_id)
+        answer = next((a for a in asst_by_conv.get(m.conversation_id, []) if a.id > m.id), None)
+        rows.append({
+            "id": m.id,
+            "conversation_id": m.conversation_id,
+            "email": emails.get(conv.user_id) if conv else None,
+            "at": _as_utc(m.created_at).isoformat(),
+            "question": _msg_text(m.parts),
+            "answer": _msg_text(answer.parts) if answer else None,
+        })
+    return rows

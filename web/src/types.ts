@@ -1294,4 +1294,14 @@ export interface AdminMetrics {
     chat_turns: number;
   }[];
   users: AdminUserRow[];
+  top_symbols: { symbol: string; views: number }[];   // 인기 종목(조회수)
+  screen_usage: { path: string; views: number }[];    // 화면별 사용량
+}
+export interface ChatInputRow {
+  id: number;
+  conversation_id: number;
+  email: string | null;
+  at: string;
+  question: string;
+  answer: string | null;      // 페어링된 봇 답변(없으면 null)
 }

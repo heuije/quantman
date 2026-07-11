@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import type { AdminMetrics, AdminUserRow } from "../types";
+import type { AdminMetrics, AdminUserRow, ChatInputRow } from "../types";
 
 // DESIGN.md §8 차트 규칙 — 네이비 막대 + 골드 선만(회색 등 금지).
 const CHART_NAVY = "#264a85";
@@ -59,9 +59,43 @@ function ChartPanel({ title, children }: { title: string; children: React.ReactE
   );
 }
 
+// 순위 막대 리스트 (인기 종목·화면별 사용량). DESIGN §8 — 네이비 막대.
+function RankPanel({ title, empty, rows }: {
+  title: string; empty: string; rows: { label: string; value: number }[];
+}) {
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  return (
+    <div className="panel" style={{ flex: "1 1 300px", minWidth: 280 }}>
+      <div className="sub-h" style={{ marginBottom: 10 }}>{title}</div>
+      {rows.length === 0 ? (
+        <p className="muted small" style={{ margin: 0 }}>{empty}</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          {rows.map((r) => (
+            <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 130, fontSize: 13, overflow: "hidden",
+                             textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                   title={r.label}>{r.label}</div>
+              <div style={{ flex: 1, height: 8, background: "var(--border)",
+                             borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ width: `${(r.value / max) * 100}%`, height: "100%",
+                               background: CHART_NAVY }} />
+              </div>
+              <div style={{ width: 44, textAlign: "right", fontSize: 13, fontWeight: 600 }}>
+                {r.value.toLocaleString()}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Admin() {
   const { isAdmin, ready } = useAuth();
   const [data, setData] = useState<AdminMetrics | null>(null);
+  const [chatLog, setChatLog] = useState<ChatInputRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -70,6 +104,10 @@ export default function Admin() {
     api.adminMetrics()
       .then((m) => { if (alive) setData(m); })
       .catch((e) => { if (alive) setErr(e instanceof Error ? e.message : String(e)); });
+    // 챗봇 입력 내역은 별도 엔드포인트(페이로드가 커 metrics와 분리)
+    api.adminChatLog(100)
+      .then((r) => { if (alive) setChatLog(r.messages); })
+      .catch(() => { /* 로그 조회 실패는 대시보드 나머지를 막지 않는다 */ });
     return () => { alive = false; };
   }, [isAdmin]);
 
@@ -94,7 +132,8 @@ export default function Admin() {
     return <div className="panel"><p className="muted">불러오는 중…</p></div>;
   }
 
-  const { totals, active_users, signups, auth_breakdown, daily, users } = data;
+  const { totals, active_users, signups, auth_breakdown, daily, users,
+          top_symbols, screen_usage } = data;
 
   return (
     <div>
@@ -162,6 +201,14 @@ export default function Admin() {
         </ChartPanel>
       </div>
 
+      {/* ── 인기 종목 · 화면별 사용량 ── */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 14 }}>
+        <RankPanel title="인기 종목 (조회수)" empty="아직 종목 조회 데이터가 없습니다."
+                   rows={top_symbols.map((s) => ({ label: s.symbol, value: s.views }))} />
+        <RankPanel title="화면별 사용량" empty="아직 활동 데이터가 없습니다."
+                   rows={screen_usage.map((s) => ({ label: s.path, value: s.views }))} />
+      </div>
+
       {/* ── 유저별 활동 ── */}
       <div className="panel">
         <div className="sub-h" style={{ marginBottom: 10 }}>유저별 활동 ({users.length})</div>
@@ -169,6 +216,9 @@ export default function Admin() {
           <UserTable users={users} />
         </div>
       </div>
+
+      {/* ── 챗봇 입력 내역 ── */}
+      <ChatLogPanel rows={chatLog} />
     </div>
   );
 }
@@ -215,5 +265,59 @@ function UserTable({ users }: { users: AdminUserRow[] }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+function fmtWhen(iso: string): string {
+  return new Date(iso).toLocaleString("ko-KR", {
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
+
+function ChatLogPanel({ rows }: { rows: ChatInputRow[] }) {
+  const thL: React.CSSProperties = { textAlign: "left", padding: "6px 10px", whiteSpace: "nowrap" };
+  return (
+    <div className="panel">
+      <div className="sub-h" style={{ marginBottom: 10 }}>챗봇 입력 내역 ({rows.length})</div>
+      {rows.length === 0 ? (
+        <p className="muted small" style={{ margin: 0 }}>아직 챗봇 입력이 없습니다.</p>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid var(--border)", color: "var(--muted)" }}>
+                <th style={{ ...thL, width: 96 }}>시각</th>
+                <th style={thL}>이메일</th>
+                <th style={thL}>질문{" "}
+                  <span className="muted" style={{ fontWeight: 400 }}>(클릭 → 봇 답변)</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((m) => (
+                <tr key={m.id} style={{ borderBottom: "1px solid var(--border)", verticalAlign: "top" }}>
+                  <td style={{ ...thL, color: "var(--muted)" }}>{fmtWhen(m.at)}</td>
+                  <td style={thL}>{m.email ?? "—"}</td>
+                  <td style={{ padding: "6px 10px" }}>
+                    {m.answer ? (
+                      <details>
+                        <summary style={{ cursor: "pointer" }}>
+                          {m.question || <span className="muted">(빈 입력)</span>}
+                        </summary>
+                        <div className="muted" style={{ marginTop: 6, whiteSpace: "pre-wrap",
+                                                          maxHeight: 220, overflowY: "auto", fontSize: 12.5 }}>
+                          {m.answer}
+                        </div>
+                      </details>
+                    ) : (
+                      m.question || <span className="muted">(빈 입력)</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }

@@ -124,6 +124,21 @@ class HeartbeatEvent(SQLModel, table=True):
     at: datetime = Field(default_factory=_now, index=True)
 
 
+class ActivityEvent(SQLModel, table=True):
+    """웹 유저 활동 이벤트 — 화면 전환·종목 조회 1건당 row 1개.
+
+    운영자 대시보드(/admin)의 인기 종목·화면별 사용량·유저별 타임라인 소스.
+    프론트 Layout이 라우트 변경 시 POST /activity로 적재(로그인 유저만·fire-and-forget).
+    안전정보만(화면 경로·종목코드) — 자격증명·계좌번호 없음. 30일 초과 row는 일일 pruning
+    cron(main.py db_prune 04:00 KST → db.prune_old_rows)이 정리(무한성장 방지·HeartbeatEvent 패턴).
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True, foreign_key="user.id")
+    path: str = ""                    # 화면 경로(정규화됨, 예: "/dashboard", "/strategies/:id")
+    symbol: Optional[str] = Field(default=None, index=True)   # 조회 종목코드(HOME ?symbol=), 없으면 None
+    at: datetime = Field(default_factory=_now, index=True)
+
+
 class UserSettings(SQLModel, table=True):
     """사용자별 모니터링·알림·위험 한도 설정 (1:1)."""
     user_id: int = Field(primary_key=True, foreign_key="user.id")

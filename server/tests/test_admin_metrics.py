@@ -21,7 +21,7 @@ if str(_SERVER_DIR) not in sys.path:
 from app.admin_metrics import compute_admin_metrics
 from app.db import get_session
 from app.models import (BacktestRun, ChatTurnMetric, CompileLog, Conversation,
-                        Device, HeartbeatEvent, Strategy, User)
+                        Device, HeartbeatEvent, Message, Strategy, User)
 from app.routers import admin as admin_router
 from app.security import create_access_token
 
@@ -159,3 +159,41 @@ def test_admin_metrics_requires_auth():
     client, _a, _n = _build_gate_app()
     r = client.get("/admin/metrics")     # 토큰 없음
     assert r.status_code == 401
+
+
+# ── 챗봇 입력 내역 ──────────────────────────────────────────────────────────
+
+def test_recent_chat_inputs_pairs_question_answer():
+    from app.admin_metrics import recent_chat_inputs
+    eng = _engine()
+    with Session(eng) as s:
+        u = User(email="a@example.com"); s.add(u); s.commit(); s.refresh(u)
+        c = Conversation(user_id=u.id); s.add(c); s.commit(); s.refresh(c)
+        s.add(Message(conversation_id=c.id, role="user",
+                      parts=[{"type": "text", "text": "삼성전자 어때?"}]))
+        s.add(Message(conversation_id=c.id, role="assistant",
+                      parts=[{"type": "tool_use", "id": "t", "name": "x", "input": {}},
+                             {"type": "text", "text": "저평가입니다."}]))
+        s.add(Message(conversation_id=c.id, role="user",
+                      parts=[{"type": "text", "text": "SK하이닉스는?"}]))
+        s.commit()
+        rows = recent_chat_inputs(s, limit=10)
+    # 최신순 — 질문2 먼저
+    assert [r["question"] for r in rows] == ["SK하이닉스는?", "삼성전자 어때?"]
+    assert rows[0]["answer"] is None                    # 질문2는 아직 답변 없음
+    assert rows[1]["answer"] == "저평가입니다."          # 도구 블록 제외, 텍스트만
+    assert all(r["email"] == "a@example.com" for r in rows)
+
+
+def test_recent_chat_inputs_empty():
+    from app.admin_metrics import recent_chat_inputs
+    with Session(_engine()) as s:
+        assert recent_chat_inputs(s, limit=10) == []
+
+
+def test_admin_chat_log_gate():
+    client, admin_jwt, normal_jwt = _build_gate_app()
+    assert client.get("/admin/chat-log",
+                      headers={"Authorization": f"Bearer {normal_jwt}"}).status_code == 403
+    r = client.get("/admin/chat-log", headers={"Authorization": f"Bearer {admin_jwt}"})
+    assert r.status_code == 200 and "messages" in r.json()

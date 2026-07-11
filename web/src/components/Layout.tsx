@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { api } from "../api";
 import { useAuth } from "../auth";
 import { useTheme } from "../theme";
 import ErrorBoundary from "./ErrorBoundary";
@@ -43,10 +44,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const acctRef = useRef<HTMLDivElement>(null);
+  const lastActivity = useRef("");
 
   // 라우트 변경 시 메뉴 자동 닫기
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setNavOpen(false); setAcctOpen(false); }, [location.pathname]);
+
+  // 활동 계측 — 화면 전환·종목 조회 시 1건 적재(운영자 대시보드 소스). 로그인 유저만·
+  // fire-and-forget(실패 무시·부가 텔레메트리). 연속 동일(리렌더·StrictMode 중복)은 스킵.
+  useEffect(() => {
+    if (!email) return;
+    const symbol = new URLSearchParams(location.search).get("symbol") || undefined;
+    // 화면 경로 정규화 — /strategies/123 → /strategies/:id (화면별 집계가 id로 파편화되지 않게)
+    const path = location.pathname.replace(/\/\d+(?=\/|$)/g, "/:id");
+    const key = path + "|" + (symbol ?? "");
+    if (lastActivity.current === key) return;
+    lastActivity.current = key;
+    api.logActivity(path, symbol).catch(() => { /* 텔레메트리 — 무시 */ });
+  }, [email, location.pathname, location.search]);
 
   // 계정 메뉴 바깥 클릭 시 닫기
   useEffect(() => {

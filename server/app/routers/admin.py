@@ -14,7 +14,7 @@ from quant_core import data_fetcher
 from sqlmodel import Session, select
 
 from .. import data_cache
-from ..admin_metrics import compute_admin_metrics
+from ..admin_metrics import compute_admin_metrics, recent_chat_inputs
 from ..db import get_session
 from ..deps import require_admin
 from ..models import CompileLog, User
@@ -30,6 +30,16 @@ def admin_metrics(user: User = Depends(require_admin),
     로그인 유저의 활동만 집계(익명 트래픽은 클라이언트 분석 도구 담당).
     안전정보 테이블만 읽으며 자격증명·계좌번호·원시주문은 포함하지 않는다."""
     return compute_admin_metrics(session)
+
+
+@router.get("/chat-log")
+def admin_chat_log(limit: int = 100, user: User = Depends(require_admin),
+                   session: Session = Depends(get_session)):
+    """운영자 — 최근 유저 챗봇 입력 내역(질문 + 페어링된 봇 답변).
+
+    유저가 챗봇에 실제로 무엇을 물었는지 확인용. 안전정보만(질문·답변 텍스트)이며
+    운영자(require_admin)만 접근한다."""
+    return {"messages": recent_chat_inputs(session, limit=min(max(limit, 1), 500))}
 
 
 @router.post("/invalidate")
