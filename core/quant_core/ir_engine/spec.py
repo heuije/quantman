@@ -98,6 +98,11 @@ class Exit(BaseModel):
     trail_pct: Optional[float] = None
     trail_atr_mult: Optional[float] = None
     condition: Optional[Node] = None    # 매도 신호(condition Node)
+    # 청산 체결 시점 (exit-fill 재설계 2026-07-11). None=legacy — 진입 fill·hold_days에서
+    # 파생(백테스트=진입 fill 바·라이브=hold 0 종가창/≥1 시가창, 현행과 동일). 명시 시
+    # 시간기반(hold_days) 만기 청산의 체결창만 결정 — 익절·손절·트레일·매도조건 청산은
+    # 현행대로 사이클 즉시(창 지연은 위험 확대라 의도적 제외). 어휘는 SimSpec.fill 계열.
+    fill: Optional[Literal["next_open", "close"]] = None
 
 
 class Overlays(BaseModel):
@@ -486,6 +491,13 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     if st is not None and st not in ("condition", "score"):
         issues.append(Issue("S-signal", SEV_ERROR,
                             "최상위 신호는 condition(참/거짓) 또는 score(점수) 블록이어야 합니다.", "signal"))
+
+    # exit.fill(청산 시점)은 1단계에서 condition(룰) 경로만 지원 — score(리밸런싱) 경로가
+    # 조용히 무시하면 백테≠의도 silent 결함이라 명시 거부(fail-loud·설계 D2 증분 범위).
+    if s.position.exit.fill is not None and st == "score":
+        issues.append(Issue("S-exit-fill", SEV_ERROR,
+                            "청산 시점(exit.fill) 지정은 조건(condition) 신호 전략에서만 지원합니다 "
+                            "(score·리밸런싱 전략은 후속 지원).", "position.exit.fill"))
 
     # M1 — 신호는 시장 데이터를 ≥1회 참조해야 한다. 순수 상수·산술식은 시장에 반응하지
     # 않아(예: const(5)>const(0) → 매일 매수) 백테스트가 무의미하다.

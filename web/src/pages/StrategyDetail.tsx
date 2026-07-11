@@ -419,7 +419,10 @@ function exitTimingDesc(ex: IrStrategyDef["position"]["exit"]): string {
   const parts: string[] = [];
   if (ex?.hold_days === 0) parts.push("당일 마감 — 종가 청산");
   else if (ex?.hold_days != null && ex.hold_days >= 1)
-    parts.push(`보유 ${ex.hold_days}일 후 다음 개장 — 시가 청산`);
+    // exit.fill(청산 체결 시점) 명시 시 우선 — 미지정(기존 전략)은 현행 파생(시가) 문구.
+    parts.push(ex?.fill === "close"
+      ? `보유 ${ex.hold_days}일 후 당일 마감 — 종가 청산`
+      : `보유 ${ex.hold_days}일 후 다음 개장 — 시가 청산`);
   const hasCond = ex?.take_profit != null || ex?.stop_loss != null
     || ex?.trail_pct != null || ex?.trail_atr_mult != null || ex?.condition != null;
   if (hasCond) parts.push("조건 달성 시 (익절·손절·트레일·매도신호)");

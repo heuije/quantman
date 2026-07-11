@@ -426,7 +426,19 @@ class Trader:
                 continue
             hd = (((pos.get("definition") or {}).get("position") or {})
                   .get("exit") or {}).get("hold_days")
-            if hd == 0 and int(pos.get("qty") or 0) > 0:
+            # I5+(재설계 D3): exit.fill=close 포지션도 만기일엔 그날 종가창이 청산해야
+            # 한다 — 정산 시점 잔존이면 당일매매와 같은 "의도치 않은 오버나이트" 부류.
+            _ef = (((pos.get("definition") or {}).get("position") or {})
+                   .get("exit") or {}).get("fill")
+            due_close_exit = False
+            if _ef == "close" and hd is not None and hd >= 1:
+                try:
+                    held = (kst_today()
+                            - date.fromisoformat(pos.get("entry_date", ""))).days
+                    due_close_exit = held >= hd
+                except Exception:
+                    due_close_exit = False
+            if (hd == 0 or due_close_exit) and int(pos.get("qty") or 0) > 0:
                 out.append({"sid": sid, "symbol": pos.get("symbol", ""),
                             "qty": int(pos.get("qty") or 0),
                             "strategy_name": pos.get("strategy_name", "")})
@@ -1775,7 +1787,11 @@ class Trader:
                 continue
             hold_days = (((pos.get("definition") or {}).get("position") or {})
                          .get("exit") or {}).get("hold_days")
-            if hold_days != 0:
+            # exit.fill=close(재설계 D3): 보유기간 만기 청산을 종가창에서 체결. due 여부는
+            # 아래 _exit_reason_for(is_close=True)의 창 게이트가 판정(미도달=None→skip).
+            _ef = (((pos.get("definition") or {}).get("position") or {})
+                   .get("exit") or {}).get("fill")
+            if hold_days != 0 and _ef != "close":
                 continue
             try:
                 held = (today - date.fromisoformat(pos["entry_date"])).days
@@ -1831,6 +1847,9 @@ class Trader:
                          .get("exit") or {}).get("hold_days")
             if hold_days is None or hold_days < 1:
                 continue                              # 시간기반 due만(당일매매·상시 제외)
+            if ((((pos.get("definition") or {}).get("position") or {})
+                 .get("exit") or {}).get("fill")) == "close":
+                continue                              # exit.fill=close → 종가창 소관(D3)
             try:
                 held = (today - date.fromisoformat(pos["entry_date"])).days
             except Exception:
@@ -2087,7 +2106,11 @@ class Trader:
             # 당일매매(hold_days==0)만 — 정의에서 직접 읽음(파싱 실패 고아는 hold_days 불명 → skip)
             hold_days = (((pos.get("definition") or {}).get("position") or {})
                          .get("exit") or {}).get("hold_days")
-            if hold_days != 0:
+            # exit.fill=close(재설계 D3): 보유기간 만기 청산을 종가창에서 체결. due 여부는
+            # 아래 _exit_reason_for(is_close=True)의 창 게이트가 판정(미도달=None→skip).
+            _ef = (((pos.get("definition") or {}).get("position") or {})
+                   .get("exit") or {}).get("fill")
+            if hold_days != 0 and _ef != "close":
                 continue
             held = (today - date.fromisoformat(pos["entry_date"])).days
             try:

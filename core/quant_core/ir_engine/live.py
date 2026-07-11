@@ -49,7 +49,16 @@ def cycle_exit_reason(strategy: StrategyIR, *, held_days: int,
         return None                             # 아침 진입 직후 — 종가까지 보유(청산 안 함)
     # (이하 기존 로직 그대로 — hold_days>=1·매도조건)
     if exit_spec.hold_days is not None and held_days >= exit_spec.hold_days:
-        return "보유기간"
+        # exit.fill 창 게이트(재설계 D3) — 보유기간 만기 청산의 체결창 정합:
+        #   · fill=="close" → 종가 사이클(is_close=True)에서만 청산(아침엔 보류)
+        #   · 그 외(None=legacy·"next_open") → 아침 사이클에서만(현행과 동일)
+        # 반대 창에선 사유를 내지 않아(보류) 맞는 창이 청산한다. 매도조건(cond)은
+        # 아래에서 현행대로 계속 평가 — 창 지연 없음(D3).
+        if exit_spec.fill == "close":
+            if is_close:
+                return "보유기간"
+        elif not is_close:
+            return "보유기간"
     cond = exit_spec.condition
     if cond is not None:
         df = dataset.get(symbol)

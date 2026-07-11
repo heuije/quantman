@@ -352,6 +352,10 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     rfr_daily = 0.0  # 현금 무위험수익(연율) hook — Stage 1 기본 0(패리티). 후속: sim 필드.
 
     defer = (fill == "next_open")
+    # exit-fill 재설계(2026-07-11) — 시간기반(보유기간) 청산의 체결창 오버라이드.
+    # None=legacy(진입 fill 공유·byte-identical). 익절·손절·트레일·매도신호 청산은
+    # 현행 라우팅 유지(설계 D3 — 조건 청산 지연은 위험 확대라 제외).
+    exit_fill = pos_spec.exit.fill
     cash = float(sim.initial_capital)
     capital_starved = 0   # 선물 진입 신호가 떴으나 자본<1계약 증거금이라 0계약으로 스킵된 횟수(#2)
     positions: dict[str, Position] = {}
@@ -464,13 +468,16 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         closed_this_step: set[str] = set()   # 비-defer: 당일 청산 종목 동일일 재진입 차단
         if rfr_daily:
             cash *= (1 + rfr_daily)
-        if defer:
+        if defer or pending_sells:
+            # pending_sells는 defer(진입 next_open) 외에도 exit_fill=="next_open"
+            # (진입 close + 청산 익일 시가)이 채운다 — 어느 쪽이든 시가에 청산.
             for sym, reason in list(pending_sells.items()):
                 _close(sym, i, aligned[sym]["open"][i], reason, _sell_pct(reason, sz))
                 key = _reason_key(reason)
                 if key is not None and sym in positions:
                     positions[sym].executed_rules.add(key)
             pending_sells.clear()
+        if defer:
             cash_snapshot = cash
             for sym, sgn in pending_buys.items():
                 if len(positions) >= _MAX_POSITIONS_GLOBAL or sym in positions:
@@ -493,7 +500,18 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                 pos.peak_close = float(close)
             reason = _exit_reason(pos, i, close, high, atr_v, sell_arrs[sym], exits, sign=pos.sign)
             if reason:
-                if defer and exits.hold_days == 0:
+                # exit.fill 오버라이드 — 보유기간(시간 만기) 청산에만 적용(설계 D2/D3).
+                # "close"=해당 바 종가 즉시, "next_open"=익일 시가 이월. 그 외 사유(익절·
+                # 손절·트레일·매도신호)는 아래 legacy 분기 그대로.
+                if exit_fill is not None and reason == "보유기간":
+                    if exit_fill == "close":
+                        _close(sym, i, aligned[sym]["close"][i], reason,
+                               _sell_pct(reason, sz))
+                        if sym not in positions:
+                            closed_this_step.add(sym)
+                    else:                                   # "next_open"
+                        pending_sells[sym] = reason
+                elif defer and exits.hold_days == 0:
                     # 당일매매(hold_days=0): 진입한 바의 종가에 즉시 청산 — 익일 시가로
                     # 미루지 않는다. next_open 진입 + 이 청산 = 시가→종가 당일 왕복
                     # (일봉에 시가·종가가 다 있어 분봉 불필요). exec[i]==close[i].

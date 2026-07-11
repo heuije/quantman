@@ -45,6 +45,12 @@
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [2026-07-11] 청산 타이밍(exit.fill) 1급화 — 표현력 갭+백테↔라이브 패리티 갭 [진행중]
+- 의도: IR엔 진입 fill만 있고 청산 시점 필드가 없어 "익일 종가 청산"이 표현 불가하고, fill=close+hold≥1은 백테(종가 청산)≠라이브(시가 청산) 패리티 갭이 있었다(실전 #29 해당·유저 의도=시가매도 확인). `position.exit.fill`(next_open|close·기본 None=legacy) 신설 — **제1원칙: 기존 연동 전략은 무마이그레이션·전 계층 byte-identical**(사용자 요구). 설계=docs/REDESIGN/exit-fill-timing-redesign.md.
+- 구현: D1 스펙+validator(score 경로 S-exit-fill 명시 거부 — silent 무시 차단·1단계 condition만) · D2 rule 엔진(보유기간 청산만 오버라이드·pending_sells 드레인 defer 밖 허용·조건 청산 현행 유지) · D3 core seam `cycle_exit_reason` 창 게이트(close=종가 사이클만·legacy=아침만 — 아침 §2 자동 정합) + 로컬 4곳(종가창 selector 2·아침 넷팅 PLAN 제외·daytrade_unclosed I5+ 확장) · D4 웹 설정값 표기.
+- 검증: pin 2(legacy 고정)+신규 3+validator 1+scenario 2 = 신규 8 green · core 737·골든 411·local 753·server 542·web tsc0/build 전부 회귀 0.
+- 남은 것: PR·머지 → 로컬앱 릴리스(라우팅 반영) → **웹 빌더·NL 노출은 로컬 릴리스 후**(D5 순서 — 구앱 조용한 divergence 차단). score(리밸런싱) 경로 지원은 후속.
+
 ### [2026-07-10] 크로스캘린더 마스터 달력 스코핑 — __SELF__ ts_* 조용한 항상현금(D1) 근본수정 [완료·PR#349]
 - 의도: 신호 트리에 타 달력 참조 심볼(VIX·미국채 등 US 매크로)이 들어가면 같은 트리의 __SELF__ ts_*(이동평균 등) 조건이 영구 False가 돼 전략이 크래시 없이 "항상 현금"(전 연도 정확히 0.0%·무거래)을 성공 반환하는 조용한 오답을 근본 수정. 로컬 $0 하니스 연구와 챗봇 실대화("코스피200이 120일선 위 AND VIX<25면 2배")로 재현·확정된 결함.
 - 계획: `EvalContext.from_dataset`에 universe(평가 주체) 도입 — 마스터 달력·패널 컬럼을 유니버스로 스코핑, 참조 심볼은 브로드캐스트(ffill)로만 합류. 엔진·러너·live·legacy backtest·sweep·server preview 13개 호출부 배선. red 회귀 → 구현 → 전 스위트 + 실데이터 시나리오.

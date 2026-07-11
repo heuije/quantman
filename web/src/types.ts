@@ -304,6 +304,8 @@ export interface IrStrategyDef {
     exit: {
       hold_days?: number | null; take_profit?: number | null; stop_loss?: number | null;
       trail_pct?: number | null; trail_atr_mult?: number | null; condition?: IrNode | null;
+      // 청산 체결 시점(exit-fill 재설계 2026-07-11). 미지정=기존(진입 fill·hold에서 파생).
+      fill?: "next_open" | "close" | null;
     };
     overlays: {
       vol_target?: number | null; turnover_damp?: number | null;
