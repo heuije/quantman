@@ -18,12 +18,15 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass, field
 
 # Windows에선 bare "claude"가 PATHEXT 미해석으로 subprocess에서 안 잡힌다(.CMD) → 풀패스 해석.
 _CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
 _TIMEOUT = int(os.environ.get("CHAT_EVAL_CLAUDE_TIMEOUT", "240"))
+_MAX_RETRIES = 2               # claude -p 간헐 빈응답 재시도 횟수(총 3회) — 실 anthropic SDK 기본과 정합
+_RETRY_BACKOFF_SEC = 0.5       # 재시도 간 대기(초)·시도마다 선형 증가
 
 # 프로덕션 시스템 프롬프트는 native tool-use(emit_strategy·screen 등 도구 호출)를 지시한다.
 # claude -p엔 그 도구들이 없어 모델이 tool_use를 시도하면 max_turns로 실패한다(검증됨).
@@ -38,6 +41,11 @@ _NOTOOL_ADDENDUM = (
 
 # 호출별 누적 usage(쿼터 리포트용). 러너가 읽어 REPORT에 집계.
 USAGE_LOG: list[dict] = []
+
+
+class _RetryableClaudeError(RuntimeError):
+    """일시적 claude -p 실패(빈 응답·is_error·출력 파싱 실패) — 재시도 대상.
+    타임아웃·토큰 누락은 이 예외를 쓰지 않아 즉시 전파된다(비재시도)."""
 
 
 # ── SDK 블록/메시지 흉내 (프로덕션이 접근하는 속성만) ──────────────────────────
@@ -264,6 +272,20 @@ class ClaudeCodeBackend:
             raise RuntimeError(
                 "CLAUDE_CODE_OAUTH_TOKEN 미설정 — `claude setup-token`으로 구독 토큰을 발급하고 "
                 "환경변수로 설정하세요(설계서 §9).")
+        # 실 anthropic SDK는 일시 오류를 기본 재시도한다. claude -p(구독 shim)도 공유 구독·CLI
+        # 히컵으로 간헐 빈응답(is_error·빈 result·출력 파싱 실패)을 내므로, 동일 신뢰성을 갖도록
+        # 일시 실패만 bounded 재시도한다. 타임아웃·토큰누락은 비재시도. dev 하니스 전용·프로덕션 무관.
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                return self._call_once(sys_text, prompt, model, token)
+            except _RetryableClaudeError as e:
+                if attempt >= _MAX_RETRIES:
+                    raise RuntimeError(
+                        f"claude -p {_MAX_RETRIES + 1}회 시도 모두 실패 — {e}") from e
+                time.sleep(_RETRY_BACKOFF_SEC * (attempt + 1))
+
+    def _call_once(self, sys_text: str, prompt: str, model: str,
+                   token: str) -> tuple[str, _Usage]:
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
                                          encoding="utf-8") as f:
             f.write(sys_text)
@@ -296,11 +318,13 @@ class ClaudeCodeBackend:
         try:
             env_out = json.loads(out)
         except (ValueError, TypeError):
-            raise RuntimeError(f"claude -p 출력 파싱 실패(rc={proc.returncode}): "
-                               f"stdout={out[:400]!r} / stderr={errout[:300]!r}")
-        if env_out.get("is_error"):
-            raise RuntimeError(f"claude -p 오류({env_out.get('api_error_status')}): "
-                               f"{env_out.get('result')} / stderr={errout[:200]!r}")
+            raise _RetryableClaudeError(
+                f"출력 파싱 실패(rc={proc.returncode}): "
+                f"stdout={out[:400]!r} / stderr={errout[:300]!r}")
+        if env_out.get("is_error") or not str(env_out.get("result", "")).strip():
+            raise _RetryableClaudeError(
+                f"빈/오류 응답({env_out.get('api_error_status')}): "
+                f"{env_out.get('result')} / stderr={errout[:200]!r}")
         u = env_out.get("usage") or {}
         usage = _Usage(
             input_tokens=u.get("input_tokens", 0) or 0,

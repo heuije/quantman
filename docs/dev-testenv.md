@@ -4,6 +4,10 @@
 로직은 헤드리스 하니스(`scripts/chat_eval.py`·`analysis_diag.py`)가 이미 커버 — 이 문서는 **시각(차트)**
 과 **프로덕션 데이터**, **$0 LLM 챗**을 로컬에서 잇는 3부.
 
+> **코드=프로덕션 동일성.** 이 환경은 **항상 최신 `origin/main`에서 기동**한다(워크트리가 뒤처졌으면
+> `git fetch && git checkout origin/main` 후 재기동). shim은 유료 API 대신 `claude -p`를 태우는
+> **전송 계층만** 다르고 서버·엔진·웹 코드는 프로덕션과 동일하다.
+
 ## 전제조건 (제3자 재현 시 필요)
 누구나(팀 collaborator) 아래만 갖추면 이 환경을 그대로 재현한다:
 1. **private 레포 접근** — `MercKR/quantman`은 private. clone 가능한 collaborator여야 한다(외부인 불가).
@@ -42,7 +46,7 @@ cd web && npm run dev                        # dev 서버
 ```
 claude setup-token                           # 1회 — 구독 토큰
 python scripts/run_dev_server.py --port 8010
-# web/.env.local: VITE_API_BASE=http://localhost:8010
+# web/.env.local: VITE_API_URL=http://localhost:8010
 cd web && npm run dev
 # Chrome → 로그인 → 챗에 자연어 → NL→IR→엔진(실데이터)→차트, 전부 API $0
 ```
@@ -50,6 +54,10 @@ cd web && npm run dev
   CHAT_MODEL(claude-sonnet-5)을 `claude -p --model claude-sonnet-5`로 라우팅(별칭 "sonnet"은
   Sonnet 4.6로 풀려 프로덕션과 어긋나므로 정확한 id 사용). 최종 텍스트도 `text_stream`으로 흘려보내
   웹 SSE 렌더가 프로덕션과 동일하게 표시된다.
+- **신뢰성 parity(재시도).** 실 anthropic SDK는 일시 오류를 기본 재시도한다. `claude -p`는 공유
+  구독·CLI 히컵으로 간헐 빈응답(is_error·빈 result·파싱 실패)을 내므로, shim `_call`이 이를
+  **bounded 재시도(총 3회·선형 백오프)**해 일시 히컵이 턴 실패로 새지 않게 한다(타임아웃·토큰누락은
+  비재시도). 단 native tool-use는 구독 CLI 한계상 프롬프트형 흉내로 남는다(§11·의도된 근사).
 
 ## 검증 커버리지
 | 대상 | 방법 | 비용 |
