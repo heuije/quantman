@@ -162,3 +162,27 @@ def test_force_contains_leaves_non_attribute_is_in_exact():
         "inputs": {"signal": {"op": "bucket", "params": {"edges": [0.5]}}}}}}}
     out = ic._force_attribute_filter_contains(strat)
     assert "match" not in out["universe"]["screener"]["condition"]["params"]
+
+
+# ── 시장(거래소) 필터 값 정규화 — 사용자어(코스닥·국장)≠라벨(KOSDAQ) 부류의 시장판 ──
+
+def _market_screener(values):
+    return {"universe": {"kind": "all", "screener": {"condition": {
+                "op": "is_in", "params": {"values": values},
+                "inputs": {"signal": {"op": "attribute", "params": {"attr": "Market"}}}}}}}
+
+
+def test_market_filter_values_normalized_to_exchange_labels():
+    """attr=Market은 값 어휘도 결정적 정규화 — 코스닥→KOSDAQ, 국장→KOSPI+KOSDAQ."""
+    out = ic._force_attribute_filter_contains(_market_screener(["코스닥"]))
+    cond = out["universe"]["screener"]["condition"]
+    assert cond["params"]["values"] == ["KOSDAQ"]
+    assert cond["params"]["match"] == "contains"
+    out = ic._force_attribute_filter_contains(_market_screener(["국장"]))
+    assert out["universe"]["screener"]["condition"]["params"]["values"] == ["KOSPI", "KOSDAQ"]
+
+
+def test_market_normalization_not_applied_to_sector_filter():
+    """값 정규화는 Market 전용 — Sector/Industry 필터 값은 불변(계약 KSIC/GICS 어휘 유지)."""
+    out = ic._force_attribute_filter_contains(_sector_screener(["코스닥"]))
+    assert out["universe"]["screener"]["condition"]["params"]["values"] == ["코스닥"]

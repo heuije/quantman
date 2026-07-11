@@ -22,14 +22,23 @@ def _safe_str(v) -> str:
 
 def build_db(verbose: bool = True) -> list[dict]:
     db: list[dict] = []
-    seen: set[str] = set()
+    by_ticker: dict[str, dict] = {}
 
     def add(ticker: str, korean: str, english: str, exchange: str):
         t = _safe_str(ticker)
-        if not t or t in seen:
+        if not t:
             return
-        seen.add(t)
-        db.append({"t": t, "k": _safe_str(korean), "e": _safe_str(english), "x": _safe_str(exchange)})
+        prev = by_ticker.get(t)
+        if prev is not None:
+            # S&P500은 지수(거래소 아님) — 먼저 적재된 S&P500 항목엔 뒤따르는 NASDAQ/NYSE
+            # 리스트가 실제 거래소를 채운다. x는 시장 필터(attribute Market)의 원천이라
+            # 지수 라벨로 남으면 대형주 500종목이 거래소 필터에서 전부 빠진다.
+            if prev["x"] == "S&P500" and exchange in ("NASDAQ", "NYSE"):
+                prev["x"] = exchange
+            return
+        rec = {"t": t, "k": _safe_str(korean), "e": _safe_str(english), "x": _safe_str(exchange)}
+        by_ticker[t] = rec
+        db.append(rec)
 
     # ── KRX (KOSPI + KOSDAQ) ─────────────────────────────────────────────────
     for market in ["KOSPI", "KOSDAQ"]:

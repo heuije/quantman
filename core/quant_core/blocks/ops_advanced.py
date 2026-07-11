@@ -214,10 +214,13 @@ def _ev_bar_index(resolved, params, ctx):
 # ── 축4: per-symbol 정적 분류 라벨 + 멤버십 조건 (섹터 필터·슬리브 구분) ────────
 
 def _ev_attribute(resolved, params, ctx):
-    """종목별 정적 분류 라벨 패널 — 섹터/업종(static.classification). 날짜축 불변(브로드캐스트).
+    """종목별 정적 분류 라벨 패널 — 섹터/업종(static.classification)·시장(ticker_db 거래소).
+    날짜축 불변(브로드캐스트).
 
-    그룹 연산이 내부로만 쓰던 get_symbol_group을 라벨로 노출 → is_in으로 필터(섹터 제외)·
-    select로 슬리브 구분·group_label로 그룹 노출 캡에 쓸 수 있다. 미수급은 '기타'/'Other' 폴백.
+    그룹 연산이 내부로만 쓰던 get_symbol_group을 라벨로 노출 → is_in으로 필터(섹터 제외·
+    시장 분리)·select로 슬리브 구분·group_label로 그룹 노출 캡에 쓸 수 있다.
+    attr="Market"은 상장 거래소(KOSPI·KOSDAQ·NASDAQ·NYSE) — 개별 주식 전용(ETF·지수는 폴백).
+    미수급은 '기타'/'Other' 폴백.
     """
     attr = params.get("attr", "Industry")
     vals = {sym: get_symbol_group(sym, attr) for sym in ctx.symbols}

@@ -13,20 +13,58 @@ from typing import Any, Callable
 # ── 그룹 융합 헬퍼 ────────────────────────────────────────────────────────────
 
 def get_symbol_group(sym: str, group_type: str = "Industry") -> str:
-    """티커 심볼의 그룹(업종/섹터)명. static.classification 사이드카 조회
-    (KR=FDR KRX-DESC KSIC 업종, US=FDR S&P500 GICS 섹터/서브산업).
+    """티커 심볼의 그룹(업종/섹터/시장)명.
 
-    사이드카 미적재 종목(S&P500 밖 US·미수집 KR)은 폴백 — KR(숫자코드)은 '기타', 그 외 'Other'.
-    폴백은 빈 그룹을 안 만들도록 일관된 값을 준다(그룹 연산 안전).
+    Industry·Sector = static.classification 사이드카 조회(KR=FDR KRX-DESC KSIC 업종,
+    US=FDR S&P500 GICS 섹터/서브산업). Market = ticker_db.json 거래소(KOSPI·KOSDAQ·NASDAQ·NYSE).
+
+    미적재 종목(S&P500 밖 US·미수집 KR·거래소 미상 ETF/지수)은 폴백 — KR(숫자코드)은 '기타',
+    그 외 'Other'. 폴백은 빈 그룹을 안 만들도록 일관된 값을 준다(그룹 연산 안전).
     """
-    from .data.feeds.classification import symbol_group
-    g = symbol_group(sym, group_type)
+    if group_type == "Market":
+        g: str | None = symbol_market(sym)
+    else:
+        from .data.feeds.classification import symbol_group
+        g = symbol_group(sym, group_type)
     if g:
         return g
     return "기타" if sym.split(".")[0][:1].isdigit() else "Other"   # KR 코드는 숫자로 시작(우선주 00104K 등 포함)
 
 
-_NAME_CACHE: dict | None = None
+_TICKER_META: tuple[dict, dict] | None = None    # (코드→종목명, 코드→거래소) — ticker_db 1회 로드
+_EXCHANGES = ("KOSPI", "KOSDAQ", "NASDAQ", "NYSE")
+
+
+def _ticker_meta() -> tuple[dict, dict]:
+    global _TICKER_META
+    if _TICKER_META is None:
+        import json
+        from pathlib import Path
+        # ticker_db.json은 git-tracked 정적 metadata(코드와 함께 번들 · ticker_db.py가 이 위치에 기록).
+        # 시세처럼 수집되는 런타임 데이터가 아니므로 **항상 모듈 인접(core/data)에서 읽는다**.
+        # QP_CORE_DATA_DIR(prod=/srv/data 가격 parquet 볼륨)로 찾으면 거기엔 이 파일이 없어
+        # 빈 맵→전 종목 코드 폴백된다(프로덕션 "종목명=코드" 버그의 근본).
+        p = Path(__file__).resolve().parent.parent / "data" / "ticker_db.json"
+        names: dict[str, str] = {}
+        markets: dict[str, str] = {}
+        if p.exists():
+            try:
+                for r in json.loads(p.read_text(encoding="utf-8")):
+                    code = str(r.get("t", "")).split(".")[0]
+                    if not code:
+                        continue
+                    nm = (r.get("k") or r.get("e") or "").strip()
+                    if nm:
+                        names.setdefault(code, nm)
+                    x = str(r.get("x") or "").strip()
+                    # 거래소 화이트리스트 — x에 지수 라벨(S&P500 잔재 등)이 있어도 시장 어휘를
+                    # 오염시키지 않는다(attribute Market 라벨은 4거래소 + 폴백만).
+                    if x in _EXCHANGES:
+                        markets.setdefault(code, x)
+            except (ValueError, OSError):
+                pass
+        _TICKER_META = (names, markets)
+    return _TICKER_META
 
 
 def symbol_name(sym: str) -> str:
@@ -35,27 +73,46 @@ def symbol_name(sym: str) -> str:
     결과 표시용(자기서술 결과 계약) — 코드만 보이던 결과에 이름을 붙인다. ticker_db 형식
     [{"t":"005930.KS","k":"삼성전자","e":...}] → {코드: 이름} 맵 1회 캐시.
     """
-    global _NAME_CACHE
-    if _NAME_CACHE is None:
-        import json
-        from pathlib import Path
-        # ticker_db.json은 git-tracked 정적 metadata(코드와 함께 번들 · ticker_db.py가 이 위치에 기록).
-        # 시세처럼 수집되는 런타임 데이터가 아니므로 **항상 모듈 인접(core/data)에서 읽는다**.
-        # QP_CORE_DATA_DIR(prod=/srv/data 가격 parquet 볼륨)로 찾으면 거기엔 이 파일이 없어
-        # 빈 맵→전 종목 코드 폴백된다(프로덕션 "종목명=코드" 버그의 근본).
-        p = Path(__file__).resolve().parent.parent / "data" / "ticker_db.json"
-        m: dict[str, str] = {}
-        if p.exists():
-            try:
-                for r in json.loads(p.read_text(encoding="utf-8")):
-                    code = str(r.get("t", "")).split(".")[0]
-                    nm = (r.get("k") or r.get("e") or "").strip()
-                    if code and nm:
-                        m.setdefault(code, nm)
-            except (ValueError, OSError):
-                pass
-        _NAME_CACHE = m
-    return _NAME_CACHE.get(sym.split(".")[0], sym)
+    return _ticker_meta()[0].get(sym.split(".")[0], sym)
+
+
+def symbol_market(sym: str) -> str:
+    """티커 코드 → 상장 거래소 라벨(KOSPI·KOSDAQ·NASDAQ·NYSE). 미상(ETF·지수·매크로·미수급)은 ''.
+
+    attribute("Market") 라벨의 원천 — 시장(거래소)별 유니버스 분리 필터를 가능하게 한다.
+    개별 주식 전용: ETF·지수는 ticker_db(주식 리스팅)에 없어 폴백 라벨('기타'/'Other')로 남는다.
+    """
+    return _ticker_meta()[1].get(sym.split(".")[0], "")
+
+
+# ── 사용자 시장어 → 거래소 라벨 정규화 (컴파일러 소비) ────────────────────────────
+# 섹터의 _THEME_SYNONYMS·sector_match_values와 같은 부류 해결 — 사용자어("코스닥"·"국장")가
+# 데이터 라벨(KOSDAQ)과 달라 시장 필터가 침묵의 빈 결과가 되는 것을 결정적으로 막는다.
+# 시장군 표현(국장·미장)은 복수 거래소로 확장. 미상 값은 원문 유지(침묵 변조 금지).
+_MARKET_ALIASES: dict[str, list[str]] = {
+    "코스피": ["KOSPI"], "유가증권": ["KOSPI"],
+    "코스닥": ["KOSDAQ"],
+    "나스닥": ["NASDAQ"],
+    "뉴욕": ["NYSE"], "뉴욕증권거래소": ["NYSE"],
+    "국장": ["KOSPI", "KOSDAQ"], "한국": ["KOSPI", "KOSDAQ"], "국내": ["KOSPI", "KOSDAQ"],
+    "미장": ["NASDAQ", "NYSE"], "미국": ["NASDAQ", "NYSE"], "해외": ["NASDAQ", "NYSE"],
+}
+
+
+def market_match_values(values) -> list[str]:
+    """is_in(attribute("Market")) 값 목록을 거래소 라벨로 정규화(순서 보존·중복 제거)."""
+    out: list[str] = []
+    for v in values:
+        s = str(v).strip()
+        key = s.replace(" ", "")
+        for suffix in ("시장", "증시"):        # "코스닥 시장"·"미국 증시" 류 표현 흡수
+            if len(key) > 2 and key.endswith(suffix):
+                key = key[: -len(suffix)]
+        if key.upper() in _EXCHANGES:
+            out.append(key.upper())
+        else:
+            out.extend(_MARKET_ALIASES.get(key, [s]))
+    return list(dict.fromkeys(out))
 
 
 # ── 시계열 및 횡단면 연산 함수군 ───────────────────────────────────────────────

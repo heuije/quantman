@@ -27,7 +27,9 @@ def capability_spec() -> dict:
             "field": "universe.screener",
             "does": "선택 종목에 얹는 자격 필터 — 필터+횡단순위 condition. refresh로 동적/정적.",
             "use_for": "고른 종목을 거래대금·시총·밸류 등 조건으로 2차 선별. "
-                       "refresh=each_rebalance(매 리밸런싱 재선별)·once_at_start(시작시점 바스켓 고정).",
+                       "refresh=each_rebalance(매 리밸런싱 재선별)·once_at_start(시작시점 바스켓 고정). "
+                       "시장(거래소) 분리('코스닥 종목만'·'나스닥만')는 is_in(attribute(\"Market\")) — "
+                       "라벨은 KOSPI·KOSDAQ·NASDAQ·NYSE 4값(개별 주식 전용, ETF·지수 제외).",
         },
         "entry_mode": [
             {"value": "on_signal",

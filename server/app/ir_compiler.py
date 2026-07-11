@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from typing import Callable
 
+from quant_core.expression_parser import market_match_values
 from quant_core.indicators import get_indicator_compare_group
 
 from .config import settings
@@ -317,6 +318,9 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
 3. [정기 리밸런스 팩터(횡단)] "매월/매주 ___ 상위 N(또는 X%) 보유" → universe.kind=all(또는 list+세부조건),
    signal=score(팩터), entry.mode="scheduled"+rebalance, top_n 또는 top_pct. 롱숏이면 부호/순위로 양다리.
    "거래대금·시총·밸류 등으로 선별한 종목에서"처럼 자격 필터가 붙으면 universe.screener={{condition, refresh}}로 2차 선별.
+   "코스피/코스닥/나스닥 종목만"처럼 *시장(거래소) 분리*도 screener — condition=is_in(attribute("Market"), [거래소]).
+   Market 라벨은 KOSPI·KOSDAQ·NASDAQ·NYSE 4값뿐: "국장/한국"=["KOSPI","KOSDAQ"], "미장/미국"=["NASDAQ","NYSE"].
+   (개별 주식 전용 — ETF·지수는 시장 라벨이 없어 자동 제외된다.)
 4. [국면별 비교] "상승장/하락장 등 국면에 따라 신호·성과가 어떻게 다른가" → 신호 대수는 그대로 두고
    분할 라벨로 본다. *신호 자체의 분포*가 국면별로 어떤지면 query="describe"+study.target_node(그 신호)
    +study.label(국면 라벨); *전략 성과*가 국면별로 다른지면 query는 기본 simulate, study.axis="label"
@@ -341,6 +345,7 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
    descending:false(저평가=낮은값 우선)·true(높은값 우선), display:[pb_ratio, ...](근거 지표)}}.
    ⚠ 섹터/업종 필터는 match="contains" 필수 — 분류 데이터가 KSIC 자유서술("반도체 제조업")이라
    정확매칭(기본 exact)이면 "반도체"는 0건이 된다. 버킷·국면 등 정확 라벨 필터에는 match 생략(exact).
+   시장 필터(attr="Market")의 values는 거래소 라벨(KOSPI·KOSDAQ·NASDAQ·NYSE) 그대로 쓴다("코스닥" 아님).
    (※ 레시피 3은 *정기 리밸런싱 백테스트*(simulate), 본 레시피는 *현 시점 스냅샷 선별*(select) — 둘 구분.)
 8. [단일종목 360 리포트] "삼성전자 어때"·"이 종목 분석/요약"처럼 *한 종목의 현황*이 답이면 →
    query="describe" + universe.kind="single" + symbols=[그 종목] + signal=data("__SELF__.Close")
@@ -494,12 +499,19 @@ def _force_attribute_filter_contains(node):
     분류 데이터(FDR KRX-DESC)는 섹터/업종을 KSIC 자유서술("반도체 제조업")로 저장하는데,
     LLM은 사용자어("반도체")로 emit한다 → 정확매칭이면 0건(eligible_size=0, "저평가 반도체주"
     빈 결과의 근본원인). attribute 라벨은 항상 자유서술이라 contains가 옳다(exact는 사실상 무용).
-    프롬프트 안내와 별개로 결정적이라 LLM 변동과 무관하게 재현(IR 트리 전체를 in-place 정규화)."""
+    프롬프트 안내와 별개로 결정적이라 LLM 변동과 무관하게 재현(IR 트리 전체를 in-place 정규화).
+
+    시장 필터(attr="Market")는 같은 부류의 값 어휘 정규화를 추가로 받는다 — LLM이 사용자어
+    ("코스닥"·"국장")로 emit하면 거래소 라벨(KOSDAQ·KOSPI+KOSDAQ)로 결정적 변환
+    (market_match_values). 섹터의 contains 강제와 동일한 근본원인(사용자어≠데이터 라벨)의 시장판."""
     if isinstance(node, dict):
         if node.get("op") == "is_in":
             sig = (node.get("inputs") or {}).get("signal")
             if isinstance(sig, dict) and sig.get("op") == "attribute":
-                node.setdefault("params", {})["match"] = "contains"
+                params = node.setdefault("params", {})
+                params["match"] = "contains"
+                if (sig.get("params") or {}).get("attr") == "Market":
+                    params["values"] = market_match_values(params.get("values") or [])
         for v in node.values():
             _force_attribute_filter_contains(v)
     elif isinstance(node, list):

@@ -69,7 +69,7 @@ def test_symbol_name_reads_bundled_db_ignoring_runtime_dir(monkeypatch, tmp_path
     종목이 코드로 폴백돼 '종목명=코드'로 뜬다(실제 프로덕션 버그였음)."""
     import quant_core.expression_parser as ep
     monkeypatch.setenv("QP_CORE_DATA_DIR", str(tmp_path))   # ticker_db 없는 빈 디렉터리
-    monkeypatch.setattr(ep, "_NAME_CACHE", None)            # 캐시 리셋(teardown이 restore)
+    monkeypatch.setattr(ep, "_TICKER_META", None)           # 캐시 리셋(teardown이 restore)
     assert ep.symbol_name("005930") == "삼성전자"           # env 무시·번들에서 이름 해석
 
 
