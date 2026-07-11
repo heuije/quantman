@@ -294,6 +294,54 @@ def _merge(existing: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
     return combined.sort_index()
 
 
+# ── 스케일 불연속 가드 — 소스 심볼 변경/오종목 splice 자기치유 ──────────────────────
+# 증분 수집(fetch_yfinance/fetch_fdr)은 기존 parquet에 신규 일봉을 blind append한다(_merge).
+# 소스 심볼이 바뀌면(예: 옛 'DAX'=독일 ETF ~$43 → 정규 ^GDAXI ~25,000, ~580×) 한 시리즈에
+# 두 스케일이 이어붙어(splice) 다운스트림(웹 오버레이 첫점 리베이스 등)이 폭발한다(2026-07 DAX 사건).
+# 병합 결과에 스케일 불연속이 감지되면 splice를 저장하지 않고 CORE_FLOOR부터 전체 재수집으로 교체한다.
+_SCALE_BREAK_RATIO = 3.0   # 인접일 종가비 임계 — 지수·조정주가의 정상 변동(수십 %·코로나 ~12%)을 넘어 심볼 스왑만 잡음
+
+
+def _has_scale_break(df: "pd.DataFrame | None", *, col: str = "Close",
+                     ratio: float = _SCALE_BREAK_RATIO) -> bool:
+    """시리즈 내부(경계 포함)에 인접일 종가비가 ratio배 초과로 급변하는 지점이 있으면 True.
+
+    지수·ETF의 정상 인접일 변동은 수십 %(코로나 ~12%)라 3배는 심볼 스왑/오종목 splice만 잡는다.
+    auto_adjust로 분할은 이미 매끄러워 오탐 없음. 컬럼/데이터 부족 시 False(보수적 무동작)."""
+    if df is None or df.empty or col not in df.columns:
+        return False
+    c = pd.to_numeric(df[col], errors="coerce").dropna()
+    if len(c) < 2:
+        return False
+    r = (c / c.shift(1)).dropna()
+    if r.empty:
+        return False
+    return bool((r > ratio).any() or (r < 1.0 / ratio).any())
+
+
+def _heal_or_merge(symbol_name: str, ticker: str, existing: pd.DataFrame,
+                   new: pd.DataFrame, history_fn) -> pd.DataFrame:
+    """증분 new를 existing에 병합·저장하되, 스케일 불연속(오종목 splice) 감지 시
+    history_fn(ticker, CORE_FLOOR)로 전체 재수집해 교체(자기치유). 최종 df 반환.
+
+    · 불연속 없음 → 정상 저장(기존 동작 동일).
+    · 불연속 + 전체 재수집이 clean → 교체 저장(옛 오종목 이력을 소스 클린으로 치유).
+    · 불연속 + 전체도 불연속(소스에 실재) → 병합 그대로 저장(오탐 회피).
+    · 불연속 + 전체 재수집 실패(빈) → splice 저장 회피·기존 유지(다음 cron 재시도)."""
+    merged = _merge(existing, new)
+    if _has_scale_break(merged):
+        full = history_fn(ticker, CORE_FLOOR)
+        if full is None or full.empty:
+            print(f"  [스케일 불연속] {symbol_name}: 전체 재수집 실패 — 기존 유지(다음 cron 재시도)")
+            return existing
+        if not _has_scale_break(full):
+            print(f"  [스케일 불연속] {symbol_name}: 저장 이력↔소스 불일치 → 전체 재수집 교체(자기치유)")
+            merged = full
+    _save(symbol_name, merged)
+    mark_data_dirty()
+    return merged
+
+
 # ── 선물 만기물 패널: 진실원천(만기물별 일봉) + 연속물 서빙뷰 파생 ─────────────────
 # KRX fut_bydd_trd 만기물 패널을 진실원천으로 저장하고, 백테스트용 단일 연속 시계열은
 # futures_roll.build_continuous로 파생한다(롤·조정은 데이터에 굽지 않고 백테스트 파라미터).
@@ -423,6 +471,17 @@ def save_user_stocks(stocks: list[dict]):
 
 # ── yfinance (지수/선물/개별종목) ─────────────────────────────────────────────
 
+def _yf_history(ticker: str, start: str) -> pd.DataFrame:
+    """yfinance 원시 OHLCV fetch → tz-naive 컬럼 정제. 증분·전체 재수집 공용(테스트 monkeypatch 지점)."""
+    df = yf.Ticker(ticker).history(start=start, auto_adjust=True)
+    if df is None or df.empty:
+        return pd.DataFrame()
+    cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+    df = df[cols].copy()
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    return df
+
+
 def fetch_yfinance(symbol_name: str, ticker: str, start: str = CORE_FLOOR) -> pd.DataFrame:
     existing = _load_existing(symbol_name)
     if not existing.empty:
@@ -439,16 +498,11 @@ def fetch_yfinance(symbol_name: str, ticker: str, start: str = CORE_FLOOR) -> pd
             return existing
         start = (existing.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
     try:
-        df = yf.Ticker(ticker).history(start=start, auto_adjust=True)
+        df = _yf_history(ticker, start)
         if df.empty:
             return existing
-        cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-        df = df[cols].copy()
-        df.index = pd.to_datetime(df.index).tz_localize(None)
-        merged = _merge(existing, df)
-        _save(symbol_name, merged)
-        mark_data_dirty()       # 단독 호출 시에도 라이브 캐시가 stale 유지 않도록(세대 신호)
-        return merged
+        # 병합 + 스케일 불연속(오종목 splice) 자기치유 — 세대 신호는 _heal_or_merge가 처리.
+        return _heal_or_merge(symbol_name, ticker, existing, df, _yf_history)
     except Exception as e:
         print(f"  [오류] {symbol_name}: {e}")
         return existing
@@ -461,21 +515,27 @@ def fetch_stock_price(name: str, ticker: str, start: str = CORE_FLOOR) -> pd.Dat
 
 # ── FinanceDataReader (KRX ETF) ───────────────────────────────────────────────
 
+def _fdr_history(ticker: str, start: str) -> pd.DataFrame:
+    """FinanceDataReader 원시 OHLCV fetch → tz-naive 컬럼 정제. 증분·전체 재수집 공용(테스트 monkeypatch 지점)."""
+    df = fdr.DataReader(ticker, start)
+    if df is None or df.empty:
+        return pd.DataFrame()
+    cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+    df = df[cols].copy()
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    return df
+
+
 def fetch_fdr(symbol_name: str, ticker: str, start: str = CORE_FLOOR) -> pd.DataFrame:
     existing = _load_existing(symbol_name)
     if not existing.empty:
         start = (existing.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
     try:
-        df = fdr.DataReader(ticker, start)
+        df = _fdr_history(ticker, start)
         if df.empty:
             return existing
-        cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-        df = df[cols].copy()
-        df.index = pd.to_datetime(df.index).tz_localize(None)
-        merged = _merge(existing, df)
-        _save(symbol_name, merged)
-        mark_data_dirty()       # 세대 신호 — 단독 호출 시 stale 캐시 방지
-        return merged
+        # 병합 + 스케일 불연속(오종목 splice) 자기치유 — 세대 신호는 _heal_or_merge가 처리.
+        return _heal_or_merge(symbol_name, ticker, existing, df, _fdr_history)
     except Exception as e:
         print(f"  [오류] {symbol_name}: {e}")
         return existing
