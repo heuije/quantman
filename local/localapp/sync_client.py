@@ -48,8 +48,12 @@ def push_snapshot(payload: dict) -> None:
     stopped를 항상 받게 한다(builder마다 중복 배선 없이 한 곳에서 보장). builder가 이미
     넣었으면 보존(setdefault).
     """
-    from . import auto_state
+    from . import __version__, auto_state
     payload.setdefault("auto_status", auto_state.load())
+    # 앱 버전 — 서버 템플릿 승격 게이트(장중 템플릿 설계 §2.6)가 최신 스냅샷에서 읽어
+    # "스캔 기능 없는 구앱에 템플릿 전략이 내려가는" divergence를 차단한다. 미보고(구앱)는
+    # 서버가 버전 미달로 간주(fail-safe).
+    payload.setdefault("app_version", __version__)
     r = requests.post(f"{PLATFORM_URL}/sync/push", headers=_headers(),
                       json={"payload": payload}, timeout=15)
     r.raise_for_status()

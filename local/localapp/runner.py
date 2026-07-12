@@ -465,6 +465,20 @@ def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dic
         except Exception as e:
             log.warning("[종가] preview pull 실패 — 종가진입 skip: %s", e)
 
+    # 자동매매 템플릿(장중 스캔) 진입 후보 — 서버 preview는 일봉(전일)이라 이 부류의 신호
+    # ("당일 상한가 마감")를 만들 수 없다(preview엔 "장중 스캔 대기"로 표시). 종가창의
+    # 브로커 실시간 스캔이 지금(마감 동시호가) 후보를 합성해 buy_candidates에 합류시키고,
+    # 이후 경로(run_close_netting)는 기존 그대로 — 넷팅·킬스위치·손실한도·커버리지·멱등
+    # 전수 상속(장중 템플릿 설계 §2.5). 스캔 실패는 preview pull 실패와 동형 계약:
+    # 신규 진입만 포기(fail-soft — 브로커 장애가 청산·안전장치를 막으면 안 됨) + 경보.
+    if market == "KRX" and instrument_class == "stock" and strategies:
+        from .template_scan import scan_template_candidates
+        try:
+            buy_candidates = list(buy_candidates) + scan_template_candidates(
+                trader.broker, strategies)
+        except Exception as e:
+            log.error("[종가] 템플릿 스캔 실패 — 템플릿 진입 skip(청산·기존 후보는 계속): %s", e)
+
     # dataset — 보유(청산 ref/clamp) + 종가매수 후보(진입 사이징·발주) 모두 포함.
     from . import dataset_scope
     needed = dataset_scope.needed_symbols(strategies, buy_candidates, trader.ledger)

@@ -46,11 +46,16 @@
 
 ## 작업계획 로그 (누적·최신 우선)
 
-### [2026-07-11] 청산 타이밍(exit.fill) 1급화 — 표현력 갭+백테↔라이브 패리티 갭 [진행중]
+### [2026-07-12] 자동매매 템플릿 태그 + 이벤트 경로 kind=all — 장중 신호 전략 P1 (core측) [진행중·`feat/intraday-template`]
+- 의도: 장중(실시간급) 신호 전략의 자동매매 지원(설계 SSOT=docs/REDESIGN/intraday-template-redesign.md). core 역할 = ① `StrategyIR.template` 사이드카(TemplateConfig — 엔진 불가시 태그) ② `templates.py` 매처 SSOT(S-template·scan_params — 서버 게이트·로컬 스캔이 같은 판정 공유, live.py seam 패턴) ③ **이벤트 경로 kind=all 해석 갭 수정**(run_unified이 u.symbols만 읽어 전 종목 이벤트 백테스트가 "종목 없음" 하드에러 — scheduled와 동일 `_universe_symbols`로, single/list/portfolio는 종전 식 보존).
+- 구현: spec 필드+검증 훅·templates.py(선언=브로커 사실만·파라미터는 IR 단일 출처)·capabilities 템플릿 항목(커버리지 가드 정합)·**S-univ all+on_signal 차단 규칙 제거**(엔진이 지원하게 되어 규칙↔엔진 정합 갱신·pin 부재 확인). 검증: 신규 매처 20종(태그 유/무 백테스트 동일 잠금 포함)+커버리지 가드+전 core·골든 green.
+- 남은 것: 전 스위트 확정→PR·머지→로컬 릴리스 후 실측 게이트(자동매매 원장 참조)→챗 관용구 노출(별도 승인). 챗봇 갭 리포트의 "전 종목 이벤트 simulate" 갭도 이 kind=all 수정으로 함께 열림(NL 관용구는 노출 단계에서).
+
+### [2026-07-11] 청산 타이밍(exit.fill) 1급화 — 표현력 갭+백테↔라이브 패리티 갭 [완료·PR#358→03cc91f·v0.9.71 릴리스]
 - 의도: IR엔 진입 fill만 있고 청산 시점 필드가 없어 "익일 종가 청산"이 표현 불가하고, fill=close+hold≥1은 백테(종가 청산)≠라이브(시가 청산) 패리티 갭이 있었다(실전 #29 해당·유저 의도=시가매도 확인). `position.exit.fill`(next_open|close·기본 None=legacy) 신설 — **제1원칙: 기존 연동 전략은 무마이그레이션·전 계층 byte-identical**(사용자 요구). 설계=docs/REDESIGN/exit-fill-timing-redesign.md.
 - 구현: D1 스펙+validator(score 경로 S-exit-fill 명시 거부 — silent 무시 차단·1단계 condition만) · D2 rule 엔진(보유기간 청산만 오버라이드·pending_sells 드레인 defer 밖 허용·조건 청산 현행 유지) · D3 core seam `cycle_exit_reason` 창 게이트(close=종가 사이클만·legacy=아침만 — 아침 §2 자동 정합) + 로컬 4곳(종가창 selector 2·아침 넷팅 PLAN 제외·daytrade_unclosed I5+ 확장) · D4 웹 설정값 표기.
 - 검증: pin 2(legacy 고정)+신규 3+validator 1+scenario 2 = 신규 8 green · core 737·골든 411·local 753·server 542·web tsc0/build 전부 회귀 0.
-- 남은 것: PR·머지 → 로컬앱 릴리스(라우팅 반영) → **웹 빌더·NL 노출은 로컬 릴리스 후**(D5 순서 — 구앱 조용한 divergence 차단). score(리밸런싱) 경로 지원은 후속.
+- 결과: PR#358 squash 머지(03cc91f) → 로컬앱 **v0.9.71-beta 릴리스 완료**(07-11·publish 확인). 잔여=웹 빌더·NL 노출(D5 순서 — 별도 승인)·score 경로 후속. 장중 템플릿 P1(위 entry)이 이 필드의 첫 소비자(close 진입+next_open 청산 조합).
 
 ### [2026-07-10] 크로스캘린더 마스터 달력 스코핑 — __SELF__ ts_* 조용한 항상현금(D1) 근본수정 [완료·PR#349]
 - 의도: 신호 트리에 타 달력 참조 심볼(VIX·미국채 등 US 매크로)이 들어가면 같은 트리의 __SELF__ ts_*(이동평균 등) 조건이 영구 False가 돼 전략이 크래시 없이 "항상 현금"(전 연도 정확히 0.0%·무거래)을 성공 반환하는 조용한 오답을 근본 수정. 로컬 $0 하니스 연구와 챗봇 실대화("코스피200이 120일선 위 AND VIX<25면 2배")로 재현·확정된 결함.

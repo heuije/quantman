@@ -563,6 +563,67 @@ class KisBroker:
         except (TypeError, ValueError):
             return 0.0
 
+    # ── 종가창 급등/상한가 스캔 (자동매매 템플릿 limit_up_close_v1) ────────────────
+
+    def scan_close_surge(self, min_change_pct: float) -> list[dict]:
+        """마감 동시호가 중 예상체결 상승 상위 스캔 — FHPST01820000 + 상한가 대조.
+
+        예상체결 상승상위(장마감예상 모드 fid_mkop_cls_code=1)로 당일 등락률 상위를
+        받고(상승률순·최대 30건·연속조회 불가 — 상한가 후보 규모에 충분), 임계 이상
+        후보만 종목별 현재가 TR(FHKST01010100)의 상한가(stck_mxpr)와 대조해
+        is_limit_up(예상체결가≥상한가 = 상한가 잠김 마감 예상)을 판정한다.
+
+        시세 도메인(quote_base=실전) 호출 — 모의계좌도 실전 시세앱키로 동작 전망이나
+        랭킹 TR은 공식 문서상 모의 미지원이라 실측 게이트(설계 §6 ⓐ)로 확정한다.
+        개별 row 파싱 실패는 그 종목만 제외+경고(전체 스캔은 계속), TR 자체 실패는
+        예외 전파 — 호출자(runner)가 진입 skip+결정 경보로 표면화한다(fail-soft).
+        """
+        body = self._get_retry(
+            "/uapi/domestic-stock/v1/ranking/exp-trans-updown", "FHPST01820000",
+            {"fid_rank_sort_cls_code": "0",      # 상승률순(내림차순 — 임계 미달에서 중단)
+             "fid_cond_mrkt_div_code": "J",
+             "fid_cond_scr_div_code": "20182",
+             "fid_input_iscd": "0000",            # 전체(시장 필터는 호출자 — 브로커 중립)
+             "fid_div_cls_code": "0",
+             "fid_aply_rang_prc_1": "",
+             "fid_vol_cnt": "",
+             "fid_pbmn": "",
+             "fid_blng_cls_code": "0",
+             "fid_mkop_cls_code": "1"},           # 장마감예상
+            base=self.quote_base)
+        rows: list[dict] = []
+        for it in body.get("output") or []:
+            code = str(it.get("stck_shrn_iscd") or "").strip()
+            try:
+                px = float(it.get("stck_prpr") or 0)       # 예상체결가(마감예상 화면 맥락)
+                chg = float(it.get("prdy_ctrt") or 0)      # 전일 대비율(%)
+            except (TypeError, ValueError):
+                log.warning("[스캔] FHPST01820000 row 파싱 실패 — 제외: %s", it)
+                continue
+            if chg < min_change_pct:
+                break                                       # 상승률순 — 이하 전부 미달
+            if not code or px <= 0:
+                continue
+            mxpr = self._upper_limit_price(code)
+            rows.append({"symbol": code,
+                         "name": str(it.get("hts_kor_isnm") or "").strip(),
+                         "price": px, "change_pct": chg,
+                         "is_limit_up": mxpr > 0 and px >= mxpr,
+                         "ask_rem": float(it.get("total_askp_rsqn") or 0)})
+        return rows
+
+    def _upper_limit_price(self, symbol: str) -> float:
+        """당일 상한가(stck_mxpr) — FHKST01010100. 조회 실패는 0.0(호출자가 is_limit_up=False로
+        보수 판정 — 잠김 아님으로 제외되는 방향이라 자금 안전)."""
+        body = self._get_retry(
+            "/uapi/domestic-stock/v1/quotations/inquire-price", "FHKST01010100",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol},
+            base=self.quote_base)
+        try:
+            return float(body.get("output", {}).get("stck_mxpr", 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     # ── 주문 ──────────────────────────────────────────────────────────────────
 
     def _submit(self, symbol: str, qty: int, side: str,

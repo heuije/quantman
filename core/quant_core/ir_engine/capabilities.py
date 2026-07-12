@@ -75,6 +75,17 @@ def capability_spec() -> dict:
         "sizing_note": ("⚠ 사이징 모드(equal_weight·signal_proportional·vol_inverse·target_vol·fixed_weight)는 "
                         "scheduled·always 경로에서만 실효. on_signal(이벤트) 다종목은 모드와 무관하게 종목당 "
                         "amount_pct(또는 fixed_amount의 amount_krw) 예산으로 진입한다. leverage도 scheduled·always 전용."),
+        "template": [
+            {"value": "limit_up_close_v1",
+             "does": ("자동매매 템플릿 태그 — 급등/상한가 마감형 오버나이트. 라이브는 15:25(마감 동시호가) "
+                      "브로커 스캔으로 당일 급등·상한가 잠김 종목을 종가 매수, 익일 시가 매도. 패턴 고정"
+                      "(S-template): 정규형 신호 compare(>=, __SELF__.pct_change_1d, 임계 20~29.9%) + "
+                      "simulation.fill=close + exit(hold_days=1, fill=next_open) + 롱 + on_signal + "
+                      "universe kind=all(스크리너는 Market 필터만)."),
+             "use_for": ("자동매매 연동이 필요한 장중(실시간급) 급등 마감 전략 — 이 태그가 있어야 라이브 "
+                         "연동 가능(태그 없는 임의 장중 IR은 백테스트 전용). 백테스트 의미는 태그와 무관하게 "
+                         "동일하므로 순수 백테스트엔 태그 불필요.")},
+        ],
         # ── 선물(futures) — 일부 심볼은 선물 상품. 엔진이 카탈로그로 자동 인식(IR에 자산클래스 표시 불필요). ──
         "instruments": {
             "field": "universe.symbols",

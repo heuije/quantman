@@ -27,3 +27,10 @@ class Broker(Protocol):
     def order_status(self, order_no: str, symbol: str | None = None,
                      hint: dict | None = None) -> dict: ...
     def pending_orders(self) -> list[dict]: ...
+    # 종가창 급등/상한가 스캔 — 자동매매 템플릿 limit_up_close_v1의 장중 실시간 관측
+    # (15:2x 마감 동시호가 중 예상체결가 랭킹). 반환 row:
+    #   {symbol, name, price(예상체결가), change_pct(전일 대비 %), is_limit_up(예상체결가≥상한가),
+    #    ask_rem(총 매도잔량 — 계측용)}
+    # 시장(KOSPI/KOSDAQ) 필터는 호출자(runner)가 ticker_db로 수행한다 — 브로커 중립.
+    # 미지원 구현은 NotImplementedError를 던진다(조용한 빈 리스트 금지 — 커버리지 표면화).
+    def scan_close_surge(self, min_change_pct: float) -> list[dict]: ...

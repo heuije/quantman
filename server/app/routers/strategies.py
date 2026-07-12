@@ -71,9 +71,71 @@ def save_ir_draft(session: Session, user_id: int, definition: dict) -> Strategy:
     return row
 
 
+def _ver_key(v: str) -> tuple[int, ...]:
+    """앱 버전 비교 키 — "0.9.72-beta" → (0, 9, 72). 숫자부만 비교(접미 무시), 파싱 불가=(0,)."""
+    try:
+        return tuple(int(x) for x in str(v).split("-", 1)[0].split("."))
+    except (AttributeError, ValueError):
+        return (0,)
+
+
+def _assert_template_tradable(run_mode: str, definition: dict,
+                              account_broker: str | None, *,
+                              session: Session | None = None,
+                              user_id: int | None = None) -> None:
+    """자동매매 템플릿 전략 승격 게이트 — 장중 템플릿 설계 §2.3.
+
+    템플릿(장중 스캔) 전략은 사전 검증된 별도 라이브 경로다: 검사 = ①등록 템플릿
+    ②패턴 정합(S-template 재확인 — 저장 _validate가 선행하지만 스키마 진화 방어)
+    ③브로커 선언 지원·모의 플래그(스캔 TR 모의 가용성 실측 전 paper=False — fail-safe)
+    ④capability(kr_equity) ⑤로컬앱 최소버전 — 최신 스냅샷 payload의 app_version(§2.6).
+    버전 미보고(구앱)=미달로 간주: 스캔 기능 없는 앱에 템플릿 전략이 내려가 조용히
+    반쪽 실행되는 divergence를 차단한다. session 미제공(순수 검사 재사용 — 이식성 배지
+    등)은 앱버전 검사만 건너뛴다.
+    """
+    from quant_core.ir_engine.templates import TEMPLATES, template_issues
+
+    tid = (definition.get("template") or {}).get("id")
+    spec = TEMPLATES.get(tid)
+    if spec is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"미지원 템플릿입니다: {tid}")
+    s = StrategyIR.model_validate(definition)
+    errs = [i for i in template_issues(s) if i.is_error]
+    if errs:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"템플릿 패턴 불일치: {errs[0].message}")
+    broker = account_broker or "kis"
+    bs = (spec.get("brokers") or {}).get(broker)
+    if bs is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"이 템플릿은 {broker.upper()} 브로커에서 지원되지 않습니다.")
+    if run_mode == "paper" and not bs.get("paper"):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "이 템플릿은 모의투자 미지원입니다(브로커 스캔 TR의 모의 가용성 "
+                            "실측 전) — 실전 계좌로 시작하거나 지원 후 다시 시도하세요.")
+    cap = autotrade_capability(broker, run_mode, "kr_equity")
+    if cap.status == "blocked":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"템플릿 실행 불가: {cap.reason}")
+    if session is not None and user_id is not None:
+        minv = str(spec["min_app_version"])
+        snap = session.exec(
+            select(SyncSnapshot).where(SyncSnapshot.user_id == user_id)
+            .order_by(SyncSnapshot.received_at.desc())).first()
+        ver = ((snap.payload or {}).get("app_version") if snap else None)
+        if not ver or _ver_key(str(ver)) < _ver_key(minv):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"이 템플릿은 로컬앱 v{minv} 이상이 필요합니다"
+                f"(현재 {ver or '미보고 — 구버전'}). 로컬앱을 업데이트한 뒤 다시 시도하세요.")
+
+
 def _assert_live_tradable(run_mode: str, definition: dict,
                           account_broker: str | None = None,
-                          ack_unverified: bool = False) -> None:
+                          ack_unverified: bool = False, *,
+                          session: Session | None = None,
+                          user_id: int | None = None) -> None:
     """모의/실전 승격 게이트 — 백테스트≠실거래 발산을 막는다.
 
     ① 레버리지(>1배): 실거래는 사용자 KIS '현금계좌'로 체결한다(로컬앱 order-cash만,
@@ -89,6 +151,14 @@ def _assert_live_tradable(run_mode: str, definition: dict,
        숏은 차단. long/단일방향 long·short(선물)만 라이브 승격 허용.
     """
     if run_mode not in ("paper", "live"):
+        return
+
+    # 자동매매 템플릿(장중 스캔) — 사전 검증된 별도 라이브 경로로 분기(장중 템플릿 설계 §2.3).
+    # 템플릿 패턴은 kind=all(전 종목 스캔)·Market 스크리너를 *요구*하므로 아래 일반 차단
+    # (전체 유니버스 ②·이벤트+세부조건 ③)과 구조적으로 충돌한다 — 전용 검증 세트가 대신 선다.
+    if (definition.get("template") or {}).get("id"):
+        _assert_template_tradable(run_mode, definition, account_broker,
+                                  session=session, user_id=user_id)
         return
 
     lev = float((definition.get("simulation") or {}).get("leverage") or 1.0)
@@ -272,7 +342,8 @@ def create_strategy(
     name, definition = _validate(body.engine, body.definition)
     _assert_live_tradable(body.run_mode, definition,
                           account_broker=body.account_broker,
-                          ack_unverified=body.ack_unverified)
+                          ack_unverified=body.ack_unverified,
+                          session=session, user_id=user.id)
     now = datetime.now(timezone.utc)
     row = Strategy(user_id=user.id, name=name, run_mode=body.run_mode,
                    engine=body.engine, definition=definition,
@@ -324,7 +395,8 @@ def update_strategy(
     name, definition = _validate(body.engine, body.definition)
     _assert_live_tradable(body.run_mode, definition,
                           account_broker=body.account_broker,
-                          ack_unverified=body.ack_unverified)
+                          ack_unverified=body.ack_unverified,
+                          session=session, user_id=user.id)
 
     # Phase 59 — 변경 전 정의를 버전으로 스냅샷 (사용자 선택: 매 PUT마다)
     _snapshot_version(session, row, reason="manual_edit")

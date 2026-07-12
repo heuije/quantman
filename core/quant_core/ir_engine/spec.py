@@ -244,6 +244,23 @@ class PrescribeSpec(BaseModel):
     window: Optional[int] = None          # 최근 N거래일로 공분산·기대수익 추정(None=전체 가용)
 
 
+# ── 자동매매 템플릿 태그 (장중 신호 전략 화이트리스트) ────────────────────────
+
+class TemplateConfig(BaseModel):
+    """자동매매 템플릿 태그 — 장중(실시간급) 신호 전략의 화이트리스트 선언.
+
+    엔진은 이 필드를 읽지 않는다 — 백테스트 의미는 기존 프리미티브가 완전 결정
+    (태그 유/무 결과 동일을 테스트로 잠금). 소비자는 셋: 서버 승격 게이트(템플릿 분기)·
+    서버 preview("장중 스캔 대기")·로컬앱 종가창(스캔 라우팅). 전략 파라미터의 단일
+    출처는 IR(임계=signal const·시장=universe.screener·사이징=sizing)이고, 여기엔
+    실행에만 존재하는 노브(1일 최대 진입 종목 수)만 둔다. 패턴 정합은
+    validate_strategy → templates.template_issues(S-template)가 강제한다.
+    """
+    id: Literal["limit_up_close_v1"]
+    # 스캔 후보가 많아도 하루 진입은 이 수까지(등락률 내림차순) — 이벤트 예산 분산 상한.
+    max_daily_entries: int = Field(3, ge=1, le=5)
+
+
 # ── 전략 (통합) ───────────────────────────────────────────────────────────────
 
 class StrategyIR(BaseModel):
@@ -257,6 +274,7 @@ class StrategyIR(BaseModel):
     study: Study = Field(default_factory=Study)
     select: Optional[SelectSpec] = None    # query="select" 전용
     prescribe: Optional[PrescribeSpec] = None   # query="prescribe" 전용
+    template: Optional[TemplateConfig] = None   # 자동매매 템플릿 태그(장중 신호 화이트리스트)
 
     @model_validator(mode="before")
     @classmethod
@@ -501,6 +519,13 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
         issues.append(Issue("S-signal", SEV_ERROR,
                             "최상위 신호는 condition(참/거짓) 또는 score(점수) 블록이어야 합니다.", "signal"))
 
+    # 자동매매 템플릿(S-template) — 화이트리스트 패턴 정합. 매처는 templates.py 단일 출처로,
+    # 서버 승격 게이트·로컬 종가창 스캔 라우팅이 같은 판정을 공유한다(장중 템플릿 설계 §2.2).
+    # lazy import — 검증 경로에서만 필요(spec은 templates를 모듈 수준에서 모른다).
+    if s.template is not None:
+        from .templates import template_issues
+        issues += template_issues(s)
+
     # exit.fill(청산 시점)은 1단계에서 condition(룰) 경로만 지원 — score(리밸런싱) 경로가
     # 조용히 무시하면 백테≠의도 silent 결함이라 명시 거부(fail-loud·설계 D2 증분 범위).
     if s.position.exit.fill is not None and st == "score":
@@ -595,10 +620,10 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
         issues.append(Issue("S-univ", SEV_ERROR, "단일 유니버스는 종목 1개가 필요합니다.", "universe"))
     if u.kind == "list" and not u.symbols:
         issues.append(Issue("S-univ", SEV_ERROR, "리스트 유니버스는 종목이 1개 이상 필요합니다.", "universe"))
-    if not is_research and ent.mode == "on_signal" and u.kind == "all":
-        issues.append(Issue("S-univ", SEV_ERROR,
-                            "전체 종목 유니버스는 정기리밸런싱(scheduled)·상시(always) 진입과 함께 쓰세요.",
-                            "universe"))
+    # (제거됨 2026-07-12) all+on_signal 차단 — 엔진 이벤트 경로가 kind=all을 해석하지 못하던
+    # 시절의 정합 규칙이었다. run_unified가 scheduled와 동일한 광역 해석(_universe_symbols)을
+    # 갖게 되어(전 종목 급등 스캔형 — 자동매매 템플릿 limit_up_close_v1·광역 이벤트 백테스트)
+    # 규칙도 함께 갱신한다(규칙↔엔진 손동기화 방지 — 능력계약 원칙).
     # 포트폴리오 진단 — describe 전용 대상. 보유 종목 필요, 비중 정합(축A — position 없음).
     if u.kind == "portfolio":
         if s.query != "describe":

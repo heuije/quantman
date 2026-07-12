@@ -1594,6 +1594,17 @@ class Trader:
                 # 서버 preview에 있지만 로컬엔 배정 안 된 전략 — skip
                 continue
             strat_name, strat_def, acct_ref = name_def
+            # 템플릿 이중 안전망 — 이 로컬앱이 모르는 템플릿 id의 전략은 어떤 경로로 후보가
+            # 오든 진입하지 않는다(1차는 서버 앱버전 게이트 — 여기는 방어선). 조용한 반쪽
+            # 실행 금지: 결정 로그로 표면화한다(장중 템플릿 설계 §2.5).
+            _tpl_id = (strat_def.get("template") or {}).get("id")
+            if _tpl_id:
+                from quant_core.ir_engine.templates import TEMPLATES as _TPL
+                if _tpl_id not in _TPL:
+                    decisions.append(order_log.decision(
+                        "skip_unknown_template", sid, strat_name, "",
+                        f"이 앱 버전이 지원하지 않는 템플릿({_tpl_id}) — 로컬앱을 업데이트하세요"))
+                    continue
             # 진입창 라우팅(fill) — 엔진 defer(fill=="next_open")와 동일 분할: next_open은
             # 아침 시가창(open), close/typical은 종가창(close)이 전담한다. 한 창에서 다른 fill
             # 전략을 진입하지 않는다 — 종가매수(fill=close)가 아침 시가창서 시가진입 전략들과

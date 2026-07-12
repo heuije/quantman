@@ -90,10 +90,13 @@ def test_single_universe_needs_one_symbol():
     assert any(i.rule == "S-univ" for i in validate_strategy(s))
 
 
-def test_on_signal_all_universe_rejected():
+def test_on_signal_all_universe_allowed():
+    """(계약 갱신 2026-07-12) all+on_signal 허용 pin — 엔진 이벤트 경로가 kind=all을
+    scheduled와 동일하게 해석하게 되어(전 종목 급등 스캔형·자동매매 템플릿 P1) 종전
+    S-univ 차단 규칙을 제거했다(규칙↔엔진 손동기화 방지)."""
     s = StrategyIR(signal=_cond(), universe=Universe(kind="all"),
                    position=PositionSpec(entry=Entry(mode="on_signal")))
-    assert any(i.rule == "S-univ" for i in validate_strategy(s))
+    assert not any(i.rule == "S-univ" for i in validate_strategy(s))
 
 
 def test_exit_condition_must_be_condition():

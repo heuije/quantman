@@ -91,6 +91,14 @@ tolerance는 **미국 전용 라이브 버퍼**(국내 무시)·default ±3%·�
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [진행중] 장중 신호 템플릿 P1 — 급등/상한가 마감형 종가창 스캔 진입 (2026-07-12 착수, `feat/intraday-template`)
+
+**의도.** "실시간급 신호로 거래를 생성"하는 전략 부류의 자동매매 지원 첫 단계. 임의 장중 IR을 라이브로 번역하지 않고 **사전 검증된 템플릿 화이트리스트**(1호 `limit_up_close_v1`: 15:25 마감 동시호가 스캔 → 상한가 잠김 종목 종가 매수 → 익일 시가 매도)만 연동 허용 — 보장을 런타임 검증이 아니라 설계 상수로 만든다. 근거 연구=상한가 오버나이트(승률 74%·연 344~699건). 설계 SSOT=`docs/REDESIGN/intraday-template-redesign.md`(Phase 1→최종 통합).
+
+**구현(P1).** 브로커 seam `scan_close_surge` **KIS·LS 동시 배선**(패리티 — KIS `FHPST01820000` 장마감예상→`FHKST01010100` 상한가 대조 / LS `t1488`→`t8407` 배치 uplmtprice) · `template_scan` 합성 후보(전략 수 무관 스캔 1회·전략별 재필터 잠김/임계/시장/max_daily_entries) → `run_close_cycle` 합류(`run_close_netting` 무변경 — 킬스위치·손실한도·커버리지·멱등 전수 상속) · trader `skip_unknown_template` 이중 안전망 · `push_snapshot` app_version 주입(서버 앱버전 게이트) · 서버 승격 게이트 템플릿 분기(kind=all 일반 차단과의 구조 충돌 해소) · preview "장중 스캔 대기".
+
+**남은 것.** 전 스위트 확정 → draft PR·머지(허락 게이트) → 로컬앱 릴리스 v0.9.72 → 실측 게이트 ⓐ KIS/LS 스캔 TR 가용성(KIS 모의계좌+실전 시세앱키 조합·LS t1488 InBlock 필드 의미) ⓑ 15:25 드라이런(무발주) ⓒ 소액 라이브 1건+체결률 계측 → 챗 관용구·웹 배지 노출(별도 승인·설계 §7 순서) → [완료] 전환·교훈 distill.
+
 ### [진행중] 자동매매 전 사이클 크래시 — Close-only 시리즈 × ATR 무가드 (2026-07-10 착수, `fix/indicator-ohlc-guard`)
 
 **의도.** 07-07 22:13~ 로컬앱 전 사이클(아침/종가/미장/장중 loop)이 `KeyError: 'High'`로 크래시해 자동매매 전면 중단(`docs/incidents/2026-07-07-close-only-series-cycle-crash.md`). 근본=PR#325가 발행한 **국채 수익률 37종이 Close-only**인데 dataset_scope **ALL_SYMBOLS 안전망으로 전 사이클에 자동 유입**되고, `compute_all→add_atr`가 `df["High"]` **무가드 접근** → 시리즈 하나가 dataset 로드·사이클 전체를 죽임. 부류="High/Low/Volume 요구 지표의 무가드 접근"(Volume 2곳은 기존에 올바른 관용구 보유).

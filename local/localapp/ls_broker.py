@@ -349,6 +349,70 @@ class LsBroker(_LsAuth):
         out = self._quote_overseas_raw(symbol, market).get("g3101OutBlock") or {}
         return float(out.get("price") or 0)
 
+    # ── 종가창 급등/상한가 스캔 (자동매매 템플릿 limit_up_close_v1) ────────────────
+
+    def scan_close_surge(self, min_change_pct: float) -> list[dict]:
+        """마감 동시호가 중 예상체결가 등락률 상위 스캔 — t1488 + t8407 상한가 대조.
+
+        t1488(예상체결가등락율상위·/stock/market-data·2콜/초)로 당일 예상체결 등락률
+        상위를 받고(연속조회 idx — 안전 상한 5페이지), 임계 이상 후보를 t8407
+        (멀티현재가·50종목/콜)의 상한가(uplmtprice)와 대조해 is_limit_up을 판정한다.
+
+        ⚠ t1488 InBlock은 공식 가이드 요청 예시 그대로(gubun=0·sign=1 상승) — 필드
+        세부 의미는 실측 게이트(설계 §6 ⓐ)에서 확정한다. 개별 row 파싱 실패는 그
+        종목만 제외+경고, TR 자체 실패는 예외 전파(호출자 fail-soft).
+        """
+        cands: list[dict] = []
+        idx = 0
+        for _page in range(5):                       # 안전 상한 — 상한가 후보가 150건 넘을 일 없음
+            body = self._post("/stock/market-data", "t1488", {"t1488InBlock": {
+                "gubun": "0", "sign": "1", "jgubun": "1", "jongchk": "0x00000080",
+                "idx": idx, "volume": "0", "yesprice": 0, "yeeprice": 0, "yevolume": 0}})
+            rows = body.get("t1488OutBlock1") or []
+            below = False
+            for it in rows:
+                code = str(it.get("shcode") or "").strip()
+                try:
+                    chg = float(str(it.get("diff") or "0").strip() or 0)   # "029.01" → 29.01
+                    px = float(it.get("price") or 0)                        # 예상체결가
+                except (TypeError, ValueError):
+                    log.warning("[스캔] t1488 row 파싱 실패 — 제외: %s", it)
+                    continue
+                if chg < min_change_pct:
+                    below = True                     # 등락률 내림차순 — 이하 전부 미달
+                    break
+                if not code or px <= 0:
+                    continue
+                cands.append({"symbol": code,
+                              "name": str(it.get("hname") or "").strip(),
+                              "price": px, "change_pct": chg,
+                              "ask_rem": float(it.get("offerrem") or 0)})
+            nxt = (body.get("t1488OutBlock") or {}).get("idx")
+            if below or not rows or not nxt:
+                break
+            idx = nxt
+        limits = self._multi_upper_limits([c["symbol"] for c in cands])
+        for c in cands:
+            up = limits.get(c["symbol"], 0.0)
+            c["is_limit_up"] = up > 0 and c["price"] >= up
+        return cands
+
+    def _multi_upper_limits(self, codes: list[str]) -> dict[str, float]:
+        """t8407 멀티현재가 배치(50종목/콜)에서 종목별 상한가(uplmtprice). 조회 실패
+        종목은 0.0 → is_limit_up=False 보수 판정(잠김 아님으로 제외 — 자금 안전 방향)."""
+        out: dict[str, float] = {}
+        for i in range(0, len(codes), 50):           # 공식 스펙 콜당 최대 50종목
+            chunk = codes[i:i + 50]
+            body = self._post("/stock/market-data", "t8407", {"t8407InBlock": {
+                "nrec": len(chunk), "shcode": "".join(chunk)}})
+            for it in body.get("t8407OutBlock1") or []:
+                code = str(it.get("shcode") or "").strip()
+                try:
+                    out[code] = float(it.get("uplmtprice") or 0)
+                except (TypeError, ValueError):
+                    log.warning("[스캔] t8407 row 파싱 실패 — 제외: %s", it)
+        return out
+
     def price(self, symbol: str) -> float:
         """현재가 반환. 국내=t1102(KRW), 해외=g3101(USD). ⚠ t1102OutBlock.price — A2 KB 🟢."""
         market = self._detect_market(symbol)

@@ -241,7 +241,14 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         if et != "condition":
             return _empty(f"매도 조건은 condition이어야 합니다 (현재: {et or '알 수 없는 블록'}).")
 
-    syms = [s for s in u.symbols if s in dataset and not dataset[s].empty]
+    # 유니버스 해석 — kind=all은 scheduled 경로(861)와 동일한 광역 해석(_universe_symbols:
+    # 매크로 제외·OHLC 보유 전 종목). 종전 이벤트 경로는 u.symbols만 읽어 kind=all이
+    # "종목 없음" 하드 에러였다(전 종목 급등 스캔형 — 자동매매 템플릿 limit_up_close_v1 —
+    # 의 백테스트가 걸리는 갭). single/list·portfolio 해석은 종전 식 그대로 보존(byte-identical).
+    if u.kind == "all":
+        syms = _universe_symbols(strategy, dataset)
+    else:
+        syms = [s for s in u.symbols if s in dataset and not dataset[s].empty]
     if not syms:
         return _empty("유니버스에 종목이 없습니다.")
     # 선물 이벤트(on_signal) 진입 = 증거금 레버리지 *보유* 포지션(E1b). _open/_close/NAV가 승수·
