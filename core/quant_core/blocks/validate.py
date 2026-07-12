@@ -69,10 +69,16 @@ def infer_shape(node: Node) -> Shape:
 # ── 데이터 가용성 (규칙0) ─────────────────────────────────────────────────────
 
 def available_refs(data: dict) -> set[str]:
-    """dataset에서 유효 참조 집합(심볼 ∪ 전 컬럼)을 만든다."""
-    refs: set[str] = set(data.keys())
-    for df in data.values():
+    """dataset에서 유효 참조 집합(심볼 ∪ 전 컬럼)을 만든다.
+
+    df가 None/빈 심볼 키는 제외한다 — 키만 있고 데이터가 없으면 "SYM.x" 참조가
+    NaN→False로 조용히 0건이 되므로(조용한 오답 부류), 참조 시점에 규칙0(R0)이
+    정직 거부하도록 '참조 가능'으로 치지 않는다(__SELF__.x의 컬럼 실재 요구와 대칭).
+    """
+    refs: set[str] = set()
+    for sym, df in data.items():
         if df is not None and not getattr(df, "empty", True):
+            refs.add(sym)
             refs.update(map(str, df.columns))
     return refs
 

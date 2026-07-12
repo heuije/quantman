@@ -107,6 +107,24 @@ def test_r0_missing_data():
     assert not any(i.rule == "R0" for i in validate(ok, valid_refs=valid))
 
 
+def test_r0_empty_symbol_key_not_available():
+    """키만 있고 df가 None/빈 심볼은 유효 참조가 아니다 — "SYM.x" 참조가 NaN→False로
+    조용히 0건이 되던 부류를 R0 거부로 마감(__SELF__.x의 컬럼 실재 요구와 대칭)."""
+    import pandas as pd
+
+    from quant_core.blocks import available_refs
+
+    ds = {"AAA": pd.DataFrame({"Close": [1.0, 2.0]},
+                              index=pd.bdate_range("2024-01-01", periods=2)),
+          "VIX": pd.DataFrame(), "GOLD": None}
+    refs = available_refs(ds)
+    assert "AAA" in refs and "Close" in refs
+    assert "VIX" not in refs and "GOLD" not in refs
+    bad = Node(op="compare", params={"op": ">"},
+               inputs={"left": data("VIX.Close"), "right": const(0)})
+    assert any(i.rule == "R0" for i in validate(bad, valid_refs=refs))
+
+
 # ── 규칙5 기본값 ──────────────────────────────────────────────────────────────
 
 def test_r5_apply_defaults_window():
