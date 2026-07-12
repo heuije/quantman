@@ -44,7 +44,7 @@ def main() -> int:
     # compile_nl 존재가드 통과용 더미(실인증=shim). 데이터·빠른 기동.
     os.environ.setdefault("ANTHROPIC_API_KEY", "dev-shim")
     os.environ.setdefault("QP_CORE_DATA_DIR", str(Path.home() / ".quant-platform" / "dev-data"))
-    os.environ.setdefault("QP_SKIP_STARTUP_JOBS", "1")   # cron·백필 skip → 즉시 기동(Mode B)
+    os.environ.setdefault("QP_SKIP_STARTUP_JOBS", "1")   # startup 1회성 잡(fetch·백필·프리워밍) skip → 즉시 기동(cron은 유지)
 
     import anthropic
     from backend import ClaudeCodeBackend

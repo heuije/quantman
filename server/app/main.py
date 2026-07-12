@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 from contextlib import asynccontextmanager
@@ -1407,16 +1408,17 @@ def _build_scheduler() -> BackgroundScheduler:
     return scheduler
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    _log.info("lifespan 시작 — DB 초기화")
-    create_db_and_tables()
+def _schedule_startup_jobs() -> None:
+    """시작 시 1회 초기 fetch·백필·프리워밍 (백그라운드 thread — 부팅 차단 없음).
 
-    # ── 시작 시 1회 초기 fetch (백그라운드 thread, 부팅 차단 방지) ─────────────
-    # ⚠ 폭주 가드 — 20개 job을 동시에 돌리면 배포 직후 CPU가 포화돼 첫 로그인 요청이
-    # 2~3분씩 밀렸다(실측: 폭풍 중 /symbols 47~101s·1y 상세 13s → 폭풍 후 0.02~0.5s).
-    # 세마포어(동시 2)로 직렬화 + 사용자 경험 비크리티컬 백필은 계층 지연 뒤 시작한다.
-    # 데이터 신선도는 그대로(순서만 뒤로) — 어차피 전부 백그라운드 갱신이다.
+    전 startup 잡의 단일 스케줄 진입점 — QP_SKIP_STARTUP_JOBS=1이면 lifespan이
+    이 호출을 통째로 생략한다(개별 잡 분기 없음).
+
+    ⚠ 폭주 가드 — 20개 job을 동시에 돌리면 배포 직후 CPU가 포화돼 첫 로그인 요청이
+    2~3분씩 밀렸다(실측: 폭풍 중 /symbols 47~101s·1y 상세 13s → 폭풍 후 0.02~0.5s).
+    세마포어(동시 2)로 직렬화 + 사용자 경험 비크리티컬 백필은 계층 지연 뒤 시작한다.
+    데이터 신선도는 그대로(순서만 뒤로) — 어차피 전부 백그라운드 갱신이다.
+    """
     _bg_sem = threading.BoundedSemaphore(2)
 
     def _bg(name: str, target, delay: float = 0.0) -> None:
@@ -1462,6 +1464,20 @@ async def lifespan(app: FastAPI):
     _bg("financials_prewarm", _initial_financials_prewarm, delay=720)
     _log.info("선물 grid 워머 thread 시작")
     futures.start_grid_warmer()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _log.info("lifespan 시작 — DB 초기화")
+    create_db_and_tables()
+
+    # startup 1회성 잡 — QP_SKIP_STARTUP_JOBS=1(dev 전용·scripts/run_dev_server.py가 설정)
+    # 이면 통째로 생략해 dev 머신 CPU/디스크를 아낀다. 미설정(프로덕션 Railway) 기본 =
+    # 전부 실행. cron 정기 스케줄(아래)은 게이트와 무관하게 항상 구동.
+    if os.environ.get("QP_SKIP_STARTUP_JOBS") == "1":
+        _log.info("QP_SKIP_STARTUP_JOBS=1 — startup 1회성 잡 생략(dev fast-start)")
+    else:
+        _schedule_startup_jobs()
 
     # ── 매일 정기 갱신 — cron 구성·폭주 가드는 _build_scheduler 참조 ──────────
     scheduler = _build_scheduler()

@@ -50,6 +50,9 @@ python scripts/run_dev_server.py --port 8010
 cd web && npm run dev
 # Chrome → 로그인 → 챗에 자연어 → NL→IR→엔진(실데이터)→차트, 전부 API $0
 ```
+- **즉시 기동.** run_dev_server.py가 `QP_SKIP_STARTUP_JOBS=1`을 설정해 서버 lifespan의 startup
+  1회성 데이터 잡(초기 fetch·백필·프리워밍)을 통째로 생략한다 — cron 정기 스케줄은 유지,
+  프로덕션(env 미설정)은 전부 실행(기본값).
 - shim(`scripts/chat_eval/backend.py`)은 프로덕션 모델 티어를 자동 매칭한다: `_model_alias`가
   CHAT_MODEL(claude-sonnet-5)을 `claude -p --model claude-sonnet-5`로 라우팅(별칭 "sonnet"은
   Sonnet 4.6로 풀려 프로덕션과 어긋나므로 정확한 id 사용). 최종 텍스트도 `text_stream`으로 흘려보내
