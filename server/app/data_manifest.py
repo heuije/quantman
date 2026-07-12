@@ -139,13 +139,14 @@ _MACRO_DETAIL_KEYS = {"macro.krx"}
 from quant_core.indicators import (  # noqa: E402
     FUND_INDICATOR_COLS as _FUND, FLOW_INDICATOR_COLS as _FLOW,
     CONSENSUS_INDICATOR_COLS as _CONS, SHORTVOL_INDICATOR_COLS as _SHORTVOL,
-    INSTITUTIONAL_INDICATOR_COLS as _INST,
+    SHORTBAL_INDICATOR_COLS as _SHORTBAL, INSTITUTIONAL_INDICATOR_COLS as _INST,
 )
 _FIELD_GROUPS: list[tuple[str, str, set]] = [
     ("fundamental.equity", "펀더멘털(밸류·재무)", set(_FUND)),
     ("flow.kr_investor", "수급(기관·외국인 순매수)", set(_FLOW)),
     ("estimate.consensus", "애널 컨센서스(목표가·투자의견)", set(_CONS)),
     ("flow.us_short_volume", "US 공매도 거래량(off-exchange·잔고 아님)", set(_SHORTVOL)),
+    ("flow.kr_short_balance", "KR 공매도 잔고비중(short interest)", set(_SHORTBAL)),
     ("static.market_cap", "거래대금(유동성, KRX 공식)", {"trade_value"}),
     ("flow.institutional_13f", "US 기관 13F 보유(기관수·주식수·순증감)", set(_INST)),
 ]

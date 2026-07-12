@@ -100,8 +100,9 @@ def test_compute_all_without_sidecars_adds_nothing():
 
 
 def test_groups_registered():
-    # 수급 그룹 = KR 순매수(flow.kr_investor) + US 공매도비중(파생). 둘 다 "수급" 성격.
-    assert ind.INDICATOR_GROUPS["수급"] == ["inst_net_buy", "foreign_net_buy", "short_volume_ratio"]
+    # 수급 그룹 = KR 순매수(flow.kr_investor) + US 공매도비중(파생) + KR 공매도 잔고비중.
+    assert ind.INDICATOR_GROUPS["수급"] == ["inst_net_buy", "foreign_net_buy",
+                                           "short_volume_ratio", "short_balance_ratio"]
     assert "target_upside" in ind.INDICATOR_GROUPS["컨센서스"]
     # 13F 기관보유는 별도 그룹(수급=KR 일별과 분리)
     assert ind.INDICATOR_GROUPS["기관보유(13F)"] == list(ind.INSTITUTIONAL_INDICATOR_COLS)

@@ -49,6 +49,12 @@
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [2026-07-12] 수급 배선 A+B — flow 챗 표면 완결 + KR 공매도 잔고 엔진 배선 [진행중]
+- 의도: 챗봇 데이터 트랙 잔여 "수급 배선"의 실측 재정의 — 조사 결과 D-1(sto·shortvol 엔진 배선)은 **이미 완료**돼 있었고(문서만 stale), 진짜 갭은 ①flow 컬럼(inst/foreign_net_buy)이 SSOT에 이름만 나열되고 컴파일러 필드가이드(의미·단위·관용구) 부재, ②KR 공매도 잔고(short_balance_kr)가 수집·웹 서빙만 되고 엔진 미병합. prod 실수요(수급 신호 백테스트) 지원 목적.
+- 계획: (B) add_short_balance(bal_ratio→short_balance_ratio 1컬럼)를 marketcap 동형 패턴으로 배선(indicators 계약→dataset/data_cache→spec/manifest 게이트→full bundle) → (A) ir_compiler 필드가이드(수급 단위=원·연속=modifier 관용구·US 거래량 vs KR 잔고 구분)+provenance 계보 3건 보강+chat_eval 합성에 수급 컬럼 추가 → 문서 정합(spec partial→present·B.1).
+- 결과: **draft PR#382**. 전 스위트 1879 green·$0 스모크 2건(연속 순매수=modifier streak 정확 emit / 잔고 크로스=ts_max+cross 시간 구조 emit)·실데이터(005930 12년) 66거래. 잔고 prod 검증은 배포 후 1회 필요(dev-data에 shortbal 없음).
+- 시행착오: ①스모크 합성에 잔고를 단조 점증으로 넣어 하락 크로스 신호가 항상 0건 — 톱니(주기 순환)로 교정(합성은 상승·하락 크로스 모두 발생해야 신호 계열 검증 가능). ②"수급 미배선"이라던 갭 진단은 낡은 판정 — 엔진 attach는 돼 있었고 진짜 갭은 컴파일러 표면(교훈 §21 "데이터를 엔진에 넣는 것 ≠ 챗봇이 그걸 아는 것" 재확인). 착수 전 코드 실측이 문서보다 정본.
+
 ### [2026-07-11] 수집 스케일 불연속 가드 — 오종목 splice 자기치유 (DAX +58,000% 폭발 수정) [완료]
 - 의도: 웹 GlobalMarket '세계 10대 지수' 오버레이에서 DAX만 **+58,000%로 폭발**(사용자 스크린샷). 진단=볼륨 `DAX.parquet`가 옛 오종목(미국상장 독일 ETF ~$43·2014~) 이력 위에 Phase 6a(#325) 정규 `^GDAXI`(~25,000)를 증분 append해 ~580× splice, 프론트의 첫 점 리베이스가 증폭. 서빙/웹 무변경, **수집 계층만**.
 - 계획: `data_fetcher`에 `_has_scale_break`(인접일 종가비 3배 초과 감지)+`_heal_or_merge`(병합 결과 불연속 시 CORE_FLOOR부터 전체 재수집 교체) 추가 → `fetch_yfinance`/`fetch_fdr`를 `_yf_history`/`_fdr_history`+가드로 배선 → TDD.

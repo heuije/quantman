@@ -278,7 +278,9 @@ StrategyIR = {{
   path로 구분해 스윕한다(두 역할을 한 값으로 묶지 말 것 — 라벨이 모호해진다).
 - **거래대금·공매도·선물 포지셔닝(신규 필드 의미)**:
   · `trade_value` = **일별 거래대금(원)**. "거래대금 상위/유동성 높은 종목"류 필터·랭킹에 쓴다(KR 종목·KRX 공식). `market_cap`(시가총액·원)도 KR은 거래소 공식이 정본. 둘 다 **원 단위 절대액**이라 const 비교보다 횡단 랭킹(상위 N/X%)에 적합.
-  · `short_volume_ratio` = **US 종목 공매도비중(%, 0~100)**. ⚠ 이것은 **off-exchange(TRF 보고분) 공매도 *거래량* 비중**이며 **공매도 잔고(short interest)가 아니다** — "공매도 잔고/미상환"으로 답하면 틀린다. "공매도 거래 비중이 높은/급증한"에만 쓰고, 잔고를 물으면 assumptions에 "공매도 *잔고*는 미지원(거래량 비중만 보유)" 명시.
+  · `short_volume_ratio` = **US 종목 공매도비중(%, 0~100)**. ⚠ 이것은 **off-exchange(TRF 보고분) 공매도 *거래량* 비중**이며 **공매도 잔고(short interest)가 아니다** — "공매도 잔고/미상환"으로 답하면 틀린다. "공매도 거래 비중이 높은/급증한"에만 쓴다. US 종목의 *잔고*를 물으면 assumptions에 "US 공매도 잔고는 미지원(거래량 비중만 보유)" 명시.
+  · `short_balance_ratio` = **KR 종목 공매도 잔고비중(%, 상장주식수 대비)** — 진짜 short interest. "공매도 잔고가 많은/쌓인 종목", "공매도 비중 N% 이상" 류에 쓴다(KR만 — US는 위 short_volume_ratio와 혼동 금지). 잔고는 느리게 변하는 **수준(level)** 지표라 급변 신호보다 필터·랭킹·`ts_delta`(잔고 증감)에 적합.
+  · **KR 투자자 수급** `inst_net_buy`(기관)·`foreign_net_buy`(외국인) = **일별 순매수 거래대금(원, 부호 있음)** — 양수=순매수·음수=순매도(KR 종목·2010~). "외국인이 사는 종목" = `foreign_net_buy > 0`. **"N일 연속 순매수"** = (`foreign_net_buy > 0`) 조건을 modifier 블록(지속 N일)으로 감싼다 — 레시피 5와 동일 패턴. **"N일 누적 순매수 X억 이상"** = `ts_sum(window=N)(foreign_net_buy) > X*1e8` (원 단위 절대액 주의). 원 단위 절대액이라 종목 간 비교는 const 비교보다 횡단 랭킹(상위 N)이 적합.
   · **US 선물 COT 포지셔닝**은 심볼로 참조한다: `금선물투기순포지션`·`원유선물미결제약정` 등(8개 선물×투기순포지션·미결제약정, 주간·1986~). 크로스에셋 신호("COT 순매수 급증 후 금값")에 `SYM.Close`로 쓴다.
   · **US 기관 13F 보유**(US 종목·분기 스냅샷·2013~·제출 45일 지연 PIT): `institutional_holders`(보유 기관 수)·`institutional_shares`(총 보유주식수)·`institutional_qoq_change`(전분기 대비 순증감%)·`institutional_value`(총 보유가치 $). "기관이 사 모으는/보유 많은·기관 매집" 류 필터·랭킹에 쓴다. ⚠ 신호는 `institutional_holders`·`institutional_qoq_change` 우선(`institutional_value`는 보유기관 적은 종목서 필러 오기입 잔여오차 가능). 일별 수급·공매도와 달리 **분기 데이터**라 급변 신호엔 부적합.
 종목 표기: 국내주식=6자리 코드(삼성전자 005930), 미국주식=티커(AAPL), 내장 자산명=정확한 키

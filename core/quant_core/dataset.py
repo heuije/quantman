@@ -16,6 +16,7 @@ from .data_fetcher import (_parquet_path, load_all, load_fund_all, load_stock_fu
                            load_flow_all, load_stock_flow)
 from .data.feeds.marketcap_krx import load_marketcap, load_marketcap_all
 from .data.feeds.short_volume_us import load_short_volume, load_shortvol_all
+from .data.feeds.short_balance_kr import load_short_balance, load_short_balance_all
 from .data.feeds.institutional_13f import load_institutional, load_institutional_all
 from .parquet_io import read_parquet_safe
 from .indicators import compute_all
@@ -35,10 +36,11 @@ def load_dataset(with_indicators: bool = True) -> dict[str, pd.DataFrame]:
     flow = load_flow_all()
     mcap = load_marketcap_all()
     shortvol = load_shortvol_all()
+    shortbal = load_short_balance_all()
     inst = load_institutional_all()
     return {sym: compute_all(df, funds.get(sym), cons.get(sym), flow.get(sym),
                              marketcap_df=mcap.get(sym), shortvol_df=shortvol.get(sym),
-                             institutional_df=inst.get(sym))
+                             institutional_df=inst.get(sym), shortbal_df=shortbal.get(sym))
             for sym, df in raw.items()}
 
 
@@ -78,11 +80,13 @@ def load_dataset_for(symbols: Iterable[str],
         fl = load_stock_flow(sym)
         mc = load_marketcap(sym)
         sv = load_short_volume(sym)
+        sb = load_short_balance(sym)
         it = load_institutional(sym)
         out[sym] = compute_all(df, fd if not fd.empty else None,
                                cd if not cd.empty else None,
                                fl if not fl.empty else None,
                                marketcap_df=mc if not mc.empty else None,
                                shortvol_df=sv if not sv.empty else None,
-                               institutional_df=it if not it.empty else None)
+                               institutional_df=it if not it.empty else None,
+                               shortbal_df=sb if not sb.empty else None)
     return out

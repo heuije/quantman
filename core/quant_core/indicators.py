@@ -370,6 +370,8 @@ INDICATOR_META = {
     "trade_value":        {"label": "거래대금(원)",       "unit": "원", "decimals": 0},
     # ── US 공매도 거래량 (flow.us_short_volume 피드) ──
     "short_volume_ratio": {"label": "공매도비중(%, off-exchange)", "unit": "%", "decimals": 1},
+    # ── KR 공매도 잔고 (flow.kr_short_balance 피드) ──
+    "short_balance_ratio": {"label": "공매도잔고비중(%)", "unit": "%", "decimals": 2},
     # ── US 기관 13F 보유 (flow.institutional_13f 피드) ──
     "institutional_value":      {"label": "기관보유가치(13F, $)",  "unit": "$", "decimals": 0},
     "institutional_shares":     {"label": "기관보유주식수(13F)",   "unit": "주", "decimals": 0},
@@ -416,6 +418,12 @@ MARKETCAP_INDICATOR_COLS = ["market_cap", "trade_value"]
 # ⚠ off-exchange(TRF 보고분) 기준·시장 전체 아님·공매도 잔고(short interest)와 별개.
 SHORTVOL_INDICATOR_COLS = ["short_volume_ratio"]
 
+# KR 공매도 잔고 (flow.kr_short_balance 피드, KR 종목·일별) — 노출은 잔고비중(%) 하나.
+# 피드 원시 bal_ratio(상장주식수 대비 잔고 %)를 명확한 이름으로 부착 — US short_volume_ratio
+# (거래량 비중)와 구분되는 진짜 short interest. 수량·금액(bal_qty/bal_amt)은 비중으로 정규화
+# 전 절대값이라 미노출(랭킹·비교는 비중이 정본 — 필요 실수요가 생기면 그때 추가).
+SHORTBAL_INDICATOR_COLS = ["short_balance_ratio"]
+
 # US 기관 13F 보유 (flow.institutional_13f 피드, US 종목·분기 PIT·2013Q2~).
 # 원시 3컬럼(가치·주식수·기관수) + qoq(주식수 전분기 대비 %, 파생). reindex-ffill 병합.
 INSTITUTIONAL_INDICATOR_COLS = ["institutional_value", "institutional_shares",
@@ -427,7 +435,8 @@ INSTITUTIONAL_INDICATOR_COLS = ["institutional_value", "institutional_shares",
 # IR 참조 컬럼을 걸러 원시값을 싣는다.
 EXTERNAL_FEED_COLS = frozenset(
     FUND_INDICATOR_COLS + FLOW_INDICATOR_COLS + CONSENSUS_INDICATOR_COLS
-    + MARKETCAP_INDICATOR_COLS + SHORTVOL_INDICATOR_COLS + INSTITUTIONAL_INDICATOR_COLS)
+    + MARKETCAP_INDICATOR_COLS + SHORTVOL_INDICATOR_COLS + SHORTBAL_INDICATOR_COLS
+    + INSTITUTIONAL_INDICATOR_COLS)
 
 # 지표 소분류 — 조건 빌더 UI에서 드롭다운을 그룹화하기 위한 분류
 INDICATOR_GROUPS: dict[str, list[str]] = {
@@ -441,7 +450,8 @@ INDICATOR_GROUPS: dict[str, list[str]] = {
     "통계":        ["zscore_20d", "zscore_60d"],
     "거래량":      ["volume_ratio", "adv_20d", "trade_value"],
     "펀더멘털":     list(FUND_INDICATOR_COLS),
-    "수급":         list(FLOW_INDICATOR_COLS) + list(SHORTVOL_INDICATOR_COLS),
+    "수급":         list(FLOW_INDICATOR_COLS) + list(SHORTVOL_INDICATOR_COLS)
+                    + list(SHORTBAL_INDICATOR_COLS),
     "컨센서스":     list(CONSENSUS_INDICATOR_COLS),
     "기관보유(13F)": list(INSTITUTIONAL_INDICATOR_COLS),
 }
@@ -502,6 +512,20 @@ def add_short_volume(df: pd.DataFrame, sv_df: Optional[pd.DataFrame]) -> pd.Data
     return df
 
 
+def add_short_balance(df: pd.DataFrame, sb_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """KR 공매도 잔고비중(%) 병합 — 피드 bal_ratio를 short_balance_ratio로 부착.
+
+    진짜 short interest(상장주식수 대비 잔고 %) — US short_volume_ratio(off-exchange
+    거래량 비중)와 별개 지표. reindex-ffill(as_of=거래일, add_flow 규약)."""
+    if sb_df is None or sb_df.empty:
+        return df
+    df = df.copy()
+    s = sb_df.reindex(df.index, method="ffill")
+    if "bal_ratio" in s.columns:
+        df["short_balance_ratio"] = s["bal_ratio"]
+    return df
+
+
 def add_institutional_holdings(df: pd.DataFrame, inst_df: Optional[pd.DataFrame]) -> pd.DataFrame:
     """US 기관 13F 보유(분기 PIT 패널) reindex-ffill 병합 + qoq(전분기 순증감%) 파생.
 
@@ -545,7 +569,8 @@ def compute_all(df: pd.DataFrame, fund_df: Optional[pd.DataFrame] = None,
                 flow_df: Optional[pd.DataFrame] = None,
                 marketcap_df: Optional[pd.DataFrame] = None,
                 shortvol_df: Optional[pd.DataFrame] = None,
-                institutional_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                institutional_df: Optional[pd.DataFrame] = None,
+                shortbal_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     df = add_returns(df)
     df = add_ma_deviation(df)
     df = add_ma_cross(df)
@@ -570,6 +595,8 @@ def compute_all(df: pd.DataFrame, fund_df: Optional[pd.DataFrame] = None,
         df = add_flow(df, flow_df)
     if shortvol_df is not None and not shortvol_df.empty:
         df = add_short_volume(df, shortvol_df)
+    if shortbal_df is not None and not shortbal_df.empty:
+        df = add_short_balance(df, shortbal_df)
     if institutional_df is not None and not institutional_df.empty:
         df = add_institutional_holdings(df, institutional_df)
     return df
@@ -612,7 +639,8 @@ def compute_columns(df: pd.DataFrame, columns,
                     flow_df: Optional[pd.DataFrame] = None,
                     marketcap_df: Optional[pd.DataFrame] = None,
                     shortvol_df: Optional[pd.DataFrame] = None,
-                    institutional_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+                    institutional_df: Optional[pd.DataFrame] = None,
+                    shortbal_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """요청한 지표 컬럼만 계산해 부착(컬럼 프로젝션). OHLCV는 항상 보존.
 
     compute_all(45컬럼 전부)의 부분집합 버전. 반환 DataFrame의 **요청 컬럼 값은
@@ -652,6 +680,8 @@ def compute_columns(df: pd.DataFrame, columns,
         out = add_flow(out, flow_df)
     if (wanted & set(SHORTVOL_INDICATOR_COLS)) and shortvol_df is not None and not shortvol_df.empty:
         out = add_short_volume(out, shortvol_df)
+    if (wanted & set(SHORTBAL_INDICATOR_COLS)) and shortbal_df is not None and not shortbal_df.empty:
+        out = add_short_balance(out, shortbal_df)
     if (wanted & set(INSTITUTIONAL_INDICATOR_COLS)) and institutional_df is not None and not institutional_df.empty:
         out = add_institutional_holdings(out, institutional_df)
     return out
@@ -672,7 +702,7 @@ def get_all_indicator_columns() -> list[str]:
         list(BASE_INDICATOR_COLS) + list(FUND_INDICATOR_COLS)
         + list(FLOW_INDICATOR_COLS) + list(CONSENSUS_INDICATOR_COLS)
         + list(MARKETCAP_INDICATOR_COLS) + list(SHORTVOL_INDICATOR_COLS)
-        + list(INSTITUTIONAL_INDICATOR_COLS)))
+        + list(SHORTBAL_INDICATOR_COLS) + list(INSTITUTIONAL_INDICATOR_COLS)))
 
 
 def get_indicator_label(col: str) -> str:

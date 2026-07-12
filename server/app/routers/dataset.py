@@ -40,7 +40,7 @@ _BUNDLE_LOCK = threading.Lock()
 #             소비하지 않으므로 trading에 넣지 않는다(불필요 다운로드·번들 비대 방지).
 _BUNDLE_SUBDIRS: dict[str, tuple[str, ...]] = {
     "trading": ("fundamentals",),
-    "full": ("fundamentals", "flow", "marketcap", "short_volume", "institutional"),
+    "full": ("fundamentals", "flow", "marketcap", "short_volume", "shortbal", "institutional"),
 }
 
 

@@ -54,6 +54,13 @@ def _synth_df(sym: str, i: int):
              "market_cap": 5e11 * (1 + i % 7),
              "momentum_12_1m": round(0.5 + (i % 4) * 0.4, 2)}
     df = AC._ohlc(close, extra)
+    # 수급·공매도 잔고(부호 교대·점증 — 결정적) — 수급 신호 NL→IR 스모크가 ref 검증을 통과하고
+    # 신호도 발생하도록. VIX 격자 교훈: 합성에 없는 컬럼·형상은 스모크가 검증 못 한다.
+    n_i = len(df)
+    cyc = [(-1) ** (k // 7) for k in range(n_i)]                 # 7일 주기 순매수/순매도 교대
+    df["foreign_net_buy"] = [c * (1e9 + 1e7 * k) for k, c in enumerate(cyc)]
+    df["inst_net_buy"] = [-c * (5e8 + 5e6 * k) for k, c in enumerate(cyc)]
+    df["short_balance_ratio"] = [2.0 + (k % 60) / 20 for k in range(n_i)]     # 2→5% 톱니(60일 주기 — 상승·하락 크로스 모두 발생)
     df["sector"] = _SECTORS[i % len(_SECTORS)]
     consensus = close * (1.05 + 0.03 * (i % 4))   # 컨센서스 목표주가(종가 위 5~14%) — inspect/컨센서스용
     df["consensus_target"] = consensus

@@ -50,6 +50,18 @@ def load_short_balance(code: str) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
+def load_short_balance_all() -> dict[str, pd.DataFrame]:
+    """전 종목 공매도 잔고 패널 — data_cache aux 캐시(디렉터리 주도·요청 시에만 로드)."""
+    out: dict[str, pd.DataFrame] = {}
+    d = default_manifest_path().parent / "shortbal"
+    if d.exists():
+        for p in d.glob("*.parquet"):
+            df = read_parquet_safe(p)
+            if df is not None and not df.empty:
+                out[p.stem] = df
+    return out
+
+
 def _merge_write(code: str, new: pd.DataFrame) -> None:
     """새 윈도우를 기존 parquet에 merge(as_of dedup·최신 우선) — 백필·증분 공용. 원자적 기록."""
     p = _short_path(code)

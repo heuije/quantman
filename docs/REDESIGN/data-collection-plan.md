@@ -278,7 +278,7 @@ P3  실적 캘린더 on-demand facet
 | **US 공매도 거래량** | FINRA Reg SHO consolidated(실파일 검증) | **2018-08~**(구포맷 병합 시 소급) | 필드 | ✅ 수집+실데이터 e2e(3일·12,552종목) |
 | 13F 기관보유 | SEC 구조화 ZIP(53개·최근 ~86-100MB/분기 실측) | 2013Q2~ | 필드 | 📋 설계 확정(B.2)·구현 이월 |
 
-**필드형 2종(sto·shortvol)의 엔진 소비 배선은 후속 PR** — indicators attach·compute 배관·컴파일러 노출을 라이브 데이터 검증+golden 영향 확인과 함께. 원칙: *엔진이 계산 못 하는 컬럼을 컴파일러에 노출하지 않는다.* 수집은 먼저 가동해 이력을 축적.
+**필드형 엔진 소비 배선 완료(2026-07-12 정합)** — sto(add_marketcap: market_cap 정본 교체+trade_value)·shortvol(add_short_volume: short_volume_ratio)·13F(add_institutional_holdings)·KR 수급(add_flow)·**KR 공매도 잔고(add_short_balance: short_balance_ratio — 수급 배선 B에서 추가)** 전부 indicators attach·compute 배관·SSOT(get_all_indicator_columns)·컴파일러 필드가이드까지 배선됨. 원칙(*엔진이 계산 못 하는 컬럼을 컴파일러에 노출하지 않는다*)의 해제 조건 충족. ⚠ 이 배선은 서버 챗봇 경로(full bundle) 한정 — 로컬앱 trading bundle엔 수급 피드 미포함(자동매매 라이브의 수급 신호 전략은 별도 경계 — 승격 시 재검토).
 
 ### B.2 13F 확정 설계 (구현 이월 — 별도 세션급)
 

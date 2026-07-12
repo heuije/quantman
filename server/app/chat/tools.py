@@ -676,7 +676,8 @@ def data_source_line(result: dict) -> str:
     """
     from quant_core.indicators import (CONSENSUS_INDICATOR_COLS, FLOW_INDICATOR_COLS,
                                         FUND_INDICATOR_COLS, INSTITUTIONAL_INDICATOR_COLS,
-                                        MARKETCAP_INDICATOR_COLS, SHORTVOL_INDICATOR_COLS)
+                                        MARKETCAP_INDICATOR_COLS, SHORTVOL_INDICATOR_COLS,
+                                        SHORTBAL_INDICATOR_COLS)
     shape = result.get("shape") or result_shape(result)
     if shape == "news_research":
         return ""                                    # 뉴스 출처는 context.source가 담당
@@ -699,6 +700,7 @@ def data_source_line(result: dict) -> str:
         (set(FUND_INDICATOR_COLS), "재무·밸류(KR=전자공시 OpenDART·US=SEC EDGAR)"),
         (set(MARKETCAP_INDICATOR_COLS), "시총·거래대금(KRX Open API)"),
         (set(SHORTVOL_INDICATOR_COLS), "공매도 거래량(FINRA)"),
+        (set(SHORTBAL_INDICATOR_COLS), "공매도 잔고(KRX pykrx)"),
         (set(INSTITUTIONAL_INDICATOR_COLS), "기관 13F 보유(SEC EDGAR)"),
     ):
         if cols & colset:

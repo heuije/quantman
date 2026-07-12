@@ -266,11 +266,12 @@ register(DataTypeSpec(
     source="공식 KRX Open API sto(이력 2010~, 포털 신청 필요) + FinanceDataReader(현행 스냅샷)",
     provides=["market_cap", "trade_value", "shares_listed"],
     required_meta=_BASE_META + ["as_of"], downstream=["universe.screener", "sizing"],
-    current_status="partial",
+    current_status="present",
     notes="현행 스냅샷=krx_cache(메모리·스크리너 전용). 이력 수집 경로(marketcap_krx 피드·"
           "종목별 parquet·PIT as_of=거래일) 가동 — `sto` 인가·라이브 응답 검증 완료(2026-07-03: "
           "KOSPI 945+KOSDAQ 1,821종목/일·ISU_CD 6자·삼성 시총=종가×상장주식수 크로스체크 일치·"
-          "T+1 08시 확정). 엔진 소비(indicators attach) 배선 전까지 partial.",
+          "T+1 08시 확정). 엔진 소비 배선 완료(add_marketcap — market_cap 정본 교체+trade_value) "
+          "→ present.",
 ))
 register(DataTypeSpec(
     key="static.calendar", pclass=PClass.STATIC, label="시장별 거래 캘린더",
@@ -338,11 +339,28 @@ register(DataTypeSpec(
     provides=["short_volume", "short_exempt_volume", "total_volume"],
     required_meta=_BASE_META + ["as_of"],
     downstream=["signal(공매도 ref)", "screener", "study.event"],
-    current_status="partial",
-    notes="⚠off-exchange(TRF 보고분)만 — 시장 전체 아님·공매도 잔고(포지션)와 별개(잔고는 "
-          "2010 floor 불가로 제외). as_of=거래일(당일 18:00 ET 게시 — KR 수급과 동일 규약). "
-          "원시 3컬럼만 적재(비율·급증은 파생). 휴장=404 미게시. **수집 가동·엔진 소비 배선은 "
-          "후속**(marketcap과 함께 — 엔진이 계산 못 하는 컬럼을 컴파일러에 노출하지 않음) → partial.",
+    current_status="present",
+    notes="⚠off-exchange(TRF 보고분)만 — 시장 전체 아님·공매도 잔고(포지션)와 별개(US 잔고는 "
+          "2010 floor 불가로 제외 — KR 잔고는 flow.kr_short_balance). as_of=거래일(당일 18:00 ET "
+          "게시 — KR 수급과 동일 규약). 원시 3컬럼 적재, 엔진 노출은 파생 short_volume_ratio "
+          "1컬럼(add_short_volume 배선 완료 → present). 휴장=404 미게시. floor=소스 자연 한계 "
+          "2018-08(2010 Core 미달분 정직 노출).",
+))
+register(DataTypeSpec(
+    key="flow.kr_short_balance", pclass=PClass.FLOW,
+    label="KR 공매도 잔고(잔고비중)", frequency="daily",
+    history_rule="백테스트 시작일 − 최대 window 이상 연속",
+    floor=CORE_FLOOR, point_in_time=True,
+    source="KRX 정보데이터시스템(data.krx.co.kr) — pykrx 경유(무료 KRX 계정 로그인)",
+    provides=["bal_qty", "bal_amt", "bal_ratio"],
+    required_meta=_BASE_META + ["as_of"],
+    downstream=["signal(공매도잔고 ref)", "screener", "study.event"],
+    current_status="present",
+    notes="진짜 short interest(상장주식수 대비 잔고 %) — flow.us_short_volume(거래량 비중)과 별개. "
+          "원시 3컬럼 적재, 엔진 노출은 bal_ratio→short_balance_ratio 1컬럼(add_short_balance — "
+          "수량·금액은 정규화 전 절대값이라 미노출). as_of=거래일. KRX_ID/PW 미설정 시 feed 비활성. "
+          "웹 개별종목 서빙(krdata.short_balance_recent)과 같은 피드 공유(수집 1곳). "
+          "cron 적재 가동중(10분 백필 + 16:35 일일증분).",
 ))
 register(DataTypeSpec(
     key="flow.institutional_13f", pclass=PClass.FLOW,
