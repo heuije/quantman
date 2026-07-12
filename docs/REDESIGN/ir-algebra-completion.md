@@ -149,3 +149,13 @@ EventStudyChart 음수축 렌더 포함.
   불변식 보존). 실데이터: 에코프로비엠 250일 신고가 89건 — 전 240일 +142%·전 120일 +113%
   (전조 정량화) vs 후 20일 +8.97%, dev-render 브라우저 확인. + core/tests/conftest.py 신설
   (워크트리 quant_core 고정 — 단독 실행 시 타 트리 테스트하던 부류 봉쇄).
+- 2026-07-12 **WS1 머지**(PR#369→0753bb9). **WS2(축 조합성) 구현**: ①이벤트×파라미터 격자
+  (`_run_event_sweep` — 격자점마다 이벤트 스터디 재실행·코호트 버킷·row_axis=파라미터)
+  ②variant 축 신설(`Study.variants`=이름 붙은 구조 대안 — relate+event는 조건 교체
+  `_run_event_variants`·simulate는 신호 교체 run_sweep variant 분기·기존 sweep 버킷)
+  ③'격자/대안이 있는데 조용히 무시' 부류를 필드 존재 분기로 차단(dispatch·resolve_runner 미러)
+  ④2D 모호 가드(variants×param_grid 금지·time_fold 상호배제·이름 유일성). 계약 3종 등록
+  (relate.event_sweep·relate.event_variants·simulate.sweep.variant)→광고 자동 파생.
+  부수 발견·수정: serialize axis 화이트리스트가 row_axis 유실(웹 '종목 코호트' 오표기 —
+  기지 whitelist 부류·회귀 가드 추가). 실데이터: 골든크로스 이평 20/60/120 격자(120만 +5일
+  p0.025 유의)·조건 대안(골든크로스 vs 눌림회복) dev-render 확인.

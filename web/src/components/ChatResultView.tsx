@@ -145,6 +145,7 @@ function SweepBuckets({ result }: { result: IrStrategyResult }) {
   // 축 종류별 라벨 — 기간분할은 키 형태로 연/분기/월 판별(엔진 split_period 결과). 표 머리·부제 공용.
   const colLabel = axis === "parameter" ? "파라미터"
     : axis === "asset" ? "종목"
+    : axis === "variant" ? "대안"
     : axis === "condition" ? "국면"
     : rows.every(([k]) => /^\d{4}$/.test(k)) ? "연도"
     : rows.every(([k]) => /^\d{4}Q\d$/.test(k)) ? "분기"
@@ -261,6 +262,8 @@ function CohortComparison({ result }: { result: IrStrategyResult }) {
     name?: string; n_events?: number; overall?: Record<string, IrEventStat>; error?: string }>;
   const syms = Object.keys(buckets);
   const nSym = (result as { n_symbols?: number }).n_symbols ?? syms.length;
+  // WS2 — 행축이 종목(entity)뿐 아니라 파라미터(이벤트×격자)·조건(variant 대안)일 수 있다.
+  const rowAxis = (result as { row_axis?: string }).row_axis ?? "종목";
   const label = (s: string) => {           // 종목명(코드) — 코드만 뜨던 것 식별 보강(#C P2)
     const nm = buckets[s]?.name;
     return nm && nm !== s ? `${nm} (${s})` : s;
@@ -268,11 +271,11 @@ function CohortComparison({ result }: { result: IrStrategyResult }) {
   return (
     <div className="chat-result">
       <div className="muted" style={{ fontSize: "0.8em", marginBottom: 4 }}>
-        종목 코호트 — {nSym}종목 이벤트스터디 비교 (forward 수익, 손익 아님 · 색=방향, 굵게=p&lt;0.05 유의)
+        {rowAxis} 코호트 — {nSym}개 {rowAxis}별 이벤트스터디 비교 (수익 분석, 손익 아님 · 색=방향, 굵게=p&lt;0.05 유의)
       </div>
       <div style={{ overflowX: "auto" }}>
         <table className="sweep-table">
-          <thead><tr><th>종목</th><th>표본</th>
+          <thead><tr><th>{rowAxis}</th><th>표본</th>
             {windows.map((w) => (
               <th key={w}>{Number(w) < 0 ? `전${-Number(w)}일` : `+${w}일`} 평균%(p)</th>
             ))}</tr></thead>

@@ -140,7 +140,7 @@ def build_strategy_excel(
         return _build_period_split(ir, dataset, result, disp)
     if result.get("shape") == "cohort":   # 종목 코호트(다종목 이벤트스터디) — axis="asset"지만 버킷이
         return _build_cohort(ir, dataset, result, disp)   # 이벤트스터디값(n_events·overall) → sweep보다 먼저
-    if axis in ("parameter", "asset"):
+    if axis in ("parameter", "asset", "variant"):
         return _build_sweep(ir, dataset, result, disp)
     if axis == "condition":
         return _build_condition(ir, dataset, result, disp)
@@ -1020,7 +1020,7 @@ def _build_sweep(ir, dataset, result, disp: str) -> bytes:
     """SWEEP parameter/entity — 버킷별 성과 감사표(값)."""
     S = _styles()
     axis = result.get("axis")
-    label_h = {"parameter": "파라미터값", "asset": "종목"}.get(axis, "버킷")
+    label_h = {"parameter": "파라미터값", "asset": "종목", "variant": "대안"}.get(axis, "버킷")
     wb = Workbook()
     ws = wb.active
     ws.title = "스윕결과"
@@ -1280,7 +1280,8 @@ def _build_cohort(ir, dataset, result, disp: str) -> bytes:
     ws.title = "종목비교"
     buckets = result.get("buckets") or {}
     windows = [str(w) for w in (result.get("windows") or [])]
-    _title(ws, f"{disp} — 종목 코호트 이벤트 스터디 ({result.get('n_symbols', len(buckets))}종목 · "
+    row_axis = result.get("row_axis") or "종목"   # WS2 — 파라미터/조건 코호트 겸용
+    _title(ws, f"{disp} — {row_axis} 코호트 이벤트 스터디 ({result.get('n_symbols', len(buckets))}개 · "
                "종목별 forward 수익 비교)", S)
     hdr = ["종목", "표본(이벤트수)"]
     for w in windows:

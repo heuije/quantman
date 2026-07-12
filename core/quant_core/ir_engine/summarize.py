@@ -410,8 +410,9 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
                 f"(p{_f(_win(ov, w).get('p_value'), 3)}·양{_f(_win(ov, w).get('prob_positive'), 0)}%)"
                 for w in windows)
             lines.append(f"  {who}: n={b.get('n_events')} · {wins}")
-        head = (f"[종목 코호트 이벤트스터디] {result.get('n_symbols', len(buckets))}종목 · "
-                "종목별 forward 수익 비교")
+        row_axis = result.get("row_axis") or "종목"   # WS2 — 행축이 파라미터/조건일 수 있다
+        head = (f"[{row_axis} 코호트 이벤트스터디] {result.get('n_symbols', len(buckets))}개 · "
+                f"{row_axis}별 이벤트 수익 비교")
         return head + "\n" + "\n".join(lines)
 
     if shape == "event_study":

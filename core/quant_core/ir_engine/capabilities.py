@@ -220,6 +220,11 @@ def capability_spec() -> dict:
              "use_for": "'시간이 지나도 성과가 일관적인가' 강건성 점검(OOS). reduction=consistency와 함께. "
                         "**'연도별/연간/매년'은 split_period='year'**(달력 연 단위, 키=2015·2016…). "
                         "folds는 시간순 등분 수(기본 4)·split_dates는 명시 경계."},
+            {"value": "variant",
+             "does": "이름 붙은 구조 대안(study.variants=[{name, node}])별 재실행 — simulate는 신호를, "
+                     "relate+event는 이벤트 조건을 대안으로 교체해 각각 실행·나란히 비교",
+             "use_for": "'조건/전략 A안 vs B안 vs C안' — 값(param_grid)이 아니라 *구조*가 다른 대안 비교를 "
+                        "1콜로. 이름 필수·서로 다르게, 2개 이상. param_grid와 동시 사용 불가(2D 모호)."},
         ],
         # 달력 주기 분할 — '연도별' 등을 folds 추측 없이 엔진이 실데이터 날짜로 그룹. split_period.
         "study_split_period": [

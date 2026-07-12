@@ -188,11 +188,20 @@ class Objective(BaseModel):
     oos_guard: bool = True   # in-sample 최적을 시간폴드 OOS 일관성으로 교차검증(과최적화 가드)
 
 
+class Variant(BaseModel):
+    """variant 축의 한 대안 — 이름 붙은 신호/이벤트 구조(Node). param_grid가 *값* 목록이라면
+    variants는 *구조* 목록 — '조건 A안 vs B안 vs C안'을 한 번에 비교(WS2·prod conv#33)."""
+    name: str
+    node: Node
+
+
 class Study(BaseModel):
     """평면4 — 질문을 한 축으로 펼치고 환원(옛 SweepSpec + period_split 흡수)."""
-    axis: Literal["none", "parameter", "entity", "label", "time_fold"] = "none"
+    axis: Literal["none", "parameter", "entity", "label", "time_fold", "variant"] = "none"
     reduction: Literal["enumerate", "contrast", "consistency", "extremize"] = "enumerate"
     param_grid: list[ParamAxis] = Field(default_factory=list)
+    # 구조 대안 축(WS2) — simulate면 signal을, relate+event면 event 조건을 대안별로 교체 실행.
+    variants: list[Variant] = Field(default_factory=list)
     assets: list[str] = Field(default_factory=list)
     label: Optional[Node] = None
     folds: int = 4
@@ -747,10 +756,27 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     # 펼침/분석 필드(param_grid·assets·label·target_node·event)나 비-simulate 동사와
     # 공존하면 2D 모호성이 생기므로 거부 — time_fold는 단독으로만 쓴다.
     if st.axis == "time_fold" and (st.label is not None or st.param_grid or st.assets
-                                   or st.target_node is not None or st.event is not None
-                                   or s.query != "simulate"):
+                                   or st.variants or st.target_node is not None
+                                   or st.event is not None or s.query != "simulate"):
         issues.append(Issue("S-split", SEV_ERROR,
                             "기간분할과 펼침/분석은 동시에 쓸 수 없습니다 — 하나만 선택하세요.", "simulation"))
+
+    # variant(구조 대안) × parameter(값 격자) 동시 사용 금지 — 2D 모호성(어느 축이 버킷인가).
+    # variants가 있으면 축은 variant여야 하고(조용한 무시 방지), 격자·자산축과 공존할 수 없다.
+    if st.variants and (st.param_grid or st.assets):
+        issues.append(Issue("S-sweep", SEV_ERROR,
+                            "구조 대안(variants)과 파라미터 격자/자산축은 동시에 쓸 수 없습니다 — "
+                            "대안 비교는 axis=variant 단독으로, 값 민감도는 param_grid 단독으로.",
+                            "study"))
+    if st.axis == "variant" and len(st.variants) < 2:
+        issues.append(Issue("S-sweep", SEV_ERROR,
+                            "variant 축은 이름 붙은 대안(variants)이 2개 이상 필요합니다.", "study.variants"))
+    if st.variants:
+        names = [v.name.strip() for v in st.variants]
+        if any(not n for n in names) or len(set(names)) != len(names):
+            issues.append(Issue("S-sweep", SEV_ERROR,
+                                "variants의 name은 비어있지 않고 서로 달라야 합니다(버킷 키).",
+                                "study.variants"))
 
     # 선물 — 연속물 설정(roll_method·series_adjust·roll_cost_pct)이 비선물 유니버스에 걸리면
     # 조용히 무시된다 → 경고(silent no-op 방지, M-vacuous 계열). 단일·리스트 유니버스에서만 판정.

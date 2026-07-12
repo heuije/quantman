@@ -362,6 +362,10 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
     ⚠ **비교 vs 최적 구분**: "어느 게 *최적* 1개"=reduction="extremize"; "여러 조건/임계/종목/시나리오를 *각각 비교·나열*
     (다 보여줘·어떻게 다른가)"=study.axis="parameter"(+param_grid 후보값들) 또는 "entity"(+assets) + reduction="enumerate".
     비교·나열 요청을 study 없이(axis=none) 단일 실행으로 떨어뜨리지 말 것 — N개를 한 번에 펼쳐 비교한다.
+    **구조가 다른 대안 비교(variant·WS2)**: 값이 아니라 *신호/조건의 구조 자체*가 다른 대안들("A안: 순매수 전환 vs
+    B안: 전환+500억 이상 vs C안: 2일 연속")은 → study.axis="variant" + study.variants=[{{"name":"A안","node":<블록>}}, ...]
+    (이름 필수·서로 다르게). simulate면 대안이 signal을, relate+event면 event 조건을 교체해 각각 실행·나란히 비교.
+    variants와 param_grid 동시 사용 금지(2D 모호).
 11. [다중팩터 횡단 회귀] "밸류·모멘텀·퀄리티 중 무엇이 forward 수익을 설명하나(상호 통제)"·"여러 지표로
     수익 횡단 회귀"처럼 *여러 설명변수의 동시 예측력*이면 → query="relate" + study.relation_kind="regression"
     + study.factors=[팩터1, 팩터2, ...](각 score 블록) + study.windows. universe.kind=all/list(종목 2+).
@@ -385,6 +389,11 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
     **전조(pre-event)**: "급등 *전*에 조짐이 있었나"·"이벤트 *이전* 구간" 질문이면 windows에 **음수**를 넣는다 —
     음수 w = 이벤트 전 |w|일 구간의 누적수익(창 시작점 anchor). 예: windows=[-240,-120]=이벤트 전 240일/120일
     구간(전반·후반 대조). intraday 기준의 음수 창만 미지원(분봉 필요 — close로).
+    **이벤트 × 격자(WS2)**: "임계값(급등률·순매수 규모 등)을 바꿔가며 이벤트 경향 비교"는 → 위 이벤트 스터디에
+    study.axis="parameter" + study.param_grid=[{{"path":"study.event...(이벤트 내부 값 점경로)","values":[...]}}]를
+    더한다 — 격자점마다 이벤트 스터디가 재실행돼 나란히 비교(코호트 표). windows도 격자 가능.
+    **이벤트 조건 대안(variant)**: 구조가 다른 이벤트 조건 N개("A: 전환 vs B: 전환+임계") 비교는
+    study.axis="variant" + study.variants=[{{"name","node"(condition 블록)}}] — 대안별 이벤트 스터디 1콜.
     **국면별로 다른가**(상승장 vs 하락장·고변동 vs 저변동)면 study.label=<국면 라벨(bucket 등 label 블록)>도 추가
     → by_regime로 분리 비교. signal은 명목(data Close — 분석 동사).
     ⚠ 단일종목의 "예측력/오를까/방향"은 횡단 IC(종목 2+ 필요)가 **아니라** 이벤트 스터디다(한 종목으로 가능).

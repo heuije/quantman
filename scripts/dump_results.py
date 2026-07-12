@@ -63,6 +63,23 @@ FIXTURES = [
             "left": C, "right": {"op": "ts_max", "params": {"window": 250}, "inputs": {
                 "signal": {"op": "ts_delay", "params": {"window": 1}, "inputs": {"signal": C}}}}}},
                   "windows": [-240, -120, 20], "event_basis": "close"}}),
+    ("event_sweep", "이벤트 × 파라미터 격자 (WS2·conv#22 부류)", {
+        "name": "코스피선물 골든크로스 — 이평기간 20/60/120별 forward 비교",
+        "universe": {"kind": "single", "symbols": ["코스피200선물"]},
+        "signal": C, "query": "relate",
+        "study": {"axis": "parameter", "event": _cross(60), "windows": [5, 20],
+                  "event_basis": "close",
+                  "param_grid": [{"path": "study.event.inputs.right.params.window",
+                                  "values": [20, 60, 120]}]}}),
+    ("event_variants", "이벤트 조건 대안 비교 (WS2·conv#33 부류)", {
+        "name": "삼성전자 — 골든크로스 vs 눌림회복 조건 대안",
+        "universe": {"kind": "single", "symbols": ["005930"]},
+        "signal": C, "query": "relate",
+        "study": {"axis": "variant", "windows": [5, 20], "event_basis": "close",
+                  "event": _cross(60),
+                  "variants": [
+                      {"name": "골든크로스(60일)", "node": _cross(60)},
+                      {"name": "20일선 상향회복", "node": _cross(20)}]}}),
     ("event_concentrated", "이벤트 연도편중 (P3-a 함정 verdict·ok+참고배너)", {
         "name": "에코프로비엠 250일 신고가 후 수익 (2022~)",
         "universe": {"kind": "single", "symbols": ["247540"]},

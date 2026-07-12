@@ -206,6 +206,12 @@ def _dispatch_query(strategy: StrategyIR, dataset: dict) -> dict:
         st = strategy.study
         if st.axis == "entity":                       # 다종목 코호트(#A P1) — pool 아닌 per-symbol 비교
             return _run_entity_cohort(strategy, dataset)
+        # WS2 — 이벤트 스터디의 축 조합. axis뿐 아니라 필드 존재로도 분기해 '격자/대안이 있는데
+        # 조용히 무시'되던 부류를 닫는다(검증기가 variants×param_grid 동시는 거부).
+        if st.event is not None and (st.axis == "variant" or st.variants):
+            return _run_event_variants(strategy, dataset)
+        if st.event is not None and (st.axis == "parameter" or st.param_grid):
+            return _run_event_sweep(strategy, dataset)
         if st.event is not None:
             return _run_event_study(strategy, dataset)
         if st.relation_kind == "regression":
@@ -307,6 +313,10 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
     if err is not None:
         return _empty(err)
     st = strategy.study
+    # variant는 필드 존재로도 분기(WS2) — 컴파일러가 axis를 빠뜨려도 대안이 조용히 무시되지 않게.
+    if st.variants and st.axis in ("none", "variant"):
+        st = st.model_copy(update={"axis": "variant"})
+        strategy = strategy.model_copy(update={"study": st})
     if st.axis == "none":
         return run_strategy_ir(strategy, dataset)
 
@@ -343,6 +353,23 @@ def run_sweep(strategy: StrategyIR, dataset: dict) -> dict:
             buckets[a] = (summarize_returns(daily_returns(res["equity"]))
                           if res.get("success") else {"error": res.get("error")})
         return {"success": True, "axis": "asset", "buckets": buckets}
+
+    if st.axis == "variant":
+        # WS2 — 구조 대안 축(simulate): 이름 붙은 신호 대안을 각각 백테스트해 성과 버킷으로.
+        # param_grid가 '값' 목록이라면 variants는 '신호 트리' 목록 — 기존 sweep 버킷 형상 재사용.
+        variants = [v for v in (strategy.study.variants or [])]
+        if len(variants) < 2:
+            return _empty("variant 축은 이름 붙은 대안(variants)이 2개 이상 필요합니다.")
+        base = strategy.model_dump()
+        buckets = {}
+        for var in base["study"]["variants"]:
+            d = copy.deepcopy(base)
+            d["study"] = {"axis": "none"}; d["query"] = "simulate"
+            d["signal"] = copy.deepcopy(var["node"])
+            res = run_strategy_ir(StrategyIR.model_validate(d), dataset)
+            buckets[var["name"]] = (summarize_returns(daily_returns(res["equity"]))
+                                    if res.get("success") else {"error": res.get("error")})
+        return {"success": True, "axis": "variant", "buckets": buckets}
 
     if st.axis == "label":
         if st.label is None:
@@ -410,6 +437,71 @@ def _run_entity_cohort(strategy: StrategyIR, dataset: dict) -> dict:
             buckets[a] = {"name": nm, "error": res.get("error"), "n_events": 0}
     return {"success": True, "shape": "cohort", "axis": "asset", "query": strategy.query,
             "windows": windows, "n_symbols": len(assets), "buckets": buckets}
+
+
+def _run_event_sweep(strategy: StrategyIR, dataset: dict) -> dict:
+    """이벤트 스터디 × 파라미터 격자(W2a) — 격자점마다 이벤트 스터디를 재실행해 나란히 비교.
+
+    prod 실측(conv#22·#27): 'VIX 급등 임계값·윈도우 조합별로 가장 두드러진 경향'이 2-D 거부로
+    막혀 봇이 수동 순차 sweep하다 오류로 죽었다. param_grid 경로는 study.event 내부 값
+    (예: study.event.inputs.right.params.value)·windows 등 IR 아무 점경로."""
+    st = strategy.study
+    grid = st.param_grid
+    if not grid or any(not ax.values for ax in grid):
+        return _empty("이벤트 격자는 param_grid(경로·값 목록)가 필요합니다.")
+    import itertools
+    base = strategy.model_dump()
+    buckets: dict = {}
+    windows = None
+    axes_meta = [{"path": ax.path, "values": list(ax.values)} for ax in grid]
+    for combo in itertools.product(*[ax.values for ax in grid]):
+        key = " | ".join(f"{ax.path.split('.')[-1]}={v}" for ax, v in zip(grid, combo))
+        d = copy.deepcopy(base)
+        d["study"] = {**(base.get("study") or {}), "axis": "none", "param_grid": [], "variants": []}
+        for ax, v in zip(grid, combo):
+            _set_path(d, ax.path, v)          # 경로는 IR 아무 점경로(study.event 내부 포함)
+        res = run_query(StrategyIR.model_validate(d), dataset)
+        if res.get("success"):
+            windows = windows or res.get("windows")
+            buckets[key] = {"name": key, "n_events": res.get("n_events"),
+                            "overall": res.get("overall"), "composition": res.get("composition")}
+        else:
+            buckets[key] = {"name": key, "error": res.get("error"), "n_events": 0}
+    return {"success": True, "shape": "cohort", "axis": "parameter", "row_axis": "파라미터",
+            "query": strategy.query, "axes": axes_meta,
+            "windows": windows or [str(int(w)) for w in
+                                   sorted({int(x) for x in st.windows or [5, 10, 20]})],
+            "n_symbols": len(buckets), "buckets": buckets}
+
+
+def _run_event_variants(strategy: StrategyIR, dataset: dict) -> dict:
+    """이벤트 조건 대안 비교(W2b) — 이름 붙은 이벤트 조건 N개를 각각 이벤트 스터디로 실행해
+    나란히(prod 실측 conv#33: '진입조건 A/B/C/D 비교'가 1콜로 컴파일되지 않아 조건 A만 나옴).
+    코호트 기계 재사용 = 신규 shape 0(렌더러·status·엑셀 그대로 소비)·내부 run_query라
+    버킷별 status·탈락 회계도 산다."""
+    st = strategy.study
+    if len(st.variants or []) < 2:
+        return _empty("variant 축은 이름 붙은 대안(variants)이 2개 이상 필요합니다.")
+    base = strategy.model_dump()
+    buckets: dict = {}
+    windows = None
+    for var in base["study"]["variants"]:
+        d = copy.deepcopy(base)
+        d["study"] = {**(base.get("study") or {}), "axis": "none", "param_grid": [],
+                      "variants": [], "event": copy.deepcopy(var["node"])}
+        res = run_query(StrategyIR.model_validate(d), dataset)
+        if res.get("success"):
+            windows = windows or res.get("windows")
+            buckets[var["name"]] = {"name": var["name"], "n_events": res.get("n_events"),
+                                    "overall": res.get("overall"),
+                                    "composition": res.get("composition")}
+        else:
+            buckets[var["name"]] = {"name": var["name"], "error": res.get("error"), "n_events": 0}
+    return {"success": True, "shape": "cohort", "axis": "variant", "row_axis": "조건",
+            "query": strategy.query,
+            "windows": windows or [str(int(w)) for w in
+                                   sorted({int(x) for x in st.windows or [5, 10, 20]})],
+            "n_symbols": len(buckets), "buckets": buckets}
 
 
 # ── 최적화 (extremize 환원 — 최적해 + 과최적화 OOS 가드) ────────────────────────

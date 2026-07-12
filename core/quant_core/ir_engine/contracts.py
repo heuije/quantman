@@ -179,6 +179,11 @@ def resolve_runner(s) -> str:
         st = s.study
         if st.axis == "entity":
             return "relate.entity_cohort"
+        # WS2 — 축 조합(필드 존재로도 분기: '격자/대안이 있는데 조용히 무시' 부류 차단·dispatch 미러)
+        if st.event is not None and (st.axis == "variant" or st.variants):
+            return "relate.event_variants"
+        if st.event is not None and (st.axis == "parameter" or st.param_grid):
+            return "relate.event_sweep"
         if st.event is not None:
             return "relate.event_study"
         if st.relation_kind == "regression":
@@ -189,13 +194,15 @@ def resolve_runner(s) -> str:
     st = s.study
     if st.axis == "time_fold":
         return "simulate.period_split"
+    if st.variants and st.axis in ("none", "variant"):
+        return "simulate.sweep.variant"     # 필드 존재 분기(WS2) — run_sweep 승격과 미러
     if st.axis == "none":
         # 엔진 2차 분기(run_unified) — entry.mode는 IR에서 정적으로 읽힌다.
         return ("simulate.event" if s.position.entry.mode == "on_signal"
                 else "simulate.scheduled")
     if st.reduction == "extremize":
         return "simulate.extremize"
-    return f"simulate.sweep.{st.axis}"      # parameter | entity | label
+    return f"simulate.sweep.{st.axis}"      # parameter | entity | label | variant
 
 
 # ── 계약 레지스트리 (러너 21종 전수 — P2) ─────────────────────────────────────
@@ -277,6 +284,14 @@ def _sweep_param_grid(s):
     return None
 
 
+def _variants_min2(s):
+    """구조 대안 축은 이름 붙은 대안 2개 이상 — 1개면 비교가 아니라 단일 실행이다(WS2)."""
+    if len(s.study.variants or []) < 2:
+        return ("S-sweep", "variant 축은 이름 붙은 대안(variants)이 2개 이상 필요합니다.",
+                "study.variants")
+    return None
+
+
 def _sweep_assets(s):
     if not s.study.assets:
         return ("S-sweep", "자산축 펼침은 assets(종목 목록)가 필요합니다.", "study")
@@ -346,6 +361,22 @@ REGISTRY: dict[str, RunnerContract] = {c.key: c for c in [
         checks=(Check("study.windows", MinLen(1), rule="S-event",
                       message="이벤트 분석은 윈도우가 필요합니다(경과 영업일 — 음수=이벤트 이전·전조)."),),
         cross_checks=(_event_windows_domain, _event_excess_needs_universe)),
+    _rc("relate.event_sweep", "run.py::_run_event_sweep", "이벤트 스터디 × 파라미터 격자",
+        "이벤트 정의·윈도우의 파라미터 격자점마다 이벤트 스터디를 재실행해 나란히 비교(버킷)",
+        "'임계값 10/20/30%별로 이벤트 후(또는 전) 경향이 어떻게 다른가' — 이벤트 민감도 탐색을 "
+        "한 번에(param_grid 경로는 study.event 내부 값·windows 등 아무 점경로).",
+        shape="cohort",
+        checks=(Check("study.windows", MinLen(1), rule="S-event",
+                      message="이벤트 분석은 윈도우가 필요합니다(경과 영업일 — 음수=이벤트 이전·전조)."),),
+        cross_checks=(_sweep_param_grid, _event_windows_domain, _event_excess_needs_universe)),
+    _rc("relate.event_variants", "run.py::_run_event_variants", "이벤트 조건 대안 비교",
+        "이름 붙은 이벤트 조건 대안 N개를 각각 이벤트 스터디로 실행해 나란히 비교(버킷)",
+        "'진입조건 A/B/C 중 뭐가 나은가' — 구조가 다른 조건 대안 비교를 1콜로"
+        "(study.variants=[{name, node}]).",
+        shape="cohort",
+        checks=(Check("study.windows", MinLen(1), rule="S-event",
+                      message="이벤트 분석은 윈도우가 필요합니다(경과 영업일 — 음수=이벤트 이전·전조)."),),
+        cross_checks=(_variants_min2, _event_windows_domain, _event_excess_needs_universe)),
     _rc("relate.ic", "run.py::_run_ic_study", "IC(예측력) 분석",
         "신호(target_node)와 w일 forward 수익의 날짜별 횡단 상관(IC·IR)",
         "'이 지표가 수익을 예측하나' — 다종목 예측력.",
@@ -409,6 +440,11 @@ REGISTRY: dict[str, RunnerContract] = {c.key: c for c in [
     _rc("simulate.sweep.label", "run.py::run_sweep(label)", "라벨 분할 성과",
         "1회 실행의 종목별 기여를 라벨(섹터·국면 등)로 그룹 분할 비교",
         "'섹터별/국면별 성과'.", shape="sweep"),
+    _rc("simulate.sweep.variant", "run.py::run_sweep(variant)", "신호 대안 백테스트 비교",
+        "이름 붙은 신호 대안(variants=[{name, node}]) N개를 각각 백테스트해 성과 버킷으로 비교",
+        "'전략 A안 vs B안 vs C안 성과' — 값이 아니라 *구조*가 다른 신호 대안 비교를 1콜로.",
+        shape="sweep",
+        cross_checks=(_variants_min2,)),
 ]}
 
 
