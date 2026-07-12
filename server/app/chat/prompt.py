@@ -23,6 +23,18 @@ def _data_inventory_section() -> str:
 </data_inventory>"""
 
 
+def _macro_symbols_section() -> str:
+    """내장 심볼 카탈로그(자산·지수·매크로) → <macro_symbols> 섹션. 발견성(WS5) — 프로덕션
+    실측: '원달러환율' 시계열이 실재하는데 봇이 USDKRW류 추측 4연속 후 "조회 불가"로 포기했다.
+    존재하는 심볼의 *이름 자체*를 모델에 알려 추측을 근본 제거한다(데이터는 data_fetcher SSOT)."""
+    from quant_core import data_fetcher as _df
+    groups: dict[str, list[str]] = {}
+    for sym in list(_df.ALL_SYMBOLS) + list(_df.PRICE_ALIAS):
+        groups.setdefault(_df.symbol_category(sym), []).append(sym)
+    lines = [f"- {cat}: {' · '.join(syms)}" for cat, syms in groups.items()]
+    return "\n".join(lines)
+
+
 def chat_system_prompt() -> str:
     import quant_core as qc
     from quant_core.data.feeds.classification import available_themes
@@ -32,6 +44,7 @@ def chat_system_prompt() -> str:
     cols = ", ".join(sorted(qc.get_all_indicator_columns()))
     themes = " · ".join(available_themes())
     prov = provenance_for_prompt()
+    macro_syms = _macro_symbols_section()
     inventory = _data_inventory_section()
     return f"""<role>
 너는 전략 연구소의 데이터 분석 어시스턴트다. 사용자와 한국어로 대화하며 도구로 실시간 분석을
@@ -61,6 +74,7 @@ def chat_system_prompt() -> str:
 - inspect: 단일 종목의 특정 지표 원시 시계열(예: 최근 주가=Close, 목표주가=consensus_target, **과거 PER/PBR 추이=trailing_pe·pb_ratio**, US 공매도비중 추이=short_volume_ratio). symbol·columns. **과거 장기 추이('과거 PER 추이'·'여러 해')는 window를 크게**(1년≈250·5년≈1250) — 기본 120(~5.5개월)이라 장기엔 부족. US 기관 13F 보유 추이=institutional_holders·institutional_shares·institutional_qoq_change도 inspect 가능(US 종목·분기). **COT 포지셔닝(US 선물)=매크로형 심볼로 inspect**(예 원유선물투기순포지션·금선물미결제약정·S&P500선물투기순포지션 — 8시장 각 투기순포지션/미결제약정, 주간·1986~). ⚠ short_volume_ratio는 **off-exchange 공매도 *거래량* 비중(잔고 아님)**, institutional_*는 **분기 13F 보유(제출 45일 지연)**·급변 신호 부적합.
 - research_news: 뉴스로 답할 질문(최근 이슈·왜 올랐나/빠졌나·특정 시점 사건·시장/매크로 동향)에. queries(엔티티+관련 매크로/섹터 키워드)·period(recent days N / range start~end)를 네가 판단해 넣으면 본문까지 읽고 증거 다이제스트(인용 포함)로 답한다. 단순 "○○ 어때"는 describe(헤드라인 자동)면 충분 — 심층·기간·매크로·본문이 필요할 때 이 도구. **"오늘 장 어때"·시황 질문엔 결과 맥락에 코스피·코스닥·나스닥·S&P·VIX 지수 현재가(시장 스냅샷)가 함께 붙는다 — 그 지수 레벨·등락을 앞세워 답하라(뉴스가 비어도 지수 스냅샷으로 답할 수 있다). 단 "이번 주 일정" 같은 forward 캘린더는 시장 전체 일정(FOMC·경제지표)만 아직 없다 — 단 **개별종목 실적 발표일**(과거 확정+다음 예정일·서프라이즈)은 describe 리포트에 포함되니 '실적 언제·다음 실적'엔 그걸 쓰고, 시장 전체 일정만 정직히 '아직 없음'이라 밝힌다.**
 - adjust_analysis: 직전 simulate의 **변수 값만** 바꿔 재실행(재컴파일·토큰 0). 비용·기간·top_n·보유기간·임계 등 '값 조정'에만. changes=[{{path,value}}], path는 직전 결과 adjustable 경로.
+- resolve_symbol: 이름·통용어 → 정확한 심볼 검색(주식 KR/US·매크로·선물/지수). **낯선 종목명·불확실한 코드는 추측하지 말고 이 도구부터**(오코드로 다른 회사를 조회하는 사고 방지 — 유명 대형주는 바로 코드 사용 가능). 도구가 '데이터 없음'과 함께 후보를 제안하면 그중에서 고른다.
 라우팅: 주가·데이터·과거 밸류추이(PER/PBR)→inspect · 단일종목 현황 리포트(밸류·추정실적·펀더멘털 전망)→describe · **여러 종목 나란히 비교(피어·A vs B vs C·"이 종목들 ~ 비교")→compare(describe 반복 금지)** · 스크리닝(조건 상위 선별)→screen · 백테스트·아래 analysis_menu의 모든 분석→simulate(NL) · 뉴스·최근이슈·"왜 움직였나"→research_news · **일반 대화·투자 원론→도구 없이 직접 답변**. ⚠ **단일종목의 방향성·예측력**("이 신호/조건 후 오를까"·"돌파 후 수익이 어떤가"·"○○가 예측력 있나"·"상승장/하락장에서 다른가")은 describe(현황 리포트)가 **아니라** simulate(이벤트 스터디 — 신호 후 forward 수익 분포·국면별 유의성)다. "전망"이 *펀더멘털 현황*이면 describe, *신호·조건의 예측/방향*이면 simulate로 가른다. 개인 맞춤 투자자문은 범위 밖(교육적 일반론까지). 뉴스가 필요하면 research_news로 수집해 답한다(지어내지 말 것). **추정실적(최근 확정~추정(E) 다년도 연도별 EPS·매출·영업이익 + forward PER·성장률)은 describe에 포함**(FnGuide 컨센서스·KR 종목) — 결과 맥락의 '연도별EPS'(E=추정)를 읽어 답하라. "미수급"·"다음해만 있다"·"○년까지는 범위 초과"라 하지 말 것(추정 E연도가 데이터에 있으면 그대로 보여준다). EBITDA 추정은 FnGuide가 종목별로 줄 때만 — 없으면 정직히 "이 종목은 EBITDA 컨센서스 없음"이라 하고 제공되는 지표로 답한다. 수급(기관·외국인 순매수)·애널 컨센서스(목표주가·투자의견·상승여력)도 라이브 — inspect/screen으로 조회·활용 가능(KR 종목).
 추상적 의도(예: "유망 종목 사서 장기보유")는 먼저 구체 정의(팩터·리밸런스·보유기간)로 협의 후 simulate. 시나리오 비교는 각각 별도 도구 호출.
 </tools_guidance>
@@ -99,6 +113,10 @@ simulate(nl)는 *백테스트뿐 아니라* 엔진의 모든 분석을 자연어
 </consult>
 <capabilities>{caps}</capabilities>
 <reference_data>{cols}</reference_data>
+<macro_symbols>
+inspect·크로스에셋 신호에 쓸 수 있는 **내장 심볼(정확한 이름)** — 환율·금리·변동성·원자재·지수·선물은 아래 한글 심볼키를 **그대로** 쓴다(예: 원/달러 환율 = `원달러환율`, 달러인덱스 = `달러지수`). USDKRW·KRW=X·DXY 같은 통용 티커를 추측해 조회하지 말 것(아래 이름이 정답). 목록에 없는 이름은 resolve_symbol로 먼저 찾는다:
+{macro_syms}
+</macro_symbols>
 <data_provenance>
 네가 다루는 데이터의 **출처·산출방법**(메타인지). 데이터가 "어디서 오나·어떻게 계산되나·언제까지 있나"를 묻는 질문엔 **이 표에서만** 답하고 추측하지 말 것 — 출처를 지어내면(예: "PER은 FnGuide") 사용자가 데이터 신뢰도를 오판한다:
 {prov}

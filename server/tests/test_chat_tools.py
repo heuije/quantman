@@ -20,7 +20,7 @@ class _NoDbSession:
 def test_tool_schemas_present():
     names = {t["name"] for t in TOOL_SCHEMAS}
     assert names == {"screen", "compare", "simulate", "save_strategy", "describe", "inspect",
-                     "adjust_analysis", "research_news"}
+                     "adjust_analysis", "research_news", "resolve_symbol"}
 
 
 def test_assemble_compare_makes_valid_compare_ir():
@@ -649,3 +649,48 @@ def test_run_simulate_attaches_adjustable_manifest(monkeypatch):
     out = tools.run_simulate(session=_NoDbSession(), user_id=1, tool_input={"nl": "모멘텀"})
     paths = {p["path"] for p in out["adjustable"]}
     assert {"position.entry.top_n", "simulation.commission", "simulation.initial_capital"} <= paths
+
+
+# ── WS5: 심볼 발견성 — resolve_symbol 도구 + 미스 주도 제안 ─────────────────────
+# 프로덕션 실측 부류: 오코드 연쇄(노바렉스·코스맥스엔비티)·매크로 심볼 추측 포기(원달러환율).
+
+def test_resolve_symbol_tool_registered():
+    from app.chat.tools import TOOL_SCHEMAS
+    assert "resolve_symbol" in {t["name"] for t in TOOL_SCHEMAS}
+
+
+def test_resolve_symbol_finds_kr_stock_by_name():
+    out = chat_tools.run_tool("resolve_symbol", {"query": "노바렉스"})
+    assert out["success"] and out["shape"] == "resolve_symbol"
+    assert out["candidates"][0]["symbol"] == "194700"
+
+
+def test_resolve_symbol_alias_then_search():
+    """통용 티커(USDKRW)는 별칭(#D) 경유 후 검색 — 정식 매크로 심볼키가 1위."""
+    out = chat_tools.run_tool("resolve_symbol", {"query": "USDKRW"})
+    assert out["success"] and out["candidates"][0]["symbol"] == "원달러환율"
+
+
+def test_resolve_symbol_miss_is_honest_failure():
+    out = chat_tools.run_tool("resolve_symbol", {"query": "zzz존재하지않는이름zzz"})
+    assert out["success"] is False and "찾지 못했습니다" in out["error"]
+
+
+def test_resolve_symbol_empty_query():
+    out = chat_tools.run_tool("resolve_symbol", {"query": "  "})
+    assert out["success"] is False
+
+
+def test_resolve_symbol_compact_summary_lists_candidates():
+    out = chat_tools.run_tool("resolve_symbol", {"query": "코스맥스엔비티"})
+    text = chat_tools.compact_summary("resolve_symbol", out)
+    assert "222040" in text and "코스맥스엔비티" in text
+
+
+def test_inspect_miss_suggests_candidates(monkeypatch):
+    """심볼 미해결 실패가 유사 후보를 동봉 — 봇의 연쇄 추측(USDKRW→KRW=X…)을 근본 차단."""
+    from app.chat import tools
+    monkeypatch.setattr(tools.qc, "load_dataset_for", lambda syms: {})
+    out = tools.run_inspect({"symbol": "노바렉수", "columns": ["Close"]})   # 오타 질의
+    assert out["success"] is False
+    assert "노바렉스" in out["error"] and "194700" in out["error"]

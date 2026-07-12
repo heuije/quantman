@@ -197,8 +197,24 @@ COMPARE_TOOL = {
     },
 }
 
+RESOLVE_SYMBOL_TOOL = {
+    "name": "resolve_symbol",
+    "description": ("이름·통용어로 정확한 심볼(종목코드·매크로 심볼키)을 찾는다. 종목명이 낯설거나 "
+                    "코드가 불확실하면 **코드를 추측하지 말고** 먼저 이 도구로 후보를 확인할 것 "
+                    "(오코드로 다른 회사를 조회하는 사고 방지). 주식(KR/US)·매크로(환율·금리·VIX·COT)·"
+                    "선물/지수 전부 검색된다. 예: '노바렉스'→194700, '원달러 환율'→원달러환율."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string",
+                      "description": "찾을 이름·통용어(예: '노바렉스', '코스맥스엔비티', '원달러 환율', 'wti')."},
+        },
+        "required": ["query"],
+    },
+}
+
 TOOL_SCHEMAS = [SCREEN_TOOL, COMPARE_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL,
-                ADJUST_TOOL, RESEARCH_NEWS_TOOL]
+                ADJUST_TOOL, RESEARCH_NEWS_TOOL, RESOLVE_SYMBOL_TOOL]
 
 
 # ── IR 조립 ──────────────────────────────────────────────────────────────────
@@ -397,7 +413,15 @@ def run_inspect(tool_input: dict) -> dict:
     resolved = resolve_symbol_alias(symbol)   # USDKRW→원달러환율 등(#D 별칭 — 프로덕션 실측 해상도 갭)
     df = qc.load_dataset_for([resolved]).get(resolved)
     if df is None or len(df) == 0:
-        return {"success": False, "error": f"데이터가 없습니다: {resolved}"}
+        # 미스 주도 발견(WS5) — 실패가 스스로 길을 안내: 유사 후보를 실패 메시지에 동봉해
+        # 봇이 심볼을 연쇄 추측(prod: USDKRW→USD/KRW→KRW=X 4연속)하지 않게 한다.
+        from quant_core.ticker_db import search_symbols
+        sug = search_symbols(symbol, limit=5)
+        hint = ("" if not sug else " 비슷한 심볼: "
+                + ", ".join(f"{c['name']}({c['symbol']})" if c["name"] != c["symbol"]
+                            else c["symbol"] for c in sug)
+                + " — resolve_symbol로 더 찾을 수 있다.")
+        return {"success": False, "error": f"데이터가 없습니다: {resolved}.{hint}"}
     have = [c for c in columns if c in df.columns]
     if not have:
         avail = ", ".join(list(df.columns)[:40])   # 앞 40개면 모델 자가수정에 충분(넓은 DF 덤프 방지)
@@ -413,6 +437,22 @@ def run_inspect(tool_input: dict) -> dict:
             "columns": have, "dates": dates, "series": series}
 
 
+def run_resolve_symbol(tool_input: dict) -> dict:
+    """이름·통용어 → 심볼 후보(발견성 — WS5). 엔진 우회 retrieval.
+
+    별칭(#D)을 먼저 적용해 통용 티커(USDKRW·DXY)는 정식 심볼키로 바뀐 뒤 검색되므로
+    정확일치 1위가 보장된다. 미발견은 정직한 실패(지어내기 금지)."""
+    from quant_core.ticker_db import search_symbols
+    query = str(tool_input.get("query") or "").strip()
+    if not query:
+        return {"success": False, "error": "resolve_symbol: query가 필요합니다."}
+    cands = search_symbols(resolve_symbol_alias(query))
+    if not cands:
+        return {"success": False,
+                "error": f"'{query}'와 일치하는 심볼을 찾지 못했습니다(주식·매크로·선물 인덱스 기준)."}
+    return {"success": True, "shape": "resolve_symbol", "query": query, "candidates": cands}
+
+
 def run_tool(tool_name: str, tool_input: dict) -> dict:
     """도구 호출 → IR 조립 → 데이터셋 로드 → 엔진 실행. full 결과 dict 반환.
 
@@ -421,6 +461,8 @@ def run_tool(tool_name: str, tool_input: dict) -> dict:
     """
     if tool_name == "inspect":
         return run_inspect(tool_input)   # 원시 시계열 dump — IR 없음(엑셀 증빙 대상 아님)
+    if tool_name == "resolve_symbol":     # 심볼 발견 — 엔진 우회(WS5)
+        return run_resolve_symbol(tool_input)
     if tool_name == "research_news":      # 뉴스 리서치 — 엔진 우회(수집+본문+Haiku 다이제스트)
         from .news_research import research_news
         return research_news(tool_input.get("queries") or [],
@@ -584,6 +626,11 @@ def compact_summary(tool_name: str, result: dict) -> str:
     if tool_name == "save_strategy" or result.get("strategy_id") is not None:
         return (f"[save_strategy] '{result.get('name')}' 전략을 draft로 저장(id={result.get('strategy_id')}). "
                 "모의/실전은 웹 자동매매 메뉴에서.")
+    if tool_name == "resolve_symbol":     # 후보 목록 그대로(결정적) — 모델이 심볼을 골라 다음 도구로
+        lines = [f"- {c['name']} → {c['symbol']}"
+                 + (f" ({c['kind']}" + (f"·{c['exchange']}" if c.get("exchange") else "") + ")")
+                 for c in (result.get("candidates") or [])]
+        return "[resolve_symbol] 후보(관련도순):\n" + "\n".join(lines)
     return _status_header(result) + _methodology_header(result) + summarize_result(result)
 
 

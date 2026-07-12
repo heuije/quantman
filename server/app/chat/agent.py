@@ -114,6 +114,8 @@ def _progress_line(name: str, inp: dict) -> str:
         return "🔧 직전 분석 값 조정·재계산"
     if name == "research_news":
         return "📰 뉴스 조사"
+    if name == "resolve_symbol":
+        return f"🔍 '{inp.get('query', '')}' 심볼 찾기"
     if name == "save_strategy":
         return "💾 전략 저장"
     return f"⚙️ {name} 실행"

@@ -154,3 +154,19 @@ def test_chat_prompt_surfaces_advanced_analyses():
     assert "analysis_menu" in p
     for kw in ("민감도", "최적값", "국면", "회귀", "포트폴리오 진단", "연도별"):
         assert kw in p, f"analysis_menu에 '{kw}' 누락 — 에이전트가 해당 분석을 못 권한다"
+
+
+def test_chat_prompt_exposes_macro_symbol_catalog():
+    """WS5 발견성 — 매크로 심볼 *이름*(원달러환율 등)이 프롬프트에 실재해 추측을 근본 제거.
+    prod 실측: 시계열이 있는데 봇이 USDKRW류 추측 4연속 후 '조회 불가'로 포기(conv#42)."""
+    p = cp.chat_system_prompt()
+    assert "<macro_symbols>" in p
+    assert "원달러환율" in p and "달러지수" in p       # 금리·환율 그룹
+    assert "코스피200변동성지수" in p                   # KRX 그룹
+    assert "미국채10년" in p                            # 국채 커브
+
+
+def test_chat_prompt_resolve_symbol_guidance():
+    """낯선 종목명은 코드 추측 대신 resolve_symbol부터 — 오코드 연쇄(노바렉스류) 방지 규율."""
+    p = cp.chat_system_prompt()
+    assert "resolve_symbol" in p and "추측하지 말고" in p
