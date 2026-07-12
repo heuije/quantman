@@ -110,3 +110,32 @@ def test_fetch_yfinance_heals_end_to_end(monkeypatch):
     out = dfm.fetch_yfinance("DAX", "^GDAXI")
     assert dfm._has_scale_break(out) is False                 # 폭발 제거
     assert out.equals(clean_full) and dfm._has_scale_break(saved["DAX"]) is False
+
+
+# ── load 시점 선제 치유 (데이터 최신 → fetch skip 상황에서도 저장 splice 치유) ──────
+
+def test_fetch_yfinance_heals_stored_splice_even_when_current(monkeypatch):
+    """저장 이력에 splice가 있고 데이터가 최신(fetch skip 조건)이어도 load 시점 선제 치유가 발화.
+    PR#356 자기치유가 fetch 진행 시에만 돌아 최신 DAX가 안 낫던 갭(2026-07 실측)을 마감."""
+    saved, calls = {}, {"n": 0}
+    monkeypatch.setattr(dfm, "_save", lambda s, d: saved.__setitem__(s, d))
+    monkeypatch.setattr(dfm, "mark_data_dirty", lambda: None)
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=30)   # 마지막=최신(skip 조건)
+    spliced = pd.DataFrame({"Close": [43.0] * 25 + [25000.0] * 5}, index=idx)  # 내부 splice
+    monkeypatch.setattr(dfm, "_load_existing", lambda s: spliced)
+    clean_full = _series(np.linspace(9800, 25100, 60))
+    monkeypatch.setattr(dfm, "_yf_history",
+                        lambda t, s: (calls.__setitem__("n", calls["n"] + 1) or clean_full))
+    out = dfm.fetch_yfinance("DAX", "^GDAXI")
+    assert dfm._has_scale_break(out) is False and out.equals(clean_full)   # skip 상황에도 치유
+    assert calls["n"] == 1 and dfm._has_scale_break(saved["DAX"]) is False  # 전체 재수집 1회·저장본 클린
+
+
+def test_heal_stored_break_none_and_no_refetch_on_clean(monkeypatch):
+    """클린 시리즈는 선제 치유 무발화 + 전체 재수집 시도조차 안 함(오탐·낭비 방지)."""
+    calls = {"n": 0}
+    monkeypatch.setattr(dfm, "_yf_history",
+                        lambda t, s: (calls.__setitem__("n", calls["n"] + 1) or _series([1.0])))
+    clean = _series(np.linspace(24000, 25000, 30))
+    assert dfm._heal_stored_break("S&P500", "US500", clean, dfm._yf_history) is None
+    assert calls["n"] == 0

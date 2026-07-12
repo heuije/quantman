@@ -482,8 +482,31 @@ def _yf_history(ticker: str, start: str) -> pd.DataFrame:
     return df
 
 
+def _heal_stored_break(symbol_name: str, ticker: str, existing: pd.DataFrame, history_fn):
+    """저장된 이력에 스케일 불연속(오종목 splice)이 있으면 최신성 skip과 무관하게 전체 재수집으로
+    즉시 교체(자기치유). 치유 시 교체된 df, 아니면 None(정상 경로 진행).
+
+    `_heal_or_merge`는 '새로 fetch가 진행될 때'만 발화하는데, fetch_*는 데이터가 최신이면 fetch를
+    skip해 그대로 반환한다 → 이미 저장된 splice(예: DAX $43 이력↔^GDAXI 25,000)는 영영 안 나을 수
+    있다. 그래서 load 시점(startup·매 cron 호출)에 선제 검사한다. 전체 재수집이 비거나 자체 불연속이면
+    치유하지 않고(소스 실불연속 or 일시장애) 정상 경로로 폴백(splice 유지·다음 호출 재시도)."""
+    if existing is None or existing.empty or not _has_scale_break(existing):
+        return None
+    full = history_fn(ticker, CORE_FLOOR)
+    if full.empty or _has_scale_break(full):
+        return None
+    _save(symbol_name, full)
+    mark_data_dirty()
+    print(f"  [스케일 불연속] {symbol_name}: 저장 이력 splice 선제 감지 → 전체 재수집 교체(자기치유)")
+    return full
+
+
 def fetch_yfinance(symbol_name: str, ticker: str, start: str = CORE_FLOOR) -> pd.DataFrame:
     existing = _load_existing(symbol_name)
+    # 저장 이력 splice 선제 치유 — skip 로직 이전에(데이터가 최신이라 fetch를 skip해도 치유되도록).
+    healed = _heal_stored_break(symbol_name, ticker, existing, _yf_history)
+    if healed is not None:
+        return healed
     if not existing.empty:
         last_date = existing.index[-1].date()
         from datetime import timezone
@@ -528,6 +551,10 @@ def _fdr_history(ticker: str, start: str) -> pd.DataFrame:
 
 def fetch_fdr(symbol_name: str, ticker: str, start: str = CORE_FLOOR) -> pd.DataFrame:
     existing = _load_existing(symbol_name)
+    # 저장 이력 splice 선제 치유 — skip 로직 이전.
+    healed = _heal_stored_break(symbol_name, ticker, existing, _fdr_history)
+    if healed is not None:
+        return healed
     if not existing.empty:
         start = (existing.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
     try:
