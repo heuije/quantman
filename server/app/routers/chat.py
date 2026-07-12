@@ -6,8 +6,11 @@ JSON parts를 돌려주고, /chat/stream은 같은 agent 루프를 SSE 이벤트
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import queue
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -19,7 +22,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ..config import settings
-from ..db import get_session
+from ..db import engine, get_session
 from ..deps import get_current_user
 from ..models import ChatTurnMetric, Conversation, Message, User
 from ..chat.agent import run_chat_turn, stream_chat_turn
@@ -201,6 +204,54 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+_SSE_KEEPALIVE_SEC = 15.0
+
+
+def _stream_with_keepalive(gen, interval: float = _SSE_KEEPALIVE_SEC):
+    """동기 턴 제너레이터를 producer 스레드에서 소진해 SSE 텍스트로 내보내는 async 제너레이터.
+
+    실측 부류 2건(conv#4/6/7)을 전송층 한 곳에서 마감한다:
+    ① 침묵 끊김 — LLM 라운드(로컬 $0 shim은 라운드당 수 분) 동안 이벤트가 0이라 유휴
+       연결이 끊기고 클라이언트에 network error로 표면화 → 유휴 interval마다 SSE
+       주석(': ka')을 흘려 연결을 살린다(주석은 SSE 표준 무시 대상·웹 파서도
+       event: 없는 프레임을 건너뛴다).
+    ② 결과 유실 — 클라이언트가 끊기면 종전엔 다음 yield에서 GeneratorExit로 턴이
+       중단돼 수십 분짜리 분석이 완성 직전에 날아갔다 → producer 스레드는 소비자와
+       무관하게 턴을 끝까지 실행·영속한다(사용자는 대화 재열람으로 완성 답변 수신).
+       agent의 GeneratorExit 백스톱은 프로세스 종료 등 진짜 close에 대해 유지된다.
+    """
+    q: queue.Queue = queue.Queue()
+    _DONE = object()
+
+    def _produce():
+        try:
+            for item in gen:
+                q.put(item)
+        except Exception as exc:   # noqa: BLE001 — 소비자로 재전파(종전 동기 스트림과 동일 표면).
+            q.put(("__raise__", exc))   # 삼키면 '빈 200 스트림'이라는 조용한 오답이 된다.
+        finally:
+            q.put(_DONE)
+
+    threading.Thread(target=_produce, daemon=True).start()
+
+    async def _consume():
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                item = await loop.run_in_executor(None, q.get, True, interval)
+            except queue.Empty:
+                yield ": ka\n\n"
+                continue
+            if item is _DONE:
+                return
+            kind, payload = item
+            if kind == "__raise__":
+                raise payload
+            yield _sse(kind, {} if kind == "done" else payload)
+
+    return _consume()
+
+
 @router.post("/stream")
 def post_message_stream(body: MessageIn, user: User = Depends(get_current_user),
                         session: Session = Depends(get_session)):
@@ -212,11 +263,15 @@ def post_message_stream(body: MessageIn, user: User = Depends(get_current_user),
         return _rate_limited(quota)
     _autotitle(session, conv, body.message)           # 첫 메시지면 제목 자동 설정
 
-    def event_stream():
-        for kind, payload in stream_chat_turn(session, body.conversation_id, body.message):
-            # done의 parts는 프론트가 증분 구성한 것과 동일하고 GET 재조회로도 정전(canonical) — SSE엔
-            # 싣지 않아 tool_result full payload 중복 전송을 피한다.
-            yield _sse(kind, {} if kind == "done" else payload)
+    bind = session.get_bind()   # 요청 세션과 같은 엔진(DI 오버라이드·테스트 DB 포함)에서 파생
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream",
+    def turn_gen():
+        # 턴 전용 세션 — 요청 세션(Depends)은 응답 종료(클라 끊김 포함) 시 닫히는데,
+        # producer 스레드는 그 뒤에도 턴을 완주·영속해야 하므로 수명을 분리한다.
+        # (done의 parts는 SSE에 싣지 않음 — 프론트 증분 구성과 GET 재조회가 정전.)
+        with Session(bind) as turn_session:
+            yield from stream_chat_turn(turn_session, body.conversation_id, body.message)
+
+    return StreamingResponse(_stream_with_keepalive(turn_gen()),
+                             media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

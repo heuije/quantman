@@ -143,7 +143,9 @@ def test_aborted_turn_leaves_metric_and_log(caplog):
     queue = [_Resp([_Block(type="text", text="분석 중입니다…")], stop_reason="tool_use")]
     client = _FakeClient(queue)
     gen = chat_agent.stream_chat_turn(s, conv.id, "US·KR 섹터별 연도별 대형 다축 쿼리", client=client, model="x")
-    kind, _ = next(gen)                 # 첫 델타 소비 → 제너레이터가 loop 안 yield에서 suspend
+    kind, _ = next(gen)                 # 첫 이벤트 = 라운드 진행 라벨(침묵 UX 계약)
+    assert kind == "progress"
+    kind, _ = next(gen)                 # 델타 소비 → 제너레이터가 loop 안 yield에서 suspend
     assert kind == "delta"
     with caplog.at_level(logging.WARNING, logger="app.chat.agent"):
         gen.close()                     # 클라이언트 끊김 시뮬레이션 → GeneratorExit
@@ -381,7 +383,8 @@ def test_stream_chat_turn_yields_ordered_events(monkeypatch):
     events = list(chat_agent.stream_chat_turn(s, conv.id, "저평가주 골라줘",
                                               client=_FakeClient(queue)))
     kinds = [k for k, _ in events]
-    assert kinds[0] == "delta"                         # 서두 텍스트가 먼저 흐른다
+    assert kinds[0] == "progress"                      # 라운드 진행 라벨이 최선두(침묵 UX 계약)
+    assert kinds[1] == "delta"                         # 이어서 서두 텍스트가 흐른다
     assert "tool_use" in kinds and "tool_result" in kinds
     assert kinds[-1] == "done"
     assert kinds.index("delta") < kinds.index("tool_use")

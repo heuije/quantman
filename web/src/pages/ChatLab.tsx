@@ -38,6 +38,9 @@ export default function ChatLab() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 진행 단계 라벨(SSE progress·표시 전용) — 델타/도구 이벤트가 오면 그쪽이 진행 표시를
+  // 대신하므로 비우고, 다음 progress가 오면 다시 채운다.
+  const [progress, setProgress] = useState<string | null>(null);
   // 사용량 카운터 + 운영진 언락(서버 강제 일일 한도). 비번은 sessionStorage에만 보관하고 매 요청에 동봉.
   const [adminPw, setAdminPw] = useState<string>(() => sessionStorage.getItem("chat_admin_pw") || "");
   const [quota, setQuota] = useState<CompileQuota | null>(null);
@@ -156,22 +159,29 @@ export default function ChatLab() {
       }
       await api.streamChatMessage(cid, text, {
         // 델타는 마지막 파트가 텍스트면 이어붙이고, 아니면(도구 결과 뒤) 새 텍스트 파트를 연다.
-        onDelta: (t) => patch((parts) => {
+        onDelta: (t) => { setProgress(null); patch((parts) => {
           const last = parts[parts.length - 1];
           if (last && last.type === "text")
             return [...parts.slice(0, -1), { type: "text", text: last.text + t }];
           return [...parts, { type: "text", text: t }];
-        }),
-        onToolUse: (p) => patch((parts) => [...parts, { type: "tool_use", ...p }]),
-        onToolResult: (p) => patch((parts) => [...parts, { type: "tool_result", ...p }]),
+        }); },
+        onToolUse: (p) => { setProgress(null); patch((parts) => [...parts, { type: "tool_use", ...p }]); },
+        onToolResult: (p) => { setProgress(null); patch((parts) => [...parts, { type: "tool_result", ...p }]); },
+        onProgress: (label) => setProgress(label),
       }, adminPw || undefined);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "오류가 발생했습니다.";
+      const raw = e instanceof Error ? e.message : "";
+      // 전송층 단절(TypeError: Failed to fetch 등)은 원문이 사용자에게 무의미하고, 서버는
+      // 턴을 계속 완주·영속하므로(keepalive 래퍼) 재열람 안내가 정직한 표면이다.
+      const msg = (e instanceof TypeError || /fetch|network/i.test(raw))
+        ? "연결이 끊겼습니다. 분석은 서버에서 계속 진행됩니다 — 잠시 후 이 대화를 다시 열면 완성된 답변이 표시됩니다."
+        : (raw || "오류가 발생했습니다.");
       setError(msg);
       // 프론트 단계 오류(429 한도 초과 안내 포함)로 빈 assistant 버블이 남으면 그 문구로 채운다.
       patch((parts) => (parts.length ? parts : [{ type: "text", text: msg }]));
     } finally {
       setBusy(false);
+      setProgress(null);
       refreshQuota();              // 턴 후 카운터 갱신(차단 429였어도 used 반영)
       refreshConvs();              // 새 대화 등장 + 첫 메시지 자동제목을 사이드바에 반영
     }
@@ -222,7 +232,7 @@ export default function ChatLab() {
             <div key={i} className={"chat-msg " + m.role}>
               {m.parts.length === 0
                 ? (m.role === "assistant" && busy
-                    ? <p className="chat-text muted">분석 중…</p>
+                    ? <p className="chat-text muted">{progress ?? "분석 중"}…</p>
                     : null)
                 : m.parts.map((p, j) =>
                     p.type === "tool_result" && j !== lastTr ? (
@@ -235,6 +245,10 @@ export default function ChatLab() {
                     ) : (
                       <PartView key={j} part={p} />
                     ))}
+              {/* 도구 결과 뒤 다음 LLM 라운드(델타 없는 구간)의 진행 표시 — 마지막 버블에만 */}
+              {m.role === "assistant" && busy && progress != null && m.parts.length > 0
+                && i === messages.length - 1
+                && <p className="chat-text muted">{progress}…</p>}
             </div>
           );
         })}

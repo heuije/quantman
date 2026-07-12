@@ -342,6 +342,9 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
             # 동일 부류 — 도구 내부가 커밋하든 말든 여기서 무조건 반납해 부류를 한 곳에서 닫는다.
             # 다음 DB 접근은 fresh checkout이라 pool_pre_ping(db.py)이 stale 연결을 자동 보호한다.
             session.commit()
+            # 진행 라벨(표시 전용·비영속) — LLM 라운드는 스트림 델타가 없을 수 있어(로컬 shim은
+            # 텍스트를 끝에 일괄 방출) 이 이벤트가 없으면 화면이 수 분간 정지된 듯 보인다.
+            yield ("progress", {"label": f"모델 응답 생성 중 (라운드 {acc['rounds'] + 1})"})
             with client.messages.stream(model=model, max_tokens=4096, system=system,
                                         thinking={"type": "disabled"},   # Sonnet5는 thinking 기본ON→응답에
                                         # thinking블록 포함→멀티턴 히스토리 재구성 시 유실되면 400. 오케스트레이터는
@@ -451,6 +454,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
         # 도구 없는 1콜(tools 미전달 → 모델이 텍스트만 낼 수밖에 없음)로 최선의 답을 짓게 한다.
         # 상한 소진은 드문 경로라 이 추가 1콜은 무시할 만하다(무응답 > 1콜의 비용).
         _inject_directive(messages, _SYNTH_DIRECTIVE)
+        yield ("progress", {"label": "부분 결과 종합 중"})
         try:
             synth_text = ""
             with client.messages.stream(model=model, max_tokens=4096, system=system,

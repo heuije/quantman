@@ -111,6 +111,7 @@ export type ChatStreamHandlers = {
   onDelta: (text: string) => void;       // 모델 서술 토큰(점진 표시)
   onToolUse: (p: { id: string; name: string; input: Record<string, unknown> }) => void;
   onToolResult: (p: { tool_use_id: string; name: string; result: Record<string, unknown> }) => void;
+  onProgress?: (label: string) => void;  // 진행 단계 라벨(라운드 생성 중 등) — 표시 전용·비영속
 };
 
 async function streamChatMessage(
@@ -151,7 +152,9 @@ async function streamChatMessage(
       if (ev === "delta") h.onDelta(payload.text ?? "");
       else if (ev === "tool_use") h.onToolUse(payload);
       else if (ev === "tool_result") h.onToolResult(payload);
+      else if (ev === "progress") h.onProgress?.(payload.label ?? "");
       // "done"·기타 이벤트는 무시 — 스트림 종료는 reader done으로 감지한다.
+      // (서버 keepalive 주석 프레임은 event: 라인이 없어 위 `if (!ev) continue`가 걸러낸다.)
     }
   }
 }
