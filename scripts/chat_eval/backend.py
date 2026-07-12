@@ -24,7 +24,9 @@ from dataclasses import dataclass, field
 
 # Windows에선 bare "claude"가 PATHEXT 미해석으로 subprocess에서 안 잡힌다(.CMD) → 풀패스 해석.
 _CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
-_TIMEOUT = int(os.environ.get("CHAT_EVAL_CLAUDE_TIMEOUT", "240"))
+# 600s = 실 anthropic SDK 기본 timeout(10분)과 정합. 240s는 단일-턴 시절 값 —
+# 무거운 IR 컴파일(대형 JSON)·max-turns 3·부하 겹침에서 실측 초과(07-12 컴파일 타임아웃).
+_TIMEOUT = int(os.environ.get("CHAT_EVAL_CLAUDE_TIMEOUT", "600"))
 _MAX_RETRIES = 2               # claude -p 간헐 빈응답 재시도 횟수(총 3회) — 실 anthropic SDK 기본과 정합
 _RETRY_BACKOFF_SEC = 0.5       # 재시도 간 대기(초)·시도마다 선형 증가
 
