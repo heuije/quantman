@@ -166,6 +166,12 @@ MACRO_COT_SYMBOLS = [m + s
                                "나스닥선물", "S&P500선물", "비트코인선물")
                      for s in ("투기순포지션", "미결제약정")]
 
+# KR 선물·ETF 투자자별 수급 — KRX MDC 로그인 화면(data/feeds/flow_deriv_kr.py)이 수집. fetch_all 아님.
+# {상품|KRETF}{투자자}순매수 6종(값=일별 순매수 대금·원). 피드 SYMBOLS와의 정합은 가드가 잠근다.
+MACRO_FLOW_DERIV_SYMBOLS = [p + inv + "순매수"
+                            for p in ("코스피200선물", "코스닥150선물", "KRETF")
+                            for inv in ("외국인", "기관")]
+
 # 국가별 국채 수익률 만기물 — 국채 피드(data/feeds/bonds.py)가 발행(US/JP/EU/CN 전만기·KR은
 # KRX 국고채가 매크로 SSOT라 제외). {접두}{만기} 명명. 피드 bonds.macro_symbols()와의 정합은
 # 드리프트 가드가 잠근다(test_bonds_macro_catalog_matches_feed).
@@ -181,7 +187,8 @@ MACRO_BONDS_SYMBOLS = [pre + t for pre, ts in _BOND_TENORS.items() for t in ts]
 ASSET_SYMBOLS = list(YFINANCE_SYMBOLS) + list(FDR_SYMBOLS) + ["비트코인"] + KRX_PANEL_FUTURES
 MACRO_SYMBOLS = (list(MACRO_YF_SYMBOLS) + list(MACRO_FRED_SYMBOLS)
                  + list(MACRO_FRED_LAGGED) + MACRO_OTHER + MACRO_DERIVED
-                 + MACRO_KRX_SYMBOLS + MACRO_COT_SYMBOLS + MACRO_BONDS_SYMBOLS)
+                 + MACRO_KRX_SYMBOLS + MACRO_COT_SYMBOLS + MACRO_FLOW_DERIV_SYMBOLS
+                 + MACRO_BONDS_SYMBOLS)
 ALL_SYMBOLS = ASSET_SYMBOLS + MACRO_SYMBOLS
 
 
@@ -202,6 +209,7 @@ def data_type_symbols() -> dict[str, list[str]]:
         "macro.fred_lagged": list(MACRO_FRED_LAGGED),
         "macro.krx": list(MACRO_KRX_SYMBOLS),
         "macro.cot": list(MACRO_COT_SYMBOLS),
+        "macro.kr_deriv_flow": list(MACRO_FLOW_DERIV_SYMBOLS),
         "macro.bonds": list(MACRO_BONDS_SYMBOLS),
     }
 
@@ -251,6 +259,8 @@ SYMBOL_CATEGORY: dict[str, str] = {
     **{s: "심리" for m in ("원유선물", "천연가스선물", "금선물", "은선물", "구리선물",
                           "나스닥선물", "S&P500선물", "비트코인선물")
        for s in (m + "투기순포지션", m + "미결제약정")},
+    # KR 선물·ETF 투자자별 수급 (KRX MDC 로그인·flow_deriv_kr) — 챗 카탈로그 '수급' 그룹(발견성).
+    **{s: "수급" for s in MACRO_FLOW_DERIV_SYMBOLS},
     # 국채 만기물 (Phase 6a — 국채 피드 발행·US/JP/EU/CN 전만기)
     **{s: "금리·환율" for s in MACRO_BONDS_SYMBOLS},
 }

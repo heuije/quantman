@@ -230,6 +230,21 @@ register(DataTypeSpec(
           "시장당 2시리즈(투기순포지션=비상업 롱−숏·미결제약정) — US 선물 유일 무료 OI(주간). "
           "매크로형 명명 시계열(MACRO_COT_SYMBOLS). floor는 정책 최소(실제 1986~ 초과 수집).",
 ))
+register(DataTypeSpec(
+    key="macro.kr_deriv_flow", pclass=PClass.MACRO,
+    label="KR 선물·ETF 투자자별 수급(코스피200/코스닥150 선물·ETF 시장 — 외국인·기관 순매수)",
+    frequency="daily", history_rule="2010~", floor=CORE_FLOOR, point_in_time=True,
+    source="KRX 정보데이터시스템 MDC(getJsonData·로그인 — 파생 13102·ETF 04802)",
+    provides=["Close(=순매수 대금·원)"], required_meta=_BASE_META + ["as_of"],
+    downstream=["study.label(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",
+    notes="매크로형 명명 시계열 6종(MACRO_FLOW_DERIV_SYMBOLS — {상품|KRETF}{외국인|기관}순매수). "
+          "선물 상품 지정은 isuCd=KR___FUK2I(파생ID KRDRV→KR___ 변형 — prodId로 보내면 조용한 전부 0). "
+          "컬럼 매핑은 기간합계 라벨 합산과 산술 대조로 확정(13102 A07=기관·A12=외국인 / 04802 "
+          "VAL21=기관·VAL24=외국인, 2026-07-12 실측). 당일치 18시 이후 제공(증분 cron 18:40). "
+          "KRX_ID/PW 미설정 시 비활성. 개별 주식 수급은 flow.kr_investor(종목별 컬럼) — 이건 상품/"
+          "시장 단위 매크로 심볼(pclass MACRO: P7은 종목별 필드형 가드와 결속·매크로형은 여기가 정본). "
+          "floor는 정책 최소(소스 이력 2005~ 실측).",
+))
 
 # ── P5 분류·정적 메타 ─────────────────────────────────────────────────────────
 

@@ -50,6 +50,11 @@
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [2026-07-12] D-3 선물·ETF 투자자별 수급 피드 — KRX MDC 매크로 심볼 6종 + 챗 배선 [진행중]
+- 의도: 챗 실수요(진단서 G6·prod #34 "코스닥150 ETF 수급") 기반 D-3 마감 — 주식 수급(flow_kr)만 있고 선물·ETF 수급이 없던 갭을 KRX MDC 일별추이(선물 13102·ETF 04802, 로그인 getJsonData)로 채운다. 소스·isuCd 변형·2005 깊이는 §9.4 실측 확정분(PR#384) 그대로, LS 기각 유지. 완료 정의에 챗 배선 포함(공급≫소비 갭 방지).
+- 계획: `flow_deriv_kr.py` 신설(cot_cftc 동형 매크로 발행 + flow_kr 로그인 게이트·부분전진 금지) → 매크로 심볼 6종({코스피200선물|코스닥150선물|KRETF}{외국인|기관}순매수·일별 순매수 대금·원) → 배선(data_fetcher `MACRO_FLOW_DERIV_SYMBOLS`·spec `macro.kr_deriv_flow`·provenance·`_MACRO_ALIASES`·ir_compiler 필드가이드·cron 백필 :04/증분 18:40 KST·드리프트 가드) + 웹 픽커 '수급' 탭.
+- 진행: 미확정 2건(13102 A07~A12·04802 VAL21~25 매핑)을 **기간합계(13101/04801) 라벨 합산과 10거래일 산술 대조로 확정**(13102 A07=기관합계·A08=기타법인·A09=개인·A12=외국인 / 04802 VAL21=기관합계·VAL24=외국인+기타외국인 정확합·±2원. money 파라미터 무관 원 단위 — m1/m3 비율 1.0 실측). 실측 함정 신규: **13102 장기창 소요 = 거래일당 ~0.1s 선형**(600일 창=read timeout·240일=24s) → 백필 청크 240일·timeout 90s. (스펙 이탈 기록: 핸드오프 제안 pclass FLOW 대신 **MACRO** — 서버 가드 `test_every_field_type_spec_wired_to_field_groups`가 P7을 종목별 필드형으로 강제하는데 이건 COT 동형 매크로 명명 시계열.)
+
 ### [2026-07-12] 전 hour-cron +9h 시프트 근본수정 — CronTrigger KST 앵커 명시 [완료]
 - 의도: bonds_daily NameError 인시던트 진단 중 cron이 07:40**Z**(=16:40 KST)에 발화한 관찰(별건 분리)을 확정·근본수정. `BackgroundScheduler(timezone="Asia/Seoul")`임에도 timezone 미지정 CronTrigger 인스턴스 39곳이 컨테이너 tz(UTC)에 앵커돼 hour/day 기반 30개 job 전부가 2026-05-20 도입 이래 +9h 시프트로 돌던 결함. 서버 스케줄 계층만 — 수집 함수·cron 라벨 시각 자체는 불변.
 - 계획: 가설 확정(apscheduler 3.10.4/3.11.3 소스 + Railway 배포 3건 로그 전수 대조) → UTC 컨테이너 시뮬레이션 실패 테스트 → 39곳 전수 `timezone=_TZ_SEOUL` 명시 → GREEN + 스위트.

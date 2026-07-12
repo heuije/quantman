@@ -39,6 +39,12 @@ DATA_PROVENANCE: list[dict[str, str]] = [
      "note": "KR 한정(US 미제공). 소형주는 sparse"},
     {"category": "수급(기관·외국인 순매수)",
      "source": "KRX(pykrx)", "method": "일별 순매수 대금", "note": "KR 한정"},
+    {"category": "KR 선물·ETF 투자자별 수급(외국인·기관 순매수)",
+     "source": "KRX 정보데이터시스템 MDC(로그인 getJsonData)",
+     "method": "일별추이 원시 시계열(파생 13102·ETF 04802 — 일별 순매수 대금·원). "
+               "매크로형 심볼 6종(예 '코스피200선물외국인순매수'·'KRETF기관순매수')",
+     "note": "KR. KRX_ID/PW 필요·미설정 시 비활성. 개별 주식 수급(위 pykrx 종목별)과 별개 — "
+             "선물은 상품 단위·ETF는 시장 전체 집계. 크로스에셋 신호로 참조 가능"},
     {"category": "공매도 잔고(잔고비중 short_balance_ratio)",
      "source": "KRX(pykrx)", "method": "일별 잔고비중(상장주식수 대비 %) — 진짜 short interest",
      "note": "KR 한정. US 공매도 *잔고*는 미보유(아래 거래량 비중과 별개)"},

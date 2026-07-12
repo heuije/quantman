@@ -14,7 +14,7 @@ export const SYMBOL_CAT_ORDER = [
   "미국 NASDAQ ETF/ETN", "미국 NYSE ETF/ETN", "미국 AMEX ETF/ETN",
   "일본 주식", "일본 ETF/ETN",
   "홍콩 주식", "홍콩 ETF/ETN",
-  "자산", "변동성", "금리·환율", "신용", "거시지표", "심리", "개별종목",
+  "자산", "변동성", "금리·환율", "신용", "거시지표", "심리", "수급", "개별종목",
 ];
 
 /** 팝오버를 외부 클릭·Esc로 닫는 훅. 트리거+패널을 감싸는 ref를 반환. */
@@ -228,7 +228,7 @@ const TRADABLE_TAB_ORDER = [
 ];
 
 const OPERAND_TAB_ORDER = [
-  "자산", "변동성", "금리·환율", "신용", "거시지표", "심리",
+  "자산", "변동성", "금리·환율", "신용", "거시지표", "심리", "수급",
 ];
 
 function tabCategoryFor(s: SymbolInfo, tradable?: boolean): string {

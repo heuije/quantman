@@ -400,6 +400,8 @@ def _initial_reports_refresh():
 # 수집은 marketcap_krx와 동일하게 날짜축 cursor 백필(DateCursorBackfill — 컨센서스·KRX와 동일 문법).
 _FLOW_WINDOW_DAYS = 60      # 일별 4콜/평일 × ~43평일 ≈ 172콜·throttle 0.2s → ~40s/청크
 _SHORTBAL_WINDOW_DAYS = 60  # 공매도 잔고: 일별 2콜/평일(시장) × ~43평일 ≈ 86콜/청크(flow의 절반)
+_FLOW_DERIV_WINDOW_DAYS = 240  # 선물·ETF 수급: 소스당 기간 1콜(3콜/청크·~55s — 13102 소요 거래일당
+                               # ~0.1s 선형 실측·600일은 timeout) — 전체 이력 ~26청크 완주
 
 
 def _backfill_flow_chunk() -> None:
@@ -494,6 +496,44 @@ def _initial_shortbal_refresh():
         _backfill_shortbal_chunk()
     except Exception:
         _log.exception("KR 공매도 잔고 초기 청크 예외 — 10분 cron 재시도")
+
+
+# ── KR 선물·ETF 투자자별 수급(KRX MDC 로그인, 소스당 기간 1콜) ─────────────────
+# flow_kr(종목별 수급)와 별개 — 상품/시장 단위 매크로 심볼 6종(flow_deriv_kr.SYMBOLS).
+def _backfill_flow_deriv_chunk() -> None:
+    """KR 선물·ETF 수급 백필 청크 — 240일 창 today→2010 역순 1청크(3콜·~55s).
+    KRX_ID/PW 미설정 시 no-op. 성공 시만 cursor 전진(실패면 커서 유지·같은 윈도우 재시도)."""
+    from quant_core import data_fetcher
+    from quant_core.data.feeds import flow_deriv_kr
+    if not flow_deriv_kr._has_login():
+        return
+    bf = DateCursorBackfill(cursor_path=data_fetcher.DATA_DIR / "_flow_deriv.cursor",
+                            floor=CORE_FLOOR_COMPACT, window_days=_FLOW_DERIV_WINDOW_DAYS)
+    win = bf.next_window()
+    if win is None:
+        return                                       # 백필 완료 — 무비용
+    start, end = win
+    res = flow_deriv_kr.fetch_range(start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+    if not res.get("ok"):
+        _log.warning("[altdata] KR 선물·ETF 수급 백필 실패(%s~%s, fail=%s) — cursor 유지·재시도",
+                     start, end, res.get("fail"))
+        return
+    bf.advance(start)
+    _log.info("[altdata] KR 선물·ETF 수급 백필(KRX MDC) %s~%s: %s", start, end, res)
+
+
+def _refresh_flow_deriv() -> None:
+    """일일 선물·ETF 수급 증분 — 최근 7일 재수집·merge(18:40 KST — 당일치 18시 이후 제공)."""
+    from datetime import date, timedelta
+    from quant_core.data.feeds import flow_deriv_kr
+    if not flow_deriv_kr._has_login():
+        return
+    end = date.today()
+    res = flow_deriv_kr.fetch_range((end - timedelta(days=7)).strftime("%Y%m%d"),
+                                    end.strftime("%Y%m%d"))
+    if res.get("ok"):
+        data_cache.invalidate()
+        _log.info("[altdata] KR 선물·ETF 수급 증분(KRX MDC) ~%s: %s", end, res)
 
 
 # ── KR OHLCV 깊이 백필(FDR, 무키) ─────────────────────────────────────────────
@@ -1310,6 +1350,16 @@ def _build_scheduler() -> BackgroundScheduler:
         lambda: _run_with_retry("shortbal_daily", _refresh_shortbal, scheduler),
         CronTrigger(hour=16, minute=35, timezone=_TZ_SEOUL),
         id="shortbal_daily", replace_existing=True)
+    # KR 선물·ETF 투자자별 수급(KRX MDC, KRX_ID/PW 필요) — 10분 백필 청크 + 18:40 일일 증분
+    # (당일 최종치는 18시 이후 제공 — ETF 04802 화면 명시·파생 동일 규약).
+    scheduler.add_job(
+        lambda: _run_with_retry("flowderiv_chunk", _backfill_flow_deriv_chunk, scheduler),
+        CronTrigger(minute="4-59/10", timezone=_TZ_SEOUL),           # :04,:14… — 다른 10분 cron과 스태거
+        id="flowderiv_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("flowderiv_daily", _refresh_flow_deriv, scheduler),
+        CronTrigger(hour=18, minute=40, timezone=_TZ_SEOUL),
+        id="flowderiv_daily", replace_existing=True)
 
     # KR OHLCV 깊이 백필(FDR, 무키) — 10분 청크로 기존 종목을 2010까지 소급 prepend.
     # 일일 dataset_kr 증분은 앞으로만 가서 과거를 못 채움 → 별도 백필이 그 갭만 메움(완료 시 0비용).
