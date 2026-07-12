@@ -11,6 +11,7 @@
 ## 인덱스
 | 일자 | 심각도 | 제목 | 상태 |
 |--|--|--|--|
+| 2026-07-12 | High | [전 hour 기반 cron +9h 시프트 — CronTrigger가 컨테이너 tz(UTC)에 앵커](2026-07-12-cron-utc-anchor-9h-shift.md) | 🟠 수정·테스트 완료·머지/배포 대기 |
 | 2026-07-12 | Medium | [bonds_daily cron NameError — 수집 성공 직후 매번 실패·최대 5회 중복 재수집](2026-07-12-bonds-daily-nameerror-dup-fetch.md) | 🟠 수정·검증 완료·머지 대기 |
 | 2026-07-07 | Critical | [자동매매 전 사이클 크래시 — Close-only 국채 시리즈 × ATR 무가드](2026-07-07-close-only-series-cycle-crash.md) | 🟠 수정·실데이터 검증 완료·릴리스 대기 |
 | 2026-07-07 | High | [프로덕션 볼륨 디스크 풀 → HOME 종목조회 500·수십초 행](2026-07-07-volume-full-disk-space.md) | ✅ 해소(리사이즈·빌드/프로브 검증) |

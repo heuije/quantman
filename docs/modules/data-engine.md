@@ -4,6 +4,7 @@
 
 ## 📌 교훈·함정 (작업 전 먼저 읽기)
 
+- **apscheduler 3.x: 트리거 '인스턴스'는 스케줄러 timezone을 상속하지 않는다.** `BackgroundScheduler(timezone="Asia/Seoul")`여도 `CronTrigger(hour=…)`를 미리 만들어 `add_job`에 넘기면 tzlocal(Railway 컨테이너=UTC)에 앵커 — hour 기반 cron 30개 전부가 7.5주간 +9h 시프트로 돌았다(06:05 KIS가 15:05 KST 장중 발화, [인시던트](../incidents/2026-07-12-cron-utc-anchor-9h-shift.md)). tz 상속은 `add_job(fn, "cron", hour=…)` 문자열 형식에만 적용되고, docstring "defaults to scheduler timezone"은 그 경로 얘기다. 파생 교훈 3가지: ① 스케줄 라이브러리의 tz 기본값 문서는 **어느 생성 경로에 적용되는지 소스로 확인** ② tz 결함은 KST 개발 PC에선 절대 재현 안 됨(`get_localzone()`==의도 tz) — **컨테이너 tz(UTC) 시뮬레이션 테스트**(`server/tests/test_scheduler_timezone.py`)가 유일한 로컬 가드 ③ 분 단위 청크 cron·배포 startup 잡이 시각 시프트를 마스킹한다 — **"데이터가 갱신된다" ≠ "의도 시각에 돈다"**, 발화 시각 자체를 로그 타임스탬프(UTC)로 대조하라. 새 cron 추가 시 `timezone=_TZ_SEOUL` 명시(invariant 테스트가 누락을 RED로 잡는다).
 - **"유저 접속 시 렉→몇 분 후 해소" warmup의 진짜 뿌리 = in-process 백그라운드 작업의 CPU 독점(캐시 콜드 아님).** 프로덕션 실측: `/market/symbol`이 정상 620ms인데 간헐적으로 **24~131초**(30s→500·82s→클라 499)로 튀고 몇 분 뒤 회복. 오진 함정 다수(①"5.5시간 포화"=웹요청 15건·3.5분치뿐이라 근거없음 ②"배포 직후"=배포는 5.5h전·무관 ③"우연히 회복"). **근본원인**: `dataset.build_bundle`이 전 parquet(수 GB)을 `zstandard.ZstdCompressor(threads=-1)`=**전 CPU 코어**로 압축, 그것도 refresh 끝마다 **trading+full 두 스코프**(#331)로. 웹서버와 **같은 프로세스**라 압축 수십초 동안 sync 엔드포인트가 CPU를 못 얻어 굶음 → 압축 끝나면 회복. **수정: `threads=0`(단일코어)** 로 웹에 코어 양보(압축 wall-clock↑ 무방·백그라운드 패키징). ⚠**startup thundering herd는 이미 세마포어(2)+계층지연으로 완화**돼 있으니(lifespan `_bg`) 남은 CPU 스파이크는 **세마포어 밖에서 도는 것**(번들 압축)을 의심하라. **교훈: 배경 수집/패키징이 웹과 한 프로세스면 CPU 병렬도(threads=-1·전코어)를 절대 풀지 말 것 — 웹요청 기아의 근본.** 진단 규율: latency는 *산문 추론 아니라 Railway HTTP 로그(요청별 ms)*에서 보고, "포화"를 단정하기 전 실제 요청 수·시간범위를 확인(자신감≠정확·[[feedback_diagnose_from_artifacts]]).
 - **summary(종목상세) 경로는 프리워밍 대상에서 빠져 있었다 — 첫 유저가 `_all_listings_cached`(US StockListing 네트워크) 콜드를 물었다.** 트리맵·재무제표·챗 raw는 startup 프리워밍(`_initial_*_prewarm`)이 데우는데 symbol_detail은 없었다. 수정: `_initial_summary_prewarm`(공유 목록캐시+대표종목) 추가. **커버 종목의 볼륨 read는 콜드여도 빠르므로(~620ms) 전 종목 프리워밍은 불필요·불가** — 공유 목록캐시 워밍이 핵심. + `_probe_summary_latency`(5분 cron) 상시 계측으로 "어떤 시간에도 빠른가"를 추측 아닌 연속 신호(`[probe] summary` 로그)로 검증. (2026-07-07 warmup 렉 근본수정)
 - **새 데이터는 `spec.py`부터.** 지원 현황(present/partial/absent)의 진실원천 = `core/quant_core/data/spec.py`. 새 데이터 추가·상태 확인은 항상 여기서 시작.
@@ -48,6 +49,12 @@
 - **present(2026-07 프로덕션 로그 검증):** 애널 리포트목록·컨센서스·목표가·투자의견(**네이버 reports_kr** — 옛 한경 consensus_kr 은퇴)·수급(기관/외국인, pykrx **일별 전종목**·날짜커서) — cron 적재 가동중(10분 백필→2010 floor + 일일증분 16:30/19:30). KR 지수 멤버십 이력은 여전히 absent.
 
 ## 작업계획 로그 (누적·최신 우선)
+
+### [2026-07-12] 전 hour-cron +9h 시프트 근본수정 — CronTrigger KST 앵커 명시 [완료]
+- 의도: bonds_daily NameError 인시던트 진단 중 cron이 07:40**Z**(=16:40 KST)에 발화한 관찰(별건 분리)을 확정·근본수정. `BackgroundScheduler(timezone="Asia/Seoul")`임에도 timezone 미지정 CronTrigger 인스턴스 39곳이 컨테이너 tz(UTC)에 앵커돼 hour/day 기반 30개 job 전부가 2026-05-20 도입 이래 +9h 시프트로 돌던 결함. 서버 스케줄 계층만 — 수집 함수·cron 라벨 시각 자체는 불변.
+- 계획: 가설 확정(apscheduler 3.10.4/3.11.3 소스 + Railway 배포 3건 로그 전수 대조) → UTC 컨테이너 시뮬레이션 실패 테스트 → 39곳 전수 `timezone=_TZ_SEOUL` 명시 → GREEN + 스위트.
+- 결과: 3계층 증거로 확정(소스 폴백 `get_localzone()`·프로덕션 06:05Z KIS/07:40Z bonds/08:10Z 선물 발화+KST 예측 시각 침묵·로컬 RED 재현). `main.py` 39 트리거+스케줄러 `_TZ_SEOUL` 명시, `test_scheduler_timezone.py`(전 트리거 KST invariant + 대표 5 job 절대발화 assert), `requirements.txt` `apscheduler<4` 캡(4.x는 BackgroundScheduler 제거). server 591 passed·회귀 0. 상세: [인시던트](../incidents/2026-07-12-cron-utc-anchor-9h-shift.md). 교훈 §distill.
+- 시행착오: Railway 로그가 배포 단위로 갈려 하루치 연속 대조가 불가 → `railway deployment list`로 이전 배포 id를 얻어 `railway logs <id> --json`(배포당 ~600줄 전량)으로 생존 구간별 발화/침묵을 양방향 대조. 같은 이름 startup 잡(`startup job 시작:` 마커)과 cron(`[name] 성공/실패` 마커)을 구분해야 오판 없음.
 
 ### [2026-07-12] 수급 배선 A+B — flow 챗 표면 완결 + KR 공매도 잔고 엔진 배선 [진행중]
 - 의도: 챗봇 데이터 트랙 잔여 "수급 배선"의 실측 재정의 — 조사 결과 D-1(sto·shortvol 엔진 배선)은 **이미 완료**돼 있었고(문서만 stale), 진짜 갭은 ①flow 컬럼(inst/foreign_net_buy)이 SSOT에 이름만 나열되고 컴파일러 필드가이드(의미·단위·관용구) 부재, ②KR 공매도 잔고(short_balance_kr)가 수집·웹 서빙만 되고 엔진 미병합. prod 실수요(수급 신호 백테스트) 지원 목적.

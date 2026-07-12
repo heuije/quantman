@@ -61,6 +61,14 @@ if not _app_log.handlers:
 _RETRY_BACKOFFS_MIN = [5, 15, 30, 60, 120]
 _RETRY_MAX_ATTEMPTS = 5
 
+# ── 스케줄 tz 앵커 ───────────────────────────────────────────────────────────
+# 모든 cron 라벨 시각은 KST. ⚠ apscheduler 3.x에서 CronTrigger "인스턴스"는
+# 스케줄러 timezone을 상속하지 않는다(상속은 add_job 문자열 형식에만 적용) —
+# timezone 미지정 인스턴스는 tzlocal(Railway 컨테이너=UTC)에 앵커돼 전 cron이
+# +9h 시프트로 돌았다(2026-07-12 실측, docs/incidents/2026-07-12-cron-utc-anchor-9h-shift.md).
+# 모든 CronTrigger에 이 값을 명시한다(회귀 가드: tests/test_scheduler_timezone.py).
+_TZ_SEOUL = "Asia/Seoul"
+
 
 def _run_with_retry(name: str, fn: Callable[[], object],
                      scheduler: BackgroundScheduler) -> None:
@@ -94,7 +102,7 @@ def _run_with_retry(name: str, fn: Callable[[], object],
                 min(state["attempt"] - 1, len(_RETRY_BACKOFFS_MIN) - 1)]
             # tz-aware(KST) 시각으로 생성 — scheduler가 Asia/Seoul이므로 naive를
             # 쓰면 UTC 배포(Railway)에서 과거 시각으로 해석돼 misfire drop된다.
-            run_at = datetime.now(ZoneInfo("Asia/Seoul")) + timedelta(minutes=backoff_min)
+            run_at = datetime.now(ZoneInfo(_TZ_SEOUL)) + timedelta(minutes=backoff_min)
             _log.warning("[%s] %d분 후 재시도 (#%d) — %s",
                          name, backoff_min, state["attempt"] + 1,
                          run_at.strftime("%H:%M:%S"))
@@ -1151,31 +1159,31 @@ def _build_scheduler() -> BackgroundScheduler:
       (retry_{name})와 함께 같은 외부 소스 중복 fetch를 차단.
     """
     scheduler = BackgroundScheduler(
-        timezone="Asia/Seoul",
+        timezone=_TZ_SEOUL,
         job_defaults={"misfire_grace_time": 3600, "coalesce": True,
                       "max_instances": 1})
 
     # 06:05 — KIS 마스터 1차 (06:00 first publish 직후)
     scheduler.add_job(
         lambda: _run_with_retry("kis_master_1st", _refresh_kis_master, scheduler),
-        CronTrigger(hour=6, minute=5),
+        CronTrigger(hour=6, minute=5, timezone=_TZ_SEOUL),
         id="kis_master_1st", replace_existing=True)
     # 18:58 — KIS 마스터 2차 (18:55 last publish 직후, 당일 변경 모두 반영)
     scheduler.add_job(
         lambda: _run_with_retry("kis_master_2nd", _refresh_kis_master, scheduler),
-        CronTrigger(hour=18, minute=58),
+        CronTrigger(hour=18, minute=58, timezone=_TZ_SEOUL),
         id="kis_master_2nd", replace_existing=True)
 
     # 07:30 — dataset 글로벌 (yfinance/FRED 06:15 publish + Binance/공포탐욕 09:00 publish 이후)
     scheduler.add_job(
         lambda: _run_with_retry("dataset_global", _refresh_global_dataset, scheduler),
-        CronTrigger(hour=7, minute=30),
+        CronTrigger(hour=7, minute=30, timezone=_TZ_SEOUL),
         id="dataset_global", replace_existing=True)
 
     # 07:40 — 국가별 국채 수익률곡선(FRED/MOF/ECB, 무키·5개국) 일일 갱신. dataset_global 직후 스태거.
     scheduler.add_job(
         lambda: _run_with_retry("bonds_daily", _refresh_bonds, scheduler),
-        CronTrigger(hour=7, minute=40),
+        CronTrigger(hour=7, minute=40, timezone=_TZ_SEOUL),
         id="bonds_daily", replace_existing=True)
 
     # 상시 summary 레이턴시 프로브 — 5분마다 대표 종목상세를 내부 호출해 소요 ms를 로깅.
@@ -1183,13 +1191,13 @@ def _build_scheduler() -> BackgroundScheduler:
     # 웹을 굶기면 이 값이 튄다). 실패 비크리티컬이라 _run_with_retry 미사용(자체 예외 로깅).
     scheduler.add_job(
         _probe_summary_latency,
-        CronTrigger(minute="*/5"),
+        CronTrigger(minute="*/5", timezone=_TZ_SEOUL),
         id="summary_probe", replace_existing=True)
 
     # 15:45 — KRX 정규장 1차 (15:40 publish 직후)
     scheduler.add_job(
         lambda: _run_with_retry("krx_1st", _refresh_krx, scheduler),
-        CronTrigger(hour=15, minute=45),
+        CronTrigger(hour=15, minute=45, timezone=_TZ_SEOUL),
         id="krx_1st", replace_existing=True)
 
     # 16:05 + 16:35 — 산업분석 트리맵 가격 캐시 무효화 + 공식 종가 프리워밍.
@@ -1198,7 +1206,7 @@ def _build_scheduler() -> BackgroundScheduler:
     for _hh, _mm in [(16, 5), (16, 35)]:
         scheduler.add_job(
             lambda: _run_with_retry("industry_prices", _refresh_industry_prices, scheduler),
-            CronTrigger(hour=_hh, minute=_mm),
+            CronTrigger(hour=_hh, minute=_mm, timezone=_TZ_SEOUL),
             id=f"industry_prices_{_hh}_{_mm}", replace_existing=True)
 
     # 08:10 + 09:35 — KOSPI200 선물 만기물 패널 최근분 증분 + 연속물 재구성 (공식 KRX API,
@@ -1211,25 +1219,25 @@ def _build_scheduler() -> BackgroundScheduler:
     for _hh, _mm, _jid in [(8, 10, "kospi_futures_am"), (9, 35, "kospi_futures")]:
         scheduler.add_job(
             lambda: _run_with_retry("kospi_futures", _refresh_kospi_futures, scheduler),
-            CronTrigger(hour=_hh, minute=_mm),
+            CronTrigger(hour=_hh, minute=_mm, timezone=_TZ_SEOUL),
             id=_jid, replace_existing=True)
 
     # 17:00 — NAVER 펀더멘털 (publish 비공개, 보수적 추정)
     scheduler.add_job(
         lambda: _run_with_retry("naver", _refresh_naver, scheduler),
-        CronTrigger(hour=17, minute=0),
+        CronTrigger(hour=17, minute=0, timezone=_TZ_SEOUL),
         id="naver", replace_existing=True)
 
     # 17:15 — 기술지표 (NAVER 직후, daily_metrics 내부 계산)
     scheduler.add_job(
         lambda: _run_with_retry("technical", _refresh_technical, scheduler),
-        CronTrigger(hour=17, minute=15),
+        CronTrigger(hour=17, minute=15, timezone=_TZ_SEOUL),
         id="technical", replace_existing=True)
 
     # 03:30 — 기업개요 분기 갱신(매일 staleness 체크 → 90일 경과 시에만 FnGuide 재수집)
     scheduler.add_job(
         lambda: _run_with_retry("company_profiles", _refresh_company_profiles, scheduler),
-        CronTrigger(hour=3, minute=30),
+        CronTrigger(hour=3, minute=30, timezone=_TZ_SEOUL),
         id="company_profiles", replace_existing=True)
 
     # 재무제표(Financials) — 분기/사업보고서 제출 마감일 저녁 20:10에 일괄 갱신.
@@ -1239,14 +1247,14 @@ def _build_scheduler() -> BackgroundScheduler:
     for _mo, _dy in [(3, 31), (5, 15), (8, 14), (11, 14)]:
         scheduler.add_job(
             lambda: _run_with_retry("financials", _refresh_financials, scheduler),
-            CronTrigger(month=_mo, day=_dy, hour=20, minute=10),
+            CronTrigger(month=_mo, day=_dy, hour=20, minute=10, timezone=_TZ_SEOUL),
             id=f"financials_{_mo}_{_dy}", replace_existing=True)
 
     # 18:10 — 정적 메타(섹터·상장폐지일) 사이드카. dataset_kr(18:15) invalidate 직전 →
     # 매니페스트가 새 사이드카로 재빌드, bundle(18:30)이 로컬 전파. FDR KRX-DESC/DELISTING.
     scheduler.add_job(
         lambda: _run_with_retry("static_meta", _refresh_static_meta, scheduler),
-        CronTrigger(hour=18, minute=10),
+        CronTrigger(hour=18, minute=10, timezone=_TZ_SEOUL),
         id="static_meta", replace_existing=True)
 
     # 18:15 — 한국 dataset 갱신 (정규장 종가 + KRX 정정 반영, parquet 영구 저장)
@@ -1255,7 +1263,7 @@ def _build_scheduler() -> BackgroundScheduler:
     # 모두 파괴했음. 정정 보정 가치 < 자동 선택 데이터 손실. 15:45 KRX 1차로 충분.
     scheduler.add_job(
         lambda: _run_with_retry("dataset_kr", _refresh_kr_dataset, scheduler),
-        CronTrigger(hour=18, minute=15),
+        CronTrigger(hour=18, minute=15, timezone=_TZ_SEOUL),
         id="dataset_kr", replace_existing=True)
 
     # Dataset bundle packaging은 고정 시각 cron이 아니라 각 dataset refresh의
@@ -1265,12 +1273,12 @@ def _build_scheduler() -> BackgroundScheduler:
     # 전진(한 방 17:30 의존이 폭주에 죽어 24h 0건이던 근본 수정, 2026-06-10). budget 1500=~150종목.
     scheduler.add_job(
         lambda: _run_with_retry("kr_fund_chunk", _backfill_kr_fundamentals_chunk, scheduler),
-        CronTrigger(minute="*/10"),
+        CronTrigger(minute="*/10", timezone=_TZ_SEOUL),
         id="kr_fund_chunk", replace_existing=True)
     # 17:30 — 누적 펀더멘털 일일 attach(invalidate). dataset_kr(18:15) 직전 매니페스트 반영.
     scheduler.add_job(
         lambda: _run_with_retry("kr_fundamentals", _refresh_kr_fundamentals, scheduler),
-        CronTrigger(hour=17, minute=30),
+        CronTrigger(hour=17, minute=30, timezone=_TZ_SEOUL),
         id="kr_fundamentals", replace_existing=True)
 
     # 애널 컨센서스 cron은 별도로 없다 — reports_kr(네이버)가 목록·목표가·투자의견 수집 시 컨센서스 패널까지
@@ -1278,66 +1286,66 @@ def _build_scheduler() -> BackgroundScheduler:
     # 애널 리포트(네이버, 무로그인) — 10분 백필 청크(페이지 커서→2010·상세 목표가/투자의견 부착) + 19:30 증분.
     scheduler.add_job(
         lambda: _run_with_retry("reports_chunk", _backfill_reports_chunk, scheduler),
-        CronTrigger(minute="9-59/10"),             # :09,:19… — 다른 10분 cron과 스태거
+        CronTrigger(minute="9-59/10", timezone=_TZ_SEOUL),             # :09,:19… — 다른 10분 cron과 스태거
         id="reports_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("reports_daily", _refresh_reports, scheduler),
-        CronTrigger(hour=19, minute=30),           # 컨센서스(19:00) 후 스태거
+        CronTrigger(hour=19, minute=30, timezone=_TZ_SEOUL),           # 컨센서스(19:00) 후 스태거
         id="reports_daily", replace_existing=True)
     # KR 기관·외국인 수급(pykrx, KRX_ID/PW 필요) — 10분 백필 청크 + 16:30 일일 증분(KRX 마감 후).
     scheduler.add_job(
         lambda: _run_with_retry("flow_chunk", _backfill_flow_chunk, scheduler),
-        CronTrigger(minute="5-59/10"),           # :05,:15… — 다른 10분 cron과 스태거
+        CronTrigger(minute="5-59/10", timezone=_TZ_SEOUL),           # :05,:15… — 다른 10분 cron과 스태거
         id="flow_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("flow_daily", _refresh_flow, scheduler),
-        CronTrigger(hour=16, minute=30),
+        CronTrigger(hour=16, minute=30, timezone=_TZ_SEOUL),
         id="flow_daily", replace_existing=True)
     # KR 공매도 잔고(pykrx, KRX_ID/PW 필요) — 10분 백필 청크 + 16:35 일일 증분(KRX 마감 후).
     scheduler.add_job(
         lambda: _run_with_retry("shortbal_chunk", _backfill_shortbal_chunk, scheduler),
-        CronTrigger(minute="7-59/10"),           # :07,:17… — 다른 10분 cron과 스태거
+        CronTrigger(minute="7-59/10", timezone=_TZ_SEOUL),           # :07,:17… — 다른 10분 cron과 스태거
         id="shortbal_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("shortbal_daily", _refresh_shortbal, scheduler),
-        CronTrigger(hour=16, minute=35),
+        CronTrigger(hour=16, minute=35, timezone=_TZ_SEOUL),
         id="shortbal_daily", replace_existing=True)
 
     # KR OHLCV 깊이 백필(FDR, 무키) — 10분 청크로 기존 종목을 2010까지 소급 prepend.
     # 일일 dataset_kr 증분은 앞으로만 가서 과거를 못 채움 → 별도 백필이 그 갭만 메움(완료 시 0비용).
     scheduler.add_job(
         lambda: _run_with_retry("kr_ohlcv_depth", _backfill_kr_ohlcv_chunk, scheduler),
-        CronTrigger(minute="7-59/10"),           # :07,:17… — fund(*/10)·flow(5)·reports(9)와 스태거
+        CronTrigger(minute="7-59/10", timezone=_TZ_SEOUL),           # :07,:17… — fund(*/10)·flow(5)·reports(9)와 스태거
         id="kr_ohlcv_depth", replace_existing=True)
 
     # US OHLCV 깊이 백필(yfinance, 무키) — 10분 청크로 기존 종목을 2010까지 소급 prepend.
     # 과거 backfill_start=2015 코호트의 floor 이전 갭(KR과 동일 이유·동일 마커 규약).
     scheduler.add_job(
         lambda: _run_with_retry("us_ohlcv_depth", _backfill_us_ohlcv_chunk, scheduler),
-        CronTrigger(minute="3-59/10"),           # :03,:13… — 다른 10분 청크들과 스태거
+        CronTrigger(minute="3-59/10", timezone=_TZ_SEOUL),           # :03,:13… — 다른 10분 청크들과 스태거
         id="us_ohlcv_depth", replace_existing=True)
 
     # KR 시장지표(공식 KRX API, KRX_API_KEY) — 10분 청크 백필(가벼운 지표 넓게·옵션 풋콜 좁게)
     # + 09:30 일일 증분. KRX_API_KEY 미설정이면 feed가 no-op(무영향).
     scheduler.add_job(
         lambda: _run_with_retry("krx_market_chunk", _backfill_krx_market_chunk, scheduler),
-        CronTrigger(minute="8-59/10"),           # :08,:18… 스태거
+        CronTrigger(minute="8-59/10", timezone=_TZ_SEOUL),           # :08,:18… 스태거
         id="krx_market_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("krx_putcall_chunk", _backfill_krx_putcall_chunk, scheduler),
-        CronTrigger(minute="4-59/10"),           # :04,:14… 스태거 (옵션 무거움·좁은 윈도우)
+        CronTrigger(minute="4-59/10", timezone=_TZ_SEOUL),           # :04,:14… 스태거 (옵션 무거움·좁은 윈도우)
         id="krx_putcall_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("krx_etf_chunk", _backfill_krx_etf_chunk, scheduler),
-        CronTrigger(minute="6-59/10"),           # :06,:16… 스태거 (ETF AUM/flow)
+        CronTrigger(minute="6-59/10", timezone=_TZ_SEOUL),           # :06,:16… 스태거 (ETF AUM/flow)
         id="krx_etf_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("krx_futures_panel_chunk", _backfill_krx_futures_panel_chunk, scheduler),
-        CronTrigger(minute="9-59/10"),           # :09,:19… 스태거 (선물 만기물 패널 2010 백필)
+        CronTrigger(minute="9-59/10", timezone=_TZ_SEOUL),           # :09,:19… 스태거 (선물 만기물 패널 2010 백필)
         id="krx_futures_panel_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("krx_market_daily", _refresh_krx_market, scheduler),
-        CronTrigger(hour=9, minute=30),          # 공식 KRX API T+1 08시 갱신 후
+        CronTrigger(hour=9, minute=30, timezone=_TZ_SEOUL),          # 공식 KRX API T+1 08시 갱신 후
         id="krx_market_daily", replace_existing=True)
 
     # KR 시총·거래대금(공식 KRX API `sto` — 포털 별도 신청) — 30분 청크 백필(60일 창,
@@ -1345,48 +1353,48 @@ def _build_scheduler() -> BackgroundScheduler:
     # 드러남(전용 fetcher가 에러 페이로드와 휴장을 구분 — 커서 침묵 전진 방지).
     scheduler.add_job(
         lambda: _run_with_retry("marketcap_chunk", _backfill_marketcap_chunk, scheduler),
-        CronTrigger(minute="1-59/30"),           # :01,:31 — 10분 청크들과 스태거
+        CronTrigger(minute="1-59/30", timezone=_TZ_SEOUL),           # :01,:31 — 10분 청크들과 스태거
         id="marketcap_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("marketcap_daily", _refresh_marketcap, scheduler),
-        CronTrigger(hour=9, minute=35),          # sto는 T+1 08시 확정(라이브 실증) — 09:30 krx_market 뒤
+        CronTrigger(hour=9, minute=35, timezone=_TZ_SEOUL),          # sto는 T+1 08시 확정(라이브 실증) — 09:30 krx_market 뒤
         id="marketcap_daily", replace_existing=True)
 
     # US 공매도 거래량(FINRA Reg SHO, 무키) — 30분 청크 백필(90일 창·floor 2018-08)
     # + 09:40 일일 증분(당일 18:00 ET 게시 후).
     scheduler.add_job(
         lambda: _run_with_retry("shortvol_chunk", _backfill_shortvol_chunk, scheduler),
-        CronTrigger(minute="16-59/30"),          # :16,:46 — marketcap(:01,:31)과 스태거
+        CronTrigger(minute="16-59/30", timezone=_TZ_SEOUL),          # :16,:46 — marketcap(:01,:31)과 스태거
         id="shortvol_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("shortvol_daily", _refresh_shortvol, scheduler),
-        CronTrigger(hour=9, minute=40),
+        CronTrigger(hour=9, minute=40, timezone=_TZ_SEOUL),
         id="shortvol_daily", replace_existing=True)
 
     # 일요일 08:00 — 미국 S&P500 시가총액 (fast_info). 분기 변동 낮아 주1회.
     scheduler.add_job(
         lambda: _run_with_retry("us_market_caps", _refresh_us_market_caps, scheduler),
-        CronTrigger(day_of_week="sun", hour=8, minute=0),
+        CronTrigger(day_of_week="sun", hour=8, minute=0, timezone=_TZ_SEOUL),
         id="us_market_caps", replace_existing=True)
 
     # 일요일 09:00 — US 펀더멘털(SEC Company Facts). 분기 변동 낮아 주1회. 자체 invalidate.
     scheduler.add_job(
         lambda: _run_with_retry("us_fundamentals", _refresh_us_fundamentals, scheduler),
-        CronTrigger(day_of_week="sun", hour=9, minute=0),
+        CronTrigger(day_of_week="sun", hour=9, minute=0, timezone=_TZ_SEOUL),
         id="us_fundamentals", replace_existing=True)
 
     # 토요일 09:00 — US 선물 COT(CFTC). 금요일 15:30 ET(토 새벽 KST) 공개 직후 안전 마진.
     # 시장당 1콜=전체 이력 멱등 merge라 백필·증분·정정 흡수가 같은 호출(주 8콜).
     scheduler.add_job(
         lambda: _run_with_retry("cot_weekly", _refresh_cot, scheduler),
-        CronTrigger(day_of_week="sat", hour=9, minute=0),
+        CronTrigger(day_of_week="sat", hour=9, minute=0, timezone=_TZ_SEOUL),
         id="cot_weekly", replace_existing=True)
 
     # US 13F 기관보유(SEC 구조화·무키) — 30분 청크 백필(분기 ZIP 1개/run·최신→과거·메모리 상한).
     # 전 분기 소진 후 무비용 no-op(신규 분기 자동 픽업). CUSIP→ticker 맵은 최초 1회 FTD로 구축.
     scheduler.add_job(
         lambda: _run_with_retry("institutional_13f_chunk", _backfill_13f_chunk, scheduler),
-        CronTrigger(minute="23-59/30"),          # :23,:53 — marketcap(:01)·shortvol(:16)과 스태거
+        CronTrigger(minute="23-59/30", timezone=_TZ_SEOUL),          # :23,:53 — marketcap(:01)·shortvol(:16)과 스태거
         id="institutional_13f_chunk", replace_existing=True)
 
     # 03:00 — KR/US 시장 캘린더 일일 재빌드 (Q2+Q8).
@@ -1394,7 +1402,7 @@ def _build_scheduler() -> BackgroundScheduler:
     # 시각: 한국·미국 모두 새벽 — 사이클·시장 시간과 무관.
     scheduler.add_job(
         lambda: _run_with_retry("calendars", calendar_cache.refresh, scheduler),
-        CronTrigger(hour=3, minute=0),
+        CronTrigger(hour=3, minute=0, timezone=_TZ_SEOUL),
         id="calendars", replace_existing=True)
 
     # 04:00 — DB pruning: HeartbeatEvent 30일·SyncSnapshot 30일(유저별 최신 1건
@@ -1402,7 +1410,7 @@ def _build_scheduler() -> BackgroundScheduler:
     # 정책·인덱스 의존은 db.prune_old_rows docstring 참조.
     scheduler.add_job(
         lambda: _run_with_retry("db_prune", _prune_db, scheduler),
-        CronTrigger(hour=4, minute=0),
+        CronTrigger(hour=4, minute=0, timezone=_TZ_SEOUL),
         id="db_prune", replace_existing=True)
 
     return scheduler
