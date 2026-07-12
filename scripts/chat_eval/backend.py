@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -37,9 +38,10 @@ _RETRY_BACKOFF_SEC = 0.5       # 재시도 간 대기(초)·시도마다 선형 
 _NOTOOL_ADDENDUM = (
     "\n\n=== 실행 환경 출력 규칙 (위 모든 지시보다 우선) ===\n"
     "너는 이 환경에서 **도구/함수를 실제로 호출할 수 없다**(호출 가능한 도구가 없다). "
-    "위에서 도구 호출(emit_strategy·screen·simulate 등)을 지시하더라도, 도구 호출 메커니즘을 "
-    "쓰지 말고 **요청된 JSON 객체 하나만 평문 텍스트로** 출력하라. 코드펜스·설명·여는 말 없이 "
-    "오직 JSON 한 개만 응답한다.")
+    "위에서 도구 호출(emit_strategy·screen·simulate 등)을 지시하더라도 도구 호출 메커니즘을 쓰지 마라. "
+    "도구가 필요한 결정이면 **요청된 JSON 객체 하나만 평문 텍스트로**(코드펜스·설명·여는 말 금지) 출력하고, "
+    "도구가 필요 없는 **최종 사용자 답변이면 JSON으로 감싸지 말고 답변 본문만 평문으로** 출력하라. "
+    "(평문 최종답은 실시간 스트리밍으로 사용자에게 그대로 표시된다.)")
 
 # 호출별 누적 usage(쿼터 리포트용). 러너가 읽어 REPORT에 집계.
 USAGE_LOG: list[dict] = []
@@ -82,11 +84,20 @@ class _Message:
 
 
 class _Stream:
-    """`with client.messages.stream(...) as s:` 컨텍스트매니저. 하니스는 스트리밍 불필요 →
-    text_stream은 비어 있고 최종 메시지는 get_final_message()로 한 번에 준다."""
+    """`with client.messages.stream(...) as s:` — **라이브 스트리밍**(stream-json).
 
-    def __init__(self, message: _Message):
-        self._m = message
+    text_stream이 claude -p 서브프로세스를 소진하며 **평문(최종답) 델타를 실시간으로**
+    흘린다 — 프로덕션 실 API 스트리밍과 같은 체감(TTFT 수 초). 도구 결정은 프롬프트형
+    프로토콜상 JSON 텍스트라 화면에 흘리면 안 되므로, 첫 비공백 문자가 '{'인 메시지는
+    억제하고 파싱만 한다(진행 표시는 agent의 progress 이벤트가 담당). 소진이 끝나면
+    get_final_message()가 배치 경로와 동일한 파싱으로 _Message를 만든다."""
+
+    def __init__(self, backend: "ClaudeCodeBackend", sys_text: str, prompt: str,
+                 model: str, tools, tool_choice):
+        self._b = backend
+        self._args = (sys_text, prompt, model, tools, tool_choice)
+        self._final: _Message | None = None
+        self._gen = None
 
     def __enter__(self):
         return self
@@ -96,16 +107,14 @@ class _Stream:
 
     @property
     def text_stream(self):
-        # 최종 메시지의 text 블록을 delta로 흘려보낸다 → agent 루프의 `for delta in text_stream:
-        # yield ("delta",…)`가 실행돼 웹(onDelta)에 최종 텍스트가 표시된다(프로덕션 실 API 스트리밍과
-        # 동일한 관찰가능 동작). tool_use 블록은 제외 → 도구 라운드는 안 흘리고 텍스트 라운드만.
-        # (shim은 claude -p 블로킹 후 전체 텍스트를 한 번에 확보 → 한 델타로 방출.)
-        for b in self._m.content:
-            if getattr(b, "type", None) == "text" and b.text:
-                yield b.text
+        if self._gen is None:                 # 단일 제너레이터 캐시 — 반복 접근에도 1회 실행
+            self._gen = self._b._stream_deltas(self)
+        return self._gen
 
     def get_final_message(self) -> _Message:
-        return self._m
+        for _ in self.text_stream:            # 미소진분 드레인(소비자가 안 읽어도 완결 보장)
+            pass
+        return self._final
 
 
 # ── 모델 별칭·직렬화 헬퍼 ─────────────────────────────────────────────────────
@@ -194,10 +203,11 @@ def _build_prompt(messages: list, tools, tool_choice) -> str:
                 f"도구를 실제로 호출하지 말 것 — 오직 JSON 텍스트만(설명·코드펜스 금지).")
     return (f"<conversation>\n{convo}\n</conversation>\n\n"
             f"<available_tools>\n{schemas}\n</available_tools>\n\n"
-            f"위 system 지침에 따라 다음 행동 하나를 결정해 **JSON 객체 하나로만 평문 출력**하라. "
-            f"도구를 실제로 호출하지 말 것 — 아래 형식의 JSON 텍스트만(설명·코드펜스 금지):\n"
-            f'- 도구 사용: {{"action":"tool","name":"<도구명>","input":{{...}}}}\n'
-            f'- 최종 답변: {{"action":"text","text":"<사용자에게 보일 답변>"}}')
+            f"위 system 지침에 따라 다음 중 하나로만 응답하라. 도구를 실제로 호출하지 말 것:\n"
+            f'- 도구 사용 결정: {{"action":"tool","name":"<도구명>","input":{{...}}}} '
+            f"— 이 JSON 객체 하나만(설명·코드펜스 금지)\n"
+            f"- 최종 답변: JSON으로 감싸지 말고 사용자에게 보일 답변 본문만 평문으로 "
+            f"(실시간 스트리밍으로 그대로 표시된다)")
 
 
 # ── claude -p 호출·파싱 ───────────────────────────────────────────────────────
@@ -236,7 +246,74 @@ class _Messages:
 
     def stream(self, *, model=None, system=None, messages=None, tools=None,
                tool_choice=None, max_tokens=4096, **_kw) -> _Stream:
-        return _Stream(self._b._respond(model, system, messages or [], tools, tool_choice))
+        # 라이브 스트리밍 경로(오케스트레이터 루프) — create()(NL→IR 컴파일·다이제스트)는
+        # 검증된 배치 경로 유지. 델타는 _Stream.text_stream 소비 시점에 흐른다.
+        sys_text = _join_system(system)
+        if tools:
+            sys_text += _NOTOOL_ADDENDUM
+        prompt = _build_prompt(messages or [], tools, tool_choice)
+        return _Stream(self._b, sys_text, prompt, _model_alias(model), tools, tool_choice)
+
+
+def _finalize_message(result_text: str, usage: _Usage, tools, tool_choice) -> _Message:
+    """claude -p 최종 텍스트 → SDK _Message. 배치·스트리밍 공용 파싱(단일 출처)."""
+    if not tools:                                  # 평문(다이제스트)
+        return _Message([_TextBlock(result_text)], "end_turn", usage)
+    forced = (isinstance(tool_choice, dict) and tool_choice.get("type") == "tool"
+              and tool_choice.get("name")) or None
+    if forced:                                     # NL→IR: 강제 도구 input
+        payload = _extract_json(result_text) or {}
+        return _Message([_ToolUseBlock(name=forced, input=payload)], "tool_use", usage)
+    decision = _extract_json(result_text) or {}    # 오케스트레이터: action 분기
+    if decision.get("action") == "tool" and decision.get("name"):
+        return _Message([_ToolUseBlock(name=decision["name"],
+                                       input=decision.get("input") or {})], "tool_use", usage)
+    # 평문 최종답(신 프로토콜·스트리밍용) 또는 {"action":"text"} JSON(구 프로토콜) 모두 수용
+    text = decision.get("text") if decision.get("action") == "text" else result_text
+    return _Message([_TextBlock(str(text))], "end_turn", usage)
+
+
+def _claude_env(token: str) -> dict:
+    # ANTHROPIC_API_KEY가 env에 있으면 claude -p가 OAuth보다 그걸 우선해 API모드로 간다
+    # (하니스는 compile_nl 존재가드 통과용 더미 키를 쓴다) → 서브프로세스 env에선 제거.
+    env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": token}
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    return env
+
+
+def _kill_tree(proc) -> None:
+    # Windows: proc.kill()은 claude.CMD만 죽이고 손자(node)가 남아 대기가 무한블록
+    # (6h hang 근본원인) → taskkill /T로 프로세스 트리 전체 강제 종료.
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                       capture_output=True)
+    else:
+        proc.kill()
+    proc.wait()
+
+
+def _check_envelope(env_out: dict, errout: str, model: str) -> tuple[str, _Usage]:
+    """result 봉투 공통 검사(배치 json·스트리밍 stream-json 동일 봉투) + usage 회계."""
+    if env_out.get("is_error") or not str(env_out.get("result", "")).strip():
+        # subtype·is_error·num_turns까지 남겨야 다음 발생 시 원인(도구시도 max_turns vs
+        # CLI 오류 vs 사용량)을 로그만으로 판별할 수 있다.
+        raise _RetryableClaudeError(
+            f"빈/오류 응답(status={env_out.get('api_error_status')} "
+            f"subtype={env_out.get('subtype')} is_error={env_out.get('is_error')} "
+            f"num_turns={env_out.get('num_turns')}): "
+            f"{env_out.get('result')} / stderr={errout[:200]!r}")
+    u = env_out.get("usage") or {}
+    usage = _Usage(
+        input_tokens=u.get("input_tokens", 0) or 0,
+        output_tokens=u.get("output_tokens", 0) or 0,
+        cache_creation_input_tokens=u.get("cache_creation_input_tokens", 0) or 0,
+        cache_read_input_tokens=u.get("cache_read_input_tokens", 0) or 0)
+    USAGE_LOG.append({"model": model, "in": usage.input_tokens, "out": usage.output_tokens,
+                      "cache_create": usage.cache_creation_input_tokens,
+                      "cache_read": usage.cache_read_input_tokens,
+                      "cost_est": env_out.get("total_cost_usd", 0)})
+    return str(env_out.get("result", "")), usage
 
 
 class ClaudeCodeBackend:
@@ -251,22 +328,9 @@ class ClaudeCodeBackend:
             sys_text += _NOTOOL_ADDENDUM
         prompt = _build_prompt(messages, tools, tool_choice)
         result_text, usage = self._call(sys_text, prompt, _model_alias(model))
+        return _finalize_message(result_text, usage, tools, tool_choice)
 
-        if not tools:                                  # 평문(다이제스트)
-            return _Message([_TextBlock(result_text)], "end_turn", usage)
-
-        forced = (isinstance(tool_choice, dict) and tool_choice.get("type") == "tool"
-                  and tool_choice.get("name")) or None
-        if forced:                                     # NL→IR: 강제 도구 input
-            payload = _extract_json(result_text) or {}
-            return _Message([_ToolUseBlock(name=forced, input=payload)], "tool_use", usage)
-
-        decision = _extract_json(result_text) or {}    # 오케스트레이터: action 분기
-        if decision.get("action") == "tool" and decision.get("name"):
-            return _Message([_ToolUseBlock(name=decision["name"],
-                                           input=decision.get("input") or {})], "tool_use", usage)
-        text = decision.get("text") if decision.get("action") == "text" else result_text
-        return _Message([_TextBlock(str(text))], "end_turn", usage)
+    # ── 배치 경로 (create — NL→IR 컴파일·다이제스트) ─────────────────────────────
 
     def _call(self, sys_text: str, prompt: str, model: str) -> tuple[str, _Usage]:
         token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
@@ -293,11 +357,6 @@ class ClaudeCodeBackend:
             f.write(sys_text)
             sys_file = f.name
         try:
-            # ANTHROPIC_API_KEY가 env에 있으면 claude -p가 OAuth보다 그걸 우선해 API모드로 간다
-            # (하니스는 compile_nl 존재가드 통과용 더미 키를 쓴다) → 서브프로세스 env에선 제거.
-            env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": token}
-            env.pop("ANTHROPIC_API_KEY", None)
-            env.pop("ANTHROPIC_AUTH_TOKEN", None)
             # --max-turns 3: _NOTOOL_ADDENDUM에도 모델이 native tool_use를 시도하는 샘플이 있다
             # (동일 쿼리 실측: 1턴 순응 샘플과 '1턴째 도구시도(거부)→2턴째 JSON 자기교정' num_turns=2
             # 샘플 공존). 1이면 후자가 최종텍스트 없이 끝나 빈 result → 턴 실패 부류의 근본원인.
@@ -305,18 +364,11 @@ class ClaudeCodeBackend:
                 [_CLAUDE_BIN, "-p", "--model", model, "--system-prompt-file", sys_file,
                  "--max-turns", "3", "--allowedTools", "", "--output-format", "json"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", env=env)
+                text=True, encoding="utf-8", env=_claude_env(token))
             try:
                 out, errout = proc.communicate(input=prompt, timeout=_TIMEOUT)
             except subprocess.TimeoutExpired:
-                # Windows: proc.kill()은 claude.CMD만 죽이고 손자(node)가 남아 communicate가
-                # 무한블록(6h hang 근본원인) → taskkill /T로 프로세스 트리 전체 강제 종료.
-                if os.name == "nt":
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                                   capture_output=True)
-                else:
-                    proc.kill()
-                proc.wait()
+                _kill_tree(proc)
                 raise RuntimeError(f"claude -p 타임아웃({_TIMEOUT}s) — 프로세스 트리 종료함")
         finally:
             os.unlink(sys_file)
@@ -326,22 +378,123 @@ class ClaudeCodeBackend:
             raise _RetryableClaudeError(
                 f"출력 파싱 실패(rc={proc.returncode}): "
                 f"stdout={out[:400]!r} / stderr={errout[:300]!r}")
-        if env_out.get("is_error") or not str(env_out.get("result", "")).strip():
-            # subtype·is_error·num_turns까지 남겨야 다음 발생 시 원인(도구시도 max_turns vs
-            # CLI 오류 vs 사용량)을 로그만으로 판별할 수 있다.
+        return _check_envelope(env_out, errout, model)
+
+    # ── 스트리밍 경로 (stream — 오케스트레이터 루프·TTFT 수 초) ──────────────────
+
+    def _stream_deltas(self, s: _Stream):
+        """_Stream.text_stream 본체 — 평문 델타를 yield하고 완료 시 s._final을 세팅.
+
+        재시도는 **아무것도 방출하기 전**에만 — 델타가 이미 화면에 흘렀는데 재시도하면
+        같은 답이 중복 표출된다. 방출 후 실패는 정직하게 표면화(드묾)."""
+        token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+        if not token:
+            raise RuntimeError(
+                "CLAUDE_CODE_OAUTH_TOKEN 미설정 — `claude setup-token`으로 구독 토큰을 발급하고 "
+                "환경변수로 설정하세요(설계서 §9).")
+        sys_text, prompt, model, tools, tool_choice = s._args
+        emitted = False
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                for kind, val in self._stream_once(sys_text, prompt, model, token):
+                    if kind == "delta":
+                        emitted = True
+                        yield val
+                    else:                       # ("final", (result_text, usage))
+                        s._final = _finalize_message(val[0], val[1], tools, tool_choice)
+                return
+            except _RetryableClaudeError as e:
+                if emitted or attempt >= _MAX_RETRIES:
+                    raise RuntimeError(
+                        f"claude -p 스트리밍 실패({attempt + 1}회차·emitted={emitted}) — {e}") from e
+                time.sleep(_RETRY_BACKOFF_SEC * (attempt + 1))
+
+    def _stream_once(self, sys_text: str, prompt: str, model: str, token: str):
+        """claude -p stream-json 1회 실행 — ("delta", str)… 후 ("final", (text, usage)).
+
+        프로토콜(CLI 2.1.161 실측·probe): stream_event/content_block_delta(text_delta)가
+        토큰 단위로 오고, 마지막 result 이벤트가 배치 --output-format json과 **동일 봉투**
+        (is_error·result·usage·subtype·num_turns)를 준다 → 봉투 검사·재시도 분류를 배치와
+        공유(_check_envelope). 게이트: assistant 메시지별 첫 비공백 문자가 '{'면 도구 결정
+        JSON → 화면 미방출(파싱은 봉투 result로). max-turns 자기교정으로 한 호출에 여러
+        메시지가 올 수 있어 message_start마다 게이트를 리셋한다 — 앞 턴이 평문이어도 뒤 턴
+        JSON이 화면에 새지 않는다. 도구시도의 input_json_delta·thinking 델타는 text가 없어
+        자연 무시된다."""
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8") as f:
+            f.write(sys_text)
+            sys_file = f.name
+        killed = {"v": False}
+        stderr_tail: list[str] = []
+        envelope = None
+        try:
+            proc = subprocess.Popen(
+                [_CLAUDE_BIN, "-p", "--model", model, "--system-prompt-file", sys_file,
+                 "--max-turns", "3", "--allowedTools", "",
+                 "--output-format", "stream-json", "--include-partial-messages", "--verbose"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", env=_claude_env(token))
+
+            def _on_timeout():
+                killed["v"] = True
+                _kill_tree(proc)
+
+            watchdog = threading.Timer(_TIMEOUT, _on_timeout)   # 스트림 hang 보호(배치와 동일 예산)
+            watchdog.start()
+
+            def _drain_stderr():
+                # stderr 미소비로 파이프 버퍼가 차면 stdout 읽기가 교착한다 — 꼬리만 보존(진단용).
+                for ln in proc.stderr:
+                    stderr_tail.append(ln)
+                    del stderr_tail[:-20]
+
+            threading.Thread(target=_drain_stderr, daemon=True).start()
+            try:
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+                mode = None          # 메시지별 게이트: None(미분류) → "prose" | "json"
+                buf = ""
+                for line in proc.stdout:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except ValueError:
+                        continue
+                    t = ev.get("type")
+                    if t == "stream_event":
+                        inner = ev.get("event") or {}
+                        it = inner.get("type")
+                        if it == "message_start":
+                            mode, buf = None, ""
+                        elif it == "content_block_delta":
+                            txt = (inner.get("delta") or {}).get("text") or ""
+                            if not txt:
+                                continue
+                            if mode is None:
+                                buf += txt
+                                stripped = buf.lstrip()
+                                if not stripped:
+                                    continue
+                                mode = "json" if stripped[0] == "{" else "prose"
+                                if mode == "prose":
+                                    yield ("delta", buf)
+                                    buf = ""
+                            elif mode == "prose":
+                                yield ("delta", txt)
+                            # mode == "json": 도구 결정 — 화면 미방출
+                    elif t == "result":
+                        envelope = ev
+                proc.wait()
+            finally:
+                watchdog.cancel()
+        finally:
+            os.unlink(sys_file)
+        if killed["v"]:
+            raise RuntimeError(f"claude -p 타임아웃({_TIMEOUT}s) — 프로세스 트리 종료함")
+        errout = "".join(stderr_tail)
+        if envelope is None:
             raise _RetryableClaudeError(
-                f"빈/오류 응답(status={env_out.get('api_error_status')} "
-                f"subtype={env_out.get('subtype')} is_error={env_out.get('is_error')} "
-                f"num_turns={env_out.get('num_turns')}): "
-                f"{env_out.get('result')} / stderr={errout[:200]!r}")
-        u = env_out.get("usage") or {}
-        usage = _Usage(
-            input_tokens=u.get("input_tokens", 0) or 0,
-            output_tokens=u.get("output_tokens", 0) or 0,
-            cache_creation_input_tokens=u.get("cache_creation_input_tokens", 0) or 0,
-            cache_read_input_tokens=u.get("cache_read_input_tokens", 0) or 0)
-        USAGE_LOG.append({"model": model, "in": usage.input_tokens, "out": usage.output_tokens,
-                          "cache_create": usage.cache_creation_input_tokens,
-                          "cache_read": usage.cache_read_input_tokens,
-                          "cost_est": env_out.get("total_cost_usd", 0)})
-        return str(env_out.get("result", "")), usage
+                f"stream 종료·result 봉투 없음(rc={proc.returncode}) / stderr={errout[:300]!r}")
+        yield ("final", _check_envelope(envelope, errout, model))

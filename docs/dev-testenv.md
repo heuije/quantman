@@ -55,8 +55,16 @@ cd web && npm run dev
   프로덕션(env 미설정)은 전부 실행(기본값).
 - shim(`scripts/chat_eval/backend.py`)은 프로덕션 모델 티어를 자동 매칭한다: `_model_alias`가
   CHAT_MODEL(claude-sonnet-5)을 `claude -p --model claude-sonnet-5`로 라우팅(별칭 "sonnet"은
-  Sonnet 4.6로 풀려 프로덕션과 어긋나므로 정확한 id 사용). 최종 텍스트도 `text_stream`으로 흘려보내
-  웹 SSE 렌더가 프로덕션과 동일하게 표시된다.
+  Sonnet 4.6로 풀려 프로덕션과 어긋나므로 정확한 id 사용).
+- **라이브 스트리밍(오케스트레이터 루프·TTFT 수 초).** `messages.stream()`은
+  `--output-format stream-json --include-partial-messages`로 claude -p를 소진하며 **평문
+  최종답을 토큰 단위로 실시간** 흘린다 — 종전 배치(`--output-format json`, 완성까지 대기라
+  TTFT 라운드당 수 분)의 침묵을 물리적으로 없앤다(실측 TTFT ~5–11s). 프롬프트형 도구 결정은
+  JSON 텍스트라 화면에 새면 안 되므로, 메시지별 첫 비공백 문자가 `{`면 억제하고 파싱만 한다
+  (message_start마다 게이트 리셋 → max-turns 자기교정의 뒤 JSON도 미유출). `create()`
+  (NL→IR 컴파일·다이제스트)는 검증된 배치 경로 유지. 재시도는 **첫 방출 전**에만(방출 후
+  실패는 중복 표출 방지 위해 정직 표면화). 봉투(is_error·result·usage·num_turns)는 배치와
+  동일해 신뢰성 검사·회계를 공유. 프로덕션은 이 shim을 안 타므로 무영향.
 - **신뢰성 parity(재시도).** 실 anthropic SDK는 일시 오류를 기본 재시도한다. `claude -p`는 공유
   구독·CLI 히컵으로 간헐 빈응답(is_error·빈 result·파싱 실패)을 내므로, shim `_call`이 이를
   **bounded 재시도(총 3회·선형 백오프)**해 일시 히컵이 턴 실패로 새지 않게 한다(타임아웃·토큰누락은
