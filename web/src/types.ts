@@ -1262,7 +1262,8 @@ export interface AdminUserRow {
   id: number;
   email: string;
   created_at: string;
-  last_active_at: string | null;
+  last_active_at: string | null;   // 사람 행동만(백테스트·챗·컴파일·화면조회)
+  local_app_at: string | null;     // 로컬앱 heartbeat/sync — 자동매매 가동 신호(기계)
   backtests: number;
   chat_turns: number;
   strategies: number;

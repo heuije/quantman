@@ -23,15 +23,16 @@ from .models import (ActivityEvent, BacktestRun, ChatTurnMetric, CompileLog,
 
 _KST = timezone(timedelta(hours=9))
 
-# 활성 유저·최근활동 판정 소스 — (user_id 컬럼, 타임스탬프 컬럼).
-# 제품 행동(백테스트·챗봇·전략 컴파일) + 화면·종목 조회(ActivityEvent) + 로컬앱 alive(heartbeat).
-# Device.last_seen_at는 컬럼명이 달라 별도로 합친다.
-_ACTIVITY = [
+# 활성 유저·최근활동 판정 소스 — (user_id 컬럼, 타임스탬프 컬럼). **사람의 행동만**:
+# 백테스트 실행·챗봇 질문·전략 컴파일·화면/종목 조회. 로컬앱 heartbeat(5분 자동 ping)·
+# Device.last_seen(sync 갱신)은 기계 신호라 여기 넣지 않는다 — 자동매매만 켜둔 유저가
+# "방금 활동"으로 표시되는 오해(2026-07-11 mwmw1119 사례)의 근본 원인이었다.
+# 로컬앱 가동 여부는 유저 행의 local_app_at으로 분리 표시한다.
+_HUMAN_ACTIVITY = [
     (BacktestRun.user_id, BacktestRun.created_at),
     (ChatTurnMetric.user_id, ChatTurnMetric.created_at),
     (CompileLog.user_id, CompileLog.created_at),
     (ActivityEvent.user_id, ActivityEvent.at),
-    (HeartbeatEvent.user_id, HeartbeatEvent.at),
 ]
 
 
@@ -91,15 +92,23 @@ def compute_admin_metrics(session: Session, *, now: datetime | None = None,
         "last_30d": sum(1 for u in users if _as_utc(u.created_at) >= d30),
     }
 
-    # ── 활동 (user_id, ts) 쌍을 소스별로 로드 → 활성·최근활동·일별을 단일 패스로 파생 ──
+    # ── 사람 활동 (user_id, ts) 쌍을 소스별로 로드 → 활성·최근활동·일별을 단일 패스로 파생 ──
     activity_pairs: list[tuple[int, datetime]] = []
-    for uid_col, ts_col in _ACTIVITY:
+    for uid_col, ts_col in _HUMAN_ACTIVITY:
         for uid, ts in session.exec(select(uid_col, ts_col)).all():
             if uid is not None and ts is not None:
                 activity_pairs.append((uid, _as_utc(ts)))
-    for uid, ts in session.exec(select(Device.user_id, Device.last_seen_at)).all():
-        if uid is not None and ts is not None:
-            activity_pairs.append((uid, _as_utc(ts)))
+
+    # ── 로컬앱 alive (기계 신호) — heartbeat·device sync의 유저별 최신. 별도 표시용 ──
+    local_app: dict[int, datetime] = {}
+    for uid_col, ts_col in ((HeartbeatEvent.user_id, HeartbeatEvent.at),
+                            (Device.user_id, Device.last_seen_at)):
+        for uid, ts in session.exec(
+                select(uid_col, func.max(ts_col)).group_by(uid_col)).all():
+            if uid is not None and ts is not None:
+                ts = _as_utc(ts)
+                if uid not in local_app or ts > local_app[uid]:
+                    local_app[uid] = ts
 
     last_active: dict[int, datetime] = {}
     active_d1: set[int] = set()
@@ -162,11 +171,13 @@ def compute_admin_metrics(session: Session, *, now: datetime | None = None,
     user_rows = []
     for u in users:
         la = last_active.get(u.id)
+        lap = local_app.get(u.id)
         user_rows.append({
             "id": u.id,
             "email": u.email,
             "created_at": _as_utc(u.created_at).isoformat(),
-            "last_active_at": la.isoformat() if la else None,
+            "last_active_at": la.isoformat() if la else None,       # 사람 행동만
+            "local_app_at": lap.isoformat() if lap else None,       # 로컬앱 heartbeat/sync
             "backtests": bt_ct.get(u.id, 0),
             "chat_turns": chat_ct.get(u.id, 0),
             "strategies": strat_ct.get(u.id, 0),

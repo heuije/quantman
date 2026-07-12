@@ -97,7 +97,8 @@ def test_compute_admin_metrics_aggregates():
 
     assert m["auth_breakdown"] == {"google": 1, "naver": 1, "password": 1}
 
-    # 활성(롤링): dau=u1만(24h) / wau=u1+u2 / mau=u1+u2(u3 40일 제외)
+    # 활성(롤링·**사람 행동만**): dau=u1만(24h 백테스트) / wau=u1+u2 / mau=u1+u2.
+    # u3는 heartbeat(기계)뿐이라 사람 활동 없음 — 어디에도 안 잡힘.
     assert m["active_users"] == {"dau": 1, "wau": 2, "mau": 2}
     # 가입: 24h=u1 / 7d=u1+u2 / 30d=u1+u2(u3 40일 제외)
     assert m["signups"] == {"last_24h": 1, "last_7d": 2, "last_30d": 2}
@@ -115,7 +116,12 @@ def test_compute_admin_metrics_aggregates():
     assert a["backtests"] == 2 and a["strategies"] == 2 and a["live_strategies"] == 1
     assert a["devices"] == 1 and a["chat_turns"] == 1 and a["auth"] == "password"
     assert by_email["b@example.com"]["auth"] == "google"
-    assert by_email["c@example.com"]["last_active_at"] is not None   # 40일 전이라도 기록
+    # 사람/기계 분리 — u3는 heartbeat(기계)만: 최근활동 없음·로컬앱 시각은 별도 기록.
+    # 자동매매만 켜둔 유저가 "방금 활동"으로 표시되던 오해의 회귀 가드.
+    c_row = by_email["c@example.com"]
+    assert c_row["last_active_at"] is None and c_row["local_app_at"] is not None
+    # u1은 기기 sync(1h 전)가 로컬앱 시각으로 잡힘
+    assert a["local_app_at"] is not None
     # 최근활동순 — u1이 가장 최근(1h 전)
     assert m["users"][0]["email"] == "a@example.com"
 

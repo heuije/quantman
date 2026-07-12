@@ -153,7 +153,7 @@ export default function Admin() {
         <Stat label="총 가입자" value={totals.users.toLocaleString()}
               sub={<>신규 24h <b>{signups.last_24h}</b> · 7일 <b>{signups.last_7d}</b></>} />
         <Stat label="활성 유저 (DAU)" value={active_users.dau.toLocaleString()}
-              sub={<>WAU <b>{active_users.wau}</b> · MAU <b>{active_users.mau}</b></>} />
+              sub={<>WAU <b>{active_users.wau}</b> · MAU <b>{active_users.mau}</b> · 사람 활동 기준</>} />
         <Stat label="자동매매 연동" value={totals.devices.toLocaleString()}
               sub={<>실전 전략 <b>{totals.live_strategies}</b> · 모의 <b>{totals.paper_strategies}</b></>} />
         <Stat label="누적 백테스트" value={totals.backtests.toLocaleString()}
@@ -233,11 +233,12 @@ function UserTable({ users }: { users: AdminUserRow[] }) {
         <tr style={{ borderBottom: "1px solid var(--border)", color: "var(--muted)" }}>
           <th style={thL}>이메일</th>
           <th style={thL}>가입</th>
-          <th style={th}>최근 활동</th>
+          <th style={th} title="사람 행동 기준 — 백테스트·챗봇·전략 컴파일·화면 조회">최근 활동</th>
           <th style={th}>백테스트</th>
           <th style={th}>챗봇</th>
           <th style={th}>전략</th>
           <th style={th}>연동</th>
+          <th style={th} title="로컬앱(자동매매) 마지막 신호 — heartbeat/sync. 사람 활동과 별개">로컬앱</th>
           <th style={thL}>인증</th>
         </tr>
       </thead>
@@ -258,6 +259,7 @@ function UserTable({ users }: { users: AdminUserRow[] }) {
               )}
             </td>
             <td style={td}>{u.devices > 0 ? u.devices : <span className="muted">—</span>}</td>
+            <td style={td} className={u.local_app_at ? "" : "muted"}>{ago(u.local_app_at)}</td>
             <td style={thL}>
               <span className="badge gray">{AUTH_LABEL[u.auth] ?? u.auth}</span>
             </td>
