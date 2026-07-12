@@ -385,6 +385,17 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
     각 구성은 독립 백테스트 후 일일수익 가중 합산(고정비중 매일 리밸런스 혼합) — 합성 자본곡선+구성별 분해가 나온다.
     기본 페어(같은 신호로 A 롱 + B 숏)도 구성 2개로 표현. ⚠ 공동 증거금·동시 체결(조인트 멀티레그)은 미지원(정직 한계)
     — 자동매매 연동도 불가(백테스트 전용·구성별 개별 등록 안내). 중첩 합성 금지(1단).
+14d. [달력·계절성 신호 게이트] "11월~4월만 보유(Sell in May)"·"월말 N일만 매수"·"월요일만"처럼 *달력이
+    진입 조건*이면 → is_in(inputs.signal=calendar(unit), params.values=[...])를 신호(또는 AND 게이트)로.
+    unit: month(1~12)·weekday(0=월)·dom(월중일)·turn_of_month(월말/월초=1). 예: Sell in May 보유 =
+    is_in(calendar(month), [11,12,1,2,3,4]) + entry.always. (국면 *분할 비교*는 기존대로 study.label=calendar.)
+14e. [청산 체결 시점(exit.fill)] "종가에 사서 *익일 시가*에 판다"(오버나이트)·"보유 N일 후 *당일 종가* 청산"처럼
+    보유기간 만기 청산의 체결 시점이 명시되면 → position.exit.fill="next_open"(익일 시가)|"close"(당일 종가).
+    오버나이트 = simulation.fill="close"(종가 진입) + exit.hold_days=1 + exit.fill="next_open". 보유기간 청산에만
+    적용(익절·손절·조건 청산은 즉시)·condition 신호 전용 — score(리밸런싱) 경로엔 넣지 말 것(검증 거부).
+14f. [선물 증거금률 what-if(G3)] "증거금 10%로(10배 레버리지 감안해서)" 류 가정 백테스트 →
+    simulation.margin_rate_override=0.10(분수). **백테스트 전용**(모의/실전 승격 차단·실거래 증거금은
+    거래소 실측) — 선물 심볼에만 적용. futures_margin_pct(증거금 *사용률* 예산)와 혼동 금지.
 14c. [적립식(DCA)·주기 납입(WS4)] "매달 100만원씩 매수/적립"·"월 N원씩 투자하면"처럼 *주기적 신규 자본 유입*이
     핵심이면 → simulation.contributions={{"amount": 1000000, "schedule": "monthly"(weekly|quarterly|annual)}}.
     주기 첫 거래일마다 현금이 계좌에 추가돼 전략이 사용(scheduled 리밸런싱과 자연 결합). 결과 지표(CAGR·샤프·MDD)는

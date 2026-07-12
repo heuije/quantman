@@ -153,6 +153,14 @@ def _assert_live_tradable(run_mode: str, definition: dict,
     if run_mode not in ("paper", "live"):
         return
 
+    # ⑥ 증거금률 오버라이드(G3): 백테스트 what-if 전용 — 실거래 증거금은 거래소·브로커가
+    #    정하므로(모델A: 브로커 주문가능수량 실측) 임의 가정 전략의 승격을 차단.
+    if (definition.get("simulation") or {}).get("margin_rate_override"):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "증거금률 오버라이드(margin_rate_override)는 백테스트 전용 가정입니다 — 모의·실전 "
+            "적용 불가(실거래 증거금은 거래소·브로커 실측값). 필드를 제거하고 승격하세요.")
+
     # ⑤ 전략 합성(WS3·components): 수익률 수준 합성은 백테스트 전용 — 로컬앱은 단일 전략
     #    체결기라 구성 간 가중 배분·혼합 리밸런스를 재현할 수 없다. 구성별 개별 전략으로 등록.
     if definition.get("components"):

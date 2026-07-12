@@ -288,7 +288,9 @@ register(BlockDef("ts_halflife", ValueType.SCORE, _ev_ts_halflife,
                   param_defaults={"window": 60}, doc="평균회귀 반감기"))
 register(BlockDef("calendar", ValueType.LABEL, _ev_calendar,
                   param_defaults={"unit": "weekday"},
-                  doc="달력 라벨(요일·월·월중주차)"))
+                  doc="달력 라벨(요일·월·월중주차·turn_of_month) — 국면 분할(study.label)뿐 아니라 "
+                      "is_in과 결합해 *신호 게이트*로도 사용(예: Sell in May = "
+                      "is_in(calendar(month), [11,12,1,2,3,4])·월말효과 = calendar(turn_of_month)==1)"))
 register(BlockDef("bar_index", ValueType.SCORE, _ev_bar_index,
                   doc="경과 영업일 램프(추세 회귀의 시간축 x)"))
 register(BlockDef("attribute", ValueType.LABEL, _ev_attribute,

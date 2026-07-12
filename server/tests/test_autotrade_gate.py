@@ -123,3 +123,37 @@ def test_capabilities_endpoint():
     m = r.json()
     assert m["kis"]["paper"]["kr_futures"]["status"] == "ok"
     assert m["ls"]["paper"]["us_equity"]["status"] == "blocked"
+
+
+# ── 캠페인 게이트 — 백테스트 전용 필드의 승격 차단(WS3 합성·G3 증거금 오버라이드) ──
+
+def _base_def():
+    C = {"op": "data", "params": {"ref": "__SELF__.Close"}}
+    return {"name": "x", "universe": {"kind": "single", "symbols": ["005930"]},
+            "signal": {"op": "compare", "params": {"op": ">"},
+                       "inputs": {"left": C, "right": {"op": "const", "params": {"value": 0}}}},
+            "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
+                         "entry": {"mode": "on_signal"}, "exit": {"hold_days": 5}},
+            "simulation": {"initial_capital": 1e8}, "query": "simulate"}
+
+
+def test_gate_blocks_composite_promotion():
+    from fastapi import HTTPException
+    from app.routers.strategies import _assert_live_tradable
+    d = _base_def()
+    d["components"] = [{"weight": 1, "ir": _base_def()}, {"weight": 1, "ir": _base_def()}]
+    with pytest.raises(HTTPException) as e:
+        _assert_live_tradable("paper", d)
+    assert "합성" in str(e.value.detail)
+    _assert_live_tradable("draft", d)               # draft는 허용(백테스트 전용 저장)
+
+
+def test_gate_blocks_margin_override_promotion():
+    from fastapi import HTTPException
+    from app.routers.strategies import _assert_live_tradable
+    d = _base_def()
+    d["simulation"]["margin_rate_override"] = 0.10
+    with pytest.raises(HTTPException) as e:
+        _assert_live_tradable("live", d)
+    assert "증거금률" in str(e.value.detail)
+    _assert_live_tradable("draft", d)

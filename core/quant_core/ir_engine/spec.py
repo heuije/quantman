@@ -165,6 +165,9 @@ class SimSpec(BaseModel):
     end: Optional[str] = None
     # 적립식 납입(WS4) — None=기존 경로 byte-identical(골든 보존).
     contributions: Optional[Contributions] = None
+    # 선물 개시증거금률 오버라이드(G3·백테스트 전용 what-if) — 분수(0.10=10%≈10배 레버리지).
+    # None=상품 카탈로그 실측값(기존 경로). 선물 심볼에만 적용(주식 1.0 불변)·모의/실전 승격 차단.
+    margin_rate_override: Optional[float] = None
     # ── 선물 연속물 구성 (equity 심볼이면 무시) ──────────────────────────────────
     # 선물은 만기물 체인 → 단일 연속 시계열로 이어붙여 백테스트한다. 만기물 패널 보유 선물
     # (KOSPI200)은 엔진이 이 설정으로 패널에서 연속물을 재구성한다(E2). 미지정(None)이면 상품
@@ -880,6 +883,13 @@ def _validate_strategy_impl(s: "StrategyIR", valid_refs, meta) -> list[Issue]:
                                 "아직 함께 쓸 수 없습니다 — 오버레이의 수익률 재합성이 납입과 "
                                 "미정합(후속 지원). 하나만 선택하세요.",
                                 "simulation.contributions"))
+
+    # 선물 증거금률 오버라이드(G3) — 값 도메인(분수 0<v≤1). 라이브 차단은 서버 게이트.
+    mro = s.simulation.margin_rate_override
+    if mro is not None and not (0.0 < float(mro) <= 1.0):
+        issues.append(Issue("S-margin", SEV_ERROR,
+                            "증거금률 오버라이드(margin_rate_override)는 분수(0 초과 1 이하)여야 "
+                            "합니다 — 예: 10% = 0.10.", "simulation.margin_rate_override"))
 
     # variant(구조 대안) × parameter(값 격자) 동시 사용 금지 — 2D 모호성(어느 축이 버킷인가).
     # variants가 있으면 축은 variant여야 하고(조용한 무시 방지), 격자·자산축과 공존할 수 없다.

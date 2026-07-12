@@ -112,6 +112,12 @@ def capability_spec() -> dict:
             {"value": "back_adjust", "does": "과거를 차감 조정(가격차 보존)"},
             {"value": "ratio", "does": "비율 조정(수익률 정확 보존·양수 보존)"},
         ],
+        "margin_override": {
+            "field": "simulation.margin_rate_override",
+            "does": "선물 개시증거금률 what-if(분수·0.10=10%≈10배 레버리지) — 카탈로그 실측값 대체",
+            "use_for": ("'증거금 10%로 10배 감안해서' 류 백테스트 가정. **백테스트 전용**(모의/실전 "
+                        "승격 차단 — 실거래 증거금은 거래소·브로커 실측). 선물 심볼에만 적용."),
+        },
         "account_currency": [
             {"value": "KRW", "does": "원화 기준 손익(국내선물 — 무환산)"},
             {"value": "USD", "does": "달러 기준(해외선물). ⚠ 현재 엔진은 환율 환산 미구현 — 단일통화 백테스트만 정합."},
@@ -136,6 +142,10 @@ def capability_spec() -> dict:
                 "take_profit": "익절(+%, 양수)", "stop_loss": "손절(-%, 음수)",
                 "hold_days": "보유기간(거래일, ≥0; 0=당일 종가 청산)", "trail_pct": "트레일링 스탑(+%)",
                 "trail_atr_mult": "ATR 배수 트레일링", "condition": "매도 신호(condition 블록)",
+                "fill": ("청산 체결 시점(exit.fill) — next_open=익일 시가·close=당일 종가. "
+                         "보유기간(hold_days) 만기 청산에만 적용(익절·손절·조건 청산은 즉시)·"
+                         "condition 신호 전략 전용. 예: '종가매수→익일 시가 매도' 오버나이트 = "
+                         "fill=close 진입 + exit.hold_days=1 + exit.fill=next_open."),
             },
         },
         "fill": [

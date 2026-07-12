@@ -365,7 +365,11 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
             "exec": ((hi + lo + cl) / 3.0) if fill == "typical" else cl,
             "atr": (df["atr_14"].to_numpy(dtype=float) if "atr_14" in df.columns else None),
             "currency": _spec.currency, "tick": _spec.tick,
-            "mult": _spec.multiplier, "mr": _spec.init_margin_rate,
+            "mult": _spec.multiplier,
+            # G3 — 백테스트 전용 증거금률 what-if(선물만·카탈로그 기본). 라이브는 서버 게이트 차단.
+            "mr": (float(sim.margin_rate_override)
+                   if sim.margin_rate_override and _spec.asset_class == "futures"
+                   else _spec.init_margin_rate),
             "is_fut": _spec.asset_class == "futures",
         }
         dir_arrs[sym] = (
@@ -990,7 +994,9 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
     # 상품 계약명세 — 선물 회계(승수·증거금)의 단일 출처. 주식은 mult=1·mr=1(현금모델 그대로).
     cur_of = {s: instrument_spec(s).currency for s in cols}
     mult = {s: instrument_spec(s).multiplier for s in cols}        # point value(1pt=mult 통화단위)
-    mr = {s: instrument_spec(s).init_margin_rate for s in cols}    # 개시증거금률(주식=1.0)
+    mr = {s: (float(sim.margin_rate_override)                      # G3 — 백테스트 전용 what-if
+              if sim.margin_rate_override and instrument_spec(s).asset_class == "futures"
+              else instrument_spec(s).init_margin_rate) for s in cols}   # 개시증거금률(주식=1.0)
     tk = {s: instrument_spec(s).tick for s in cols}                # 선물 계약 틱(주식=0.0 → 통화별 표)
     commission = sim.commission if sim.commission is not None else _DEFAULT_COMMISSION
     slippage = sim.slippage if sim.slippage is not None else _DEFAULT_SLIPPAGE

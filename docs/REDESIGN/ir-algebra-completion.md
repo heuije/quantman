@@ -175,3 +175,9 @@ EventStudyChart 음수축 렌더 포함.
   가격불변 원금대비≈0 테스트·전 스위트 1811 green(골든 411 byte-identical)·실데이터
   dev-render(삼성전자 월 100만 적립 148회: TWR CAGR 21.4%·원금대비 +508.6%) 확인.
   **WS1~WS4 엔진 워크스트림 전체 완결.**
+- 2026-07-12 **WS3+WS4 머지**(PR#372→dc49f03). **소형 3건 구현**: ①G3 증거금률 오버라이드
+  (simulation.margin_rate_override 분수·선물만·백테스트 전용 — 라이브 게이트 ⑥·capabilities/
+  레시피 14f 광고·prod 2대화 수요) ②달력 신호 게이트 광고(calendar 블록 doc + 레시피 14d —
+  Sell in May/월말효과가 이제 컴파일 가능·L2-a 마감) ③exit.fill NL 노출(capabilities exit
+  knobs + 레시피 14e — 오버나이트 관용구 명시·D5 완결). 게이트 테스트 2종(합성·오버라이드 승격
+  차단) 포함 전 스위트 1847 green.
