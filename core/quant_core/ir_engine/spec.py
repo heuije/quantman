@@ -147,7 +147,11 @@ class SimSpec(BaseModel):
     delay: int = 1                      # 신호→체결 지연(거래일). look-ahead 방지.
     # next_open=익일 시가, close=당일 종가, typical=당일 (고+저+종)/3 일봉 VWAP 근사.
     # (진짜 intraday VWAP·N분 평균은 분봉 데이터 필요 — 현재 데이터 범위 밖, 가짜 폴백 안 함.)
-    fill: Literal["next_open", "close", "typical"] = "next_open"
+    # trigger=장중 돌파 체결의 보수 일봉 근사(장중 템플릿 설계 §4): 정규형 트리거 신호
+    # (high_change_1d ≥ X — 당일 고가가 임계 도달)가 참인 바에서 max(시가, 전일종가×(1+X%))에
+    # 체결. 경로 무지는 항상 불리한 방향으로(갭 상승=시가 체결·이외=경계가) — 근사임을
+    # 자기서술로 표시. 정규형·on_signal·롱 요건은 S-trigger가 강제(조용한 오독 차단).
+    fill: Literal["next_open", "close", "typical", "trigger"] = "next_open"
     commission: Optional[float] = None
     slippage: Optional[float] = None
     sell_tax: Optional[float] = None
@@ -271,7 +275,7 @@ class TemplateConfig(BaseModel):
     실행에만 존재하는 노브(1일 최대 진입 종목 수)만 둔다. 패턴 정합은
     validate_strategy → templates.template_issues(S-template)가 강제한다.
     """
-    id: Literal["limit_up_close_v1"]
+    id: Literal["limit_up_close_v1", "watchlist_trigger_v1"]
     # 스캔 후보가 많아도 하루 진입은 이 수까지(등락률 내림차순) — 이벤트 예산 분산 상한.
     max_daily_entries: int = Field(3, ge=1, le=5)
 
@@ -605,6 +609,26 @@ def _validate_strategy_impl(s: "StrategyIR", valid_refs, meta) -> list[Issue]:
     if s.template is not None:
         from .templates import template_issues
         issues += template_issues(s)
+
+    # trigger 체결(S-trigger) — 장중 돌파의 보수 일봉 근사는 세 요건과 짝일 때만 의미가 있다:
+    # ① 정규형 트리거 신호(high_change_1d 임계 비교 — 경계가의 단일 출처) ② 이벤트 진입
+    # (scheduled/always 경로는 sim.fill을 close로 오독해 조용한 divergence) ③ 롱(매수 돌파만
+    # 정의 — 숏 하락돌파는 후속). 벗어나면 명시 거부(fail-loud).
+    if not is_research and s.simulation.fill == "trigger":
+        from .templates import trigger_threshold_of
+        if ent.mode != "on_signal":
+            issues.append(Issue("S-trigger", SEV_ERROR,
+                                "trigger 체결은 이벤트 진입(entry.mode=on_signal) 전용입니다.",
+                                "simulation.fill"))
+        if pos.direction != "long":
+            issues.append(Issue("S-trigger", SEV_ERROR,
+                                "trigger 체결은 롱 전용입니다(하락 돌파 숏은 후속 지원).",
+                                "position.direction"))
+        if trigger_threshold_of(s.signal) is None:
+            issues.append(Issue("S-trigger", SEV_ERROR,
+                                "trigger 체결은 정규형 트리거 신호가 필요합니다: "
+                                "compare(>=, data(__SELF__.high_change_1d), const(임계%)).",
+                                "signal"))
 
     # exit.fill(청산 시점)은 1단계에서 condition(룰) 경로만 지원 — score(리밸런싱) 경로가
     # 조용히 무시하면 백테≠의도 silent 결함이라 명시 거부(fail-loud·설계 D2 증분 범위).

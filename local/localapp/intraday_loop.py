@@ -282,7 +282,8 @@ def _polling_round_interval(n_held: int) -> float:
 
 
 def _rest_polling_loop(ws, broker, manager, in_market_fn,
-                        stop_flag: threading.Event, market: str) -> None:
+                        stop_flag: threading.Event, market: str,
+                        tick_fn=None, extra_symbols_fn=None) -> None:
     """REST 폴링 fallback thread 본체.
 
     상태 머신:
@@ -306,8 +307,12 @@ def _rest_polling_loop(ws, broker, manager, in_market_fn,
                     break
                 continue
 
-            # WebSocket 끊김 → 1라운드 폴링
+            # WebSocket 끊김 → 1라운드 폴링. 워치리스트(진입 감시 — P2)도 합류:
+            # WS가 죽어도 트리거 감시가 기능 유지(해상도만 라운드 주기로 저하).
             held = [s for s in manager.held_symbols() if in_market_fn(s)]
+            if extra_symbols_fn is not None:
+                held += [s for s in sorted(extra_symbols_fn())
+                         if s not in held and in_market_fn(s)]
             if not held:
                 # 보유 없음 — health check 주기로 대기
                 if stop_flag.wait(_POLLING_HEALTH_CHECK_SEC):
@@ -327,7 +332,7 @@ def _rest_polling_loop(ws, broker, manager, in_market_fn,
                 try:
                     price = broker.price(sym)
                     if price > 0:
-                        manager.on_tick(sym, price)
+                        (tick_fn or manager.on_tick)(sym, price)
                 except Exception as e:
                     log.debug("[polling-fallback] %s price 실패: %s", sym, e)
                 if stop_flag.wait(per_symbol_sleep):
@@ -448,6 +453,39 @@ def start(market: str = "KRX") -> dict:
         )
         manager.reset_daily()
 
+        # 진입 트리거(워치리스트 템플릿 P2) — 매도 전용 loop에 장중 진입 감시를 더한다.
+        # risk_limits는 발화 게이트(_close_entry_blocked)가 쓰므로 여기(구성 전)로 당김
+        # (종전 위치의 pull을 위로 이동 — 의미 동일, 아래 손실한도 배선이 이 rl을 쓴다).
+        try:
+            rl = pull_risk_limits()
+        except Exception as e:
+            log.warning("risk_limits pull 실패 — 글로벌 default 사용: %s", e)
+            rl = {}
+        entry_mgr = None
+        if market == "KRX":
+            from .entry_trigger import EntryTriggerManager
+            _em = EntryTriggerManager(trader, broker, strategies, dataset, rl)
+            if _em.active:
+                entry_mgr = _em
+                log.info("[트리거] 워치리스트 감시 시작 — %d종목",
+                         len(_em.watch_symbols()))
+
+        def _ws_targets(held_now: set[str]) -> list[str]:
+            """WS 구독 대상 — 보유(청산 감시) 우선 + 잔여 예산에 워치리스트.
+
+            KIS WS 등록 한도 41의 정적 예산(설계 degrade 순위: 청산>주문>진입). 예산을
+            넘는 워치 초과분은 구독하지 않아도 폴링 폴백이 감시한다(기능 유지·해상도만 저하).
+            """
+            out = sorted(held_now)
+            if entry_mgr is not None:
+                budget = max(0, 41 - len(out))
+                watch = sorted(entry_mgr.watch_symbols() - held_now)
+                if len(watch) > budget:
+                    log.warning("[트리거] WS 예산 초과 — 워치 %d/%d만 구독"
+                                "(초과분은 폴링 폴백 감시)", budget, len(watch))
+                out += watch[:budget]
+            return out
+
         from . import market_index
 
         def _in_market(sym: str) -> bool:
@@ -462,6 +500,8 @@ def start(market: str = "KRX") -> dict:
                 with _lock:
                     _state["last_overseas_tick"] = time.time()
             manager.on_tick(sym, price)
+            if entry_mgr is not None:
+                entry_mgr.on_tick(sym, price)
 
         # active broker에 맞는 시세 WS (kis→KisWebSocket, ls→LsWebSocket). KIS는
         # 기존과 동일하게 KisWebSocket이 만들어져 start된다(byte-identical). LS는
@@ -477,14 +517,16 @@ def start(market: str = "KRX") -> dict:
             log.error("[%s] 시세 WS 시작 실패 — REST 폴링 fallback만으로 동작: %s",
                        market, e)
 
-        # 초기 구독: 이번 시장의 보유 종목만 (WebSocket 미동작이면 skip)
+        # 초기 구독: 보유(청산 감시) 우선 + 잔여 예산에 워치리스트(진입 감시 — P2)
         held = [s for s in manager.held_symbols() if _in_market(s)]
-        if held and ws_started:
-            ws.subscribe(list(held))
-            log.info("[%s] 초기 구독: %s (%d종목)", market, held, len(held))
-        elif held:
-            log.info("[%s] 초기 보유 %d종목 — WebSocket 미동작, 폴링 fallback이 평가",
-                      market, len(held))
+        targets = _ws_targets(set(held))
+        if targets and ws_started:
+            ws.subscribe(targets)
+            log.info("[%s] 초기 구독: %s (%d종목 — 보유 %d·워치 %d)",
+                     market, targets, len(targets), len(held), len(targets) - len(held))
+        elif targets:
+            log.info("[%s] 초기 대상 %d종목 — WebSocket 미동작, 폴링 fallback이 평가",
+                      market, len(targets))
         us_subscribed = len(held) if market == "US" else 0
 
         # Phase 33 — 체결 통보 WebSocket (HTS ID 설정된 경우만)
@@ -528,12 +570,7 @@ def start(market: str = "KRX") -> dict:
         manager._submit_sell = _hook_submit
 
         # Q5 Tier 1+2 — 체결 직후 + 60초 monitor 평가 활성화.
-        # risk_limits 받아서 일일 손실 한도 결정 (글로벌 default fallback).
-        try:
-            rl = pull_risk_limits()
-        except Exception as e:
-            log.warning("risk_limits pull 실패 — 글로벌 default 사용: %s", e)
-            rl = {}
+        # (risk_limits는 위 — 진입 트리거 구성 전 — 에서 이미 pull됨)
         # 일일 손실 한도: user 모니터링 설정에서만 가져옴. None이면 OFF.
         daily_loss_limit_pct = rl.get("kill_switch_daily_loss_pct")
         trader._daily_loss_limit_pct = (float(daily_loss_limit_pct)
@@ -591,7 +628,8 @@ def start(market: str = "KRX") -> dict:
         def _sync_loop():
             while not stop_flag.wait(60):
                 try:
-                    target = {s for s in manager.held_symbols() if _in_market(s)}
+                    held_now = {s for s in manager.held_symbols() if _in_market(s)}
+                    target = set(_ws_targets(held_now))
                     result = ws.sync_subscriptions(target)
                     if result["added"] or result["removed"]:
                         log.info("[%s] 구독 sync: %s", market, result)
@@ -612,7 +650,9 @@ def start(market: str = "KRX") -> dict:
             target=_rest_polling_loop, daemon=True, name="intraday-polling",
             kwargs={"ws": ws, "broker": broker, "manager": manager,
                      "in_market_fn": _in_market, "stop_flag": stop_flag,
-                     "market": market})
+                     "market": market, "tick_fn": _on_tick_detect,
+                     "extra_symbols_fn": (entry_mgr.watch_symbols
+                                          if entry_mgr is not None else None)})
         polling_thread.start()
 
         _state.update({

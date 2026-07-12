@@ -79,10 +79,32 @@ def _ver_key(v: str) -> tuple[int, ...]:
         return (0,)
 
 
+def _watch_used(session: Session, user_id: int,
+                exclude_strategy_id: int | None) -> int:
+    """유저의 활성(paper/live) 워치리스트 템플릿 전략들의 감시 종목 수 합산.
+
+    admission control(설계 §4)의 '사용 중 예산' — update 경로는 자기 자신을 제외하고
+    합산한다(교체 시 이중 계상 방지).
+    """
+    from quant_core.ir_engine.templates import WATCHLIST_TRIGGER
+    rows = session.exec(select(Strategy).where(
+        Strategy.user_id == user_id,
+        Strategy.run_mode.in_(("paper", "live")))).all()   # type: ignore[attr-defined]
+    used = 0
+    for r in rows:
+        if exclude_strategy_id is not None and r.id == exclude_strategy_id:
+            continue
+        d = r.definition or {}
+        if ((d.get("template") or {}).get("id")) == WATCHLIST_TRIGGER:
+            used += len((d.get("universe") or {}).get("symbols") or [])
+    return used
+
+
 def _assert_template_tradable(run_mode: str, definition: dict,
                               account_broker: str | None, *,
                               session: Session | None = None,
-                              user_id: int | None = None) -> None:
+                              user_id: int | None = None,
+                              exclude_strategy_id: int | None = None) -> None:
     """자동매매 템플릿 전략 승격 게이트 — 장중 템플릿 설계 §2.3.
 
     템플릿(장중 스캔) 전략은 사전 검증된 별도 라이브 경로다: 검사 = ①등록 템플릿
@@ -118,6 +140,18 @@ def _assert_template_tradable(run_mode: str, definition: dict,
     if cap.status == "blocked":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             f"템플릿 실행 불가: {cap.reason}")
+    # 워치리스트 합산 admission control(설계 §4) — 유저 계정의 감시 종목 총합이 브로커
+    # 감시 예산(watch_budget)을 넘는 연동을 시점에 거부: 초과 상태를 만들 수 없게 한다.
+    budget = spec.get("watch_budget")
+    if budget is not None and session is not None and user_id is not None:
+        new_n = len((definition.get("universe") or {}).get("symbols") or [])
+        used = _watch_used(session, user_id, exclude_strategy_id)
+        if used + new_n > int(budget):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"워치리스트 감시 예산 초과 — 운용 중 {used}종목 + 신규 {new_n}종목 > "
+                f"한도 {budget}종목(브로커 실시간 감시 한도). 기존 워치리스트 전략을 "
+                "정지하거나 종목 수를 줄여 주세요.")
     if session is not None and user_id is not None:
         minv = str(spec["min_app_version"])
         snap = session.exec(
@@ -135,7 +169,8 @@ def _assert_live_tradable(run_mode: str, definition: dict,
                           account_broker: str | None = None,
                           ack_unverified: bool = False, *,
                           session: Session | None = None,
-                          user_id: int | None = None) -> None:
+                          user_id: int | None = None,
+                          exclude_strategy_id: int | None = None) -> None:
     """모의/실전 승격 게이트 — 백테스트≠실거래 발산을 막는다.
 
     ① 레버리지(>1배): 실거래는 사용자 KIS '현금계좌'로 체결한다(로컬앱 order-cash만,
@@ -174,7 +209,8 @@ def _assert_live_tradable(run_mode: str, definition: dict,
     # (전체 유니버스 ②·이벤트+세부조건 ③)과 구조적으로 충돌한다 — 전용 검증 세트가 대신 선다.
     if (definition.get("template") or {}).get("id"):
         _assert_template_tradable(run_mode, definition, account_broker,
-                                  session=session, user_id=user_id)
+                                  session=session, user_id=user_id,
+                                  exclude_strategy_id=exclude_strategy_id)
         return
 
     lev = float((definition.get("simulation") or {}).get("leverage") or 1.0)
@@ -412,7 +448,8 @@ def update_strategy(
     _assert_live_tradable(body.run_mode, definition,
                           account_broker=body.account_broker,
                           ack_unverified=body.ack_unverified,
-                          session=session, user_id=user.id)
+                          session=session, user_id=user.id,
+                          exclude_strategy_id=row.id)
 
     # Phase 59 — 변경 전 정의를 버전으로 스냅샷 (사용자 선택: 매 PUT마다)
     _snapshot_version(session, row, reason="manual_edit")

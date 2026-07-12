@@ -35,6 +35,11 @@ def add_returns(df: pd.DataFrame) -> pd.DataFrame:
     df["pct_change_20d"]  = df["Close"].pct_change(20) * 100
     df["pct_change_252d"] = df["Close"].pct_change(252) * 100   # 1년(약 252 거래일)
     df["log_return_1d"]   = _safe_log_return(df["Close"]) * 100
+    # 장중 도달 판정 — 당일 고가가 전일 종가 대비 몇 %까지 갔나. 종가 후퇴와 무관하게
+    # "장중 임계 도달" 여부를 일봉으로 정직하게 판정한다(fill="trigger" 백테스트의 신호 —
+    # 장중 템플릿 설계 §4). High 부재(Close-only 시리즈)는 NaN 컬럼(#343 관용구 — 무가드 부류 차단).
+    _hi = df["High"] if "High" in df.columns else pd.Series(np.nan, index=df.index)
+    df["high_change_1d"] = (_hi / df["Close"].shift(1) - 1) * 100
     return df
 
 
@@ -318,6 +323,7 @@ INDICATOR_META = {
     "price_level":        {"label": "가격 (정규장 종가)",  "unit": "",   "decimals": 2},
     # 가격 수익률 — 모두 정규장 종가 기반
     "pct_change_1d":      {"label": "전일대비(%)",        "unit": "%",  "decimals": 2},
+    "high_change_1d":     {"label": "고가 전일대비(%)",   "unit": "%",  "decimals": 2},
     "pct_change_5d":      {"label": "5일 수익률(%)",      "unit": "%",  "decimals": 2},
     "pct_change_20d":     {"label": "20일 수익률(%)",     "unit": "%",  "decimals": 2},
     "pct_change_252d":    {"label": "1년 수익률(%)",      "unit": "%",  "decimals": 1},
@@ -377,7 +383,7 @@ INDICATOR_META = {
 # 항상 존재하는 가격 기반 지표 (지수/ETF/코인 포함)
 BASE_INDICATOR_COLS = [
     "pct_change_1d", "pct_change_5d", "pct_change_20d", "pct_change_252d",
-    "log_return_1d", "momentum_12_1m", "streak",
+    "high_change_1d", "log_return_1d", "momentum_12_1m", "streak",
     "ma_dev_20d", "ma_dev_60d", "ma_dev_200d", "ma_gap_20_60", "high_dev_20d",
     "bb_width", "bb_pct", "rsi_14", "rsi_bear_div", "atr_14_pct",
     "realized_vol_20d", "realized_vol_60d",
@@ -580,7 +586,8 @@ def compute_all(df: pd.DataFrame, fund_df: Optional[pd.DataFrame] = None,
 # 순서는 compute_all과 동일(rsi가 rsi_divergence보다 선행). test_compute_columns가 고정.
 _PRODUCERS: list[tuple] = [
     (add_returns,          ("price_level", "pct_change_1d", "pct_change_5d",
-                            "pct_change_20d", "pct_change_252d", "log_return_1d"), ()),
+                            "pct_change_20d", "pct_change_252d", "log_return_1d",
+                            "high_change_1d"), ()),
     (add_ma_deviation,     ("ma_dev_20d", "ma_dev_60d", "ma_dev_200d"), ()),
     (add_ma_cross,         ("ma_gap_20_60",), ()),
     (add_bb_width,         ("bb_width", "bb_pct"), ()),
@@ -679,7 +686,8 @@ def get_indicator_label(col: str) -> str:
 COMPARE_GROUP: dict[str, str] = {
     # 백분율 (%) — 수익률·괴리율·변동성·이익률 등 부호 있는 %
     "pct_change_1d": "pct", "pct_change_5d": "pct", "pct_change_20d": "pct",
-    "pct_change_252d": "pct", "log_return_1d": "pct", "momentum_12_1m": "pct",
+    "pct_change_252d": "pct", "high_change_1d": "pct",
+    "log_return_1d": "pct", "momentum_12_1m": "pct",
     "ma_dev_20d": "pct", "ma_dev_60d": "pct", "ma_dev_200d": "pct",
     "ma_gap_20_60": "pct", "high_dev_20d": "pct",
     "bb_width": "pct", "atr_14_pct": "pct",

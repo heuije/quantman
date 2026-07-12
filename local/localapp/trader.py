@@ -1611,7 +1611,13 @@ class Trader:
             # 증거금 경쟁에 밀려 미체결되던 근본(전략18)을 닫는다. 종가매수 진입은 종가창 전담.
             strat_fill = (strat_def.get("simulation") or {}).get("fill") or "next_open"
             is_close_fill = strat_fill in ("close", "typical")
-            if (entry_window == "open") == is_close_fill:
+            if strat_fill == "trigger":
+                # 장중 트리거 전략(워치리스트 템플릿) — 표준 창(아침/종가)에선 진입하지 않는다.
+                # 감시·발화는 intraday_loop의 EntryTriggerManager 전담(entry_window="intraday").
+                # 창 오배정으로 트리거 전략이 아침 시가에 조용히 진입하는 divergence 차단.
+                if entry_window != "intraday":
+                    continue
+            elif (entry_window == "open") == is_close_fill:
                 continue
             # degenerate 방어 — 종가매수(fill=close)+당일청산(hold_days==0)은 진입한 바에 청산할
             # 창이 없다(백테스트는 진입=청산 바라 순노출 0). 라이브는 종가에 진입 후 청산 창이
@@ -1684,7 +1690,7 @@ class Trader:
                         ledger_key, sid, strat_name, strat_def,
                         symbol, dataset, equity_now, decisions,
                         catchup=catchup, cand_direction=c.get("direction"),
-                        is_close_entry=(entry_window == "close"),
+                        is_close_entry=(entry_window in ("close", "intraday")),
                         capacity_credit=capacity_credit, capture=capture):
                     bought += 1
                     n_preview_used += 1

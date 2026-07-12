@@ -345,6 +345,19 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         for sym, df in symbol_dfs.items():
             if not {"High", "Low"}.issubset(df.columns):
                 return _empty(f"'{sym}'에 고가·저가가 없어 typical 체결을 쓸 수 없습니다.")
+    # trigger 체결 — 경계가(임계 %)의 단일 출처는 정규형 신호의 const(S-trigger가 강제·이중
+    # 기재 금지). 판정은 신호(high_change_1d ≥ X — High 기반)가 소유하고, 여기선 체결가만
+    # 보수 근사로 만든다(장중 템플릿 설계 §4). High 없는 시리즈는 typical과 동일한 사전 요구.
+    trig_thr: float | None = None
+    if fill == "trigger":
+        from .templates import trigger_threshold_of
+        trig_thr = trigger_threshold_of(strategy.signal)
+        if trig_thr is None:
+            return _empty("trigger 체결은 정규형 트리거 신호(high_change_1d 임계 비교)가 "
+                          "필요합니다.")
+        for sym, df in symbol_dfs.items():
+            if "High" not in df.columns:
+                return _empty(f"'{sym}'에 고가가 없어 trigger 체결을 쓸 수 없습니다.")
 
     # 방향정책 seam(M5d) — long_short는 score 부호로 바별 방향, 그 외는 condition×고정방향.
     base_sign = -1.0 if pos_spec.direction == "short" else 1.0
@@ -372,6 +385,13 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
                    else _spec.init_margin_rate),
             "is_fut": _spec.asset_class == "futures",
         }
+        if fill == "trigger":
+            # 보수 체결가 — 트리거 도달 바에서 max(시가, 경계가): 갭 상승이면 시가에(불리),
+            # 이외엔 경계가 체결 가정(경로 무지의 보수 규칙). i=0은 prev 종가 부재 → NaN이나
+            # high_change_1d도 NaN이라 신호가 참일 수 없다(도달 불가 — 안전).
+            _prev_cl = np.concatenate(([np.nan], cl[:-1]))
+            aligned[sym]["exec"] = np.maximum(
+                aligned[sym]["open"], _prev_cl * (1.0 + trig_thr / 100.0))
         dir_arrs[sym] = (
             _direction_for(None, _sym_float(buy_panel, sym, master_idx),
                            base_sign=base_sign, threshold=threshold)

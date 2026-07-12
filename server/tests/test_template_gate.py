@@ -129,3 +129,59 @@ def test_preview_marks_scan_waiting():
     out = _evaluate_ir_strategy(_tpl_def(), {}, 1_000_000.0, set(), {})
     assert out["candidates"] == []
     assert any("장중 스캔 대기" in (sk.get("reason") or "") for sk in out["skipped"])
+
+
+# ── P2: watchlist_trigger_v1 — 합산 admission control(§4)·preview 트리거 대기 ──
+
+def _wl_def(symbols=("123450", "005930"), thr=10.0):
+    return {
+        "name": "돌파", "query": "simulate",
+        "universe": {"kind": "list", "symbols": list(symbols)},
+        "signal": {"op": "compare", "params": {"op": ">="}, "inputs": {
+            "left": {"op": "data", "params": {"ref": "__SELF__.high_change_1d"}},
+            "right": {"op": "const", "params": {"value": thr}}}},
+        "position": {"direction": "long",
+                     "sizing": {"mode": "pct_cash", "amount_pct": 100},
+                     "entry": {"mode": "on_signal"},
+                     "exit": {"hold_days": 3}},
+        "simulation": {"fill": "trigger"},
+        "template": {"id": "watchlist_trigger_v1", "max_daily_entries": 2},
+    }
+
+
+def test_watchlist_draft_save_and_pure_live_gate():
+    _validate("ir", _wl_def())                                    # 저장 검증 통과
+    _assert_live_tradable("live", _wl_def(), account_broker="kis")   # 순수 게이트(예산·앱버전 skip)
+    _assert_live_tradable("live", _wl_def(), account_broker="ls")
+    with pytest.raises(HTTPException):                            # 모의 — 실측 전 차단
+        _assert_live_tradable("paper", _wl_def(), account_broker="kis")
+
+
+def test_watchlist_budget_admission(monkeypatch):
+    import app.routers.strategies as st
+    monkeypatch.setattr(st, "_watch_used", lambda s, u, e: 29)    # 운용 중 29종목
+    ok = _Sess(_Snap({"app_version": "0.9.73-beta"}))
+    with pytest.raises(HTTPException) as ei:                      # 29+2 > 30 → 거부
+        _assert_live_tradable("live", _wl_def(), account_broker="kis",
+                              session=ok, user_id=1)
+    assert "감시 예산 초과" in str(ei.value.detail)
+    monkeypatch.setattr(st, "_watch_used", lambda s, u, e: 28)    # 28+2 ≤ 30 → 통과
+    _assert_live_tradable("live", _wl_def(), account_broker="kis",
+                          session=ok, user_id=1)
+
+
+def test_watchlist_app_version_gate(monkeypatch):
+    import app.routers.strategies as st
+    monkeypatch.setattr(st, "_watch_used", lambda s, u, e: 0)
+    old = _Sess(_Snap({"app_version": "0.9.72-beta"}))            # < 0.9.73 → 차단
+    with pytest.raises(HTTPException) as ei:
+        _assert_live_tradable("live", _wl_def(), account_broker="kis",
+                              session=old, user_id=1)
+    assert "로컬앱" in str(ei.value.detail)
+
+
+def test_preview_marks_trigger_waiting():
+    from app.preview_engine import _evaluate_ir_strategy
+    out = _evaluate_ir_strategy(_wl_def(), {}, 1_000_000.0, set(), {})
+    assert out["candidates"] == []
+    assert any("장중 트리거 대기" in (sk.get("reason") or "") for sk in out["skipped"])

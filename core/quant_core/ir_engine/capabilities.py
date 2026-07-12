@@ -85,6 +85,15 @@ def capability_spec() -> dict:
              "use_for": ("자동매매 연동이 필요한 장중(실시간급) 급등 마감 전략 — 이 태그가 있어야 라이브 "
                          "연동 가능(태그 없는 임의 장중 IR은 백테스트 전용). 백테스트 의미는 태그와 무관하게 "
                          "동일하므로 순수 백테스트엔 태그 불필요.")},
+            {"value": "watchlist_trigger_v1",
+             "does": ("자동매매 템플릿 태그 — 워치리스트 장중 돌파 진입. 라이브는 장중 loop"
+                      "(09:00~15:30)가 지정 종목(1~20)을 감시해 전일 종가 대비 임계 돌파 순간 "
+                      "즉시 매수. 패턴 고정(S-template): 정규형 신호 compare(>=, "
+                      "__SELF__.high_change_1d, 임계 2~29.9%) + simulation.fill=trigger + "
+                      "universe kind=list(KR 주식 1~20) + exit.hold_days 1~10(익절·손절·트레일 "
+                      "추가 허용) + 롱 + on_signal."),
+             "use_for": ("'내가 고른 종목이 장중 X% 돌파하면 바로 매수' 류 워치리스트 전략의 "
+                         "자동매매 연동. 백테스트는 fill=trigger 보수 근사('장중 근사' 표시).")},
         ],
         # ── 선물(futures) — 일부 심볼은 선물 상품. 엔진이 카탈로그로 자동 인식(IR에 자산클래스 표시 불필요). ──
         "instruments": {
@@ -155,6 +164,14 @@ def capability_spec() -> dict:
              "use_for": "'종가 부근' 체결 · 일일 리밸런싱(상수 레버리지)."},
             {"value": "typical", "does": "당일 (고+저+종)/3 (일봉 VWAP 근사) — on_signal(이벤트) 경로 전용",
              "use_for": "체결가 보수적 근사. ⚠ scheduled·always 경로에선 미적용(종가 체결)."},
+            {"value": "trigger",
+             "does": ("장중 돌파 체결의 보수 일봉 근사 — 정규형 트리거 신호(compare(>=, "
+                      "__SELF__.high_change_1d, const(임계%)) = 당일 고가가 전일 종가 대비 임계 "
+                      "도달)가 참인 바에서 max(시가, 전일종가×(1+임계%))에 체결. 경로 무지는 "
+                      "항상 불리한 방향(갭 상승=시가·이외=경계가)."),
+             "use_for": ("'전일 종가 대비 X% 돌파 시 즉시 매수' 류 장중 트리거 전략(워치리스트 "
+                         "템플릿). ⚠ on_signal+롱+정규형 신호 전용(S-trigger 강제) — 결과는 "
+                         "'장중 근사' 표시.")},
         ],
         "overlays": {
             "field": "position.overlays",

@@ -229,12 +229,16 @@ def _evaluate_ir_strategy(strat_def: dict, dataset: dict, cash: float,
     out["trade_symbol"] = ("IR:전체" if u.kind == "all"
                            else "IR:" + ",".join(u.symbols))
     if s.template is not None:
-        # 자동매매 템플릿(장중 스캔) — 신호가 "당일 마감" 실시간 관측이라 일봉 preview로는
-        # 후보를 만들 수 없다(만들면 전일 급등의 1일 지연 오답). 후보 결정은 종가창(15:25)에
-        # 로컬앱의 브로커 실시간 스캔이 소유한다(장중 템플릿 설계 §3.3) — 여기선 대기 상태만
-        # 표면화한다. 아침 사이클도 이 빈 후보를 받아 템플릿 전략을 시가창에서 진입하지 않는다.
-        out["skipped"].append({"reason": "장중 스캔 대기 — 종가창(15:25)에 로컬앱이 "
-                                          "실시간 스캔으로 진입 후보를 결정합니다"})
+        # 자동매매 템플릿(장중 실시간 관측) — 신호가 당일 장중 데이터라 일봉 preview로는
+        # 후보를 만들 수 없다(만들면 전일 데이터의 1일 지연 오답). 후보 결정은 로컬앱이
+        # 소유한다(장중 템플릿 설계 §3.3·§4) — 여기선 대기 상태만 표면화. 아침 사이클도
+        # 이 빈 후보를 받아 템플릿 전략을 시가창에서 진입하지 않는다.
+        if s.template.id == "watchlist_trigger_v1":
+            out["skipped"].append({"reason": "장중 트리거 대기 — 장중(09:00~15:30) "
+                                              "로컬앱이 워치리스트 돌파를 감시해 진입합니다"})
+        else:
+            out["skipped"].append({"reason": "장중 스캔 대기 — 종가창(15:25)에 로컬앱이 "
+                                              "실시간 스캔으로 진입 후보를 결정합니다"})
         return out
     st = get(s.signal.op).out_type.value if has(s.signal.op) else None
     if st not in ("condition", "score"):

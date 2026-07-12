@@ -97,7 +97,9 @@ tolerance는 **미국 전용 라이브 버퍼**(국내 무시)·default ±3%·�
 
 **구현(P1).** 브로커 seam `scan_close_surge` **KIS·LS 동시 배선**(패리티 — KIS `FHPST01820000` 장마감예상→`FHKST01010100` 상한가 대조 / LS `t1488`→`t8407` 배치 uplmtprice) · `template_scan` 합성 후보(전략 수 무관 스캔 1회·전략별 재필터 잠김/임계/시장/max_daily_entries) → `run_close_cycle` 합류(`run_close_netting` 무변경 — 킬스위치·손실한도·커버리지·멱등 전수 상속) · trader `skip_unknown_template` 이중 안전망 · `push_snapshot` app_version 주입(서버 앱버전 게이트) · 서버 승격 게이트 템플릿 분기(kind=all 일반 차단과의 구조 충돌 해소) · preview "장중 스캔 대기".
 
-**남은 것.** 전 스위트 확정 → draft PR·머지(허락 게이트) → 로컬앱 릴리스 v0.9.72 → 실측 게이트 ⓐ KIS/LS 스캔 TR 가용성(KIS 모의계좌+실전 시세앱키 조합·LS t1488 InBlock 필드 의미) ⓑ 15:25 드라이런(무발주) ⓒ 소액 라이브 1건+체결률 계측 → 챗 관용구·웹 배지 노출(별도 승인·설계 §7 순서) → [완료] 전환·교훈 distill.
+**구현(P2 — 07-12 착수, `feat/watchlist-trigger` · "구현 선행/실측하며 디버깅" 사용자 결정).** 워치리스트 장중 돌파(`watchlist_trigger_v1`): ① 엔진 `fill="trigger"` — 정규형 신호(신규 지표 `high_change_1d`=당일 High/전일 Close−1 %)가 참인 바에서 max(시가, 전일종가×(1+임계%)) 보수 체결. 경계가의 단일 출처=신호 const(`trigger_threshold_of` — 엔진·검증기 공유), S-trigger가 on_signal·롱·정규형 강제(scheduled 경로의 close 오독 divergence 차단) ② local `EntryTriggerManager`(신규 entry_trigger.py) — 매도 전용 intraday_loop에 진입 감시 합류: tick 현재가/전일종가 임계 판정 → `_close_entry_blocked` 게이트 → `_enter_from_preview(entry_window="intraday")` 재사용(종목 게이트 전수 상속). **디스크 발화 기록 = 전략×종목×일 1회·저장이 발주보다 먼저(실패 시 발주 금지 — 중복 방지 우선)·M9 재기동 SSOT.** WS 예산 41 = 보유(청산 감시) 우선 + 잔여에 워치(초과분은 폴링 폴백 감시 — degrade 순위 구현), 폴링 루프 tick_fn/extra_symbols 확장 ③ server `_watch_used` 합산 admission control(watch_budget=30 = 41−보유여유 11·update 자기 제외) + preview "장중 트리거 대기". 검증: core 44·local 진입매니저 7·server 게이트 13 green(전 스위트는 PR 게이트).
+
+**남은 것.** P1: ~~draft PR·머지~~(PR#371→38f3db6·Railway 배포 검증 07-12 完) → 로컬앱 릴리스 v0.9.72(월 아침 게이트 후) → 실측 ⓐ KIS/LS 스캔 TR 가용성(⚠07-12 주말 선행 시도 = dev 파이썬 keyring 자격증명 로드 불가 확정 — 릴리스된 앱에서 ⓑ와 함께) ⓑ 15:25 드라이런 ⓒ 소액 라이브+체결률 계측. P2: 전 스위트→draft PR(머지 승인 대기)→백테스트 실데이터 스모크→릴리스 v0.9.73→장중 페이퍼 관찰 1주→노출 PR(P1·P2 함께·별도 승인) → [완료] 전환·교훈 distill.
 
 ### [진행중] 자동매매 전 사이클 크래시 — Close-only 시리즈 × ATR 무가드 (2026-07-10 착수, `fix/indicator-ohlc-guard`)
 
