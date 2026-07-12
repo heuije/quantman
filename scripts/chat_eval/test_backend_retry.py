@@ -95,3 +95,20 @@ def test_max_turns_allows_tool_attempt_self_correction(monkeypatch):
     backend.ClaudeCodeBackend()._call("sys", "prompt", "claude-sonnet-5")
     i = captured["cmd"].index("--max-turns")
     assert int(captured["cmd"][i + 1]) >= 2
+
+
+def test_effort_flag_passed(monkeypatch):
+    """claude -p에 --effort가 명시 전달돼야 한다(추론예산 레버·상수 _EFFORT 주석 참조). 누락되면
+    CLI 기본 추론예산으로 새어나가 $0에서 무거운 쿼리가 안 보이는 thinking으로 수분 침묵한다."""
+    captured = {}
+
+    def _popen(cmd, **_k):
+        captured["cmd"] = cmd
+        return _FakeProc(_envelope(result="OK"))
+
+    monkeypatch.setattr(backend.subprocess, "Popen", _popen)
+    backend.ClaudeCodeBackend()._call("sys", "prompt", "claude-sonnet-5")
+    assert "--effort" in captured["cmd"]
+    val = captured["cmd"][captured["cmd"].index("--effort") + 1]
+    assert val == backend._EFFORT
+    assert val in {"low", "medium", "high", "xhigh", "max"}

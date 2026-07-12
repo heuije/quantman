@@ -31,6 +31,17 @@ _TIMEOUT = int(os.environ.get("CHAT_EVAL_CLAUDE_TIMEOUT", "600"))
 _MAX_RETRIES = 2               # claude -p 간헐 빈응답 재시도 횟수(총 3회) — 실 anthropic SDK 기본과 정합
 _RETRY_BACKOFF_SEC = 0.5       # 재시도 간 대기(초)·시도마다 선형 증가
 
+# claude -p 추론(thinking) 예산 — dev 하니스 전용(2026-07-12 조사 결론).
+# prod는 4경로 전부 thinking={"type":"disabled"}(agent 오케스트레이터·종합·news_research·ir_compiler):
+# 취향 아닌 correctness — Sonnet5 thinking ON→thinking블록이 멀티턴 히스토리 재구성서 유실→400(PR#300).
+# claude -p엔 thinking 토글이 없어 SDK의 thinking=disabled를 못 받는다(stream/create가 **_kw로 흘림).
+# 방치 시 CLI 기본 추론예산으로 돌아 $0(~15tok/s)에서 무거운 쿼리가 안 보이는 thinking 수천 토큰을 수분간
+# 생성해 "멈춘 듯" 보인다(실측 한 턴 11.9분·TTFT 11.6분·출력 10.7K 중 대부분 숨은 thinking). --effort로
+# 추론예산을 근사 제어(low/medium/high/xhigh/max). medium = 로컬 리서치 절충 — low(=prod 최근접·최속·순수
+# 검증용)와 high(=최대 숙고·$0에서 수분 침묵) 사이. ⚠ dev>prod 추론이면 검증서 prod 실패를 과대통과할 수
+# 있으니 순수 parity 검증엔 CHAT_EVAL_CLAUDE_EFFORT=low로 내려라. prod thinking 설정과 무관(무변경).
+_EFFORT = os.environ.get("CHAT_EVAL_CLAUDE_EFFORT", "medium")
+
 # 프로덕션 시스템 프롬프트는 native tool-use(emit_strategy·screen 등 도구 호출)를 지시한다.
 # claude -p엔 그 도구들이 없어 모델이 tool_use를 시도하면 max_turns로 실패한다(검증됨).
 # → tools 모드일 때 시스템 프롬프트 끝에 "도구 호출 불가, JSON 텍스트로만" 오버라이드를 덧붙여
@@ -362,7 +373,7 @@ class ClaudeCodeBackend:
             # 샘플 공존). 1이면 후자가 최종텍스트 없이 끝나 빈 result → 턴 실패 부류의 근본원인.
             proc = subprocess.Popen(
                 [_CLAUDE_BIN, "-p", "--model", model, "--system-prompt-file", sys_file,
-                 "--max-turns", "3", "--allowedTools", "", "--output-format", "json"],
+                 "--max-turns", "3", "--effort", _EFFORT, "--allowedTools", "", "--output-format", "json"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", env=_claude_env(token))
             try:
@@ -430,7 +441,7 @@ class ClaudeCodeBackend:
         try:
             proc = subprocess.Popen(
                 [_CLAUDE_BIN, "-p", "--model", model, "--system-prompt-file", sys_file,
-                 "--max-turns", "3", "--allowedTools", "",
+                 "--max-turns", "3", "--effort", _EFFORT, "--allowedTools", "",
                  "--output-format", "stream-json", "--include-partial-messages", "--verbose"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", env=_claude_env(token))
