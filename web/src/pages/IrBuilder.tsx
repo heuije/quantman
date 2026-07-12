@@ -134,6 +134,7 @@ export default function IrBuilder() {
   // 청산 — 채운 규칙 OR 결합(이벤트·정기 모두 적용)
   const [useExitCond, setUseExitCond] = useState(false);
   const [holdDays, setHoldDays] = useState<number | "">("");
+  const [exitFill, setExitFill] = useState<string>("");   // 청산 체결 시점("" = 기존 방식·#358)
   const [takeProfit, setTakeProfit] = useState<number | "">("");
   const [stopLoss, setStopLoss] = useState<number | "">("");
   const [trailPct, setTrailPct] = useState<number | "">("");
@@ -324,6 +325,7 @@ export default function IrBuilder() {
     setThreshold(numOrEmpty(en.threshold));
     const ex = p.exit ?? ({} as IrStrategyDef["position"]["exit"]);
     setHoldDays(numOrEmpty(ex.hold_days));
+    setExitFill(ex.fill ?? "");
     setTakeProfit(numOrEmpty(ex.take_profit));
     setStopLoss(numOrEmpty(ex.stop_loss));
     setTrailPct(numOrEmpty(ex.trail_pct));
@@ -465,6 +467,9 @@ export default function IrBuilder() {
       trail_pct: trailPct === "" ? null : trailPct,
       trail_atr_mult: trailAtr === "" ? null : trailAtr,
       condition: useExitCond ? exitCond : null,
+      // 청산 체결 시점(#358) — 조건(condition) 신호 전략 전용(score 경로는 엔진 validator가
+      // 명시 거부). score로 전환된 상태에서 잔존 값이 IR에 실려 거부되지 않게 여기서도 게이트.
+      fill: exitFill && signalType !== "score" ? exitFill : null,
     };
 
     // 발주 방식은 시장이 결정(국내=시장가·미국=지정가) — execution 토글 없음. 단,
@@ -1001,6 +1006,9 @@ export default function IrBuilder() {
         <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
           채운 규칙들이 함께 적용되어 가장 먼저 닿는 조건에서 청산합니다. 정기 리밸런싱에도 적용(상시 진입은 매일 교체라 무시).
           <br />보유일수 <b>0 = 당일 종가 청산</b>(시가 진입 시 시가→종가 당일매매).
+          {signalType !== "score" && (
+            <><br />청산 체결 시점은 <b>보유일수 만기 청산</b>의 체결창만 정합니다(익절·손절·조건 청산은 즉시).</>
+          )}
         </div>
         <div className="lab-row">
           <label className="lab-field">보유일수
@@ -1023,6 +1031,15 @@ export default function IrBuilder() {
             <input type="number" step={0.5} value={trailAtr} placeholder="없음"
                    onChange={(e) => setTrailAtr(e.target.value === "" ? "" : Number(e.target.value))} />
           </label>
+          {signalType !== "score" && (
+            <label className="lab-field">청산 체결 시점
+              <select value={exitFill} onChange={(e) => setExitFill(e.target.value)}>
+                <option value="">기존 방식(진입 체결에서 파생)</option>
+                <option value="next_open">익일 시가</option>
+                <option value="close">당일 종가</option>
+              </select>
+            </label>
+          )}
         </div>
         <label style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
           <input type="checkbox" checked={useExitCond}
