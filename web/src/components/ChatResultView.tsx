@@ -23,6 +23,7 @@ import {
 import { Link } from "react-router-dom";
 import { Fragment, useState, type ReactElement } from "react";
 import EquityChart from "./EquityChart";
+import { StatNote } from "./StatGlossary";
 import ExcelExportButton from "./ExcelExportButton";
 import AutotradeLinkButton from "./AutotradeLinkButton";
 import ParamControls, { type AdjustableParam } from "./ParamControls";
@@ -185,6 +186,8 @@ function SweepBuckets({ result }: { result: IrStrategyResult }) {
             (v.p_value != null && v.p_value < 0.05 ? " (유의)" : "")).join(" · ")}
         </div>
       ) : null}
+      <StatNote keys={["sharpe", "sortino", "mdd", "win_rate", "payoff_ratio",
+                       ...(Object.keys(pairwise).length ? ["p_value_2s"] : [])]} />
     </div>
   );
 }
@@ -194,8 +197,11 @@ function SweepBuckets({ result }: { result: IrStrategyResult }) {
 function EventStudy({ result }: { result: IrStrategyResult }) {
   const windows = result.windows ?? [];
   const overall = (result.overall ?? {}) as Record<string, IrEventStat>;
+  // 유의성은 색이 아니라 굵기로 — 양측검정이라 '유의'는 방향(상승)이 아니다. 평균이 음수인
+  // 유의 결과를 상승색(pos)으로 칠하던 오도를 제거(방향=평균 부호 열이 담당).
   const pcell = (p?: number) => (
-    <td className={p != null && p < 0.05 ? "pos" : ""}>{p != null ? p.toFixed(4) : "—"}</td>);
+    <td style={p != null && p < 0.05 ? { fontWeight: 700 } : undefined}>
+      {p != null ? p.toFixed(4) : "—"}</td>);
   const basisLabel = { close: "종가→종가", intraday: "시가→종가(당일)", excess: "시장초과" }[
     result.basis ?? "close"] ?? "종가→종가";
   // T7 — 풀 구성 분해(종목 상위·연도범위)를 표면화해 'n=수천 무차별 pooling'(#4c)을 투명화.
@@ -237,6 +243,7 @@ function EventStudy({ result }: { result: IrStrategyResult }) {
           </tbody>
         </table>
       </div>
+      <StatNote keys={["p_value", "mean_mae", "mean_mfe", "prob_positive", "payoff_ratio"]} />
     </div>
   );
 }
@@ -257,7 +264,7 @@ function CohortComparison({ result }: { result: IrStrategyResult }) {
   return (
     <div className="chat-result">
       <div className="muted" style={{ fontSize: "0.8em", marginBottom: 4 }}>
-        종목 코호트 — {nSym}종목 이벤트스터디 비교 (forward 수익, 손익 아님 · p&lt;0.05 강조)
+        종목 코호트 — {nSym}종목 이벤트스터디 비교 (forward 수익, 손익 아님 · 색=방향, 굵게=p&lt;0.05 유의)
       </div>
       <div style={{ overflowX: "auto" }}>
         <table className="sweep-table">
@@ -276,8 +283,11 @@ function CohortComparison({ result }: { result: IrStrategyResult }) {
                   {windows.map((w) => {
                     const o = ov[w] ?? ({} as IrEventStat);
                     const sig = o.p_value != null && o.p_value < 0.05;
+                    // 색=방향(평균 부호)·굵기=유의성 분리 — 양측검정이라 '유의'가 상승을
+                    // 뜻하지 않는다(음수 유의를 상승색으로 칠하던 오도 제거).
                     return (
-                      <td key={w} className={sig ? "pos" : ((o.mean ?? 0) < 0 ? "neg" : "")}>
+                      <td key={w} className={(o.mean ?? 0) >= 0 ? "pos" : "neg"}
+                          style={sig ? { fontWeight: 700 } : undefined}>
                         {fmt(o.mean, "")}
                         <span className="muted" style={{ fontSize: "0.85em" }}>
                           {" "}(p{o.p_value != null ? o.p_value.toFixed(3) : "—"})</span>
@@ -289,6 +299,7 @@ function CohortComparison({ result }: { result: IrStrategyResult }) {
           </tbody>
         </table>
       </div>
+      <StatNote keys={["p_value"]} />
     </div>
   );
 }
@@ -316,6 +327,7 @@ function SignalStudy({ result }: { result: IrStrategyResult }) {
         <div className="chat-result-stat"><div className="chat-result-label">상위5%</div>
           <div className="chat-result-value pos">{fmt(q.q95, "")}</div></div>
       </div>
+      <StatNote keys={["quantiles"]} />
     </div>
   );
 }
@@ -346,7 +358,7 @@ function ICStudy({ result }: { result: IrStrategyResult }) {
                   <td>{o.ir != null ? o.ir.toFixed(3) : "—"}</td>
                   <td>{o.t_stat != null ? o.t_stat.toFixed(2) : "—"}</td>
                   <td>{fmt(o.prob_positive, "")}</td>
-                  <td className={o.p_value != null && o.p_value < 0.05 ? "pos" : ""}>
+                  <td style={o.p_value != null && o.p_value < 0.05 ? { fontWeight: 700 } : undefined}>
                     {o.p_value != null ? o.p_value.toFixed(4) : "—"}</td>
                 </tr>
               );
@@ -354,6 +366,7 @@ function ICStudy({ result }: { result: IrStrategyResult }) {
           </tbody>
         </table>
       </div>
+      <StatNote keys={["ic", "ic_ir", "t_stat", "p_value", "prob_positive"]} />
     </div>
   );
 }
@@ -481,6 +494,7 @@ function SimulateChart({ result }: Props) {
         })}
       </div>
       <EquityChart equity={r.equity ?? []} benchmark={r.benchmark} trades={r.trades} />
+      <StatNote keys={["cagr", "sharpe", "mdd", "win_rate"]} />
     </div>
   );
 }

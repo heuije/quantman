@@ -156,6 +156,14 @@ def test_chat_prompt_surfaces_advanced_analyses():
         assert kw in p, f"analysis_menu에 '{kw}' 누락 — 에이전트가 해당 분석을 못 권한다"
 
 
+def test_chat_prompt_stat_semantics_guidance():
+    """통계 용어 해설 규율 — p값=양측 t-검정·귀무가설 '평균 0'을 모델이 명시·방향은 평균 부호로.
+    사용자 실측 피드백: 귀무가설이 화면·답변 어디에도 없어 '유의=상승' 오독 여지(compare.py 정본)."""
+    p = cp.chat_system_prompt()
+    assert "귀무가설" in p and "양측" in p
+    assert "평균의 부호" in p          # 유의≠상승 — 방향 분리 해석 규율
+
+
 def test_chat_prompt_exposes_macro_symbol_catalog():
     """WS5 발견성 — 매크로 심볼 *이름*(원달러환율 등)이 프롬프트에 실재해 추측을 근본 제거.
     prod 실측: 시계열이 있는데 봇이 USDKRW류 추측 4연속 후 '조회 불가'로 포기(conv#42)."""

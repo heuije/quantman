@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { StatNote } from "./StatGlossary";
 import {
   Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, LineChart,
   Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, Treemap, XAxis, YAxis,
@@ -853,6 +854,7 @@ export function RegressionChart({ r }: { r: IrRegressionResult }) {
             {data.map((d) => `${d.name}: β=${f2(d.coef)} t=${d.t_inf ? "∞" : f2(d.t_stat)}`)
               .join(" · ")}
           </div>
+          <StatNote keys={["coef", "t_stat"]} />
         </>
       )}
     </Box>
@@ -938,6 +940,7 @@ export function ExtremizeChart({ r }: { r: IrExtremizeResult }) {
               ))}
             </tbody>
           </table>
+          <StatNote keys={["oos"]} />
         </div>
       ) : null}
     </Box>
