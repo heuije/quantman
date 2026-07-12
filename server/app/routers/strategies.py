@@ -153,6 +153,14 @@ def _assert_live_tradable(run_mode: str, definition: dict,
     if run_mode not in ("paper", "live"):
         return
 
+    # ⑤ 전략 합성(WS3·components): 수익률 수준 합성은 백테스트 전용 — 로컬앱은 단일 전략
+    #    체결기라 구성 간 가중 배분·혼합 리밸런스를 재현할 수 없다. 구성별 개별 전략으로 등록.
+    if definition.get("components"):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "합성 전략(components)은 백테스트 전용입니다 — 모의·실전 적용 불가. "
+            "실거래가 필요하면 각 구성을 개별 전략으로 등록하세요.")
+
     # 자동매매 템플릿(장중 스캔) — 사전 검증된 별도 라이브 경로로 분기(장중 템플릿 설계 §2.3).
     # 템플릿 패턴은 kind=all(전 종목 스캔)·Market 스크리너를 *요구*하므로 아래 일반 차단
     # (전체 유니버스 ②·이벤트+세부조건 ③)과 구조적으로 충돌한다 — 전용 검증 세트가 대신 선다.

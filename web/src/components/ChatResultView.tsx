@@ -466,7 +466,10 @@ export default function ChatResultView({ result }: Props) {
   const tradableIr = shape === "extremize"
     ? (live.result as { best?: { ir?: Record<string, unknown> } }).best?.ir
     : (live.ir ?? ir0);
-  const canLink = AUTOTRADE_SHAPES.has(shape) && status !== "degenerate" && !!tradableIr;
+  // 합성(WS3·components)은 백테스트 전용 — 서버 승격 게이트(422)와 정합해 버튼 자체를 숨긴다.
+  const isComposite = !!(tradableIr as { components?: unknown[] } | undefined)?.components?.length;
+  const canLink = AUTOTRADE_SHAPES.has(shape) && status !== "degenerate" && !!tradableIr
+    && !isComposite;
   return (
     <>
       <ChatResultBody result={live.result} />
@@ -503,6 +506,51 @@ function SimulateChart({ result }: Props) {
         })}
       </div>
       <EquityChart equity={r.equity ?? []} benchmark={r.benchmark} trades={r.trades} />
+      {(() => {
+        // 적립식(WS4) — 납입 요약(지표=TWR·원금대비 분리). contributions 없으면 렌더 0.
+        const ct = (result as { contributions?: { n?: number; total?: number;
+          total_invested?: number; final_value?: number; profit_pct?: number } }).contributions;
+        if (!ct) return null;
+        return (
+          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            적립식 — 납입 {ct.n ?? "—"}회 · 누계 {ct.total != null ? ct.total.toLocaleString() : "—"}원
+            · 평가액 {ct.final_value != null ? Math.round(ct.final_value).toLocaleString() : "—"}원
+            · <b>원금대비 {ct.profit_pct != null ? `${ct.profit_pct.toFixed(1)}%` : "—"}</b>
+            {" "}(위 지표는 납입 왜곡을 제거한 시간가중 TWR)
+          </div>
+        );
+      })()}
+      {(() => {
+        // 전략 합성(WS3) — 구성별 분해 표(비중·성과). components 없으면 렌더 0.
+        const comps = (result as { components?: Record<string, {
+          weight?: number; cum_return?: number; cagr?: number; sharpe?: number;
+          mdd?: number; error?: string }> }).components;
+        if (!comps || !Object.keys(comps).length) return null;
+        return (
+          <div style={{ overflowX: "auto", marginTop: 8 }}>
+            <table className="sweep-table">
+              <thead><tr><th>구성</th><th>비중</th><th>누적(%)</th><th>CAGR(%)</th>
+                <th>샤프</th><th>MDD(%)</th></tr></thead>
+              <tbody>
+                {Object.entries(comps).map(([k, b]) => (
+                  b.error ? (
+                    <tr key={k}><td>{k}</td><td colSpan={5} className="neg">{b.error}</td></tr>
+                  ) : (
+                    <tr key={k}>
+                      <td>{k}</td>
+                      <td>{b.weight != null ? `${(b.weight * 100).toFixed(0)}%` : "—"}</td>
+                      <td className={(b.cum_return ?? 0) >= 0 ? "pos" : "neg"}>{fmt(b.cum_return, "")}</td>
+                      <td>{fmt(b.cagr, "")}</td>
+                      <td>{fmt(b.sharpe, "")}</td>
+                      <td className="neg">{fmt(b.mdd, "")}</td>
+                    </tr>
+                  )
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
       <StatNote keys={["cagr", "sharpe", "mdd", "win_rate"]} />
     </div>
   );

@@ -159,3 +159,19 @@ EventStudyChart 음수축 렌더 포함.
   부수 발견·수정: serialize axis 화이트리스트가 row_axis 유실(웹 '종목 코호트' 오표기 —
   기지 whitelist 부류·회귀 가드 추가). 실데이터: 골든크로스 이평 20/60/120 격자(120만 +5일
   p0.025 유의)·조건 대안(골든크로스 vs 눌림회복) dev-render 확인.
+- 2026-07-12 **WS2 머지**(PR#370→27a86a4). **WS3(전략 합성) 구현**: StrategyIR.components
+  (수익률 수준 합성 — 구성별 독립 실행→일일수익 가중합=고정비중 매일 리밸런스 혼합·달력 합집합
+  결측=0 처리 명시). 부모=컨테이너(검증 조기분기 — 명목 신호 거짓거부 차단)·구성 재귀 전체검증
+  (경로 접두)·중첩 금지(1단). needed_symbols/columns 합집합 순회·serialize 합성 인지(components
+  보존·benchmark None 허용)·라이브 승격 게이트 ⑤(422 백테스트 전용)·웹 구성분해 표+연동버튼
+  숨김·엑셀 신호패널 정직 생략·컴파일러 레시피 14b·챗 병행합성 안내. 실데이터: 코스피선물
+  추세 67%(−63%)+삼성 보유 33%(+920%) 혼합 곡선 dev-render 확인. 전 스위트 1804 green.
+- 2026-07-12 **WS4(자본 흐름·적립식 DCA) 구현**: SimSpec.contributions(주기 정액 납입 —
+  _is_rebalance 달력 SSOT 재사용·양 엔진 경로 주입) + **지표=시간가중 TWR 재계산**(r=eq/(prev+flow)−1
+  합성 곡선으로 기존 지표 기계 재사용·납입 왜곡 제거) + 원금대비 별도 동봉·정직 경고(벤치마크
+  초기자본 기준). 오버레이(vol_target·dd_stop)×납입은 정직 거부(수익률 재합성 미정합·후속).
+  classify_status: 상시보유 적립의 거래0을 empty 오판하던 것 contributions-인지로 수정.
+  serialize whitelist에 contributions 보존. 검증: TWR 불변식 테스트(DCA CAGR≈무납입 CAGR)·
+  가격불변 원금대비≈0 테스트·전 스위트 1811 green(골든 411 byte-identical)·실데이터
+  dev-render(삼성전자 월 100만 적립 148회: TWR CAGR 21.4%·원금대비 +508.6%) 확인.
+  **WS1~WS4 엔진 워크스트림 전체 완결.**

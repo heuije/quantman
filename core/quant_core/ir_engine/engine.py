@@ -206,6 +206,55 @@ def _reason_key(reason: str) -> str | None:
     return None
 
 
+# ── 적립식 납입 (WS4·DCA) — 주기 첫 거래일 외부 현금 유입 + TWR 지표 재계산 ──────
+
+def _contribution_flows(sim, master_idx) -> "np.ndarray | None":
+    """contributions 설정 시 일별 납입액 배열(주기 첫 거래일=amount·그 외 0). None=미설정.
+
+    주기 경계는 리밸런스 달력 규칙(_is_rebalance)과 동일 SSOT — 첫 거래일(i=0)도 납입
+    (초기자본과 별개로 '매 주기 N원' 의미를 데이터 첫날부터 일관 적용)."""
+    c = getattr(sim, "contributions", None)
+    if c is None:
+        return None
+    flows = np.zeros(len(master_idx), dtype=float)
+    last = None
+    for i in range(len(master_idx)):
+        if _is_rebalance(i, last, master_idx, c.schedule, None):
+            flows[i] = float(c.amount)
+            last = i
+    return flows
+
+
+def _with_contribution_metrics(result: dict, equity_s: pd.Series, flows, sim) -> dict:
+    """납입 존재 시 지표를 시간가중(TWR)으로 재계산 — 입금이 '수익'으로 왜곡되는 것 제거.
+
+    r_i = eq_i/(eq_{i-1}+flow_i) − 1 (납입은 당일 장 시작 전 유입). 합성 TWR 곡선으로
+    기존 지표 기계(finalize_metrics)를 그대로 돌리고, 자본곡선(equity)은 납입 포함 실제
+    평가액을 유지한다(차트=실계좌·지표=성과). 원금대비(납입누계 대비)는 별도 동봉."""
+    f = pd.Series(flows, index=equity_s.index, dtype=float)
+    prev = equity_s.shift(1)
+    prev.iloc[0] = float(sim.initial_capital)
+    denom = (prev + f).replace(0, np.nan)
+    r = (equity_s / denom - 1.0).fillna(0.0)
+    twr_eq = ((1.0 + r).cumprod() * float(sim.initial_capital)).rename("전략")
+    bench, trades = result.get("benchmark"), result.get("trades")
+    result["metrics"] = finalize_metrics(_metrics(twr_eq, bench, trades), twr_eq, bench, trades)
+    invested = float(sim.initial_capital) + float(f.sum())
+    final = float(equity_s.iloc[-1])
+    profit_pct = (final / invested - 1.0) * 100.0 if invested > 0 else None
+    result["contributions"] = {
+        "amount": float(sim.contributions.amount), "schedule": sim.contributions.schedule,
+        "n": int((f > 0).sum()), "total": float(f.sum()),
+        "total_invested": invested, "final_value": final, "profit_pct": profit_pct}
+    result["warnings"] = list(result.get("warnings") or []) + [{
+        "code": "contributions_twr",
+        "message": (f"적립식 백테스트 — 납입 {int((f > 0).sum())}회·누계 {f.sum():,.0f}원. "
+                    "지표(CAGR·샤프·MDD)는 시간가중(TWR)으로 납입 왜곡을 제거했고, "
+                    "자본곡선은 납입 포함 실제 평가액입니다. 원금(초기+납입) 대비 "
+                    f"{profit_pct:+.1f}%. 벤치마크는 초기자본 기준(납입 미반영).")}]
+    return result
+
+
 # ── 통합 엔진 (Stage 1: 이벤트 트리거) ────────────────────────────────────────
 
 def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
@@ -470,9 +519,12 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
         if pos.shares <= 1e-9:
             del positions[sym]
 
+    flows = _contribution_flows(sim, master_idx)     # 적립식 납입(WS4) — None=기존 경로
     _wrec: list[dict] = [dict() for _ in range(n)]   # 일별 비중 — 기여 패널 기질(비교용)
     for i in range(n):
         closed_this_step: set[str] = set()   # 비-defer: 당일 청산 종목 동일일 재진입 차단
+        if flows is not None and flows[i]:
+            cash += flows[i]                 # 주기 납입 — 당일 장 시작 전 현금 유입
         if rfr_daily:
             cash *= (1 + rfr_daily)
         if defer or pending_sells:
@@ -614,11 +666,14 @@ def run_unified(strategy: StrategyIR, dataset: dict[str, pd.DataFrame]) -> dict:
     equity_s = pd.Series(equity, index=master_idx, name="전략")
     trades_df = pd.DataFrame(trades)
     weight_panel = pd.DataFrame(_wrec, index=master_idx).fillna(0.0)   # 비중 패널(비교 기질)
-    return {"success": True, "error": None, "equity": equity_s,
-            "benchmark": benchmark_s, "trades": trades_df, "weight": weight_panel,
-            "capital_starved": capital_starved,
-            "metrics": finalize_metrics(_metrics(equity_s, benchmark_s, trades_df),
-                                        equity_s, benchmark_s, trades_df)}
+    out = {"success": True, "error": None, "equity": equity_s,
+           "benchmark": benchmark_s, "trades": trades_df, "weight": weight_panel,
+           "capital_starved": capital_starved,
+           "metrics": finalize_metrics(_metrics(equity_s, benchmark_s, trades_df),
+                                       equity_s, benchmark_s, trades_df)}
+    if flows is not None:
+        out = _with_contribution_metrics(out, equity_s, flows, sim)   # WS4 — TWR 재계산
+    return out
 
 
 def _sell_pct(reason: str, sizing) -> float:
@@ -1131,8 +1186,11 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
 
     excluded: set = set()
     _wrec: list[dict] = [dict() for _ in range(n)]   # 일별 end-of-day 비중 — 기여 패널 기질
+    flows = _contribution_flows(sim, master)           # 적립식 납입(WS4) — None=기존 경로
     for i in range(n):
         d = master[i]
+        if flows is not None and flows[i]:
+            cash += flows[i]                           # 주기 납입 — 당일 장 시작 전 현금 유입
         if rfr_daily and cash > 0:                     # 현금 무위험수익
             cash *= (1 + rfr_daily)
         if (borrow_daily or funding_daily) and positions:   # 숏 차입·레버리지 펀딩
@@ -1221,8 +1279,11 @@ def _run_scheduled(strategy: StrategyIR, dataset: dict) -> dict:
     eq_mean = float(equity_s.mean())
     met["turnover"] = float(turnover_notional / n / eq_mean * 100) if eq_mean > 0 else 0.0
     weight_panel = pd.DataFrame(_wrec, index=master).fillna(0.0)   # 비중 패널(기여·비교 기질)
-    return {"success": True, "error": None, "equity": equity_s, "benchmark": benchmark_s,
-            "trades": trades_df, "metrics": met, "weight": weight_panel}
+    out = {"success": True, "error": None, "equity": equity_s, "benchmark": benchmark_s,
+           "trades": trades_df, "metrics": met, "weight": weight_panel}
+    if flows is not None:
+        out = _with_contribution_metrics(out, equity_s, flows, sim)   # WS4 — TWR 재계산
+    return out
 
 
 def _benchmark_cols(close: dict, master, initial_capital: float) -> pd.Series:

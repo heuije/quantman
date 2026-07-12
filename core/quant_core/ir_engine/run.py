@@ -184,8 +184,57 @@ def run_query(strategy: StrategyIR, dataset: dict) -> dict:
     return res
 
 
+def run_composite(strategy: StrategyIR, dataset: dict) -> dict:
+    """전략 합성(WS3) — 구성별 독립 백테스트 → 일일수익 가중 합산(고정비중 매일 리밸런스 혼합).
+
+    prod 실수요(conv#25·#28 "이와 별개로 병행합니다"): 전략 A+B 병행 포트폴리오를 1콜로.
+    기본 페어(같은 신호 A롱+B숏 2구성)도 이 기계로 표현된다. 정직 한계: 공동 증거금·두 다리
+    동시 체결(조인트 멀티레그)은 모델하지 않는다 — 구성 간 자본은 가중치로 고정 배분되고
+    달력 불일치 일자는 해당 구성 수익 0(휴장)으로 처리(계약 not_supported·방법론 명시)."""
+    comps = strategy.components
+    if len(comps) < 2:
+        return _empty("합성 전략은 구성이 2개 이상이어야 합니다.")
+    total_w = sum(float(c.weight) for c in comps)
+    if total_w <= 0:
+        return _empty("구성 가중치 합이 양수여야 합니다.")
+    rets: dict[str, pd.Series] = {}
+    buckets: dict[str, dict] = {}
+    for i, c in enumerate(comps):
+        child = StrategyIR.model_validate(c.ir)
+        name = child.name or f"구성{i + 1}"
+        if name in rets:                        # 이름 충돌 — 버킷 키 유일성
+            name = f"{name}#{i + 1}"
+        res = run_strategy_ir(child, dataset)
+        if not res.get("success"):
+            return _empty(f"구성 '{name}' 실행 실패: {res.get('error')}")
+        r = daily_returns(res["equity"])
+        w = float(c.weight) / total_w
+        rets[name] = r
+        buckets[name] = {**summarize_returns(r), "weight": w,
+                         "n_trades": (res.get("metrics") or {}).get("n_trades")}
+    panel = pd.DataFrame(rets).sort_index()
+    # 달력 합집합 — 어느 구성의 휴장/무데이터 일자는 그 구성 수익 0(현금 가정·방법론 명시).
+    panel = panel.fillna(0.0)
+    weights = {n: buckets[n]["weight"] for n in panel.columns}
+    port = sum(panel[n] * weights[n] for n in panel.columns)
+    equity = (1.0 + port).cumprod() * float(strategy.simulation.initial_capital)
+    metrics = summarize_returns(port)
+    metrics["total_return"] = metrics.get("cum_return")   # simulate 지표행(웹 CHAT_METRICS) 호환
+    # trades=빈 DataFrame — 직렬화(1회 백테스트 분기)·웹 계약 호환(합성은 구성 내부 체결이라
+    # 합성 수준의 개별 거래 목록이 없다 — 방법론·경고로 명시).
+    return {"success": True, "shape": "simulate", "equity": equity, "metrics": metrics,
+            "trades": pd.DataFrame(), "benchmark": None,
+            "components": buckets,
+            "warnings": [{"code": "composite_model",
+                          "message": ("합성은 수익률 수준(고정비중 매일 리밸런스) 모델 — 구성 간 "
+                                      "공동 증거금·동시 체결은 미모델, 달력 불일치 일자는 해당 구성 "
+                                      "수익 0(현금) 처리.")}]}
+
+
 def _dispatch_query(strategy: StrategyIR, dataset: dict) -> dict:
     """query 동사 + study 펼침 → 실행 함수 라우팅(형상 스탬프 직전 단계)."""
+    if strategy.components:                     # 전략 합성(WS3) — 동사 분기보다 먼저
+        return run_composite(strategy, dataset)
     q = strategy.query
     if q == "select":
         return run_select(strategy, dataset)

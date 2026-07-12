@@ -130,6 +130,16 @@ class PositionSpec(BaseModel):
 
 # ── 시뮬레이션 (비전 §3.5) ────────────────────────────────────────────────────
 
+class Contributions(BaseModel):
+    """적립식 납입(WS4·DCA) — 주기 첫 거래일마다 외부 현금 amount를 계좌에 추가.
+
+    prod 실수요(conv#23 '매달 100만원씩 매수'): 신규 자본 유입 모델 부재로 0거래·동일가중
+    대체되던 부류. 지표는 엔진이 시간가중(TWR)으로 재계산해 납입 왜곡을 제거하고,
+    원금대비(납입누계 대비 평가액)는 별도 동봉한다."""
+    amount: float                      # 회당 납입액(원·양수)
+    schedule: Literal["weekly", "monthly", "quarterly", "annual"] = "monthly"
+
+
 class SimSpec(BaseModel):
     # 기본 1억 — 고승수 지수선물(코스피200선물 1계약 증거금 ≈7,500만=승수25만×~300pt×개시증거금률0.1)도
     # 진입 가능하도록. 주식은 %수익이라 자본 스케일에 불변(골든은 모두 자본 명시라 무영향).
@@ -153,6 +163,8 @@ class SimSpec(BaseModel):
     maintenance_margin_pct: Optional[float] = None
     start: Optional[str] = None
     end: Optional[str] = None
+    # 적립식 납입(WS4) — None=기존 경로 byte-identical(골든 보존).
+    contributions: Optional[Contributions] = None
     # ── 선물 연속물 구성 (equity 심볼이면 무시) ──────────────────────────────────
     # 선물은 만기물 체인 → 단일 연속 시계열로 이어붙여 백테스트한다. 만기물 패널 보유 선물
     # (KOSPI200)은 엔진이 이 설정으로 패널에서 연속물을 재구성한다(E2). 미지정(None)이면 상품
@@ -263,6 +275,16 @@ class TemplateConfig(BaseModel):
 
 # ── 전략 (통합) ───────────────────────────────────────────────────────────────
 
+class Component(BaseModel):
+    """합성 전략(WS3)의 한 구성 — 완결 StrategyIR dict + 가중치.
+
+    수익률 수준 합성: 각 구성을 기존 엔진으로 독립 실행해 일일수익을 가중 합산한다
+    (=고정비중 매일 리밸런스 혼합). ir는 dict로 두고 실행·검증 시 파싱(자기참조 모델 회피·
+    저장/직렬화 대칭). 공동 증거금·동시 체결(조인트 멀티레그)은 비목표 — 계약 not_supported."""
+    weight: float = 1.0
+    ir: dict
+
+
 class StrategyIR(BaseModel):
     name: str = "새 전략"
     universe: Universe = Field(default_factory=Universe)
@@ -274,6 +296,8 @@ class StrategyIR(BaseModel):
     study: Study = Field(default_factory=Study)
     select: Optional[SelectSpec] = None    # query="select" 전용
     prescribe: Optional[PrescribeSpec] = None   # query="prescribe" 전용
+    # 전략 합성(WS3) — 2개 이상이면 composite 러너로 실행(top-level signal은 명목).
+    components: list[Component] = Field(default_factory=list)
     template: Optional[TemplateConfig] = None   # 자동매매 템플릿 태그(장중 신호 화이트리스트)
 
     @model_validator(mode="before")
@@ -501,6 +525,59 @@ def signal_out_type(node: Node) -> Optional[str]:
 def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
                       meta: Optional[DatasetMeta] = None) -> list[Issue]:
     """StrategyIR 정합성 — 블록 메타규칙 + 구조 규칙(신호타입×진입 등) + 무결성."""
+    return _validate_strategy_impl(s, valid_refs, meta)
+
+
+def _validate_composite(s: "StrategyIR", valid_refs) -> list[Issue]:
+    """합성 전략(WS3) 검증 — 부모 컨테이너 규칙 + 구성별 재귀 전체 검증(경로 접두)."""
+    issues: list[Issue] = []
+    st = s.study
+    if s.query != "simulate":
+        issues.append(Issue("S-composite", SEV_ERROR,
+                            "합성 전략(components)은 query=simulate 전용입니다.", "components"))
+    if len(s.components) < 2:
+        issues.append(Issue("S-composite", SEV_ERROR,
+                            "합성 전략은 구성이 2개 이상이어야 합니다(1개면 그 전략 단독으로).",
+                            "components"))
+    if st.axis != "none" or st.variants or st.param_grid or st.event is not None:
+        issues.append(Issue("S-composite", SEV_ERROR,
+                            "합성 전략과 study 펼침/분석(격자·대안·이벤트·기간분할)은 동시에 "
+                            "쓸 수 없습니다 — 합성 결과의 분석은 후속 요청으로.", "components"))
+    for i, c in enumerate(s.components):
+        where = f"components.{i}"
+        if c.weight is None or float(c.weight) <= 0:
+            issues.append(Issue("S-composite", SEV_ERROR,
+                                f"구성 {i + 1}의 weight는 양수여야 합니다.", f"{where}.weight"))
+        if isinstance(c.ir, dict) and c.ir.get("components"):
+            issues.append(Issue("S-composite", SEV_ERROR,
+                                "구성 안의 합성(중첩 components)은 지원하지 않습니다(1단 깊이).",
+                                f"{where}.ir"))
+            continue
+        try:
+            child = StrategyIR.model_validate(c.ir)
+        except Exception as e:              # noqa: BLE001 — 형식 오류를 loud로
+            issues.append(Issue("S-composite", SEV_ERROR,
+                                f"구성 {i + 1} IR 형식 오류: {e}", f"{where}.ir"))
+            continue
+        if child.query != "simulate" or child.study.axis != "none":
+            issues.append(Issue("S-composite", SEV_ERROR,
+                                f"구성 {i + 1}({child.name})은 단일 백테스트(query=simulate·"
+                                "펼침 없음)여야 합니다.", f"{where}.ir"))
+            continue
+        for iss in validate_strategy(child, valid_refs=valid_refs):
+            if iss.is_error:
+                issues.append(Issue(iss.rule, iss.severity,
+                                    f"구성 {i + 1}({child.name}): {iss.message}",
+                                    f"{where}.{iss.path}"))
+    return issues
+
+
+def _validate_strategy_impl(s: "StrategyIR", valid_refs, meta) -> list[Issue]:
+    # ── 전략 합성(WS3) — 부모는 컨테이너(top-level signal·position은 명목)라 단일 전략
+    # 검사를 적용하지 않고, 구성 재귀 검증만 수행 후 조기 반환한다(명목 신호가 S-entry 등에
+    # 거짓 거부되는 부류 차단). 구성 각각은 완결 simulate IR로 전체 검증을 통과해야 한다.
+    if s.components:
+        return _validate_composite(s, valid_refs)
     issues: list[Issue] = list(validate(s.signal, valid_refs))
     issues += meaningfulness_issues(s.signal, "signal")   # M2·M3 — 동어반복·모순·퇴화 윈도우
     st = signal_out_type(s.signal)
@@ -786,6 +863,24 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
         issues.append(Issue("S-split", SEV_ERROR,
                             "기간분할과 펼침/분석은 동시에 쓸 수 없습니다 — 하나만 선택하세요.", "simulation"))
 
+    # 적립식 납입(WS4) — 값 도메인 + 미정합 조합 정직 거부.
+    contrib = s.simulation.contributions
+    if contrib is not None:
+        if contrib.amount <= 0:
+            issues.append(Issue("S-contrib", SEV_ERROR,
+                                "납입액(contributions.amount)은 양수여야 합니다.",
+                                "simulation.contributions"))
+        if is_research:
+            issues.append(Issue("S-contrib", SEV_ERROR,
+                                "적립식 납입은 백테스트(query=simulate) 전용입니다.",
+                                "simulation.contributions"))
+        if pos.overlays.vol_target or pos.overlays.max_drawdown_stop:
+            issues.append(Issue("S-contrib", SEV_ERROR,
+                                "적립식 납입과 포트폴리오 오버레이(vol_target·max_drawdown_stop)는 "
+                                "아직 함께 쓸 수 없습니다 — 오버레이의 수익률 재합성이 납입과 "
+                                "미정합(후속 지원). 하나만 선택하세요.",
+                                "simulation.contributions"))
+
     # variant(구조 대안) × parameter(값 격자) 동시 사용 금지 — 2D 모호성(어느 축이 버킷인가).
     # variants가 있으면 축은 variant여야 하고(조용한 무시 방지), 격자·자산축과 공존할 수 없다.
     if st.variants and (st.param_grid or st.assets):
@@ -802,6 +897,7 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
             issues.append(Issue("S-sweep", SEV_ERROR,
                                 "variants의 name은 비어있지 않고 서로 달라야 합니다(버킷 키).",
                                 "study.variants"))
+
 
     # 선물 — 연속물 설정(roll_method·series_adjust·roll_cost_pct)이 비선물 유니버스에 걸리면
     # 조용히 무시된다 → 경고(silent no-op 방지, M-vacuous 계열). 단일·리스트 유니버스에서만 판정.
@@ -850,6 +946,19 @@ def needed_symbols(s: StrategyIR) -> Optional[set[str]]:
     all: 횡단 랭킹이라 후보 전체가 필요 → None(전 유니버스 로드).
     엔진의 _universe_symbols(all 경로)가 dataset 전체를 후보로 보는 것과 같은 경계.
     """
+    # 합성(WS3) — 구성들의 요구 합집합(자식이 하나라도 전체 필요면 전체).
+    if s.components:
+        syms_all: set[str] = set()
+        for c in s.components:
+            try:
+                child = StrategyIR.model_validate(c.ir)
+            except Exception:                  # noqa: BLE001 — 잘못된 구성이면 안전하게 전체
+                return None
+            child_syms = needed_symbols(child)
+            if child_syms is None:
+                return None
+            syms_all |= child_syms
+        return syms_all
     if s.universe.kind == "all":
         return None
     syms: set[str] = set(s.universe.symbols)
@@ -894,6 +1003,19 @@ def needed_columns(s: StrategyIR) -> Optional[set[str]]:
     byte 동일(각 add_*가 순수, test_backtest_golden의 프로젝션 불변식이 보장).
     strat:<id> 조합은 자식이 임의 지표를 쓸 수 있어 None(전체)로 안전 폴백.
     """
+    # 합성(WS3) — 구성들의 컬럼 요구 합집합(자식이 하나라도 전체 필요면 전체).
+    if s.components:
+        cols_all: set[str] = set()
+        for c in s.components:
+            try:
+                child = StrategyIR.model_validate(c.ir)
+            except Exception:                  # noqa: BLE001
+                return None
+            child_cols = needed_columns(child)
+            if child_cols is None:
+                return None
+            cols_all |= child_cols
+        return cols_all
     if any(str(x).startswith("strat:") for x in s.universe.symbols):
         return None
     nodes = [s.signal, s.position.exit.condition, s.position.overlays.group_label,

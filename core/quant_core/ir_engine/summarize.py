@@ -203,12 +203,16 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
 
     if shape == "simulate":
         m = result.get("metrics") or {}
+        contrib = result.get("contributions")
         parts = [f"{lbl} {_f(m.get(k))}{u}" for k, lbl, u in (
             ("cagr", "CAGR", "%"), ("sharpe", "샤프", ""), ("mdd", "MDD", "%"),
             ("total_return", "누적", "%")) if m.get(k) is not None]
         for k, lbl, u in (("bench_cagr", "벤치CAGR", "%"), ("win_rate", "승률", "%")):
             if m.get(k) is not None:
                 parts.append(f"{lbl} {_f(m.get(k), 1 if k == 'win_rate' else 2)}{u}")
+        if isinstance(contrib, dict):   # 적립식(WS4) — 지표=TWR·원금대비 별도(모델이 혼동 없이 서술)
+            parts.append(f"납입 {contrib.get('n', '?')}회·누계 {_f(contrib.get('total'), 0)}원 · "
+                         f"원금대비 {_f(contrib.get('profit_pct'))}% (지표는 시간가중 TWR)")
         if m.get("n_trades") is not None:
             parts.append(f"거래 {m.get('n_trades')}회")
         out = "[백테스트] " + " · ".join(parts)

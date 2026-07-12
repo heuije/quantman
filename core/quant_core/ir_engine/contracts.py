@@ -163,6 +163,8 @@ def resolve_runner(s) -> str:
     """IR → 러너 키. run.py `_dispatch_query`(1차) + engine `run_unified`의 entry.mode 분기(2차)
     + select mode(3차)의 결정 로직을 순수함수로 추출 — 분기 *순서까지* 실제 디스패치와 동일해야
     한다(드리프트는 test_runner_contracts의 예측=실행 일치 테스트가 잠근다)."""
+    if s.components:                            # 전략 합성(WS3) — 동사 분기보다 먼저(dispatch 미러)
+        return "simulate.composite"
     q = s.query
     if q == "select":
         return "select.compare" if (s.select is not None and s.select.mode == "compare") else "select.rank"
@@ -445,6 +447,16 @@ REGISTRY: dict[str, RunnerContract] = {c.key: c for c in [
         "'전략 A안 vs B안 vs C안 성과' — 값이 아니라 *구조*가 다른 신호 대안 비교를 1콜로.",
         shape="sweep",
         cross_checks=(_variants_min2,)),
+    _rc("simulate.composite", "run.py::run_composite", "전략 합성(병행 포트폴리오)",
+        "완결 전략 구성(components=[{weight, ir}]) 2개+를 각각 백테스트해 일일수익을 가중 "
+        "합산(고정비중 매일 리밸런스 혼합) — 합성 자본곡선+구성별 분해",
+        "'전략 A와 B를 병행하면'·'둘을 합친 포트폴리오'·기본 페어(같은 신호 A롱+B숏 2구성). "
+        "top-level signal은 명목(data Close).",
+        not_supported=(
+            "구성 간 공동 증거금·두 다리 동시 체결(조인트 멀티레그) — 수익률 수준 합성만 "
+            "(구성별 독립 실행·고정비중). 자동매매 연동도 미지원(백테스트 전용 — 합성은 "
+            "구성별 개별 전략으로 등록 가능).",),
+        shape="simulate"),
 ]}
 
 

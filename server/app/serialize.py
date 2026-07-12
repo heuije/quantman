@@ -60,11 +60,13 @@ def serialize_backtest(result: dict) -> dict:
                 rec[k] = _num(v)
         trades.append(rec)
 
+    bench = result.get("benchmark")
     return {
         "success": True,
         "metrics": {k: _num(v) for k, v in result["metrics"].items()},
         "equity": _series_points(result["equity"]),
-        "benchmark": _series_points(result["benchmark"]),
+        # 합성(WS3)은 벤치마크 없음 — None 허용(웹 EquityChart는 미제공 시 생략).
+        "benchmark": _series_points(bench) if isinstance(bench, pd.Series) else None,
         "trades": trades,
     }
 
@@ -88,9 +90,11 @@ def serialize_ir_result(res: dict) -> tuple[dict, str]:
         # run_query가 스탬프한 결과 품질 계약(status/diagnostics/verdict)과 진단 신호를 보존한다.
         # 없으면 serialize에서 소실돼 agent가 재분류 → capital_starved 등 컨텍스트를 잃고 잘못된
         # verdict('신호 미충족')를 냈다(#2 자본부족 verdict가 웹·모델에 미도달하던 부류).
-        for k in ("shape", "status", "diagnostics", "verdict", "capital_starved"):
+        for k in ("shape", "status", "diagnostics", "verdict", "capital_starved",
+                  "components",    # components(WS3) — 합성 구성 분해. 유실 시 웹 표 미표시(whitelist 부류)
+                  "contributions"):   # 적립식(WS4) — 납입 요약(원금대비). 유실 시 웹·모델 미도달
             if res.get(k) is not None:
-                payload[k] = res[k]
+                payload[k] = clean_json(res[k]) if k in ("components", "contributions") else res[k]
         return payload, "backtest"
     # (2) 펼침(axis) resultset — top-level equity Series 등 JSON 비호환 → 화이트리스트 키만.
     #     extremize는 best/oos 등 키 보존이 필요해 (3) 통과 분기로(구 라우터 동작 보존).

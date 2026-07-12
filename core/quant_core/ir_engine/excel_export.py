@@ -620,7 +620,12 @@ def _simulate_sheets(wb: "Workbook", ir, dataset, result, disp: str) -> None:
     #   추출: _raw_data_sheet·_signal_panel은 SIMULATE·EVENT 공용(P3-b GAP-1 증빙 동등 대우).
     roles = _input_symbols_by_role(ir, dataset)
     raw_col_map = _raw_data_sheet(wb, ir, dataset, roles, equity.index, disp)
-    panel_reason = _signal_panel(wb, _ir_dict(ir).get("signal"), equity.index, roles, raw_col_map, disp)
+    _ird = _ir_dict(ir)
+    # 합성 전략(WS3·components) — top-level signal은 명목이라 신호 패널을 만들면 오도.
+    # 구성별 신호는 각 구성 전략을 개별 export해서 검증한다(정직 생략·사유 표기).
+    panel_reason = ("합성 전략(components) — top-level 신호는 명목이며 구성별 신호는 개별 전략에서"
+                    if _ird.get("components")
+                    else _signal_panel(wb, _ird.get("signal"), equity.index, roles, raw_col_map, disp))
 
     # ── 시트 4: 일별비중 (엔진 EOD 기여 비중) · 패널 있을 때만 생성 ───────────────
     # 단일종목/방향성 백테스트는 엔진이 weight 패널을 내지 않음 → 빈 시트 대신 생략(죽은 시트 제거).

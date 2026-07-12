@@ -97,6 +97,11 @@ def classify_status(result: Any) -> dict:
             return done("data_insufficient",
                         f"데이터 밀도 {cov * 100:.0f}%로 부족 — 결손 구간이 결과를 왜곡합니다"
                         "(데이터 보강 또는 기간 조정 필요).")
+        if nt == 0 and result.get("contributions"):
+            # 적립식(WS4) — always 상시보유 적립은 리밸런스 교체가 없어 거래 0으로 집계되지만
+            # 납입·보유 성과가 실재한다(대표 사용례). '빈 결과' 오판 대신 ok로 통과.
+            diag["contributions_n"] = (result["contributions"] or {}).get("n")
+            return done("ok", None)
         if nt == 0:
             starved = result.get("capital_starved") or 0
             if starved:

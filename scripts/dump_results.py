@@ -63,6 +63,29 @@ FIXTURES = [
             "left": C, "right": {"op": "ts_max", "params": {"window": 250}, "inputs": {
                 "signal": {"op": "ts_delay", "params": {"window": 1}, "inputs": {"signal": C}}}}}},
                   "windows": [-240, -120, 20], "event_basis": "close"}}),
+    ("dca", "적립식 DCA — 월 100만원 납입 (WS4·conv#23 부류)", {
+        "name": "삼성전자 매달 100만원 적립 매수",
+        "universe": {"kind": "single", "symbols": ["005930"]},
+        "signal": {"op": "compare", "params": {"op": ">"}, "inputs": {
+            "left": C, "right": {"op": "const", "params": {"value": 0}}}},
+        "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
+                     "entry": {"mode": "always"}, "exit": {}},
+        "simulation": {"initial_capital": 1e6, "fill": "close",
+                       "contributions": {"amount": 1_000_000, "schedule": "monthly"}},
+        "query": "simulate"}),
+    ("composite", "전략 합성 — 병행 포트폴리오 (WS3·conv#25/#28 부류)", {
+        "name": "코스피선물 추세 + 삼성전자 보유 병행(2:1)",
+        "universe": {"kind": "single", "symbols": ["코스피200선물"]},
+        "signal": C, "query": "simulate",
+        "components": [
+            {"weight": 2, "ir": _hold("코스피200선물")},
+            {"weight": 1, "ir": {
+                "name": "삼성전자 상시보유", "universe": {"kind": "single", "symbols": ["005930"]},
+                "signal": {"op": "compare", "params": {"op": ">"}, "inputs": {
+                    "left": C, "right": {"op": "const", "params": {"value": 0}}}},
+                "position": {"direction": "long", "sizing": {"mode": "equal_weight"},
+                             "entry": {"mode": "always"}, "exit": {}},
+                "simulation": {"initial_capital": 5e8, "fill": "close"}, "query": "simulate"}}]}),
     ("event_sweep", "이벤트 × 파라미터 격자 (WS2·conv#22 부류)", {
         "name": "코스피선물 골든크로스 — 이평기간 20/60/120별 forward 비교",
         "universe": {"kind": "single", "symbols": ["코스피200선물"]},
@@ -113,7 +136,13 @@ FIXTURES = [
 
 
 def _collect_symbols(spec: dict) -> set[str]:
-    """유니버스 심볼 + 신호/스터디의 크로스에셋 ref(SYM.field, __SELF__ 제외)."""
+    """유니버스 심볼 + 신호/스터디의 크로스에셋 ref(SYM.field, __SELF__ 제외) + 합성 구성(WS3)."""
+    # 합성(components) — 구성별 요구 합집합(서버 경로의 needed_symbols와 동일 규칙).
+    if spec.get("components"):
+        out: set[str] = set()
+        for c in spec["components"]:
+            out |= _collect_symbols(c.get("ir") or {})
+        return out
     syms = set(spec.get("universe", {}).get("symbols") or [])
 
     def walk(node):
