@@ -272,4 +272,12 @@ def capability_spec() -> dict:
             {"value": "intraday", "does": "시가→종가 수익(당일 반등 포착)"},
             {"value": "excess", "does": "시장 대비 초과수익(universe.kind!=single 필요)"},
         ],
+        # 러너별 명시적 한계 — 계약 레지스트리(contracts.py)에서 생성(산문 손동기화 제거).
+        # "무엇을 못 하는지"를 광고하지 않으면 컴파일러가 미정의 문법을 발명한다(음수 창 실측).
+        "지원_한계": _runner_limits(),
     }
+
+
+def _runner_limits() -> str:
+    from .contracts import runner_limits_text
+    return runner_limits_text()

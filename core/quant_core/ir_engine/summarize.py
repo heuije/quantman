@@ -415,12 +415,21 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
 
     if shape == "event_study":
         overall = result.get("overall") or {}
+        n_events = result.get("n_events")
         lines = []
         for w in result.get("windows") or []:
             o = _win(overall, w)
+            n_w = o.get("n")
+            # 창별 표본수 + 전체 이벤트 대비 탈락 표면화 — 헤드라인 "N건"과 달리 특정 창은
+            # 소수만 집계됐을 수 있다(창이 데이터 끝을 넘는 최근 이벤트 등). 조용한 탈락을 문장으로.
+            cov = ""
+            if isinstance(n_w, (int, float)) and isinstance(n_events, int) and n_w < n_events:
+                cov = f" · 표본 {int(n_w)}/{n_events}건(잔여는 경로 산출 불가)"
             lines.append(f"  +{w}일: 평균 {_f(o.get('mean'))}% · p {_f(o.get('p_value'), 4)} · "
-                         f"양(+) {_f(o.get('prob_positive'), 1)}% · MAE {_f(o.get('mean_mae'))}% · MFE {_f(o.get('mean_mfe'))}%")
-        head = f"[이벤트] {result.get('n_events', '?')}건 · 기준 {result.get('basis', 'close')} (forward 수익)"
+                         f"양(+) {_f(o.get('prob_positive'), 1)}% · MAE {_f(o.get('mean_mae'))}% · "
+                         f"MFE {_f(o.get('mean_mfe'))}%{cov}")
+        head = (f"[이벤트] {result.get('n_events', '?')}건 · 기준 {result.get('basis', 'close')} "
+                f"(발생 이후 forward 수익 — 전조 아님)")
         head += _composition_line(result)        # 풀 구성(종목·연도) — 무차별 pooling 투명화(#4c)
         return head + "\n" + "\n".join(lines)
 

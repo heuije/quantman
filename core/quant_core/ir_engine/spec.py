@@ -551,16 +551,7 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
             issues.append(Issue("S-SEL", SEV_ERROR,
                                 "select 질의는 select 설정(top_n 또는 top_pct)이 필요합니다.",
                                 "select"))
-        else:
-            if not is_compare and (sel.top_n is None) == (sel.top_pct is None):
-                issues.append(Issue("S-SEL", SEV_ERROR,
-                                    "top_n과 top_pct 중 정확히 하나를 지정하세요.", "select"))
-            if sel.top_n is not None and sel.top_n < 1:
-                issues.append(Issue("S-SEL", SEV_ERROR,
-                                    "top_n은 1 이상이어야 합니다.", "select.top_n"))
-            if sel.top_pct is not None and not (0 < sel.top_pct <= 100):
-                issues.append(Issue("S-SEL", SEV_ERROR,
-                                    "top_pct는 0 초과 100 이하여야 합니다.", "select.top_pct"))
+        # top_n/top_pct 값 도메인·xor 정합은 러너 계약(contracts.py select.rank)이 담당.
 
     # M4 — 선택 파라미터 범위 (퇴화 선택 방지: top_n=0/음수, top_pct 범위밖이면 조용한 무거래)
     # position.entry 전용 — 리서치 스킵(select 랭킹은 select.top_n으로 S-SEL이 별도 검증).
@@ -605,13 +596,8 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
             issues.append(Issue("S-PORT", SEV_ERROR,
                                 "portfolio 유니버스는 진단(query=describe) 전용입니다 — "
                                 "보유 기반 시뮬은 별도 대상입니다.", "universe"))
-        if not u.symbols:
-            issues.append(Issue("S-PORT", SEV_ERROR,
-                                "포트폴리오 진단은 보유 종목(symbols)이 1개 이상 필요합니다.", "universe"))
+        # 보유 종목 수·weights 양수 도메인은 러너 계약(contracts.py describe.portfolio)이 담당.
         if u.weights:
-            if any(float(v) <= 0 for v in u.weights.values()):
-                issues.append(Issue("S-PORT", SEV_ERROR,
-                                    "보유 비중(weights)은 양수여야 합니다.", "universe.weights"))
             stray = set(u.weights) - set(u.symbols)
             if stray:
                 issues.append(Issue("M-vacuous", SEV_INTEGRITY_WARN,
@@ -693,12 +679,7 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     st = s.study
     if st.axis == "label" and st.label is None:
         issues.append(Issue("S-sweep", SEV_ERROR, "조건축 펼침은 라벨 블록이 필요합니다.", "study"))
-    if st.axis == "parameter" and (not st.param_grid
-                                   or any(not ax.values for ax in st.param_grid)):
-        issues.append(Issue("S-sweep", SEV_ERROR,
-                            "파라미터축 펼침은 param_grid(경로·값 목록)가 필요합니다.", "study"))
-    if st.axis == "entity" and not st.assets:
-        issues.append(Issue("S-sweep", SEV_ERROR, "자산축 펼침은 assets(종목 목록)가 필요합니다.", "study"))
+    # 파라미터축 param_grid·자산축 assets 존재는 러너 계약(contracts.py simulate.sweep.*)이 담당.
     # extremize(최적화) — 검색공간 축(parameter/entity) + simulate 동사 필요.
     if st.reduction == "extremize":
         if s.query != "simulate":
@@ -712,12 +693,8 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
         if signal_out_type(st.event) != "condition":
             issues.append(Issue("S-event", SEV_ERROR,
                                 "이벤트 분석은 이벤트 신호가 condition(발생 여부)이어야 합니다.", "study.event"))
-        if not st.windows:
-            issues.append(Issue("S-event", SEV_ERROR, "이벤트 분석은 forward 윈도우가 필요합니다.", "study.windows"))
-        if st.event_basis == "excess" and u.kind == "single":
-            issues.append(Issue("S-event", SEV_ERROR,
-                                "초과수익(excess) 기준은 시장 지수 생성을 위해 종목이 2개 이상이어야 합니다.",
-                                "study.event_basis"))
+        # windows 존재·값 도메인(발생 이후만)·excess 유니버스는 러너 계약(contracts.py
+        # relate.event_study)이 담당 — 아래 말미의 contract_issues 단일 소비로 검사된다.
     if st.label is not None:
         issues += list(validate(st.label, valid_refs))
         if signal_out_type(st.label) != "label":
@@ -731,23 +708,8 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     # (relate + event는 이벤트 스터디라 target_node 없이 동작 → IC 모드일 때만 target_node 요구.)
     is_ic = s.query == "relate" and st.event is None and st.relation_kind == "ic"
     is_regression = s.query == "relate" and st.event is None and st.relation_kind == "regression"
-    # 상관행렬(correlation) — target_node·factors 불필요(가격수익 공행렬). 종목 2+만 요구.
-    if s.query == "relate" and st.event is None and st.relation_kind == "correlation" \
-            and s.universe.kind == "single":
-        issues.append(Issue("S-CORR", SEV_ERROR,
-                            "상관분석은 종목이 2개 이상이어야 합니다(universe.kind=list/all).", "universe"))
-    # 처방(prescribe) — 비중 최적화는 종목 2+ 필요(가격수익 공분산).
-    if s.query == "prescribe" and s.universe.kind == "single":
-        issues.append(Issue("S-PRESCRIBE", SEV_ERROR,
-                            "포트폴리오 추천은 종목이 2개 이상이어야 합니다(universe.kind=list).", "universe"))
-    # breadth(시장 폭) — 다수 종목 집계라 단일종목 불가.
-    if s.query == "breadth" and s.universe.kind == "single":
-        issues.append(Issue("S-BREADTH", SEV_ERROR,
-                            "시장 breadth는 종목군이 필요합니다(universe.kind=all/list).", "universe"))
-    # rotation(섹터 순환매) — 섹터별 집계라 다수 종목(가급적 전체)이 필요.
-    if s.query == "rotation" and s.universe.kind == "single":
-        issues.append(Issue("S-ROTATION", SEV_ERROR,
-                            "섹터 순환매는 종목군이 필요합니다(universe.kind=all/list).", "universe"))
+    # 상관·처방·breadth·rotation의 종목수 도메인은 러너 계약(contracts.py)이 담당 —
+    # 옛 kind=single 거부보다 강한 명시 리스트 2+ 검사(MinSymbols)로 흡수(규칙 ID 호환).
     describe_dist = s.query == "describe" and u.kind in ("all", "list")
     if describe_dist or is_ic:
         tn = st.target_node
@@ -765,30 +727,12 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
             if not has_market_source(tn):
                 issues.append(Issue("M-const", SEV_ERROR,
                                     "분석 노드가 시장 데이터를 참조하지 않습니다.", "study.target_node"))
-        if is_ic:
-            if not st.windows:
-                issues.append(Issue("S-target", SEV_ERROR,
-                                    "IC 분석은 forward 윈도우(windows)가 필요합니다.", "study.windows"))
-            if s.universe.kind == "single":
-                issues.append(Issue("S-target", SEV_ERROR,
-                                    "IC(횡단 상관) 분석은 종목이 2개 이상이어야 합니다. "
-                                    "단일종목의 예측력은 이벤트 스터디(query=relate + study.event 조건 + windows)로 분석하세요.",
-                                    "universe"))
+        # IC의 windows 존재·값 도메인·종목수는 러너 계약(contracts.py relate.ic)이 담당.
 
     # 다중팩터 횡단 회귀(relation_kind=regression) — 설명변수(factors) 1개 이상·종목 2+·
     # forward 윈도우 필요. 각 factor는 score/condition 블록이고 시장 데이터를 참조해야 한다.
     if is_regression:
-        if not st.factors:
-            issues.append(Issue("S-REG", SEV_ERROR,
-                                "다중 회귀는 설명변수(factors)가 1개 이상 필요합니다.", "study.factors"))
-        if s.universe.kind == "single":
-            issues.append(Issue("S-REG", SEV_ERROR,
-                                "횡단 회귀는 종목이 2개 이상이어야 합니다. "
-                                "단일종목의 예측력은 이벤트 스터디(query=relate + study.event 조건 + windows)로 분석하세요.",
-                                "universe"))
-        if not st.windows:
-            issues.append(Issue("S-REG", SEV_ERROR,
-                                "회귀는 forward 윈도우(windows)가 필요합니다.", "study.windows"))
+        # factors 개수·windows 존재/도메인·종목수는 러너 계약(contracts.py relate.regression)이 담당.
         for f in st.factors:
             issues += list(validate(f, valid_refs))
             if signal_out_type(f) not in ("score", "condition"):
@@ -837,6 +781,11 @@ def validate_strategy(s: StrategyIR, valid_refs: Optional[set] = None,
     if meta is None:
         meta = DatasetMeta(delay=s.simulation.delay)
     issues += list(integrity_issues(s.signal, meta))
+
+    # 러너 능력 계약(contracts.py) — 이 IR을 실행할 러너의 입력 도메인·명시적 한계 검사.
+    # 오류 메시지가 컴파일 수리 루프의 교사가 된다(음수 창 재시도 대신 정직 거부/대안 유도).
+    from .contracts import contract_issues
+    issues += contract_issues(s)
     return prioritize(issues)
 
 

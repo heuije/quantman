@@ -155,7 +155,20 @@ def run_query(strategy: StrategyIR, dataset: dict) -> dict:
     err = _root_type_error(strategy)
     if err is not None:
         return _empty(err)
+    # 러너 능력 계약 경계 가드 — 검증기(validate_strategy)와 같은 계약을 실행 직전에 이중화.
+    # 존재 이유: 검증을 안 거치는 호출자(저장 IR 재실행·직접 API·엔진 직접 호출) 방어 —
+    # 신호타입 계약의 3중화(_root_type_error)와 같은 선례. 위반은 계산하지 않고 정직 거부.
+    from .contracts import contract_issues, resolve_runner
+    cerrs = contract_issues(strategy)
+    if cerrs:
+        return {"success": False, "status": "unsupported",
+                "error": " / ".join(i.message for i in cerrs),
+                "diagnostics": {"stage": "contract", "rules": sorted({i.rule for i in cerrs})}}
     res = _dispatch_query(strategy, dataset)
+    if isinstance(res, dict) and res.get("success", True):
+        # 실행 러너 키 스탬프 — resolve_runner(결정 SSOT)와 실제 디스패치의 드리프트를
+        # 테스트·프로덕션에서 관측 가능하게 한다.
+        res.setdefault("runner", resolve_runner(strategy))
     if isinstance(res, dict) and res.get("success", True) and "shape" not in res:
         res["shape"] = result_shape(res)
     # 결과 품질 계약 — 모든 엔진 결과가 자기 품질(status/diagnostics/verdict)을 서술한다
@@ -1308,6 +1321,11 @@ def _event_paths(ca, oa, p, w, basis, mvals):
     intraday: 시가 anchor, k=0..w 누적(k=0=당일 시가→종가, intraday reversal).
     excess  : 종가 anchor 누적 − 시장 누적.
     """
+    if w < 0 or (w == 0 and basis != "intraday"):
+        # 음수/0 창 미지원(발생 이후 경로만) — 검증기(S-event)가 막지만 저장 IR·직접 호출을 방어.
+        # 이 가드 없이 w<0이 오면 q+1<0의 파이썬 음수 인덱싱이 미래 구간을 '전조'처럼 wrap해
+        # 그럴듯한 오답 통계를 만든다(prod conv#50 실측: p=10·w=-240 → +760일 미래 수익률).
+        return None
     q = p + w
     if q >= len(ca):
         return None
@@ -1473,6 +1491,17 @@ def _run_event_study(strategy: StrategyIR, dataset: dict) -> dict:
         "by_symbol": dict(sorted(c["by_symbol"].items(), key=lambda kv: -kv[1])),   # 많은 순(편중 즉시 보임)
         "by_year": {str(y): c["by_year"][y] for y in sorted(c["by_year"])},          # 연도 오름차순
     }
+    # 탈락 회계 — 러너가 조용히 버린 것을 세어 결과에 동봉(자기서술 v2). "이벤트 N건" 헤드라인과
+    # 달리 특정 창은 경로 산출 불가(데이터 끝 초과 등)로 소수만 집계될 수 있다 — summarize의
+    # 커버리지 문장·classify_status의 저커버리지 판정이 이 숫자를 소비한다.
+    ev_syms = list(c["by_symbol"])
+    accounting = {
+        "events_total": int(c["n_events"]),
+        "evaluated_by_window": {str(w): len(collected[w]) for w in windows},
+        "universe_events": {"KR": sum(1 for x in ev_syms if str(x).split(".")[0][:1].isdigit()),
+                            "US": sum(1 for x in ev_syms if not str(x).split(".")[0][:1].isdigit())},
+    }
     return {"success": True, "axis": "time", "basis": basis,
             "windows": [str(w) for w in windows], "n_events": int(c["n_events"]),
-            "overall": overall, "by_regime": by_regime, "composition": composition}
+            "overall": overall, "by_regime": by_regime, "composition": composition,
+            "accounting": accounting}

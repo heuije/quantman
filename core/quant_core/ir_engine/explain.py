@@ -288,9 +288,11 @@ def _environment(sim: SimSpec, u: Universe, split_mode: str) -> dict:
         items.append(_it("기간", f"{sim.start or '데이터 시작'} ~ {sim.end or '데이터 끝'}", _SET))
     else:
         items.append(_it("기간", "데이터 전체 기간", _DEF))
+    # 주의: split_mode(single/oos/walk_forward)는 capabilities enum이 아니다 — 과거 존재하지
+    # 않는 'period_split' 키를 _does로 조회해 무성 빈 문자열이었다(조용한 손동기화 부패의
+    # 실측 표본). 설명은 _SPLIT(표시 계층 소유)만 쓴다.
     items.append(_it("검증 방식", _SPLIT.get(split_mode, split_mode),
-                     _SET if split_mode != "single" else _DEF,
-                     _does("period_split", split_mode)))
+                     _SET if split_mode != "single" else _DEF))
     items.append(_it("데이터 빈도", "일봉 (일별 OHLC)", _DEF, "분/틱 단위 아님."))
     items.append(_it("데이터 처리", "종목별 시장 소스 1개 사용 · 배당/생존편향 등 세부 처리는 데이터 레이어에 의존", _DEF))
     # 선물 연속물·롤 — 심볼별 정직성. 만기물 패널 보유(KOSPI200)는 롤/조정을 백테스트에 반영,
@@ -340,12 +342,24 @@ def _display_axis_target(ir: StrategyIR) -> tuple[str, str]:
             "label": "condition"}.get(st.axis, "none"), "return"
 
 
+# 표시 계층 소유 라벨 — _display_axis_target의 옛 표시쌍(asset·condition·time 등)은 capabilities
+# enum 어휘가 아니라서 _does 조회가 항상 무성 빈 문자열 → raw enum이 그대로 노출됐다(조용한
+# 손동기화 부패 실측 표본). capabilities 키를 조회하려면 값 어휘까지 일치해야 한다 — 여기 값은
+# 표시 전용이므로 명시 맵을 표시 계층이 소유한다.
+_AXIS_LABEL = {"parameter": "파라미터 격자 — 값 조합별 재실행해 비교",
+               "asset": "종목별 — 자산마다 개별 실행해 비교",
+               "condition": "라벨 분할 — 그룹별 기여를 나눠 비교",
+               "time": "이벤트 시간축 — 발생 이후 경과일별 경로"}
+_TARGET_LABEL = {"return": "전략(이벤트) 수익률", "signal": "신호값 분포",
+                 "relation": "신호↔미래수익 관계(IC)"}
+
+
 def _analysis(ir: StrategyIR) -> dict | None:
     axis, target = _display_axis_target(ir)
     if axis == "none":            # 옛 sweep.axis=="none"(단일·기간분할·IC·신호분포)은 분석 버킷 없음
         return None
-    items = [_it("분석 축", _does("sweep_axis", axis) or axis, _SET),
-             _it("측정 대상", _does("sweep_target", target) or target, _SET)]
+    items = [_it("분석 축", _AXIS_LABEL.get(axis, axis), _SET),
+             _it("측정 대상", _TARGET_LABEL.get(target, target), _SET)]
     if ir.study.label is not None:
         items.append(_it("분할 라벨", "그룹 라벨 블록(섹터·국면 등)으로 분할", _SET))
     return _bucket("analysis", "⑨ 분석 차원 (결과 펼침)", "단일 결과인가, 쪼개 보나?", items)
@@ -393,8 +407,10 @@ def _research_narrative(ir: StrategyIR) -> str | None:
 
     if ir.query == "relate":
         if st.event is not None:
-            return (f"{_uni()}에서 이벤트 발생 후 경과일별 forward 수익(평균·최대낙폭/상승)을 "
-                    f"봅니다 — 분석 전용(미래참조).")
+            wins = "·".join(f"+{int(w)}" for w in (st.windows or [5, 10, 20]))
+            return (f"{_uni()}에서 이벤트 발생 후 경과일별({wins}일) forward 수익"
+                    f"(평균·최대낙폭/상승)을 봅니다 — 발생 *이후* 경로만 지원(전조 분석 아님)·"
+                    f"분석 전용(미래참조).")
         if st.relation_kind == "regression":
             fn = []
             for fac in (st.factors or []):

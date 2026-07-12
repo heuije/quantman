@@ -141,9 +141,28 @@ def classify_status(result: Any) -> dict:
         conc = _year_concentration(result.get("composition"))
         if conc:
             diag["top_year_share"] = round(conc["share"], 3)
+        # 창별 커버리지(탈락 회계) — 전멸 창은 하드 결함이라 소표본 노트보다 우선 판정한다.
+        # 특정 창이 이벤트 전부/대부분을 경로 산출 불가로 버렸으면 그 창의 통계는 헤드라인
+        # N건을 대표하지 않는다(조용한 탈락의 판정 표면화 — 자기서술 v2).
+        evalw = (result.get("accounting") or {}).get("evaluated_by_window") or {}
+        if ne and evalw:
+            worst_w = min(evalw, key=lambda k: evalw[k])
+            worst_n = int(evalw[worst_w])
+            if worst_n == 0:
+                return done("empty",
+                            f"창 +{worst_w}일은 경로 산출 가능한 이벤트가 0건입니다 — 창이 데이터 "
+                            f"범위를 벗어났습니다(창을 줄이거나 기간을 늘리세요).")
         # 표본 하한 미달이면 그게 지배적 caveat — 소표본에서 연도 편중은 노이즈라 겹쳐 알리지 않는다.
         if ne is not None and ne < _MIN_EVENTS:
             return done("ok", f"이벤트 {ne}건으로 표본이 적어 통계 신뢰도가 제한적입니다.")
+        if ne and evalw:
+            worst_w = min(evalw, key=lambda k: evalw[k])
+            worst_n = int(evalw[worst_w])
+            if worst_n < ne * 0.5:
+                diag["worst_window_coverage"] = {"window": worst_w, "evaluated": worst_n}
+                return done("ok",
+                            f"주의(창 커버리지) — 창 +{worst_w}일은 이벤트 {ne}건 중 {worst_n}건만 "
+                            f"경로 산출이 가능해 그 창의 통계가 전체를 대표하지 않을 수 있습니다.")
         if conc and conc["share"] >= _YEAR_CONCENTRATION:
             return done("ok",
                         f"주의(레짐 편중) — 이벤트 {conc['total']}건 중 {conc['count']}건"
