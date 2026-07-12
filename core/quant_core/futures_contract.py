@@ -36,12 +36,15 @@ OVERSEAS_ROOTS: dict[str, str] = {
     "비트코인선물": "BTC",      # Bitcoin 5coin (MBT=micro 제외)
 }
 
-# 국내 선물(KRX) 상품별 식별자 — (마스터 라인 첫 글자, 단축코드 prefix). 새 국내선물은 여기 한 줄.
-# 정규 코스피200선물 = 마스터 '1' 시작·단축 A01 / 미니 = 'B' 시작·단축 A05. fo_idx_code.mst가
-# 두 상품을 같은 파일에 담으므로 root_char(첫 글자)로 라인을 갈라 상품별 근월물을 해석한다.
-_DOMESTIC_SPEC: dict[str, tuple[str, str]] = {
-    "코스피200선물":     ("1", "A01"),
-    "미니코스피200선물": ("B", "A05"),
+# 국내 선물(KRX) 상품별 식별자 — (마스터 라인 첫 글자 root_char, 단축코드 prefix, 라인 상품 키워드).
+# 정규 코스피200 = '1'/A01/'KOSPI200' · 미니 = 'B'/A05/'KOSPI200' · 코스닥150 = '3'/A06/'KSQ150'.
+# fo_idx_code.mst가 전 국내 지수선물을 한 파일에 담으므로 root_char(첫 글자)로 라인을 갈라 상품별
+# 근월물을 해석한다. 라인 키워드는 후미 상품명 토큰(_front_domestic의 방어적 2차 필터 — root_char와
+# 동시 만족해야 채택). root_char·prefix·키워드는 KIS 공개 마스터 실측 확정(2026-07-12). 새 국내선물은 여기 한 줄.
+_DOMESTIC_SPEC: dict[str, tuple[str, str, str]] = {
+    "코스피200선물":     ("1", "A01", "KOSPI200"),
+    "미니코스피200선물": ("B", "A05", "KOSPI200"),
+    "코스닥150선물":     ("3", "A06", "KSQ150"),
 }
 _DOMESTIC = tuple(_DOMESTIC_SPEC)
 
@@ -53,6 +56,7 @@ _DOMESTIC = tuple(_DOMESTIC_SPEC)
 _DOMESTIC_KRX_PREFIX: dict[str, str] = {
     "코스피200선물":     "101",
     "미니코스피200선물": "105",
+    "코스닥150선물":     "106",   # A0N→10N 패턴(A01→101·A05→105)·KRX 표준 상품코드. ⚠모의 잔고 왕복으로 최종 확인.
 }
 
 
@@ -62,11 +66,13 @@ def _second_thursday(y: int, m: int) -> date:
 
 
 def _front_domestic(master_text: str, today: date,
-                    lead_days: int = 0, root_char: str = "1") -> tuple[date, str] | None:
-    """fo_idx_code.mst → KOSPI200 선물 근월물 (만기일, 단축코드). 없으면 None.
+                    lead_days: int = 0, root_char: str = "1",
+                    line_keyword: str = "KOSPI200") -> tuple[date, str] | None:
+    """fo_idx_code.mst → 국내 지수선물 근월물 (만기일, 단축코드). 없으면 None.
 
-    root_char로 상품을 선택: 정규('1' 시작, 단축 A01)·미니('B' 시작, 단축 A05). 옵션('2', C/P)은
-    항상 제외. 기본 root_char="1"이라 기존 호출부(정규)는 byte-identical. 만기=2번째 목요일. 순수함수.
+    root_char+line_keyword로 상품을 선택: 정규('1'/KOSPI200)·미니('B'/KOSPI200)·코스닥150('3'/KSQ150).
+    옵션('2', C/P)·타상품은 두 조건 동시 만족 아니면 제외. 기본값은 정규 코스피200이라 기존 호출부(정규)는
+    byte-identical. 만기=2번째 목요일(국내 지수선물 공통 규정). 순수함수.
 
     lead_days>0이면 **만기 lead일 전부터 차월물로 롤** — 진입 시 만기 임박 계약을 피한다.
     백스톱(_expiry_close_reason)이 보유분을 만기 lead일 전 청산하는 것과 대칭: 진입도
@@ -76,7 +82,7 @@ def _front_domestic(master_text: str, today: date,
     cutoff = today + timedelta(days=lead_days)
     best: tuple[date, str] | None = None
     for line in master_text.splitlines():
-        if "KOSPI200" not in line or not line.startswith(root_char):
+        if line_keyword not in line or not line.startswith(root_char):
             continue
         m = re.search(r"F (\d{6})", line)            # 상품명 'F 202606'
         if not m:
@@ -90,11 +96,13 @@ def _front_domestic(master_text: str, today: date,
 
 
 def parse_front_month_domestic(master_text: str, today: date,
-                               lead_days: int = 0, root_char: str = "1") -> str | None:
-    """fo_idx_code.mst → KOSPI200 선물 근월물 단축코드(만기≥today+lead 중 최근). 없으면 None.
+                               lead_days: int = 0, root_char: str = "1",
+                               line_keyword: str = "KOSPI200") -> str | None:
+    """fo_idx_code.mst → 국내 지수선물 근월물 단축코드(만기≥today+lead 중 최근). 없으면 None.
 
-    root_char로 상품 선택(정규 '1'·미니 'B'). 기본 '1'이라 기존 호출부는 정규 그대로(byte-identical)."""
-    r = _front_domestic(master_text, today, lead_days, root_char)
+    root_char+line_keyword로 상품 선택(정규 '1'/KOSPI200·미니 'B'·코스닥150 '3'/KSQ150).
+    기본값은 정규 코스피200이라 기존 호출부는 byte-identical."""
+    r = _front_domestic(master_text, today, lead_days, root_char, line_keyword)
     return r[1] if r else None
 
 
@@ -165,7 +173,7 @@ def dataset_for_contract(code: str) -> str | None:
     for sym, r in OVERSEAS_ROOTS.items():
         if r == root:
             return sym
-    for sym, (_root, prefix) in _DOMESTIC_SPEC.items():   # 국내 단축코드 prefix(A01 정규·A05 미니)
+    for sym, (_root, prefix, _kw) in _DOMESTIC_SPEC.items():   # 국내 단축코드 prefix(A01·A05·A06)
         if code.startswith(prefix):
             return sym
     if len(code) == 8:      # KRX 상품코드형은 8자 — 주식 6자 종목코드(005930) 오매칭 방지 가드
@@ -200,8 +208,9 @@ def resolve_contract(symbol: str, today: date, *,
     if symbol in _DOMESTIC:
         if not domestic_master:
             return None
-        root_char = _DOMESTIC_SPEC[symbol][0]          # 정규 '1'·미니 'B' — 상품별 마스터 라인 선택
-        return parse_front_month_domestic(domestic_master, today, lead, root_char=root_char)
+        root_char, _prefix, kw = _DOMESTIC_SPEC[symbol]   # 상품별 마스터 라인 선택('1'·'B'·'3')
+        return parse_front_month_domestic(domestic_master, today, lead,
+                                          root_char=root_char, line_keyword=kw)
     root = OVERSEAS_ROOTS.get(symbol)
     if root is not None:
         if not overseas_master:
@@ -227,8 +236,9 @@ def front_contract(symbol: str, today: date, *,
     if symbol in _DOMESTIC:
         if not domestic_master:
             return None
-        root_char = _DOMESTIC_SPEC[symbol][0]          # 정규 '1'·미니 'B' — 상품별 마스터 라인 선택
-        r = _front_domestic(domestic_master, today, lead, root_char=root_char)
+        root_char, _prefix, kw = _DOMESTIC_SPEC[symbol]   # 상품별 마스터 라인 선택('1'·'B'·'3')
+        r = _front_domestic(domestic_master, today, lead,
+                            root_char=root_char, line_keyword=kw)
         if r is None:
             return None
         exp, code = r

@@ -257,4 +257,4 @@ def test_dataset_for_contract_krx_numeric_form():
 def test_dataset_for_contract_krx_form_guards():
     assert dataset_for_contract("101000") is None      # 6자 = 주식 코드공간(오매칭 방지 가드)
     assert dataset_for_contract("201T9000") is None    # 옵션(콜) 상품코드 — 미등록 → None(호출부 표면화)
-    assert dataset_for_contract("106T9000") is None    # 코스닥150 — 카탈로그 미등록(등록 시 한 줄 추가)
+    assert dataset_for_contract("106T9000") == "코스닥150선물"   # KQ150 등록(2026-07 배선). 미등록→None 가드는 위 201(옵션)이 담당

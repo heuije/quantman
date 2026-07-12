@@ -91,6 +91,16 @@ tolerance는 **미국 전용 라이브 버퍼**(국내 무시)·default ±3%·�
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [완료-draft] 코스닥150선물(KQ150) 라이브 계약 배선 (2026-07-12, `feat/kq150-futures-autotrade`)
+- **의도**: 데이터 계층 완료(PR#387 수급·#389 가격·exec_defaults KQ150 등록)된 코스닥150선물을 라이브 발주에 배선 — 심볼 "코스닥150선물"→브로커 계약코드(KIS·LS) 해석+잔고 역매핑+만기. 기존 코스피200선물 라이브 유저(LS) 무영향 절대 보장.
+- **실측 확정(KIS 공개 마스터 fo_idx_code.mst 다운로드)**: KQ150 = root_char `3`·단축 prefix `A06`·라인 키워드 `KSQ150`. ⚠핸드오프 추정 "KOSDAQ150"은 오답(마스터엔 `KSQ150`·`코스닥150`) — 추측 배선 시 0건 매칭·조용한 거래불가였을 것(실측의 가치). KRX 잔고형 `106`(A0N→10N 패턴·모의 왕복 최종확인 대상).
+- **구현(core 2파일)**: `_DOMESTIC_SPEC` 3-튜플화(+라인키워드)+KQ150 · `_DOMESTIC_KRX_PREFIX` +`106` · `_front_domestic` `"KOSPI200"` 하드코딩→`line_keyword` 파라미터화(기본값 보존=byte-identical) · `futures_expiry` `kosdaq150_2nd_thu` 독립분기. LS `_pick_front_kospi200`은 symbol-param+core파생이라 로직 무변경(자동전파). KIS 리졸버·broker_router·trader·server(region/category) 전부 위임이라 무변경.
+- **byte-identical 보장**: 기존 코스피200/미니 경로 = 딕셔너리 새 키 추가·기본값 `KOSPI200` 유지·prefix 101/105/106 distinct·8자 가드. 골든+전 스위트 증명(core+root 1326·local 773·server 594 green).
+- **부수 발견·수정**: PR#389가 KOSPI200 증거금 0.195→0.198(KRX 2026-07-06 정기변경) 반영하며 기대값 테스트 3건 갱신 누락 → origin/main 로컬 스위트 red였음. 카탈로그값으로 보정(test_sim_futures 2·test_fund_transparency 1). 다른 세션 인지 필요.
+- **📌 교훈**: 새 선물 배선 전 브로커 마스터를 **실제 다운로드해 실측**하라 — 핸드오프 추정 키워드가 실제와 달랐다. 형식 불일치 실패는 조용함(resolve None→발주 보류·오발주 0이지만 "거래 안 됨"). 공유 함수 파라미터화는 기존 상품 키워드를 **기본값으로 보존**해 byte-identical 유지(회귀 테스트로 잠금).
+- **LS 실측·배선 완료(07-13)**: LS 코스닥150은 지수선물마스터(t8467)가 아니라 **파생종목마스터 t8435 gubun="SF"** 제공(모의 실측: shcode `A0669000`·hname `KQF 2609` — prefix A06는 KIS와 동일). `index_futures_master`가 t8467+t8435(SF) 병합(additive·non-fatal — 코스피200 정규 보존). 부수 발견: 미니 A05도 t8467 부재·t8435 `MF` 필요(별도 작업 spawn). 교훈="코스닥150도 지수선물이니 지수선물마스터에 있겠지"가 오진 뿌리 — 실측이 문서추론·리서치를 둘 다 정정.
+- **잔여**: KIS·LS **모의 1계약 왕복 ×2브로커**(미니 K200 전철 방지). **머지·릴리스는 사용자 승인**. draft PR#391.
+
 ### [진행중] 장중 신호 템플릿 P1 — 급등/상한가 마감형 종가창 스캔 진입 (2026-07-12 착수, `feat/intraday-template`)
 
 **의도.** "실시간급 신호로 거래를 생성"하는 전략 부류의 자동매매 지원 첫 단계. 임의 장중 IR을 라이브로 번역하지 않고 **사전 검증된 템플릿 화이트리스트**(1호 `limit_up_close_v1`: 15:25 마감 동시호가 스캔 → 상한가 잠김 종목 종가 매수 → 익일 시가 매도)만 연동 허용 — 보장을 런타임 검증이 아니라 설계 상수로 만든다. 근거 연구=상한가 오버나이트(승률 74%·연 344~699건). 설계 SSOT=`docs/REDESIGN/intraday-template-redesign.md`(Phase 1→최종 통합).

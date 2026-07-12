@@ -17,7 +17,7 @@ from quant_core.futures_contract import (
 _KOSPI200 = "코스피200선물"
 # 국내선물 단축코드 prefix는 core _DOMESTIC_SPEC 단일출처에서 파생(정규 A01·미니 A05).
 # 여기서 "A01"/"A05"를 독립 하드코딩하지 않는다 — 그 독립 하드코딩이 이 모듈이 닫으려는 버그류다.
-_DOMESTIC_PREFIX = {sym: prefix for sym, (_root_char, prefix) in _DOMESTIC_SPEC.items()}
+_DOMESTIC_PREFIX = {sym: prefix for sym, (_root_char, prefix, _kw) in _DOMESTIC_SPEC.items()}
 
 # CME 월물코드 → 월 (ADM23 = BscGdsCd + 월물코드 + 연2자리)
 # ⚠ o3101 필드명(Symbol/BscGdsCd)·LS BscGdsCd가 CME globex root와 동일한지(금 GC 등)·

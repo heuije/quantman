@@ -68,6 +68,9 @@ def last_trading_date(expiry_rule: str, year: int, month: int) -> date | None:
     """
     if expiry_rule == "kospi200_2nd_thu":
         return _nth_weekday(year, month, _THU, 2)
+    if expiry_rule == "kosdaq150_2nd_thu":
+        # 코스닥150선물 최종거래일도 KRX 규정상 결제월 2번째 목요일(kospi200와 동일 계산).
+        return _nth_weekday(year, month, _THU, 2)
     if expiry_rule in ("cme_gc", "cme_si"):
         # COMEX 금속: 인도월 3번째 마지막 영업일.
         return _nth_last_business_day(year, month, 3)

@@ -124,3 +124,90 @@ def test_resolve_expiry_mini_accepted():
     code, exp = r.resolve_expiry("미니코스피200선물")
     assert code is not None and code.startswith("A05")
     assert exp is not None and exp.weekday() == 3   # 목요일
+
+
+# ── 코스닥150선물(A06) 일반화 — core _DOMESTIC_SPEC 파생으로 자동 지원 ──────────
+# LS 코스닥150선물 마스터 = 파생종목마스터 t8435 gubun="SF"(2026-07-13 모의 실측 확정):
+#   shcode "A06…"(예 A0669000)·hname "KQF YYMM"·expcode "KR4A06…". 지수선물마스터 t8467엔 없다
+#   (LS 공식: t8467 gubun은 V=변동성/S=섹터/그외=코스피200 — 코스닥150 값 자체가 없음). 그래서
+#   index_futures_master가 t8467(코스피200)+t8435(SF 코스닥150)를 병합한다(ls_futures_broker.py).
+#   이 픽스처는 그 병합 결과 형태(A01 정규 + A06 코스닥150)를 재현해 resolver 로직을 잠근다.
+#   prefix "A06"·YYMM 파싱("KQF 2609"→26·09)은 상품 무관 그대로 작동.
+_MASTER_KQ = [
+    {"shcode": "A0166000", "expcode": "KR4A01660005", "hname": "F 2606"},        # 정규 2026-06
+    {"shcode": "A0169000", "expcode": "KR4A01690002", "hname": "F 2609"},        # 정규 2026-09
+    {"shcode": "A0666000", "expcode": "KR4A06660008", "hname": "KQF 2606"},    # KQ150 2026-06(실측 형식)
+    {"shcode": "A0669000", "expcode": "KR4A06690007", "hname": "KQF 2609"},    # KQ150 2026-09(실측 형식)
+    {"shcode": "D06696CS", "expcode": "KR4D06696CS7", "hname": "KQF SP 09-2612"},  # 스프레드(SP) 제외
+]
+
+
+def test_resolve_regular_unchanged_with_kq150_present():
+    """정규 해석은 KQ150이 같은 마스터에 있어도 A01 근월물로 byte-identical 보존(INVARIANT)."""
+    r = lfc.LsContractResolver(_DomesticMasterBroker(_MASTER_KQ))
+    code = r.resolve("코스피200선물")
+    assert code is not None and code.startswith("A01")
+
+
+def test_resolve_kq150_picks_a06():
+    """KQ150 해석은 A06 근월물 shcode를 고른다(스프레드·정규 A01 제외)."""
+    today = datetime.date(2026, 7, 1)   # 2606 만기경과 → 2609 근월물
+    assert lfc._pick_front_kospi200(_MASTER_KQ, today, "코스닥150선물") == "A0669000"
+
+
+def test_dataset_for_code_kq150_short_and_krx():
+    """역매핑: A06…→KQ150(shcode), 106…→KQ150(KRX 잔고형·core 위임). 기존 A01/101 불변."""
+    assert lfc.LsContractResolver.dataset_for_code_static("A0666000") == "코스닥150선물"
+    assert lfc.LsContractResolver.dataset_for_code_static("106T9000") == "코스닥150선물"
+    assert lfc.LsContractResolver.dataset_for_code_static("A0166000") == "코스피200선물"
+    assert lfc.LsContractResolver.dataset_for_code_static("101T9000") == "코스피200선물"
+
+
+def test_resolve_expiry_kq150_second_thursday():
+    """resolve_expiry가 KQ150도 받아 2번째 목요일 만기를 반환한다."""
+    r = lfc.LsContractResolver(_DomesticMasterBroker(_MASTER_KQ))
+    code, exp = r.resolve_expiry("코스닥150선물")
+    assert code is not None and code.startswith("A06")
+    assert exp is not None and exp.weekday() == 3   # 목요일
+
+
+# ── LsFuturesBroker.index_futures_master: t8467 + t8435(SF) 병합 (실 TR 배선) ──
+# 실측(2026-07-13 모의): t8467은 코스피200 정규(A01)만, 코스닥150은 t8435 gubun="SF"(A06)로
+# 분리 제공 → 브로커가 둘을 병합해야 resolver가 코스닥150을 본다. t8435는 additive·non-fatal.
+def _broker_with_post(fake_post):
+    from localapp.ls_futures_broker import LsFuturesBroker
+    br = LsFuturesBroker.__new__(LsFuturesBroker)   # __init__(자격증명/네트워크) 우회
+    br._post = fake_post
+    return br
+
+
+def test_index_master_merges_t8467_and_t8435_sf():
+    """index_futures_master가 t8467(코스피200)+t8435 SF(코스닥150)를 병합한다."""
+    seen = []
+
+    def fake_post(path, tr, body):
+        seen.append((tr, body.get(f"{tr}InBlock", {}).get("gubun")))
+        if tr == "t8467":
+            return {"t8467OutBlock": [{"shcode": "A0169000", "hname": "F 2609",
+                                       "expcode": "KR4A01690002"}]}
+        if tr == "t8435":
+            return {"t8435OutBlock": [{"shcode": "A0669000", "hname": "KQF 2609",
+                                       "expcode": "KR4A06690007"}]}
+        return {}
+
+    rows = _broker_with_post(fake_post).index_futures_master()
+    shcodes = {r["shcode"] for r in rows}
+    assert "A0169000" in shcodes and "A0669000" in shcodes   # 코스피200 + 코스닥150
+    assert ("t8467", "") in seen and ("t8435", "SF") in seen
+
+
+def test_index_master_t8435_failure_preserves_kospi200():
+    """t8435(코스닥150) 조회 실패해도 예외 전파 없이 코스피200(t8467)은 보존 — 기존 유저 무영향."""
+    def fake_post(path, tr, body):
+        if tr == "t8467":
+            return {"t8467OutBlock": [{"shcode": "A0169000", "hname": "F 2609",
+                                       "expcode": "KR4A01690002"}]}
+        raise RuntimeError("t8435 down")
+
+    rows = _broker_with_post(fake_post).index_futures_master()
+    assert [r["shcode"] for r in rows] == ["A0169000"]   # 코스피200 정규 보존

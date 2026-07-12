@@ -93,7 +93,8 @@ def test_stock_buy_records_amount(isolated_trader):
 def test_futures_buy_records_notional_margin_leverage(isolated_trader):
     """코스피200선물 매수 체결 → invest.notional/margin/leverage.
 
-    코스피200선물 spec: multiplier 250000·init_margin_rate 0.195(=레버리지 5.1x, 1자리 반올림).
+    코스피200선물 spec: multiplier 250000·init_margin_rate 0.198(=레버리지 5.1x, 1자리 반올림).
+    (KRX 2026-07-06 정기변경 19.5→19.8% — exec_defaults #389 반영)
     """
     trader, _ = isolated_trader
     qty, fill = 2, 350.0
@@ -103,8 +104,8 @@ def test_futures_buy_records_notional_margin_leverage(isolated_trader):
     bought = [d for d in decisions if d["action"] == "bought"][-1]
     inv = bought["invest"]
     assert inv["notional"] == approx(qty * fill * 250_000)       # 175,000,000
-    assert inv["margin"] == approx(inv["notional"] * 0.195)      # 34,125,000
-    assert inv["leverage"] == approx(5.1)                        # round(1/0.195, 1) = 5.1
+    assert inv["margin"] == approx(inv["notional"] * 0.198)      # 34,650,000
+    assert inv["leverage"] == approx(5.1)                        # round(1/0.198, 1) = 5.1
     assert inv["currency"] == "KRW"
     assert "amount" not in inv
 

@@ -38,9 +38,26 @@ class LsFuturesBroker(_LsAuth):
         return self._ov is not None
 
     def index_futures_master(self) -> list[dict]:
-        """t8467 지수선물 마스터 — shcode/expcode/hname. resolver가 1일 캐시."""
-        body = self._post("/futureoption/market-data", "t8467", {"t8467InBlock": {"gubun": ""}})
-        return body.get("t8467OutBlock") or []
+        """국내 지수선물 마스터(shcode/expcode/hname) — resolver가 1일 캐시.
+
+        코스피200 정규는 지수선물마스터 t8467(gubun="")이 주지만, **코스닥150선물은 LS가
+        파생종목마스터 t8435(gubun="SF")로 분리 제공**한다(2026-07-13 모의 실측: shcode "A06…"·
+        hname "KQF YYMM"·expcode "KR4A06…"). 두 목록을 병합해 리졸버가 상품별 prefix(A01·A06)로
+        근월물을 고른다.
+        ⚠ t8435(코스닥150)는 additive·non-fatal — 실패해도 코스피200(t8467) 정규 해석은 보존
+        (기존 라이브 유저 무영향). 실패 시 코스닥150만 resolve None→발주 보류.
+        (미니 A05도 t8435 gubun="MF"에 있음 — 현재 t8467 미포함이라 별도 배선 필요·후속.)
+        """
+        rows = self._post("/futureoption/market-data", "t8467",
+                          {"t8467InBlock": {"gubun": ""}}).get("t8467OutBlock") or []
+        try:
+            kq = self._post("/futureoption/market-data", "t8435",
+                            {"t8435InBlock": {"gubun": "SF"}}).get("t8435OutBlock") or []
+            rows = rows + kq
+        except Exception as e:
+            log.warning("t8435(코스닥150선물) 마스터 조회 실패 — 코스닥150 발주 보류"
+                        "(코스피200 정규는 무영향): %s", e)
+        return rows
 
     def overseas_futures_master(self) -> list[dict]:
         """o3101 해외선물 종목마스터 — Symbol(ADM23)·BscGdsCd·CtrtPrAmt. resolver가 1일 캐시."""
