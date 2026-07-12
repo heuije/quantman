@@ -55,6 +55,14 @@ FIXTURES = [
         "study": {"axis": "entity", "assets": ["005930", "247540", "005380"],
                   "event": {"op": "compare", "params": {"op": ">"}, "inputs": {"left": C, "right": _ma(20)}},
                   "windows": [5, 20], "event_basis": "close"}}),
+    ("event_prewindow", "이벤트 전조 — 음수 윈도우 (WS1·conv#50 부류)", {
+        "name": "에코프로비엠 250일 신고가 前 조짐 (전 240/120일 구간 + 후 20일)",
+        "universe": {"kind": "single", "symbols": ["247540"]},
+        "signal": C, "query": "relate",
+        "study": {"event": {"op": "compare", "params": {"op": ">"}, "inputs": {
+            "left": C, "right": {"op": "ts_max", "params": {"window": 250}, "inputs": {
+                "signal": {"op": "ts_delay", "params": {"window": 1}, "inputs": {"signal": C}}}}}},
+                  "windows": [-240, -120, 20], "event_basis": "close"}}),
     ("event_concentrated", "이벤트 연도편중 (P3-a 함정 verdict·ok+참고배너)", {
         "name": "에코프로비엠 250일 신고가 후 수익 (2022~)",
         "universe": {"kind": "single", "symbols": ["247540"]},

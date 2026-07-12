@@ -1284,7 +1284,8 @@ def _build_cohort(ir, dataset, result, disp: str) -> bytes:
                "종목별 forward 수익 비교)", S)
     hdr = ["종목", "표본(이벤트수)"]
     for w in windows:
-        hdr += [f"+{w}일 평균%", f"+{w}일 양(+)%"]
+        lab = f"전{-int(w)}일" if int(w) < 0 else f"+{w}일"   # 음수 창=전조(이벤트 이전 구간·WS1)
+        hdr += [f"{lab} 평균%", f"{lab} 양(+)%"]
     hdr += ["최다연도", "최다연도 비중%"]
     _header(ws, 3, hdr, S)
     r = 4
@@ -1357,7 +1358,7 @@ def _build_event(ir, dataset, result, disp: str) -> bytes:
     rwins = rec.get("windows") or []
     raw = wb.create_sheet("이벤트원자료")
     _title(raw, f"{disp} — 이벤트 원자료 (집계 전 {rec.get('n_events', '?')}건)", S)
-    _header(raw, 3, ["종목", "일자"] + [f"+{w}일수익%" for w in rwins], S)
+    _header(raw, 3, ["종목", "일자"] + [(f"전{-int(w)}일수익%" if int(w) < 0 else f"+{w}일수익%") for w in rwins], S)
     rr = 4
     for e in rec.get("events", []):
         raw.cell(rr, 1, e.get("symbol"))
@@ -1435,7 +1436,8 @@ def _build_event(ir, dataset, result, disp: str) -> bytes:
                      "발생일과 대조(어느 행이 신호를 켰나 · 전체 시계열 증빙).")
 
     notes = [
-        ("이벤트 스터디", "이벤트(조건 충족) 발생 후 forward 윈도 수익 분포. MAE=구간내 최대손실, MFE=최대이익."),
+        ("이벤트 스터디", "이벤트(조건 충족) 기준 윈도 수익 분포 — +N일=발생 후 forward, 전N일(음수 창)="
+         "이벤트 이전 구간 누적수익(전조). MAE=구간내 최대손실, MFE=최대이익."),
         ("원자료 + 재계산 (증빙)", "'이벤트원자료' 시트에 이벤트별 종목·일자·윈도수익을 그대로 싣고, "
          "표본·평균·양(+)비율을 셀 수식(COUNT·AVERAGE·COUNTIF)으로 재계산 → 엔진 요약과 일치 확인."),
     ]

@@ -1,9 +1,9 @@
-"""이벤트 스터디 윈도우 값 도메인 — 음수/0 창 조용한 오답 부류 봉쇄 (prod conv#50).
+"""이벤트 스터디 윈도우 값 도메인 — 조용한 오답 부류 봉쇄 (prod conv#50) + WS1 전조 승격.
 
-부류: 검증기(S-event)가 windows의 *비어있음*만 보고 값 도메인을 안 봐서 음수 창이 통과 →
-_event_paths가 대부분 이벤트를 빈 슬라이스로 조용히 탈락시키고, 시리즈 초반(p<|w|) 이벤트는
-파이썬 음수 인덱스 wrap으로 **미래 구간 수익률을 '전조'로 집계** → 자기서술은 "발생 후 forward"
-고정이라 유저에겐 정상처럼 보였다. 3겹(검증기·엔진 가드·자기서술)을 함께 잠근다.
+부류(원형): 검증기가 값 도메인을 안 봐서 음수 창이 통과 → 시리즈 초반 이벤트가 음수 인덱스
+wrap으로 **미래 구간을 '전조'로 집계**하던 조용한 오답. P0가 '정직 거부'로 막았고,
+WS1(IR 대수 캠페인)이 음수 창을 **1급 지원**(창 시작점 anchor 누적수익·wrap 금지·조기 이벤트
+탈락 회계)으로 승격했다. 잔여 거부는 intraday 기준 음수(분봉 필요)와 close/excess의 0뿐.
 """
 import re
 import sys
@@ -38,10 +38,15 @@ def _event_errors(ir):
 
 # ── 검증기 — 값 도메인 ────────────────────────────────────────────────────────
 
-def test_validator_rejects_negative_windows():
-    errs = _event_errors(_ir([-240, -120, 0]))
-    assert errs, "음수/0 윈도우가 검증을 통과하면 conv#50 조용한 오답이 재발한다"
-    assert any("전조" in e.message and "미지원" in e.message for e in errs)   # 정직 한계 안내
+def test_validator_accepts_negative_windows_close_basis():
+    """WS1 — 음수 창(전조)은 close/excess 기준에서 1급 지원(더 이상 거부 아님)."""
+    assert not _event_errors(_ir([-240, -120, 20]))
+
+
+def test_validator_rejects_negative_windows_intraday():
+    errs = _event_errors(_ir([-240, -120], basis="intraday"))
+    assert errs, "intraday 기준 전조는 분봉이 필요해 거부돼야 한다"
+    assert any("전조" in e.message or "이전" in e.message for e in errs)   # 정직 한계+대안 안내
 
 
 def test_validator_rejects_zero_window_close_basis():
@@ -63,10 +68,15 @@ def test_validator_allows_zero_for_intraday_basis():
 def test_event_paths_negative_window_never_wraps():
     ca = np.linspace(100, 200, 1000)
     oa = ca.copy()
-    # 시리즈 초반 이벤트: 가드 없으면 ca[11:-229] wrap으로 +760일 미래 수익률이 나왔다(실측 재현값).
+    # 시리즈 초반 이벤트(p+w<0): wrap 금지 — 가드 없으면 ca[11:-229] wrap으로 +760일
+    # 미래 수익률이 '전조'가 됐다(실측 재현값). WS1 이후에도 조기 이벤트는 반드시 탈락.
     assert _event_paths(ca, oa, 10, -240, "close", None) is None
-    assert _event_paths(ca, oa, 500, -240, "close", None) is None
-    assert _event_paths(ca, oa, 500, 0, "close", None) is None
+    # 유효한 전조 창(p+w>=0)은 창 시작점 anchor 누적수익을 반환(WS1 승격).
+    got = _event_paths(ca, oa, 500, -240, "close", None)
+    assert got is not None and got[0] > 0                      # 상승 시리즈의 전조 구간 수익
+    assert abs(got[0] - (ca[500] / ca[260] - 1.0)) < 1e-12     # anchor=p+w 정확 산술
+    assert _event_paths(ca, oa, 500, 0, "close", None) is None  # close의 0은 여전히 무의미
+    assert _event_paths(ca, oa, 10, -240, "intraday", None) is None   # intraday 전조 미지원
     # 유효 도메인은 보존
     assert _event_paths(ca, oa, 500, 5, "close", None) is not None
     assert _event_paths(ca, oa, 500, 0, "intraday", None) is not None

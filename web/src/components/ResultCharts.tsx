@@ -270,18 +270,23 @@ export function EventStudyChart({ windows, overall }: {
   const data = [...windows]
     .sort((a, z) => (Number(a) || 0) - (Number(z) || 0))
     .map((w) => {
+      const n = Number(w) || 0;
       const o = overall[w] ?? ({} as IrEventStat);
-      return { label: `${w}일`, mean: o.mean ?? null,
+      // 음수 창(전조·WS1) = 이벤트 *이전* |w|일 구간의 누적수익 — 라벨로 방향 명시.
+      return { label: n < 0 ? `전${-n}일` : `${w}일`, mean: o.mean ?? null,
         mae: o.mean_mae ?? null, mfe: o.mean_mfe ?? null,
         band: [o.mean_mae ?? null, o.mean_mfe ?? null] as [number | null, number | null],
         prob: o.prob_positive, p: o.p_value, n: o.n };
     });
   if (!data.length) return null;
+  const hasPre = windows.some((w) => (Number(w) || 0) < 0);
   const Tip = tip([["평균수익", "mean"], ["MAE", "mae"], ["MFE", "mfe"],
     ["양(+)확률", "prob"], ["p", "p"], ["표본", "n"]]);
   return (
     <Box title="시각화"
-      sub="진입 후 경과일별 평균 forward 수익(선) · 평균 최대낙폭~최대상승 범위(음영)">
+      sub={hasPre
+        ? "이벤트 전(전N일=이전 구간 누적수익)~후(+N일=forward) 평균 수익(선) · 경로 극값 범위(음영)"
+        : "진입 후 경과일별 평균 forward 수익(선) · 평균 최대낙폭~최대상승 범위(음영)"}>
       <ResponsiveContainer width="100%" height={260}>
         <ComposedChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
           <CartesianGrid stroke={C.grid} />

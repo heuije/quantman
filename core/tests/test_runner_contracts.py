@@ -95,9 +95,11 @@ def test_resolve_runner_matches_actual_dispatch(monkeypatch):
 # ── 경계 가드 — 검증 우회(저장 IR·직접 호출)도 조용한 오답 대신 정직 거부 ────────
 
 def test_run_query_boundary_guard_refuses_contract_violation():
+    # WS1로 음수 창(전조)은 1급 지원이 됐다 — 여전히 계약 위반인 케이스로 가드를 검증:
+    # intraday 기준의 음수 창(장중 전조 — 분봉 필요·미지원).
     ir = StrategyIR.model_validate({
         "universe": {"kind": "all"}, "signal": _COND, "query": "relate",
-        "study": {"event": _COND, "windows": [-240, -120]},
+        "study": {"event": _COND, "windows": [-240, -120], "event_basis": "intraday"},
     })
     res = run_query(ir, {})            # validate_strategy를 거치지 않는 직접 실행
     assert res["success"] is False

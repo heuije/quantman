@@ -380,8 +380,11 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
     어떻게 분포하나"·"이 조건 뒤 오를 확률·반등이 유의한가"·"삼성전자가 ___면 그 뒤 오르나(예측력)"처럼
     *이벤트 후 전향(forward) 수익*이나 *단일종목의 방향성/예측*이 답이면 → query="relate" +
     study.event=<발생 조건 block(condition·발생 여부; '돌파한 날'은 cross가 정확·compare(>)는 그 위에 머무는 동안 참)>
-    + study.windows=[전향 거래일들] + event_basis="close"(시장 대비 초과수익 보려면 "excess"·종목 2+ 필요).
+    + study.windows=[경과 거래일들] + event_basis="close"(시장 대비 초과수익 보려면 "excess"·종목 2+ 필요).
     universe=single(한 종목 가능)·list. 결과=이벤트 후 forward 수익 분포·승률(prob_positive)·유의성(t/p)·MAE/MFE.
+    **전조(pre-event)**: "급등 *전*에 조짐이 있었나"·"이벤트 *이전* 구간" 질문이면 windows에 **음수**를 넣는다 —
+    음수 w = 이벤트 전 |w|일 구간의 누적수익(창 시작점 anchor). 예: windows=[-240,-120]=이벤트 전 240일/120일
+    구간(전반·후반 대조). intraday 기준의 음수 창만 미지원(분봉 필요 — close로).
     **국면별로 다른가**(상승장 vs 하락장·고변동 vs 저변동)면 study.label=<국면 라벨(bucket 등 label 블록)>도 추가
     → by_regime로 분리 비교. signal은 명목(data Close — 분석 동사).
     ⚠ 단일종목의 "예측력/오를까/방향"은 횡단 IC(종목 2+ 필요)가 **아니라** 이벤트 스터디다(한 종목으로 가능).

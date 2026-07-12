@@ -1320,11 +1320,33 @@ def _event_paths(ca, oa, p, w, basis, mvals):
     close   : 종가 anchor, k=1..w 누적.
     intraday: 시가 anchor, k=0..w 누적(k=0=당일 시가→종가, intraday reversal).
     excess  : 종가 anchor 누적 − 시장 누적.
+    w<0(전조·WS1): anchor를 창 시작점(p+w)에 두는 대칭 의미론 — endpoint=이벤트일까지의
+    |w|일 누적수익(전조 구간 수익), MAE/MFE=그 구간 경로 극값. wrap 금지: 조기 이벤트
+    (p+w<0)는 None(창별 n 회계가 탈락을 표면화). intraday 기준 전조는 분봉이 필요해
+    미지원(계약이 거부·여기선 저장 IR·직접 호출 방어).
     """
-    if w < 0 or (w == 0 and basis != "intraday"):
-        # 음수/0 창 미지원(발생 이후 경로만) — 검증기(S-event)가 막지만 저장 IR·직접 호출을 방어.
-        # 이 가드 없이 w<0이 오면 q+1<0의 파이썬 음수 인덱싱이 미래 구간을 '전조'처럼 wrap해
-        # 그럴듯한 오답 통계를 만든다(prod conv#50 실측: p=10·w=-240 → +760일 미래 수익률).
+    if w < 0:
+        if basis == "intraday":
+            return None
+        a = p + w
+        if a < 0:
+            # 조기 이벤트 — 이 가드 없이는 파이썬 음수 인덱싱이 미래 구간을 '전조'처럼
+            # wrap해 그럴듯한 오답 통계를 만든다(prod conv#50 실측: p=10·w=-240).
+            return None
+        anchor = ca[a]
+        if not np.isfinite(anchor) or anchor <= 0:
+            return None
+        seg = ca[a + 1:p + 1] / anchor - 1.0
+        if basis == "excess":
+            if mvals is None or not np.isfinite(mvals[a]) or mvals[a] <= 0:
+                return None
+            seg = seg - (mvals[a + 1:p + 1] / mvals[a] - 1.0)
+        seg = seg[np.isfinite(seg)]
+        if seg.size == 0:
+            return None
+        return float(seg[-1]), float(seg.min()), float(seg.max())
+    if w == 0 and basis != "intraday":
+        # 0 창은 intraday(당일 시가→종가) 전용 — 검증기(S-event)가 막지만 방어 유지.
         return None
     q = p + w
     if q >= len(ca):
@@ -1364,7 +1386,8 @@ def _collect_event_rows(strategy: StrategyIR, dataset: dict) -> dict:
     syms = _universe_symbols(strategy, dataset)
     if not syms:
         return {"ok": False, "error": "이벤트 분석 유니버스에 종목이 없습니다."}
-    windows = strategy.study.windows or [5, 10, 20]
+    # 부호 정렬·중복 제거 — 음수(전조·WS1)~양수 창이 섞여 와도 표·차트가 시간순으로 읽힌다.
+    windows = sorted({int(w) for w in (strategy.study.windows or [5, 10, 20])})
     basis = strategy.study.event_basis
     ev_node = strategy.study.event or strategy.signal
     ctx = EvalContext.from_dataset(_scoped(dataset, syms, ev_node, strategy.study.label),

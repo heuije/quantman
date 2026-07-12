@@ -204,6 +204,10 @@ function EventStudy({ result }: { result: IrStrategyResult }) {
       {p != null ? p.toFixed(4) : "—"}</td>);
   const basisLabel = { close: "종가→종가", intraday: "시가→종가(당일)", excess: "시장초과" }[
     result.basis ?? "close"] ?? "종가→종가";
+  // 음수 창(전조·WS1) 포함 여부 — 헤더 설명을 방향에 맞춘다(전조를 forward로 오독 방지).
+  const hasPre = windows.some((w) => Number(w) < 0);
+  const kindLabel = hasPre ? "전N일=이벤트 이전 구간 누적수익 · +N일=발생 후 forward — 손익 아님"
+    : "forward 수익, 손익 아님";
   // T7 — 풀 구성 분해(종목 상위·연도범위)를 표면화해 'n=수천 무차별 pooling'(#4c)을 투명화.
   const comp = result.composition;
   const bySym = comp?.by_symbol ? Object.entries(comp.by_symbol) : [];
@@ -211,7 +215,7 @@ function EventStudy({ result }: { result: IrStrategyResult }) {
   return (
     <div className="chat-result">
       <div className="muted" style={{ fontSize: "0.8em", marginBottom: 4 }}>
-        이벤트 분석 — 총 {result.n_events ?? 0}건 · 기준 {basisLabel} (forward 수익, 손익 아님)
+        이벤트 분석 — 총 {result.n_events ?? 0}건 · 기준 {basisLabel} ({kindLabel})
       </div>
       {bySym.length > 0 && (
         <div className="muted" style={{ fontSize: "0.78em", marginBottom: 6 }}>
@@ -269,7 +273,9 @@ function CohortComparison({ result }: { result: IrStrategyResult }) {
       <div style={{ overflowX: "auto" }}>
         <table className="sweep-table">
           <thead><tr><th>종목</th><th>표본</th>
-            {windows.map((w) => <th key={w}>+{w}일 평균%(p)</th>)}</tr></thead>
+            {windows.map((w) => (
+              <th key={w}>{Number(w) < 0 ? `전${-Number(w)}일` : `+${w}일`} 평균%(p)</th>
+            ))}</tr></thead>
           <tbody>
             {syms.map((s) => {
               const b = buckets[s] ?? {};

@@ -405,7 +405,8 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
                 continue
             ov = b.get("overall") or {}
             wins = " · ".join(
-                f"+{w}일 {_f(_win(ov, w).get('mean'))}%"
+                (f"전 {-int(w)}일" if int(w) < 0 else f"+{w}일")
+                + f" {_f(_win(ov, w).get('mean'))}%"
                 f"(p{_f(_win(ov, w).get('p_value'), 3)}·양{_f(_win(ov, w).get('prob_positive'), 0)}%)"
                 for w in windows)
             lines.append(f"  {who}: n={b.get('n_events')} · {wins}")
@@ -416,20 +417,30 @@ def summarize_result(result: Any, *, max_rows: int = 40) -> str:
     if shape == "event_study":
         overall = result.get("overall") or {}
         n_events = result.get("n_events")
+        wins = [int(w) for w in (result.get("windows") or [])]
         lines = []
-        for w in result.get("windows") or []:
+        for w in wins:
             o = _win(overall, w)
             n_w = o.get("n")
             # 창별 표본수 + 전체 이벤트 대비 탈락 표면화 — 헤드라인 "N건"과 달리 특정 창은
-            # 소수만 집계됐을 수 있다(창이 데이터 끝을 넘는 최근 이벤트 등). 조용한 탈락을 문장으로.
+            # 소수만 집계됐을 수 있다(창이 데이터 끝을 넘는 최근 이벤트·전조 창이 시리즈 시작
+            # 이전인 조기 이벤트 등). 조용한 탈락을 문장으로.
             cov = ""
             if isinstance(n_w, (int, float)) and isinstance(n_events, int) and n_w < n_events:
                 cov = f" · 표본 {int(n_w)}/{n_events}건(잔여는 경로 산출 불가)"
-            lines.append(f"  +{w}일: 평균 {_f(o.get('mean'))}% · p {_f(o.get('p_value'), 4)} · "
+            # 음수 창(전조·WS1) = 이벤트 *이전* |w|일 구간의 누적수익 — 라벨로 방향을 명시해
+            # 모델·사용자가 forward와 혼동하지 않게 한다.
+            lab = f"전 {-w}일 구간" if w < 0 else f"+{w}일"
+            lines.append(f"  {lab}: 평균 {_f(o.get('mean'))}% · p {_f(o.get('p_value'), 4)} · "
                          f"양(+) {_f(o.get('prob_positive'), 1)}% · MAE {_f(o.get('mean_mae'))}% · "
                          f"MFE {_f(o.get('mean_mfe'))}%{cov}")
+        has_pre = any(w < 0 for w in wins)
+        has_fwd = any(w >= 0 for w in wins)
+        kind = ("전조(이벤트 이전 구간 누적수익)+발생 후 forward" if has_pre and has_fwd
+                else "전조 — 이벤트 *이전* 구간 누적수익(창 시작→이벤트일)" if has_pre
+                else "발생 이후 forward 수익 — 전조 아님")
         head = (f"[이벤트] {result.get('n_events', '?')}건 · 기준 {result.get('basis', 'close')} "
-                f"(발생 이후 forward 수익 — 전조 아님)")
+                f"({kind})")
         head += _composition_line(result)        # 풀 구성(종목·연도) — 무차별 pooling 투명화(#4c)
         return head + "\n" + "\n".join(lines)
 

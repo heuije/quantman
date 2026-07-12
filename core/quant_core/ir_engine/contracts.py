@@ -204,23 +204,32 @@ def resolve_runner(s) -> str:
 # 광고(does/use_for)·shape의 단일 원천이자 "전수 등록됐다"는 계약 테스트의 기준.
 
 
-def _event_windows_floor(s):
-    """발생 이후 경로만 계산(close/excess=1일부터·intraday=0=당일부터) — 음수(pre-event)는
-    엔진 미지원. 무검증 통과 시 _event_paths가 대부분 이벤트를 조용히 탈락시키고 시리즈 초반
-    이벤트는 음수 인덱스 wrap으로 미래 구간을 '전조'처럼 집계한다(prod conv#50 실측)."""
+def _event_windows_domain(s):
+    """윈도우 값 도메인 — 음수(전조·pre-event)는 close/excess 기준에서 1급 지원(WS1).
+
+    잔여 제약 2가지만 거부: ① 0 창은 intraday(당일 시가→종가) 전용 — close/excess의 0은
+    무의미(anchor=endpoint). ② intraday 기준의 음수 창 — 장중 전조는 분봉 데이터가 필요해
+    데이터 범위 밖(가짜 근사 폴백 금지). 조기 이벤트(시리즈 시작 이전 창)는 검증이 아니라
+    엔진 탈락 회계(evaluated_by_window)가 담당한다."""
     st = s.study
     if not st.windows:
         return None                          # 빈 목록은 MinLen 검사가 담당
-    floor = 0 if st.event_basis == "intraday" else 1
-    bad = sorted({int(w) for w in st.windows if int(w) < floor})
-    if not bad:
+    ws = {int(w) for w in st.windows}
+    if st.event_basis == "intraday":
+        bad = sorted(w for w in ws if w < 0)
+        if bad:
+            return ("S-event",
+                    (f"intraday(당일 시가→종가) 기준은 이벤트 *이전*(전조) 창 {bad}을 지원하지 "
+                     "않습니다 — 장중 전조는 분봉 데이터가 필요합니다(미보유). 전조 분석은 "
+                     "event_basis=close로 음수 윈도우(예: -120=이벤트 전 120일 구간)를 쓰세요."),
+                    "study.windows")
         return None
-    return ("S-event",
-            (f"이벤트 윈도우는 발생 이후 경과 영업일만 지원합니다(기준 {st.event_basis}: "
-             f"{floor} 이상) — {bad} 불가. 이벤트 *이전*(전조·pre-event) 구간 분석은 아직 "
-             "미지원입니다: 사용자가 전조 분석을 원하면 음수 윈도우로 재시도하지 말고 "
-             "expressible=false로 한계를 정직히 알리세요. 발생 *후* 경로는 양수 윈도우로 "
-             "분석 가능합니다."), "study.windows")
+    if 0 in ws:
+        return ("S-event",
+                ("윈도우 0(당일)은 intraday 기준 전용입니다(close/excess의 0은 무의미) — "
+                 "당일 시가→종가 반응은 event_basis=intraday로, 발생 후 경로는 양수, "
+                 "이벤트 *이전*(전조) 구간은 음수 윈도우로 분석하세요."), "study.windows")
+    return None
 
 
 def _event_excess_needs_universe(s):
@@ -326,15 +335,17 @@ REGISTRY: dict[str, RunnerContract] = {c.key: c for c in [
         "'이 신호가 보통 어떤 값인가' — 손익 아닌 신호 자체.", shape="signal_dist"),
     # ── relate ──
     _rc("relate.event_study", "run.py::_run_event_study", "이벤트 스터디",
-        "이벤트(condition 참) 발생 시점 *이후* 경과일별 forward 수익 경로(평균·MAE·MFE·유의성)",
-        "'~한 날 이후 어떻게 되나' — 발생 후 반응·지속성. windows=발생 후 경과 영업일(양수).",
+        "이벤트(condition 참) 시점 기준 경과일별 수익 경로(평균·MAE·MFE·유의성) — 양수 창=발생 "
+        "*이후* forward, 음수 창=발생 *이전*(전조·pre-event) 구간의 누적수익(창 시작점 anchor)",
+        "'~한 날 이후 어떻게 되나'(양수 windows) · '급등/이벤트 *전*에 조짐이 있었나'(음수 windows — "
+        "예: [-240,-120]=이벤트 전 240일/120일 구간). windows=경과 영업일(부호 있는 정수).",
         not_supported=(
-            "이벤트 *이전*(전조·pre-event) 구간 분석 — windows는 발생 이후(양수·intraday만 0 허용). "
-            "'급등 전 조짐' 류 전조 질문은 음수 윈도우를 만들지 말고 expressible=false로 정직 안내.",),
+            "intraday(당일 시가→종가) 기준의 음수 창 — 장중 전조는 분봉 데이터가 필요(미보유). "
+            "전조 분석은 event_basis=close + 음수 윈도우로 가능.",),
         shape="event_study",
         checks=(Check("study.windows", MinLen(1), rule="S-event",
-                      message="이벤트 분석은 forward 윈도우가 필요합니다."),),
-        cross_checks=(_event_windows_floor, _event_excess_needs_universe)),
+                      message="이벤트 분석은 윈도우가 필요합니다(경과 영업일 — 음수=이벤트 이전·전조)."),),
+        cross_checks=(_event_windows_domain, _event_excess_needs_universe)),
     _rc("relate.ic", "run.py::_run_ic_study", "IC(예측력) 분석",
         "신호(target_node)와 w일 forward 수익의 날짜별 횡단 상관(IC·IR)",
         "'이 지표가 수익을 예측하나' — 다종목 예측력.",
