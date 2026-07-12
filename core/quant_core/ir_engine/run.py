@@ -293,28 +293,45 @@ def _label_panel(lab, idx, cols: list) -> pd.DataFrame:
     return pd.DataFrame({c: series for c in cols}, index=idx)
 
 
-def _universe_symbols(strategy: StrategyIR, dataset: dict) -> list[str]:
+def _universe_symbols(strategy: StrategyIR, dataset: dict, *,
+                      apply_screener: bool = True) -> list[str]:
     u = strategy.universe
     if u.kind in ("single", "list", "portfolio"):
-        return [s for s in u.symbols if s in dataset and not dataset[s].empty]
-    # all — 매크로/자산 지수 제외, OHLC 보유 종목(전 유니버스 후보).
-    # universe.screener 세부조건은 list/all 모두 _scoped·_screener_mask가 직교 적용한다.
-    macro: set = set()
-    if u.exclude_macro:
-        try:
-            from ..data_fetcher import MACRO_SYMBOLS
-            macro = set(MACRO_SYMBOLS)
-        except Exception:
-            macro = set()
-    out = []
-    for s, df in dataset.items():
-        # strat: 합성 자산은 시장 종목이 아님 — all 광역 스캔에서 제외
-        # (명시 list 유니버스·데이터 참조로만 진입). 그 외 macro·빈 프레임 제외.
-        if s in macro or s.startswith("strat:") or df is None or df.empty:
-            continue
-        if {"Open", "Close"}.issubset(df.columns):
-            out.append(s)
-    return out
+        base = [s for s in u.symbols if s in dataset and not dataset[s].empty]
+    else:
+        # all — 매크로/자산 지수 제외, OHLC 보유 종목(전 유니버스 후보).
+        macro: set = set()
+        if u.exclude_macro:
+            try:
+                from ..data_fetcher import MACRO_SYMBOLS
+                macro = set(MACRO_SYMBOLS)
+            except Exception:
+                macro = set()
+        base = []
+        for s, df in dataset.items():
+            # strat: 합성 자산은 시장 종목이 아님 — all 광역 스캔에서 제외
+            # (명시 list 유니버스·데이터 참조로만 진입). 그 외 macro·빈 프레임 제외.
+            if s in macro or s.startswith("strat:") or df is None or df.empty:
+                continue
+            if {"Open", "Close"}.issubset(df.columns):
+                base.append(s)
+    scr = u.screener or {}
+    if not apply_screener or not base or not scr.get("condition"):
+        return base
+    # universe.screener 소비 — 스터디/질의 공용 choke point(부류 근본수정).
+    # 종전엔 engine 백테스트·run_select만 적용하고 나머지 스터디 러너는 조용히 무시 —
+    # Market=KOSDAQ 스크리너가 IR에 있어도 전체(미국 포함) 유니버스로 실행되던 prod 실측
+    # 결함. 최신 유효 단면 1회 평가: 속성 조건(Market·Sector)은 날짜 무관이라 정확하고,
+    # 가격 의존 조건은 '최신 단면 자격'으로 정규화된다(데이터가 끝까지 없는 종목은 제외).
+    # run_select는 자체 PIT as-of 마스크를 소유 → apply_screener=False로 opt-out.
+    from .engine import _screener_mask
+    filt = Node.model_validate(scr["condition"])
+    ctx = EvalContext.from_dataset(_scoped(dataset, base, filt), universe=base)
+    mask = _screener_mask(scr, ctx, base)
+    if mask.empty:
+        return base
+    row = mask.iloc[-1]
+    return [s for s in base if bool(row.get(s, False))]
 
 
 def relevant_symbols(strategy: StrategyIR, dataset: dict) -> set[str]:
@@ -993,7 +1010,9 @@ def run_select(strategy: StrategyIR, dataset: dict) -> dict:
         return _run_compare(strategy, dataset)          # 지정 종목 나란히 비교(score 불요)
     if _out_type(strategy.signal) != "score":
         return _empty("select(스크리닝)은 랭킹용 score 신호가 필요합니다.")
-    syms = _universe_symbols(strategy, dataset)
+    # opt-out: select는 아래에서 as_of 단면 PIT 마스크를 직접 적용(이중 적용 금지 —
+    # choke point의 '최신 단면 1회' 평가가 역사적 as_of 자격을 덮어쓰면 안 된다).
+    syms = _universe_symbols(strategy, dataset, apply_screener=False)
     if not syms:
         return _empty("선별 유니버스에 종목이 없습니다.")
     screener = strategy.universe.screener or {}

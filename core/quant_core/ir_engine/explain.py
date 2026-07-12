@@ -407,10 +407,18 @@ def _research_narrative(ir: StrategyIR) -> str | None:
 
     if ir.query == "relate":
         if st.event is not None:
-            wins = "·".join(f"+{int(w)}" for w in (st.windows or [5, 10, 20]))
-            return (f"{_uni()}에서 이벤트 발생 후 경과일별({wins}일) forward 수익"
-                    f"(평균·최대낙폭/상승)을 봅니다 — 발생 *이후* 경로만 지원(전조 분석 아님)·"
-                    f"분석 전용(미래참조).")
+            # WS1: 음수 창=발생 *이전*(전조) 구간 1급 지원 — 계약(contracts.py relate.event_study
+            # does)과 동일 사실을 서술한다(종전 '발생 이후만·전조 아님' 문구는 stale·오도).
+            wl = [int(w) for w in (st.windows or [5, 10, 20])]
+            wins = "·".join(f"{w:+d}" for w in wl)
+            if all(w < 0 for w in wl):
+                path_txt = "발생 *이전*(전조) 구간"
+            elif any(w < 0 for w in wl):
+                path_txt = "발생 전·후 구간"
+            else:
+                path_txt = "발생 *이후* 경로"
+            return (f"{_uni()}에서 이벤트 {path_txt} 경과일별({wins}일) 수익"
+                    f"(평균·최대낙폭/상승)을 봅니다 — 분석 전용(미래참조).")
         if st.relation_kind == "regression":
             fn = []
             for fac in (st.factors or []):
