@@ -77,6 +77,20 @@ def test_margin_override_ignored_for_stocks():
     assert over["metrics"]["total_return"] == pytest.approx(base["metrics"]["total_return"])
 
 
+def test_margin_override_reflected_in_self_description():
+    """자기서술(execution_summary·methodology_brief)이 override 값을 서술해야 한다 —
+    엔진은 10%로 계산하는데 방법론이 카탈로그 20%를 말하면 봇이 '미반영' 오판(G3 스모크 실측)."""
+    from quant_core.ir_engine.execution_summary import execution_summary, methodology_brief
+    over = execution_summary(_fut_spec(0.10))
+    lev = next(d for d in over["assumed"] if d["label"] == "레버리지(선물)")
+    assert "10%" in lev["value"] and "오버라이드" in lev["value"]
+    assert "최대 10.0x" in lev["value"]                # 1/0.10 — 카탈로그가 아닌 override 기준
+    assert "개시증거금률 10%" in methodology_brief(_fut_spec(0.10))
+    base = next(d for d in execution_summary(_fut_spec())["assumed"]
+                if d["label"] == "레버리지(선물)")
+    assert "오버라이드" not in base["value"]            # 미지정 시 카탈로그 서술 불변
+
+
 # ── 광고(달력 게이트·exit.fill·오버라이드) — 컴파일러가 배우는 표면 ────────────
 
 def test_calendar_block_advertises_signal_gate():

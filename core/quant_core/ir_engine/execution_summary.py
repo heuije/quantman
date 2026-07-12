@@ -58,12 +58,16 @@ def execution_summary(strategy_def: dict) -> dict:
     if is_fut:
         sp = next(instrument_spec(s) for s in syms
                   if instrument_spec(s).asset_class == "futures")
-        mr = sp.init_margin_rate
+        # 엔진 mr 소비(engine.py 양 경로)와 동일 규칙 — override 지정 시 카탈로그가 아닌
+        # 그 값을 서술해야 자기서술이 실제 계산과 일치한다(G3 스모크 실측: 봇이 '미반영' 오판).
+        mro = ir.simulation.margin_rate_override
+        mr = mro if mro else sp.init_margin_rate
         lev = round(1.0 / mr, 1) if mr else None
         lev_txt = f"최대 {lev}x · " if lev is not None else ""
+        src = " (전략 지정 오버라이드)" if mro else ""
         assumed.append({
             "label": "레버리지(선물)",
-            "value": f"{lev_txt}개시증거금률 {mr * 100:.0f}% · 승수 {sp.multiplier:,.0f}",
+            "value": f"{lev_txt}개시증거금률 {mr * 100:.0f}%{src} · 승수 {sp.multiplier:,.0f}",
         })
 
     at_order = [
