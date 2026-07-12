@@ -132,11 +132,15 @@ _INSTRUMENTS: dict[str, InstrumentSpec] = {
     # 실 KOSPI200 선물 연속 일봉(지수포인트) — KRX 공식 API fut_bydd_trd 만기물 패널(2010+)에서
     # default_roll(at_expiry)로 "코스피200선물" 연속물 서빙뷰를 파생(S4). ETF(261220)는
     # "코스피200선물ETF"로 분리 — 이 키엔 ETF 안 들어와 승수 충돌(F0 equity 후퇴) 해소.
-    # 증거금률 = KRX 위탁증거금 실측(myasset 2026.6.1 + LS CFOAQ10100 실측 교차): 개시 19.5%·유지 13.0%.
-    # 종전 0.10은 추정치로 백테스트 계약수·레버리지 표시를 ~2배 과다(레버리지 10배 vs 실제 ~5.1배)로 냈다.
-    # ⚠ KRX가 변동성 따라 주기적 조정 → 카탈로그는 대표값. 라이브는 모델 A(브로커 주문가능수량)가 실시간 반영.
-    "코스피200선물":  InstrumentSpec("futures", 250_000.0, 0.05, "KRW", 0.195, 0.13, "kospi200_2nd_thu", "at_expiry"),
-    "미니코스피200선물": InstrumentSpec("futures",  50_000.0, 0.05, "KRW", 0.195, 0.13, "kospi200_2nd_thu", "at_expiry"),
+    # 증거금률 = KRX 위탁증거금 공표값(myasset margin_rate.pdf 2026.7.6 정기변경 — 2026.6.1
+    # 19.5/13.0 실측치(LS CFOAQ10100 교차)에서 KRX 정기조정으로 이동): KR 지수선물 3종 공통
+    # 개시 19.8%·유지 13.2%. ⚠ KRX가 변동성 따라 주기적 조정 → 카탈로그는 대표값.
+    # 라이브는 모델 A(브로커 주문가능수량)가 실시간 반영.
+    "코스피200선물":  InstrumentSpec("futures", 250_000.0, 0.05, "KRW", 0.198, 0.132, "kospi200_2nd_thu", "at_expiry"),
+    "미니코스피200선물": InstrumentSpec("futures",  50_000.0, 0.05, "KRW", 0.198, 0.132, "kospi200_2nd_thu", "at_expiry"),
+    # 코스닥150선물 — 승수 1만원/pt·틱 0.10pt(KRX 상품스펙·수집 패널 호가 0.1 granularity 실측).
+    # 이력=상장 2015-11-23~(만기물 패널). 라이브 발주 배선은 별도(로컬앱 미매핑 — 데이터/백테스트 전용).
+    "코스닥150선물":  InstrumentSpec("futures",  10_000.0, 0.10, "KRW", 0.198, 0.132, "kosdaq150_2nd_thu", "at_expiry"),
     "원유선물":      InstrumentSpec("futures",   1_000.0, 0.01,  "USD", 0.10, 0.08,  "cme_cl",  "days_before:5"),
     "천연가스선물":   InstrumentSpec("futures",  10_000.0, 0.001, "USD", 0.10, 0.08,  "cme_ng",  "days_before:5"),
     "금선물":        InstrumentSpec("futures",     100.0, 0.10,  "USD", 0.08, 0.06,  "cme_gc",  "days_before:5"),

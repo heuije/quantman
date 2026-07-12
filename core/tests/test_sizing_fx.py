@@ -215,10 +215,11 @@ def test_event_qty_mini_kospi200_uses_50k_multiplier():
     라도 계약당 증거금이 1/5라 같은 예산으로 5배 계약 = 동일 명목 노출. KRW 선물이라 FX 무관(정규와 동일)."""
     mini = _strat({"futures_margin_pct": 20.0},
                   {"kind": "single", "symbols": ["미니코스피200선물"]})
-    # 1e9 × 20% = 2e8 / (400×50,000×0.195=3.9e6) = 51계약 (정규 10계약의 ~5배 — 승수 1/5·floor)
-    assert event_buy_qty(mini, cash=1e9, prev_close=400.0) == 51
+    # 1e9 × 20% = 2e8 / (400×50,000×0.198=3.96e6) = 50계약 (정규 10계약의 ~5배 — 승수 1/5·floor.
+    # 증거금률은 카탈로그 공표값 갱신 시 함께 이동: 2026-07-06 정기변경 19.8%)
+    assert event_buy_qty(mini, cash=1e9, prev_close=400.0) == 50
     assert event_buy_qty(mini, cash=1e9, prev_close=400.0,
-                         dataset={_FX: _fx_df(1370.0)}) == 51
+                         dataset={_FX: _fx_df(1370.0)}) == 50
 
 
 # ── 모델 A 국내선물 라이브 사이징 헬퍼 (futures_margin_pct_of · model_a_qty) ──────

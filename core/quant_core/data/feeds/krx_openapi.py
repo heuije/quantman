@@ -231,8 +231,10 @@ _PUTCALL_SERIES = ("옵션풋콜비율", _SVC_OPT, extract_putcall)
 _ETF_AUM_SYMBOL = "KRETF순자산총액"
 _ETF_FLOW_SYMBOL = "KRETF순자금유입"
 
-# 선물 만기물 패널 — 연속물 서빙뷰 심볼(엔진/백테스트 소비) ↔ KRX 상품명(공백 포함)
-_FUT_PANEL = {"코스피200선물": "코스피200 선물"}
+# 선물 만기물 패널 — 연속물 서빙뷰 심볼(엔진/백테스트 소비) ↔ KRX 상품명(공백 포함).
+# 하루 1콜(fut_bydd_trd)이 전 상품 만기물을 담으므로 상품 추가 = 추가 콜 0(같은 응답에서 추출).
+# 코스닥150선물은 상장(2015-11-23) 이후만 행 존재(상장 전일 0행 실측) — 이전 날짜는 자연 skip.
+_FUT_PANEL = {"코스피200선물": "코스피200 선물", "코스닥150선물": "코스닥150 선물"}
 
 LIGHT_SYMBOLS = [name for name, _, _ in _LIGHT_SERIES]
 PUTCALL_SYMBOL = _PUTCALL_SERIES[0]
@@ -364,17 +366,20 @@ def fetch_etf_flow(sdate: str, edate: str, fetch=_fetch_day) -> dict:
             "saved": {_ETF_AUM_SYMBOL: n_aum, _ETF_FLOW_SYMBOL: n_flow}}
 
 
-def fetch_futures_panel(sdate: str, edate: str, symbol: str = "코스피200선물",
+def fetch_futures_panel(sdate: str, edate: str, symbols: list[str] | None = None,
                         fetch=_fetch_day) -> dict:
     """[sdate,edate] 평일 선물 만기물 패널 수집·merge-save + 연속물 서빙뷰 재구성.
 
-    진실원천(만기물 패널)을 저장하고, 백테스트용 단일 연속물(카탈로그 기본 롤·조정)을
-    data_fetcher.rebuild_futures_continuous로 파생한다. 반환 {ok, days, fail, rows, cont}.
+    하루 1콜(fut_bydd_trd)이 전 상품 만기물을 담으므로 등록 상품 전부를 같은 응답에서
+    추출한다(symbols 미지정 = _FUT_PANEL 전체 — 상품 수 증가에 콜 수 불변). 진실원천
+    (만기물 패널)을 상품별 저장하고, 백테스트용 단일 연속물(카탈로그 기본 롤·조정)을
+    data_fetcher.rebuild_futures_continuous로 파생한다.
+    반환 {ok, days, fail, rows(총 패널행), cont(총 연속물행), saved: {심볼: {패널행, 연속물}}}.
     """
     if not is_active():
         return {"inactive": True}
-    prod = _FUT_PANEL[symbol]
-    frames = []
+    symbols = list(_FUT_PANEL) if symbols is None else symbols
+    frames: dict[str, list] = {s: [] for s in symbols}
     days = fail = 0
     for bd in _weekdays(sdate, edate):
         rows = fetch(_SVC_FUT, bd)
@@ -382,16 +387,23 @@ def fetch_futures_panel(sdate: str, edate: str, symbol: str = "코스피200선�
             fail += 1
             continue
         days += 1
-        recs = extract_futures_panel(rows, prod)
-        if recs:
-            df = pd.DataFrame(recs)
-            df.index = pd.to_datetime([bd] * len(df), format="%Y%m%d")
-            frames.append(df)
-    if not frames:
-        return {"ok": fail == 0, "days": days, "fail": fail, "rows": 0, "cont": 0,
-                "saved": {"패널행": 0, "연속물": 0}}
-    n_rows = _df.merge_futures_panel(symbol, pd.concat(frames))
-    n_cont = _df.rebuild_futures_continuous(symbol)
-    _df.mark_data_dirty()
-    return {"ok": fail == 0, "days": days, "fail": fail, "rows": n_rows, "cont": n_cont,
-            "saved": {"패널행": n_rows, "연속물": n_cont}}
+        for s in symbols:
+            recs = extract_futures_panel(rows, _FUT_PANEL[s])
+            if recs:                       # 상장 전/휴장 상품은 그 날 행 없음 — 자연 skip
+                df = pd.DataFrame(recs)
+                df.index = pd.to_datetime([bd] * len(df), format="%Y%m%d")
+                frames[s].append(df)
+    saved: dict[str, dict] = {}
+    total_rows = total_cont = 0
+    for s in symbols:
+        if not frames[s]:
+            continue
+        n_rows = _df.merge_futures_panel(s, pd.concat(frames[s]))
+        n_cont = _df.rebuild_futures_continuous(s)
+        saved[s] = {"패널행": n_rows, "연속물": n_cont}
+        total_rows += n_rows
+        total_cont += n_cont
+    if saved:
+        _df.mark_data_dirty()
+    return {"ok": fail == 0, "days": days, "fail": fail,
+            "rows": total_rows, "cont": total_cont, "saved": saved}

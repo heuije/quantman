@@ -100,7 +100,7 @@ def test_kr_equity_candidate_uses_simspec_commission():
 # ── 선물 후보 정적 레버리지 정보 ────────────────────────────────────────────────
 
 def test_futures_candidate_has_leverage_info():
-    """코스피200선물 후보 → qty None 유지 + leverage 5.1·multiplier 250000·margin_rate 0.195."""
+    """코스피200선물 후보 → qty None 유지 + leverage 5.1·multiplier 250000·margin_rate 0.198."""
     fut = {"코스피200선물": _df([10, 11, 12, 13, 14, 15, 16, 17, 18, 30])}
     out = preview_engine._evaluate_ir_strategy(
         _ir_def(["코스피200선물"]), fut, cash=10_000_000.0,
@@ -110,9 +110,9 @@ def test_futures_candidate_has_leverage_info():
     c = out["candidates"][0]
     assert c["qty"] is None, c                 # 서버 사이징 불가 — 로컬 선물계좌
     assert c["est_total"] is None, c
-    assert c["leverage"] == approx(5.1), c          # round(1/0.195, 1) = 5.1
+    assert c["leverage"] == approx(5.1), c          # round(1/0.198, 1) = 5.1
     assert c["multiplier"] == approx(250_000), c
-    assert c["margin_rate"] == approx(0.195), c
+    assert c["margin_rate"] == approx(0.198), c
 
 
 # ── 미국 후보 키 일관(est_fee_krw=None) ─────────────────────────────────────────

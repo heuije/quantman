@@ -645,14 +645,17 @@ _KRX_PUTCALL_WINDOW_DAYS = 4        # 옵션 무거움(timeout 90s) — 좁게
 _KRX_MARKETCAP_WINDOW_DAYS = 60     # sto 2서비스×평일(~86콜/청크) — 30분 케이던스로 quota 관리
 
 
-def _krx_backfill(name: str, window_days: int, fetch_fn) -> None:
-    """공식 KRX API 날짜축 cursor 백필 — today→CORE_FLOOR 역순 1청크. 성공 시만 cursor 전진."""
+def _krx_backfill(name: str, window_days: int, fetch_fn, floor: str = CORE_FLOOR_COMPACT) -> None:
+    """공식 KRX API 날짜축 cursor 백필 — today→floor 역순 1청크. 성공 시만 cursor 전진.
+
+    floor 기본=CORE_FLOOR. 상장이 floor보다 늦은 상품(코스닥150선물 2015-11-23)은 상장일
+    floor로 — 그 이전 구간은 소스에 행이 없어 헛도는 콜만 생긴다."""
     from quant_core import data_fetcher
     from quant_core.data.feeds import krx_openapi
     if not krx_openapi.is_active():
         return
     bf = DateCursorBackfill(cursor_path=data_fetcher.DATA_DIR / f"_krx_{name}.cursor",
-                            floor=CORE_FLOOR_COMPACT, window_days=window_days)
+                            floor=floor, window_days=window_days)
     win = bf.next_window()
     if win is None:
         return                                       # 백필 완료 — 무비용
@@ -683,6 +686,18 @@ def _backfill_krx_etf_chunk() -> None:
 def _backfill_krx_futures_panel_chunk() -> None:
     from quant_core.data.feeds import krx_openapi
     _krx_backfill("futures_panel", _KRX_LIGHT_WINDOW_DAYS, krx_openapi.fetch_futures_panel)
+
+
+def _backfill_kq150_panel_chunk() -> None:
+    """코스닥150선물 만기물 패널 소급 백필 — 상장일(2015-11-23) floor 전용 커서.
+
+    기존 futures_panel 커서는 K200 단독 시절 완주분이라 KQ150 과거를 못 채운다 — 뒤늦게
+    합류한 상품은 자기 커서로 소급(같은 fut_bydd_trd 일별 응답에서 KQ150만 추출·저장)."""
+    from functools import partial
+    from quant_core.data.feeds import krx_openapi
+    _krx_backfill("kq150_panel", _KRX_LIGHT_WINDOW_DAYS,
+                  partial(krx_openapi.fetch_futures_panel, symbols=["코스닥150선물"]),
+                  floor="20151123")
 
 
 def _backfill_marketcap_chunk() -> None:
@@ -825,26 +840,27 @@ def _package_bundle() -> None:
         _log.exception("full bundle 패키징 실패 (dev 테스트환경 pull만 영향 — 로컬앱 무영향)")
 
 
-def _refresh_kospi_futures() -> None:
-    """KOSPI200 선물 — 공식 KRX API fut_bydd_trd 만기물 패널 최근분 증분 + 연속물 재구성.
+def _refresh_krx_futures() -> None:
+    """KRX 선물(등록 상품 전체 — K200·KQ150) 만기물 패널 최근분 증분 + 연속물 재구성.
 
-    진실원천 = 만기물별 일봉 패널(2010~, 날짜축 cursor 백필). 백테스트용 단일 연속물은 카탈로그
-    기본 롤(at_expiry)로 파생(rebuild_futures_continuous), 다른 롤/조정은 엔진이 백테스트 시
-    패널서 재-stitch(E2). KRX는 T+1(익일 08시) 확정 데이터라 미확정 당일 봉 문제가 없다(KIS
-    실시간과 달리 — 옛 F1 인시던트 무관). 라이브 체결가는 별도(Naver/브로커) — 이 시리즈는
-    백테스트/신호 전용. 선물분석 탭(futures_config 정적 CSV)은 이 경로와 무관(무변경).
+    진실원천 = 만기물별 일봉 패널(fut_bydd_trd — 하루 1콜에 전 상품·날짜축 cursor 백필).
+    백테스트용 단일 연속물은 카탈로그 기본 롤(at_expiry)로 파생(rebuild_futures_continuous),
+    다른 롤/조정은 엔진이 백테스트 시 패널서 재-stitch(E2). KRX는 T+1(익일 08시) 확정
+    데이터라 미확정 당일 봉 문제가 없다(KIS 실시간과 달리 — 옛 F1 인시던트 무관). 라이브
+    체결가는 별도(Naver/브로커) — 이 시리즈는 백테스트/신호 전용. 선물분석 탭(futures_config
+    정적 CSV)은 이 경로와 무관(무변경).
     """
     from datetime import date, timedelta
 
     from quant_core.data.feeds import krx_openapi
     if not krx_openapi.is_active():
-        _log.info("KOSPI200 선물 refresh skip(KRX_API_KEY 미설정)")
+        _log.info("KRX 선물 refresh skip(KRX_API_KEY 미설정)")
         return
     end = date.today()
     s = (end - timedelta(days=7)).strftime("%Y%m%d")     # 최근 7일 재수집(T+1 확정 반영)
     res = krx_openapi.fetch_futures_panel(s, end.strftime("%Y%m%d"))
     data_cache.invalidate()
-    _log.info("[altdata] KOSPI200 선물 패널 증분 %s~%s: %s", s, end, res.get("saved"))
+    _log.info("[altdata] KRX 선물 패널 증분 %s~%s: %s", s, end, res.get("saved"))
     # 08:10 수집(#345) 후 preview 스냅샷 재계산 — 이게 없으면 07:30(dataset_global발)에
     # 계산된 "선물 stale → 후보 0" 스냅샷이 08:55 로컬 pull(온디맨드 재계산)까지 잔존해
     # 웹 타임라인이 오보되고, 온디맨드 실패 시 stale 캐시 폴백 위험(2026-07-10 후속리뷰).
@@ -1006,9 +1022,9 @@ def _initial_dataset_refresh():
         # 선물은 단건이라 무거운 전체 갱신 앞에서 먼저 — 빠른 데이터·검증. 자체 try로 격리(선물
         # 실패가 메인 데이터 갱신을 막지 않게). KIS 데이터키 미설정이면 fail-safe no-op.
         try:
-            _refresh_kospi_futures()
+            _refresh_krx_futures()
         except Exception:
-            _log.exception("KOSPI200 선물 초기 수집 예외 — 16:00 cron 재시도")
+            _log.exception("KRX 선물 초기 수집 예외 — 아침 cron 재시도")
         _refresh_dataset_all()
         _log.info("dataset 초기 갱신 완료")
     except Exception:
@@ -1249,16 +1265,18 @@ def _build_scheduler() -> BackgroundScheduler:
             CronTrigger(hour=_hh, minute=_mm, timezone=_TZ_SEOUL),
             id=f"industry_prices_{_hh}_{_mm}", replace_existing=True)
 
-    # 08:10 + 09:35 — KOSPI200 선물 만기물 패널 최근분 증분 + 연속물 재구성 (공식 KRX API,
-    # T+1 08시 갱신 후). KRX_API_KEY 미설정이면 fail-safe no-op. 백필은 krx_futures_panel_chunk(10분)가 담당.
+    # 08:10 + 09:35 — KRX 선물(K200·KQ150) 만기물 패널 최근분 증분 + 연속물 재구성 (공식 KRX
+    # API, T+1 08시 갱신 후). KRX_API_KEY 미설정이면 fail-safe no-op. 백필은 krx_futures_panel_chunk
+    # (10분·K200 완주분) + kq150_panel_chunk(10분·상장일 소급)가 담당.
     #
     # 08:10이 주 수집: 아침 자동매매 사이클(08:55)의 preview 신선도 게이트가 어제 선물 봉을
     # 요구하는데, 종전 09:35 단독으로는 08:55 시점에 항상 1일 지연 → 매일 아침 후보가
     # 차단됐다(2026-07-08~10 실측 — 선물 소스가 same-day 경로에서 T+1 패널로 전환되며 발생).
     # 09:35는 KRX 공개 지연일의 재시도로 유지 — fetch가 최근 7일 재수집이라 멱등(이중 실행 무해).
+    # job id는 도입 당시 이름(kospi_futures*) 유지 — 로그 연속성(수집 자체는 등록 상품 전체).
     for _hh, _mm, _jid in [(8, 10, "kospi_futures_am"), (9, 35, "kospi_futures")]:
         scheduler.add_job(
-            lambda: _run_with_retry("kospi_futures", _refresh_kospi_futures, scheduler),
+            lambda: _run_with_retry("kospi_futures", _refresh_krx_futures, scheduler),
             CronTrigger(hour=_hh, minute=_mm, timezone=_TZ_SEOUL),
             id=_jid, replace_existing=True)
 
@@ -1354,7 +1372,7 @@ def _build_scheduler() -> BackgroundScheduler:
     # (당일 최종치는 18시 이후 제공 — ETF 04802 화면 명시·파생 동일 규약).
     scheduler.add_job(
         lambda: _run_with_retry("flowderiv_chunk", _backfill_flow_deriv_chunk, scheduler),
-        CronTrigger(minute="4-59/10", timezone=_TZ_SEOUL),           # :04,:14… — 다른 10분 cron과 스태거
+        CronTrigger(minute="2-59/10", timezone=_TZ_SEOUL),           # :02,:12… — 도입 시 :04가 putcall과 겹쳐 재스태거
         id="flowderiv_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("flowderiv_daily", _refresh_flow_deriv, scheduler),
@@ -1393,6 +1411,10 @@ def _build_scheduler() -> BackgroundScheduler:
         lambda: _run_with_retry("krx_futures_panel_chunk", _backfill_krx_futures_panel_chunk, scheduler),
         CronTrigger(minute="9-59/10", timezone=_TZ_SEOUL),           # :09,:19… 스태거 (선물 만기물 패널 2010 백필)
         id="krx_futures_panel_chunk", replace_existing=True)
+    scheduler.add_job(
+        lambda: _run_with_retry("kq150_panel_chunk", _backfill_kq150_panel_chunk, scheduler),
+        CronTrigger(minute="1-59/10", timezone=_TZ_SEOUL),           # :01,:11… 스태거 (KQ150 상장일 소급 — 완주 후 무비용)
+        id="kq150_panel_chunk", replace_existing=True)
     scheduler.add_job(
         lambda: _run_with_retry("krx_market_daily", _refresh_krx_market, scheduler),
         CronTrigger(hour=9, minute=30, timezone=_TZ_SEOUL),          # 공식 KRX API T+1 08시 갱신 후

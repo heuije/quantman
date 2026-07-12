@@ -149,17 +149,23 @@ _FUT_PANEL_ROWS = [
     {"PROD_NM": "미니코스피200 선물", "ISU_NM": "미니코스피200 F 202609 (주간)", "TDD_CLSPRC": "1455"},  # 타상품 제외
     {"PROD_NM": "코스피200 선물", "ISU_NM": "코스피200 F 202612 (주간)", "TDD_CLSPRC": "1465",
      "SETL_PRC": "1465", "ACC_TRDVOL": "20", "ACC_OPNINT_QTY": "8000"},
+    {"PROD_NM": "코스닥150 선물", "ISU_NM": "코스닥150 F 202609 (주간)", "TDD_OPNPRC": "1400.7",
+     "TDD_HGPRC": "1488.2", "TDD_LWPRC": "1384.6", "TDD_CLSPRC": "1469.8", "SETL_PRC": "1469.8",
+     "ACC_TRDVOL": "233538", "ACC_OPNINT_QTY": "437112"},               # KQ150 outright(2026-07-10 실측 형상)
 ]
 
 
 def test_extract_futures_panel_outright_only():
     p = kx.extract_futures_panel(_FUT_PANEL_ROWS, "코스피200 선물")
-    assert sorted(x["contract"] for x in p) == ["202609", "202612"]   # 야간·SP·미니 제외
+    assert sorted(x["contract"] for x in p) == ["202609", "202612"]   # 야간·SP·미니·타상품 제외
     front = next(x for x in p if x["contract"] == "202609")
     assert front["Close"] == 1455.0 and front["High"] == 1460.0 and front["OI"] == 145000.0
+    kq = kx.extract_futures_panel(_FUT_PANEL_ROWS, "코스닥150 선물")
+    assert [x["contract"] for x in kq] == ["202609"] and kq[0]["Close"] == 1469.8
 
 
 def test_fetch_futures_panel_saves_and_rebuilds(monkeypatch, tmp_path):
+    """등록 상품 전체를 하루 1콜 응답에서 동시 추출·상품별 패널+연속물 저장."""
     _setup(monkeypatch, tmp_path)
     monkeypatch.setattr(_df, "FUTURES_PANEL_DIR", tmp_path / "futures_panel")
 
@@ -167,11 +173,27 @@ def test_fetch_futures_panel_saves_and_rebuilds(monkeypatch, tmp_path):
         return _FUT_PANEL_ROWS
 
     res = kx.fetch_futures_panel("20260625", "20260626", fetch=fake)   # 목·금 2일
-    assert res["ok"] and res["rows"] == 4                              # 2계약 × 2일
+    assert res["ok"] and res["rows"] == 6                              # (K200 2계약+KQ150 1계약) × 2일
     panel = _df.load_futures_panel("코스피200선물")
     assert sorted(panel["contract"].unique()) == ["202609", "202612"]
     cont = _df._load_existing("코스피200선물")                          # 연속물 서빙뷰 파생됨
     assert not cont.empty and cont["Close"].iloc[-1] == 1455.0         # 살아있는 최근월물(202609)
+    kq_panel = _df.load_futures_panel("코스닥150선물")                  # KQ150도 같은 응답에서
+    assert list(kq_panel["contract"].unique()) == ["202609"]
+    kq_cont = _df._load_existing("코스닥150선물")
+    assert not kq_cont.empty and kq_cont["Close"].iloc[-1] == 1469.8
+
+
+def test_panel_symbols_locked_to_registry_and_catalog():
+    """_FUT_PANEL(피드) ↔ data_fetcher.KRX_PANEL_FUTURES(카탈로그) ↔ exec_defaults(계약명세)
+    정합 — 한쪽만 고치면 CI 실패. 특히 카탈로그 미등록 선물은 equity·USD로 조용히 오분류되므로
+    (instrument_spec 기본값) 전 패널 심볼의 futures 등록을 잠근다."""
+    from quant_core.exec_defaults import instrument_spec
+    assert set(kx._FUT_PANEL) == set(_df.KRX_PANEL_FUTURES)
+    for s in _df.KRX_PANEL_FUTURES:
+        assert instrument_spec(s).asset_class == "futures", s
+        assert instrument_spec(s).currency == "KRW", s
+        assert _df.symbol_category(s) == "자산", s
 
 
 def test_rebuild_skips_when_panel_shallower_than_existing(monkeypatch, tmp_path):

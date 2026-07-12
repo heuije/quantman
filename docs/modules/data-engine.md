@@ -50,6 +50,11 @@
 
 ## 작업계획 로그 (누적·최신 우선)
 
+### [2026-07-12] D-2 코스닥150선물 가격(만기물 패널→연속물) — K200과 일관 확보 [진행중]
+- 의도: D-3(선물 수급) 직후 사용자 지적 — KQ150은 수급·OI만 있고 **가격(OHLCV)이 없어** "수급→선물가격" 백테스트가 불가한 반쪽 상태. 코스피200선물과 동형(만기물 패널 진실원천→연속물 서빙뷰·롤은 백테스트 파라미터)으로 확보한다. 이력=상장일 2015-11-23~(2010 floor 미달은 소스 자연 한계·정직 노출).
+- 계획: `_FUT_PANEL`·`KRX_PANEL_FUTURES`에 KQ150 추가 + `fetch_futures_panel` 다중상품화(하루 1콜이 전 상품을 담아 **상품 추가=콜 증가 0**) + 상장일 floor 전용 백필 커서(`_krx_backfill` floor 파라미터화·cron :01) + `exec_defaults` 계약명세(승수 1만원/pt·틱 0.1pt·증거금 19.8/13.2%) + 패널↔카탈로그 정합 드리프트 가드.
+- 진행: 실측 — fut_bydd_trd 응답에 KQ150 outright 상장일부터 존재(상장 전일 0행 = 자연 경계·기존 extract 무수정 작동). **redesign §9.4의 D-2용 MDC 13401 제안은 불채택**(공식 API가 상장일부터 전량 커버 — 로그인 불요·단순). 증거금률은 myasset margin_rate.pdf(2026-07-06 정기변경) 공표값 — K200·미니도 같은 문서 기준 19.5/13.0→**19.8/13.2 갱신**. ⚠카탈로그 미등록 선물은 instrument_spec 기본값으로 **equity·USD 조용 오분류** — 가드 테스트(test_panel_symbols_locked_to_registry_and_catalog)로 부류 잠금. 부수 수리: PR#387 flowderiv cron :04가 putcall과 겹쳐 :02 재스태거. 라이브 발주(로컬앱 KQ150 매핑)는 별도 스코프 — 이 작업은 데이터/백테스트 전용.
+
 ### [2026-07-12] D-3 선물·ETF 투자자별 수급 피드 — KRX MDC 매크로 심볼 6종 + 챗 배선 [진행중]
 - 의도: 챗 실수요(진단서 G6·prod #34 "코스닥150 ETF 수급") 기반 D-3 마감 — 주식 수급(flow_kr)만 있고 선물·ETF 수급이 없던 갭을 KRX MDC 일별추이(선물 13102·ETF 04802, 로그인 getJsonData)로 채운다. 소스·isuCd 변형·2005 깊이는 §9.4 실측 확정분(PR#384) 그대로, LS 기각 유지. 완료 정의에 챗 배선 포함(공급≫소비 갭 방지).
 - 계획: `flow_deriv_kr.py` 신설(cot_cftc 동형 매크로 발행 + flow_kr 로그인 게이트·부분전진 금지) → 매크로 심볼 6종({코스피200선물|코스닥150선물|KRETF}{외국인|기관}순매수·일별 순매수 대금·원) → 배선(data_fetcher `MACRO_FLOW_DERIV_SYMBOLS`·spec `macro.kr_deriv_flow`·provenance·`_MACRO_ALIASES`·ir_compiler 필드가이드·cron 백필 :04/증분 18:40 KST·드리프트 가드) + 웹 픽커 '수급' 탭.

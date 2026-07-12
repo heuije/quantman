@@ -115,9 +115,10 @@ register(DataTypeSpec(
     notes="yfinance auto_adjust=True → 배당·분할 조정. excess basis 시 시장지수 필요.",
 ))
 register(DataTypeSpec(
-    key="ohlcv.futures", pclass=PClass.PRICE, label="선물·지수 OHLCV(S&P500·WTI·금 등)",
+    key="ohlcv.futures", pclass=PClass.PRICE, label="선물·지수 OHLCV(S&P500·WTI·금·KR 지수선물 등)",
     frequency="daily", history_rule="백테스트 시작일 − 최대 window 이상 연속",
-    floor=CORE_FLOOR, adjustment="total_return", source="yfinance / FinanceDataReader",
+    floor=CORE_FLOOR, adjustment="total_return",
+    source="yfinance / FinanceDataReader / KRX 만기물 패널(KR 지수선물 — 코스닥150선물은 상장 2015-11-23~)",
     provides=["Open", "High", "Low", "Close", "Volume"],
     required_meta=_BASE_META + ["adjustment"],
     downstream=["universe", "signal", "study.event"], current_status="present",
