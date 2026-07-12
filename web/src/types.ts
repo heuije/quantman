@@ -328,7 +328,7 @@ export interface IrStrategyDef {
   // select=as-of 스냅샷 횡단 랭킹 스크리닝.
   query?: "select" | "describe" | "relate" | "simulate";
   study?: {
-    axis?: "none" | "parameter" | "entity" | "label" | "time_fold";
+    axis?: "none" | "parameter" | "entity" | "label" | "time_fold" | "variant";
     reduction?: "enumerate" | "contrast" | "consistency" | "extremize";
     param_grid?: { path: string; values: (number | string)[] }[];
     assets?: string[];                         // axis=entity
@@ -550,7 +550,11 @@ export interface IrStrategyResult extends BacktestResult {
   max_weight?: number | null;
   // 결과 dict의 axis는 백엔드가 옛 라벨을 parity로 유지한다(요청의 study.axis 신값과
   // 다를 수 있음 — 예: study.axis="entity" 요청 → 결과 axis="asset"). 표시 전용.
-  axis?: "condition" | "parameter" | "asset" | "time" | "period_split" | "signal" | "relation";
+  // variant(WS2 구조 대안)·row_axis(코호트 행축)는 IR대수 캠페인 신설 — 누락 시 tsc -b(프로덕션
+  // 빌드)가 TS2367로 실패한다(실측: PR#370 이후 Vercel 배포 실패·로컬 tsc --noEmit은 미탐지).
+  axis?: "condition" | "parameter" | "asset" | "time" | "period_split" | "signal" | "relation"
+    | "variant";
+  row_axis?: string | null;
   buckets?: Record<string, IrSweepBucket>;
   overall?: IrSweepBucket | Record<string, IrEventStat> | IrDistribution;
   // target=relation(IC) — 윈도우별 IC 통계 + (선택)국면별
