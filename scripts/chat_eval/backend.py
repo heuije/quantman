@@ -296,9 +296,12 @@ class ClaudeCodeBackend:
             env = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": token}
             env.pop("ANTHROPIC_API_KEY", None)
             env.pop("ANTHROPIC_AUTH_TOKEN", None)
+            # --max-turns 3: _NOTOOL_ADDENDUM에도 모델이 native tool_use를 시도하는 샘플이 있다
+            # (동일 쿼리 실측: 1턴 순응 샘플과 '1턴째 도구시도(거부)→2턴째 JSON 자기교정' num_turns=2
+            # 샘플 공존). 1이면 후자가 최종텍스트 없이 끝나 빈 result → 턴 실패 부류의 근본원인.
             proc = subprocess.Popen(
                 [_CLAUDE_BIN, "-p", "--model", model, "--system-prompt-file", sys_file,
-                 "--max-turns", "1", "--allowedTools", "", "--output-format", "json"],
+                 "--max-turns", "3", "--allowedTools", "", "--output-format", "json"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", env=env)
             try:
@@ -322,8 +325,12 @@ class ClaudeCodeBackend:
                 f"출력 파싱 실패(rc={proc.returncode}): "
                 f"stdout={out[:400]!r} / stderr={errout[:300]!r}")
         if env_out.get("is_error") or not str(env_out.get("result", "")).strip():
+            # subtype·is_error·num_turns까지 남겨야 다음 발생 시 원인(도구시도 max_turns vs
+            # CLI 오류 vs 사용량)을 로그만으로 판별할 수 있다.
             raise _RetryableClaudeError(
-                f"빈/오류 응답({env_out.get('api_error_status')}): "
+                f"빈/오류 응답(status={env_out.get('api_error_status')} "
+                f"subtype={env_out.get('subtype')} is_error={env_out.get('is_error')} "
+                f"num_turns={env_out.get('num_turns')}): "
                 f"{env_out.get('result')} / stderr={errout[:200]!r}")
         u = env_out.get("usage") or {}
         usage = _Usage(

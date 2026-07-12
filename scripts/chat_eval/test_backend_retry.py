@@ -80,3 +80,18 @@ def test_empty_result_is_retried(monkeypatch):
     text, _usage = backend.ClaudeCodeBackend()._call("sys", "prompt", "claude-sonnet-5")
     assert text == "OK"
     assert state["n"] == 2
+
+
+def test_max_turns_allows_tool_attempt_self_correction(monkeypatch):
+    """모델이 addendum에도 native tool_use를 시도하는 샘플(실측 num_turns=2)이 거부 피드백 후
+    자기교정할 수 있도록 --max-turns는 2 이상이어야 한다(1이면 빈 result로 턴 실패)."""
+    captured = {}
+
+    def _popen(cmd, **_k):
+        captured["cmd"] = cmd
+        return _FakeProc(_envelope(result="OK"))
+
+    monkeypatch.setattr(backend.subprocess, "Popen", _popen)
+    backend.ClaudeCodeBackend()._call("sys", "prompt", "claude-sonnet-5")
+    i = captured["cmd"].index("--max-turns")
+    assert int(captured["cmd"][i + 1]) >= 2
