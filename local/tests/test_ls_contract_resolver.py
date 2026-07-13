@@ -74,13 +74,15 @@ def test_resolve_overseas_unknown_root_none():
 
 
 # ── 미니 코스피200선물(A05) 일반화 ─────────────────────────────────────────────
-# 정규(A01)와 미니(A05)가 같은 t8467 마스터에 동시 수록된다는 전제(2026-06 실측 형식).
+# 미니(A05)는 t8467이 아니라 파생종목마스터 t8435 gubun="MF"로 분리 제공된다(2026-07-13 모의
+# 실측: shcode "A05…"·hname "MF YYMM"). index_futures_master가 t8467(A01)+t8435(MF)를 병합
+# 하므로, 이 픽스처는 그 병합 결과(A01 정규 + A05 미니)를 재현해 resolver 로직을 잠근다.
 # 정규 LS 해석은 byte-identical로 보존되고, 미니가 옆에 ADD 된다.
 _MASTER_BOTH = [
     {"shcode": "A0166000", "expcode": "KR4A01660005", "hname": "F 2606"},      # 정규 2026-06
     {"shcode": "A0169000", "expcode": "KR4A01690002", "hname": "F 2609"},      # 정규 2026-09
-    {"shcode": "A0566000", "expcode": "KR4A05660003", "hname": "미니 F 2606"},   # 미니 2026-06
-    {"shcode": "A0569000", "expcode": "KR4A05690000", "hname": "미니 F 2609"},   # 미니 2026-09
+    {"shcode": "A0566000", "expcode": "KR4A05660003", "hname": "MF 2606"},     # 미니 2026-06(실측 형식)
+    {"shcode": "A0569000", "expcode": "KR4A05690000", "hname": "MF 2609"},     # 미니 2026-09(실측 형식)
     {"shcode": "D01696CS", "expcode": "KR4D016000", "hname": "F SP 09-2612"},   # 스프레드(SP) 제외
 ]
 
@@ -211,3 +213,48 @@ def test_index_master_t8435_failure_preserves_kospi200():
 
     rows = _broker_with_post(fake_post).index_futures_master()
     assert [r["shcode"] for r in rows] == ["A0169000"]   # 코스피200 정규 보존
+
+
+def test_index_master_merges_t8467_and_t8435_mf():
+    """index_futures_master가 t8467(코스피200)+t8435 MF(미니 코스피200 A05)를 병합한다.
+
+    2026-07-13 모의 실측: 미니는 t8467에 없고 파생종목마스터 t8435 gubun="MF"로 분리 제공
+    (shcode "A05…"·hname "MF YYMM"). 병합 안 하면 리졸버가 미니를 못 봐 조용한 무발주."""
+    seen = []
+
+    def fake_post(path, tr, body):
+        gubun = body.get(f"{tr}InBlock", {}).get("gubun")
+        seen.append((tr, gubun))
+        if tr == "t8467":
+            return {"t8467OutBlock": [{"shcode": "A0169000", "hname": "F 2609",
+                                       "expcode": "KR4A01690002"}]}
+        if tr == "t8435" and gubun == "MF":
+            return {"t8435OutBlock": [{"shcode": "A0569000", "hname": "MF 2609",
+                                       "expcode": "KR4A05690000"}]}
+        return {}
+
+    rows = _broker_with_post(fake_post).index_futures_master()
+    shcodes = {r["shcode"] for r in rows}
+    assert "A0169000" in shcodes and "A0569000" in shcodes   # 코스피200 + 미니
+    assert ("t8467", "") in seen and ("t8435", "MF") in seen
+
+
+def test_index_master_per_product_t8435_failure_isolated():
+    """t8435 한 상품(SF) 실패가 다른 상품(MF)·코스피200을 막지 않는다 — 상품별 독립 non-fatal.
+
+    상품별 try를 하나로 합치면 SF 실패가 MF까지 건너뛰어 미니가 조용히 재차 깨진다 — 그 회귀 차단."""
+    def fake_post(path, tr, body):
+        gubun = body.get(f"{tr}InBlock", {}).get("gubun")
+        if tr == "t8467":
+            return {"t8467OutBlock": [{"shcode": "A0169000", "hname": "F 2609",
+                                       "expcode": "KR4A01690002"}]}
+        if tr == "t8435" and gubun == "SF":
+            raise RuntimeError("t8435 SF down")
+        if tr == "t8435" and gubun == "MF":
+            return {"t8435OutBlock": [{"shcode": "A0569000", "hname": "MF 2609",
+                                       "expcode": "KR4A05690000"}]}
+        return {}
+
+    shcodes = {r["shcode"] for r in _broker_with_post(fake_post).index_futures_master()}
+    assert "A0169000" in shcodes and "A0569000" in shcodes   # 코스피200·미니 보존
+    assert "A0669000" not in shcodes                          # 실패한 코스닥150만 누락
