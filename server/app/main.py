@@ -1013,6 +1013,53 @@ def _rebuild_overseas_universe() -> int:
     return len(nt)
 
 
+# orphan parquet 1회성 정리 — PR#400(유니버스 malformed 차단) 후속. 옛 오종목('/'→'_' 파일
+# AACT_U.parquet 등)이 볼륨에 영구 잔존해 매 번들에 실리는 대역폭 낭비를 제거. 정합성 아닌
+# hygiene이라 1회면 충분(marker 게이트). ⚠자동 삭제라 mass-deletion 가드 필수: 유니버스가
+# 비정상적으로 작으면(미로드 의심) 삭제 skip·marker 미기록으로 다음 부팅 재시도.
+_ORPHAN_PRUNE_MARKER = "_orphan_prune_done.marker"
+_ORPHAN_MIN_SANE_UNIVERSE = 1000        # prod 유니버스 25k+ — 이보다 적으면 미로드로 보고 삭제 금지
+
+
+def _prune_orphan_parquets_once():
+    """유니버스 밖 orphan parquet 1회 정리(marker 게이트·유니버스 sanity 가드).
+
+    keep-set은 write 경로(_parquet_path)와 동일 규칙 + 해외는 predicate 필터라 매크로·실티커·
+    별칭·서브디렉터리·정당 종목 전부 보존(find_orphan_parquets). 유니버스 키가 floor 미만이면
+    (managed 목록 미로드 등) 전 파일이 orphan으로 오판될 수 있어 **삭제하지 않고 재시도**한다."""
+    import time
+    from quant_core import data_fetcher
+    try:
+        time.sleep(540)                 # dataset_refresh(360)+rebuild 이후 — 명단 self-clean 뒤 스태거
+        marker = data_fetcher.DATA_DIR / _ORPHAN_PRUNE_MARKER
+        if marker.exists():
+            return
+        n_keys = len(data_fetcher.iter_universe_keys())
+        if n_keys < _ORPHAN_MIN_SANE_UNIVERSE:
+            _log.warning("orphan 정리 skip — 유니버스 키 %d개(<%d 미로드 의심) — 삭제 금지·다음 부팅 재시도",
+                         n_keys, _ORPHAN_MIN_SANE_UNIVERSE)
+            return                      # marker 미기록 → 재시도
+        orphans = data_fetcher.find_orphan_parquets()
+        total = len(list(data_fetcher.DATA_DIR.glob("*.parquet")))
+        _log.info("orphan 정리(1회성): 유니버스 %d키 · top-level %d개 중 orphan %d개 삭제",
+                  n_keys, total, len(orphans))
+        for p in orphans[:20]:
+            _log.info("  orphan 표본: %s", p.name)
+        deleted = 0
+        for p in orphans:
+            try:
+                p.unlink()
+                deleted += 1
+            except OSError as e:
+                _log.warning("orphan 삭제 실패(건너뜀): %s — %s", p.name, e)
+        marker.write_text(f"pruned {deleted}/{len(orphans)}", encoding="utf-8")
+        _log.info("orphan 정리 완료: %d/%d 삭제 · marker 기록", deleted, len(orphans))
+        if deleted:
+            data_fetcher.mark_data_dirty()
+    except Exception:
+        _log.exception("orphan 정리 1회성 잡 예외 — 다음 부팅 재시도(marker 미기록)")
+
+
 def _initial_dataset_refresh():
     """시작 시 1회 dataset 갱신 — 기술적 지표 후 240초 지연 (외부 소스 동시 호출 분산)."""
     import time
@@ -1564,6 +1611,7 @@ def _schedule_startup_jobs() -> None:
     # refresh '완료' 이벤트로 수행 — _package_bundle docstring 참조.
     _bg("us_market_caps", _initial_us_market_caps, delay=360)
     _bg("dataset_cache_prewarm", _initial_dataset_cache_prewarm, delay=420)
+    _bg("orphan_prune", _prune_orphan_parquets_once, delay=0)   # 자체 sleep(540)·marker 게이트·1회성
     # 계층 3 — 대용량·저빈도 백필(OHLCV 깊이·COT·공매도·13F·재무 XBRL). 10분 뒤.
     _bg("kr_ohlcv_backfill", _initial_kr_ohlcv_backfill, delay=600)
     _bg("us_ohlcv_backfill", _initial_us_ohlcv_backfill, delay=600)

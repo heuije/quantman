@@ -934,11 +934,17 @@ def iter_universe_keys() -> set[str]:
     """현재 유니버스에 속한 모든 dataset 심볼 키 — orphan parquet 판정의 '보존 대상' 기준.
 
     내장(ALL_SYMBOLS)·가격별칭(PRICE_ALIAS 양변)·자동관리 KR·해외·사용자 종목의 합집합.
-    매크로(금선물·S&P500)·실티커는 여기 포함되므로 orphan 판정에서 자동 보존된다."""
+    매크로(금선물·S&P500)·실티커는 여기 포함되므로 orphan 판정에서 자동 보존된다.
+
+    ⚠ 해외는 **is_valid_overseas_symbol로 필터**한다 — 명단이 아직 self-clean 전이라
+    malformed 엔트리(AACT_U 등)가 남아 있어도, 그 엔트리가 자기 orphan 파일을 keep-set으로
+    '보호'하지 못하게(orphan 정리가 명단 self-clean 타이밍에 의존하지 않게). malformed는
+    애초에 유효한 유니버스 멤버가 아니다(fetch·거래 불가)."""
     keys: set[str] = set(ALL_SYMBOLS)
     keys |= set(PRICE_ALIAS) | set(PRICE_ALIAS.values())
     keys |= set(load_managed_kr_codes())
-    keys |= {s.get("code", "") for s in load_managed_overseas() if s.get("code")}
+    keys |= {s.get("code", "") for s in load_managed_overseas()
+             if is_valid_overseas_symbol(s.get("code", ""))}
     keys |= {s.get("name", "") for s in load_user_stocks() if s.get("name")}
     return {k for k in keys if k}
 

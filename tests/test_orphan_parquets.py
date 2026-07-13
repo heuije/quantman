@@ -55,5 +55,15 @@ def test_price_alias_target_preserved(_env):
     assert df.find_orphan_parquets() == []
 
 
+def test_malformed_overseas_entry_does_not_protect_its_file(_env, monkeypatch):
+    """명단 self-clean 전에 malformed 엔트리(AACT_U)가 남아 있어도, keep-set은 predicate로
+    필터하므로 그 orphan 파일이 '보호'되지 않는다(orphan 정리가 명단 타이밍에 비의존)."""
+    monkeypatch.setattr(df, "load_managed_overseas",
+                        lambda: [{"code": "AAPL"}, {"code": "AACT_U"}])   # AACT_U=아직 남은 malformed
+    _touch(_env, "AAPL.parquet", "AACT_U.parquet")
+    orphans = {p.name for p in df.find_orphan_parquets()}
+    assert orphans == {"AACT_U.parquet"}, f"malformed의 파일은 orphan이어야: {orphans}"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
