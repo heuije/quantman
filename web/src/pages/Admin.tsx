@@ -1,11 +1,14 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
   Bar, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis,
 } from "recharts";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import type { AdminMetrics, AdminUserRow, ChatInputRow } from "../types";
+import type {
+  AdminMetrics, AdminUserRow, ChatInputRow,
+  AdminHealth, AdminHealthUser, HealthCondition, HealthStatus,
+} from "../types";
 
 // DESIGN.md §8 차트 규칙 — 네이비 막대 + 골드 선만(회색 등 금지).
 const CHART_NAVY = "#264a85";
@@ -92,10 +95,167 @@ function RankPanel({ title, empty, rows }: {
   );
 }
 
+// ── 자동매매 건강 신호등 ──────────────────────────────────────────────────────
+// 상태색은 "상태 의미"(정상/주의/이상). DESIGN.md 상태 토큰(--green/--amber/--danger/
+// --muted)을 쓴다 — 시장 방향색(--up 빨강/--down 파랑)과 의도적으로 구분(한국식
+// 방향색을 상태에 재사용하면 운영자가 '상승/하락'으로 오독).
+const HEALTH_COLOR: Record<HealthStatus, string> = {
+  green: "var(--green)",
+  amber: "var(--amber)",     // 주의 = 앰버/골드 톤 상태 토큰(브랜드 --accent 아님)
+  red: "var(--danger)",
+  unknown: "var(--muted)",
+};
+const HEALTH_LABEL: Record<HealthStatus, string> = {
+  green: "정상", amber: "주의", red: "이상", unknown: "미상",
+};
+// 9개 조건 — 서버 키 → 한글 짧은 라벨(권장 표시 순서대로).
+const CONDITION_ORDER: [key: string, label: string][] = [
+  ["runtime", "런타임"],
+  ["connectivity", "연결"],
+  ["data_freshness", "데이터"],
+  ["strategy_validity", "전략유효"],
+  ["broker_ready", "브로커"],
+  ["cycle_execution", "사이클"],
+  ["decision_output", "판단"],
+  ["order_placement", "발주"],
+  ["reconciliation", "정합"],
+];
+
+/** ISO → "MM/DD HH:MM" (title 안 정확 시각용). 없으면 "없음". */
+function fmtExact(iso: string | null): string {
+  return iso ? fmtWhen(iso) : "없음";
+}
+
+/** overall 신호등 — 색 점 + 상태 라벨. */
+function StatusLight({ status, size = 12 }: { status: HealthStatus; size?: number }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+      <span style={{ width: size, height: size, borderRadius: "50%", flex: "0 0 auto",
+                     background: HEALTH_COLOR[status] }} />
+      <span style={{ color: HEALTH_COLOR[status], fontWeight: 600 }}>{HEALTH_LABEL[status]}</span>
+    </span>
+  );
+}
+
+/** 9개 조건별 작은 신호등 점 — hover(title)로 라벨·상태·detail 노출. */
+function ConditionDots({ conditions }: { conditions: Record<string, HealthCondition> }) {
+  return (
+    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+      {CONDITION_ORDER.map(([key, label]) => {
+        const c = conditions[key];
+        const status: HealthStatus = c?.status ?? "unknown";
+        const detail = c?.detail || "정보 없음";
+        return (
+          <span key={key}
+                title={`${label} · ${HEALTH_LABEL[status]}\n${detail}`}
+                aria-label={`${label} ${HEALTH_LABEL[status]}`}
+                style={{ width: 10, height: 10, borderRadius: "50%", cursor: "help",
+                         flex: "0 0 auto", background: HEALTH_COLOR[status] }} />
+        );
+      })}
+    </div>
+  );
+}
+
+function HealthRows({ users }: { users: AdminHealthUser[] }) {
+  const thL: React.CSSProperties = { textAlign: "left", padding: "6px 10px", whiteSpace: "nowrap" };
+  const th: React.CSSProperties = { textAlign: "right", padding: "6px 10px", whiteSpace: "nowrap" };
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      <thead>
+        <tr style={{ borderBottom: "1px solid var(--border)", color: "var(--muted)" }}>
+          <th style={{ ...thL, width: 76 }}>상태</th>
+          <th style={thL}>이메일</th>
+          <th style={th}>실전 전략</th>
+          <th style={th} title="로컬앱 마지막 하트비트 — 자동매매 가동 신호">마지막 신호</th>
+          <th style={th} title="런타임·연결·데이터·전략유효·브로커·사이클·판단·발주·정합">조건 (9)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {users.map((u) => {
+          const hasAlerts = u.alert_reasons.length > 0;
+          // 경고 강조색 — 이상(red)은 danger, 그 외는 주의(amber)로 눈에 띄게.
+          const alertText = u.overall === "red" ? "var(--danger)" : "var(--amber)";
+          const alertSoft = u.overall === "red" ? "var(--red-soft)" : "var(--amber-soft)";
+          return (
+            <Fragment key={u.user_id}>
+              <tr style={{ borderBottom: hasAlerts ? "none" : "1px solid var(--border)" }}>
+                <td style={thL}><StatusLight status={u.overall} /></td>
+                <td style={{ ...thL, fontWeight: 600 }}>{u.email ?? <span className="muted">—</span>}</td>
+                <td style={th}>
+                  {u.live_strategies > 0
+                    ? <span className="badge" style={{ background: "var(--up-soft)", color: "var(--up)" }}>
+                        실전 {u.live_strategies}
+                      </span>
+                    : <span className="muted">0</span>}
+                </td>
+                <td style={th} className={u.heartbeat_at ? "" : "muted"}
+                    title={`하트비트: ${fmtExact(u.heartbeat_at)}\n스냅샷: ${fmtExact(u.snapshot_at)}`}>
+                  {ago(u.heartbeat_at)}
+                </td>
+                <td style={{ ...th, paddingTop: 8, paddingBottom: 8 }}>
+                  <ConditionDots conditions={u.conditions} />
+                </td>
+              </tr>
+              {hasAlerts && (
+                <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                  <td colSpan={5} style={{ padding: "0 10px 8px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {u.alert_reasons.map((a) => (
+                        <div key={a.code} style={{ background: alertSoft, color: alertText,
+                              borderLeft: `3px solid ${alertText}`, borderRadius: 6,
+                              padding: "5px 10px", fontSize: 12.5 }}>
+                          ⚠ {a.message}
+                        </div>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function HealthPanel({ health, err }: { health: AdminHealth | null; err: string | null }) {
+  const alertCount = health?.users.filter((u) => u.alert_reasons.length > 0).length ?? 0;
+  return (
+    <div className="panel" style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between",
+                     gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
+        <div className="sub-h" style={{ margin: 0 }}>
+          자동매매 건강{health ? ` (${health.users.length})` : ""}
+        </div>
+        {alertCount > 0 && (
+          <span className="badge" style={{ background: "var(--red-soft)", color: "var(--danger)" }}>
+            경고 {alertCount}명
+          </span>
+        )}
+      </div>
+      {err ? (
+        <p className="muted small" style={{ margin: 0 }}>건강 상태를 불러오지 못했습니다 — {err}</p>
+      ) : !health ? (
+        <p className="muted small" style={{ margin: 0 }}>불러오는 중…</p>
+      ) : health.users.length === 0 ? (
+        <p className="muted small" style={{ margin: 0 }}>실전 자동매매를 가동 중인 유저가 없습니다.</p>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <HealthRows users={health.users} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Admin() {
   const { isAdmin, ready } = useAuth();
   const [data, setData] = useState<AdminMetrics | null>(null);
   const [chatLog, setChatLog] = useState<ChatInputRow[]>([]);
+  const [health, setHealth] = useState<AdminHealth | null>(null);
+  const [healthErr, setHealthErr] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -108,6 +268,11 @@ export default function Admin() {
     api.adminChatLog(100)
       .then((r) => { if (alive) setChatLog(r.messages); })
       .catch(() => { /* 로그 조회 실패는 대시보드 나머지를 막지 않는다 */ });
+    // 자동매매 건강 신호등은 별도 엔드포인트(조건 계산이 무거워 metrics와 분리).
+    // 조용한 무발주(mwmw 사고)를 운영자가 놓치지 않도록 실패는 삼키지 않고 표면화.
+    api.adminHealth()
+      .then((h) => { if (alive) setHealth(h); })
+      .catch((e) => { if (alive) setHealthErr(e instanceof Error ? e.message : String(e)); });
     return () => { alive = false; };
   }, [isAdmin]);
 
@@ -162,6 +327,9 @@ export default function Admin() {
               value={`${auth_breakdown.google + auth_breakdown.naver}`}
               sub={<>구글 <b>{auth_breakdown.google}</b> · 네이버 <b>{auth_breakdown.naver}</b> · 이메일 <b>{auth_breakdown.password}</b></>} />
       </div>
+
+      {/* ── 자동매매 건강 신호등 ── */}
+      <HealthPanel health={health} err={healthErr} />
 
       {/* ── 일별 추세 (KST) ── */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 14 }}>

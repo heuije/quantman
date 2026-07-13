@@ -1310,3 +1310,28 @@ export interface ChatInputRow {
   question: string;
   answer: string | null;      // 페어링된 봇 답변(없으면 null)
 }
+
+// ── 자동매매 건강 (/admin/health) — 유저별 신호등 ────────────────────────────
+// 상태색은 시장 방향색(--up/--down)이 아니라 상태 토큰(green/amber/danger/muted).
+export type HealthStatus = "green" | "amber" | "red" | "unknown";
+export interface HealthCondition {
+  status: HealthStatus;
+  detail: string;             // hover 로 노출할 한 줄 설명
+}
+export interface HealthAlertReason {
+  code: string;
+  message: string;            // 운영자에게 강조 표시할 경고 메시지
+}
+export interface AdminHealthUser {
+  user_id: number;
+  email: string | null;
+  live_strategies: number;
+  snapshot_at: string | null;   // 마지막 포지션 스냅샷 push (ISO)
+  heartbeat_at: string | null;  // 마지막 로컬앱 하트비트 (ISO)
+  overall: HealthStatus;
+  conditions: Record<string, HealthCondition>;   // 9개 조건(runtime…reconciliation)
+  alert_reasons: HealthAlertReason[];
+}
+export interface AdminHealth {
+  users: AdminHealthUser[];     // 서버가 RED 유저를 위로 정렬해 반환
+}
