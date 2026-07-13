@@ -1,5 +1,6 @@
 import type {
   AdminMetrics,
+  AdminHealth,
   ChatInputRow,
   BacktestRunSummary,
   CapabilityMatrix,
@@ -192,6 +193,10 @@ export const api = {
   // 운영자 — 최근 유저 챗봇 입력 내역(질문 + 봇 답변). 서버 require_admin 게이트.
   adminChatLog: (limit = 100) =>
     req<{ messages: ChatInputRow[] }>(`/admin/chat-log?limit=${limit}`),
+
+  // 운영자 — 유저별 자동매매 건강 신호등(런타임·연결·데이터·발주·정합 등 9조건).
+  // 서버 require_admin 게이트. 서버가 RED 유저를 위로 정렬해 반환.
+  adminHealth: () => req<AdminHealth>("/admin/health"),
 
   symbols: () => req<{ symbols: SymbolInfo[]; indicator_catalog: IndicatorInfo[]; has_master: boolean }>("/symbols"),
 

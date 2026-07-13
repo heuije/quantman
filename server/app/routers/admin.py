@@ -17,6 +17,7 @@ from .. import data_cache
 from ..admin_metrics import compute_admin_metrics, recent_chat_inputs
 from ..db import get_session
 from ..deps import require_admin
+from ..health_monitor import compute_user_health
 from ..models import CompileLog, User
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -40,6 +41,18 @@ def admin_chat_log(limit: int = 100, user: User = Depends(require_admin),
     유저가 챗봇에 실제로 무엇을 물었는지 확인용. 안전정보만(질문·답변 텍스트)이며
     운영자(require_admin)만 접근한다."""
     return {"messages": recent_chat_inputs(session, limit=min(max(limit, 1), 500))}
+
+
+@router.get("/health")
+def autotrade_health(user: User = Depends(require_admin),
+                     session: Session = Depends(get_session)):
+    """운영자 — 유저별 자동매매 건강 신호등(MECE 조건 C1~C9 + dead-man's-switch).
+
+    "이 유저가 데이터를 싣고→신호를 내고→발주하고→정합을 맞추나"를 per-user로 판정한다.
+    mwmw CON.parquet 사고(설치 이래 발주 0이 며칠 미탐지)의 사각을 메우는 창구.
+    SyncSnapshot.payload의 안전정보(플래그·카운트·타임스탬프)만 읽으며 자격증명·계좌번호
+    ·원시주문은 접근하지 않는다. RED 유저가 위로 정렬된다."""
+    return {"users": compute_user_health(session)}
 
 
 @router.post("/invalidate")
