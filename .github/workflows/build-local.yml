@@ -31,7 +31,33 @@ on:
       - 'v*-rc*'
 
 jobs:
+  test:
+    # 2026-07-13 인시던트(CON.parquet Windows 예약명): CI가 build-only라 326개 테스트 중
+    # 하나도 릴리스를 게이트하지 못했다 → 실유저 무발주가 며칠간 잡히지 않음. 릴리스 전
+    # 회귀 테스트를 강제한다. 크래시는 환경 의존이라 재현이 아니라 **예약명이 번들에 안 실림**을
+    # assert하는 방식으로 검증(어느 OS·Python에서도 결정적).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install deps
+        run: |
+          pip install --upgrade pip
+          pip install -e core
+          pip install -r server/requirements.txt
+          pip install -r local/requirements.txt
+          pip install pytest
+      - name: Run regression tests (파일명 안전화 · 번들 · 추출)
+        env:
+          PYTHONPATH: core:server:local
+        run: |
+          pytest -q core/tests/test_sanitize_fs_name.py server/tests/test_dataset_bundle.py server/tests/test_dataset_bundle_reserved.py local/tests/test_dataset_bundle_timeout.py local/tests/test_datafetch_refresh.py
+
   create-release:
+    needs: [test]
     # 빌드 전에 release를 먼저 생성 — 빌드 잡들이 asset을 직접 업로드할 대상.
     # 릴리즈노트 파일 검증도 여기서 — 없으면 3~4분 빌드를 돌리기 전에 fail fast.
     if: |
@@ -86,11 +112,12 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
-    needs: [create-release]
+    needs: [create-release, test]
     # smoke build(dispatch publish=false)에선 create-release가 skip — 빌드는 항상 수행.
-    # create-release가 '실패'(릴리즈노트 누락 등)면 빌드도 중단(fail fast).
+    # 단 test는 반드시 통과(2026-07-13 CON.parquet 인시던트 후 회귀 게이트). create-release가
+    # '실패'(릴리즈노트 누락 등)면 빌드도 중단(fail fast).
     if: |
-      always() && !cancelled() &&
+      always() && !cancelled() && needs.test.result == 'success' &&
       (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
     defaults:
       run:
@@ -152,9 +179,9 @@ jobs:
 
   build-macos:
     runs-on: macos-14   # Apple Silicon (M-series). Intel은 macos-13.
-    needs: [create-release]
+    needs: [create-release, test]
     if: |
-      always() && !cancelled() &&
+      always() && !cancelled() && needs.test.result == 'success' &&
       (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
     defaults:
       run:

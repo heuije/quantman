@@ -121,6 +121,7 @@ def fetch_dataset_bundle(local_data_dir: Path, scope: str = "trading") -> dict:
     local_data_dir.mkdir(parents=True, exist_ok=True)
     tmp_path: str | None = None
     n_extracted = 0
+    failed_members: list[str] = []
     try:
         _deadline = time.monotonic() + _BUNDLE_TOTAL_TIMEOUT_SEC
         with tempfile.NamedTemporaryFile(delete=False, suffix=".zst") as tmp:
@@ -140,6 +141,7 @@ def fetch_dataset_bundle(local_data_dir: Path, scope: str = "trading") -> dict:
         # 4459 parquet 있어도 dataset dict에 macro 51개만 로드 → trader가
         # 매수 후보 종목(AAPL 등) prev_close 못 찾아 skip_no_data로 매수 0건.
         extracted_symbols: list[str] = []
+        from quant_core.parquet_io import sanitize_fs_name
         dctx = zstandard.ZstdDecompressor()
         with open(tmp_path, "rb") as f, \
                 dctx.stream_reader(f) as zr, \
@@ -147,13 +149,42 @@ def fetch_dataset_bundle(local_data_dir: Path, scope: str = "trading") -> dict:
             for member in tar:
                 if not member.isfile() or not member.name.endswith(".parquet"):
                     continue
-                tar.extract(member, path=local_data_dir,
-                             set_attrs=False, filter="data")
+                # per-member 격리 — 한 멤버 실패가 나머지 추출을 중단시키지 못하게 한다
+                # (2026-07-13 CON.parquet 인시던트: 예약명 1개 추출 실패가 스트림 루프 전체를
+                # 죽여 dataset이 거의 빈 채로 남아 발주 0). 스트리밍 tar(r|)은 seek 불가라
+                # tar.extract가 target open에서 실패하면 멤버 바이트가 미소비돼 이후 멤버가
+                # 깨진다 → extractfile로 **바이트를 먼저 소비**한 뒤 OS-안전 이름으로 직접 write:
+                # 스트림 정렬 보존 + 예약명(CON 등) 회피를 동시에(서버 미배포 시 클라 단독 방어).
+                name = member.name.replace("\\", "/")
+                if name.startswith("/") or ".." in name.split("/"):
+                    failed_members.append(f"{member.name}(unsafe_path)")
+                    continue
+                try:
+                    fobj = tar.extractfile(member)
+                    data = fobj.read() if fobj is not None else b""
+                except Exception as e:
+                    failed_members.append(f"{member.name}(read:{type(e).__name__})")
+                    log.error("dataset bundle 멤버 읽기 실패(격리·계속): %s — %s", member.name, e)
+                    continue
+                head, _, base_name = name.rpartition("/")
+                stem = Path(base_name).stem
+                safe_rel = (f"{head}/" if head else "") + f"{sanitize_fs_name(stem)}.parquet"
+                target = local_data_dir / safe_rel
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with open(target, "wb") as out:
+                        out.write(data)
+                except Exception as e:
+                    failed_members.append(f"{member.name}(write:{type(e).__name__})")
+                    log.error("dataset bundle 멤버 저장 실패(격리·계속): %s — %s", member.name, e)
+                    continue
                 n_extracted += 1
-                # symbol 추출 — "subdir/AAPL.parquet" → "AAPL"
-                stem = Path(member.name).stem
+                # symbol 추출 — "subdir/AAPL.parquet" → "AAPL"(원본 stem으로 universe 등록)
                 if stem:
                     extracted_symbols.append(stem)
+        if failed_members:
+            log.error("dataset bundle: %d개 멤버 추출 실패(나머지 %d개 적용) — %s",
+                      len(failed_members), n_extracted, failed_members[:10])
 
         # bundle 종목들을 KRX(6자리 숫자) / overseas(영문 ticker)로 분류해 universe 등록.
         # macro symbol(S&P500·달러원 등)은 ALL_SYMBOLS에 이미 있으니 overseas 등록에서 제외.
@@ -187,6 +218,7 @@ def fetch_dataset_bundle(local_data_dir: Path, scope: str = "trading") -> dict:
     log.info("dataset bundle 적용: %d parquet, %.1fs, etag=%s",
               n_extracted, elapsed, new_etag[:12])
     return {"ok": True, "skipped": False, "n_files": n_extracted,
+            "n_failed": len(failed_members), "failed_sample": failed_members[:10],
             "elapsed_sec": elapsed}
 
 

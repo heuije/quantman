@@ -21,6 +21,39 @@ from pathlib import Path
 import pandas as pd
 
 
+# Windows 예약 장치명 — 파일명으로 못 쓴다(확장자 무관: "CON.parquet"도 콘솔 장치로 취급).
+# 데이터엔진은 Linux라 이런 이름도 정상 저장하지만, 그 parquet을 tar 번들로 받아 푸는
+# Windows 로컬앱에선 추출이 [WinError]로 깨진다 → 그 지점 이후 멤버가 통째로 유실.
+# (2026-07-13 실유저 무발주 인시던트: 실재 티커 "CON"(Concentra)·"PRN"이 공유 번들에 실려
+#  한 유저의 dataset 추출 전체를 중단시켜 발주 0. 재발 방지 = 이 이름을 클라이언트에 안 보낸다.)
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+# Windows 파일명 금지문자(기존 '/'만 치환하던 것을 전 금지문자로 확장).
+_WINDOWS_ILLEGAL_CHARS = '<>:"/\\|?*'
+
+
+def sanitize_fs_name(stem: str) -> str:
+    """심볼(파일 stem)을 모든 OS에서 안전한 파일명 stem으로 정규화한다.
+
+    **정상 이름은 그대로(byte-identical)** — 오직 Windows 예약장치명·금지문자·말미 점/공백만
+    결정적으로 remap한다. write·read·bundle 세 경로가 이 한 함수를 SSOT로 공유하므로
+    원본↔안전키가 1:1로 유지된다(별도 매핑 테이블 불필요).
+    예: "AAPL"→"AAPL", "코스피200선물"→"코스피200선물", "BRK/B"→"BRK_B",
+        "CON"→"CON_", "PRN"→"PRN_", "005930"→"005930".
+    """
+    safe = stem
+    for ch in _WINDOWS_ILLEGAL_CHARS:
+        if ch in safe:
+            safe = safe.replace(ch, "_")
+    safe = safe.rstrip(" .")                 # Windows는 말미 점·공백을 잘라 충돌·유실 유발
+    if safe.upper() in _WINDOWS_RESERVED_STEMS:
+        safe = safe + "_"                    # 확장자 무관 예약어라 stem 자체를 무력화
+    return safe or "_"                       # 전부 제거된 극단 방어(정상 심볼엔 도달 안 함)
+
+
 def write_parquet_atomic(df: pd.DataFrame, path: Path) -> None:
     """parquet을 원자적으로 저장: 같은 디렉터리 임시파일에 쓴 뒤 os.replace로 교체.
 

@@ -97,13 +97,32 @@ def build_bundle(scope: str = "trading") -> dict:
         # 웹 요청에 코어를 양보해 "어떤 시간에 접속해도 빠른 응답"을 지킨다. (2026-07-07)
         cctx = zstandard.ZstdCompressor(level=3, threads=0)
 
+        # 파일명 안전화 SSOT — 심볼이 Windows 예약장치명(CON·PRN 등)이면 그 parquet을 받은
+        # Windows 로컬앱의 추출이 [WinError]로 깨져 그 지점 이후 멤버가 통째로 유실된다
+        # (2026-07-13 실유저 무발주 인시던트). 번들 arcname을 sanitize_fs_name으로 통과시켜
+        # **OS-안전 이름만 배포**한다(정상 심볼은 byte-identical). 디스크 원본은 Linux 서버에서
+        # 그대로 유효하므로 write 경로·재수집은 불필요 — 배포 경계에서 근본 차단.
+        from quant_core.parquet_io import sanitize_fs_name
+
+        _seen_arc: set[str] = set()
+        _remapped: list[str] = []
+
+        def _arc(p, prefix: str = "") -> str:
+            safe_stem = sanitize_fs_name(p.stem)
+            if safe_stem != p.stem:
+                _remapped.append(f"{prefix}{p.name}->{safe_stem}{p.suffix}")
+            return f"{prefix}{safe_stem}{p.suffix}"
+
         def _safe_add(tar, p, arcname) -> int:
-            """압축 중 데이터엔진 cron·병렬세션이 parquet을 **원자적 교체(write_parquet_atomic의
-            temp→rename, 짧은 unlink 창)**하면 glob 시점엔 있던 파일이 tar.add 시점엔 없을 수 있다
-            → 그 파일만 건너뛴다(다음 빌드가 담음). 무가드면 파일 1개 사라짐이 전체 빌드를
-            FileNotFoundError로 실패시킨다(테스트가 재현·2026-07-07)."""
+            """arcname 중복(예약명 remap 충돌) 방지 + 압축 중 데이터엔진 cron·병렬세션이 parquet을
+            **원자적 교체(temp→rename, 짧은 unlink 창)**하면 glob 시점엔 있던 파일이 tar.add
+            시점엔 없을 수 있다 → 그 파일만 건너뛴다. 무가드면 파일 1개 사라짐이 전체 빌드를
+            FileNotFoundError로 실패시킨다(테스트 재현·2026-07-07)."""
+            if arcname in _seen_arc:
+                return 0
             try:
                 tar.add(p, arcname=arcname)
+                _seen_arc.add(arcname)
                 return 1
             except FileNotFoundError:
                 return 0
@@ -112,7 +131,7 @@ def build_bundle(scope: str = "trading") -> dict:
             with open(tmp, "wb") as f, cctx.stream_writer(f) as zw, \
                     tarfile.open(fileobj=zw, mode="w|") as tar:
                 for p in sorted(base.glob("*.parquet")):
-                    n_files += _safe_add(tar, p, p.name)
+                    n_files += _safe_add(tar, p, _arc(p))
                 # 정적 메타 사이드카(섹터·상장폐지일) — 로컬 get_symbol_group·매니페스트가 소비.
                 for name in ("_classification.json", "_listing.json"):
                     sp = base / name
@@ -125,7 +144,10 @@ def build_bundle(scope: str = "trading") -> dict:
                     if not sdir.exists():
                         continue
                     for p in sorted(sdir.glob("*.parquet")):
-                        n_files += _safe_add(tar, p, f"{sub}/{p.name}")
+                        n_files += _safe_add(tar, p, _arc(p, f"{sub}/"))
+            if _remapped:
+                _log.warning("dataset bundle(%s): 파일명 안전화 %d건(예약명/금지문자) — %s",
+                             scope, len(_remapped), _remapped[:10])
             size_mb = tmp.stat().st_size / 1024 / 1024
             # ETag = md5 of bundle (강력함, 안전한 cache invalidation)
             h = hashlib.md5()
