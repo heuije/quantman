@@ -197,13 +197,34 @@ def evaluate_health(
         conditions["broker_ready"] = _cond(UNKNOWN, "브로커 상태 신호 없음(구버전 클라)")
 
     # ── C4 전략 유효성 (서버 preview 기반) ──
+    # preview.skipped는 **보수적 투영**(실 발주 결정은 클라)이라 데이터 신선도(stale) 스킵도 포함한다.
+    # 데이터 stale은 전략 무효가 아니다 — 특히 선물 연속물은 T+1 아침(08:10) 재구성이라 **저녁엔 항상
+    # stale로 보이지만 08:55 사이클 전 해소**된다(main.py by-design). 진짜 데이터 문제는 클라
+    # authoritative 신호(C7 skip_no_data·C8 0발주·dead-man's-switch)가 잡으므로, C4는 **구조적 전략
+    # 무효**(유니버스 공집합·IR 파싱·참조 미해소)만 판정하고 stale-only 스킵은 무시한다 — 2026-07-13
+    # mwmw 저녁 선물 stale이 '전략 무효 AMBER'로 오표시되던 false-positive 근본수정.
     prev = p.get("next_day_preview") or {}
     by_strat = prev.get("by_strategy") or []
+
+    def _has_structural_skip(strat: dict) -> bool:
+        """이 전략의 스킵 중 **데이터 신선도가 아닌**(=구조적 무효) 사유가 있나."""
+        for sk in (strat.get("skipped") or []):
+            reason = str(sk.get("reason", ""))
+            if "stale" not in reason and "지연" not in reason:
+                return True
+        return False
+
     if has_live and by_strat:
-        all_skipped = all(s.get("skipped") for s in by_strat)
-        if all_skipped:
+        invalid = [s for s in by_strat if _has_structural_skip(s)]
+        stale_only = [s for s in by_strat
+                      if s.get("skipped") and not _has_structural_skip(s)]
+        if invalid:
             conditions["strategy_validity"] = _cond(
-                AMBER, f"라이브 전략 {len(by_strat)}개 전부 preview에서 skip(유효후보 0)")
+                AMBER, f"라이브 전략 {len(invalid)}개 구조적 무효(유니버스·IR·참조) — preview skip")
+        elif stale_only:
+            # 전부 데이터 신선도 대기 — 전략 자체는 유효(선물은 아침 재구성 전 저녁 정상 상태).
+            conditions["strategy_validity"] = _cond(
+                GREEN, f"전략 {len(by_strat)}개 유효 (데이터 신선도 대기 — 전략 무효 아님)")
         else:
             conditions["strategy_validity"] = _cond(GREEN, f"전략 {len(by_strat)}개 preview 유효")
     else:
