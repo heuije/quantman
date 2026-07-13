@@ -358,22 +358,28 @@ def local_health() -> dict:
         except Exception as e:
             log.warning("마지막 사이클 읽기 실패: %s", e)
 
-    # KIS 토큰 만료 (.kis_token.json) — 자체 캐시 파일 손상 시 health에서 누락만 시키고 사이클은 계속.
+    # KIS 토큰 만료 — 캐시는 **다중 엔트리** {fp: {access_token, expires_at}}(kis_broker._read_token_cache).
+    # 옛 코드는 top-level expires_at을 읽어 **항상 None**이었다(구조 불일치 결함, 2026-07-13 감사). 가장
+    # 먼저 만료되는 토큰 기준으로 경고한다. 비교는 kis_broker와 동일하게 **naive local**(datetime.now())로
+    # — 캐시가 datetime.now()(local)로 write되므로 UTC로 오해석하면 KST offset만큼 어긋난다.
     if _KIS_TOKEN_CACHE.exists():
         try:
             tk = json.loads(_KIS_TOKEN_CACHE.read_text(encoding="utf-8"))
-            exp = tk.get("expires_at")
-            health["kis_token_expires_at"] = exp
-            if exp:
-                exp_dt = _parse_ts(exp)
-                if exp_dt:
-                    # naive datetime이면 utc로 가정
-                    if exp_dt.tzinfo is None:
-                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-                    if exp_dt < _now():
-                        health["warnings"].append("KIS 토큰 만료 — 재발급 필요")
-                    elif exp_dt < _now() + timedelta(hours=2):
-                        health["warnings"].append("KIS 토큰이 2시간 이내 만료 예정")
+            exps = []
+            for ent in (tk.values() if isinstance(tk, dict) else []):
+                if isinstance(ent, dict) and ent.get("expires_at"):
+                    try:
+                        exps.append(datetime.fromisoformat(ent["expires_at"]))
+                    except ValueError:
+                        pass
+            if exps:
+                soonest = min(exps)
+                health["kis_token_expires_at"] = soonest.isoformat()
+                now_local = datetime.now()
+                if soonest < now_local:
+                    health["warnings"].append("KIS 토큰 만료 — 재발급 필요")
+                elif soonest < now_local + timedelta(hours=2):
+                    health["warnings"].append("KIS 토큰이 2시간 이내 만료 예정")
         except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
             log.debug("KIS 토큰 만료 파싱 실패: %s", e)
 
