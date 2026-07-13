@@ -43,8 +43,12 @@ def _print_rows(rows: list[dict], *, verbose: bool) -> None:
     for r in rows:
         codes = ",".join(a["code"] for a in r["alert_reasons"])
         push = (r["snapshot_at"] or "없음")[:16]
+        # content_at(데이터·판단 등 content 조건이 읽은 스냅샷)이 최신 push와 다르면 표시 —
+        # "데이터는 직전 cycle 기준"임을 투명화(F3). 최신이 곧 cycle이면 생략(동일).
+        cat = (r.get("content_at") or "")[:16]
+        content_note = f" content={cat}" if cat and cat != push else ""
         print(f"[{_MARK.get(r['overall'], '?????')}] {(r['email'] or '?'):28} "
-              f"live={r['live_strategies']} push={push}"
+              f"live={r['live_strategies']} push={push}{content_note}"
               + (f"  ALERT: {codes}" if codes else ""))
         # RED/AMBER 유저는 문제 조건을, verbose면 전 조건을 상세 출력.
         show_all = verbose
@@ -53,6 +57,21 @@ def _print_rows(rows: list[dict], *, verbose: bool) -> None:
             st = c.get("status")
             if show_all or st in (RED, AMBER):
                 print(f"        {_MARK.get(st, '?????')} {lbl}: {c.get('detail', '')}")
+        # 번들/데이터 로드 요약(F1) — content 조건의 원천 수치를 한 줄로.
+        b, d = r.get("bundle") or {}, r.get("dataset") or {}
+        if verbose and (b or d):
+            print(f"        · 번들 {b.get('result', '?')}/{b.get('n_files', '?')}files"
+                  f"/{b.get('n_failed', '?')}fail · dataset "
+                  f"{d.get('loaded', '?')}/{d.get('needed', '?')} loaded")
+        # 원시 최근 에러(F1) — 신호등만 보고 놓치던 raw 에러(예: CON.parquet WinError)를 직접 노출.
+        # 이게 이번 CON 오진의 근본수정: 증거가 DB에 있어도 CLI가 안 보여줘 진단자가 못 봤다.
+        # 전부 노출 — 클라가 이미 최근 10건으로 캡한 목록이라 truncate하면 가장 진단적인 에러
+        # (예: 오래돼 밀려난 CON.parquet WinError)를 놓친다. 이번 오진의 직접 교훈.
+        errs = r.get("recent_errors") or []
+        if errs:
+            print(f"        최근 에러 {len(errs)}건:")
+            for e in errs:
+                print(f"          - {str(e)[:150]}")
 
 
 def main_cli(argv: list[str] | None = None) -> None:

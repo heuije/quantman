@@ -438,3 +438,142 @@ def test_scan_and_alert_clears_state_on_recovery():
         assert r["alerts_sent"] == 0
         st = s.get(HealthAlertState, u.id)
         assert st.alert_codes == "" and st.recovered_at is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# content_payload 분리 — 최신 push가 content-빈약(reconcile/settlement)일 때 직전 cycle에서
+# content 조건을 읽는다. 2026-07-13 CON 오진의 관측성 근본수정: 진단자가 최신 reconcile 스냅샷의
+# data=UNKNOWN만 보고, 23분 전 cycle 스냅샷에 있던 CON.parquet 에러 증거를 못 봤다.
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_content_payload_backfills_data_freshness():
+    """최신=reconcile(diagnostics 없음)이라도 content_payload(cycle)로 데이터 GREEN 판정."""
+    reconcile = {"cycle_summary": {"kind": "post_open_reconcile"},
+                 "reconciliation": {"has_drift": False}}
+    cycle = {"cycle_summary": {"kind": "cycle", "n_bought": 0},
+             "diagnostics": {"bundle": {"result": "ok", "n_files": 24047, "n_failed": 0},
+                             "dataset": {"needed": 136, "loaded": 136}}}
+    res = evaluate_health(reconcile, heartbeat_at=_FRESH_HB, snapshot_at=_FRESH_SNAP,
+                          live_strategies=2, now=_NOW, content_payload=cycle)
+    assert res["conditions"]["data_freshness"]["status"] == GREEN
+    # content_payload 없으면(=기존 동작) reconcile엔 diagnostics 없어 UNKNOWN — 하위호환 확인.
+    res0 = evaluate_health(reconcile, heartbeat_at=_FRESH_HB, snapshot_at=_FRESH_SNAP,
+                           live_strategies=2, now=_NOW)
+    assert res0["conditions"]["data_freshness"]["status"] == UNKNOWN
+
+
+def test_reconciliation_reads_latest_not_content():
+    """C9 정합은 latest overall(reconcile push가 최신 drift)에서 읽는다 — content_payload 무시."""
+    reconcile = {"cycle_summary": {"kind": "post_open_reconcile"},
+                 "reconciliation": {"has_drift": True, "external_extras": [{"symbol": "X"}]}}
+    clean_cycle = {"cycle_summary": {"kind": "cycle", "n_bought": 1},
+                   "diagnostics": {"bundle": {"result": "ok"}},
+                   "reconciliation": {"has_drift": False}}
+    res = evaluate_health(reconcile, heartbeat_at=_FRESH_HB, snapshot_at=_FRESH_SNAP,
+                          live_strategies=1, now=_NOW, content_payload=clean_cycle)
+    assert res["conditions"]["reconciliation"]["status"] == AMBER  # latest의 drift 유지
+
+
+def test_deadman_switch_uses_content_cycle():
+    """최신이 reconcile여도 직전 cycle이 데이터결손 0발주면 dead-man's-switch가 잡는다
+    (종전엔 최신 reconcile의 kind=post_open_reconcile이 cycle_ran=False라 조용히 놓쳤다)."""
+    reconcile = {"cycle_summary": {"kind": "post_open_reconcile"}}
+    starved_cycle = {"cycle_summary": {"kind": "cycle", "n_bought": 0},
+                     "decisions": [{"action": "skip_no_data", "symbol": "코스피200선물"}]}
+    res = evaluate_health(reconcile, heartbeat_at=_FRESH_HB, snapshot_at=_FRESH_SNAP,
+                          live_strategies=2, now=_NOW, content_payload=starved_cycle)
+    assert res["overall"] == RED
+    assert "no_orders_data_starved" in _codes(res)
+
+
+def test_compute_reads_content_from_prior_cycle_when_latest_is_reconcile():
+    """DB 엔드투엔드: 최신 push=reconcile(diagnostics 없음)이어도 직전 cycle 스냅샷의 건강한
+    diagnostics를 읽어 데이터 GREEN + recent_errors(CON 증거)를 row에 노출한다."""
+    with Session(_engine()) as s:
+        u = _seed_user(s, "mwmw@example.com", live=2)
+        dev = Device(user_id=u.id, name="pc", token_hash="h", last_seen_at=_NOW)
+        s.add(dev); s.commit(); s.refresh(dev)
+        s.add(HeartbeatEvent(user_id=u.id, at=_NOW - timedelta(minutes=2)))
+        # 직전 cycle(30분 전) — 건강한 diagnostics + 과거 CON 에러 로그.
+        s.add(SyncSnapshot(
+            user_id=u.id, device_id=dev.id, received_at=_NOW - timedelta(minutes=30),
+            payload={"cycle_summary": {"kind": "cycle", "n_bought": 0},
+                     "diagnostics": {
+                         "bundle": {"result": "ok", "n_files": 24047, "n_failed": 0},
+                         "dataset": {"needed": 136, "loaded": 136},
+                         "recent_errors": [
+                             "2026-07-13 08:56 WARNING [WinError 6] ...: 'CON.parquet'"]}}))
+        s.commit()
+        # 최신 reconcile(5분 전) — diagnostics 없음(정합 사이클).
+        s.add(SyncSnapshot(
+            user_id=u.id, device_id=dev.id, received_at=_NOW - timedelta(minutes=5),
+            payload={"cycle_summary": {"kind": "post_open_reconcile"},
+                     "reconciliation": {"has_drift": False}}))
+        s.commit()
+        rows = compute_user_health(s, now=_NOW)
+    assert len(rows) == 1
+    r = rows[0]
+    # 데이터: 최신(reconcile)엔 diagnostics 없지만 직전 cycle에서 읽어 GREEN(종전엔 UNKNOWN).
+    assert r["conditions"]["data_freshness"]["status"] == GREEN
+    # recent_errors 노출 — CON 증거가 CLI/대시에 뜬다(이번 오진의 직접 근본수정).
+    assert any("CON.parquet" in e for e in r["recent_errors"])
+    assert r["bundle"]["n_files"] == 24047
+    # content_at = 직전 cycle 시각(최신 push와 다름 → CLI가 'Nh 전 사이클 기준' 표시).
+    assert r["content_at"] != r["snapshot_at"]
+
+
+def test_compute_latest_cycle_uses_itself_no_content_query():
+    """최신 push가 이미 cycle(diagnostics 有)이면 그걸 그대로 content로 써 기존과 동일."""
+    with Session(_engine()) as s:
+        u = _seed_user(s, "healthy@example.com", live=1)
+        _seed_snapshot(s, u.id, {
+            "cycle_summary": {"kind": "cycle", "n_bought": 2},
+            "diagnostics": {"bundle": {"result": "ok", "n_files": 100, "n_failed": 0},
+                            "dataset": {"needed": 50, "loaded": 50}}})
+        rows = compute_user_health(s, now=_NOW)
+    r = rows[0]
+    assert r["conditions"]["data_freshness"]["status"] == GREEN
+    assert r["content_at"] == r["snapshot_at"]  # 최신=cycle이라 동일
+    assert r["bundle"]["n_files"] == 100
+
+
+def test_c6_latest_settlement_error_not_masked_by_content():
+    """C6 회귀 방지: 최신 push가 정산/reconcile error(diagnostics 없음)면 content_payload(직전
+    cycle)가 그 error를 마스킹하지 않고 cycle_error로 잡는다. error는 latest-fresh 신호 —
+    runner.py Phase0가 최신 push의 cycle_summary.error로 브로커 실패를 표면화하는 계약을 지킨다."""
+    reconcile_err = {"cycle_summary": {"kind": "post_close_settlement",
+                                       "error": "정산 잔고 조회 실패: timeout"}}
+    clean_cycle = {"cycle_summary": {"kind": "cycle", "n_bought": 1},
+                   "diagnostics": {"bundle": {"result": "ok"}}}
+    res = evaluate_health(reconcile_err, heartbeat_at=_FRESH_HB, snapshot_at=_FRESH_SNAP,
+                          live_strategies=1, now=_NOW, content_payload=clean_cycle)
+    assert res["conditions"]["cycle_execution"]["status"] == RED
+    assert "cycle_error" in _codes(res)
+    assert "정산 잔고 조회 실패" in res["conditions"]["cycle_execution"]["detail"]
+
+
+def test_compute_preserves_latest_settlement_error_over_content_cycle():
+    """DB 엔드투엔드: 최신=정산 실패 스냅샷 + 직전 diag cycle이면 cycle_error 페이지가 유지된다
+    (content_payload가 latest error를 마스킹하던 회귀의 방지)."""
+    with Session(_engine()) as s:
+        u = _seed_user(s, "err@example.com", live=1)
+        dev = Device(user_id=u.id, name="pc", token_hash="h", last_seen_at=_NOW)
+        s.add(dev); s.commit(); s.refresh(dev)
+        s.add(HeartbeatEvent(user_id=u.id, at=_NOW - timedelta(minutes=2)))
+        # 직전 정상 cycle(diagnostics 有).
+        s.add(SyncSnapshot(
+            user_id=u.id, device_id=dev.id, received_at=_NOW - timedelta(minutes=20),
+            payload={"cycle_summary": {"kind": "cycle", "n_bought": 1},
+                     "diagnostics": {"bundle": {"result": "ok"},
+                                     "dataset": {"needed": 5, "loaded": 5}}}))
+        s.commit()
+        # 최신 정산 실패(diagnostics 없음).
+        s.add(SyncSnapshot(
+            user_id=u.id, device_id=dev.id, received_at=_NOW - timedelta(minutes=3),
+            payload={"cycle_summary": {"kind": "post_close_settlement",
+                                       "error": "정산 잔고 조회 실패: timeout"}}))
+        s.commit()
+        rows = compute_user_health(s, now=_NOW)
+    r = rows[0]
+    assert r["conditions"]["cycle_execution"]["status"] == RED
+    assert "cycle_error" in {a["code"] for a in r["alert_reasons"]}

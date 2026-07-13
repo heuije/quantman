@@ -54,3 +54,28 @@ def test_cli_json_is_machine_readable(monkeypatch, capsys):
     health_cli.main_cli(["--json"])
     data = json.loads(capsys.readouterr().out)
     assert len(data) == 2 and data[0]["email"] == "mwmw@x.com"
+
+
+def test_cli_surfaces_recent_errors_and_content_age(monkeypatch, capsys):
+    """F1: 원시 recent_errors(예: CON.parquet)와 content_at(직전 cycle 기준)을 CLI가 노출한다.
+    이번 CON 오진의 직접 근본수정 — 증거가 있어도 CLI가 안 보여주던 문제."""
+    rows = [{
+        "user_id": 73, "email": "mwmw@x.com", "live_strategies": 2,
+        "snapshot_at": "2026-07-13T13:35:00", "content_at": "2026-07-13T13:12:00",
+        "heartbeat_at": None, "overall": "amber",
+        "conditions": {"data_freshness": {"status": "green", "detail": "데이터 로드 136/136"}},
+        "alert_reasons": [],
+        # CON 에러가 목록의 '가장 오래된' 위치 — truncate하면 놓친다(이번 오진 회귀 방지).
+        "recent_errors": (
+            ["2026-07-13 08:56 WARNING [WinError 6] ...: 'CON.parquet'"]
+            + [f"2026-07-13 1{h}:00 WARNING preview 502" for h in range(9)]),
+        "bundle": {"result": "ok", "n_files": 24047, "n_failed": 0},
+        "dataset": {"needed": 136, "loaded": 136},
+    }]
+    monkeypatch.setattr(health_cli, "compute_user_health", lambda s: rows)
+    health_cli.main_cli(["--user", "73"])
+    out = capsys.readouterr().out
+    assert "CON.parquet" in out            # 가장 오래된 에러도 노출(truncate 안 함) — 핵심
+    assert "최근 에러 10건" in out
+    assert "content=2026-07-13T13:12" in out   # 직전 cycle 기준 투명화
+    assert "24047" in out                   # 번들 요약

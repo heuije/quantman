@@ -12,7 +12,7 @@ hermetic 테스트가 가능하다(특히 mwmw 과거 스냅샷 replay). 보안 
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlmodel import Session, func, select
 
@@ -29,6 +29,7 @@ UNKNOWN = "unknown"  # 신호 부재(판정 불가)
 STALE_MIN = 30         # heartbeat가 이 분(min) 넘게 끊기면 앱 다운 의심
 PUSH_GAP_HR = 6        # heartbeat 정상인데 스냅샷 push가 이 시간(hr) 넘게 없으면 동기화 실패
 LOAD_RATIO_RED = 0.5   # 데이터 로드율(loaded/needed)이 이 아래면 데이터 결손
+_CONTENT_SCAN_DEPTH = 8  # 최신이 content-빈약(reconcile)일 때 직전 cycle을 찾아 훑는 최근 push 수
 
 # "실제 매매 사이클"로 간주하는 kind — 여기서 0발주+데이터결손이면 dead-man's-switch.
 # state_sync·settlement·reconcile 등은 진입 사이클이 아니라 제외(정상 0발주).
@@ -53,22 +54,33 @@ def evaluate_health(
     snapshot_at: datetime | None,
     live_strategies: int,
     now: datetime,
+    content_payload: dict | None = None,
     prior: dict | None = None,
 ) -> dict:
     """유저 1명의 최신 스냅샷을 MECE 건강 조건으로 평가한다(순수함수).
 
-    payload: SyncSnapshot.payload (최신 1건). heartbeat_at: 최신 HeartbeatEvent.at.
-    snapshot_at: 최신 SyncSnapshot.received_at. live_strategies: 라이브 전략 수.
-    now: 평가 시각(UTC). prior: 직전 평가 결과(전이 판정용, 선택).
+    payload: SyncSnapshot.payload (최신 1건 = latest overall). heartbeat_at: 최신
+    HeartbeatEvent.at. snapshot_at: 최신 SyncSnapshot.received_at. live_strategies:
+    라이브 전략 수. now: 평가 시각(UTC). prior: 직전 평가 결과(전이 판정용, 선택).
+
+    content_payload: **content 조건 전용** 페이로드 — diagnostics·cycle_summary·decisions·
+    health 같은 '클라 매매 사이클이 실어 보내는' 신호의 출처. 최신 push가 reconcile/settlement/
+    state_sync면 그 신호가 비어(=UNKNOWN degrade), 실제로는 직전 cycle 스냅샷에 건강한 값이
+    있는데도 진단자가 못 보던 사각(2026-07-13 CON 오진의 관측성 근본)을 닫는다. compute_user_
+    health가 'diagnostics 실린 최신 스냅샷'을 넘긴다. None이면 payload를 그대로 써 **기존과 동일**
+    (하위호환). next_day_preview(C4)·reconciliation(C9)은 latest overall(=payload)에서 최신이라
+    content_payload를 쓰지 않는다.
 
     반환: {conditions:{키:{status,detail}}, overall, alert_reasons:[{code,message}]}.
     alert_reasons = 캘린더 무관·고신뢰 RED만(운영자 페이징 대상). C1/C2(캘린더 민감)·
     C9(양성 잦음)는 대시보드엔 뜨되 자동 페이징 안 함.
     """
     p = payload or {}
+    # content 조건은 cp(직전 cycle)에서, 시간·preview·reconcile은 p(latest overall)에서.
+    cp = content_payload if content_payload is not None else p
     now = _as_utc(now)
-    cs = p.get("cycle_summary") or {}
-    diag = p.get("diagnostics") or {}
+    cs = cp.get("cycle_summary") or {}
+    diag = cp.get("diagnostics") or {}
     conditions: dict[str, dict] = {}
     alerts: list[dict] = []
 
@@ -129,7 +141,7 @@ def evaluate_health(
     # ── C7 판단 산출 (skip_no_data) ──
     # cycle_summary.n_skip_no_data 집계 우선(P2 승격 — decisions 리스트 없어도 판정 가능),
     # 없으면 decisions 스캔(구버전 하위호환).
-    decisions = p.get("decisions") or []
+    decisions = cp.get("decisions") or []
     cs_n_skip = cs.get("n_skip_no_data")
     skip_no_data_n = cs_n_skip if cs_n_skip is not None else len(
         [d for d in decisions if d.get("action") == "skip_no_data"])
@@ -146,8 +158,13 @@ def evaluate_health(
         conditions["decision_output"] = _cond(UNKNOWN, "결정 이력 없음(무후보일 가능)")
 
     # ── C6 사이클 실행 ──
-    if cs.get("error"):
-        conditions["cycle_execution"] = _cond(RED, f"사이클 에러: {cs.get('error')}")
+    # error는 **latest-fresh 신호**다 — 정산/reconcile 잔고조회 실패가 최신 push(diagnostics 없어
+    # content로 안 잡히는 kind)에 error를 실어 보내는데(runner.py Phase0), content(직전 cycle)만
+    # 보면 그 error를 마스킹해 cycle_error 운영자 페이지가 소실된다. 그래서 latest(p)·content(cp)
+    # **양쪽의 error**를 본다(어느 쪽 실패든 놓치지 않게). 완료 kind는 content(직전 실 cycle)가 유용.
+    cyc_error = (p.get("cycle_summary") or {}).get("error") or cs.get("error")
+    if cyc_error:
+        conditions["cycle_execution"] = _cond(RED, f"사이클 에러: {cyc_error}")
         alerts.append({"code": "cycle_error", "message": conditions["cycle_execution"]["detail"]})
     elif cs.get("kind"):
         conditions["cycle_execution"] = _cond(GREEN, f"사이클 완료(kind={cs.get('kind')})")
@@ -178,7 +195,7 @@ def evaluate_health(
     # P2 emit: health.broker_ready(bool)·active_broker + 기존 account_handles + 토큰경고(warnings).
     # 토큰 만료 판정은 클라가 자기 tz로 계산한 verdict(health.warnings)를 그대로 소비한다
     # — 서버가 naive-local 타임스탬프를 UTC로 재해석하면 어긋나므로(클라가 tz의 진실).
-    health = p.get("health") or {}
+    health = cp.get("health") or {}
     broker_ready = health.get("broker_ready")
     handles = health.get("account_handles")
     token_warn = [w for w in (health.get("warnings") or []) if "토큰" in str(w)]
@@ -282,6 +299,27 @@ def compute_user_health(session: Session, *, now: datetime | None = None) -> lis
     snaps = {sn.user_id: sn for sn in session.exec(
         select(SyncSnapshot).where(SyncSnapshot.id.in_(latest_ids))).all()} if latest_ids else {}
 
+    # content 조건(데이터·판단·발주·브로커)은 클라 매매 사이클이 실어 보내는 diagnostics/decisions/
+    # health에서 온다. 최신 push가 reconcile/settlement/state_sync면 그 신호가 비어 UNKNOWN으로
+    # degrade되는데, 실제로는 직전 cycle 스냅샷에 건강한 값이 있다(2026-07-13 CON 오진: 22:35
+    # reconcile이 최신이라 data=UNK·CON 에러 비가시 → 진단자가 사고 증거를 못 봄). 그래서 최신이
+    # diagnostics를 안 실었으면 'diagnostics 실린 최신 스냅샷'을 유저별로 따로 로드해(egress: 최신이
+    # 이미 cycle이면 재로드 안 함) content 전용 페이로드로 넘긴다.
+    # diagnostics 유무는 payload(JSON) 내부라 SQL 필터가 방언 의존적(SQLite/Postgres 상이)이다.
+    # 방언 함정을 피하려 유저당 최근 _CONTENT_SCAN_DEPTH건만 로드해 파이썬에서 판별한다 —
+    # cycle은 잦아 직전 cycle이 보통 몇 push 내에 있고, 없으면 content=None(=기존 UNKNOWN)로 안전
+    # degrade. 최신이 이미 cycle인 유저는 재로드 안 함(egress 제한). cron/admin/CLI 냉경로라 무해.
+    content_snaps: dict[int, SyncSnapshot] = {}
+    _lacks_diag = [uid for uid, sn in snaps.items()
+                   if not (sn.payload or {}).get("diagnostics")]
+    for uid in _lacks_diag:
+        for snx in session.exec(
+                select(SyncSnapshot).where(SyncSnapshot.user_id == uid)
+                .order_by(SyncSnapshot.id.desc()).limit(_CONTENT_SCAN_DEPTH)).all():
+            if (snx.payload or {}).get("diagnostics"):
+                content_snaps[uid] = snx
+                break
+
     uids = set(live_counts) | set(snaps)
     emails = {u.id: u.email for u in session.exec(
         select(User).where(User.id.in_(uids))).all()} if uids else {}
@@ -289,21 +327,33 @@ def compute_user_health(session: Session, *, now: datetime | None = None) -> lis
     rows = []
     for uid in uids:
         sn = snaps.get(uid)
+        # content 스냅샷 = 최신이 diagnostics를 가지면 그것, 아니면 diagnostics 실린 직전 스냅샷.
+        csn = sn if (sn and (sn.payload or {}).get("diagnostics")) else content_snaps.get(uid)
         res = evaluate_health(
             sn.payload if sn else {},
             heartbeat_at=hb.get(uid),
             snapshot_at=_as_utc(sn.received_at) if sn else None,
             live_strategies=live_counts.get(uid, 0),
-            now=now)
+            now=now,
+            content_payload=csn.payload if csn else None)
+        cdiag = ((csn.payload or {}).get("diagnostics") or {}) if csn else {}
         rows.append({
             "user_id": uid,
             "email": emails.get(uid),
             "live_strategies": live_counts.get(uid, 0),
             "snapshot_at": _as_utc(sn.received_at).isoformat() if sn else None,
+            # content_at = content 조건이 읽은 스냅샷 시각(최신과 다르면 '직전 cycle'). CLI/대시가
+            # '데이터는 Nh 전 사이클 기준'을 표시해 stale 여부를 투명화(F3).
+            "content_at": _as_utc(csn.received_at).isoformat() if csn else None,
             "heartbeat_at": hb[uid].isoformat() if uid in hb else None,
             "overall": res["overall"],
             "conditions": res["conditions"],
             "alert_reasons": res["alert_reasons"],
+            # 원시 진단 노출(F1) — 진단자가 신호등만 보고 놓치던 raw 에러(예: CON.parquet WinError)를
+            # 직접 본다. recent_errors는 클라가 emit측에서 scrub(경로·유저명)한 안전 요약이다.
+            "recent_errors": cdiag.get("recent_errors") or [],
+            "bundle": cdiag.get("bundle") or {},
+            "dataset": cdiag.get("dataset") or {},
         })
     # RED 먼저, 그 다음 AMBER — 운영자가 문제 유저를 위에서 본다.
     _rank = {RED: 0, AMBER: 1, UNKNOWN: 2, GREEN: 3}
