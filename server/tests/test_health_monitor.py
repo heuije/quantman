@@ -244,6 +244,54 @@ def test_old_client_no_broker_flag_stays_backward_compatible():
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# C4 전략유효성 — 데이터 stale 스킵 false-positive 수정 (2026-07-13)
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_c4_stale_only_skips_is_green():
+    """데이터 stale로만 스킵된 전략은 무효 아님 → C4 GREEN.
+
+    mwmw 저녁 선물 stale(연속물 T+1 아침 재구성)이 '전략 무효 AMBER'로 오표시되던 회귀 가드.
+    """
+    payload = {"cycle_summary": {"kind": "post_close_settlement"},
+               "next_day_preview": {"by_strategy": [
+                   {"strategy_id": 27, "skipped": [
+                       {"symbol": "코스피200선물", "reason": "데이터 stale (last=2026-07-10, 3일 지연)"}]},
+                   {"strategy_id": 29, "skipped": [
+                       {"symbol": "코스피200선물", "reason": "데이터 stale (last=2026-07-10, 3일 지연)"}]}]}}
+    res = _eval(payload)
+    assert res["conditions"]["strategy_validity"]["status"] == GREEN
+
+
+def test_c4_structural_invalid_skip_is_amber():
+    """유니버스 공집합 등 **구조적** 무효는 여전히 AMBER."""
+    payload = {"cycle_summary": {"kind": "cycle"},
+               "next_day_preview": {"by_strategy": [
+                   {"strategy_id": 1, "skipped": [
+                       {"symbol": "X", "reason": "유니버스에 종목이 없습니다"}]}]}}
+    res = _eval(payload)
+    assert res["conditions"]["strategy_validity"]["status"] == AMBER
+
+
+def test_c4_mixed_stale_and_structural_is_amber():
+    """stale 전략과 섞여도 하나라도 구조적 무효면 AMBER."""
+    payload = {"cycle_summary": {"kind": "cycle"},
+               "next_day_preview": {"by_strategy": [
+                   {"strategy_id": 27, "skipped": [{"symbol": "코스피200선물", "reason": "데이터 stale"}]},
+                   {"strategy_id": 1, "skipped": [{"symbol": "X", "reason": "IR 파싱 실패"}]}]}}
+    res = _eval(payload)
+    assert res["conditions"]["strategy_validity"]["status"] == AMBER
+
+
+def test_c4_all_valid_is_green():
+    payload = {"cycle_summary": {"kind": "cycle"},
+               "next_day_preview": {"by_strategy": [
+                   {"strategy_id": 27, "skipped": []},
+                   {"strategy_id": 29, "skipped": []}]}}
+    res = _eval(payload)
+    assert res["conditions"]["strategy_validity"]["status"] == GREEN
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # compute_user_health (DB-backed) + /admin/health 게이트
 # ─────────────────────────────────────────────────────────────────────────
 
