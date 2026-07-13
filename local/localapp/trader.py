@@ -2795,6 +2795,9 @@ class Trader:
             "n_netted": int(n_netted),                   # 넷팅 이관 계약수(시가창)
             "commission_saved_krw": round(commission_saved, 2),
             "n_skip_held": sum(1 for d in decisions if d["action"] == "skip_held"),
+            # 데이터 결손으로 발주 판단 불가 — 서버 건강 모니터 C7이 소비(0발주가 정상 무후보인지
+            # 데이터 결손인지 구분). 이전엔 decisions에만 있어 집계·경보에 승격 안 됐다.
+            "n_skip_no_data": sum(1 for d in decisions if d["action"] == "skip_no_data"),
             "n_rejected": sum(1 for d in decisions if d["action"] == "rejected"),
             "n_unfilled": sum(1 for d in decisions if d["action"] == "unfilled"),
             "n_errors": sum(1 for d in decisions if d["action"] == "error"),

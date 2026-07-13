@@ -69,3 +69,15 @@ def test_old_single_entry_format_is_graceful_none():
         _clear_cache()
     # top-level 값은 문자열(dict 아님) → 스킵 → None (옛 형식 안전 무시)
     assert h["kis_token_expires_at"] is None
+
+
+def test_local_health_emits_broker_ready_flag():
+    """P2: local_health가 broker_ready(bool)·active_broker를 emit — 서버 C5가 소비.
+
+    값은 머신의 실제 keyring 자격증명 상태를 반영(keyring은 QP_LOCAL_DIR로 격리 안 됨) —
+    값 자체가 아니라 **emit 여부·타입**을 검증한다. 계좌번호·자격증명 실값은 미노출(bool만).
+    """
+    _clear_cache()
+    h = analytics.local_health()
+    assert isinstance(h["broker_ready"], bool)     # 값 아닌 bool 플래그만 노출(보안경계)
+    assert h["active_broker"] in ("kis", "ls")

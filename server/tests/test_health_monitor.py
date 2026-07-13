@@ -199,6 +199,51 @@ def test_settlement_cycle_zero_orders_not_flagged():
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Phase 2 — 클라 emit 플래그 소비 (broker_ready · n_skip_no_data)
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_broker_ready_false_is_red_and_paged():
+    """health.broker_ready=False(자격증명 실패) → RED + 페이징."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 0},
+                 "health": {"broker_ready": False, "active_broker": "kis"}})
+    assert res["conditions"]["broker_ready"]["status"] == RED
+    assert "broker_missing" in _codes(res)
+
+
+def test_broker_ready_true_is_green():
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 1},
+                 "health": {"broker_ready": True, "active_broker": "kis"}})
+    assert res["conditions"]["broker_ready"]["status"] == GREEN
+
+
+def test_token_expiry_warning_is_amber_not_paged():
+    """브로커 준비됐으나 클라가 보낸 토큰 만료 경고 → AMBER(대시보드만, 서버 tz 재해석 안 함)."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 1},
+                 "health": {"broker_ready": True,
+                            "warnings": ["KIS 토큰 만료 — 재발급 필요"]}})
+    assert res["conditions"]["broker_ready"]["status"] == AMBER
+    assert res["alert_reasons"] == []
+
+
+def test_n_skip_no_data_aggregate_flags_red_without_decisions_list():
+    """cycle_summary.n_skip_no_data 집계만으로(decisions 리스트 없이) RED — P2 승격 효과."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 0, "n_skip_no_data": 5}})
+    assert res["conditions"]["decision_output"]["status"] == RED
+    assert res["conditions"]["order_placement"]["status"] == RED
+    assert "no_orders_data_starved" in _codes(res)
+
+
+def test_old_client_no_broker_flag_stays_backward_compatible():
+    """구버전 클라(broker_ready 없음)는 기존 account_handles 로직대로 — 하위호환."""
+    res_missing = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 0},
+                         "health": {"account_handles": []}})
+    assert res_missing["conditions"]["broker_ready"]["status"] == RED
+    res_ok = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 1},
+                    "health": {"account_handles": [{"account_id": "u", "broker": "kis"}]}})
+    assert res_ok["conditions"]["broker_ready"]["status"] == GREEN
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # compute_user_health (DB-backed) + /admin/health 게이트
 # ─────────────────────────────────────────────────────────────────────────
 

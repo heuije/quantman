@@ -339,6 +339,8 @@ def local_health() -> dict:
         "last_cycle_ts": None,
         "kis_token_expires_at": None,
         "kis_master_pushed_date": None,
+        "broker_ready": None,      # 활성 브로커 자격증명 준비 여부(bool) — 서버 건강 모니터 C5
+        "active_broker": None,     # "kis" | "ls"
         "warnings": [],
     }
     # 마지막 사이클
@@ -400,6 +402,15 @@ def local_health() -> dict:
         log.warning("account_handles 보고 실패(무시): %s", e)
         health.setdefault("account_handles", [])
         health.setdefault("active_account_ids", [])
+
+    # 브로커 준비 상태 플래그(값 아닌 bool·enum — 자격증명·계좌번호 미노출, 보안경계 준수).
+    # 서버 건강 모니터 C5가 소비해 "라이브 전략 있는데 브로커 미설정/자격증명 실패"를 감지.
+    try:
+        from . import secrets_store
+        health["broker_ready"] = secrets_store.active_cred_ok()
+        health["active_broker"] = secrets_store.get_active_broker()
+    except Exception as e:
+        log.debug("broker_ready 판정 실패(무시): %s", e)
 
     return health
 
