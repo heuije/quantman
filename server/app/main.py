@@ -1159,6 +1159,28 @@ def _initial_summary_prewarm() -> None:
         _log.exception("summary 프리워밍 예외")
 
 
+def _health_scan() -> None:
+    """자동매매 건강 dead-man's-switch — 전 유저 건강을 주기 평가해 신규 RED(무발주·데이터결손·
+    앱다운)를 운영자 webhook으로 능동 통지한다. on-ingest로는 못 잡는 '침묵 유저'(push 없음)까지
+    cron이 잡아, mwmw CON.parquet 사고(설치 이래 발주 0이 며칠 미탐지)의 사각을 봉합한다.
+    실패 비크리티컬(자체 예외 로깅)."""
+    try:
+        from sqlmodel import Session
+
+        from .db import engine
+        from .health_monitor import scan_and_alert
+        from .routers.sync import _post_webhook
+        url = settings.OPERATOR_ALERT_WEBHOOK
+        send = (lambda msg: _post_webhook(url, msg)) if url else None
+        with Session(engine) as s:
+            r = scan_and_alert(s, send=send)
+        level = _log.warning if r["alerts_sent"] else _log.info
+        level("[health] %d users evaluated, %d operator alerts sent",
+              r["evaluated"], r["alerts_sent"])
+    except Exception as e:
+        _log.warning("[health] scan 실패: %s", e)
+
+
 def _probe_summary_latency() -> None:
     """summary 응답시간 상시 계측 — 대표 종목상세를 주기적으로 내부 호출해 소요 ms를 로깅한다.
 
@@ -1249,6 +1271,13 @@ def _build_scheduler() -> BackgroundScheduler:
         _probe_summary_latency,
         CronTrigger(minute="*/5", timezone=_TZ_SEOUL),
         id="summary_probe", replace_existing=True)
+
+    # 자동매매 건강 dead-man's-switch — 15분마다 전 유저 건강 평가·신규 RED 운영자 통지.
+    # on-ingest로 못 잡는 '침묵 유저'(push 없음)까지 cron이 잡는다(mwmw 사고 사각 봉합).
+    scheduler.add_job(
+        _health_scan,
+        CronTrigger(minute="*/15", timezone=_TZ_SEOUL),
+        id="health_scan", replace_existing=True)
 
     # 15:45 — KRX 정규장 1차 (15:40 publish 직후)
     scheduler.add_job(

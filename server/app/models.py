@@ -175,6 +175,20 @@ class UserSettings(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_now)
 
 
+class HealthAlertState(SQLModel, table=True):
+    """운영자 자동매매 건강 알림 상태 (유저별 1:1) — 전이 시에만 발송해 스팸 방지.
+
+    유저 본인 알림(UserSettings.alert_webhook_url)과 무관한 **운영자** 페이징 채널이라
+    별도 테이블. dead-man's-switch cron(main.py health_scan)이 갱신. alert_codes는
+    현재 페이징 중인 alert code 집합(정렬·콤마결합) — 빈 문자열이면 현재 이상 없음.
+    """
+    user_id: int = Field(primary_key=True, foreign_key="user.id")
+    alert_codes: str = ""                       # 예: "no_orders_data_starved,broker_missing"
+    since: Optional[datetime] = None            # 현재 alert 에피소드 시작
+    last_alerted_at: Optional[datetime] = None
+    recovered_at: Optional[datetime] = None
+
+
 class BacktestRun(SQLModel, table=True):
     """백테스트 실행 내역 — 저장된 전략과 연결되면 strategy_id 보관.
 

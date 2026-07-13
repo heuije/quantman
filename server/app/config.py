@@ -65,6 +65,9 @@ class Settings:
     # DART 전자공시 OpenAPI 키 — 재무제표 5개년 연결 수집용(opendart.fss.or.kr 무료 발급).
     # server/.env에 OPENDART_API_KEY=... 로 넣으면 됨. 없으면 FnGuide(3개년)로 폴백.
     OPENDART_API_KEY: str = os.getenv("OPENDART_API_KEY", "")
+    # 운영자 자동매매 건강 알림 webhook (Discord/Slack 호환). 유저 알림과 별개 — RED 유저
+    # (무발주·데이터결손·앱다운)를 운영자에게 능동 통지(dead-man's-switch). 미설정 시 대시보드만.
+    OPERATOR_ALERT_WEBHOOK: str = os.getenv("QP_OPERATOR_ALERT_WEBHOOK", "")
     NL_COMPILE_MODEL: str = os.getenv("QP_NL_COMPILE_MODEL", "claude-sonnet-5")
     # 대화형 전략 연구소 챗봇 — agentic tool-use 루프(다중턴 추론·결과 논의). NL 컴파일러보다
     # 추론 부담이 커 Sonnet 기본(env로 교체). 키는 ANTHROPIC_API_KEY 공유.
