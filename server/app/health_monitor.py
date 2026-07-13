@@ -127,16 +127,21 @@ def evaluate_health(
         conditions["data_freshness"] = _cond(GREEN, "번들 정상")
 
     # ── C7 판단 산출 (skip_no_data) ──
+    # cycle_summary.n_skip_no_data 집계 우선(P2 승격 — decisions 리스트 없어도 판정 가능),
+    # 없으면 decisions 스캔(구버전 하위호환).
     decisions = p.get("decisions") or []
-    skip_no_data = [d for d in decisions if d.get("action") == "skip_no_data"]
-    acted = [d for d in decisions if d.get("action") in ("buy", "sell", "enter", "exit")]
+    cs_n_skip = cs.get("n_skip_no_data")
+    skip_no_data_n = cs_n_skip if cs_n_skip is not None else len(
+        [d for d in decisions if d.get("action") == "skip_no_data"])
+    had_orders = (cs.get("n_bought") or 0) > 0 or any(
+        d.get("action") in ("buy", "sell", "enter", "exit") for d in decisions)
     decision_red = False
-    if skip_no_data and not acted:
+    if skip_no_data_n and not had_orders:
         decision_red = True
         conditions["decision_output"] = _cond(
-            RED, f"{len(skip_no_data)}종목 데이터결손으로 skip_no_data(발주 판단 불가)")
-    elif decisions:
-        conditions["decision_output"] = _cond(GREEN, f"결정 {len(decisions)}건 산출")
+            RED, f"{skip_no_data_n}종목 데이터결손으로 skip_no_data(발주 판단 불가)")
+    elif decisions or had_orders:
+        conditions["decision_output"] = _cond(GREEN, "판단 정상 산출")
     else:
         conditions["decision_output"] = _cond(UNKNOWN, "결정 이력 없음(무후보일 가능)")
 
@@ -169,16 +174,27 @@ def evaluate_health(
     else:
         conditions["order_placement"] = _cond(GREEN, "발주 없음(정상 무후보 또는 진입창 밖)")
 
-    # ── C5 브로커/계좌 준비 (Phase 1: 자격증명 존재만) ──
+    # ── C5 브로커/계좌 준비 ──
+    # P2 emit: health.broker_ready(bool)·active_broker + 기존 account_handles + 토큰경고(warnings).
+    # 토큰 만료 판정은 클라가 자기 tz로 계산한 verdict(health.warnings)를 그대로 소비한다
+    # — 서버가 naive-local 타임스탬프를 UTC로 재해석하면 어긋나므로(클라가 tz의 진실).
     health = p.get("health") or {}
+    broker_ready = health.get("broker_ready")
     handles = health.get("account_handles")
-    if has_live and handles is not None and len(handles) == 0:
-        conditions["broker_ready"] = _cond(RED, "라이브 전략 있는데 브로커 미등록")
+    token_warn = [w for w in (health.get("warnings") or []) if "토큰" in str(w)]
+    if has_live and broker_ready is False:
+        conditions["broker_ready"] = _cond(RED, "라이브 전략 있는데 브로커 미설정/자격증명 실패")
         alerts.append({"code": "broker_missing", "message": conditions["broker_ready"]["detail"]})
-    elif handles:
-        conditions["broker_ready"] = _cond(GREEN, f"브로커 계좌 {len(handles)}개 등록")
+    elif has_live and broker_ready is None and handles is not None and len(handles) == 0:
+        conditions["broker_ready"] = _cond(RED, "라이브 전략 있는데 브로커 계좌 미등록")
+        alerts.append({"code": "broker_missing", "message": conditions["broker_ready"]["detail"]})
+    elif broker_ready or handles:
+        if token_warn:
+            conditions["broker_ready"] = _cond(AMBER, f"브로커 준비됨 · {token_warn[0]}")
+        else:
+            conditions["broker_ready"] = _cond(GREEN, "브로커 준비됨")
     else:
-        conditions["broker_ready"] = _cond(UNKNOWN, "브로커 상태 신호 없음(P2 emit 대기)")
+        conditions["broker_ready"] = _cond(UNKNOWN, "브로커 상태 신호 없음(구버전 클라)")
 
     # ── C4 전략 유효성 (서버 preview 기반) ──
     prev = p.get("next_day_preview") or {}

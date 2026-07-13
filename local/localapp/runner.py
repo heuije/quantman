@@ -614,7 +614,16 @@ def _run_settlement_locked(market: str, kind: str, label: str) -> dict:
     try:
         snap = broker.account_snapshot()
     except Exception as e:
+        # 정산 잔고 조회 전체 실패 — 옛 코드는 push 없이 return해 서버가 이 실패를 아예 못 봤다
+        # (2026-07-13 감사, 건강 모니터 사각). kind·error 담은 최소 스냅샷을 push해 운영자 타임라인·
+        # 건강 모니터(C6 cycle_execution RED)에 표면화한다.
         log.error("잔고 조회 실패: %s", e)
+        try:
+            push_snapshot({"cycle_summary": {
+                "today": today, "market": market, "kind": kind,
+                "error": f"정산 잔고 조회 실패: {e}"}})
+        except Exception as pe:
+            log.warning("정산 실패 스냅샷 push 실패: %s", pe)
         return {"error": str(e)}
 
     payload = {

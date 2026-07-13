@@ -2503,10 +2503,16 @@ class Trader:
             decisions.append(order_log.decision(
                 "skip_kis_health", "", "", "",
                 f"KIS API 응답 실패 — 자동매매 보류 (다음 사이클 재시도): {e}"))
+            # cycle_summary에 kind·market·error 부여 — 없으면 서버 타임라인이 이 자기중단을
+            # "missed-B(cron 미발동)"로 오분류한다(2026-07-13 감사). kind로 스케줄 슬롯 매칭·
+            # error로 "실행됐으나 실패(C)" 분류 + 건강 모니터 C6(cycle_execution) RED.
             return {"balance": {"cash": 0, "total_eval": 0},
                     "positions": [], "equity": self.equity[-365:],
                     "trades": [], "decisions": decisions,
-                    "cycle_summary": {"skipped_reason": "kis_health_fail",
+                    "cycle_summary": {"kind": "catchup_cycle" if catchup else "cycle",
+                                       "market": market,
+                                       "skipped_reason": "kis_health_fail",
+                                       "error": f"KIS 잔고 조회 실패 — cycle 중단: {e}",
                                        "cycle_id": cycle_id}}
 
         # ★ε: 부분 잔고(해외/선물 조회 실패) — 위험 결정(day_start 앵커·손실한도·
@@ -2789,6 +2795,9 @@ class Trader:
             "n_netted": int(n_netted),                   # 넷팅 이관 계약수(시가창)
             "commission_saved_krw": round(commission_saved, 2),
             "n_skip_held": sum(1 for d in decisions if d["action"] == "skip_held"),
+            # 데이터 결손으로 발주 판단 불가 — 서버 건강 모니터 C7이 소비(0발주가 정상 무후보인지
+            # 데이터 결손인지 구분). 이전엔 decisions에만 있어 집계·경보에 승격 안 됐다.
+            "n_skip_no_data": sum(1 for d in decisions if d["action"] == "skip_no_data"),
             "n_rejected": sum(1 for d in decisions if d["action"] == "rejected"),
             "n_unfilled": sum(1 for d in decisions if d["action"] == "unfilled"),
             "n_errors": sum(1 for d in decisions if d["action"] == "error"),
