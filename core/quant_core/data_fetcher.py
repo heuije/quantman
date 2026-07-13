@@ -9,6 +9,7 @@ Data fetcher — 가격·매크로 시계열(parquet). 펀더멘털·섹터·상
 import io
 import json
 import os
+import re
 import tempfile
 import time
 import requests
@@ -888,26 +889,69 @@ def load_managed_overseas() -> list[dict]:
     return []
 
 
-def save_managed_overseas(stocks: list[dict]) -> None:
-    """on-demand 해외 종목 목록 저장. code 기준 dedupe + yfinance 미수집 티커 제외.
+# 해외(US) 티커 shape — 대문자 영숫자 세그먼트를 대시로 연결(BRK-B·BRK-A-PR). SSOT.
+# nasdaq_trader._norm이 다중 점을 다중 대시로 낼 수 있어 세그먼트는 1개 이상(`*`)을 허용한다(F2).
+_VALID_OVERSEAS_RE = re.compile(r"[A-Z0-9]+(-[A-Z0-9]+)*\Z")
 
-    KIS 미국 마스터엔 우선주·유닛·클래스주가 '/' 표기(JPM/D·RAC/UN)로 섞여 들어오는데
-    yfinance는 '/'를 쓰지 않아(클래스주=BRK-B, 우선주=JPM-PD) **항상 fetch 실패**한다
-    (실측: '/' 티커 457개 중 parquet 생성 0개). 이들을 두면 매 수집마다 "Failed to get
-    ticker" 폭주 + Yahoo throttle + 로그 500/sec 초과만 유발하므로 **유일한 write 경로인
-    여기서 원천 차단**한다 — 기존 항목도 다음 저장(시드 cron) 때 함께 정리된다. 정당한
-    클래스주는 _seed_sp500_overseas가 대시 형식(BRK-B)으로 별도 보존(code dedupe로 중복 제거).
+
+def is_valid_overseas_symbol(code: str) -> bool:
+    """해외(US) 티커 형태만 허용. 대문자 영숫자 + 대시로 연결된 세그먼트(BRK-B·BRK-A-PR).
+
+    거부: 공백('Apple Inc')·언더스코어('AACT_U'·예약명 sanitize stem 'CON_')·소문자·한글·
+    '/'(우선주/유닛)·빈값·대시 경계('-AAPL'·'AAPL-'). 실측 오거부 0(실 유니버스 25k+ 통과,
+    표시명/유닛/회사명 1,146만 거부). 예약명 실티커(CON·PRN)는 shape valid로 통과 — 파일명
+    안전화는 parquet_io.sanitize_fs_name 소관이지 심볼 유효성이 아니다.
+
+    번들 되먹임 루프(sync_client)와 write choke(save_managed_overseas)가 이 한 함수를 공유해,
+    파일명 stem을 티커로 오분류하던 부류(str.isalpha()가 한글·유닛코드를 True로 판정)를 닫는다.
+    """
+    return bool(code) and bool(_VALID_OVERSEAS_RE.match(code))
+
+
+def save_managed_overseas(stocks: list[dict]) -> None:
+    """on-demand 해외 종목 목록 저장. code 기준 dedupe + malformed 심볼 원천 차단.
+
+    유니버스에 유입되는 오염은 두 부류다: ① KIS 마스터의 우선주·유닛·클래스주 '/' 표기
+    (JPM/D·RAC/UN — yfinance 미수집, 실측 457개 중 parquet 0개) ② 번들 되먹임 루프가 파일명
+    stem(유닛 'AACT_U'·예약명 sanitize 'CON_'·한글 표시명 '금'·회사명 'Apple Inc')을 티커로
+    오분류한 것(실측 1,146건). 둘 다 **유일한 write 경로인 여기서** is_valid_overseas_symbol로
+    차단한다 — 기존 항목도 다음 저장(시드 cron·overwrite) 때 self-clean. 정당한 클래스주는
+    _seed_sp500_overseas가 대시 형식(BRK-B)으로 별도 보존(code dedupe로 중복 제거).
     """
     seen, uniq = set(), []
     for s in stocks:
         c = s.get("code", "").strip()
-        if not c or "/" in c:           # 빈 코드·yfinance 미수집('/') 제외
+        if not is_valid_overseas_symbol(c):   # 기존 `not c or "/" in c`의 strict superset
             continue
         if c not in seen:
             seen.add(c)
             uniq.append({"code": c, "name": s.get("name", "")})
     MANAGED_OVERSEAS_PATH.write_text(
         json.dumps(uniq, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def iter_universe_keys() -> set[str]:
+    """현재 유니버스에 속한 모든 dataset 심볼 키 — orphan parquet 판정의 '보존 대상' 기준.
+
+    내장(ALL_SYMBOLS)·가격별칭(PRICE_ALIAS 양변)·자동관리 KR·해외·사용자 종목의 합집합.
+    매크로(금선물·S&P500)·실티커는 여기 포함되므로 orphan 판정에서 자동 보존된다."""
+    keys: set[str] = set(ALL_SYMBOLS)
+    keys |= set(PRICE_ALIAS) | set(PRICE_ALIAS.values())
+    keys |= set(load_managed_kr_codes())
+    keys |= {s.get("code", "") for s in load_managed_overseas() if s.get("code")}
+    keys |= {s.get("name", "") for s in load_user_stocks() if s.get("name")}
+    return {k for k in keys if k}
+
+
+def find_orphan_parquets() -> list[Path]:
+    """DATA_DIR top-level의 orphan parquet 목록 — 어떤 유니버스 키에도 대응 안 되는 파일.
+
+    옛 오종목('/'→'_' 파일 AACT_U.parquet·상장폐지 잔재)이 볼륨에 영구 잔존해 매 번들에 실리는
+    대역폭·용량 낭비를 정리하기 위한 안전 계산. 보존 파일집합은 **write 경로와 동일 규칙**
+    (_parquet_path — PRICE_ALIAS 적용·'/'→'_')로 만들어 오삭제를 방지한다. fundamentals/·flow/
+    등 서브디렉터리는 별도 피드 소유라 제외(top-level glob만). 순수 조회 — 삭제는 호출자."""
+    keep = {_parquet_path(k).name for k in iter_universe_keys()}
+    return sorted(p for p in DATA_DIR.glob("*.parquet") if p.name not in keep)
 
 
 # 패키지에 동봉된 S&P500 큐레이션 유니버스 (gen_sp500.py 생성)

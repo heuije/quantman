@@ -33,6 +33,29 @@ _BUNDLE_READ_TIMEOUT_SEC = 30
 _BUNDLE_TOTAL_TIMEOUT_SEC = 600
 
 
+def _classify_bundle_symbols(
+    stems: list[str], macro_set: set[str],
+) -> tuple[list[str], list[dict]]:
+    """번들 parquet 파일명 stem을 KRX(6자리 숫자) / overseas(US 티커)로 분류해 universe 등록용
+    (kr_codes, overseas) 반환. 순수함수 — 되먹임 루프의 유일한 분류 seam(단위테스트 가능).
+
+    macro symbol(S&P500·달러원 등 ALL_SYMBOLS)은 제외(이미 내장). overseas 판정은
+    data_fetcher.is_valid_overseas_symbol(shape) — 기존 `sym[0].isalpha()`는 유니코드라
+    한글('금')·회사명('Apple Inc')·유닛 stem('AACT_U')·예약명 sanitize stem('CON_')를 티커로
+    오분류해 유니버스를 1,146건 오염시켰다(이 함수가 그 부류를 닫는다)."""
+    from quant_core import data_fetcher as _df
+    kr_codes: list[str] = []
+    overseas: list[dict] = []
+    for sym in stems:
+        if sym in macro_set:
+            continue
+        if sym.isdigit() and len(sym) == 6:
+            kr_codes.append(sym)
+        elif _df.is_valid_overseas_symbol(sym):
+            overseas.append({"code": sym, "name": sym})
+    return kr_codes, overseas
+
+
 def _headers() -> dict:
     token = load_device_token()
     if not token:
@@ -187,17 +210,8 @@ def fetch_dataset_bundle(local_data_dir: Path, scope: str = "trading") -> dict:
                       len(failed_members), n_extracted, failed_members[:10])
 
         # bundle 종목들을 KRX(6자리 숫자) / overseas(영문 ticker)로 분류해 universe 등록.
-        # macro symbol(S&P500·달러원 등)은 ALL_SYMBOLS에 이미 있으니 overseas 등록에서 제외.
         from quant_core import data_fetcher as _df
-        macro_set = set(_df.ALL_SYMBOLS)
-        kr_codes, overseas = [], []
-        for sym in extracted_symbols:
-            if sym in macro_set:
-                continue
-            if sym.isdigit() and len(sym) == 6:
-                kr_codes.append(sym)
-            elif sym and sym[0].isalpha():
-                overseas.append({"code": sym, "name": sym})
+        kr_codes, overseas = _classify_bundle_symbols(extracted_symbols, set(_df.ALL_SYMBOLS))
         if kr_codes:
             _df.save_managed_kr_codes(sorted(set(kr_codes)))
         if overseas:

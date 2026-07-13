@@ -95,17 +95,57 @@ def cmd_status() -> None:
     print(f"  us_market_caps(시총):  {len(caps)}")
 
 
+def cmd_prune_orphans(apply: bool = False) -> None:
+    """유니버스 밖 orphan parquet 정리 — **기본 dry-run**(목록만 출력, 삭제 안 함).
+
+    옛 오종목('/'→'_' 파일 AACT_U.parquet 등)이 볼륨에 영구 잔존해 매 번들에 실리는 낭비를
+    없앤다. 보존 집합은 write 경로(_parquet_path)와 동일 규칙이라 매크로·실티커·별칭·서브디렉터리
+    는 자동 보존. 실제 삭제는 `--apply` 명시(안전). 라이브 서버 볼륨에서 실행 가능(명단 무관·파일만)."""
+    from quant_core import data_fetcher
+
+    orphans = data_fetcher.find_orphan_parquets()
+    total_bytes = 0
+    print(f"=== orphan parquet {'삭제' if apply else 'DRY-RUN(삭제 안 함)'} — {len(orphans)}개 ===")
+    for p in orphans:
+        try:
+            sz = p.stat().st_size
+        except OSError:
+            sz = 0
+        total_bytes += sz
+        print(f"  {'DEL' if apply else 'would-del'}  {p.name}  ({sz:,}B)")
+    print(f"  합계 {total_bytes:,}B ({total_bytes / 1e6:.1f}MB) · 유니버스 키 {len(data_fetcher.iter_universe_keys())}개 보존")
+    if not apply:
+        print("  → 실제 삭제하려면 --apply 를 붙이세요.")
+        return
+    deleted = 0
+    for p in orphans:
+        try:
+            p.unlink()
+            deleted += 1
+        except OSError as e:
+            log.warning("삭제 실패(건너뜀): %s — %s", p.name, e)
+    log.info("orphan parquet 삭제 완료: %d/%d", deleted, len(orphans))
+    if deleted:
+        log.info("데이터 세대 마커 bump: %d", data_fetcher.mark_data_dirty())
+
+
 def main_cli() -> None:
     ap = argparse.ArgumentParser(description="수동 데이터 갱신 CLI")
     ap.add_argument("target", choices=[
         "status", "master", "krx", "naver", "technical", "global", "kr",
-        "us", "us_caps", "us_metrics", "all", "mark-dirty"])
+        "us", "us_caps", "us_metrics", "all", "mark-dirty", "prune-orphans"])
     ap.add_argument("--limit", type=int, default=None,
                     help="미국 종목 앞 N개만 (개발/검증용)")
+    ap.add_argument("--apply", action="store_true",
+                    help="prune-orphans: dry-run 대신 실제 삭제")
     args = ap.parse_args()
 
     if args.target == "status":
         cmd_status()
+        return
+
+    if args.target == "prune-orphans":
+        cmd_prune_orphans(apply=args.apply)
         return
 
     if args.target == "mark-dirty":
