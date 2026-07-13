@@ -207,6 +207,12 @@ def _synced_eval_krw(balance: dict) -> int:
     return int(eq or 0)
 
 
+# 진단 텔레메트리 — 마지막 dataset 로드 통계(needed/loaded·미로드 샘플). datafetch의
+# last_bundle_result()와 함께 스냅샷 diagnostics 블록으로 서버에 실려, 관리자가 유저에게
+# 로그를 매번 요청하지 않고도 추출 실패·dataset 결손을 원격 진단한다(rebind 대신 mutation).
+_LAST_DATASET_STATS: dict = {}
+
+
 def run_cycle(market: str = "KRX", catchup: bool = False,
               reserved: bool = False, trigger: str = "cron") -> dict:
     """1회 자동매매 사이클을 실행하고 동기화 스냅샷을 반환한다.
@@ -350,6 +356,12 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             log.info("[cycle] ④ dataset 로드 시작 (%d종목 needed, 지표계산 포함)", len(needed))
             dataset = qc.load_dataset_for(needed, with_indicators=True)
             log.info("[cycle] ④ dataset 로드 완료 — %d종목 %.1fs", len(dataset), time.monotonic() - _t0)
+            # 진단 텔레메트리 — needed 대비 loaded가 급감(예: 129 needed 중 1 loaded)하면
+            # 추출 실패/결손 신호. 서버 스냅샷 diagnostics로 원격 관측(rebind 없이 mutation).
+            _LAST_DATASET_STATS.clear()
+            _LAST_DATASET_STATS.update({
+                "needed": len(needed), "loaded": len(dataset),
+                "missing_sample": [s for s in needed if s not in dataset][:10]})
 
             # Phase 38.7/38.10 — 사용자 위험 한도. 실패 시 빈 dict → default fallback.
             risk_limits = pull_risk_limits()
@@ -400,6 +412,15 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
         # catch-up 자동 재시도와 정합.
         order_log.log_cycle([], {"market": market, "kind": "cycle_error",
                                  "cycle_id": cycle_id, "error": _err_str})
+
+    # 진단 텔레메트리 — 서버가 재현·로그요청 없이 원격 진단하도록 로컬 진단 블록 첨부.
+    # 실패해도 스냅샷 push 자체는 진행(진단은 부가 신호).
+    try:
+        from . import analytics, datafetch
+        payload["diagnostics"] = analytics.diagnostics_block(
+            datafetch.last_bundle_result(), dict(_LAST_DATASET_STATS))
+    except Exception as _e:
+        log.debug("diagnostics 조립 실패(무시): %s", _e)
 
     try:
         push_snapshot(payload)

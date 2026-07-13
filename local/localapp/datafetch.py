@@ -22,6 +22,16 @@ log = logging.getLogger("localapp.datafetch")
 # 어차피 선행 호출이 같은 bundle을 받고 있으므로 대기·중복 모두 무가치.
 _REFRESH_LOCK = threading.Lock()
 
+# 진단 텔레메트리 — 가장 최근 bundle 다운로드 결과를 담아 스냅샷에 실어 서버로 보낸다.
+# 관리자가 유저에게 로그를 매번 요청하지 않고도 추출 실패(예: Windows 예약명 크래시)를
+# 서버에서 원격 진단하기 위함. 안전정보만(결과코드·파일수·실패수·스크럽된 에러).
+_LAST_BUNDLE_RESULT: dict = {}
+
+
+def last_bundle_result() -> dict:
+    """가장 최근 dataset bundle 다운로드 결과(진단용). 없으면 {}."""
+    return dict(_LAST_BUNDLE_RESULT)
+
 
 def refresh_market_data() -> bool:
     """서버 dataset bundle을 pull해 사용자 데이터 디렉터리에 저장한다.
@@ -46,13 +56,22 @@ def refresh_market_data() -> bool:
 
 
 def _refresh_market_data_locked() -> bool:
+    global _LAST_BUNDLE_RESULT
     try:
         from quant_core import data_fetcher
         from .sync_client import fetch_dataset_bundle
         result = fetch_dataset_bundle(data_fetcher.DATA_DIR)
+        _LAST_BUNDLE_RESULT = {
+            "result": "304" if result.get("skipped") else "ok",
+            "n_files": result.get("n_files"),
+            "n_failed": result.get("n_failed", 0),
+            "failed_sample": result.get("failed_sample") or [],
+        }
         log.info("dataset bundle 사용: %s", result)
         return True
     except Exception as e:
+        _LAST_BUNDLE_RESULT = {"result": "failed",
+                               "error_type": type(e).__name__, "error": str(e)}
         # bundle 미준비(410)·서버 미도달·총시간 초과 등 — 마지막 성공 bundle
         # 캐시로 진행. manifest 종목별 폴백은 제거됨(2026-06-10 인시던트 D1-2):
         # 수만 parquet 직렬 신선도 검사로 시간 단위(실측 7h+)를 소모하며 발주

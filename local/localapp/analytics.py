@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -40,6 +41,52 @@ def _parse_ts(s: str) -> Optional[datetime]:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ── 로컬 진단 텔레메트리 (서버 원격 진단용) ──────────────────────────────────────
+# 유저에게 「진단 정보 복사」를 매번 요청하지 않고도 관리자가 서버 스냅샷만으로 로컬앱
+# 실패(예: 2026-07-13 Windows 예약명 CON.parquet 추출 크래시 → dataset 결손 → 무발주)를
+# 원격 진단하기 위한 구조화 신호. 안전정보만 — 자격증명·계좌번호는 절대 안 실린다.
+
+_LOG_PATH = APP_DIR / "logs" / "localapp.log"
+# 절대경로(C:\\Users\\<유저명>\\...)는 파일명만 남기고 스크럽 — 유저명 노출 방지.
+_ABS_PATH_RE = re.compile(r"[A-Za-z]:[\\/][^\s'\"]*[\\/]")
+
+
+def _scrub(text: str) -> str:
+    return _ABS_PATH_RE.sub("", text or "")
+
+
+def _recent_errors(limit: int = 10) -> list:
+    """localapp.log의 최근 WARNING/ERROR 라인 tail(경로 스크럽). 읽기 실패 시 []."""
+    try:
+        lines = _LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return []
+    errs = [ln for ln in lines[-500:] if " WARNING " in ln or " ERROR " in ln]
+    return [_scrub(ln)[:200] for ln in errs[-limit:]]
+
+
+def diagnostics_block(bundle_result: Optional[dict] = None,
+                      dataset_stats: Optional[dict] = None) -> dict:
+    """서버 스냅샷에 실을 로컬 진단 블록 — 재현·로그요청 없이 원격 진단.
+
+    app_version·bundle(결과코드·파일수·실패수·스크럽된 에러)·dataset(needed/loaded)·
+    최근 에러 로그. 전부 안전정보.
+    """
+    try:
+        from . import __version__ as _ver
+    except Exception:
+        _ver = "?"
+    d: dict = {"app_version": _ver, "recent_errors": _recent_errors()}
+    if bundle_result:
+        br = dict(bundle_result)
+        if br.get("error"):
+            br["error"] = _scrub(str(br["error"]))[:200]
+        d["bundle"] = br
+    if dataset_stats:
+        d["dataset"] = dataset_stats
+    return d
 
 
 # ── 전략별 P&L attribution ────────────────────────────────────────────────────

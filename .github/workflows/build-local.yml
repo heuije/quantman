@@ -54,7 +54,7 @@ jobs:
         env:
           PYTHONPATH: core:server:local
         run: |
-          pytest -q core/tests/test_sanitize_fs_name.py server/tests/test_dataset_bundle.py server/tests/test_dataset_bundle_reserved.py local/tests/test_dataset_bundle_timeout.py local/tests/test_datafetch_refresh.py
+          pytest -q core/tests/test_sanitize_fs_name.py server/tests/test_dataset_bundle.py server/tests/test_dataset_bundle_reserved.py local/tests/test_dataset_bundle_timeout.py local/tests/test_datafetch_refresh.py local/tests/test_diagnostics_block.py
 
   create-release:
     needs: [test]
