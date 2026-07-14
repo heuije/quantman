@@ -150,12 +150,15 @@ function StrategyCard({ strategy: s, backtest, onClick }: {
       : <>{summarizeTargets(od.trade_symbol)}</>;
   }
   const m = backtest?.metrics ?? null;
-  const connected = s.run_mode === "live" || s.run_mode === "paper";
+  // 설정 기간 = 백테스트 수행 기간(start~end). 백테스트 전이면 안내.
+  const period = backtest?.start && backtest?.end
+    ? `${shortDate(backtest.start)} ~ ${shortDate(backtest.end)}`
+    : "백테스트 필요";
 
   return (
     <button className="strat-card" onClick={onClick}>
       <div className="strat-head">
-        <span className="strat-name">{s.name}</span>
+        <span className="strat-name" title={s.name}>{s.name}</span>
         {s.run_mode === "live" ? (
           <span className="strat-status connected"><i className="dot dot-green" />트레이딩 연동됨</span>
         ) : (
@@ -165,29 +168,24 @@ function StrategyCard({ strategy: s, backtest, onClick }: {
         )}
       </div>
 
-      <div className="strat-target muted">🎯 {target}</div>
-
-      {m ? (
-        <div className="strat-bt">
-          <div><span className="muted">총수익</span><b className={btCls(m.total_return)}>{btPct(m.total_return)}</b></div>
-          <div><span className="muted">CAGR</span><b className={btCls(m.cagr)}>{btPct(m.cagr)}</b></div>
-          <div><span className="muted">MDD</span><b className="neg">{btPct(m.max_drawdown)}</b></div>
-          <div><span className="muted">샤프</span><b>{m.sharpe != null ? m.sharpe.toFixed(2) : "—"}</b></div>
+      <dl className="strat-meta">
+        <div className="strat-meta-row">
+          <dt>설정 기간</dt>
+          <dd>{period}</dd>
         </div>
-      ) : (
-        <div className="strat-bt-empty muted">아직 백테스트를 실행하지 않았습니다</div>
-      )}
-
-      <div className="strat-foot muted">
-        <span>
-          {backtest?.start && backtest?.end
-            ? `백테스트 ${shortDate(backtest.start)}~${shortDate(backtest.end)} · ` : ""}
-          {backtest ? `실행 ${shortDate(backtest.created_at)}` : "백테스트 필요"}
-        </span>
-        <span className="strat-hint">
-          {connected ? "실행 현황은 트레이딩 →" : s.account_ref ? "연동 대기" : "계좌 미연동"}
-        </span>
-      </div>
+        <div className="strat-meta-row">
+          <dt>투자 수익률</dt>
+          {/* Gross/Net IRR은 엔진 미산출 — 현재는 백테스트 실측 총수익·CAGR(연환산) 표시(조대표 IRR 추가 시 교체). */}
+          <dd>{m
+            ? <>총수익 <b className={btCls(m.total_return)}>{btPct(m.total_return)}</b>
+                {" / "}CAGR <b className={btCls(m.cagr)}>{btPct(m.cagr)}</b></>
+            : <span className="muted">아직 백테스트 없음</span>}</dd>
+        </div>
+        <div className="strat-meta-row">
+          <dt>투자 전략 요약</dt>
+          <dd className="strat-summary" title={typeof target === "string" ? target : undefined}>{target}</dd>
+        </div>
+      </dl>
     </button>
   );
 }
