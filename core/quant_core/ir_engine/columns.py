@@ -18,6 +18,7 @@ _META: dict[str, dict] = {
     "ev_ebitda": {"label": "EV/EBITDA", "unit": "x", "format": "0.00", "direction": "low_better"},
     "ps_ratio": {"label": "PSR", "unit": "x", "format": "0.00", "direction": "low_better"},
     "dividend_yield": {"label": "배당수익률", "unit": "%", "format": "0.00", "direction": "high_better"},
+    "roe": {"label": "ROE", "unit": "%", "format": "0.0", "direction": "high_better"},
     "market_cap": {"label": "시가총액", "unit": "백만원", "scale": 1e6, "format": "#,##0"},
     "momentum_12_1m": {"label": "모멘텀(12-1M)", "format": "0.000", "direction": "high_better"},
     "Close": {"label": "종가", "unit": "원", "format": "#,##0"},

@@ -342,8 +342,10 @@ const(상수)의 **스케일**을 틀리면 전혀 다른 전략이 된다(라�
    · ⚠ roll_method·series_adjust·roll_cost_pct·account_currency는 **현재 엔진 미적용(예약)** — 채우지
      말 것(단일 연속 시계열·단일통화 가정). 사용자가 강하게 명시하면 채우되 "현재 미적용"을 assumptions에 명시.
 7. [스크리닝(현 시점 종목 선별)] "저평가 X 상위 N개"·"조건 맞는 종목 골라줘"처럼 *백테스트 손익이
-   아니라 지금 시점 종목 리스트*가 답이면 → query="select" + signal=랭킹 score(예: 낮은 PBR이면
-   data(__SELF__.pb_ratio)) + universe.kind=all + universe.screener.condition=
+   아니라 지금 시점 종목 리스트*가 답이면 → query="select" + signal=랭킹 score. **저평가는 핵심 밸류 4종
+   (PER·PBR·PSR·EV/EBITDA) 백분위 합 composite**(rank(pct,asc) 4개를 binary "+"로 합·낮을수록 저평가);
+   단일 지표면 data(__SELF__.pb_ratio). **ROE는 저평가 점수에 넣지 말 것**(낮은 ROE≠저평가·수익성 별개 —
+   "수익성 좋은"은 screener에 compare(__SELF__.roe ≥ 15)로). + universe.kind=all + universe.screener.condition=
    is_in(attribute("Sector"), ["반도체"], match="contains") 같은 섹터/자격 필터 + select={{top_n:N,
    descending:false(저평가=낮은값 우선)·true(높은값 우선), display:[pb_ratio, ...](근거 지표)}}.
    ⚠ 섹터/업종 필터는 match="contains" 필수 — 분류 데이터가 KSIC 자유서술("반도체 제조업")이라

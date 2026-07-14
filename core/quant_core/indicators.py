@@ -268,6 +268,12 @@ def add_fundamentals(df: pd.DataFrame, fund_df: Optional[pd.DataFrame]) -> pd.Da
         bvps = fund_d["stockholders_equity"] / shares.replace(0, np.nan)
         df["pb_ratio"] = df["Close"] / bvps.where(bvps > 0)
 
+    # ── ROE = TTM 순이익 / 자기자본 × 100 (%, 수익성 축). 자본잠식(equity<=0)은 미정의(NaN).
+    #    ⚠ 저평가(밸류)와 별개 축 — 낮을수록 저평가가 아니라 높을수록 수익성↑(ROE≥15%='수익성 좋은 기업').
+    if "ttm_ni" in fund_d.columns and "stockholders_equity" in fund_d.columns:
+        eq = fund_d["stockholders_equity"].where(fund_d["stockholders_equity"] > 0)
+        df["roe"] = fund_d["ttm_ni"] / eq * 100
+
     # ── Altman Z-Score = 1.2×WC/TA + 1.4×RE/TA + 3.3×EBIT/TA + 0.6×MktCap/TL + 1.0×Rev/TA
     z_cols = ["z_wc_ta", "z_re_ta", "z_ebit_ta", "z_tl", "z_rev_ta"]
     if all(c in fund_d.columns for c in z_cols):
@@ -297,6 +303,8 @@ def add_fundamentals(df: pd.DataFrame, fund_df: Optional[pd.DataFrame]) -> pd.Da
         df["ev_ebitda"] = ev / fund_d["ttm_ebitda"].replace(0, np.nan)
     if "ttm_rev" in fund_d.columns:
         df["ev_sales"] = ev / fund_d["ttm_rev"].replace(0, np.nan)
+        # PSR = 시가총액 / TTM 매출 (저평가 밸류 지표·낮을수록 저평가). 매출<=0은 미정의(NaN).
+        df["ps_ratio"] = mkt_cap / fund_d["ttm_rev"].where(fund_d["ttm_rev"] > 0)
 
     # ── PEG = Trailing P/E ÷ EPS 성장률(%, 전년 대비)
     if "ttm_ni" in fund_d.columns and "trailing_pe" in df.columns:
@@ -356,12 +364,14 @@ INDICATOR_META = {
     "gross_margin_trend": {"label": "총이익률 추세(%p)",  "unit": "%p", "decimals": 1},
     "op_margin":          {"label": "영업이익률(%)",      "unit": "%",  "decimals": 1},
     "roic":               {"label": "ROIC(%)",           "unit": "%",  "decimals": 1},
+    "roe":                {"label": "ROE(%)",            "unit": "%",  "decimals": 1},
     "cash_conversion":    {"label": "현금전환율(%)",      "unit": "%",  "decimals": 0},
     "net_debt_ebitda":    {"label": "순부채/EBITDA",      "unit": "x",  "decimals": 2},
     "ev_ebitda":          {"label": "EV/EBITDA",         "unit": "x",  "decimals": 1},
     "ev_sales":           {"label": "EV/Sales",          "unit": "x",  "decimals": 2},
     "trailing_pe":        {"label": "Trailing P/E",      "unit": "x",  "decimals": 1},
     "pb_ratio":           {"label": "P/B Ratio",         "unit": "x",  "decimals": 2},
+    "ps_ratio":           {"label": "PSR",               "unit": "x",  "decimals": 2},
     "peg":                {"label": "PEG",               "unit": "",   "decimals": 2},
     "fcf_yield":          {"label": "FCF Yield(%)",      "unit": "%",  "decimals": 2},
     "altman_z":           {"label": "Altman Z-Score",    "unit": "",   "decimals": 2},
@@ -395,8 +405,8 @@ BASE_INDICATOR_COLS = [
 
 # 개별종목에만 존재하는 펀더멘털 지표
 FUND_INDICATOR_COLS = [
-    "gross_margin", "gross_margin_trend", "op_margin", "roic", "cash_conversion",
-    "net_debt_ebitda", "ev_ebitda", "ev_sales", "trailing_pe", "pb_ratio", "peg",
+    "gross_margin", "gross_margin_trend", "op_margin", "roic", "roe", "cash_conversion",
+    "net_debt_ebitda", "ev_ebitda", "ev_sales", "ps_ratio", "trailing_pe", "pb_ratio", "peg",
     "fcf_yield", "altman_z", "market_cap",
 ]
 
@@ -739,7 +749,7 @@ COMPARE_GROUP: dict[str, str] = {
     # 배수 (x)
     "volume_ratio": "mult", "net_debt_ebitda": "mult",
     "ev_ebitda": "mult", "ev_sales": "mult",
-    "trailing_pe": "mult", "pb_ratio": "mult", "peg": "mult",
+    "trailing_pe": "mult", "pb_ratio": "mult", "peg": "mult", "ps_ratio": "mult",
     # 표준편차 (Z)
     "zscore_20d": "z", "zscore_60d": "z", "altman_z": "z",
     # 거래대금 (원·큰 값)

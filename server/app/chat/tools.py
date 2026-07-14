@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 SCREEN_TOOL = {
     "name": "screen",
     "description": ("팩터 점수로 종목을 횡단 랭킹해 상위 종목을 선별(현 시점 as-of 스냅샷). "
-                    "**저평가**=여러 밸류 지표를 score_refs로(백분위 합 composite·낮을수록 저평가·"
-                    "단일 raw 정렬 금지). **섹터별 N개**=group_by. **여러 섹터**=sectors. top_n 필요."),
+                    "**저평가**=PER·PBR·PSR·EV/EBITDA 4개 핵심 밸류 지표를 score_refs로 종합(백분위 합·"
+                    "낮을수록 저평가·단일 raw 정렬 금지). **수익성은 별개 축** — ROE≥15%='수익성 좋은 기업'"
+                    "(roe로 필터·표시, 저평가 점수엔 미포함). **섹터별 N개**=group_by. **여러 섹터**=sectors. top_n 필요."),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -40,9 +41,11 @@ SCREEN_TOOL = {
                           "description": "단일 랭킹 지표 ref (예: momentum_12_1m). 복합은 score_refs."},
             "score_refs": {"type": "array", "items": {"type": "string"},
                            "description": ("복합 저평가 점수용 밸류 지표 ref 목록 — 백분위 합(낮을수록 저평가). "
-                                           "예: ['__SELF__.pb_ratio','__SELF__.trailing_pe']. "
+                                           "저평가 기본 4종=['__SELF__.trailing_pe','__SELF__.pb_ratio',"
+                                           "'__SELF__.ps_ratio','__SELF__.ev_ebitda'](PER·PBR·PSR·EV/EBITDA). "
                                            "낮을수록 저평가인 밸류 지표만(혼합 방향 금지). "
-                                           "**ev_ebitda는 저평가 점수에 넣지 말 것**(왜곡 — 사용자 합의로 제외).")},
+                                           "⚠ ROE는 밸류가 아니라 **수익성** — score_refs에 넣지 말 것"
+                                           "('수익성 좋은 기업'=ROE≥15%는 별도 필터/표시로).")},
             "top_n": {"type": "integer", "description": "상위 N 종목(group_by 시 그룹당 N)."},
             "descending": {"type": "boolean",
                            "description": "단일 score_ref일 때만. 큰 순(true·기본)/작은 순(false). composite는 자동."},
@@ -223,7 +226,7 @@ TOOL_SCHEMAS = [SCREEN_TOOL, COMPARE_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DE
 # 무의미하다(적자기업은 싼 게 아니라 해당없음). 저평가 스크린은 오름차순 정렬이라 이런 음수
 # 종목이 '가장 싼' 1위로 오선별된다 — 자격에서 제외해 근본 차단(희제 라이브 발견).
 _POSITIVE_VALUATION_COLS = frozenset({
-    "trailing_pe", "forward_pe", "ev_ebitda", "ev_sales", "pb_ratio", "peg"})
+    "trailing_pe", "forward_pe", "ev_ebitda", "ev_sales", "pb_ratio", "ps_ratio", "peg"})
 
 
 def _gt0(ref: str) -> dict:
