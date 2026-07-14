@@ -18,6 +18,7 @@ KST 환산 예:
 
 from __future__ import annotations
 
+import bisect
 import json
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
@@ -208,3 +209,15 @@ def is_session_day(market: str, day: date) -> bool:
     """
     cal = _load(market)
     return day.isoformat() in cal["sessions"]
+
+
+def prev_session_day(market: str, day: date) -> date | None:
+    """`day` 직전(strict <)의 정규 거래일. 캘린더에 그런 날이 없으면 None.
+
+    자동매매 신선도 게이트의 기준일 — "번들 마지막 봉이 직전 거래일 봉인가?"를 판정한다.
+    주말·공휴일을 건너뛴다(sessions 기반). ISO 날짜 문자열은 사전식=시간순이라 bisect로 O(log n).
+    None은 캘린더 범위(과거 경계) 밖 — 호출자는 그때 신선도 판정을 보류(over-block 금지)한다.
+    """
+    days = _load(market)["sorted_days"]
+    i = bisect.bisect_left(days, day.isoformat())
+    return date.fromisoformat(days[i - 1]) if i > 0 else None

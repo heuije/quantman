@@ -22,6 +22,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import quant_core as qc
+from quant_core import market_calendar as mc
 from quant_core.exec_defaults import instrument_spec, merged_execution
 from quant_core.futures_expiry import roll_lead_days
 
@@ -138,6 +139,24 @@ def _market_group_safe(symbol: str) -> str:
         return market_index.market_group_of(symbol)
     except Exception:
         return "KRX"
+
+
+def _bar_is_stale(sdf, symbol: str, today: date) -> bool:
+    """dataset 마지막 봉이 직전 거래일보다 오래됐나 — 신선도 게이트(fail-stale).
+
+    2026-07-14 사고: 서버가 08:10 KRX 선물을 번들에 재포장하지 않아 07-10 봉(1210.5)이
+    '전일 종가'인 척 참조가·사이징·넷팅에 쓰였다(로컬 신선도 검증 부재). 이 함수는 마지막 봉
+    날짜를 직전 정규 거래일과 대조한다. 판정 불가(캘린더 범위 밖·인덱스 비날짜)면 False —
+    근거 없이 정상 진입을 막지 않는다(over-block 금지). KRX→KR 캘린더 매핑."""
+    try:
+        last = sdf.index[-1]
+        last_date = last.date() if hasattr(last, "date") else last
+        grp = _market_group_safe(symbol)
+        cal_market = "KR" if grp == "KRX" else grp
+        prev = mc.prev_session_day(cal_market, today)
+        return prev is not None and last_date < prev
+    except Exception:
+        return False
 
 
 def _count_today_pending(pending: dict, side: str, market: str,
@@ -1322,6 +1341,21 @@ class Trader:
                 "skip_no_data", strategy_id, strat_name, symbol,
                 "전일 종가가 0 — 데이터 이상"))
             return False
+
+        # 신선도 게이트(fail-stale) — 마지막 봉이 직전 거래일보다 오래면 stale. 07-14 사고의
+        # 직접 원인(서버가 08:10 선물을 재포장 안 해 07-10 봉이 참조가로 쓰임). stale면 live
+        # (_safe_price) 우선, live도 없으면 진입 skip(fail-closed — stale로 발주가·사이징·넷팅
+        # 오염보다 이번 진입 보류가 안전). is_close_entry는 아래에서 어차피 live를 쓰지만,
+        # next_open 진입(07-14 #27)은 이 게이트에서만 stale이 걸러진다.
+        if _bar_is_stale(sdf, symbol, kst_today()):
+            cur = self._safe_price(symbol)
+            if cur and cur > 0:
+                prev_close = cur
+            else:
+                decisions.append(order_log.decision(
+                    "skip_stale_data", strategy_id, strat_name, symbol,
+                    "데이터 stale — 마지막 봉이 직전 거래일보다 오래됨 · 실시간가도 없음 (진입 보류)"))
+                return False
 
         # 종가 진입(fill=close): 참조가를 종가 무렵 현재가로 교체. 전일종가 기준은 15:40 시점엔
         # 오늘 등락만큼 stale → 지정가가 종가 단일가창을 빗나가 미체결된다. 청산(liquidate_day_

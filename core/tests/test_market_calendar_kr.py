@@ -63,6 +63,26 @@ def test_kr_coverage():
     assert end >= "2030-12-30"
 
 
+def test_prev_session_day_skips_weekend_and_holiday():
+    """신선도 게이트 기준일 — 주말·공휴일을 건너뛴 직전 거래일."""
+    # 2026-05-26(화) 직전 거래일 = 05-22(금): 주말(23·24) + 부처님오신날 대체(25 월) 건너뜀
+    assert mc.prev_session_day("KR", date(2026, 5, 26)) == date(2026, 5, 22)
+    # 휴장일(05-25 월) 기준으로도 직전 거래일 = 05-22
+    assert mc.prev_session_day("KR", date(2026, 5, 25)) == date(2026, 5, 22)
+    # 토요일(05-23) 기준 = 05-22
+    assert mc.prev_session_day("KR", date(2026, 5, 23)) == date(2026, 5, 22)
+
+
+def test_prev_session_day_us_memorial_day():
+    # US도 동일 — 05-25 Memorial Day 휴장 + 주말 건너뛰어 05-22
+    assert mc.prev_session_day("US", date(2026, 5, 26)) == date(2026, 5, 22)
+
+
+def test_prev_session_day_before_calendar_is_none():
+    # 캘린더 범위(과거 경계) 밖 → None (호출자는 신선도 판정 보류·over-block 금지)
+    assert mc.prev_session_day("KR", date(2000, 1, 1)) is None
+
+
 def test_unknown_market_raises():
     with pytest.raises(mc.CalendarError):
         mc.is_session_day("JP", date(2026, 5, 22))
