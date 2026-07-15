@@ -342,6 +342,47 @@ def test_c10_missing_or_zero_price_skipped_safely():
     assert res["conditions"]["ref_price_integrity"]["status"] == UNKNOWN
 
 
+# ── C11 목표 수렴 (target reconciliation) ─────────────────────────────────
+
+def test_c11_drift_correction_is_amber_not_paged():
+    """수동매매 흡수(n_drift>0) → AMBER(운영자 가시)·자동 페이징 안 함."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 6, "n_drift": 5}})
+    assert res["conditions"]["target_convergence"]["status"] == AMBER
+    assert "5계약" in res["conditions"]["target_convergence"]["detail"]
+    # drift는 수동 개입 시 정상 → 페이징 대상 아님(C9 정합과 동일 정책).
+    assert not any("target" in c or "drift" in c for c in _codes(res))
+
+
+def test_c11_deferred_correction_surfaced():
+    """교정 발주 보류(비-최근월물·현재가 부재) → AMBER로 표면화."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 0, "n_drift": 0},
+               "decisions": [{"action": "drift_deferred", "symbol": "코스닥150선물",
+                              "reason": "비-최근월물"}]}
+    res = _eval(payload)
+    assert res["conditions"]["target_convergence"]["status"] == AMBER
+    assert "보류" in res["conditions"]["target_convergence"]["detail"]
+
+
+def test_c11_hold_surfaced():
+    """§13 수렴 보류(stale/부분잔고) → AMBER(전량청산 아님을 명시)."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 0},
+               "decisions": [{"action": "drift_eval_skipped", "symbol": ""}]}
+    res = _eval(payload)
+    assert res["conditions"]["target_convergence"]["status"] == AMBER
+
+
+def test_c11_clean_convergence_is_green():
+    """drift 0·보류 없음 → GREEN(목표 상태 정상)."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 3, "n_drift": 0}})
+    assert res["conditions"]["target_convergence"]["status"] == GREEN
+
+
+def test_c11_no_cycle_is_unknown():
+    """사이클 요약 없음(구버전 클라) → UNKNOWN(오탐 없이 degrade)."""
+    res = _eval({})
+    assert res["conditions"]["target_convergence"]["status"] == UNKNOWN
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # compute_user_health (DB-backed) + /admin/health 게이트
 # ─────────────────────────────────────────────────────────────────────────

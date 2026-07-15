@@ -289,6 +289,33 @@ def evaluate_health(
             conditions["ref_price_integrity"] = _cond(
                 GREEN, f"{sym} 진입가↔실평균 정합({bps:.0f}bps)")
 
+    # ── C11 목표 수렴 (target reconciliation — 대시보드 표시, 자동 페이징 안 함) ──
+    # 목표모델(kr-target-reconciliation.md)의 새 신호를 운영자에게 노출한다 — payload에만
+    # 갇히면 목표모델이 프로덕션에서 어떻게 도는지(수동매매 흡수·수렴 보류) 관측 불가
+    # (2026-07-13 CON 오진과 같은 F1~F3 관측성 함정). drift 교정은 수동 개입 시 정상이라
+    # 자동 페이징은 안 하되(C9 정합과 동일 정책), 규모·보류를 신호등으로 보이게 한다.
+    #  · drift_deferred = 교정이 발주 못 됨(비-최근월물·현재가 부재) → 다음 사이클/수동 점검
+    #  · skip_indeterminate/drift_eval_skipped = 판정불가로 수렴 보류(§13 hold)
+    #  · n_drift = 이번 사이클 교정 계약수(수동매매/외부보유 정리 규모)
+    n_drift = int(cs.get("n_drift") or 0)
+    drift_deferred = [d for d in decisions if d.get("action") == "drift_deferred"]
+    held = [d for d in decisions
+            if d.get("action") in ("skip_indeterminate", "drift_eval_skipped")]
+    if drift_deferred:
+        conditions["target_convergence"] = _cond(
+            AMBER, f"목표수렴 교정 보류 {len(drift_deferred)}건 — 비-최근월물/현재가 부재"
+                   "(다음 사이클 재시도·수동 점검)")
+    elif held:
+        conditions["target_convergence"] = _cond(
+            AMBER, f"수렴 보류 {len(held)}건 — stale/부분잔고/정규화실패로 hold(전량청산 아님)")
+    elif n_drift > 0:
+        conditions["target_convergence"] = _cond(
+            AMBER, f"목표수렴 drift 교정 {n_drift}계약 — 수동매매/외부보유 정리(원장 불변)")
+    elif cs.get("kind"):
+        conditions["target_convergence"] = _cond(GREEN, "목표 상태 수렴 정상(drift 0)")
+    else:
+        conditions["target_convergence"] = _cond(UNKNOWN, "수렴 신호 없음(구버전 클라)")
+
     # ── 종합 ──
     statuses = [c["status"] for c in conditions.values()]
     if RED in statuses:
