@@ -71,11 +71,14 @@ _TZ_SEOUL = "Asia/Seoul"
 
 
 def _run_with_retry(name: str, fn: Callable[[], object],
-                     scheduler: BackgroundScheduler) -> None:
+                     scheduler: BackgroundScheduler,
+                     backoffs_min: list[int] | None = None) -> None:
     """fn을 즉시 실행, 실패 시 backoff 후 재시도 job을 scheduler에 등록.
 
     호출될 때마다 같은 name의 기존 retry job을 cancel — 정시 cron이 트리거되면
     이전 실패의 재시도 큐를 깨끗이 비우고 다시 시작한다.
+    backoffs_min: 커스텀 백오프(분) — 발주창처럼 좁은 시간 예산의 job이 기본
+    [5,15,30,60,120]보다 촘촘히 재시도해야 할 때(예: 아침 선물 [3,6,10,15]).
     """
     # 기존 retry job cancel (정시 cron이 새로 시작될 때마다 큐 비움).
     # retry job id는 고정(retry_{name}) — 시도마다 다른 id를 쓰면 max_instances=1
@@ -85,6 +88,7 @@ def _run_with_retry(name: str, fn: Callable[[], object],
     except JobLookupError:
         pass  # 대기 중 retry 없음 — 정상 (대부분의 정시 트리거)
 
+    _backoffs = backoffs_min or _RETRY_BACKOFFS_MIN
     state = {"attempt": 0}
 
     def _attempt() -> None:
@@ -98,8 +102,8 @@ def _run_with_retry(name: str, fn: Callable[[], object],
                 _log.error("[%s] 최대 재시도(%d) 도달 — 다음 정시 cron까지 포기",
                            name, _RETRY_MAX_ATTEMPTS)
                 return
-            backoff_min = _RETRY_BACKOFFS_MIN[
-                min(state["attempt"] - 1, len(_RETRY_BACKOFFS_MIN) - 1)]
+            backoff_min = _backoffs[
+                min(state["attempt"] - 1, len(_backoffs) - 1)]
             # tz-aware(KST) 시각으로 생성 — scheduler가 Asia/Seoul이므로 naive를
             # 쓰면 UTC 배포(Railway)에서 과거 시각으로 해석돼 misfire drop된다.
             run_at = datetime.now(ZoneInfo(_TZ_SEOUL)) + timedelta(minutes=backoff_min)
@@ -134,18 +138,19 @@ def _initial_master_refresh():
 
 
 def _trigger_preview(data_source: str) -> None:
-    """데이터 갱신 직후 preview 자동 갱신. 실패해도 cron 본 작업엔 영향 X.
+    """데이터 갱신 직후 preview 자동 갱신 — 실패는 **예외 전파**(파이프라인 문제 8 근본수정).
 
-    Phase 60 — Neon 연결 끊김(`server conn crashed?`) 시 fresh 연결로 1회 재시도.
-    이게 없으면 데이터 fetch는 성공했는데 preview 갱신만 끊김으로 실패→예외가 여기서
-    삼켜져 _run_with_retry가 재시도를 안 걸고, preview가 stale해진다(국장 후보결정 누락 근본원인).
+    구 버전은 예외를 삼켰다: 데이터 fetch는 성공했는데 preview 갱신만 실패하면
+    _run_with_retry가 재시도를 안 걸고 저장본 preview가 stale로 잔존, 로컬 pull은
+    저장본이 있으면 재빌드하지 않아(sync.py stale-present) stale 그대로 발주에 쓰였다.
+    이제 예외가 호출자(_run_with_retry 래핑 refresh)로 전파돼 fetch→번들→preview
+    전체가 하나의 원자적 공급 단위로 재시도된다(fetch는 최근분 재수집이라 멱등).
+
+    Phase 60 — Neon 연결 끊김(`server conn crashed?`) 시 fresh 연결로 1회 재시도는 유지.
     """
-    try:
-        from . import preview_engine
-        from .db import call_with_disconnect_retry
-        call_with_disconnect_retry(preview_engine.refresh_all_users_preview, data_source)
-    except Exception:
-        _log.exception("preview 자동 갱신 실패 [%s]", data_source)
+    from . import preview_engine
+    from .db import call_with_disconnect_retry
+    call_with_disconnect_retry(preview_engine.refresh_all_users_preview, data_source)
 
 
 def _prune_db() -> None:
@@ -816,7 +821,7 @@ def _refresh_dataset_all() -> None:
     _refresh_kr_dataset()
 
 
-def _package_bundle() -> None:
+def _package_bundle(include_full: bool = True) -> None:
     """dataset bundle 재패키징 — 반드시 dataset refresh '완료' 뒤에서만 호출한다.
 
     이전 구조(고정 시각 cron 07:45/18:30 + boot+300s 고정 sleep)는 refresh '진행 중'
@@ -831,9 +836,15 @@ def _package_bundle() -> None:
       full    — dev 테스트환경(localhost 챗봇)이 프로덕션 볼륨과 동일 데이터로 pull하는
                 스코프(+flow·시총·공매도·13F). best-effort: full 빌드가 실패해도 로컬앱
                 경로(trading bundle)엔 영향이 없도록 격리한다.
+
+    include_full=False — 아침 선물 경로(08:02) 전용: full은 대용량·단일코어 zstd라
+    아침 발주창(로컬 08:35 선물/08:55 주식 pull 전) 예산을 위협한다. 로컬앱이 받는
+    trading만 재포장하고 full은 다음 정기 재포장(18:15)이 담당(dev 환경만 영향).
     """
     from .routers import dataset as dataset_router
     dataset_router.build_bundle("trading")
+    if not include_full:
+        return
     try:
         dataset_router.build_bundle("full")
     except Exception:
@@ -849,21 +860,60 @@ def _refresh_krx_futures() -> None:
     데이터라 미확정 당일 봉 문제가 없다(KIS 실시간과 달리 — 옛 F1 인시던트 무관). 라이브
     체결가는 별도(Naver/브로커) — 이 시리즈는 백테스트/신호 전용. 선물분석 탭(futures_config
     정적 CSV)은 이 경로와 무관(무변경).
-    """
-    from datetime import date, timedelta
 
+    2026-07-15 파이프라인 근본수정(kr-target-reconciliation.md §15 Phase 3 — 07-14 사고 B2):
+    ① **휴장 게이트**(문제 5): KR 휴장일엔 skip — 봉이 원래 없는 날을 지연으로 오판해
+       재시도 낭비하지 않는다(거래 안전은 로컬 휴장 게이트 별도).
+    ② **신선도 판정 = "직전 거래일 봉을 받았는가"**(문제 3·4 근본): fetch 반환 saved는
+       병합 후 총 행수라 "새 봉 없음" 신호가 아니다(실측). 저장된 패널의 마지막 봉
+       날짜를 직접 검사해, KRX 공개 지연일엔 예외를 던져 _run_with_retry 백오프가
+       발주창 안에서 재시도하게 한다.
+    ③ **번들 재포장**(문제 1·2 — 07-14 근본원인): fresh 확인 후 trading 번들을 즉시
+       재포장해 로컬이 받는 번들과 preview가 같은 아침 데이터 상태를 가리키게 한다.
+       구 버전은 preview만 트리거하고 번들(07:30분)을 안 바꿔 선물이 구조적 T-2였다.
+    """
+    from datetime import datetime as _dt, timedelta
+
+    from quant_core import market_calendar as _mc
+    from quant_core import data_fetcher as _df
     from quant_core.data.feeds import krx_openapi
     if not krx_openapi.is_active():
         _log.info("KRX 선물 refresh skip(KRX_API_KEY 미설정)")
         return
-    end = date.today()
+    # ⚠ 컨테이너(UTC)에서 date.today()는 아침 KST에 어제 — 반드시 KST 벽시계 기준.
+    today_kst = _dt.now(ZoneInfo(_TZ_SEOUL)).date()
+    if not _mc.is_session_day("KR", today_kst):
+        _log.info("KRX 선물 refresh skip — KR 휴장일(%s)", today_kst)
+        return
+    end = today_kst
     s = (end - timedelta(days=7)).strftime("%Y%m%d")     # 최근 7일 재수집(T+1 확정 반영)
     res = krx_openapi.fetch_futures_panel(s, end.strftime("%Y%m%d"))
     data_cache.invalidate()
     _log.info("[altdata] KRX 선물 패널 증분 %s~%s: %s", s, end, res.get("saved"))
-    # 08:10 수집(#345) 후 preview 스냅샷 재계산 — 이게 없으면 07:30(dataset_global발)에
-    # 계산된 "선물 stale → 후보 0" 스냅샷이 08:55 로컬 pull(온디맨드 재계산)까지 잔존해
-    # 웹 타임라인이 오보되고, 온디맨드 실패 시 stale 캐시 폴백 위험(2026-07-10 후속리뷰).
+    # ② 신선도 판정 — 수집된 각 상품의 저장 패널 마지막 봉 ≥ 직전 KR 거래일이어야 한다.
+    prev = _mc.prev_session_day("KR", today_kst)
+    if prev is not None:
+        stale: list[str] = []
+        for sym in (res.get("saved") or {}):
+            try:
+                panel = _df.load_futures_panel(sym)
+            except Exception:
+                continue                     # 신규 상장/미백필 — 판정 불가는 차단하지 않음
+            if panel is None or len(panel) == 0:
+                continue
+            last = panel.index[-1]
+            last_d = last.date() if hasattr(last, "date") else last
+            if last_d < prev:
+                stale.append(f"{sym}(마지막 봉 {last_d})")
+        if stale:
+            # 예외 전파 → _run_with_retry 백오프(아침 커스텀 [3,6,10,15]분)가 재시도.
+            raise RuntimeError(
+                f"KRX 선물 stale — 직전 거래일({prev}) 봉 미수신: {', '.join(stale)}")
+    # ③ fresh 확정 → 로컬이 받는 trading 번들 즉시 재포장(문제 1 근본 — full은 18:15 소관).
+    _package_bundle(include_full=False)
+    # preview 재계산 — 이게 없으면 07:30(dataset_global발)에 계산된 "선물 stale → 후보 0"
+    # 스냅샷이 08:55 로컬 pull까지 잔존(2026-07-10 후속리뷰). 실패는 전파(문제 8)되어
+    # fetch→번들→preview 전체가 원자적으로 재시도된다.
     _trigger_preview("kospi_futures")
 
 
@@ -903,8 +953,9 @@ def _refresh_global_dataset() -> None:
         us_metrics_cache.refresh()
     except Exception:
         _log.exception("us_metrics 갱신 실패 (미국 스크리너 영향)")
-    _trigger_preview("dataset_global")
+    # 번들 먼저 → preview — preview 예외(전파·문제 8)가 번들 재포장을 건너뛰지 않게.
     _package_bundle()
+    _trigger_preview("dataset_global")
 
 
 def _refresh_us_market_caps() -> None:
@@ -945,8 +996,9 @@ def _refresh_kr_dataset() -> None:
     _rebuild_overseas_universe()
 
     data_cache.invalidate()
-    _trigger_preview("dataset_kr")
+    # 번들 먼저 → preview — preview 예외(전파·문제 8)가 번들 재포장을 건너뛰지 않게.
     _package_bundle()
+    _trigger_preview("dataset_kr")
 
 
 def _seed_sp500_overseas() -> int:
@@ -1341,20 +1393,23 @@ def _build_scheduler() -> BackgroundScheduler:
             CronTrigger(hour=_hh, minute=_mm, timezone=_TZ_SEOUL),
             id=f"industry_prices_{_hh}_{_mm}", replace_existing=True)
 
-    # 08:10 + 09:35 — KRX 선물(K200·KQ150) 만기물 패널 최근분 증분 + 연속물 재구성 (공식 KRX
-    # API, T+1 08시 갱신 후). KRX_API_KEY 미설정이면 fail-safe no-op. 백필은 krx_futures_panel_chunk
-    # (10분·K200 완주분) + kq150_panel_chunk(10분·상장일 소급)가 담당.
+    # 08:02 — KRX 선물(K200·KQ150) 만기물 패널 최근분 증분 + 연속물 재구성 (공식 KRX
+    # API, T+1 08시 갱신 직후). KRX_API_KEY 미설정이면 fail-safe no-op. 백필은
+    # krx_futures_panel_chunk(10분·K200 완주분) + kq150_panel_chunk(10분·상장일 소급)가 담당.
     #
-    # 08:10이 주 수집: 아침 자동매매 사이클(08:55)의 preview 신선도 게이트가 어제 선물 봉을
-    # 요구하는데, 종전 09:35 단독으로는 08:55 시점에 항상 1일 지연 → 매일 아침 후보가
-    # 차단됐다(2026-07-08~10 실측 — 선물 소스가 same-day 경로에서 T+1 패널로 전환되며 발생).
-    # 09:35는 KRX 공개 지연일의 재시도로 유지 — fetch가 최근 7일 재수집이라 멱등(이중 실행 무해).
-    # job id는 도입 당시 이름(kospi_futures*) 유지 — 로그 연속성(수집 자체는 등록 상품 전체).
-    for _hh, _mm, _jid in [(8, 10, "kospi_futures_am"), (9, 35, "kospi_futures")]:
-        scheduler.add_job(
-            lambda: _run_with_retry("kospi_futures", _refresh_krx_futures, scheduler),
-            CronTrigger(hour=_hh, minute=_mm, timezone=_TZ_SEOUL),
-            id=_jid, replace_existing=True)
+    # 2026-07-15 재설계(문제 1·3·4 — kr-target-reconciliation.md §15 Phase 3):
+    # · 08:02 시작 + 커스텀 백오프 [3,6,10,15]분 — 지연일 재시도가 08:05/08:11/08:21/08:36
+    #   으로 발주창(로컬 선물 08:35·주식 08:55 pull) 안에 든다. 재시도 발동 조건은
+    #   _refresh_krx_futures의 신선도 판정("직전 거래일 봉 수신") 예외.
+    # · 구 09:35 재시도 cron 삭제 — 08:55 아침 사이클보다 늦어 당일 진입에 무의미했고
+    #   (그날 진입은 이미 차단된 후), retry name 공유로 08:02의 재시도 큐를 비우는
+    #   충돌도 있었다. 미수신분은 다음 아침 7일 재수집이 자동 백필.
+    # job id·retry name은 도입 당시 이름(kospi_futures*) 유지 — 로그 연속성.
+    scheduler.add_job(
+        lambda: _run_with_retry("kospi_futures", _refresh_krx_futures, scheduler,
+                                backoffs_min=[3, 6, 10, 15]),
+        CronTrigger(hour=8, minute=2, timezone=_TZ_SEOUL),
+        id="kospi_futures_am", replace_existing=True)
 
     # 17:00 — NAVER 펀더멘털 (publish 비공개, 보수적 추정)
     scheduler.add_job(
