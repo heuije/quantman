@@ -230,6 +230,64 @@ def test_flat_capacity_no_effect_opposite_direction(isolated_trader):
     assert "sell" in captured, "숏 진입은 orderable(sell)로 사이징"
 
 
+def test_a1_external_pending_same_direction_nets(isolated_trader):
+    """§19 A1 배선 E2E — 동시호가 창 수동 **미체결** 매수 4를 effective current로 반영.
+
+    진입 target 5인데 수동 pending 매수 4가 있으면 자동은 **순매수 1**만(체결 후 수동4+자동1
+    =5=target·과매수 방지). A1 없으면 매수 5 → 08:45에 4+5=9 과매수. 저널 비어 own 없음 →
+    pending 전량 external. (§6 D1의 '수동 보유4' 버전을 '수동 미체결4'로 — 넷팅 결과 동일)."""
+    t, broker = isolated_trader
+    spec = _spec()
+    rate = spec.init_margin_rate or 0.10
+    mult = spec.multiplier
+    broker._prices[SYM] = 300.0
+    broker._balance.update({"cash": 1_000_000_000, "total_eval": 1_000_000_000,
+                            "futures_order_cash_kr": 1_000_000_000})
+    broker.orderable_qty = lambda symbol, side, price: 100      # 넉넉 — fixed_amount(5)가 바인딩
+    broker.pending_orders = lambda: [
+        {"order_no": "MANUAL1", "symbol": SYM, "side": "buy", "remain_qty": 4,
+         "market": "DOMESTIC", "asset_class": "futures"}]
+    a29 = int(5.5 * 300 * mult * rate)                         # → 진입 5계약
+    strats = [{"id": "29", "name": "오버나이트롱", "definition": _def29(a29),
+               "account_ref": None}]
+    by = [{"strategy_id": "29", "candidates": [{"symbol": SYM}]}]
+    p = t.run_close_netting(by, strats, _ds("2026-05-29", 300.0),
+                            market="KRX", instrument_class="futures", risk_limits={})
+    orders = [(o["side"], o["qty"]) for o in broker.submitted]
+    assert orders == [("buy", 1)], \
+        f"§19 A1: target5 − 수동pending4 = 순매수 1 — 실제 {orders}"
+    assert p["cycle_summary"]["n_drift"] == 0        # 수동 pending은 인수(book)·drift 아님
+    _fill_all(t, broker, 300.0, since=0)
+    assert t.ledger["29"]["qty"] == 5                # 전략이 flat target 5 소유(수동4 인수+자동1)
+
+
+def test_a1_opposite_pending_excluded_normal_order(isolated_trader):
+    """§19 A1 — 반대 방향 수동 미체결(매도)은 A1에서 제외 → 자동은 정상 target 발주.
+
+    진입 target 5, 수동 pending 매도 3(반대) → net = target 5(제외·불변). 반대방향은 동시호가
+    자전·증거금 상충 위험이라 방향무관 08:52 수렴이 처리(여기선 08:35 정상 발주만 확인)."""
+    t, broker = isolated_trader
+    spec = _spec()
+    rate = spec.init_margin_rate or 0.10
+    mult = spec.multiplier
+    broker._prices[SYM] = 300.0
+    broker._balance.update({"cash": 1_000_000_000, "total_eval": 1_000_000_000,
+                            "futures_order_cash_kr": 1_000_000_000})
+    broker.orderable_qty = lambda symbol, side, price: 100
+    broker.pending_orders = lambda: [
+        {"order_no": "MANUAL2", "symbol": SYM, "side": "sell", "remain_qty": 3,
+         "market": "DOMESTIC", "asset_class": "futures"}]
+    a29 = int(5.5 * 300 * mult * rate)
+    strats = [{"id": "29", "name": "오버나이트롱", "definition": _def29(a29),
+               "account_ref": None}]
+    by = [{"strategy_id": "29", "candidates": [{"symbol": SYM}]}]
+    t.run_close_netting(by, strats, _ds("2026-05-29", 300.0),
+                        market="KRX", instrument_class="futures", risk_limits={})
+    orders = [(o["side"], o["qty"]) for o in broker.submitted]
+    assert orders == [("buy", 5)], \
+        f"§19 A1: 반대방향 pending 제외 → 정상 순매수 5 — 실제 {orders}"
+
+
 def test_external_symbol_liquidated_by_drift(isolated_trader):
     """§9③ 비전략 심볼 청산 — 전략 무관 브로커 보유 → target 0 → drift 매도(원장 불변)."""
     t, broker = isolated_trader

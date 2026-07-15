@@ -59,6 +59,41 @@ def signed_qty(leg) -> int:
     return int(leg.qty) if leg.order_side == "buy" else -int(leg.qty)
 
 
+def external_pending_by_key(pending, own_order_nos, scope_ok, key_of):
+    """외부(수동) 미체결을 계약 키별 부호수량 + (심볼,side)별 잔량으로 집계 (§19 A1·순수).
+
+    동시호가 창에 유저가 발주한 미체결은 08:45/15:45 체결되므로 자동 발주(08:35/15:40)
+    시점에 effective current로 반영해야 과매수하지 않는다. 자기 주문은 반드시 제외한다 —
+    포함하면 08:40/42 재시도가 자기 미체결을 상쇄하는 워시 발주가 나간다(§17.1 기각 사유).
+
+    pending: broker.pending_orders() — [{order_no, symbol, side, remain_qty|qty, ...}].
+    own_order_nos: 자기 발주 order_no 집합(intents 저널 mark_submitted). 이 order_no는 제외.
+    scope_ok(p)→bool: 이 미체결이 이번 사이클 범위(시장·자산군)인가 — 호출자가 dict 필드
+        (market·asset_class)로 판정(심볼 파싱 대신). key_of(sym)→positions/ledger와 동일
+        계약 키(선물=계약코드·주식=심볼).
+    반환 (signed_by_key, remain_by_sym_side): 넷팅용 부호수량 + 사이징 크레딧용 잔량.
+    """
+    signed_by_key: dict[str, int] = {}
+    remain_by_sym_side: dict[tuple[str, str], int] = {}
+    for p in pending or []:
+        ono = str(p.get("order_no") or "")
+        if ono and ono in own_order_nos:
+            continue                                   # 자기 주문 — 워시 방지
+        side = p.get("side")
+        if side not in ("buy", "sell") or not scope_ok(p):
+            continue
+        sym = str(p.get("symbol") or "").strip()
+        rem = int(p.get("remain_qty") or p.get("qty") or 0)
+        if not sym or rem <= 0:
+            continue
+        key = key_of(sym)
+        signed_by_key[key] = signed_by_key.get(key, 0) + (rem if side == "buy" else -rem)
+        pos_side = "long" if side == "buy" else "short"
+        remain_by_sym_side[(sym, pos_side)] = \
+            remain_by_sym_side.get((sym, pos_side), 0) + rem
+    return signed_by_key, remain_by_sym_side
+
+
 @dataclass(frozen=True)
 class SymbolPlan:
     """한 **계약 키**의 수렴 계획 — trader가 book_legs 정산 → order_legs·drift 발주.
@@ -85,6 +120,7 @@ def build_symbol_plans(
     broker_signed: dict[str, int],
     indeterminate: set[str],
     symbol_of: dict[str, str] | None = None,
+    external_pending: dict[str, int] | None = None,
 ) -> list[SymbolPlan]:
     """계약 키별 수렴 계획 산출 (순수).
 
@@ -94,6 +130,12 @@ def build_symbol_plans(
         부호합(주식=심볼, 선물=contract_code-or-심볼 — 호출자가 같은 규약으로 키잉).
     indeterminate: 판정 불가 키(§13 — target=None 의미). 계획에서 통째 제외(hold).
     symbol_of: 키→발주 심볼 매핑(누락 키는 키 자신 — 주식·fallback 규약과 일치).
+    external_pending: §19 A1 — 계약 키별 **외부(수동) 미체결** 부호수량(자기 주문 제외).
+        동시호가 창에 유저가 발주한 미체결은 08:45/15:45 체결되므로 effective current로
+        반영해야 자동이 과매수하지 않는다. 단, net 부호를 뒤집지 않게 **같은 방향으로
+        intended net을 부분선매수한 만큼만(cap |intended|)** 포함 — 자동 net이 수동과
+        반대 방향이 되면 같은 계좌 자전·증거금 상충이라, 반대/초과분은 제외하고 방향무관
+        개장후 수렴(08:50)이 처리한다(§19.2). None=미반영(기존 net=target−broker).
 
     반환 순서: net≤0(매도·정산-only) 먼저, net>0(매수) 나중 — 청산이 증거금을
     먼저 푸는 기존 불변식(청산 먼저 → 진입 나중)을 키 단위로 보존.
@@ -113,7 +155,19 @@ def build_symbol_plans(
         broker = int(broker_signed.get(key, 0))
 
         target = ledger + sum(signed_qty(leg) for leg in legs)
-        net = target - broker
+        # §19 A1 — 외부(수동) 미체결을 effective current에 반영. intended(=target−broker)와
+        # 같은 방향으로 부분선매수한 만큼만 포함(cap |intended|)해 net 부호를 뒤집지 않는다:
+        # 자동 net이 수동과 반대 방향이 되면 동시호가 자전·증거금 상충이므로, 반대·초과분은
+        # 제외(→ 방향무관 08:50 수렴이 처리). 예약 산술이 아니라 "체결될 미체결 = 현재보유"
+        # 취급이라 자기 주문 워시(§17.1 기각) 재발 없음 — 호출자가 external을 자기 order_no로
+        # 필터해 넘긴다.
+        intended = target - broker
+        _pend = int((external_pending or {}).get(key, 0))
+        if intended != 0 and (_pend > 0) == (intended > 0):
+            incl = (1 if intended > 0 else -1) * min(abs(_pend), abs(intended))
+        else:
+            incl = 0
+        net = target - (broker + incl)
 
         # ① 진입↔청산 상쇄(handoff) — 기존 넷팅 그대로 재사용.
         #    (contract_key, position_side) 그룹핑이라 롤 경계(E6)·교차 side 보호 유지.

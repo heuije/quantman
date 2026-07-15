@@ -2139,6 +2139,39 @@ class Trader:
                 return (instrument_class == "futures") == qc.is_futures(sym)
             return True
 
+        # §19 A1 — 동시호가 창에 유저가 발주한 외부(수동) 미체결을 effective current로 반영
+        # (같은 방향은 08:35/15:40 넷팅·사이징에, 반대/초과는 방향무관 08:52 수렴이 처리).
+        # 자기 주문은 order_no(intents 저널)로 제외해 재시도 워시(§17.1 기각)를 막는다 —
+        # 08:40/42 재시도에서 자기 08:35 미체결을 상쇄하는 매도가 나가지 않게. 키=계약코드
+        # (선물)·심볼(주식)로 pending 심볼이 곧 positions/ledger와 동일 규약. 스코프는 dict
+        # 필드(market·asset_class)로 판정(심볼 파싱 대신). 미지원 브로커·조회 실패는 안전
+        # skip(08:52 수렴이 백업 — A1은 최적화, 수렴이 정합 보장).
+        ext_signed: dict = {}
+        ext_remain: dict = {}
+        _pend_fn = getattr(self.broker, "pending_orders", None)
+        if _pend_fn is not None:
+            try:
+                _own = {str(e.get("order_no")) for e in
+                        intents._read_today(today.isoformat()) if e.get("order_no")}
+
+                def _pend_scope(pnd: dict) -> bool:
+                    _mg = ("KRX" if str(pnd.get("market") or "") in ("DOMESTIC", "KRX")
+                           else "US")
+                    if _mg != market:
+                        return False
+                    if instrument_class is not None:
+                        return str(pnd.get("asset_class") or "") == instrument_class
+                    return True
+
+                ext_signed, ext_remain = target_recon.external_pending_by_key(
+                    _pend_fn() or [], _own, _pend_scope, lambda s: s)
+                if ext_signed:
+                    log.info("[A1] 외부(수동) 미체결 반영: %s", ext_signed)
+            except Exception as e:
+                log.warning("[A1] 외부 미체결 조회 실패 — pending 넷팅 skip"
+                            "(08:52 수렴 백업): %s", e)
+                ext_signed, ext_remain = {}, {}
+
         entry_intents: list = []
         if not entries_blocked and buy_candidates is not None:
             # §18 빈-상태 사이징: 진입 심볼의 **브로커 실보유 전체(side별)를 되돌림 크레딧**으로
@@ -2179,6 +2212,36 @@ class Trader:
                             px = 0.0
                     if px > 0:
                         extra_capacity[(sym, side)] = remaining * px
+            # §19 A1 사이징 크레딧 — 외부 pending의 예약 여력을 "빈 상태"로 되돌림(§18과 동일
+            # 목적: target을 수동 취소 후 최대로). ext_remain 키=(계약코드,side)를 진입 표시
+            # 심볼로 역매핑해야 extra_capacity(표시심볼 키)와 맞는다 — positions·후보를
+            # _resolve_contract_key로 코드↔표시 매핑(주식은 코드=심볼이라 무이슈). 역매핑 없는
+            # 신선 계약은 표시심볼 미상 → skip(08:52 수렴이 top-up).
+            if ext_remain:
+                _code2disp: dict = {}
+                for _p in (snap_pre.get("positions") or []):
+                    _s = _p.get("symbol") or ""
+                    if _s:
+                        _code2disp[self._resolve_contract_key(_s)] = _s
+                for _e in (buy_candidates or []):
+                    for _c in (_e.get("candidates") or []):
+                        _s = _c.get("symbol") or ""
+                        if _s:
+                            _code2disp.setdefault(self._resolve_contract_key(_s), _s)
+                for (code, side), rem in ext_remain.items():
+                    disp = _code2disp.get(code)
+                    if disp is None or not _in_scope(disp):
+                        continue
+                    if qc.is_futures(disp):
+                        extra_capacity[(disp, side)] = \
+                            extra_capacity.get((disp, side), 0) + rem
+                    else:
+                        sdf = dataset.get(disp)
+                        px = (float(sdf["Close"].iloc[-1]) if (sdf is not None
+                              and len(sdf) and "Close" in sdf.columns) else 0.0)
+                        if px > 0:
+                            extra_capacity[(disp, side)] = \
+                                extra_capacity.get((disp, side), 0) + rem * px
             entry_intents, ent_dec = self.plan_entries_captured(
                 buy_candidates, strategies, dataset, equity_now, credit_intents,
                 market, instrument_class, entry_window=window, catchup=catchup,
@@ -2267,7 +2330,7 @@ class Trader:
 
         plans = target_recon.build_symbol_plans(
             plan_intents, ledger_signed, broker_signed,
-            excluded_keys, symbol_of=symbol_of)
+            excluded_keys, symbol_of=symbol_of, external_pending=ext_signed)
 
         n_netted = 0
         commission_saved = 0.0

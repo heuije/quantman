@@ -407,3 +407,70 @@ capacity_credit는 물리 주문 기계가 아니라 **사이징 입력**이다.
 - **삭제**: `_plan_cycle_liquidations`(아침 넷팅 계획) · 넷팅 pre-pass 블록 · §2 잔여청산 블록(+skip_oversell·netted_opener_sids·netted_exit_consumed) · §2/§3 진입 게이트 분리.
 - **유지**: `netting.py`(net_window — 상쇄 엔진으로 재사용) · `_apply_netted_leg`(합성 정산) · `plan_close_liquidations`(레거시 API·프로덕션 미사용) · `liquidate_day_trades`/`enter_close_candidates`(레거시·후속 정리) · intraday_stop/killswitch(독립).
 - **테스트**: 신규 `tests/test_target_recon.py`(순수 13) · `tests/scenarios/test_target_reconciliation.py`(§6 재현+적대 5). 재작성 7건(구 의미론→신): netting_cycle 오버셀→net0 무발주 · exit_fill_close_window(구 API→_plan_exit_intents) · reconcile 자동차감 4건→관측 전용.
+
+---
+
+# 19. 동시호가 pending-aware 넷팅 + 개장후 수렴 (수동매매 호환성 개선, 2026-07-16)
+
+**목표 (유저 정의):** "언제 어떤 수동매매를 진행하더라도, 장전·장마감 동시호가 직후에는
+자동매매로만 계좌를 운용하는 것과 동일한 포지션으로 교정된다"(자동 발주 08:35·15:40).
+
+## 19.1 문제 — 08:35/15:40 발주 시 수동 pending으로 잔고 오염
+
+동시호가 창(08:30~45·15:35~45)에 유저가 수동매매를 발주하면 그 주문은 **미체결(pending)**
+상태로 08:45/15:45에 체결된다. 08:35/15:40 자동 발주 시점엔:
+- pending이 증거금/현금을 **예약** → `orderable`·`cash` 축소(사이징 오염 → 자동이 과소 발주).
+- pending이 `positions` 스냅샷엔 없음(아직 미체결) → net이 이를 못 보고 **과매수**(체결 후 08:45에 target 초과).
+
+§18(빈-상태 사이징)은 **체결된** 수동 보유만 되돌린다 — pending은 미반영. 그래서 pending을
+넷팅·사이징에 반영하는 A1 넷팅이 필요하다.
+
+## 19.2 설계 — 두 계층 (A1 주 + 개장후 수렴 안전망)
+
+**A1: 08:35/15:40 pending-aware 넷팅 (같은 방향만).**
+- **외부(수동) pending 식별**: `external = broker.pending_orders() − 자기 order_no`
+  (자기 = `intents._read_today()`의 mark_submitted order_no). 이중 방어: 자기 in-flight
+  심볼은 이미 `indeterminate` hold(§17.1) → 08:40/42 재시도가 자기 주문을 상쇄하는 워시 차단.
+- **effective_current = positions + 외부 pending** (같은 방향·|pending|≤|intended_net| 한도):
+  - 넷팅: `broker_signed[key] += 같은방향_capped(외부 pending)` → `net = target − effective_current`.
+  - 사이징: 그 pending의 예약 여력을 §18 `extra_capacity`에 되돌림(같은 side) → target = 빈 상태.
+  - **단일 순방향 보존**: pending 포함량을 `|intended_net|`로 cap → net 부호가 뒤집히지 않음
+    → 자동 net이 수동과 **반대 방향이 되지 않음**(같은 계좌 자전거래·증거금 상충 구조적 회피).
+- **반대 방향·초과·교차-종목 pending**: A1에서 **제외**(넷팅·크레딧 안 함, 보수적) → 19.2 안전망이 처리.
+
+**개장후 수렴 (안전망, 방향 무관).** 동시호가 체결(선물 08:45·주식 09:00) 반영 후
+`run_cycle` 재실행으로 **실체결 기준 멱등 수렴**(`net = target − broker`):
+- 선물 **08:52** · 주식 **09:05** (기존 08:35/08:55 사이클과 별개 cron).
+- 잡는 것: A1 취소-race(08:35 넷팅 후 취소)·늦은 수동(08:35 후 발주)·A1 제외분(반대/초과/교차).
+- 멱등(L-01 재진입 차단·drift만 교정)이라 무결(교정할 것 없으면 no-op).
+- **마감측 불가**: 선물 15:45·주식 15:30 체결 = 시장 마감 → 당일 교정 불가, 익일 개장 carry(원리적 한계).
+
+## 19.3 케이스 매트릭스
+
+| 수동매매 시점 | 08:35/15:40 (A1) | 08:52/09:05 (안전망) | 결과 |
+|---|---|---|---|
+| 발주 전·같은 방향 pending | net 반영·크레딧 | (no-op) | **동시호가 단일가 정확 교정** |
+| 발주 전·반대/초과 pending | 제외 | 방향무관 수렴 | 08:52 교정 |
+| 발주 후 취소(개장측)·늦은 수동 | (못 봄) | 방향무관 수렴 | 08:52 교정 |
+| 발주 후 취소(마감측)·늦은 수동 | (못 봄) | 시장마감·불가 | **익일 개장 carry** |
+| 동시호가 외(장중) | (해당 없음) | 다음 사이클 drift | 다음 사이클 교정 |
+
+## 19.4 게이트 (실계좌 안전)
+
+- MockBroker 테스트 전건 통과 후에도 **라이브 배포는 개장 모의 실측 + 유저 승인 후**:
+  반대방향 `orderable_qty(sell)` 의미·동시호가 자전 실제 발생 여부·§18 사이징 확대.
+- KIS·LS 양 브로커 `pending_orders()` 포맷 정규화(중립 seam) — 각각 모의 왕복 1회.
+- **KIS 선물 ccnl output1의 symbol/side 필드명 미검증**(KB 미문서화·§10): 현재 `shtn_pdno`·
+  `sll_buy_dvsn_name`/`_cd`로 방어적 부착(불명확 시 side 생략→A1 helper skip→08:52 백업).
+  첫 실거래 캡처로 확정 필요. LS 선물은 이미 정규형 반환(mwmw=LS라 A1 즉시 동작).
+
+## 19.5 구현 상태 (2026-07-16 · 브랜치 `fix/flat-capacity-sizing`·미배포)
+
+- **완료·테스트**: `build_symbol_plans(external_pending)` 같은-방향 cap + `external_pending_by_key`
+  집계(순수·6 테스트) · `_reconcile_pass` 배선(pending 조회·자기 order_no 필터·사이징 크레딧
+  코드↔표시 역매핑·넷팅) · A1 E2E 2 테스트(같은방향→순매수1·반대방향→정상5) · 개장후 수렴
+  cron(선물08:52·주식09:05) · KIS 선물 pending symbol/side 방어적 부착. **로컬 836 pass**
+  (1 격리시 통과 Windows temp 플레이크).
+- **미배포·게이트**: 실계좌 배포는 **개장 모의 실측 + 유저 승인 후** — pending 심볼이 positions
+  키와 실제 일치하는지·KIS 필드명·반대방향 orderable·§18 사이징 확대.
+- **degrade 안전**: pending 조회 실패·미지원 브로커·symbol 미상은 안전 skip → 08:52 수렴이 정합 보장.

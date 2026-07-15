@@ -15,7 +15,8 @@ for _p in (str(_LOCAL_DIR), str(_CORE_DIR)):
         sys.path.insert(0, _p)
 
 from localapp.netting import Intent
-from localapp.target_recon import build_symbol_plans, signed_qty
+from localapp.target_recon import (build_symbol_plans, external_pending_by_key,
+                                   signed_qty)
 
 S = "코스닥150선물"
 
@@ -57,6 +58,75 @@ def test_entry_absorbs_manual_holding():
     assert sum(l.qty for l in p.book_legs) == 4          # 진입 4는 합성 정산(인수)
     assert p.drift_qty == 0
     _check_identities(p, 0)
+
+
+# ── §19 A1: 동시호가 외부(수동) pending-aware 넷팅 (같은-방향 cap) ────────────────
+
+def test_external_pending_same_direction_reduces_net():
+    """§19 A1: 진입 5·브로커 0·수동 미체결 매수 4(같은 방향) → net 5−(0+4)=1.
+    08:45 체결 시 수동 4 + 자동 1 = target 5(과매수 없음·동시호가 단일가 정확 교정)."""
+    [p] = build_symbol_plans([_leg("entry", 5)], {}, {}, set(),
+                             external_pending={S: 4})
+    assert (p.target, p.broker, p.net) == (5, 0, 1)
+    assert sum(l.qty for l in p.order_legs) == 1
+    assert p.drift_qty == 0
+    _check_identities(p, 0)
+
+
+def test_external_pending_overshoot_caps_net_to_zero():
+    """§19 A1: 수동 미체결 매수 14가 target 5를 초과 → net cap 0(자동 무발주·단일
+    순방향 보존, 자전 회피). 오버슈트분 −9는 방향무관 08:50 안전망이 정리."""
+    [p] = build_symbol_plans([_leg("entry", 5)], {}, {}, set(),
+                             external_pending={S: 14})
+    assert (p.target, p.broker, p.net) == (5, 0, 0)
+    assert not p.order_legs and p.drift_qty == 0
+    _check_identities(p, 0)
+
+
+def test_external_pending_opposite_direction_ignored():
+    """§19 A1: 수동 미체결 매도 3(반대 방향)은 A1에서 제외 → net = target 5(정상 발주).
+    반대방향은 동시호가 자전·증거금 상충 위험이라 방향무관 08:50이 처리."""
+    [p] = build_symbol_plans([_leg("entry", 5)], {}, {}, set(),
+                             external_pending={S: -3})
+    assert (p.target, p.broker, p.net) == (5, 0, 5)
+    assert sum(l.qty for l in p.order_legs) == 5
+    _check_identities(p, 0)
+
+
+def test_external_pending_none_is_unchanged():
+    """§19 회귀: external_pending 미지정 = 기존 net = target − broker 그대로."""
+    [p] = build_symbol_plans([_leg("entry", 5)], {}, {S: 4}, set())
+    assert (p.target, p.broker, p.net) == (5, 4, 1)
+    _check_identities(p, 0)
+
+
+# ── §19 A1: external_pending_by_key 순수 집계 (자기주문 필터·부호·스코프) ──────
+
+def _pend(order_no, sym, side, remain, market="DOMESTIC"):
+    return {"order_no": order_no, "symbol": sym, "side": side,
+            "remain_qty": remain, "market": market, "asset_class": "futures"}
+
+
+def test_external_pending_filters_own_and_signs():
+    """자기 order_no 제외(워시 방지)·매수=+·매도=−·(심볼,side)별 잔량 집계."""
+    pend = [_pend("OWN1", S, "buy", 3),       # 자기 주문 → 제외
+            _pend("EXT1", S, "buy", 4),       # 외부 매수 → +4
+            _pend("EXT2", "X", "sell", 2)]    # 외부 매도 → -2
+    signed, remain = external_pending_by_key(
+        pend, own_order_nos={"OWN1"}, scope_ok=lambda p: True, key_of=lambda s: s)
+    assert signed == {S: 4, "X": -2}
+    assert remain == {(S, "long"): 4, ("X", "short"): 2}
+
+
+def test_external_pending_scope_and_qty_fallback():
+    """scope_ok=False는 제외·remain_qty 없으면 qty로 폴백."""
+    pend = [_pend("E1", S, "buy", 5, market="US"),               # 범위 밖 → 제외
+            {"order_no": "E2", "symbol": S, "side": "buy", "qty": 3,  # remain_qty 없음
+             "market": "DOMESTIC", "asset_class": "futures"}]
+    signed, remain = external_pending_by_key(
+        pend, own_order_nos=set(),
+        scope_ok=lambda p: p.get("market") == "DOMESTIC", key_of=lambda s: s)
+    assert signed == {S: 3} and remain == {(S, "long"): 3}
 
 
 def test_manual_presold_roll_restores():
