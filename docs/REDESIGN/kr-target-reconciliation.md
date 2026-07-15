@@ -306,3 +306,37 @@ target_qty의 크기를 무엇으로 정하나:
 | E17 | **번들 구조 문제(2·7·9·11) 소멸** — thin-client(방향 B) | Phase 5 — **Phase 2 완료 후 별도 협의·착수** | 5 | ☐(후속) |
 
 **검증 원칙**: E1~E9는 코드+테스트로 이 세션에서 실측, E10~E12는 서버 테스트+배포 후 prod 실측(배포는 유저 허락 필요), E13~E14는 테스트로 실측(실개장 실측은 릴리스 후 아침 게이트), E17은 후속 트랙.
+
+---
+
+# 17. 구현 노트 — 구현 중 확정된 설계 정정 (2026-07-15, Phase 2 구현 세션)
+
+구현·적대 테스트가 설계 원안의 결함/과단순화를 4건 발견해 정정했다. **코드가 정본** — 이 문서의 이전 §과 어긋나면 §17이 우선.
+
+### 17.1 pending 산술 기각 → intent 저널 멱등 (§14 정정)
+`net = target − (broker + pending)` 산술은 **기각**. in-flight 주문의 leg는 L-01 멱등 게이트가 재계획에서 빼는데 pending 산술만 남으면 **자기 주문을 상쇄하는 워시 주문**이 나간다(미체결 매수 6 존재 → net −6 매도). 확정 구현:
+- **plan-time**: in-flight(활성 intent) 주문이 있는 심볼 → indeterminate(이번 사이클 hold).
+- **submit-time**: 전 발주가 intent 저널 게이트 통과(L-01 + 신규 `DRIFT:{window}` 키).
+저널은 fsync·크래시 재기동 복구(reconcile_submitting)까지 검증된 기존 기계다.
+
+### 17.2 capacity_credit 유지 (§5·§14 제거 판정 정정)
+capacity_credit는 물리 주문 기계가 아니라 **사이징 입력**이다. 제거하면 같은 사이클 롤(A청산+B진입·자본 잠김)에서 B가 0으로 사이징돼 핸드오프가 실매도로 퇴화한다(테스트 실증). **유지**하되 신규 규칙: 크레딧은 **브로커 실보유로 클램프한 청산량만**(수동 선매도분은 이미 브로커 현금/orderable에 반영 — 크레딧하면 이중계상, N7 유지).
+
+### 17.3 "단일 순주문" → "단일 순방향" (§2 구현 형태)
+물리 주문은 잔여 leg별 + drift 교정으로 **분할 발주**한다(전부 같은 방향 = sign(net)). 불변식은 "심볼당 단일 순방향"(매수·매도 동시 불가 = 오버셀·wash 소멸)이고, leg별 분할은 기존 `_apply_fill` 회계(전략별 P&L·부분체결·WS 경로)를 무수정 재사용하기 위함. drift 주문은 `pending["drift"]=True`로 **체결돼도 원장 불변**.
+
+### 17.4 A2 fail-open 개정 — stale ref는 정산가 금지 (§13 신선도 정밀화)
+구 A2는 "청산은 live 우선, live 없으면 stale이라도 진행(fail-open)" — 구 모델의 ref는 시장가 주문 참고값이라 무해했다. 목표수렴에선 **ref가 정산가**(book leg 실현손익 기장)가 되므로 stale 봉(1210.5)으로 book하면 phantom 재발(적대 테스트 실증). 확정: **청산 정산가 = fresh 봉 or live. 둘 다 없으면 hold**(§13 indeterminate — 다음 사이클 재시도).
+
+### 17.5 부분 스냅샷 degrade — 보유 심볼 hold·신규 진입만 (§14 가용성 가드 구체화)
+`fetch_failed` 시 보유가 얽힌 심볼(원장·브로커)은 전부 hold: 원장 전량 청산은 오버셀(의도외 숏), drift 교정은 오인 청산 위험. 보유 무관 신규 진입만 진행(구 모델 가용성과 동일).
+
+### 17.6 reconcile 관측 전용 전환 (§14 이행 완료)
+`reconcile_with_kis`의 orphan 자동 차감(ledger←broker) **전면 제거** — 표면화만. 원장=전략 의도 정본, 물리 복원은 다음 사이클 `_reconcile_pass` drift 교정(broker←ledger). 구 I3(주식 자동 차감)도 폐기.
+
+### 17.7 코드 지도 (신규/변경)
+- **신규** `local/localapp/target_recon.py` — 순수 계획(SymbolPlan·검산 항등식 3종 docstring).
+- trader.py: `_plan_exit_intents`(창별 청산 의도+indeterminate) · `_reconcile_pass`(수렴 본체) · `_submit_drift`(원장 불변 교정) · `_apply_fill` drift 분기 · `_cycle_body`/`run_close_netting` 재배선 · `reconcile_with_kis` 관측 전용.
+- **삭제**: `_plan_cycle_liquidations`(아침 넷팅 계획) · 넷팅 pre-pass 블록 · §2 잔여청산 블록(+skip_oversell·netted_opener_sids·netted_exit_consumed) · §2/§3 진입 게이트 분리.
+- **유지**: `netting.py`(net_window — 상쇄 엔진으로 재사용) · `_apply_netted_leg`(합성 정산) · `plan_close_liquidations`(레거시 API·프로덕션 미사용) · `liquidate_day_trades`/`enter_close_candidates`(레거시·후속 정리) · intraday_stop/killswitch(독립).
+- **테스트**: 신규 `tests/test_target_recon.py`(순수 13) · `tests/scenarios/test_target_reconciliation.py`(§6 재현+적대 5). 재작성 7건(구 의미론→신): netting_cycle 오버셀→net0 무발주 · exit_fill_close_window(구 API→_plan_exit_intents) · reconcile 자동차감 4건→관측 전용.
