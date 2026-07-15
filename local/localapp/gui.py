@@ -115,6 +115,9 @@ class SettingsApp:
             threading.Thread(target=self._check_updates_async,
                               daemon=True, name="update-check").start()
             self.root.bind("<FocusIn>", self._on_focus_in_check_updates, add="+")
+            # 무인 자동 업데이트 — 새 버전이 감지되면 안전창(장중 미가동·미체결 0·
+            # 16~21시 KST)에서 다이얼로그 없이 적용. 수동 배너와 공존(운영자 요청).
+            self.root.after(600_000, self._auto_update_tick)
 
         # Phase 7 — Catch-up 결과 polling. scheduler가 background thread로 catchup
         # 실행 → 결과 catchup_result.json. 5초 후 첫 read 시도(catch-up이 진행
@@ -2667,6 +2670,69 @@ class SettingsApp:
     def _dismiss_cmd_result_banner(self):
         self.cmd_result_banner.pack_forget()
 
+    def _shutdown_for_restart(self):
+        """scheduler·cmd_client 정리 후 mainloop 종료 — updater가 파일 교체 시작.
+
+        수동/자동 업데이트 양쪽이 공유(재시작 직전 정리). 원장·pending은 파일에
+        영속돼 재시작 시 복원되므로 여기선 프로세스 정리만."""
+        if self.scheduler and self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
+        if hasattr(self, "cmd_client") and self.cmd_client:
+            self.cmd_client.stop()
+        self.root.quit()    # mainloop 종료 → 프로세스 종료 → updater가 교체 시작
+
+    def _auto_update_tick(self):
+        """무인 자동 업데이트 — 새 버전 대기 중이면 안전창에서 조용히 적용(운영자 요청).
+
+        10분 주기. `_update_info`(새 버전 감지)가 있고 frozen 환경이며 안전창
+        (updater.is_safe_update_window — 장중 미가동·미체결 0·16~21시 KST)이면
+        다이얼로그 없이 background로 다운로드·설치·재시작. 하나라도 어긋나면 이번
+        틱 skip, 다음 틱 재시도(수동 배너는 그대로 노출돼 즉시 업데이트도 가능)."""
+        import logging
+        log = logging.getLogger("localapp.gui.autoupdate")
+        try:
+            info = self._update_info
+            if info and info.get("url") and updater.is_frozen():
+                from . import intraday_loop, trader
+                from .config import PENDING_ORDERS_PATH
+                intraday_running = bool(intraday_loop.status().get("running"))
+                try:
+                    import json as _json
+                    pending = _json.loads(
+                        PENDING_ORDERS_PATH.read_text(encoding="utf-8")) \
+                        if PENDING_ORDERS_PATH.exists() else {}
+                    pending_count = len(pending or {})
+                except Exception:
+                    pending_count = 1     # 조회 실패 = 보수적으로 미체결 있다고 간주(skip)
+                safe, reason = updater.is_safe_update_window(
+                    trader.kst_now(), intraday_running=intraday_running,
+                    pending_count=pending_count)
+                if safe:
+                    log.info("[auto-update] 안전창 진입 — %s 무인 설치 시작", info["tag"])
+                    self._auto_apply_update(info)
+                    return          # 재시작 진행 — 추가 틱 예약 불필요
+                else:
+                    log.debug("[auto-update] 대기 (%s)", reason)
+        except Exception as e:
+            log.debug("[auto-update] 틱 예외(무시): %s", e)
+        self.root.after(600_000, self._auto_update_tick)   # 10분 후 재시도
+
+    def _auto_apply_update(self, info: dict):
+        """다이얼로그 없이 headless 다운로드·설치 후 재시작(자동 경로 전용)."""
+        import logging
+        log = logging.getLogger("localapp.gui.autoupdate")
+
+        def worker():
+            try:
+                updater.perform_update(info["url"])   # progress_cb 없음(무인)
+                log.info("[auto-update] 설치 완료 — 재시작")
+                self.root.after(1000, self._shutdown_for_restart)
+            except Exception as e:
+                # 실패 시 기존 설치 그대로 — 다음 틱에서 재시도되도록 tick 재개.
+                log.warning("[auto-update] 설치 실패(기존 유지·재시도 예약): %s", e)
+                self.root.after(600_000, self._auto_update_tick)
+        threading.Thread(target=worker, daemon=True, name="auto-update-worker").start()
+
     def _start_update(self):
         """진행률 다이얼로그 + background 다운로드/설치."""
         info = self._update_info
@@ -2718,13 +2784,7 @@ class SettingsApp:
                 def finish():
                     status.config(text="✓ 설치 완료 — 곧 자동 재시작됩니다…")
                     progress.config(value=100)
-                    def real_quit():
-                        if self.scheduler and self.scheduler.running:
-                            self.scheduler.shutdown(wait=False)
-                        if hasattr(self, "cmd_client") and self.cmd_client:
-                            self.cmd_client.stop()
-                        self.root.quit()    # mainloop 종료 → 프로세스 종료 → bat이 교체 시작
-                    self.root.after(1500, real_quit)
+                    self.root.after(1500, self._shutdown_for_restart)
                 self.root.after(0, finish)
             except Exception as e:
                 err = str(e)
