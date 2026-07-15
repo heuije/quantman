@@ -351,10 +351,27 @@ def _decide_catchup_plan(now: datetime | None = None) -> CatchupPlan:
         # 무시해서 catch-up 후 PC 재부팅 시 또 catch-up 실행 (중복 자원 낭비).
         # 자금 안전은 L-01 intent journal idempotency가 차단했으나 cycle 자체 낭비.
         last_cycle = _last_of(entries, "KRX", ("cycle", "catchup_cycle"))
-        if last_cycle is None or last_cycle.date() < now.date():
+        # 아침 자산군 분리(선물 08:35 / 주식 08:55 — 문제 10) 이후 "오늘 KRX cycle
+        # 있음"만으론 부족: 선물 사이클만 돌고 꺼진 날 주식 catchup이 억제된다.
+        # 완료 = full-scope(None — catchup/구버전) 1회 or {stock, futures} 각 1회.
+        # catchup 실행은 full-scope(run_cycle instrument_class=None)라 목표수렴
+        # 멱등성으로 이미 돈 클래스를 재실행해도 무해(net≈0·intent 게이트).
+        done_classes: set = set()
+        for e in entries:
+            summary = e.get("summary") or {}
+            if summary.get("error"):
+                continue
+            m, k = _classify_entry(e)
+            ts = _entry_ts(e)
+            if (m == "KRX" and k in ("cycle", "catchup_cycle")
+                    and ts is not None and ts.date() == now.date()):
+                done_classes.add(summary.get("instrument_class"))
+        covered = (None in done_classes) or ({"stock", "futures"} <= done_classes)
+        if last_cycle is None or last_cycle.date() < now.date() or not covered:
             plan.krx_cycle_needed = True
             plan.reasons.append(
-                f"KRX cycle 누락 (장중) — 마지막 cycle={last_cycle}")
+                f"KRX cycle 누락 (장중) — 마지막 cycle={last_cycle}, "
+                f"완료 클래스={sorted(str(c) for c in done_classes)}")
         # 손절은 cycle 유무와 무관하게 항상 체크 (보유 종목 즉시 위험 평가).
         # Phase 2에서 실제 실행 시 broker가 보유 종목 0건이면 자동 skip.
         plan.krx_stop_loss_check = True
