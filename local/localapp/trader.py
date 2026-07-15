@@ -1914,11 +1914,16 @@ class Trader:
                     ref_price = float(sdf["Close"].iloc[-1])
                 except Exception:
                     ref_price = 0.0
-            if ref_price <= 0:
+            # 신선도(A2): 번들 봉이 stale면 live 우선 — 넷팅 청산이 stale 봉으로 정산돼 phantom
+            # 실현손익을 내는 것 방지(07-14: 1210.5로 +120.5M). 진입 leg(_try_buy_one_symbol
+            # 게이트)와 동일 정책이라 넷팅 양다리가 같은 신선도 기준 → book 정합(정상일엔 둘 다 bundle
+            # prev_close·무변경). live 없으면 stale이라도 진행(청산은 fail-open).
+            if ref_price <= 0 or _bar_is_stale(sdf, pos["symbol"], today):
                 cur = self._safe_price(pos["symbol"])
-                if not cur or cur <= 0:
-                    continue
-                ref_price = cur
+                if cur and cur > 0:
+                    ref_price = cur
+            if ref_price <= 0:
+                continue
             pos_side = pos.get("side", "long")
             clamped = clamp_sell_qty(
                 held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side), int(pos["qty"]))
@@ -2703,7 +2708,8 @@ class Trader:
                         pos["symbol"], "전략 정의 파싱 실패 — 자동 청산 불가(수동 정리 필요)"))
                 continue
 
-            # ref_price는 dataset 전일 종가. 없으면 KIS 현재가로 fallback.
+            # ref_price는 dataset 전일 종가. stale면 live 우선(A2 — 넷팅청산과 동일 정책·stale
+            # 지정가 misfill 방지), 둘 다 없으면 다음 사이클로 연기.
             sdf = dataset.get(pos["symbol"])
             ref_price = 0.0
             if sdf is not None and len(sdf) > 0 and "Close" in sdf.columns:
@@ -2711,13 +2717,14 @@ class Trader:
                     ref_price = float(sdf["Close"].iloc[-1])
                 except Exception:
                     ref_price = 0.0
-            if ref_price <= 0:
+            if ref_price <= 0 or _bar_is_stale(sdf, pos["symbol"], today):
                 cur = self._safe_price(pos["symbol"])
-                if cur is None or cur <= 0:
-                    log.warning("청산 ref_price 없음 [%s] — 다음 사이클로 연기",
-                                pos["symbol"])
-                    continue
-                ref_price = cur
+                if cur and cur > 0:
+                    ref_price = cur
+            if ref_price <= 0:
+                log.warning("청산 ref_price 없음 [%s] — 다음 사이클로 연기",
+                            pos["symbol"])
+                continue
 
             policy = _policy(pos.get("definition"))
             # L-01 매도 멱등은 _submit_sell 진입부 단일 게이트가 담당(전 매도 경로 공유).
