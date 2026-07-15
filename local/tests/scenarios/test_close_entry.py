@@ -45,7 +45,9 @@ def _ir_def(fill: str, symbol: str = "005930", sizing: dict | None = None):
 
 
 def _ds(symbol: str = "005930", prev_close: float = 50000.0):
-    idx = pd.date_range("2026-05-01", periods=8, freq="B")
+    # 마지막 봉을 fixture kst_today(2026-06-01)의 직전 거래일(05-29)에 맞춘다 — 신선도 게이트가
+    # stale로 오판하지 않도록(정상 진입 경로 검증). 값은 날짜 무관(전부 prev_close).
+    idx = pd.date_range(end="2026-05-29", periods=8, freq="B")
     return {symbol: pd.DataFrame(
         {"Open": [prev_close] * 8, "High": [prev_close] * 8,
          "Low": [prev_close] * 8, "Close": [prev_close] * 8}, index=idx)}

@@ -2636,6 +2636,9 @@ class Trader:
         # 보존; 이 skip이 없으면 opener 전략의 매도조건이 진입 바에 참일 때 방금 넷팅한 포지션을
         # 실제로 wash 매도하는 divergence 발생).
         netted_opener_sids: set[str] = set()
+        # A3: 넷팅이 book으로 이관한 브로커 재고(exit handoff) — (심볼,side)별 합. §2 잔여청산의
+        # 클램프 가용재고에서 뺀다(그 재고는 이미 opener를 backing하므로 이중계상·oversell 방지).
+        netted_exit_consumed: dict[tuple[str, str], int] = {}
         if (not catchup and buy_candidates is not None
                 and not ks_active and not drawdown_active):
             from .netting import net_window
@@ -2651,6 +2654,11 @@ class Trader:
                         self._apply_netted_leg(_leg, decisions)
                     netted_opener_sids = {_leg.sid for _leg in _net.book_legs
                                           if _leg.kind == "entry"}
+                    for _leg in _net.book_legs:
+                        if _leg.kind == "exit":
+                            _k = (_leg.symbol, _leg.position_side)
+                            netted_exit_consumed[_k] = (
+                                netted_exit_consumed.get(_k, 0) + int(_leg.qty))
                     commission_saved = self._netting_commission_saved(_net.book_legs)
                     n_netted = sum(n["netted_qty"] for n in _net.netted)
                     # 잔여 진입만 실발주(잔여 청산은 아래 §2가 감소된 원장에서 처리)
@@ -2734,8 +2742,12 @@ class Trader:
             # 방지(intraday 손절과 동일 안전망, 같은 헬퍼). snap_pre는 cycle 진입부
             # 잔고 재사용이라 추가 KIS 호출 없음. ledger drift는 settlement reconcile이 정리.
             pos_side = pos.get("side", "long")
-            held = held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side)
-            clamped = clamp_sell_qty(held, sell_qty)   # snap_pre 기반이라 None 아님
+            # A3: 넷팅이 이관(book)한 브로커 재고를 가용에서 뺀다 — 안 빼면 같은 물리 재고가
+            # opener book + 이 잔여청산을 이중 backing해 불필요 실매도(07-14 order 355)가 나간다.
+            # 뺀 뒤 원장잔여 > 가용이면 clamp가 0 → skip_oversell(실매도 대신 drift 표면화·정산 정리).
+            held = (held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side)
+                    - netted_exit_consumed.get((pos["symbol"], pos_side), 0))
+            clamped = clamp_sell_qty(held, sell_qty)   # held<=0이면 clamp_sell_qty가 0(skip) 반환
             if not clamped:                            # 0 = 외부 매도(보유 0)
                 log.info("[L-04 EOD] %s KIS 실 보유 0 (외부 매도 추정) — 청산 발주 skip",
                           pos["symbol"])
