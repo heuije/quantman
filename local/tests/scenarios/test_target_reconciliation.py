@@ -230,6 +230,35 @@ def test_exit_without_ref_price_held(isolated_trader):
     assert all(float(ev.get("price") or 0) != 1210.5 for ev in _trades())
 
 
+def test_morning_futures_scope_excludes_stocks(isolated_trader):
+    """문제 10(§15.3-⑥) — 08:35 선물 사이클은 주식을 건드리지 않는다(스코프 가드).
+
+    주식 보유가 수동매도로 drift돼 있어도(원장 5 vs 브로커 0) 선물 사이클은
+    복원·청산 어느 쪽도 발주하지 않는다 — 주식은 08:55 주식 사이클 소관."""
+    t, broker = isolated_trader
+    broker._prices["005930"] = 70000.0
+    t.ledger["s1"] = {"symbol": "005930", "qty": 5, "side": "long",
+                      "entry_price": 70000.0, "peak_price": 70000.0,
+                      "entry_date": "2026-05-29", "strategy_name": "주식전략",
+                      "definition": {"name": "s", "engine": "ir", "query": "simulate",
+                                     "universe": {"kind": "single", "symbols": ["005930"]},
+                                     "signal": _DUMMY_SIGNAL,
+                                     "position": {"direction": "long",
+                                                  "sizing": {"mode": "pct_cash",
+                                                             "amount_pct": 10},
+                                                  "entry": {"mode": "on_signal"},
+                                                  "exit": {"hold_days": 30}},
+                                     "simulation": {"fill": "next_open"}}}
+    broker.set_positions([])          # 주식 수동 전량 매도 상태
+    idx = pd.date_range(end="2026-05-29", periods=8, freq="B")
+    ds = {"005930": pd.DataFrame({"Open": [70000.0] * 8, "High": [70000.0] * 8,
+                                  "Low": [70000.0] * 8, "Close": [70000.0] * 8},
+                                 index=idx)}
+    t._cycle_body([], ds, None, [], {}, "KRX", instrument_class="futures")
+    assert broker.submitted == [], "선물 스코프 사이클이 주식을 발주하면 안 됨"
+    assert t.ledger["s1"]["qty"] == 5
+
+
 def test_fetch_failed_holds_held_symbols(isolated_trader):
     """§14 가용성 가드 — 잔고 부분조회 시 보유 심볼 수렴 보류(오버셀·오인 청산 방지)."""
     t, broker = isolated_trader

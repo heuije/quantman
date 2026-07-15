@@ -1031,7 +1031,10 @@ class Trader:
             try:
                 r = self.broker.buy_resv_limit(symbol, qty, limit)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"buy_resv_limit: {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("미국 예약매수 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
@@ -1062,8 +1065,10 @@ class Trader:
             try:
                 r = self.broker.buy_limit(symbol, qty, limit)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id,
-                                      f"buy_limit (catchup): {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("[catch-up] %s 시초가 limit 발주 실패: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol,
@@ -1078,7 +1083,10 @@ class Trader:
             try:
                 r = self.broker.buy(symbol, qty)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"buy: {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("매수 시장가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
@@ -1111,7 +1119,10 @@ class Trader:
             try:
                 r = self.broker.sell_resv_limit(symbol, qty, limit)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell_resv_limit: {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("미국 예약매도 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
@@ -1124,7 +1135,10 @@ class Trader:
             try:
                 r = self.broker.sell_limit(symbol, qty, limit)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell_limit: {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("미국 매도 지정가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
@@ -1136,7 +1150,10 @@ class Trader:
             try:
                 r = self.broker.sell(symbol, qty)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell: {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("매도 시장가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
@@ -1167,7 +1184,10 @@ class Trader:
         try:
             r = self.broker.buy(symbol, qty)
         except Exception as e:
-            intents.mark_failed(today_iso, intent_id, f"buy(close): {e}")
+            # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+            # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+            # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+            # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
             log.error("숏 환매 시장가 발주 실패 [%s]: %s", symbol, e)
             decisions.append(order_log.decision(
                 "error", sid, strat_name, symbol, f"환매 발주 예외: {e}"))
@@ -1195,7 +1215,10 @@ class Trader:
         try:
             r = self.broker.sell(symbol, qty)
         except Exception as e:
-            intents.mark_failed(today_iso, intent_id, f"sell(open): {e}")
+            # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+            # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+            # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+            # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
             log.error("숏 진입 시장가 발주 실패 [%s]: %s", symbol, e)
             decisions.append(order_log.decision(
                 "error", sid, strat_name, symbol, f"숏진입 발주 예외: {e}"))
@@ -2065,7 +2088,10 @@ class Trader:
                 else:
                     r = self.broker.buy(symbol, qty)
         except Exception as e:
-            intents.mark_failed(today_iso, intent_id, f"drift {side}: {e}")
+            # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+            # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+            # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+            # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
             log.error("목표수렴 교정 발주 실패 [%s %s %d]: %s", symbol, side, qty, e)
             decisions.append(order_log.decision(
                 "error", dkey, "목표수렴", symbol, f"교정 발주 예외: {e}"))
@@ -2681,12 +2707,17 @@ class Trader:
               krx_status: dict[str, dict] | None = None,
               catchup: bool = False,
               reserved: bool = False,
-              cycle_id: str = "") -> dict:
+              cycle_id: str = "",
+              instrument_class: str | None = None) -> dict:
         """전략 목록을 1회 평가하고 매매한 뒤 동기화용 스냅샷을 반환한다.
 
         market: 이번 사이클이 다룰 시장 그룹('KRX' 또는 'US'). 청산은 해당 시장
         보유분만, 진입은 해당 시장 후보만 처리한다 — 시장별 정규장 시각에 맞춰
         분리 실행하기 위함. kill switch·drawdown은 계좌 전체(통합 equity) 기준.
+
+        instrument_class: 자산군 스코프(None=전체, "stock"/"futures") — 선물 개장
+        (08:45)과 주식 개장(09:00)이 달라 아침 사이클을 08:35 선물 / 08:55 주식으로
+        분리 실행하기 위함(파이프라인 문제 10 — kr-target-reconciliation.md §15 Phase 4).
 
         buy_candidates(by_strategy 리스트, 비어있어도 list)가 신규 진입 source.
         Phase 38.4: 항상 preview 경로 — buy_candidates가 빈 리스트면 진입 0,
@@ -2706,12 +2737,14 @@ class Trader:
             return self._cycle_locked(strategies, dataset, today,
                                        buy_candidates, risk_limits, market,
                                        krx_status, catchup=catchup,
-                                       reserved=reserved, cycle_id=cycle_id)
+                                       reserved=reserved, cycle_id=cycle_id,
+                                       instrument_class=instrument_class)
 
     def _cycle_locked(self, strategies, dataset, today, buy_candidates,
                        risk_limits, market, krx_status,
                        catchup: bool = False, reserved: bool = False,
-                       cycle_id: str = "") -> dict:
+                       cycle_id: str = "",
+                       instrument_class: str | None = None) -> dict:
         # Q5(데드락 방지): _in_cycle 플래그를 try/finally로 보장 — 예외 발생 시에도
         # 반드시 reset되어야 다음 cycle에서 _apply_fill의 평가가 정상 동작.
         self._in_cycle = True
@@ -2725,14 +2758,16 @@ class Trader:
         try:
             return self._cycle_body(strategies, dataset, today,
                                      buy_candidates, risk_limits, market,
-                                     catchup=catchup, cycle_id=cycle_id)
+                                     catchup=catchup, cycle_id=cycle_id,
+                                     instrument_class=instrument_class)
         finally:
             self._in_cycle = False
             self._reserved_us = False
 
     def _cycle_body(self, strategies, dataset, today, buy_candidates,
                      risk_limits, market, catchup: bool = False,
-                     cycle_id: str = "") -> dict:
+                     cycle_id: str = "",
+                     instrument_class: str | None = None) -> dict:
         today = today or kst_today()
         decisions: list[dict] = []
 
@@ -2861,7 +2896,7 @@ class Trader:
                 f"(한도 -{float(max_drawdown_limit_pct):.1f}%)"))
         n_netted, commission_saved, n_drift = self._reconcile_pass(
             window="open", snap_pre=snap_pre, dataset=dataset, today=today,
-            market=market, instrument_class=None,
+            market=market, instrument_class=instrument_class,
             buy_candidates=buy_candidates, strategies=strategies,
             equity_now=equity_now, entries_blocked=entries_blocked,
             ks_active=ks_active, decisions=decisions, catchup=catchup)
@@ -2917,6 +2952,8 @@ class Trader:
             "today": today.isoformat(),
             "market": market,                        # Phase 7 catch-up — 시장 식별
             "kind": "catchup_cycle" if catchup else "cycle",   # catch-up 구분
+            # 자산군 스코프(None=전체) — 08:35 선물/08:55 주식 분리 사이클 식별(문제 10).
+            "instrument_class": instrument_class,
             "cycle_id": cycle_id,                    # 시작 저널(cycle_started)과 join
             "n_strategies": len(strategies),
             "n_bought": n_bought_now,

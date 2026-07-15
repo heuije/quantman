@@ -171,10 +171,26 @@ def register_jobs(sched) -> None:
         CronTrigger(day_of_week="mon-fri", hour=8, minute=50, timezone="Asia/Seoul"),
         id="krx_loop_start", name="KRX 장중 loop 시작 (WebSocket)",
         misfire_grace_time=600)
+    # 아침 사이클 자산군 분리(파이프라인 문제 10 — kr-target-reconciliation.md §15 Phase 4):
+    # 선물 정규거래 개장은 08:45(개장 동시호가 08:30~08:45)인데 단일 08:55 사이클은
+    # 주식 개장(09:00)에 맞춰져 선물 시가진입이 연속가에 밀렸다(07-14 실측 ~30p 불리).
+    # · 08:35 선물 전용 — 동시호가 창 내 발주 → 08:45 시가 단일가 체결(파리티).
+    # · 08:40·08:42 재실행 = 창내 재시도(문제 12) — 목표수렴 사이클은 멱등(net 재계산 +
+    #   intent 저널 게이트)이라 재실행이 안전: 첫 발주가 접수됐으면 무행동, 예외로
+    #   미접수(reconcile_submitting이 판정)면 재발주.
+    # · 08:55 주식 전용 — 종전 시각 유지(선물은 08:35이 전담).
+    for _mm, _jid in [(35, "krx_cycle_futures"), (40, "krx_cycle_futures_r1"),
+                      (42, "krx_cycle_futures_r2")]:
+        sched.add_job(
+            run_cycle, kwargs={"market": "KRX", "instrument_class": "futures"},
+            trigger=CronTrigger(day_of_week="mon-fri", hour=8, minute=_mm,
+                                timezone="Asia/Seoul"),
+            id=_jid, name=f"KRX 선물 개장 사이클 (08:{_mm:02d})",
+            misfire_grace_time=120)
     sched.add_job(
-        run_cycle, kwargs={"market": "KRX"},
+        run_cycle, kwargs={"market": "KRX", "instrument_class": "stock"},
         trigger=CronTrigger(day_of_week="mon-fri", hour=8, minute=55, timezone="Asia/Seoul"),
-        id="krx_cycle", name="KRX 자동매매 사이클", misfire_grace_time=300)
+        id="krx_cycle", name="KRX 자동매매 사이클 (주식)", misfire_grace_time=300)
     sched.add_job(
         intraday_loop.stop,
         CronTrigger(day_of_week="mon-fri", hour=15, minute=30, timezone="Asia/Seoul"),
