@@ -292,6 +292,98 @@ def test_c4_all_valid_is_green():
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# C10 참조가 오염 (원장 진입가 ↔ 브로커 실평균 괴리) — 2026-07-14 mwmw stale-price
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_c10_ref_contamination_is_red_and_paged():
+    """mwmw 07-14 실측 형상 — 원장 진입가 1144.03 vs 브로커 실평균 1090.48(491bps).
+    stale 번들 참조가 오염이 장부에 남은 것 → RED + 페이징."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 1},
+               "positions": [{"symbol": "코스피200선물", "side": "long", "qty": 8,
+                              "avg_price": 1090.48, "entry_price": 1144.0333,
+                              "peak_price": 1210.5}]}
+    res = _eval(payload)
+    assert res["conditions"]["ref_price_integrity"]["status"] == RED
+    assert "ref_price_divergence" in _codes(res)
+
+
+def test_c10_clean_position_is_green():
+    """정상 포지션 — 원장 진입가 ≈ 브로커 실평균(실체결가 기록) → GREEN·페이징 없음."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 1},
+               "positions": [{"symbol": "코스피200선물", "side": "long", "qty": 5,
+                              "avg_price": 1090.48, "entry_price": 1090.6}]}
+    res = _eval(payload)
+    assert res["conditions"]["ref_price_integrity"]["status"] == GREEN
+    assert "ref_price_divergence" not in _codes(res)
+
+
+def test_c10_moderate_divergence_is_amber_not_paged():
+    """중간 괴리(50~200bps) → AMBER 대시보드, 자동 페이징 안 함."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 1},
+               "positions": [{"symbol": "코스피200선물", "side": "long", "qty": 5,
+                              "avg_price": 1090.0, "entry_price": 1105.0}]}   # ~137bps
+    res = _eval(payload)
+    assert res["conditions"]["ref_price_integrity"]["status"] == AMBER
+    assert res["alert_reasons"] == [] or "ref_price_divergence" not in _codes(res)
+
+
+def test_c10_no_positions_is_unknown():
+    """포지션 참조가 신호 없으면 판정 불가(UNKNOWN) — 오탐 없이 안전 degrade."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 0}})
+    assert res["conditions"]["ref_price_integrity"]["status"] == UNKNOWN
+
+
+def test_c10_missing_or_zero_price_skipped_safely():
+    """entry/avg 한쪽이 없거나 0인 포지션은 판정 제외 — 나눗셈 오류·오탐 방지."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 0},
+               "positions": [{"symbol": "X", "qty": 1, "avg_price": 0, "entry_price": 100},
+                             {"symbol": "Y", "qty": 1, "avg_price": 50}]}   # Y: entry 없음
+    res = _eval(payload)
+    assert res["conditions"]["ref_price_integrity"]["status"] == UNKNOWN
+
+
+# ── C11 목표 수렴 (target reconciliation) ─────────────────────────────────
+
+def test_c11_drift_correction_is_amber_not_paged():
+    """수동매매 흡수(n_drift>0) → AMBER(운영자 가시)·자동 페이징 안 함."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 6, "n_drift": 5}})
+    assert res["conditions"]["target_convergence"]["status"] == AMBER
+    assert "5계약" in res["conditions"]["target_convergence"]["detail"]
+    # drift는 수동 개입 시 정상 → 페이징 대상 아님(C9 정합과 동일 정책).
+    assert not any("target" in c or "drift" in c for c in _codes(res))
+
+
+def test_c11_deferred_correction_surfaced():
+    """교정 발주 보류(비-최근월물·현재가 부재) → AMBER로 표면화."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 0, "n_drift": 0},
+               "decisions": [{"action": "drift_deferred", "symbol": "코스닥150선물",
+                              "reason": "비-최근월물"}]}
+    res = _eval(payload)
+    assert res["conditions"]["target_convergence"]["status"] == AMBER
+    assert "보류" in res["conditions"]["target_convergence"]["detail"]
+
+
+def test_c11_hold_surfaced():
+    """§13 수렴 보류(stale/부분잔고) → AMBER(전량청산 아님을 명시)."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 0},
+               "decisions": [{"action": "drift_eval_skipped", "symbol": ""}]}
+    res = _eval(payload)
+    assert res["conditions"]["target_convergence"]["status"] == AMBER
+
+
+def test_c11_clean_convergence_is_green():
+    """drift 0·보류 없음 → GREEN(목표 상태 정상)."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 3, "n_drift": 0}})
+    assert res["conditions"]["target_convergence"]["status"] == GREEN
+
+
+def test_c11_no_cycle_is_unknown():
+    """사이클 요약 없음(구버전 클라) → UNKNOWN(오탐 없이 degrade)."""
+    res = _eval({})
+    assert res["conditions"]["target_convergence"]["status"] == UNKNOWN
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # compute_user_health (DB-backed) + /admin/health 게이트
 # ─────────────────────────────────────────────────────────────────────────
 

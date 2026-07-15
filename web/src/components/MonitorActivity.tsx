@@ -16,6 +16,7 @@ export function TodayActivity({ cycleSummary, decisions }: {
   const nBought = cycleSummary?.n_bought ?? 0;
   const nSold = cycleSummary?.n_sold ?? 0;
   const nNetted = cycleSummary?.n_netted ?? 0;
+  const nDrift = cycleSummary?.n_drift ?? 0;
   const saved = cycleSummary?.commission_saved_krw ?? null;
   const trades = (decisions ?? []).filter((d) => sideOf(d.action) != null);
 
@@ -38,6 +39,14 @@ export function TodayActivity({ cycleSummary, decisions }: {
               반대 방향 주문(청산↔진입)을 상쇄해 불필요한 왕복 수수료를 자동으로 아꼈어요.
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 목표수렴 교정 — 수동매매/외부보유를 자동이 되돌린 계약수(값>0일 때만). */}
+      {nDrift > 0 && (
+        <div className="muted small" style={{ marginTop: 8 }}>
+          🔁 목표수렴 교정 <b>{nDrift}계약</b> — 직접(수동) 거래하신 분을 자동매매가
+          목표 포지션으로 되돌렸어요.
         </div>
       )}
 

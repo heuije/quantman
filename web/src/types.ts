@@ -650,6 +650,10 @@ export interface CycleSummary {
   // 발주창 넷팅 — 로컬 cycle_summary가 이미 실어 보냄(서버 passthrough). 값>0일 때만 표시.
   n_netted?: number;
   commission_saved_krw?: number;
+  // 목표수렴 drift 교정 계약수 — 수동매매/외부보유 정리(원장 불변). 값>0일 때만 표시.
+  n_drift?: number;
+  // 자산군 스코프(08:35 선물/08:55 주식 분리 사이클 식별). null=전체.
+  instrument_class?: string | null;
 }
 
 export interface CycleRow {

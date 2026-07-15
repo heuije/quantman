@@ -30,6 +30,7 @@ _COND_LABEL = {
     "runtime": "런타임", "connectivity": "연결", "data_freshness": "데이터",
     "strategy_validity": "전략유효", "broker_ready": "브로커", "cycle_execution": "사이클",
     "decision_output": "판단", "order_placement": "발주", "reconciliation": "정합",
+    "ref_price_integrity": "참조가", "target_convergence": "목표수렴",
 }
 
 

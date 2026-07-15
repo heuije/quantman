@@ -30,6 +30,8 @@ STALE_MIN = 30         # heartbeat가 이 분(min) 넘게 끊기면 앱 다운 �
 PUSH_GAP_HR = 6        # heartbeat 정상인데 스냅샷 push가 이 시간(hr) 넘게 없으면 동기화 실패
 LOAD_RATIO_RED = 0.5   # 데이터 로드율(loaded/needed)이 이 아래면 데이터 결손
 _CONTENT_SCAN_DEPTH = 8  # 최신이 content-빈약(reconcile)일 때 직전 cycle을 찾아 훑는 최근 push 수
+REF_DIVERGENCE_RED_BPS = 200    # 원장 진입가↔브로커 실평균 괴리 이 이상이면 참조가 오염(장부)
+REF_DIVERGENCE_AMBER_BPS = 50   # 이 이상이면 주의(대시보드 표시)
 
 # "실제 매매 사이클"로 간주하는 kind — 여기서 0발주+데이터결손이면 dead-man's-switch.
 # state_sync·settlement·reconcile 등은 진입 사이클이 아니라 제외(정상 0발주).
@@ -255,6 +257,64 @@ def evaluate_health(
             AMBER, f"포지션 정합 drift(외부/미등록 {len(extras)}건)")
     else:
         conditions["reconciliation"] = _cond(GREEN, "원장↔브로커 정합")
+
+    # ── C10 참조가 오염 (원장 진입가 ↔ 브로커 실평균 괴리) ──
+    # stale 번들 봉을 참조가로 쓰면(trader freshness 가드 부재) 원장 entry_price가 브로커
+    # 실체결 평균(avg_price)에서 벗어난다 — 2026-07-14 mwmw: 원장진입가 1144.03 vs 실평균
+    # 1090.48(491bps)·stale peak 1210.5. 실주문은 시장가라 실체결은 정상이나 장부(진입가·
+    # 실현손익·청산손익)가 오염된다. 기존 positions만으로 파생(로컬 emit 불요)·최신 overall(p)
+    # 이 현재 포지션이라 p에서 읽는다(C9와 동일). 정밀한 사이클시점 ref↔live 경보는 별도(로컬 emit).
+    worst = None  # (bps, symbol, entry, avg, peak)
+    for pos in (p.get("positions") or []):
+        entry = pos.get("entry_price")
+        avg = pos.get("avg_price")
+        if not entry or not avg or avg <= 0:
+            continue                     # 한쪽 없거나 0 — 판정 불가(오탐·나눗셈 방지)
+        bps = abs(entry - avg) / avg * 10000
+        if worst is None or bps > worst[0]:
+            worst = (bps, pos.get("symbol"), entry, avg, pos.get("peak_price"))
+    if worst is None:
+        conditions["ref_price_integrity"] = _cond(UNKNOWN, "포지션 참조가 신호 없음")
+    else:
+        bps, sym, entry, avg, peak = worst
+        detail = (f"{sym} 원장진입가 {entry:g} vs 브로커실평균 {avg:g} = {bps:.0f}bps 괴리"
+                  + (f"·peak {peak:g}" if peak else ""))
+        if bps > REF_DIVERGENCE_RED_BPS:
+            conditions["ref_price_integrity"] = _cond(RED, detail + " — 참조가 오염(장부)")
+            alerts.append({"code": "ref_price_divergence",
+                           "message": conditions["ref_price_integrity"]["detail"]})
+        elif bps > REF_DIVERGENCE_AMBER_BPS:
+            conditions["ref_price_integrity"] = _cond(AMBER, detail)
+        else:
+            conditions["ref_price_integrity"] = _cond(
+                GREEN, f"{sym} 진입가↔실평균 정합({bps:.0f}bps)")
+
+    # ── C11 목표 수렴 (target reconciliation — 대시보드 표시, 자동 페이징 안 함) ──
+    # 목표모델(kr-target-reconciliation.md)의 새 신호를 운영자에게 노출한다 — payload에만
+    # 갇히면 목표모델이 프로덕션에서 어떻게 도는지(수동매매 흡수·수렴 보류) 관측 불가
+    # (2026-07-13 CON 오진과 같은 F1~F3 관측성 함정). drift 교정은 수동 개입 시 정상이라
+    # 자동 페이징은 안 하되(C9 정합과 동일 정책), 규모·보류를 신호등으로 보이게 한다.
+    #  · drift_deferred = 교정이 발주 못 됨(비-최근월물·현재가 부재) → 다음 사이클/수동 점검
+    #  · skip_indeterminate/drift_eval_skipped = 판정불가로 수렴 보류(§13 hold)
+    #  · n_drift = 이번 사이클 교정 계약수(수동매매/외부보유 정리 규모)
+    n_drift = int(cs.get("n_drift") or 0)
+    drift_deferred = [d for d in decisions if d.get("action") == "drift_deferred"]
+    held = [d for d in decisions
+            if d.get("action") in ("skip_indeterminate", "drift_eval_skipped")]
+    if drift_deferred:
+        conditions["target_convergence"] = _cond(
+            AMBER, f"목표수렴 교정 보류 {len(drift_deferred)}건 — 비-최근월물/현재가 부재"
+                   "(다음 사이클 재시도·수동 점검)")
+    elif held:
+        conditions["target_convergence"] = _cond(
+            AMBER, f"수렴 보류 {len(held)}건 — stale/부분잔고/정규화실패로 hold(전량청산 아님)")
+    elif n_drift > 0:
+        conditions["target_convergence"] = _cond(
+            AMBER, f"목표수렴 drift 교정 {n_drift}계약 — 수동매매/외부보유 정리(원장 불변)")
+    elif cs.get("kind"):
+        conditions["target_convergence"] = _cond(GREEN, "목표 상태 수렴 정상(drift 0)")
+    else:
+        conditions["target_convergence"] = _cond(UNKNOWN, "수렴 신호 없음(구버전 클라)")
 
     # ── 종합 ──
     statuses = [c["status"] for c in conditions.values()]

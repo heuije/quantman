@@ -375,3 +375,28 @@ def test_morning_netting_opener_not_re_liquidated_same_cycle(isolated_trader):
     t._cycle_body(strats, _ds(prev_close=100.0), None, by_strat, {}, "KRX")
     assert broker.submitted == [], "방금 넷팅으로 연 opener를 §2가 wash 매도하면 안 됨(risk#1)"
     assert t.ledger["D"]["qty"] == 50 and "O" not in t.ledger
+
+
+def test_morning_netting_residual_exit_no_oversell(isolated_trader):
+    """07-14 order 355 부류 — 원장 O=5 vs 브로커 4(외부 수동매도 drift) + D 진입.
+
+    목표수렴: target = 5 + (−5 청산 + 4 진입크레딧사이징) = 4 = 브로커 → net 0 →
+    **실주문 0건**(오버셀·이중계상 개념 자체 소멸 §14). O 청산 5 전량 합성 정산
+    (상쇄 4 + drift 흡수 1)·D 진입 4 합성 정산. 구 모델의 skip_oversell 표면화는
+    "net 0 무발주 + 원장 완결"로 대체된다."""
+    t, broker = isolated_trader
+    broker._balance["cash"] = 0
+    broker._prices["005930"] = 100.0
+    broker.set_positions([{"symbol": "005930", "qty": 4, "side": "long"}])  # 브로커 4 < 원장 5
+    _seed_overnight(t, "O", "005930", 5, entry=90)
+    d_def = {**_daytrade_def(), "position": {**_daytrade_def()["position"],
+             "sizing": {"mode": "pct_cash", "amount_pct": 100}}}
+    by_strat = [{"strategy_id": "D", "candidates": [{"symbol": "005930"}]}]
+    strats = [{"id": "D", "name": "D", "definition": d_def, "account_ref": None}]
+    payload = t._cycle_body(strats, _ds(prev_close=100.0), None, by_strat, {}, "KRX")
+    assert broker.submitted == [], \
+        f"net 0 — 실주문(오버셀 매도 포함) 금지 — submitted={broker.submitted}"
+    assert "O" not in t.ledger, "O 청산 5 전량 합성 정산(상쇄 4 + drift 흡수 1)"
+    assert t.ledger["D"]["qty"] == 4, "D 진입 4 = 크레딧(브로커 실보유 4 클램프) 사이징"
+    assert payload["cycle_summary"]["n_netted"] == 4
+    assert payload["cycle_summary"]["n_drift"] == 0

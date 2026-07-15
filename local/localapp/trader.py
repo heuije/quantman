@@ -22,6 +22,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import quant_core as qc
+from quant_core import market_calendar as mc
 from quant_core.exec_defaults import instrument_spec, merged_execution
 from quant_core.futures_expiry import roll_lead_days
 
@@ -138,6 +139,24 @@ def _market_group_safe(symbol: str) -> str:
         return market_index.market_group_of(symbol)
     except Exception:
         return "KRX"
+
+
+def _bar_is_stale(sdf, symbol: str, today: date) -> bool:
+    """dataset 마지막 봉이 직전 거래일보다 오래됐나 — 신선도 게이트(fail-stale).
+
+    2026-07-14 사고: 서버가 08:10 KRX 선물을 번들에 재포장하지 않아 07-10 봉(1210.5)이
+    '전일 종가'인 척 참조가·사이징·넷팅에 쓰였다(로컬 신선도 검증 부재). 이 함수는 마지막 봉
+    날짜를 직전 정규 거래일과 대조한다. 판정 불가(캘린더 범위 밖·인덱스 비날짜)면 False —
+    근거 없이 정상 진입을 막지 않는다(over-block 금지). KRX→KR 캘린더 매핑."""
+    try:
+        last = sdf.index[-1]
+        last_date = last.date() if hasattr(last, "date") else last
+        grp = _market_group_safe(symbol)
+        cal_market = "KR" if grp == "KRX" else grp
+        prev = mc.prev_session_day(cal_market, today)
+        return prev is not None and last_date < prev
+    except Exception:
+        return False
 
 
 def _count_today_pending(pending: dict, side: str, market: str,
@@ -312,15 +331,15 @@ class Trader:
 
     # ── Phase 40 — KIS 잔고 ↔ ledger 정합성 자동 정정 ──────────────────────
     def reconcile_with_kis(self, today_iso: str | None = None) -> dict:
-        """KIS 실 잔고와 ledger를 비교 → ledger_orphans는 자동 차감/제거.
+        """KIS 실 잔고와 ledger를 비교 — **관측 전용**(목표수렴 §14·§17.6).
 
-        external_extras(외부 매수)는 ledger 손대지 않음 (자동매매가 매수한 게 아니므로).
-        반환: reconcile dict + applied 변경 내역 + 거래 기록 카운트.
+        원장=전략 의도 정본. orphan(원장>브로커)·external_extras(브로커>원장) 모두
+        원장을 바꾸지 않고 표면화만 한다 — 물리 정합은 다음 사이클 _reconcile_pass의
+        drift 교정이 수행(broker←ledger). 반환: reconcile dict(applied는 항상 []).
 
         호출 시점: 15:50 post_close_settlement — 모든 KRX 종가창(주식 15:30·선물
-        15:45) 이후 (08:55 메인 사이클 직전엔 위험).
+        15:45) 이후.
         """
-        today = today_iso or kst_today().isoformat()
         try:
             snap = self.broker.account_snapshot()
         except Exception as e:
@@ -342,72 +361,35 @@ class Trader:
                            if p.get("symbol_unmapped")})
         futures_identity_broken = bool(fetch_failed or unmapped)
 
-        # M3: self.ledger 비교(reconcile_ledger)부터 차감·_save까지 단일 락 안에서
-        # — 같은 락을 쓰는 cycle·WS 체결이 비교와 변경 사이에 ledger를 바꿔
-        # stale 계획으로 차감하는 race를 막는다. account_snapshot(네트워크)은
-        # self.ledger를 읽지 않으므로 락 밖에 둔다. (settlement 경로는 이미 이
-        # 락을 쥐고 들어오며 RLock이라 재진입 안전, GUI 수동 호출 경로를 닫는다.)
-        blocked_futures_orphans = 0
+        # 목표수렴(kr-target-reconciliation.md §14) — reconcile은 **관측 전용**.
+        # 방향 역전: 구 모델은 orphan(원장>브로커)을 "외부 매도 추정"으로 원장에서
+        # 자동 차감했다(ledger←broker). 목표수렴에서 원장=전략 의도가 정본이고
+        # 브로커가 원장을 따라온다(broker←ledger) — 수동 매도는 다음 사이클
+        # _reconcile_pass의 drift 교정이 되돌린다. 여기서 원장을 차감하면 의도가
+        # 소실돼 되돌림이 무력화되므로 어떤 원장 변경도 하지 않는다(표면화만).
         with _CYCLE_LOCK:
-            # M9 참고: reconcile 호출자는 전부 ephemeral 인스턴스(settlement·gui가
-            # 매번 새 Trader 생성 = 디스크 최신 적재)라 여기서 reload하지 않는다 —
-            # 장수명 인스턴스의 stale 경로는 intraday_loop 진입부가 reload_state로 닫는다.
             result = analytics.reconcile_ledger(snap.get("positions", []), self.ledger)
-            orphans = result.get("ledger_orphans", [])
-            applied: list[dict] = []
+        orphans = result.get("ledger_orphans", [])
+        if orphans:
+            log.warning(
+                "reconcile: 원장>브로커 drift %d건 감지(수동 매도/외부 정리 추정) — "
+                "원장 불변·다음 사이클 목표수렴이 교정: %s",
+                len(orphans),
+                [(o.get("symbol"), o.get("sid")) for o in orphans][:10])
+        else:
+            log.info("reconcile: drift 없음 (in_sync %d종목)", len(result.get("in_sync", [])))
 
-            if futures_identity_broken:
-                fut_orphans = [o for o in orphans if qc.is_futures(o.get("symbol", ""))]
-                if fut_orphans:
-                    log.error(
-                        "reconcile: 선물 신원계층 비정상(fetch_failed=%s, unmapped=%s) — "
-                        "선물 orphan %d건 자동 차감 차단(외부 매도 추론 신뢰 불가·표면화만)",
-                        fetch_failed, unmapped, len(fut_orphans))
-                blocked_futures_orphans = len(fut_orphans)
-                orphans = [o for o in orphans if not qc.is_futures(o.get("symbol", ""))]
-
-            if orphans:
-                plans = analytics.plan_orphan_adjustments(orphans)
-                for p in plans:
-                    sid = p["sid"]
-                    if sid not in self.ledger:
-                        continue
-                    lg = self.ledger[sid]
-                    removed = p["removed_qty"]
-                    if removed <= 0:
-                        continue
-                    # 거래 기록: 외부 매도로 분류
-                    ev = {
-                        "ts": today, "action": "external_close",
-                        "symbol": p["symbol"], "qty": removed,
-                        "price": float(lg.get("entry_price", 0) or 0),
-                        "strategy": lg.get("strategy_name", ""),
-                        "reason": "HTS/MTS 수동 매도 추정 — reconcile 자동 차감",
-                        "sid": sid,
-                    }
-                    self._log_trade(ev)
-                    if p["fully_closed"]:
-                        del self.ledger[sid]
-                        log.warning("reconcile: ledger 제거 [%s] %s qty %d → 0 (외부 매도 추정)",
-                                      sid, p["symbol"], p["old_qty"])
-                    else:
-                        lg["qty"] = p["new_qty"]
-                        log.warning("reconcile: ledger 차감 [%s] %s qty %d → %d (외부 매도 추정)",
-                                      sid, p["symbol"], p["old_qty"], p["new_qty"])
-                    applied.append(p)
-                self._save()
-            else:
-                log.info("reconcile: drift 없음 (in_sync %d종목)", len(result.get("in_sync", [])))
-
-        result["applied"] = applied
+        result["applied"] = []          # 관측 전용 — 원장 변경 없음(필드 형태 유지)
         result["external_extras_count"] = len(result.get("external_extras", []))
         if futures_identity_broken:
             # 표면화 — cycle summary→서버→웹으로 전달돼 "정합성 점검 불가" 상태를 알린다.
+            # (스냅샷 신원이 깨진 동안엔 _reconcile_pass도 drift 교정을 보류한다.)
             result["reconcile_blocked"] = {
                 "fetch_failed": fetch_failed, "unmapped_codes": unmapped,
-                "blocked_futures_orphans": blocked_futures_orphans,
+                "blocked_futures_orphans": len(
+                    [o for o in orphans if qc.is_futures(o.get("symbol", ""))]),
             }
-        result["has_drift"] = (bool(applied) or bool(result.get("external_extras"))
+        result["has_drift"] = (bool(orphans) or bool(result.get("external_extras"))
                                or futures_identity_broken)
         return result
 
@@ -638,6 +620,11 @@ class Trader:
         분기를 실체결과 동일하게 재사용하되, 주문/거래/결정 레코드에 netted 표식을 남긴다
         (슬리피지는 호출부가 intended_price=None으로 넘겨 log_order가 자동 skip·N2·N3).
         기본 False = 현행 byte-identical.
+
+        p["drift"]=True — 목표수렴 drift 교정 체결(수동매매 되돌림·비전략 보유 청산).
+        **원장 불변**: 원장=전략 의도는 leg booking(_apply_netted_leg/leg 실체결)이 이미
+        반영했고, 이 주문은 브로커 실보유를 목표로 옮기는 물리 이동만 담당한다
+        (kr-target-reconciliation.md §2·§9③). 기록만 남기고 반환.
         """
         sid = str(p.get("strategy_id", ""))
         symbol = p["symbol"]
@@ -654,6 +641,16 @@ class Trader:
                              strategy_name=p.get("strategy_name", ""),
                              reason=p.get("reason", ""), kind=p.get("kind", ""),
                              extra=nx)
+
+        if bool(p.get("drift")):
+            # 목표수렴 drift 교정 — 원장 불변(위 docstring). 체결 사실만 표면화.
+            decisions.append(order_log.decision(
+                "drift_corrected", sid, p.get("strategy_name", ""), symbol,
+                f"목표수렴 교정 {side} {filled_qty} @ {fill_price:,.2f} — "
+                "수동매매 되돌림/비전략 보유 정리(원장 불변)"))
+            log.info("[목표수렴] drift 교정 체결 %s %s %d @ %.2f (원장 불변)",
+                     symbol, side, filled_qty, fill_price)
+            return
 
         # M3: self.ledger 읽기-수정-쓰기를 단일 락으로 직렬화 — WS 체결 thread·
         # monitor·cycle이 같은 원장을 동시 변경하는 race(lost update) 차단.
@@ -877,7 +874,8 @@ class Trader:
             {"closed": n_closed, "external": external,
              "realized": round(realized_total, 2)}))
 
-    def _apply_netted_leg(self, leg, decisions: list[dict]) -> None:
+    def _apply_netted_leg(self, leg, decisions: list[dict],
+                          reason: str | None = None) -> None:
         """넷팅 핸드오프 1건(진입/청산 leg)을 합성 체결로 원장 반영 — 브로커 미호출·수수료 0.
 
         설계 §13. 기존 _apply_fill을 재사용해 ledger·realized·통화·side 분기·락을 그대로 태운다
@@ -899,7 +897,7 @@ class Trader:
             "side": leg.order_side,
             "intended_price": None,          # 넷팅 → 슬리피지 미기록(시장 미접촉)
             "limit_price": None,
-            "reason": "넷팅 청산" if leg.kind == "exit" else "넷팅 진입",
+            "reason": reason or ("넷팅 청산" if leg.kind == "exit" else "넷팅 진입"),
             "kind": "청산" if leg.kind == "exit" else "진입",
             "definition": leg.definition,
         }
@@ -1033,7 +1031,10 @@ class Trader:
             try:
                 r = self.broker.buy_resv_limit(symbol, qty, limit)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"buy_resv_limit: {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("미국 예약매수 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
@@ -1064,8 +1065,10 @@ class Trader:
             try:
                 r = self.broker.buy_limit(symbol, qty, limit)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id,
-                                      f"buy_limit (catchup): {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("[catch-up] %s 시초가 limit 발주 실패: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol,
@@ -1080,7 +1083,10 @@ class Trader:
             try:
                 r = self.broker.buy(symbol, qty)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"buy: {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("매수 시장가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
@@ -1113,7 +1119,10 @@ class Trader:
             try:
                 r = self.broker.sell_resv_limit(symbol, qty, limit)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell_resv_limit: {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("미국 예약매도 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
@@ -1126,7 +1135,10 @@ class Trader:
             try:
                 r = self.broker.sell_limit(symbol, qty, limit)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell_limit: {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("미국 매도 지정가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
@@ -1138,7 +1150,10 @@ class Trader:
             try:
                 r = self.broker.sell(symbol, qty)
             except Exception as e:
-                intents.mark_failed(today_iso, intent_id, f"sell: {e}")
+                # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+                # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+                # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+                # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
                 log.error("매도 시장가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
@@ -1169,7 +1184,10 @@ class Trader:
         try:
             r = self.broker.buy(symbol, qty)
         except Exception as e:
-            intents.mark_failed(today_iso, intent_id, f"buy(close): {e}")
+            # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+            # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+            # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+            # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
             log.error("숏 환매 시장가 발주 실패 [%s]: %s", symbol, e)
             decisions.append(order_log.decision(
                 "error", sid, strat_name, symbol, f"환매 발주 예외: {e}"))
@@ -1197,7 +1215,10 @@ class Trader:
         try:
             r = self.broker.sell(symbol, qty)
         except Exception as e:
-            intents.mark_failed(today_iso, intent_id, f"sell(open): {e}")
+            # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+            # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+            # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+            # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
             log.error("숏 진입 시장가 발주 실패 [%s]: %s", symbol, e)
             decisions.append(order_log.decision(
                 "error", sid, strat_name, symbol, f"숏진입 발주 예외: {e}"))
@@ -1212,11 +1233,13 @@ class Trader:
                       intended_price: float, limit_price: int,
                       policy: dict, decisions: list[dict], reason: str,
                       today_iso: str = "", intent_id: str = "",
-                      kind: str = "", liquidation: bool = False) -> None:
+                      kind: str = "", liquidation: bool = False,
+                      drift: bool = False) -> None:
         """submit 결과를 후처리: pending 등록 / 즉시 체결 반영 / 거부 로깅.
 
-        kind: "진입"|"청산" — 발주 메서드가 명시(_submit_buy·_submit_open_short=진입,
-        _submit_sell·_submit_close_short=청산). pending 레코드에 실어 체결 이벤트까지 전파.
+        kind: "진입"|"청산"|"교정" — 발주 메서드가 명시(_submit_buy·_submit_open_short=진입,
+        _submit_sell·_submit_close_short=청산, _submit_drift=교정). pending 레코드에 실어
+        체결 이벤트까지 전파. drift=True면 체결이 원장을 바꾸지 않는다(_apply_fill 초입 분기).
         """
         order_no = r.get("order_no", "")
         if not r.get("success"):
@@ -1250,6 +1273,8 @@ class Trader:
             # R6/D6 — 비상청산 체결이면 booking이 신규 포지션을 만들지 않고 종목 기준
             # 청산하도록 표식(즉시체결·pending 양 경로·재기동 후에도 유지).
             "liquidation": liquidation,
+            # 목표수렴 drift 교정 — 체결돼도 원장 불변(_apply_fill 초입 분기·재기동 유지).
+            "drift": drift,
             # δ: 미국 예약주문 여부 — 접수번호와 체결행 odno의 번호공간이 달라
             # (실측 448 vs 10자리) _resolve_pending이 종목+사이드+수량 매칭으로
             # 전환하는 분기 키. 발주 분기(_is_reserved_us)와 같은 시점 동일 값.
@@ -1322,6 +1347,21 @@ class Trader:
                 "skip_no_data", strategy_id, strat_name, symbol,
                 "전일 종가가 0 — 데이터 이상"))
             return False
+
+        # 신선도 게이트(fail-stale) — 마지막 봉이 직전 거래일보다 오래면 stale. 07-14 사고의
+        # 직접 원인(서버가 08:10 선물을 재포장 안 해 07-10 봉이 참조가로 쓰임). stale면 live
+        # (_safe_price) 우선, live도 없으면 진입 skip(fail-closed — stale로 발주가·사이징·넷팅
+        # 오염보다 이번 진입 보류가 안전). is_close_entry는 아래에서 어차피 live를 쓰지만,
+        # next_open 진입(07-14 #27)은 이 게이트에서만 stale이 걸러진다.
+        if _bar_is_stale(sdf, symbol, kst_today()):
+            cur = self._safe_price(symbol)
+            if cur and cur > 0:
+                prev_close = cur
+            else:
+                decisions.append(order_log.decision(
+                    "skip_stale_data", strategy_id, strat_name, symbol,
+                    "데이터 stale — 마지막 봉이 직전 거래일보다 오래됨 · 실시간가도 없음 (진입 보류)"))
+                return False
 
         # 종가 진입(fill=close): 참조가를 종가 무렵 현재가로 교체. 전일종가 기준은 15:40 시점엔
         # 오늘 등락만큼 stale → 지정가가 종가 단일가창을 빗나가 미체결된다. 청산(liquidate_day_
@@ -1443,7 +1483,8 @@ class Trader:
                 f"가용자금 조회 실패: {e}"))
             return False
 
-        # E1: 주식은 넷팅될 같은-종목 청산이 회수할 현금을 크레딧(선물은 위 orderable 계약 크레딧).
+        # E1: 주식은 같은-종목 청산이 회수할 현금을 크레딧(선물은 아래 orderable 계약 크레딧).
+        # 사이징 입력이지 물리 주문이 아니다 — 물리는 목표수렴 net이 상쇄(_reconcile_pass).
         if capacity_credit and not qc.is_futures(symbol):
             cash += float(capacity_credit.get(symbol, 0))
 
@@ -1473,10 +1514,9 @@ class Trader:
                 side = "sell" if is_short else "buy"
                 orderable = oq_fn(symbol, side, prev_close)
                 if orderable is not None and capacity_credit:
-                    # E1/N7: 넷팅될 같은-계약 청산이 회수할 여력(계약수)을 크레딧 —
-                    # 청산을 실체결하지 않고도 진입이 회수 마진을 보게 한다. 다중 진입은
-                    # 아래 capture 시 credit을 차감해 로컬 순차 소진(E2·N9). 클램프된
-                    # 청산 수량만 크레딧돼 유령 여력 방지(N7).
+                    # E1/N7: 같은-계약 청산이 회수할 여력(계약수)을 크레딧 — 청산을
+                    # 실체결하지 않고도 진입 사이징이 회수 마진을 보게 한다(같은 사이클 롤).
+                    # 다중 진입은 아래 capture 시 credit 차감으로 로컬 순차 소진(E2·N9).
                     orderable = int(orderable) + int(capacity_credit.get(symbol, 0))
                 if orderable is None:
                     # 실 브로커(orderable_qty 보유)인데 조회 실패 → **발주 보류**(qty=0). 카탈로그
@@ -1520,9 +1560,9 @@ class Trader:
             log.info("[L-01] 중복 진입 차단 %s/%s (%s)", ledger_key, symbol, entry_side)
             return False
 
-        # 넷팅 PLAN(capture) — 발주하지 않고 진입 '의도'만 수집(설계 §13). 사이징·게이트는
-        # 위에서 이미 실주문과 동일하게 통과했다. 로컬 여력원장(capacity_credit) 차감으로
-        # 다중 진입이 회수 여력을 중복 소진하지 않게 한다(E2·N9).
+        # 수렴 PLAN(capture) — 발주하지 않고 진입 '의도'만 수집. 사이징·게이트는
+        # 위에서 이미 실주문과 동일하게 통과했다(진입 1회 사이징·보유 중 고정 §9).
+        # capacity_credit 차감 = 다중 진입의 회수 여력 순차 소진(E2·N9).
         if capture is not None:
             from .netting import Intent
             spec = instrument_spec(symbol)
@@ -1846,67 +1886,131 @@ class Trader:
                 currency=spec.currency, definition=pos.get("definition") or {}))
         return out
 
-    def _plan_cycle_liquidations(self, snap_pre: dict, dataset: dict, today: date,
-                                 market: str) -> list:
-        """아침 시가창 넷팅 대상 청산 의도 — **시간기반 due exit(hold_days 도달)만**.
+    def _plan_exit_intents(self, window: str, dataset: dict, today: date,
+                           market: str, instrument_class: str | None,
+                           ks_active: bool, decisions: list[dict],
+                           ) -> tuple[list, set[str], dict[str, str]]:
+        """이번 창의 청산 의도 + 판정불가 심볼(§13 hold) 산출 — 발주·클램프 없음.
 
-        신호·손절·만기·킬스위치 청산은 넷팅하지 않는다(§2가 정상 발주). hold_days 도달은
-        결정론적이라 §2가 반드시 청산하므로(무드리프트), 이 부분집합만 넷팅해도 §2 잔여 청산과
-        일관된다. 오버나이트 롱(hold_days=1)의 익일 시가 청산이 주 대상. 발주는 안 한다."""
+        목표수렴 설계(kr-target-reconciliation.md §13): 청산 규칙을 평가할 수 없는
+        포지션(파싱 실패·참조가 부재)이나 청산 주문이 이미 in-flight인 심볼은
+        **indeterminate**로 반환 — 그 심볼은 이번 사이클 수렴 자체를 건너뛴다(hold).
+        "목표 없음 ≠ 목표 0": 판정불가를 0으로 취급하면 stale/에러가 전량청산을 유발한다.
+
+        window="open"(아침): 구 §2와 동일 평가 — 신호·시간·만기 백스톱·ks 강제청산.
+        window="close"(종가): 구 plan_close_liquidations와 동일 선별 — 당일매매
+        (hold_days==0)·exit.fill=close 전략만, is_close=True 창 게이트.
+        참조가: 아침=번들 전일봉(stale이면 live·A2), 종가=live 우선(현재가 정산).
+        클램프 없음 — 수량은 원장 전량. 브로커 부족분은 net 계산이 흡수한다(§14).
+        """
         from .netting import Intent
         out: list = []
+        indeterminate: set[str] = set()
+        reasons: dict[str, str] = {}
+        today_iso = today.isoformat()
         for sid, pos in list(self.ledger.items()):
-            if _market_group_safe(pos["symbol"]) != market:
+            symbol = pos["symbol"]
+            if _market_group_safe(symbol) != market:
                 continue
-            if coverage.missing_categories([pos["symbol"]]):
+            is_fut = qc.is_futures(symbol)
+            if instrument_class is not None and (instrument_class == "futures") != is_fut:
                 continue
-            hold_days = (((pos.get("definition") or {}).get("position") or {})
-                         .get("exit") or {}).get("hold_days")
-            if hold_days is None or hold_days < 1:
-                continue                              # 시간기반 due만(당일매매·상시 제외)
-            if ((((pos.get("definition") or {}).get("position") or {})
-                 .get("exit") or {}).get("fill")) == "close":
-                continue                              # exit.fill=close → 종가창 소관(D3)
+            if coverage.missing_categories([symbol]):
+                decisions.append(order_log.decision(
+                    "orphan_uncovered", sid, pos.get("strategy_name", ""), symbol,
+                    "자격증명 미등록 자산군 — 청산 불가(수동 정리 필요)"))
+                indeterminate.add(symbol)
+                continue
+            if window == "close":
+                _exit = (((pos.get("definition") or {}).get("position") or {})
+                         .get("exit") or {})
+                if _exit.get("hold_days") != 0 and _exit.get("fill") != "close":
+                    continue          # 종가창 소관 아님 — 유지분으로 target에 기여
+            parse_failed = False
             try:
                 held = (today - date.fromisoformat(pos["entry_date"])).days
-            except Exception:
+                reason, _ = _exit_reason_for(
+                    pos["definition"], held, dataset, symbol,
+                    is_close=(window == "close"))
+            except Exception as e:
+                log.warning("원장 전략 파싱 실패 [%s]: %s", sid, e)
+                reason = None
+                parse_failed = True
+            # kill switch 활성 시 모든 보유 강제 청산(파싱 실패 고아 포함) — 아침창.
+            if window == "open" and ks_active and not reason:
+                reason = "kill-switch"
+            # M6 tier-2 만기 백스톱: 유저 규칙 미발동 + 선물 만기 임박 → 강제청산.
+            if not reason and is_fut:
+                reason = self._expiry_close_reason(pos, today)
+            if not reason:
+                if parse_failed:
+                    # 청산 규칙 평가 불가(고아) — 임의 매도 금지·명시 표면화. 이 심볼은
+                    # 목표 판정 불가이므로 수렴도 보류(§13 — 0으로 오인해 청산 금지).
+                    decisions.append(order_log.decision(
+                        "unparseable_orphan", sid, pos.get("strategy_name", ""),
+                        symbol, "전략 정의 파싱 실패 — 자동 청산 불가(수동 정리 필요)"))
+                    indeterminate.add(symbol)
                 continue
-            if held < hold_days:
-                continue                              # 아직 보유기간 미도달 → §2도 청산 안 함
-            ref_price = 0.0
-            sdf = dataset.get(pos["symbol"])
-            if sdf is not None and len(sdf) and "Close" in sdf.columns:
-                try:
-                    ref_price = float(sdf["Close"].iloc[-1])
-                except Exception:
-                    ref_price = 0.0
-            if ref_price <= 0:
-                cur = self._safe_price(pos["symbol"])
-                if not cur or cur <= 0:
-                    continue
-                ref_price = cur
             pos_side = pos.get("side", "long")
-            clamped = clamp_sell_qty(
-                held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side), int(pos["qty"]))
-            if not clamped:
+            exit_side = "sell" if pos_side == "long" else "buy"
+            # in-flight 게이트(§14 멱등) — 이 포지션의 청산 intent가 이미 활성(오늘
+            # 발주·미마감)이면 재계획하지 않는다. leg를 빼고 net 산술만 남기면 자기
+            # 주문과 상쇄되는 워시 주문이 나가므로, 심볼 통째 hold가 유일하게 안전.
+            if intents.is_active(today_iso, sid, symbol, exit_side):
+                log.info("[목표수렴] 청산 in-flight [%s/%s] — 이번 사이클 hold", sid, symbol)
+                indeterminate.add(symbol)
                 continue
-            spec = instrument_spec(pos["symbol"])
+            # 참조가 = **정산가**(목표수렴 §3.2 — book leg 실현손익·진입가 기장에 쓰임).
+            # 아침: 번들 전일봉(fresh 검증), stale이면 live로 대체(A2). 종가: live 우선.
+            # ⚠ 구 A2는 "live 없으면 stale이라도 진행(fail-open)"이었다 — 구 모델의 ref는
+            # 시장가 주문의 참고값이라 무해했지만, 목표수렴에선 ref가 정산가가 되므로
+            # stale 봉(07-14 1210.5)으로 book하면 phantom이 재발한다. stale+무live=hold.
+            ref_price = 0.0
+            sdf = dataset.get(symbol)
+            if window == "close":
+                ref_price = self._safe_price(symbol) or 0.0
+                if ref_price <= 0 and sdf is not None and len(sdf) \
+                        and "Close" in sdf.columns \
+                        and not _bar_is_stale(sdf, symbol, today):
+                    ref_price = float(sdf["Close"].iloc[-1])
+            else:
+                if sdf is not None and len(sdf) > 0 and "Close" in sdf.columns:
+                    try:
+                        ref_price = float(sdf["Close"].iloc[-1])
+                    except Exception:
+                        ref_price = 0.0
+                if _bar_is_stale(sdf, symbol, today):
+                    ref_price = 0.0        # stale 봉은 정산가 금지(phantom 차단)
+                if ref_price <= 0:
+                    cur = self._safe_price(symbol)
+                    if cur and cur > 0:
+                        ref_price = cur
+            if ref_price <= 0:
+                # 정산가 없이 청산 leg을 만들면 phantom 손익(07-14)·오정산 — hold(§13).
+                log.warning("청산 정산가 없음 [%s] — 이 심볼 수렴 보류(다음 사이클)",
+                            symbol)
+                indeterminate.add(symbol)
+                continue
+            spec = instrument_spec(symbol)
+            reasons[sid] = reason
             out.append(Intent(
                 sid=sid, strategy_id=sid, strategy_name=pos.get("strategy_name", ""),
-                contract_key=(pos.get("contract_code") or pos["symbol"])
-                if qc.is_futures(pos["symbol"]) else pos["symbol"],
-                symbol=pos["symbol"], kind="exit", position_side=pos_side,
-                order_side=("sell" if pos_side == "long" else "buy"),
-                qty=int(clamped), ref_price=float(ref_price),
+                contract_key=(pos.get("contract_code") or symbol) if is_fut else symbol,
+                symbol=symbol, kind="exit", position_side=pos_side,
+                order_side=exit_side,
+                qty=int(pos["qty"]), ref_price=float(ref_price),
                 entry_price=float(pos["entry_price"]), mult=spec.multiplier,
                 currency=spec.currency, definition=pos.get("definition") or {}))
-        return out
+        return out, indeterminate, reasons
 
     def _freed_capacity(self, liq_intents: list) -> dict:
-        """청산 의도가 회수할 여력을 상품명별로 합산 — 진입 사이징 크레딧(E1·§5.5).
+        """청산 의도가 회수할 여력을 상품명별로 합산 — 진입 사이징 크레딧(E1).
 
-        선물=계약수(orderable에 더함)·주식=현금(수량×기준가, cash에 더함). 클램프된 청산
-        수량만 반영돼 유령 여력을 만들지 않는다(N7)."""
+        capacity_credit는 물리 주문 기계가 아니라 **사이징 입력**이다(목표수렴 하에서도
+        유지 — 같은 사이클 롤에서 청산이 풀어줄 자본을 진입 사이징이 봐야 autotrade-only
+        의도 크기가 나온다). 선물=계약수(orderable에 더함)·주식=현금(수량×기준가).
+        호출자(_reconcile_pass)가 브로커 실보유로 클램프한 청산량만 넘겨 유령 여력을
+        만들지 않는다(N7 — 수동 선매도분은 이미 브로커 현금/orderable에 반영돼 있음)."""
         cap: dict = {}
         for lg in liq_intents:
             add = lg.qty if qc.is_futures(lg.symbol) else lg.qty * lg.ref_price
@@ -1916,22 +2020,246 @@ class Trader:
     def plan_entries_captured(self, by_strategy: list, strategies: list, dataset: dict,
                               equity_now: float, liq_intents: list, market: str,
                               instrument_class: str | None,
-                              entry_window: str = "close") -> tuple[list, list]:
-        """진입 '의도'를 산출(발주 안 함) — 넷팅 PLAN(설계 §13). 종가창(close)·시가창(open) 공용.
+                              entry_window: str = "close",
+                              catchup: bool = False) -> tuple[list, list]:
+        """진입 '의도'를 산출(발주 안 함) — 수렴 PLAN. 종가창(close)·시가창(open) 공용.
 
-        _enter_from_preview를 capture 모드로 재사용(fill 라우팅·계좌·커버리지·보유·멱등 게이트와
-        사이징을 실주문과 동일하게 통과) + 로컬 여력원장에 같은-종목 청산 회수여력을 시드해
-        E1(진입이 회수 마진을 봄)·E2/N9(다중 진입 순차 소진)를 해결. 반환 (entry_intents, decisions).
+        _enter_from_preview를 capture 모드로 재사용 — fill 라우팅·계좌·커버리지·보유·멱등
+        게이트와 사이징(현재 자본·orderable + 같은 종목 청산 회수여력 크레딧)을 실주문과
+        동일하게 통과. 사이징은 진입 시점 1회 확정·보유 중 고정(목표수렴 §9).
+        반환 (entry_intents, decisions).
         """
         capacity = self._freed_capacity(liq_intents)
         captured: list = []
         decisions: list = []
         self._enter_from_preview(by_strategy, strategies, dataset, equity_now,
                                  decisions, set(), market=market,
-                                 entry_window=entry_window,
+                                 entry_window=entry_window, catchup=catchup,
                                  instrument_class=instrument_class,
                                  capacity_credit=capacity, capture=captured)
         return captured, decisions
+
+    def _submit_drift(self, symbol: str, drift_qty: int, window: str,
+                      decisions: list[dict]) -> None:
+        """목표수렴 drift 교정 주문 — 원장 불변 물리 교정(설계 §2·§9③).
+
+        수동매매 되돌림(원장>브로커=재매수 복원, 원장<브로커=초과분 매도)과 비전략
+        심볼 청산(target 0)을 담당한다. 체결돼도 원장을 바꾸지 않는다(pending의
+        drift=True → _apply_fill 초입 분기) — 원장=전략 의도는 leg booking이 이미
+        반영했고, 이 주문은 브로커 실보유를 목표로 옮기는 물리 이동만 한다.
+        가격: live 현재가 기준(수동 개입 후라 번들 전일가는 참조 부적절). 조회 불가면
+        다음 사이클로 보류(fail-closed — 목표수렴은 매 사이클 재계산이라 자기치유).
+        """
+        side = "buy" if drift_qty > 0 else "sell"
+        qty = abs(int(drift_qty))
+        ref = self._safe_price(symbol) or 0.0
+        if ref <= 0:
+            decisions.append(order_log.decision(
+                "drift_deferred", "", "", symbol,
+                f"목표수렴 교정 {side} {qty} — 현재가 조회 불가, 다음 사이클 보류"))
+            return
+        today_iso = kst_today().isoformat()
+        dkey = f"DRIFT:{window}"
+        # §14 멱등 — 같은 창·심볼·방향의 교정이 오늘 이미 발주됐으면 재발주 금지.
+        if intents.is_active(today_iso, dkey, symbol, side):
+            log.info("[L-01] 중복 drift 교정 차단 %s %s", symbol, side)
+            return
+        intent_id = intents.new_intent_id()
+        intents.begin(today_iso, intent_id, dkey, "목표수렴", symbol, side, qty, ref)
+        policy = merged_execution(None)
+        limit = 0
+        try:
+            if side == "sell":
+                if self._is_reserved_us(symbol):
+                    limit = self._us_limit(symbol, "sell", policy, ref)
+                    r = self.broker.sell_resv_limit(symbol, qty, limit)
+                elif _currency_of(symbol) == "USD":
+                    limit = self._us_limit(symbol, "sell", policy, ref)
+                    r = self.broker.sell_limit(symbol, qty, limit)
+                else:
+                    r = self.broker.sell(symbol, qty)
+            else:
+                if self._is_reserved_us(symbol):
+                    limit = self._us_limit(symbol, "buy", policy, ref)
+                    r = self.broker.buy_resv_limit(symbol, qty, limit)
+                elif _currency_of(symbol) == "USD":
+                    limit = self._us_limit(symbol, "buy", policy, ref)
+                    r = self.broker.buy_limit(symbol, qty, limit)
+                else:
+                    r = self.broker.buy(symbol, qty)
+        except Exception as e:
+            # 문제12 verify-then-retry: 예외=ambiguous — mark_failed 하지 않고
+            # 'submitting'으로 남긴다(타임아웃은 접수됐을 수 있음). 다음 사이클 시작의
+            # reconcile_submitting이 KIS 당일주문 조회로 submitted/failed 판정 →
+            # 미접수면 재시도(창내 재실행 08:40/42 포함)·접수면 이중발주 차단.
+            log.error("목표수렴 교정 발주 실패 [%s %s %d]: %s", symbol, side, qty, e)
+            decisions.append(order_log.decision(
+                "error", dkey, "목표수렴", symbol, f"교정 발주 예외: {e}"))
+            return
+        intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
+        self._after_submit(r, dkey, "목표수렴", None, symbol, side, qty, ref, limit,
+                           policy, decisions, reason="목표수렴 drift 교정",
+                           today_iso=today_iso, intent_id=intent_id, kind="교정",
+                           drift=True)
+
+    def _reconcile_pass(self, *, window: str, snap_pre: dict, dataset: dict,
+                        today: date, market: str, instrument_class: str | None,
+                        buy_candidates: list | None, strategies: list,
+                        equity_now: float, entries_blocked: bool, ks_active: bool,
+                        decisions: list[dict], catchup: bool = False,
+                        ) -> tuple[int, float, int]:
+        """목표상태 수렴 — 청산/진입 의도 → 심볼별 net 계획 → 합성 정산·발주.
+
+        kr-target-reconciliation.md §2(모델)·§13(목표 없음≠0)·§14(멱등·가용성 가드).
+        구 넷팅 pre-pass + §2 잔여청산 + §3 진입을 단일 패스로 대체한다.
+        반환 (n_netted, commission_saved, n_drift) — cycle_summary 집계용.
+        """
+        from . import target_recon
+        from .analytics import norm_side
+
+        exit_intents, indeterminate, exit_reasons = self._plan_exit_intents(
+            window, dataset, today, market, instrument_class, ks_active, decisions)
+
+        entry_intents: list = []
+        if not entries_blocked and buy_candidates is not None:
+            # 사이징 크레딧 — 브로커 실보유로 클램프한 청산량만(유령 여력 방지 N7:
+            # 수동 선매도분은 이미 브로커 현금/orderable에 반영돼 있어 크레딧하면 이중계상).
+            from dataclasses import replace as _dc_replace
+            credit_intents: list = []
+            _avail: dict[tuple[str, str], int] = {}
+            for it in exit_intents:
+                k = (it.symbol, it.position_side)
+                if k not in _avail:
+                    _avail[k] = max(0, held_qty_from_snapshot(
+                        snap_pre, it.symbol, it.position_side))
+                take = min(int(it.qty), _avail[k])
+                if take > 0:
+                    _avail[k] -= take
+                    credit_intents.append(
+                        it if take == it.qty else _dc_replace(it, qty=take))
+            entry_intents, ent_dec = self.plan_entries_captured(
+                buy_candidates, strategies, dataset, equity_now, credit_intents,
+                market, instrument_class, entry_window=window, catchup=catchup)
+            decisions.extend(ent_dec)
+            # 진입 in-flight(오늘 이미 발주·L-01 skip_idempotent) 심볼도 hold —
+            # leg 없는 net 산술이 자기 주문과 상쇄되는 것 방지(§14).
+            for d in ent_dec:
+                if d.get("action") == "skip_idempotent" and d.get("symbol"):
+                    indeterminate.add(d["symbol"])
+        # §13 — 판정불가 심볼의 진입 leg 제거(목표 미정 심볼에 순주문 금지).
+        if indeterminate:
+            kept = []
+            for it in entry_intents:
+                if it.symbol in indeterminate:
+                    decisions.append(order_log.decision(
+                        "skip_indeterminate", it.sid, it.strategy_name, it.symbol,
+                        "심볼 목표 판정 불가 — 이번 사이클 수렴 보류(hold)"))
+                else:
+                    kept.append(it)
+            entry_intents = kept
+
+        def _in_scope(sym: str) -> bool:
+            if _market_group_safe(sym) != market:
+                return False
+            if instrument_class is not None:
+                return (instrument_class == "futures") == qc.is_futures(sym)
+            return True
+
+        # 계획 키 = 물리 계약 식별자(E6 롤 경계): 선물=contract_code-or-심볼, 주식=심볼.
+        # 심볼 단위로 net을 계산하면 롤 주간에 구계약 청산 + 신계약 진입이 같은 상품명으로
+        # 오상계돼 물리 롤이 실행되지 않는다 — 반드시 키 단위(exit/entry Intent의
+        # contract_key 규약과 동일). symbol_of는 발주 라우팅용 역매핑.
+        def _plan_key(sym: str, code: str | None) -> str:
+            return (str(code) if code else sym) if qc.is_futures(sym) else sym
+
+        symbol_of: dict[str, str] = {}
+        ledger_signed: dict[str, int] = {}
+        for pos in self.ledger.values():
+            sym = pos["symbol"]
+            if not _in_scope(sym):
+                continue
+            key = _plan_key(sym, pos.get("contract_code"))
+            symbol_of.setdefault(key, sym)
+            q = int(pos["qty"])
+            ledger_signed[key] = ledger_signed.get(key, 0) + (
+                -q if pos.get("side", "long") == "short" else q)
+
+        balance_fetch_failed = list(
+            (snap_pre.get("balance") or {}).get("fetch_failed") or [])
+        if balance_fetch_failed:
+            # §14 가용성 가드 — 부분 스냅샷에선 "브로커가 실제로 뭘 들고 있나"를 모른다.
+            # 보유가 얽힌 심볼(원장·브로커 조회분)은 전부 hold: 청산을 원장 전량으로 내면
+            # 실보유 부족 시 오버셀(의도외 숏), drift 교정은 멀쩡한 보유를 외부분으로 오인
+            # 청산할 수 있다(구 모델의 clamp-0-skip과 동일하게 보수적). 보유 무관한 순수
+            # 신규 진입만 진행(가용성 — 구 모델도 부분조회 시 진입은 계속했다).
+            broker_signed = {}
+            held_syms = set(ledger_signed) | {
+                p.get("symbol", "") for p in (snap_pre.get("positions") or [])
+                if p.get("symbol") and _in_scope(p.get("symbol", ""))}
+            indeterminate |= held_syms
+            decisions.append(order_log.decision(
+                "drift_eval_skipped", "", "", "",
+                f"잔고 부분조회 {balance_fetch_failed} — 보유 심볼 수렴 보류"
+                f"(신규 진입만 진행): {sorted(held_syms)[:10]}"))
+        else:
+            broker_signed = {}
+            for p in (snap_pre.get("positions") or []):
+                sym = p.get("symbol", "")
+                if not sym or not _in_scope(sym):
+                    continue
+                if p.get("symbol_unmapped"):
+                    # 정규화 실패 보유(I2) — 어떤 심볼인지 확정 불가. 수렴 보류·표면화.
+                    decisions.append(order_log.decision(
+                        "drift_eval_skipped", "", "", sym,
+                        "브로커 심볼 정규화 실패 — 이 심볼 수렴 보류(수동 점검)"))
+                    indeterminate.add(sym)
+                    continue
+                key = _plan_key(sym, p.get("contract_code"))
+                symbol_of.setdefault(key, sym)
+                q = int(p.get("qty") or 0)
+                broker_signed[key] = broker_signed.get(key, 0) + (
+                    -q if norm_side(p.get("side")) == "short" else q)
+
+        # indeterminate는 심볼 단위로 수집됐다 — 그 심볼의 모든 계약 키를 제외(hold).
+        # leg도 심볼로 재필터: 늦게 추가된 판정불가(fetch_failed·unmapped)의 진입 leg
+        # 키(최근월물 코드)가 symbol_of(원장·브로커 유래)에 없으면 키 제외를 빠져나가는
+        # 구멍 봉합(§13 — 판정불가 심볼에 어떤 순주문도 금지).
+        excluded_keys = set(indeterminate) | {
+            k for k, s in symbol_of.items() if s in indeterminate}
+        plan_intents = [it for it in exit_intents + entry_intents
+                        if it.symbol not in indeterminate]
+
+        plans = target_recon.build_symbol_plans(
+            plan_intents, ledger_signed, broker_signed,
+            excluded_keys, symbol_of=symbol_of)
+
+        n_netted = 0
+        commission_saved = 0.0
+        n_drift = 0
+        for plan in plans:      # 이미 매도(net≤0) 먼저 정렬 — 증거금 선회수 불변식
+            for leg in plan.book_legs:
+                self._apply_netted_leg(leg, decisions,
+                                       reason=exit_reasons.get(leg.sid))
+            commission_saved += self._netting_commission_saved(plan.book_legs)
+            n_netted += plan.offset_qty
+            for leg in plan.order_legs:
+                self._submit_residual(leg, decisions,
+                                      reason=exit_reasons.get(leg.sid),
+                                      catchup=catchup)
+            if plan.drift_qty:
+                # 비-최근월물 가드: drift 주문은 심볼로 라우팅돼 브로커가 최근월물에
+                # 체결한다. 계획 키가 다른(구·원월) 계약이면 잘못된 계약을 사고팔게
+                # 되므로 발주하지 않고 표면화만(수동 정리·만기 백스톱 소관).
+                if (qc.is_futures(plan.symbol) and plan.key != plan.symbol
+                        and plan.key != self._resolve_contract_key(plan.symbol)):
+                    decisions.append(order_log.decision(
+                        "drift_deferred", "", "", plan.symbol,
+                        f"비-최근월물({plan.key}) drift {plan.drift_qty:+d} — "
+                        "심볼 라우팅 불가, 발주 보류(수동 점검/만기 백스톱)"))
+                    continue
+                n_drift += abs(plan.drift_qty)
+                self._submit_drift(plan.symbol, plan.drift_qty, window, decisions)
+        return n_netted, commission_saved, n_drift
 
     def _netting_commission_saved(self, book_legs: list) -> float:
         """넷팅으로 절감된 수수료(KRW·확정분) — 각 합성 체결 leg이 회피한 편도 수수료 합.
@@ -1941,26 +2269,31 @@ class Trader:
         rate = (merged_execution(None).get("bt_commission_bps", 0) or 0) / 10_000.0
         return sum(leg.qty * leg.ref_price * leg.mult * rate for leg in book_legs)
 
-    def _submit_residual(self, it, decisions: list[dict]) -> None:
-        """넷팅 잔여 실주문 1건 — Intent를 기존 _submit_* 로 발주(청산/진입·롱/숏 분기).
+    def _submit_residual(self, it, decisions: list[dict],
+                         reason: str | None = None, catchup: bool = False) -> None:
+        """수렴 계획 leg 실주문 1건 — Intent를 기존 _submit_* 로 발주(청산/진입·롱/숏 분기).
 
         게이트·사이징은 PLAN에서 이미 통과했다. 각 _submit_*가 자체 멱등 게이트(is_active)를
-        가지며, 넷팅 leg은 시드를 안 남기므로 이 잔여가 막히지 않는다."""
+        가지며, 합성 정산 leg은 시드를 안 남기므로 이 잔여가 막히지 않는다.
+        reason: 청산 사유(§2 평가 결과 — 손절/보유기간/kill-switch 등) 전파. 미지정 시 종전
+        문자열("당일청산") 유지. catchup: 진입 매수의 시장가→시초가 limit 변환(기존 §3 거동)."""
         policy = _policy(it.definition)
         if it.kind == "exit":
             if it.position_side == "short":
                 self._submit_close_short(it.sid, it.strategy_name, it.symbol, it.qty,
-                                         it.ref_price, policy, "당일청산", decisions)
+                                         it.ref_price, policy, reason or "당일청산",
+                                         decisions)
             else:
                 self._submit_sell(it.sid, it.strategy_name, it.symbol, it.qty,
-                                  it.ref_price, policy, "당일청산", decisions)
+                                  it.ref_price, policy, reason or "당일청산", decisions)
         else:
             if it.position_side == "short":
                 self._submit_open_short(it.sid, it.strategy_name, it.definition,
                                         it.symbol, it.qty, it.ref_price, policy, decisions)
             else:
                 self._submit_buy(it.sid, it.strategy_name, it.definition, it.symbol,
-                                  it.qty, it.ref_price, policy, decisions)
+                                  it.qty, it.ref_price, policy, decisions,
+                                  catchup=catchup)
 
     def _close_entry_blocked(self, equity_now: float, snap_pre: dict,
                              risk_limits: dict | None, decisions: list[dict]) -> bool:
@@ -2012,18 +2345,17 @@ class Trader:
                           market: str = "KRX", instrument_class: str = "stock",
                           risk_limits: dict | None = None,
                           record_cycle: bool = True) -> dict:
-        """종가창 넷팅 사이클 — PLAN→NET→APPLY (설계 §13). liquidate_day_trades +
-        enter_close_candidates를 대체한다.
+        """종가창 수렴 사이클 — 목표상태 수렴(kr-target-reconciliation.md §2).
 
-        같은 발주창·같은 (contract_code, 포지션 side)의 청산·진입이 겹치면 브로커 주문 없이
-        원장 이관(합성 체결)하고 순증분만 실발주해 왕복 수수료를 제거한다. 넷팅 대상이 없으면
-        잔여=전체라 기존처럼 청산·진입을 실발주한다(청산 먼저 → 진입 나중). PLAN(단일 스냅샷·
-        여력원장)-NET-APPLY 전체를 _CYCLE_LOCK 임계구역에서 처리(N6)."""
-        from .netting import net_window
+        아침 _cycle_body와 동일한 _reconcile_pass를 종가창(window="close")으로 실행한다:
+        당일매매(hold_days==0)·exit.fill=close 청산과 종가매수 진입을 심볼별 target으로
+        합산해 순발주. 같은 심볼의 청산↔진입은 합성 정산(수수료 0), 수동매매 drift는
+        자동 흡수. 전체를 _CYCLE_LOCK 임계구역에서 처리(N6)."""
         decisions: list = []
         today = kst_today()
         n_netted = 0
         commission_saved = 0.0
+        n_drift = 0
         with _CYCLE_LOCK:
             self._in_cycle = True
             self._krx_status = {}
@@ -2034,38 +2366,22 @@ class Trader:
                 try:
                     equity_now = _unified_equity_krw(snap_pre.get("balance") or {})
                 except Exception as e:
-                    log.error("[종가넷팅] 잔고 조회 실패 — 진입 사이징 보수(0): %s", e)
+                    log.error("[종가수렴] 잔고 조회 실패 — 진입 사이징 보수(0): %s", e)
                     equity_now = 0.0
                 # 리스크 한도 인스턴스 상태 — 아침 진입과 동일(_try_buy_one_symbol 참조).
                 rl = risk_limits or {}
                 self._us_bp_mode = rl.get("us_buying_power_mode") or "integrated"
                 self._daily_turnover_limit_krw = int(rl.get("daily_turnover_limit_krw") or 0)
                 self._daily_trade_count_limit = int(rl.get("daily_trade_count_limit") or 0)
-                # PLAN — 단일 스냅샷으로 청산·진입 의도 산출(발주 안 함)
-                liq_intents = self.plan_close_liquidations(
-                    dataset, instrument_class, market, snap_pre)
-                # 킬스위치·drawdown 게이트 — 막히면 진입 계획 skip(청산은 계속·E5)
-                if self._close_entry_blocked(equity_now, snap_pre, risk_limits, decisions):
-                    entry_intents = []
-                else:
-                    entry_intents, plan_decisions = self.plan_entries_captured(
-                        by_strategy or [], strategies, dataset, equity_now, liq_intents,
-                        market, instrument_class, entry_window="close")
-                    decisions.extend(plan_decisions)
-                # NET — (contract_code, side)별 same-side open↔close 상쇄
-                net = net_window(liq_intents + entry_intents)
-                # APPLY — 핸드오프(합성 체결)
-                for leg in net.book_legs:
-                    self._apply_netted_leg(leg, decisions)
-                commission_saved = self._netting_commission_saved(net.book_legs)
-                n_netted = sum(n["netted_qty"] for n in net.netted)
-                # APPLY — 잔여 실주문: 청산 먼저 → 진입 나중(불변식)
-                for it in net.broker_orders:
-                    if it.kind == "exit":
-                        self._submit_residual(it, decisions)
-                for it in net.broker_orders:
-                    if it.kind == "entry":
-                        self._submit_residual(it, decisions)
+                # 킬스위치·drawdown 게이트 — 막히면 진입만 skip(청산·drift 교정은 계속·E5)
+                entries_blocked = self._close_entry_blocked(
+                    equity_now, snap_pre, risk_limits, decisions)
+                n_netted, commission_saved, n_drift = self._reconcile_pass(
+                    window="close", snap_pre=snap_pre, dataset=dataset, today=today,
+                    market=market, instrument_class=instrument_class,
+                    buy_candidates=(by_strategy or []), strategies=strategies,
+                    equity_now=equity_now, entries_blocked=entries_blocked,
+                    ks_active=False, decisions=decisions)
                 self._resolve_pending(decisions)
             finally:
                 self._in_cycle = False
@@ -2081,6 +2397,7 @@ class Trader:
             extra_summary={"instrument_class": instrument_class,
                            "n_netted": int(n_netted),
                            "commission_saved_krw": round(commission_saved, 2),
+                           "n_drift": int(n_drift),
                            "n_bought": n_bought})
 
     def liquidate_day_trades(self, dataset: dict, instrument_class: str, *,
@@ -2421,12 +2738,17 @@ class Trader:
               krx_status: dict[str, dict] | None = None,
               catchup: bool = False,
               reserved: bool = False,
-              cycle_id: str = "") -> dict:
+              cycle_id: str = "",
+              instrument_class: str | None = None) -> dict:
         """전략 목록을 1회 평가하고 매매한 뒤 동기화용 스냅샷을 반환한다.
 
         market: 이번 사이클이 다룰 시장 그룹('KRX' 또는 'US'). 청산은 해당 시장
         보유분만, 진입은 해당 시장 후보만 처리한다 — 시장별 정규장 시각에 맞춰
         분리 실행하기 위함. kill switch·drawdown은 계좌 전체(통합 equity) 기준.
+
+        instrument_class: 자산군 스코프(None=전체, "stock"/"futures") — 선물 개장
+        (08:45)과 주식 개장(09:00)이 달라 아침 사이클을 08:35 선물 / 08:55 주식으로
+        분리 실행하기 위함(파이프라인 문제 10 — kr-target-reconciliation.md §15 Phase 4).
 
         buy_candidates(by_strategy 리스트, 비어있어도 list)가 신규 진입 source.
         Phase 38.4: 항상 preview 경로 — buy_candidates가 빈 리스트면 진입 0,
@@ -2446,12 +2768,14 @@ class Trader:
             return self._cycle_locked(strategies, dataset, today,
                                        buy_candidates, risk_limits, market,
                                        krx_status, catchup=catchup,
-                                       reserved=reserved, cycle_id=cycle_id)
+                                       reserved=reserved, cycle_id=cycle_id,
+                                       instrument_class=instrument_class)
 
     def _cycle_locked(self, strategies, dataset, today, buy_candidates,
                        risk_limits, market, krx_status,
                        catchup: bool = False, reserved: bool = False,
-                       cycle_id: str = "") -> dict:
+                       cycle_id: str = "",
+                       instrument_class: str | None = None) -> dict:
         # Q5(데드락 방지): _in_cycle 플래그를 try/finally로 보장 — 예외 발생 시에도
         # 반드시 reset되어야 다음 cycle에서 _apply_fill의 평가가 정상 동작.
         self._in_cycle = True
@@ -2465,14 +2789,16 @@ class Trader:
         try:
             return self._cycle_body(strategies, dataset, today,
                                      buy_candidates, risk_limits, market,
-                                     catchup=catchup, cycle_id=cycle_id)
+                                     catchup=catchup, cycle_id=cycle_id,
+                                     instrument_class=instrument_class)
         finally:
             self._in_cycle = False
             self._reserved_us = False
 
     def _cycle_body(self, strategies, dataset, today, buy_candidates,
                      risk_limits, market, catchup: bool = False,
-                     cycle_id: str = "") -> dict:
+                     cycle_id: str = "",
+                     instrument_class: str | None = None) -> dict:
         today = today or kst_today()
         decisions: list[dict] = []
 
@@ -2585,141 +2911,12 @@ class Trader:
                 f"{peak_equity:,.0f}", f"{equity_now:,.0f}",
                 drawdown_pct, float(max_drawdown_limit_pct))
 
-        # ── 넷팅 pre-pass (설계 §13) — 시가창. catch-up 제외(E9). 시간기반 due 청산(오버나이트
-        #   익일 시가 청산 등)과 시가진입이 같은 계약·포지션 side로 겹치면 브로커 왕복 없이 원장
-        #   이관(합성 체결). **실제 상쇄가 있을 때만(book_legs 존재)** 활성화해 §3 진입을 대체한다.
-        #   상쇄가 없으면 dry-run capture를 버려 아래 §2/§3가 현행 그대로 돈다(골든 byte-identical).
-        netting_entries_done = False
-        n_netted = 0
-        commission_saved = 0.0
-        # 넷팅 pre-pass가 이 사이클에 새로 연 opener 슬롯 — §2가 같은 사이클에 재청산하지 않게
-        # 건너뛴다(비넷팅 경로는 §2가 진입보다 먼저 돌아 방금 연 포지션을 §2가 못 봄 → 동일 불변식
-        # 보존; 이 skip이 없으면 opener 전략의 매도조건이 진입 바에 참일 때 방금 넷팅한 포지션을
-        # 실제로 wash 매도하는 divergence 발생).
-        netted_opener_sids: set[str] = set()
-        if (not catchup and buy_candidates is not None
-                and not ks_active and not drawdown_active):
-            from .netting import net_window
-            _liq_intents = self._plan_cycle_liquidations(snap_pre, dataset, today, market)
-            if _liq_intents:
-                _entry_intents, _ent_dec = self.plan_entries_captured(
-                    buy_candidates, strategies, dataset, equity_now, _liq_intents,
-                    market, None, entry_window="open")
-                _net = net_window(_liq_intents + _entry_intents)
-                if _net.book_legs:
-                    decisions.extend(_ent_dec)
-                    for _leg in _net.book_legs:
-                        self._apply_netted_leg(_leg, decisions)
-                    netted_opener_sids = {_leg.sid for _leg in _net.book_legs
-                                          if _leg.kind == "entry"}
-                    commission_saved = self._netting_commission_saved(_net.book_legs)
-                    n_netted = sum(n["netted_qty"] for n in _net.netted)
-                    # 잔여 진입만 실발주(잔여 청산은 아래 §2가 감소된 원장에서 처리)
-                    for _it in _net.broker_orders:
-                        if _it.kind == "entry":
-                            self._submit_residual(_it, decisions)
-                    netting_entries_done = True
-
-        # ── 2. 청산 패스 (Phase 38.2: 신호·시간 기반만 — 가격은 intraday가 담당) ──
-        sold_this_cycle: set[str] = set()
-        for sid, pos in list(self.ledger.items()):
-            # 넷팅 pre-pass가 이 사이클에 방금 연 opener는 재청산 대상 아님(위 주석 — 불변식 보존).
-            if sid in netted_opener_sids:
-                continue
-            # 시장 배칭 — 이번 사이클 시장의 보유분만 청산 (미국 보유분은
-            # 미국 정규장 사이클에서만 매도, 그 반대도 동일).
-            if _market_group_safe(pos["symbol"]) != market:
-                continue
-            # P1 커버리지 게이트 — 이 포지션 자산군의 자격증명이 미등록이면 브로커가 보유를
-            # 볼 수 없어 청산이 불가능하다. 조용한 skip(외부매도 오진) 대신 명시 경고로 표면화.
-            if coverage.missing_categories([pos["symbol"]]):
-                decisions.append(order_log.decision(
-                    "orphan_uncovered", sid, pos.get("strategy_name", ""), pos["symbol"],
-                    "자격증명 미등록 자산군 — 청산 불가(수동 정리 필요)"))
-                continue
-            held = (today - date.fromisoformat(pos["entry_date"])).days
-            parse_failed = False
-            try:
-                reason, _ = _exit_reason_for(
-                    pos["definition"], held, dataset, pos["symbol"])
-            except Exception as e:
-                # 정의 파싱 실패(고아) — 청산 규칙을 평가할 수 없다. kill switch 발동
-                # 중엔 "모든 보유 강제 청산" 의도를 지켜야 하므로 아래에서 강제 사유를
-                # 부여하고, 그 외엔 자동매도하지 않고 청산 불가 고아로 표면화한다.
-                log.warning("원장 전략 파싱 실패 [%s]: %s", sid, e)
-                reason = None
-                parse_failed = True
-            # kill switch 활성 시 모든 보유 강제 청산(파싱 실패 고아 포함).
-            if ks_active and not reason:
-                reason = "kill-switch"
-
-            # M6 tier-2 만기 백스톱: 유저 청산규칙 미발동 + 선물 만기 임박 → 강제청산.
-            # ledger 기록 만기 기반이라 정의 파싱 실패(고아)여도 평가된다 — 물리인도/현금정산
-            # 으로 포지션이 사라지기 전에 닫는 안전망(고아도 만기 임박이면 닫아야 안전).
-            if not reason and qc.is_futures(pos["symbol"]):
-                reason = self._expiry_close_reason(pos, today)
-
-            if not reason:
-                # 파싱 실패 고아(구 스키마 등)는 청산 규칙 평가 불가 → 자동 청산이 안 된다
-                # (kill-switch 외 탈출구 없음). 임의 매도는 하지 않되, 사용자가 웹에서
-                # 인지·수동 정리하도록 명시 표면화한다(Monitor 경고로 노출).
-                if parse_failed:
-                    decisions.append(order_log.decision(
-                        "unparseable_orphan", sid, pos.get("strategy_name", ""),
-                        pos["symbol"], "전략 정의 파싱 실패 — 자동 청산 불가(수동 정리 필요)"))
-                continue
-
-            # ref_price는 dataset 전일 종가. 없으면 KIS 현재가로 fallback.
-            sdf = dataset.get(pos["symbol"])
-            ref_price = 0.0
-            if sdf is not None and len(sdf) > 0 and "Close" in sdf.columns:
-                try:
-                    ref_price = float(sdf["Close"].iloc[-1])
-                except Exception:
-                    ref_price = 0.0
-            if ref_price <= 0:
-                cur = self._safe_price(pos["symbol"])
-                if cur is None or cur <= 0:
-                    log.warning("청산 ref_price 없음 [%s] — 다음 사이클로 연기",
-                                pos["symbol"])
-                    continue
-                ref_price = cur
-
-            policy = _policy(pos.get("definition"))
-            # L-01 매도 멱등은 _submit_sell 진입부 단일 게이트가 담당(전 매도 경로 공유).
-            # IR(전략 연구소)은 per-rule 매도 비중이 없으므로 전량(100%) 청산.
-            sell_qty = int(pos["qty"])
-            # L-04(EOD): 발주 직전 KIS 실 보유로 클램프 — 외부 수동매도 시 over-sell
-            # 방지(intraday 손절과 동일 안전망, 같은 헬퍼). snap_pre는 cycle 진입부
-            # 잔고 재사용이라 추가 KIS 호출 없음. ledger drift는 settlement reconcile이 정리.
-            pos_side = pos.get("side", "long")
-            held = held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side)
-            clamped = clamp_sell_qty(held, sell_qty)   # snap_pre 기반이라 None 아님
-            if not clamped:                            # 0 = 외부 매도(보유 0)
-                log.info("[L-04 EOD] %s KIS 실 보유 0 (외부 매도 추정) — 청산 발주 skip",
-                          pos["symbol"])
-                decisions.append(order_log.decision(
-                    "skip_oversell", sid, pos.get("strategy_name", ""), pos["symbol"],
-                    "KIS 실 보유 0 — 외부 매도 추정, 청산 발주 skip"))
-                continue
-            if clamped < sell_qty:
-                log.info("[L-04 EOD] %s 청산 수량 클램프 ledger=%d → broker=%d",
-                          pos["symbol"], sell_qty, clamped)
-            sell_qty = clamped
-            # M5b: 청산 방향은 포지션 side대로 — 롱=매도청산(_submit_sell), 숏=환매(buy-to-close).
-            if pos_side == "short":
-                self._submit_close_short(sid, pos.get("strategy_name", ""), pos["symbol"],
-                                         sell_qty, ref_price, policy, reason, decisions)
-            else:
-                self._submit_sell(sid, pos.get("strategy_name", ""), pos["symbol"],
-                                  sell_qty, ref_price, policy, reason, decisions)
-            # sold_this_cycle은 sid 단위 — 같은 cycle 중복 청산 차단.
-            sold_this_cycle.add(sid)
-
-        # ── 3. 진입 패스 (넷팅 pre-pass가 진입을 처리했으면 skip; kill switch·drawdown 시 건너뜀) ──
-        if netting_entries_done:
-            pass   # 진입은 넷팅 pre-pass에서 완료(핸드오프 + 잔여 실주문)
-        elif ks_active:
+        # ── 2·3. 목표상태 수렴 (kr-target-reconciliation.md §2) ─────────────────
+        # 구 넷팅 pre-pass + §2 잔여청산 + §3 진입을 단일 패스로 대체. 심볼별로
+        # target(유지+진입−청산)과 브로커 실보유의 차이만 순발주한다 — 수동매매 drift는
+        # 자동 흡수(§6), 오버셀·이중계상·phantom 정산은 구조적으로 불가(§14).
+        entries_blocked = ks_active or drawdown_active
+        if ks_active:
             decisions.append(order_log.decision(
                 "skip_killswitch", "", "", "",
                 f"신규 진입 차단 — {ks_state.get('reason', '')}"))
@@ -2728,12 +2925,12 @@ class Trader:
                 "skip_drawdown", "", "", "",
                 f"신규 진입 차단 — 누적 drawdown {drawdown_pct:.2f}% "
                 f"(한도 -{float(max_drawdown_limit_pct):.1f}%)"))
-        elif buy_candidates is not None:
-            # 아침 시가창 — fill=next_open 전략만 시가 진입(fill=close는 종가창 전담).
-            self._enter_from_preview(buy_candidates, strategies, dataset,
-                                       equity_now, decisions, sold_this_cycle,
-                                       market=market, catchup=catchup,
-                                       entry_window="open")
+        n_netted, commission_saved, n_drift = self._reconcile_pass(
+            window="open", snap_pre=snap_pre, dataset=dataset, today=today,
+            market=market, instrument_class=instrument_class,
+            buy_candidates=buy_candidates, strategies=strategies,
+            equity_now=equity_now, entries_blocked=entries_blocked,
+            ks_active=ks_active, decisions=decisions, catchup=catchup)
 
         # ── 4. 미체결 짧게 대기 (시초가 동시호가 직후 대부분 잡힘) ───────
         # Q7: 300초 → 60초 (post_submit_wait_sec). DAY 정책으로 못 잡힌 분은
@@ -2786,14 +2983,18 @@ class Trader:
             "today": today.isoformat(),
             "market": market,                        # Phase 7 catch-up — 시장 식별
             "kind": "catchup_cycle" if catchup else "cycle",   # catch-up 구분
+            # 자산군 스코프(None=전체) — 08:35 선물/08:55 주식 분리 사이클 식별(문제 10).
+            "instrument_class": instrument_class,
             "cycle_id": cycle_id,                    # 시작 저널(cycle_started)과 join
             "n_strategies": len(strategies),
             "n_bought": n_bought_now,
             "n_buy_placed": n_bought_now + n_buy_pending,
             "n_sold": n_sold_now,
             "n_sell_placed": n_sold_now + n_sell_pending,
-            "n_netted": int(n_netted),                   # 넷팅 이관 계약수(시가창)
+            "n_netted": int(n_netted),                   # 합성 정산 상쇄 계약수(시가창)
             "commission_saved_krw": round(commission_saved, 2),
+            # 목표수렴 drift 교정 계약수 — 수동매매 되돌림/비전략 정리(원장 불변 주문).
+            "n_drift": int(n_drift),
             "n_skip_held": sum(1 for d in decisions if d["action"] == "skip_held"),
             # 데이터 결손으로 발주 판단 불가 — 서버 건강 모니터 C7이 소비(0발주가 정상 무후보인지
             # 데이터 결손인지 구분). 이전엔 decisions에만 있어 집계·경보에 승격 안 됐다.

@@ -330,11 +330,13 @@ def test_trader_submit_buy_writes_intent_on_success(jpath, monkeypatch):
     assert b["phase"] == "submitted" and b["order_no"] == "ORD-OK"
 
 
-def test_trader_submit_buy_marks_failed_when_broker_raises(jpath, monkeypatch):
-    """**가장 중요한 회귀**: broker.buy_limit가 raise하면 intent는 failed로 마감.
+def test_trader_submit_buy_stays_submitting_when_broker_raises(jpath, monkeypatch):
+    """**가장 중요한 회귀** (문제12 verify-then-retry): broker 발주 예외 = **ambiguous**.
 
-    이 흐름이 깨지면(예: intent.begin 없이 buy_limit 호출, 또는 except에서 mark_failed
-    누락) 크래시 시뮬레이션 회귀가 발생해 L-01의 보장이 무효화된다.
+    타임아웃류는 주문이 접수됐을 수 있다 — 예외를 즉시 failed로 마감하고 재시도하면
+    이중 발주가 된다. 예외 시 intent는 'submitting'으로 남고(게이트 잠김 = 보수적
+    차단), 다음 사이클 시작의 reconcile_submitting이 KIS 당일주문 조회로 판정한다:
+    미접수(no_fill)→failed(재시도 허용) / 접수(matched)→submitted(이중발주 차단).
     """
     monkeypatch.setattr(intents, "INTENTS_PATH", jpath)
     from localapp.trader import Trader
@@ -354,12 +356,17 @@ def test_trader_submit_buy_marks_failed_when_broker_raises(jpath, monkeypatch):
                    policy, [])
 
     lines = jpath.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) == 2  # submitting + failed
+    assert len(lines) == 1  # submitting만 — 마감은 reconcile 소관(ambiguous)
     import json as _j
-    a, b = _j.loads(lines[0]), _j.loads(lines[1])
+    a = _j.loads(lines[0])
     assert a["phase"] == "submitting"
-    assert b["phase"] == "failed" and "KIS timeout" in b["error"]
-    # 게이트는 풀려야 함 (failed) — 정상 재시도 허용
     today = a["date"]
+    # 게이트 잠김(보수적 이중발주 차단) — 즉시 재시도 금지
+    assert intents.is_active(today, "sid-1", "005930", "buy",
+                              path=jpath) is True
+    # 다음 사이클 reconcile: KIS 흔적 없음(진짜 미접수) → failed → 재시도 허용
+    res = intents.reconcile_submitting(_mock_broker(daily_ccld_rows=[]),
+                                       today, path=jpath)
+    assert res["no_fill"] == 1
     assert intents.is_active(today, "sid-1", "005930", "buy",
                               path=jpath) is False

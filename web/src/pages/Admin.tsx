@@ -119,6 +119,8 @@ const CONDITION_ORDER: [key: string, label: string][] = [
   ["decision_output", "판단"],
   ["order_placement", "발주"],
   ["reconciliation", "정합"],
+  ["ref_price_integrity", "참조가"],
+  ["target_convergence", "목표수렴"],
 ];
 
 /** ISO → "MM/DD HH:MM" (title 안 정확 시각용). 없으면 "없음". */

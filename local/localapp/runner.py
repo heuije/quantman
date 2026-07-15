@@ -214,11 +214,17 @@ _LAST_DATASET_STATS: dict = {}
 
 
 def run_cycle(market: str = "KRX", catchup: bool = False,
-              reserved: bool = False, trigger: str = "cron") -> dict:
+              reserved: bool = False, trigger: str = "cron",
+              instrument_class: str | None = None) -> dict:
     """1회 자동매매 사이클을 실행하고 동기화 스냅샷을 반환한다.
 
     market: 이번 사이클이 다룰 시장 그룹('KRX' 또는 'US'). 스케줄러가 각 시장의
     정규장 시각에 맞춰 호출한다. 청산·진입은 해당 시장 종목만 처리.
+
+    instrument_class: 자산군 스코프(None=전체, "stock"/"futures") — KRX 아침을
+    08:35 선물(개장 08:45 동시호가 파리티) / 08:55 주식(개장 09:00)으로 분리 실행
+    (파이프라인 문제 10). 목표수렴 사이클은 멱등이라 같은 스코프 재실행이 안전 —
+    08:40·08:42 창내 재시도가 같은 함수를 재호출한다(문제 12).
 
     catchup: PC가 꺼져 있어 missed된 cycle을 기동 시 뒤늦게 실행하는 경우 True.
     catchup.run_catchup_on_startup이 호출하며, trader가 시장가 매수를 시초가
@@ -259,7 +265,8 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
     cycle_id = uuid.uuid4().hex[:12]
     order_log.log_cycle([], {"market": market, "kind": "cycle_started",
                              "cycle_id": cycle_id, "trigger": trigger,
-                             "reserved": reserved, "catchup": catchup})
+                             "reserved": reserved, "catchup": catchup,
+                             "instrument_class": instrument_class})
 
     # 체결통보 WebSocket ready 확인 (08:50 intraday_loop과 race condition 방지)
     _wait_for_order_ws()
@@ -372,7 +379,8 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             payload = trader.cycle(strategies, dataset, buy_candidates=buy_candidates,
                                      risk_limits=risk_limits, market=market,
                                      krx_status=krx_status, catchup=catchup,
-                                     reserved=reserved, cycle_id=cycle_id)
+                                     reserved=reserved, cycle_id=cycle_id,
+                                     instrument_class=instrument_class)
             _cs = (payload or {}).get("cycle_summary") or {}
             log.info("[cycle] ⑤ 본문 완료 %.1fs — bought=%s sold=%s skip_held=%s errors=%s",
                       time.monotonic() - _t0, _cs.get("n_bought"), _cs.get("n_sold"),
