@@ -292,6 +292,57 @@ def test_c4_all_valid_is_green():
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# C10 참조가 오염 (원장 진입가 ↔ 브로커 실평균 괴리) — 2026-07-14 mwmw stale-price
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_c10_ref_contamination_is_red_and_paged():
+    """mwmw 07-14 실측 형상 — 원장 진입가 1144.03 vs 브로커 실평균 1090.48(491bps).
+    stale 번들 참조가 오염이 장부에 남은 것 → RED + 페이징."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 1},
+               "positions": [{"symbol": "코스피200선물", "side": "long", "qty": 8,
+                              "avg_price": 1090.48, "entry_price": 1144.0333,
+                              "peak_price": 1210.5}]}
+    res = _eval(payload)
+    assert res["conditions"]["ref_price_integrity"]["status"] == RED
+    assert "ref_price_divergence" in _codes(res)
+
+
+def test_c10_clean_position_is_green():
+    """정상 포지션 — 원장 진입가 ≈ 브로커 실평균(실체결가 기록) → GREEN·페이징 없음."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 1},
+               "positions": [{"symbol": "코스피200선물", "side": "long", "qty": 5,
+                              "avg_price": 1090.48, "entry_price": 1090.6}]}
+    res = _eval(payload)
+    assert res["conditions"]["ref_price_integrity"]["status"] == GREEN
+    assert "ref_price_divergence" not in _codes(res)
+
+
+def test_c10_moderate_divergence_is_amber_not_paged():
+    """중간 괴리(50~200bps) → AMBER 대시보드, 자동 페이징 안 함."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 1},
+               "positions": [{"symbol": "코스피200선물", "side": "long", "qty": 5,
+                              "avg_price": 1090.0, "entry_price": 1105.0}]}   # ~137bps
+    res = _eval(payload)
+    assert res["conditions"]["ref_price_integrity"]["status"] == AMBER
+    assert res["alert_reasons"] == [] or "ref_price_divergence" not in _codes(res)
+
+
+def test_c10_no_positions_is_unknown():
+    """포지션 참조가 신호 없으면 판정 불가(UNKNOWN) — 오탐 없이 안전 degrade."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 0}})
+    assert res["conditions"]["ref_price_integrity"]["status"] == UNKNOWN
+
+
+def test_c10_missing_or_zero_price_skipped_safely():
+    """entry/avg 한쪽이 없거나 0인 포지션은 판정 제외 — 나눗셈 오류·오탐 방지."""
+    payload = {"cycle_summary": {"kind": "cycle", "n_bought": 0},
+               "positions": [{"symbol": "X", "qty": 1, "avg_price": 0, "entry_price": 100},
+                             {"symbol": "Y", "qty": 1, "avg_price": 50}]}   # Y: entry 없음
+    res = _eval(payload)
+    assert res["conditions"]["ref_price_integrity"]["status"] == UNKNOWN
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # compute_user_health (DB-backed) + /admin/health 게이트
 # ─────────────────────────────────────────────────────────────────────────
 
