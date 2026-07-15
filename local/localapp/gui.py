@@ -125,6 +125,11 @@ class SettingsApp:
         self._catchup_poll_count = 0
         self.root.after(5_000, self._check_catchup_result_polling)
 
+        # 부팅 시 직전 자동매매 상태 복원 — 자동업데이트·재시작·크래시에도 유저 클릭 없이
+        # 직전이 running이면 이어서 가동(자동업데이트로 자동매매가 멈추던 결함 근본수정).
+        # UI 렌더 후 실행하도록 짧게 지연(register_jobs가 cron 등록·catchup 스레드 시작).
+        self.root.after(1_500, self._resume_autotrade_if_running)
+
     # ── 테마 ──────────────────────────────────────────────────────────────────
 
     def _apply_theme(self):
@@ -2461,9 +2466,18 @@ class SettingsApp:
             self._push_state_async()          # 정지 상태 웹 반영
             self.refresh_status()
             return
-        # Phase 60+ — GUI 모드도 scheduler.register_jobs를 그대로 호출.
-        # 이전엔 KRX 08:55만 등록해 미국 cycle·heartbeat·dataset·intraday loop가
-        # 모두 누락됐었다 (미장 자동매매 작동 안 한 근본 원인).
+        self._start_scheduler()
+        self.auto_paused = False
+        auto_state.set_status("running")
+        self._push_state_async()              # 가동 상태 웹 반영
+        self.refresh_status()
+
+    def _start_scheduler(self):
+        """스케줄러 생성·cron 등록·기동 — _toggle_auto(유저 시작)·부팅 자동재개 공용.
+
+        Phase 60+ — GUI 모드도 scheduler.register_jobs를 그대로 호출한다. 이전엔 KRX
+        08:55만 등록해 미국 cycle·heartbeat·dataset·intraday loop가 모두 누락됐었다
+        (미장 자동매매 작동 안 한 근본 원인). 상태(auto_state)·웹 push는 호출자가 담당."""
         from apscheduler.schedulers.background import BackgroundScheduler
         from . import scheduler as _scheduler_mod
         self.scheduler = BackgroundScheduler(timezone="Asia/Seoul")
@@ -2484,10 +2498,35 @@ class SettingsApp:
             pass
 
         self.scheduler.start()
-        self.auto_paused = False
-        auto_state.set_status("running")
-        self._push_state_async()              # 가동 상태 웹 반영
-        self.refresh_status()
+
+    def _resume_autotrade_if_running(self):
+        """부팅 시 직전 자동매매 상태 복원 — 유저 클릭 없이 이어서 가동.
+
+        자동업데이트·재시작·크래시로 프로세스가 재기동돼도 자동매매가 멈추던 결함의 근본
+        수정. auto_state는 파일에 영속되고 재시작(_shutdown_for_restart)이 지우지 않으므로,
+        직전이 running/paused였다면 스케줄러를 자동 기동한다(paused면 기동 후 pause로 직전
+        일시정지 보존). stopped(명시적 중지)면 무동작. 이미 기동됐으면 중복 방지."""
+        import logging
+        log = logging.getLogger("localapp.gui.boot")
+        try:
+            if not updater.is_frozen():
+                return          # 개발 환경(python -m localapp)은 stale 상태로 자동
+                                # 기동하지 않는다 — 자동재개는 빌드 exe(유저) 전용.
+            if self.scheduler and self.scheduler.running:
+                return
+            start, paused = auto_state.resume_plan()
+            if not start:
+                return
+            self._start_scheduler()
+            self.auto_paused = paused
+            if paused:
+                self.scheduler.pause()
+            log.info("[boot] 직전 자동매매 상태 복원 — 자동 재개(paused=%s·유저 클릭 불요)",
+                     paused)
+            self._push_state_async()
+            self.refresh_status()
+        except Exception as e:
+            log.warning("[boot] 자동매매 자동 재개 실패(수동 시작 필요): %s", e)
 
     def _run_once(self):
         if not secrets_store.active_cred_ok():

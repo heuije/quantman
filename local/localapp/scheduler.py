@@ -191,6 +191,22 @@ def register_jobs(sched) -> None:
         run_cycle, kwargs={"market": "KRX", "instrument_class": "stock"},
         trigger=CronTrigger(day_of_week="mon-fri", hour=8, minute=55, timezone="Asia/Seoul"),
         id="krx_cycle", name="KRX 자동매매 사이클 (주식)", misfire_grace_time=300)
+    # §19 개장후 수렴 (방향무관 안전망) — 동시호가 체결(선물 08:45·주식 09:00) 반영 후
+    # run_cycle 재실행 = 실체결 기준 멱등 수렴(net=target−broker). A1(08:35/15:40) 넷팅이
+    # 못 잡은 취소-race·늦은 수동·반대/초과 방향 수동을 **방향무관 drift**로 당일 교정한다.
+    # 선물 08:52(08:50 loop start·WS 안정화 후)·주식 09:05(09:00 단일가 체결 반영 후).
+    # 멱등(L-01 재진입 차단·보유 게이트·drift만)이라 교정할 것 없으면 no-op. 마감측은
+    # 시장종료(선물 15:45·주식 15:30)로 불가 → 익일 개장 carry(§19.2 원리적 한계).
+    sched.add_job(
+        run_cycle, kwargs={"market": "KRX", "instrument_class": "futures"},
+        trigger=CronTrigger(day_of_week="mon-fri", hour=8, minute=52, timezone="Asia/Seoul"),
+        id="krx_converge_futures", name="KRX 개장후 수렴 (선물·08:52)",
+        misfire_grace_time=120)
+    sched.add_job(
+        run_cycle, kwargs={"market": "KRX", "instrument_class": "stock"},
+        trigger=CronTrigger(day_of_week="mon-fri", hour=9, minute=5, timezone="Asia/Seoul"),
+        id="krx_converge_stock", name="KRX 개장후 수렴 (주식·09:05)",
+        misfire_grace_time=120)
     sched.add_job(
         intraday_loop.stop,
         CronTrigger(day_of_week="mon-fri", hour=15, minute=30, timezone="Asia/Seoul"),

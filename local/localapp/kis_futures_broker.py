@@ -707,6 +707,27 @@ class KisFuturesBroker:
         rows = self._inquire_ccnl(only_unfilled=True).get("output1") or []
         # 미체결 쿼리(CCLD_NCCS_DVSN=02)는 취소/정정 주문(orgn_odno≠0)도 함께 반환한다 — 이는
         # resting 신규주문이 아니므로 제외(라이브 2026-06-09: 취소주문이 pending으로 오보고됨).
-        return [parse_ccnl_order_status({"output1": [r]}, r.get("odno", ""))
-                for r in rows
-                if isinstance(r, dict) and _canon_odno(r.get("orgn_odno")) == ""]
+        out: list[dict] = []
+        for r in rows:
+            if not isinstance(r, dict) or _canon_odno(r.get("orgn_odno")) != "":
+                continue
+            st = parse_ccnl_order_status({"output1": [r]}, r.get("odno", ""))
+            # §19 A1 — 넷팅에 쓸 symbol·side 부착(LS와 동일 정규형). KIS 선물 ccnl output1의
+            # symbol/side 필드명은 KB 미문서화·미검증(§10 추측금지)이라 방어적으로: side는
+            # 이름("매수"/"매도")→코드(02매수/01매도) 순 판정, 불명확하면 생략(A1 helper가 안전
+            # skip → 08:52 개장후 수렴으로 교정). symbol은 shtn_pdno(단축상품번호). 첫 실거래
+            # 캡처로 필드명 확정 필요(normalize_order_resp ODNO와 동일 미검증 상태·§19.4 게이트).
+            _nm = str(r.get("sll_buy_dvsn_name") or "").strip()
+            _cd = str(r.get("sll_buy_dvsn_cd") or "").strip()
+            if _nm == "매수" or _cd == "02":
+                _side = "buy"
+            elif _nm == "매도" or _cd == "01":
+                _side = "sell"
+            else:
+                _side = ""
+            st.update({
+                "symbol": str(r.get("shtn_pdno") or r.get("pdno") or "").strip(),
+                "side": _side, "qty": int(st.get("remain_qty") or 0),
+                "market": "DOMESTIC", "currency": "KRW", "asset_class": "futures"})
+            out.append(st)
+        return out
