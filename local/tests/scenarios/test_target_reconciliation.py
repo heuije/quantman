@@ -179,6 +179,57 @@ def test_section6_simulation_replay(isolated_trader, monkeypatch):
             sum(o["qty"] for o in orders3)] == [1, 6, 3]
 
 
+def _def_pct(pct: int = 100) -> dict:
+    """선물 롱 — 시가 진입·pct_cash 사이징(model-A: orderable×사용률%가 병목)."""
+    return {"name": "역추종", "engine": "ir", "query": "simulate",
+            "universe": {"kind": "single", "symbols": [SYM]},
+            "signal": _DUMMY_SIGNAL,
+            "position": {"direction": "long",
+                         "sizing": {"mode": "pct_cash", "amount_pct": pct},
+                         "entry": {"mode": "on_signal"},
+                         "exit": {"hold_days": 0}},
+            "simulation": {"fill": "next_open"}}
+
+
+def test_flat_capacity_sizing_manual_same_direction(isolated_trader):
+    """§18 빈-상태 사이징 — 원장 밖 롱 2 보유 + 자동 롱 진입.
+
+    orderable(추가 8) + 보유 되돌림 2 = 빈 상태 여력 10 → target 10 → net 매수 8
+    (수동 2는 book으로 인수). 수정 전엔 크레딧 0 → target 8 → net 매수 6(과소)."""
+    t, broker = isolated_trader
+    broker._prices[SYM] = 300.0
+    broker._balance["futures_order_cash_kr"] = 1_000_000_000
+    broker.set_positions([{"symbol": SYM, "qty": 2, "side": "long", "avg_price": 300.0}])
+    broker.orderable_qty = lambda symbol, side, price: 8   # 추가 8(= flat 10 − 보유 2)
+    by = [{"strategy_id": "27", "candidates": [{"symbol": SYM}]}]
+    strats = [{"id": "27", "name": "역추종", "definition": _def_pct(100),
+               "account_ref": None}]
+    payload = t._cycle_body(strats, _ds("2026-05-29", 300.0), None, by, {}, "KRX")
+    buys = [o for o in broker.submitted if o["side"] == "buy"]
+    assert sum(o["qty"] for o in buys) == 8, \
+        f"빈-상태(10) − 보유(2) = 순매수 8이어야 — 실제 {[(o['side'],o['qty']) for o in broker.submitted]}"
+    assert not [o for o in broker.submitted if o["side"] == "sell"]
+    assert payload["cycle_summary"]["n_drift"] == 0     # 수동 2는 인수(book)·drift 아님
+
+
+def test_flat_capacity_no_effect_opposite_direction(isolated_trader):
+    """§18 — 부호뒤집기(롱 보유 + 숏 진입)엔 크레딧 미적용(과대 미악화·실측 대기)."""
+    t, broker = isolated_trader
+    broker._prices[SYM] = 300.0
+    broker._balance["futures_order_cash_kr"] = 1_000_000_000
+    broker.set_positions([{"symbol": SYM, "qty": 2, "side": "long", "avg_price": 300.0}])
+    captured = {}
+    broker.orderable_qty = lambda symbol, side, price: (
+        captured.setdefault(side, price) or 8)
+    d = _def_pct(100)
+    d["position"]["direction"] = "short"
+    by = [{"strategy_id": "s", "candidates": [{"symbol": SYM, "direction": "short"}]}]
+    strats = [{"id": "s", "name": "숏", "definition": d, "account_ref": None}]
+    t._cycle_body(strats, _ds("2026-05-29", 300.0), None, by, {}, "KRX")
+    # 숏 진입 사이징은 orderable(sell)만(롱 보유 크레딧 미적용) — 과대 미악화.
+    assert "sell" in captured, "숏 진입은 orderable(sell)로 사이징"
+
+
 def test_external_symbol_liquidated_by_drift(isolated_trader):
     """§9③ 비전략 심볼 청산 — 전략 무관 브로커 보유 → target 0 → drift 매도(원장 불변)."""
     t, broker = isolated_trader

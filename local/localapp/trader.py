@@ -1438,6 +1438,7 @@ class Trader:
                 return False
             direction = cand_direction
         is_short = direction == "short"
+        _pos_side = "short" if is_short else "long"   # 사이징 크레딧 side 키(§18)
 
         # 통화별 가용자금 결정.
         #  - 미국: psamount(매수가능금액) — KIS 통합증거금을 반영한 USD 주문가능액.
@@ -1483,10 +1484,11 @@ class Trader:
                 f"가용자금 조회 실패: {e}"))
             return False
 
-        # E1: 주식은 같은-종목 청산이 회수할 현금을 크레딧(선물은 아래 orderable 계약 크레딧).
+        # E1/§18: 주식은 같은-종목·같은-방향 보유가 되돌려줄 현금을 크레딧(선물은 아래 orderable 계약).
         # 사이징 입력이지 물리 주문이 아니다 — 물리는 목표수렴 net이 상쇄(_reconcile_pass).
+        # (symbol, 진입 side)로 조회 — 반대 방향 보유엔 미적용(부호뒤집기 과대 미악화).
         if capacity_credit and not qc.is_futures(symbol):
-            cash += float(capacity_credit.get(symbol, 0))
+            cash += float(capacity_credit.get((symbol, _pos_side), 0))
 
         # 사이징 — 전일 종가 기준 (cash·prev_close 모두 종목 통화).
         # IR(전략 연구소)은 position.sizing(이벤트 진입 예산)으로 사이징한다.
@@ -1514,10 +1516,11 @@ class Trader:
                 side = "sell" if is_short else "buy"
                 orderable = oq_fn(symbol, side, prev_close)
                 if orderable is not None and capacity_credit:
-                    # E1/N7: 같은-계약 청산이 회수할 여력(계약수)을 크레딧 — 청산을
-                    # 실체결하지 않고도 진입 사이징이 회수 마진을 보게 한다(같은 사이클 롤).
-                    # 다중 진입은 아래 capture 시 credit 차감으로 로컬 순차 소진(E2·N9).
-                    orderable = int(orderable) + int(capacity_credit.get(symbol, 0))
+                    # E1/N7/§18: 같은-계약·같은-방향 보유가 되돌려줄 여력(계약수)을 크레딧 —
+                    # orderable은 "보유 든 채 추가 여력"이라 여기에 보유를 되돌려야 "빈 상태
+                    # 최대"가 된다(수동 취소 후 잔고 기준·유저 원칙). (symbol, 진입 side)로 조회 —
+                    # 반대 방향 보유엔 미적용(부호뒤집기 과대 미악화). 다중 진입은 capture 차감(E2·N9).
+                    orderable = int(orderable) + int(capacity_credit.get((symbol, _pos_side), 0))
                 if orderable is None:
                     # 실 브로커(orderable_qty 보유)인데 조회 실패 → **발주 보류**(qty=0). 카탈로그
                     # 추정 증거금률(0.10)로 사이징하면 실제(~19.5%) 대비 ~2배 과대 계약수가 되어,
@@ -1575,7 +1578,8 @@ class Trader:
                 mult=spec.multiplier, currency=spec.currency, definition=strat_def))
             if capacity_credit is not None:
                 consumed = qty if qc.is_futures(symbol) else qty * prev_close
-                capacity_credit[symbol] = capacity_credit.get(symbol, 0) - consumed
+                _ck = (symbol, _pos_side)
+                capacity_credit[_ck] = capacity_credit.get(_ck, 0) - consumed
             return True
 
         # 발주가는 submit 내부에서 prev_close × (1 ± tolerance%) 계산.
@@ -2004,32 +2008,40 @@ class Trader:
         return out, indeterminate, reasons
 
     def _freed_capacity(self, liq_intents: list) -> dict:
-        """청산 의도가 회수할 여력을 상품명별로 합산 — 진입 사이징 크레딧(E1).
+        """청산 의도가 회수할 여력을 **(상품명, side)별**로 합산 — 진입 사이징 크레딧(E1).
 
         capacity_credit는 물리 주문 기계가 아니라 **사이징 입력**이다(목표수렴 하에서도
         유지 — 같은 사이클 롤에서 청산이 풀어줄 자본을 진입 사이징이 봐야 autotrade-only
         의도 크기가 나온다). 선물=계약수(orderable에 더함)·주식=현금(수량×기준가).
         호출자(_reconcile_pass)가 브로커 실보유로 클램프한 청산량만 넘겨 유령 여력을
-        만들지 않는다(N7 — 수동 선매도분은 이미 브로커 현금/orderable에 반영돼 있음)."""
+        만들지 않는다(N7 — 수동 선매도분은 이미 브로커 현금/orderable에 반영돼 있음).
+
+        **side별 키(§18)**: 진입 방향과 같은 보유만 크레딧해야 부호뒤집기(롱보유+숏진입)에
+        오적용해 과대사이징을 악화시키지 않는다. 롱 청산은 (심볼,'long')로 키잉 → 롱 진입에만."""
         cap: dict = {}
         for lg in liq_intents:
             add = lg.qty if qc.is_futures(lg.symbol) else lg.qty * lg.ref_price
-            cap[lg.symbol] = cap.get(lg.symbol, 0) + add
+            k = (lg.symbol, lg.position_side)
+            cap[k] = cap.get(k, 0) + add
         return cap
 
     def plan_entries_captured(self, by_strategy: list, strategies: list, dataset: dict,
                               equity_now: float, liq_intents: list, market: str,
                               instrument_class: str | None,
                               entry_window: str = "close",
-                              catchup: bool = False) -> tuple[list, list]:
+                              catchup: bool = False,
+                              extra_capacity: dict | None = None) -> tuple[list, list]:
         """진입 '의도'를 산출(발주 안 함) — 수렴 PLAN. 종가창(close)·시가창(open) 공용.
 
         _enter_from_preview를 capture 모드로 재사용 — fill 라우팅·계좌·커버리지·보유·멱등
-        게이트와 사이징(현재 자본·orderable + 같은 종목 청산 회수여력 크레딧)을 실주문과
+        게이트와 사이징(현재 자본·orderable + 같은 종목·방향 보유 되돌림 크레딧)을 실주문과
         동일하게 통과. 사이징은 진입 시점 1회 확정·보유 중 고정(목표수렴 §9).
-        반환 (entry_intents, decisions).
+        extra_capacity(§18): 계획 청산 외 **원장 밖 브로커 보유**의 되돌림 크레딧
+        {(symbol,side):amount} — 계획청산 크레딧과 합쳐 "빈 상태 최대" 사이징. 반환 (entry_intents, decisions).
         """
         capacity = self._freed_capacity(liq_intents)
+        for k, v in (extra_capacity or {}).items():
+            capacity[k] = capacity.get(k, 0) + v
         captured: list = []
         decisions: list = []
         self._enter_from_preview(by_strategy, strategies, dataset, equity_now,
@@ -2120,26 +2132,57 @@ class Trader:
         exit_intents, indeterminate, exit_reasons = self._plan_exit_intents(
             window, dataset, today, market, instrument_class, ks_active, decisions)
 
+        def _in_scope(sym: str) -> bool:
+            if _market_group_safe(sym) != market:
+                return False
+            if instrument_class is not None:
+                return (instrument_class == "futures") == qc.is_futures(sym)
+            return True
+
         entry_intents: list = []
         if not entries_blocked and buy_candidates is not None:
-            # 사이징 크레딧 — 브로커 실보유로 클램프한 청산량만(유령 여력 방지 N7:
-            # 수동 선매도분은 이미 브로커 현금/orderable에 반영돼 있어 크레딧하면 이중계상).
+            # §18 빈-상태 사이징: 진입 심볼의 **브로커 실보유 전체(side별)를 되돌림 크레딧**으로
+            # 삼아 target을 "수동 취소 후 빈 잔고 기준 최대"로 만든다(유저 원칙 Q-1-1-b).
+            # _avail을 in-scope 브로커 보유로 초기화 → 계획 청산이 소비 → 잔여 = 원장 밖 보유.
+            # 계획청산 크레딧(credit_intents)과 원장밖 크레딧(extra)은 서로 배타(합=총보유·비중복).
+            # 브로커 실보유 기준이라 유령 여력 불가(N7). side별이라 부호뒤집기 오적용 방지(§16.2).
             from dataclasses import replace as _dc_replace
             credit_intents: list = []
             _avail: dict[tuple[str, str], int] = {}
+            for p in (snap_pre.get("positions") or []):
+                sym = p.get("symbol", "")
+                if not sym or p.get("symbol_unmapped") or not _in_scope(sym):
+                    continue
+                k = (sym, norm_side(p.get("side")))
+                _avail[k] = _avail.get(k, 0) + max(0, int(p.get("qty") or 0))
             for it in exit_intents:
                 k = (it.symbol, it.position_side)
-                if k not in _avail:
-                    _avail[k] = max(0, held_qty_from_snapshot(
-                        snap_pre, it.symbol, it.position_side))
-                take = min(int(it.qty), _avail[k])
+                avail = _avail.get(k, 0)
+                take = min(int(it.qty), avail)
                 if take > 0:
-                    _avail[k] -= take
+                    _avail[k] = avail - take
                     credit_intents.append(
                         it if take == it.qty else _dc_replace(it, qty=take))
+            extra_capacity: dict = {}
+            for (sym, side), remaining in _avail.items():
+                if remaining <= 0:
+                    continue
+                if qc.is_futures(sym):
+                    extra_capacity[(sym, side)] = remaining
+                else:
+                    sdf = dataset.get(sym)
+                    px = 0.0
+                    if sdf is not None and len(sdf) and "Close" in sdf.columns:
+                        try:
+                            px = float(sdf["Close"].iloc[-1])
+                        except Exception:
+                            px = 0.0
+                    if px > 0:
+                        extra_capacity[(sym, side)] = remaining * px
             entry_intents, ent_dec = self.plan_entries_captured(
                 buy_candidates, strategies, dataset, equity_now, credit_intents,
-                market, instrument_class, entry_window=window, catchup=catchup)
+                market, instrument_class, entry_window=window, catchup=catchup,
+                extra_capacity=extra_capacity)
             decisions.extend(ent_dec)
             # 진입 in-flight(오늘 이미 발주·L-01 skip_idempotent) 심볼도 hold —
             # leg 없는 net 산술이 자기 주문과 상쇄되는 것 방지(§14).
@@ -2157,13 +2200,6 @@ class Trader:
                 else:
                     kept.append(it)
             entry_intents = kept
-
-        def _in_scope(sym: str) -> bool:
-            if _market_group_safe(sym) != market:
-                return False
-            if instrument_class is not None:
-                return (instrument_class == "futures") == qc.is_futures(sym)
-            return True
 
         # 계획 키 = 물리 계약 식별자(E6 롤 경계): 선물=contract_code-or-심볼, 주식=심볼.
         # 심볼 단위로 net을 계산하면 롤 주간에 구계약 청산 + 신계약 진입이 같은 상품명으로
