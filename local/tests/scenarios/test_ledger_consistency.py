@@ -29,8 +29,12 @@ def test_split_buy_weighted_average(isolated_trader):
     invariants.check_all(t)
 
 
-def test_external_sale_drift_reconciled(isolated_trader):
-    """INV-RECON-1: KIS 잔고가 ledger보다 부족(외부 수동매도)하면 reconcile이 차감한다."""
+def test_external_sale_drift_observed_not_deducted(isolated_trader):
+    """목표수렴 §14(구 INV-RECON-1 대체): 외부 수동매도를 reconcile이 차감하지 않는다.
+
+    원장=전략 의도 정본 — 차감하면 의도가 소실돼 다음 사이클 drift 복원(수동매매
+    되돌림)이 무력화된다. reconcile은 표면화만, 물리 복원은 _reconcile_pass 담당
+    (복원 E2E는 tests/scenarios/test_target_reconciliation.py)."""
     t, broker = isolated_trader
     scenario.buy_and_fill(t, broker, "s1", "005930", 10, 70000.0)
     assert t.ledger["s1"]["qty"] == 10
@@ -39,10 +43,12 @@ def test_external_sale_drift_reconciled(isolated_trader):
     broker.set_positions([])
     result = t.reconcile_with_kis(today_iso="2026-06-01")
 
-    assert "s1" not in t.ledger, "INV-RECON-1: 외부매도분이 ledger에서 차감 안 됨"
+    assert t.ledger["s1"]["qty"] == 10, "관측 전용 — 원장 불변"
     assert result["has_drift"] is True
-    assert any(p["sid"] == "s1" for p in result["applied"])
-    invariants.check_all(t)
+    assert not result["applied"]
+    assert any(s.get("sid") == "s1"
+               for o in result["ledger_orphans"]
+               for s in o.get("ledger_sids", []))
 
 
 def test_external_buy_does_not_touch_ledger(isolated_trader):

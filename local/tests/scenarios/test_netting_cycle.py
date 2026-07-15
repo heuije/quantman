@@ -378,13 +378,12 @@ def test_morning_netting_opener_not_re_liquidated_same_cycle(isolated_trader):
 
 
 def test_morning_netting_residual_exit_no_oversell(isolated_trader):
-    """A3: 넷팅이 브로커 재고를 book으로 이관하면, 원장 잔여 청산이 그 재고를 이중으로 실매도하지
-    않는다(07-14 order 355 재발 방지).
+    """07-14 order 355 부류 — 원장 O=5 vs 브로커 4(외부 수동매도 drift) + D 진입.
 
-    원장 O=5 vs 브로커 4(외부 수동매도로 drift) → _plan_cycle_liquidations가 O청산을 4로 클램프
-    → D진입과 넷팅 4(book) → O 원장 5→1. §2가 O 잔여 1을 청산하려 할 때, 넷팅이 이미 브로커 4를
-    이관했으므로 가용 재고 = 4−4 = 0 → clamp 0 → skip_oversell(실매도 아님). A3 없으면 snap_pre(4)를
-    재사용해 min(4,1)=1을 실매도(order 355)."""
+    목표수렴: target = 5 + (−5 청산 + 4 진입크레딧사이징) = 4 = 브로커 → net 0 →
+    **실주문 0건**(오버셀·이중계상 개념 자체 소멸 §14). O 청산 5 전량 합성 정산
+    (상쇄 4 + drift 흡수 1)·D 진입 4 합성 정산. 구 모델의 skip_oversell 표면화는
+    "net 0 무발주 + 원장 완결"로 대체된다."""
     t, broker = isolated_trader
     broker._balance["cash"] = 0
     broker._prices["005930"] = 100.0
@@ -395,7 +394,9 @@ def test_morning_netting_residual_exit_no_oversell(isolated_trader):
     by_strat = [{"strategy_id": "D", "candidates": [{"symbol": "005930"}]}]
     strats = [{"id": "D", "name": "D", "definition": d_def, "account_ref": None}]
     payload = t._cycle_body(strats, _ds(prev_close=100.0), None, by_strat, {}, "KRX")
-    sells = [o for o in broker.submitted if o["side"] == "sell"]
-    assert sells == [], f"넷팅 소비 재고를 §2가 이중 실매도하면 안 됨(A3) — submitted={broker.submitted}"
-    assert any(d["action"] == "skip_oversell" for d in payload["decisions"]), \
-        "넷팅 소비로 backing 0인 잔여는 skip_oversell로 표면화돼야(drift)"
+    assert broker.submitted == [], \
+        f"net 0 — 실주문(오버셀 매도 포함) 금지 — submitted={broker.submitted}"
+    assert "O" not in t.ledger, "O 청산 5 전량 합성 정산(상쇄 4 + drift 흡수 1)"
+    assert t.ledger["D"]["qty"] == 4, "D 진입 4 = 크레딧(브로커 실보유 4 클램프) 사이징"
+    assert payload["cycle_summary"]["n_netted"] == 4
+    assert payload["cycle_summary"]["n_drift"] == 0

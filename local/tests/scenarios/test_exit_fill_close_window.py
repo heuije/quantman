@@ -2,8 +2,8 @@
 """exit.fill=close 라이브 창 라우팅 (재설계 D3) — 선택자·감시 정합.
 
 계약: 보유기간 만기 청산이
-  · exit.fill=close  → 종가창(plan_close_liquidations) 소관·아침 PLAN 제외·I5+ 감시 포함
-  · legacy(미지정)   → 아침 PLAN(_plan_cycle_liquidations) 소관·종가창 제외 (현행 그대로)
+  · exit.fill=close  → 종가창(_plan_exit_intents window="close") 소관·아침 창 제외·I5+ 감시 포함
+  · legacy(미지정)   → 아침 창(window="open"·엔진 is_close 게이트) 소관·종가창 제외 (현행 그대로)
 """
 from __future__ import annotations
 
@@ -48,8 +48,10 @@ def test_close_exit_belongs_to_close_window(isolated_trader):
     ds, snap = _seed(trader, broker)
     today = _dt.date(2026, 6, 1)
 
-    morning = trader._plan_cycle_liquidations(snap, ds, today, "KRX")
-    close_w = trader.plan_close_liquidations(ds, "futures", "KRX", snap)
+    morning, _, _ = trader._plan_exit_intents(
+        "open", ds, today, "KRX", None, False, [])
+    close_w, _, _ = trader._plan_exit_intents(
+        "close", ds, today, "KRX", "futures", False, [])
 
     m_sids = {i.sid for i in morning}
     c_sids = {i.sid for i in close_w}

@@ -1,8 +1,8 @@
-"""reconcile fail-safe(I2·I3) — 선물 신원계층 비정상 시 파괴적 자동 정정 차단.
+"""reconcile fail-safe(I2) + 관측 전용(목표수렴 §14) 회귀.
 
-2026-07 원장↔브로커 분기 인시던트의 회귀 테스트: LS 잔고 코드 정규화 실패(symbol_unmapped)
-또는 선물 leg 조회 실패(fetch_failed) 상태에서 reconcile이 "외부 매도 추정"으로 원장을
-삭제하면 안 된다(무동작+표면화). 주식은 symbol=종목코드로 매칭 신뢰 가능 → 자동 차감 유지.
+2026-07 원장↔브로커 분기 인시던트: symbol_unmapped·fetch_failed 시 orphan 오판 차단.
+목표수렴 전환(2026-07-15)으로 reconcile은 **전면 관측 전용** — 어떤 orphan도 자동
+차감하지 않는다(원장=전략 의도 정본·수동 매도는 다음 사이클 drift 교정이 복원).
 """
 from __future__ import annotations
 
@@ -60,28 +60,35 @@ def test_fetch_failed_blocks_futures_orphan_deletion():
     assert r["has_drift"] is True
 
 
-def test_stock_orphan_still_deducted_when_futures_identity_broken():
-    # I3 — 주식 스냅샷은 정상(주식 fetch 실패면 account_snapshot 자체가 raise)이므로
-    # 주식 외부 매도 자동 차감(승인된 제품 동작)은 선물 신원계층과 무관하게 유지.
+def test_stock_orphan_not_deducted_observe_only():
+    # 목표수렴(kr-target-reconciliation.md §14) — reconcile은 관측 전용으로 방향 역전.
+    # 구 I3(주식 외부매도 자동 차감)는 폐기: 원장=전략 의도가 정본이고, 수동 매도는
+    # 다음 사이클 _reconcile_pass의 drift 교정이 되돌린다. 여기서 차감하면 의도가
+    # 소실돼 되돌림이 무력화된다.
     snap = {"balance": {"fetch_failed": ["futures"]}, "positions": []}
     t = Trader(_B(snap))
     t.ledger = {"s1": {"symbol": "005930", "qty": 10, "side": "long",
                        "entry_price": 70000.0, "strategy_name": "삼성"},
                 **_fut_ledger()}
     r = t.reconcile_with_kis(today_iso="2026-07-04")
-    assert "s1" not in t.ledger                          # 주식 차감 유지
-    assert t.ledger["10"]["qty"] == 3                    # 선물은 보호
-    assert [p["symbol"] for p in r["applied"]] == ["005930"]
+    assert t.ledger["s1"]["qty"] == 10                   # 원장 불변(관측 전용)
+    assert t.ledger["10"]["qty"] == 3
+    assert not r["applied"]
+    assert {o["symbol"] for o in r["ledger_orphans"]} == {"005930", "코스피200선물"}
+    assert r["has_drift"] is True                        # 표면화는 유지
 
 
-def test_healthy_futures_orphan_still_deducted():
-    # 신원계층 정상 + 브로커 선물 0 = 진짜 외부 청산 → 종전 자동 차감 유지(회귀 금지).
+def test_healthy_futures_orphan_surfaced_not_deducted():
+    # 신원계층 정상 + 브로커 선물 0(수동 청산 추정) — 관측 전용: 원장 유지·표면화만.
+    # 물리 복원은 다음 사이클 목표수렴 drift 교정 담당(§14 방향 역전).
     snap = {"balance": {}, "positions": []}
     t = Trader(_B(snap))
     t.ledger = _fut_ledger(qty=2)
     r = t.reconcile_with_kis(today_iso="2026-07-04")
-    assert "10" not in t.ledger
-    assert len(r["applied"]) == 1
+    assert t.ledger["10"]["qty"] == 2                    # 원장 불변
+    assert not r["applied"]
+    assert len(r["ledger_orphans"]) == 1
+    assert r["has_drift"] is True
     assert "reconcile_blocked" not in r
 
 

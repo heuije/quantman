@@ -105,13 +105,15 @@ def test_e2e_reconcile_preserves_futures_position(isolated_trader, monkeypatch):
     assert "k1" in trader.ledger and trader.ledger["k1"]["qty"] == 1
 
 
-def test_e2e_reconcile_removes_when_broker_flat(isolated_trader, monkeypatch):
-    # 대조군: broker가 실제로 안 들고 있으면(외부 청산) reconcile이 차감 — 올바른 동작.
+def test_e2e_reconcile_observes_when_broker_flat(isolated_trader, monkeypatch):
+    # 대조군(목표수렴 §14): broker가 안 들고 있어도(외부 청산 추정) reconcile은
+    # 관측 전용 — 원장 유지·표면화. 물리 복원은 다음 사이클 drift 교정 담당.
     trader, stock, fut = _router_trader(isolated_trader, monkeypatch)
     _seed_long(trader, fut, expiry="2026-09-10")
     fut.set_positions([])
-    trader.reconcile_with_kis("2026-06-01")
-    assert "k1" not in trader.ledger
+    r = trader.reconcile_with_kis("2026-06-01")
+    assert "k1" in trader.ledger, "관측 전용 — 원장 불변"
+    assert r["has_drift"] is True and not r["applied"]
 
 
 # ── 숏 라이프사이클: 진입(sell-to-open)→broker 숏 보유→만기청산(buy-to-close) ───────
