@@ -61,7 +61,14 @@ def signed_qty(leg) -> int:
 
 @dataclass(frozen=True)
 class SymbolPlan:
-    """한 심볼의 수렴 계획 — trader가 book_legs 정산 → order_legs·drift 발주."""
+    """한 **계약 키**의 수렴 계획 — trader가 book_legs 정산 → order_legs·drift 발주.
+
+    key = 물리 계약 식별자(선물=만기 계약코드, 주식=종목코드 — netting Intent의
+    contract_key와 동일 규약). **심볼이 아닌 키 단위로 net을 계산해야** 롤 경계에서
+    구계약 청산과 신계약 진입이 같은 상품명으로 오상계(물리 롤 미실행)되지 않는다(E6).
+    symbol = 발주 라우팅용 상품명/종목코드(주문 API는 심볼 단위).
+    """
+    key: str
     symbol: str
     target: int              # 부호 순 목표 (롱 +, 숏 −)
     broker: int              # 부호 실보유 (스냅샷)
@@ -77,33 +84,35 @@ def build_symbol_plans(
     ledger_signed: dict[str, int],
     broker_signed: dict[str, int],
     indeterminate: set[str],
+    symbol_of: dict[str, str] | None = None,
 ) -> list[SymbolPlan]:
-    """심볼별 수렴 계획 산출 (순수).
+    """계약 키별 수렴 계획 산출 (순수).
 
     plan_intents: 이 사이클의 진입/청산 의도(Intent) — 신선도·게이트·멱등은 호출자가
-        이미 통과시킴(ref_price는 fresh 또는 live).
-    ledger_signed: 이번 사이클 범위(시장·자산군) 원장 포지션의 심볼별 부호합
-        (유지+청산예정 전부 — target 항등식의 기저).
-    broker_signed: 브로커 실보유의 심볼별 부호합(스냅샷·같은 범위).
-    indeterminate: 판정 불가 심볼(§13 — target=None 의미). 계획에서 통째 제외(hold).
+        이미 통과시킴(ref_price는 fresh 또는 live). 그룹 키 = it.contract_key.
+    ledger_signed / broker_signed: 이번 사이클 범위 원장·브로커 포지션의 **계약 키별**
+        부호합(주식=심볼, 선물=contract_code-or-심볼 — 호출자가 같은 규약으로 키잉).
+    indeterminate: 판정 불가 키(§13 — target=None 의미). 계획에서 통째 제외(hold).
+    symbol_of: 키→발주 심볼 매핑(누락 키는 키 자신 — 주식·fallback 규약과 일치).
 
-    반환 순서: net≤0(매도·정산-only) 심볼 먼저, net>0(매수) 나중 — 청산이 증거금을
-    먼저 푸는 기존 불변식(청산 먼저 → 진입 나중)을 심볼 단위로 보존.
+    반환 순서: net≤0(매도·정산-only) 먼저, net>0(매수) 나중 — 청산이 증거금을
+    먼저 푸는 기존 불변식(청산 먼저 → 진입 나중)을 키 단위로 보존.
     """
-    by_symbol: dict[str, list] = {}
+    symbol_of = symbol_of or {}
+    by_key: dict[str, list] = {}
     for it in plan_intents:
-        by_symbol.setdefault(it.symbol, []).append(it)
+        by_key.setdefault(it.contract_key, []).append(it)
 
-    symbols = (set(by_symbol) | set(ledger_signed) | set(broker_signed)) \
+    keys = (set(by_key) | set(ledger_signed) | set(broker_signed)) \
         - set(indeterminate)
 
     plans: list[SymbolPlan] = []
-    for sym in sorted(symbols):
-        legs = by_symbol.get(sym, [])
-        ledger = int(ledger_signed.get(sym, 0))
-        broker = int(broker_signed.get(sym, 0))
+    for key in sorted(keys):
+        legs = by_key.get(key, [])
+        ledger = int(ledger_signed.get(key, 0))
+        broker = int(broker_signed.get(key, 0))
 
-        target = ledger + sum(signed_qty(l) for l in legs)
+        target = ledger + sum(signed_qty(leg) for leg in legs)
         net = target - broker
 
         # ① 진입↔청산 상쇄(handoff) — 기존 넷팅 그대로 재사용.
@@ -137,10 +146,12 @@ def build_symbol_plans(
             continue                       # 이미 목표 상태 — 무행동
 
         plans.append(SymbolPlan(
-            symbol=sym, target=target, broker=broker, net=net,
+            key=key,
+            symbol=(legs[0].symbol if legs else symbol_of.get(key, key)),
+            target=target, broker=broker, net=net,
             book_legs=book_legs, order_legs=order_legs,
             drift_qty=drift_qty, offset_qty=offset_qty))
 
     # 매도(net≤0) 먼저 → 매수(net>0) 나중
-    plans.sort(key=lambda p: (0 if p.net <= 0 else 1, p.symbol))
+    plans.sort(key=lambda p: (0 if p.net <= 0 else 1, p.key))
     return plans

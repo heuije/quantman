@@ -230,6 +230,30 @@ def test_exit_without_ref_price_held(isolated_trader):
     assert all(float(ev.get("price") or 0) != 1210.5 for ev in _trades())
 
 
+def test_inflight_exit_rerun_no_double_order(isolated_trader):
+    """§14·§17.1 — 청산 주문 in-flight 중 사이클 재실행(08:40/42·catchup)이 이중
+    발주하지 않는다: 활성 intent가 심볼을 hold시키고 drift 산술도 안 돈다."""
+    t, broker = isolated_trader
+    spec = _spec()
+    broker._prices[SYM] = 300.0
+    a = int(5.5 * 304 * spec.multiplier * (spec.init_margin_rate or 0.1))
+    t.ledger["29"] = {"symbol": SYM, "qty": 5, "side": "long", "entry_price": 300.0,
+                      "peak_price": 300.0, "entry_date": "2026-05-29",
+                      "strategy_name": "오버나이트롱", "definition": _def29(a)}
+    broker.set_positions([{"symbol": SYM, "qty": 5, "side": "long",
+                           "avg_price": 300.0}])
+    ds = _ds("2026-05-29", 300.0)
+    # 1차 사이클 — 청산 매도 5 발주(미체결 유지)
+    t._cycle_body([], ds, None, [], {}, "KRX")
+    first = [(o["side"], o["qty"]) for o in broker.submitted]
+    assert first == [("sell", 5)]
+    # 2차 재실행(창내 재시도/catchup) — intent 활성 → 심볼 hold → 추가 발주 0
+    t._cycle_body([], ds, None, [], {}, "KRX")
+    assert [(o["side"], o["qty"]) for o in broker.submitted] == first, \
+        "in-flight 재실행이 이중 발주하면 안 됨"
+    assert t.ledger["29"]["qty"] == 5
+
+
 def test_morning_futures_scope_excludes_stocks(isolated_trader):
     """문제 10(§15.3-⑥) — 08:35 선물 사이클은 주식을 건드리지 않는다(스코프 가드).
 

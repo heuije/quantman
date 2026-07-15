@@ -145,6 +145,39 @@ def test_sells_ordered_before_buys():
         [p.net <= 0 for p in plans], reverse=True)
 
 
+def test_roll_boundary_no_cross_contract_cancellation():
+    """E6 롤 경계 — 구계약 청산 + 신계약 진입(같은 상품명)은 절대 상쇄되지 않는다.
+
+    심볼 단위로 net을 계산하면 target=ledger−5+5, broker=5 → net 0으로 물리 롤이
+    실행되지 않는 치명 결함(적대 자체검토 발견). 키(계약코드) 단위 net이 근본 해결:
+    구계약 매도 5 + 신계약 매수 5 둘 다 실발주된다."""
+    old_exit = Intent(sid="A", strategy_id="A", strategy_name="A",
+                      contract_key="OLD코드", symbol=S, kind="exit",
+                      position_side="long", order_side="sell", qty=5,
+                      ref_price=1090.0, entry_price=1080.0, mult=250_000.0,
+                      currency="KRW", definition={})
+    new_entry = Intent(sid="A", strategy_id="A", strategy_name="A",
+                       contract_key="NEW코드", symbol=S, kind="entry",
+                       position_side="long", order_side="buy", qty=5,
+                       ref_price=1090.0, entry_price=None, mult=250_000.0,
+                       currency="KRW", definition={})
+    plans = build_symbol_plans(
+        [old_exit, new_entry],
+        {"OLD코드": 5}, {"OLD코드": 5}, set(),
+        symbol_of={"OLD코드": S, "NEW코드": S})
+    assert len(plans) == 2, "구·신 계약이 별도 계획(오상계 금지)"
+    by_key = {p.key: p for p in plans}
+    assert by_key["OLD코드"].net == -5
+    assert sum(l.qty for l in by_key["OLD코드"].order_legs) == 5   # 실매도 5
+    assert by_key["NEW코드"].net == 5
+    assert sum(l.qty for l in by_key["NEW코드"].order_legs) == 5   # 실매수 5
+    assert by_key["OLD코드"].offset_qty == 0 and by_key["NEW코드"].offset_qty == 0
+    for p in plans:
+        _check_identities(p, 5 if p.key == "OLD코드" else 0)
+    # 매도 계획이 매수보다 먼저(증거금 선회수)
+    assert plans[0].key == "OLD코드"
+
+
 def test_cross_strategy_fifo_split():
     """전략 2개 잔여 leg에 용량 FIFO(strategy_id 순) 배분 — 경계 leg은 분할."""
     legs = [_leg("entry", 3, sid="A"), _leg("entry", 3, sid="B")]

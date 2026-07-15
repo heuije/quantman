@@ -331,15 +331,15 @@ class Trader:
 
     # ── Phase 40 — KIS 잔고 ↔ ledger 정합성 자동 정정 ──────────────────────
     def reconcile_with_kis(self, today_iso: str | None = None) -> dict:
-        """KIS 실 잔고와 ledger를 비교 → ledger_orphans는 자동 차감/제거.
+        """KIS 실 잔고와 ledger를 비교 — **관측 전용**(목표수렴 §14·§17.6).
 
-        external_extras(외부 매수)는 ledger 손대지 않음 (자동매매가 매수한 게 아니므로).
-        반환: reconcile dict + applied 변경 내역 + 거래 기록 카운트.
+        원장=전략 의도 정본. orphan(원장>브로커)·external_extras(브로커>원장) 모두
+        원장을 바꾸지 않고 표면화만 한다 — 물리 정합은 다음 사이클 _reconcile_pass의
+        drift 교정이 수행(broker←ledger). 반환: reconcile dict(applied는 항상 []).
 
         호출 시점: 15:50 post_close_settlement — 모든 KRX 종가창(주식 15:30·선물
-        15:45) 이후 (08:55 메인 사이클 직전엔 위험).
+        15:45) 이후.
         """
-        today = today_iso or kst_today().isoformat()
         try:
             snap = self.broker.account_snapshot()
         except Exception as e:
@@ -2165,13 +2165,23 @@ class Trader:
                 return (instrument_class == "futures") == qc.is_futures(sym)
             return True
 
+        # 계획 키 = 물리 계약 식별자(E6 롤 경계): 선물=contract_code-or-심볼, 주식=심볼.
+        # 심볼 단위로 net을 계산하면 롤 주간에 구계약 청산 + 신계약 진입이 같은 상품명으로
+        # 오상계돼 물리 롤이 실행되지 않는다 — 반드시 키 단위(exit/entry Intent의
+        # contract_key 규약과 동일). symbol_of는 발주 라우팅용 역매핑.
+        def _plan_key(sym: str, code: str | None) -> str:
+            return (str(code) if code else sym) if qc.is_futures(sym) else sym
+
+        symbol_of: dict[str, str] = {}
         ledger_signed: dict[str, int] = {}
         for pos in self.ledger.values():
             sym = pos["symbol"]
             if not _in_scope(sym):
                 continue
+            key = _plan_key(sym, pos.get("contract_code"))
+            symbol_of.setdefault(key, sym)
             q = int(pos["qty"])
-            ledger_signed[sym] = ledger_signed.get(sym, 0) + (
+            ledger_signed[key] = ledger_signed.get(key, 0) + (
                 -q if pos.get("side", "long") == "short" else q)
 
         balance_fetch_failed = list(
@@ -2204,13 +2214,24 @@ class Trader:
                         "브로커 심볼 정규화 실패 — 이 심볼 수렴 보류(수동 점검)"))
                     indeterminate.add(sym)
                     continue
+                key = _plan_key(sym, p.get("contract_code"))
+                symbol_of.setdefault(key, sym)
                 q = int(p.get("qty") or 0)
-                broker_signed[sym] = broker_signed.get(sym, 0) + (
+                broker_signed[key] = broker_signed.get(key, 0) + (
                     -q if norm_side(p.get("side")) == "short" else q)
 
+        # indeterminate는 심볼 단위로 수집됐다 — 그 심볼의 모든 계약 키를 제외(hold).
+        # leg도 심볼로 재필터: 늦게 추가된 판정불가(fetch_failed·unmapped)의 진입 leg
+        # 키(최근월물 코드)가 symbol_of(원장·브로커 유래)에 없으면 키 제외를 빠져나가는
+        # 구멍 봉합(§13 — 판정불가 심볼에 어떤 순주문도 금지).
+        excluded_keys = set(indeterminate) | {
+            k for k, s in symbol_of.items() if s in indeterminate}
+        plan_intents = [it for it in exit_intents + entry_intents
+                        if it.symbol not in indeterminate]
+
         plans = target_recon.build_symbol_plans(
-            exit_intents + entry_intents, ledger_signed, broker_signed,
-            indeterminate)
+            plan_intents, ledger_signed, broker_signed,
+            excluded_keys, symbol_of=symbol_of)
 
         n_netted = 0
         commission_saved = 0.0
@@ -2226,6 +2247,16 @@ class Trader:
                                       reason=exit_reasons.get(leg.sid),
                                       catchup=catchup)
             if plan.drift_qty:
+                # 비-최근월물 가드: drift 주문은 심볼로 라우팅돼 브로커가 최근월물에
+                # 체결한다. 계획 키가 다른(구·원월) 계약이면 잘못된 계약을 사고팔게
+                # 되므로 발주하지 않고 표면화만(수동 정리·만기 백스톱 소관).
+                if (qc.is_futures(plan.symbol) and plan.key != plan.symbol
+                        and plan.key != self._resolve_contract_key(plan.symbol)):
+                    decisions.append(order_log.decision(
+                        "drift_deferred", "", "", plan.symbol,
+                        f"비-최근월물({plan.key}) drift {plan.drift_qty:+d} — "
+                        "심볼 라우팅 불가, 발주 보류(수동 점검/만기 백스톱)"))
+                    continue
                 n_drift += abs(plan.drift_qty)
                 self._submit_drift(plan.symbol, plan.drift_qty, window, decisions)
         return n_netted, commission_saved, n_drift
