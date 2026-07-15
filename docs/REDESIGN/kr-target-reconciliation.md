@@ -336,6 +336,19 @@ capacity_credit는 물리 주문 기계가 아니라 **사이징 입력**이다.
 ### 17.6 reconcile 관측 전용 전환 (§14 이행 완료)
 `reconcile_with_kis`의 orphan 자동 차감(ledger←broker) **전면 제거** — 표면화만. 원장=전략 의도 정본, 물리 복원은 다음 사이클 `_reconcile_pass` drift 교정(broker←ledger). 구 I3(주식 자동 차감)도 폐기.
 
+### 17.8 적대 검토 결과 (2026-07-15 — 외부 리뷰 에이전트 사용한도 중단 → 자체 적대검토)
+
+7개 관점(자금 안전·§13·동시성·산술·서버·롤 경계·관측성) 전수 점검. 발견 3건 수정·테스트 고정:
+
+| 심각도 | 발견 | 수정 |
+|---|---|---|
+| CRITICAL | **롤 경계 오상계** — 심볼 단위 net이 구계약 청산+신계약 진입을 상쇄 → 물리 롤 미실행(원장=신계약 vs 브로커=구계약) | 계획·net을 **계약 키**(contract_code) 단위로(E6). test_roll_boundary_no_cross_contract_cancellation |
+| HIGH | late-indeterminate(fetch_failed·unmapped) 심볼의 진입 leg 키가 키-제외를 우회 | leg 심볼 재필터(§13 봉합) |
+| MED | 비-최근월물 키의 drift 주문이 심볼 라우팅으로 잘못된 계약 매매 | 발주 보류 + drift_deferred 표면화 |
+
+검증 완료(발견 없음): in-flight 재실행 이중발주(테스트 고정) · 이중 정산(항등식 ①) · _CYCLE_LOCK RLock 경계 · 서버 KST/saved 키 정합 · skip_oversell 서버 소비처 없음.
+**후속(비차단)**: 서버 webhook drift 알림이 `applied` 상세를 잃음(관측 전용 전환) — `ledger_orphans` 렌더링 추가 권장. 서버 타임라인에 08:35 선물 사이클 전용 슬롯. 레거시 API 3종 제거.
+
 ### 17.7 코드 지도 (신규/변경)
 - **신규** `local/localapp/target_recon.py` — 순수 계획(SymbolPlan·검산 항등식 3종 docstring).
 - trader.py: `_plan_exit_intents`(창별 청산 의도+indeterminate) · `_reconcile_pass`(수렴 본체) · `_submit_drift`(원장 불변 교정) · `_apply_fill` drift 분기 · `_cycle_body`/`run_close_netting` 재배선 · `reconcile_with_kis` 관측 전용.
