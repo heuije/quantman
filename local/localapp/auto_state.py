@@ -31,6 +31,22 @@ def load() -> str:
         return "stopped"
 
 
+def resume_plan(status: str | None = None) -> tuple[bool, bool]:
+    """부팅 시 자동매매 복원 계획 — (스케줄러 기동?, paused로 둘까?).
+
+    자동업데이트·재시작·크래시로 프로세스가 재기동돼도 직전 상태를 이어가기 위한 결정.
+    running → (True, False)   : 유저 클릭 없이 그대로 가동.
+    paused  → (True, True)    : 기동 후 pause로 직전 일시정지 상태 보존(웹 PAUSE_AUTO).
+    stopped/그 외 → (False, False): 명시적으로 중지된 상태이므로 자동 기동 안 함.
+    status 미지정이면 load()로 현재 영속 상태를 읽는다."""
+    s = status if status is not None else load()
+    if s == "running":
+        return True, False
+    if s == "paused":
+        return True, True
+    return False, False
+
+
 def set_status(status: str) -> None:
     """상태 기록. 유효하지 않은 값은 무시(방어). 원자적 저장 + owner-only ACL."""
     if status not in VALID:
