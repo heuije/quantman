@@ -252,6 +252,44 @@ def clamp_sell_qty(broker_qty: int | None, ledger_qty: int) -> int | None:
     return min(int(broker_qty), int(ledger_qty))
 
 
+def credit_for(capacity_credit: dict | None, symbol: str, pos_side: str) -> float:
+    """§18 사이징 크레딧 조회 — 두 풀의 합(같은-편 + 방향무관).
+
+    - `(symbol, pos_side)` = **계획 청산**이 되돌려줄 여력. 진입 방향과 같은 보유만
+      크레딧한다(리버설엔 미적용 — "청산분 제외한 나머지로 사이징"이 유저 모델).
+    - `(symbol, None)` = **원장 밖(수동·외부) 보유**가 되돌려줄 여력. 수동은 "전부 취소한
+      잔고 기준"(§18.1 유저 원칙)이라 **진입 방향과 무관하게** 크레딧한다.
+
+    반대편 수동 보유에도 크레딧하는 근거(2026-07-16 LS 문서·실측 확정): CFOAQ10100은
+    신규(`NewOrdAbleQty`)와 청산(`LqdtOrdAbleQty`)을 **분리 반환**하고(예시 38=36+2)
+    우리는 신규만 읽는다 → 보유를 되돌려 더해야 빈-상태 여력이 된다. 이중계상이 아니다.
+    (실측: 수동 숏4 보유 시 신규매수 5·청산매수 4 → 빈-상태 9. 크레딧 미적용이라
+    5로 사이징돼 롱2 진입, 정답은 9×50%=롱4였다 — §18.2 갭.)
+    """
+    if not capacity_credit:
+        return 0.0
+    return (float(capacity_credit.get((symbol, pos_side), 0))
+            + float(capacity_credit.get((symbol, None), 0)))
+
+
+def consume_credit(capacity_credit: dict, symbol: str, pos_side: str,
+                   consumed: float) -> None:
+    """다중 진입의 회수 여력 순차 소진(E2·N9) — 같은-편 풀 먼저, 부족분은 방향무관 풀에서.
+
+    두 풀의 **합**이 정확히 consumed만큼 줄어야 다음 진입이 같은 여력을 재사용하지 않는다.
+    초과분은 방향무관 풀을 음수로 만들어 다음 진입의 orderable을 그만큼 깎는다(기존 동작 보존).
+    """
+    _ck = (symbol, pos_side)
+    same = float(capacity_credit.get(_ck, 0))
+    take = min(consumed, same) if same > 0 else 0.0
+    if take:
+        capacity_credit[_ck] = same - take
+    rest = consumed - take
+    if rest:
+        _fk = (symbol, None)
+        capacity_credit[_fk] = float(capacity_credit.get(_fk, 0)) - rest
+
+
 class Trader:
     """Broker에 의존하는 모의투자 실행기. 보유 원장을 로컬에 유지한다.
 
@@ -1484,11 +1522,11 @@ class Trader:
                 f"가용자금 조회 실패: {e}"))
             return False
 
-        # E1/§18: 주식은 같은-종목·같은-방향 보유가 되돌려줄 현금을 크레딧(선물은 아래 orderable 계약).
+        # E1/§18: 주식은 같은-종목 보유가 되돌려줄 현금을 크레딧(선물은 아래 orderable 계약).
         # 사이징 입력이지 물리 주문이 아니다 — 물리는 목표수렴 net이 상쇄(_reconcile_pass).
-        # (symbol, 진입 side)로 조회 — 반대 방향 보유엔 미적용(부호뒤집기 과대 미악화).
+        # credit_for = 계획청산(같은-편) + 원장 밖 수동보유(방향무관·원복 전제) 합산.
         if capacity_credit and not qc.is_futures(symbol):
-            cash += float(capacity_credit.get((symbol, _pos_side), 0))
+            cash += credit_for(capacity_credit, symbol, _pos_side)
 
         # 사이징 — 전일 종가 기준 (cash·prev_close 모두 종목 통화).
         # IR(전략 연구소)은 position.sizing(이벤트 진입 예산)으로 사이징한다.
@@ -1516,11 +1554,11 @@ class Trader:
                 side = "sell" if is_short else "buy"
                 orderable = oq_fn(symbol, side, prev_close)
                 if orderable is not None and capacity_credit:
-                    # E1/N7/§18: 같은-계약·같은-방향 보유가 되돌려줄 여력(계약수)을 크레딧 —
-                    # orderable은 "보유 든 채 추가 여력"이라 여기에 보유를 되돌려야 "빈 상태
-                    # 최대"가 된다(수동 취소 후 잔고 기준·유저 원칙). (symbol, 진입 side)로 조회 —
-                    # 반대 방향 보유엔 미적용(부호뒤집기 과대 미악화). 다중 진입은 capture 차감(E2·N9).
-                    orderable = int(orderable) + int(capacity_credit.get((symbol, _pos_side), 0))
+                    # E1/N7/§18: 같은-계약 보유가 되돌려줄 여력(계약수)을 크레딧 — orderable은
+                    # 브로커의 **신규**주문가능수량(LS NewOrdAbleQty·청산분 제외)이라 여기에
+                    # 보유를 되돌려야 "빈 상태 최대"가 된다(수동 취소 후 잔고 기준·유저 원칙).
+                    # 계획청산=같은-편만, 수동보유=방향무관(credit_for 참조). 다중 진입은 소진(E2·N9).
+                    orderable = int(orderable) + int(credit_for(capacity_credit, symbol, _pos_side))
                 if orderable is None:
                     # 실 브로커(orderable_qty 보유)인데 조회 실패 → **발주 보류**(qty=0). 카탈로그
                     # 추정 증거금률(0.10)로 사이징하면 실제(~19.5%) 대비 ~2배 과대 계약수가 되어,
@@ -1577,9 +1615,8 @@ class Trader:
                 ref_price=float(prev_close), entry_price=None,
                 mult=spec.multiplier, currency=spec.currency, definition=strat_def))
             if capacity_credit is not None:
-                consumed = qty if qc.is_futures(symbol) else qty * prev_close
-                _ck = (symbol, _pos_side)
-                capacity_credit[_ck] = capacity_credit.get(_ck, 0) - consumed
+                consume_credit(capacity_credit, symbol, _pos_side,
+                               qty if qc.is_futures(symbol) else qty * prev_close)
             return True
 
         # 발주가는 submit 내부에서 prev_close × (1 ± tolerance%) 계산.
@@ -2016,8 +2053,13 @@ class Trader:
         호출자(_reconcile_pass)가 브로커 실보유로 클램프한 청산량만 넘겨 유령 여력을
         만들지 않는다(N7 — 수동 선매도분은 이미 브로커 현금/orderable에 반영돼 있음).
 
-        **side별 키(§18)**: 진입 방향과 같은 보유만 크레딧해야 부호뒤집기(롱보유+숏진입)에
-        오적용해 과대사이징을 악화시키지 않는다. 롱 청산은 (심볼,'long')로 키잉 → 롱 진입에만."""
+        **side별 키(§18)**: 롱 청산은 (심볼,'long')로 키잉 → **롱 진입에만** 크레딧한다.
+        리버설(롱청산→숏진입)에 크레딧하지 않는 건 "청산분을 제외한 나머지 여력으로 진입"이
+        유저 모델이기 때문이다(2026-07-16 확인). 같은 편은 롤=핸드오프라 크레딧이 맞다.
+        ⚠ 이전 주석의 "부호뒤집기 과대사이징 악화 방지"는 **오진**이었다 — orderable은
+        신규 전용(LS NewOrdAbleQty)이라 크레딧 미적용은 과대가 아니라 **과소**를 낳는다(§16.2
+        정정②). 그래서 **원장 밖(수동) 보유**는 방향무관 키 (심볼, None)로 크레딧한다 —
+        plan_entries_captured·credit_for 참조. 이 함수(계획 청산)만 같은-편 규칙이다."""
         cap: dict = {}
         for lg in liq_intents:
             add = lg.qty if qc.is_futures(lg.symbol) else lg.qty * lg.ref_price
@@ -2034,14 +2076,19 @@ class Trader:
         """진입 '의도'를 산출(발주 안 함) — 수렴 PLAN. 종가창(close)·시가창(open) 공용.
 
         _enter_from_preview를 capture 모드로 재사용 — fill 라우팅·계좌·커버리지·보유·멱등
-        게이트와 사이징(현재 자본·orderable + 같은 종목·방향 보유 되돌림 크레딧)을 실주문과
-        동일하게 통과. 사이징은 진입 시점 1회 확정·보유 중 고정(목표수렴 §9).
+        게이트와 사이징(현재 자본·orderable + 보유 되돌림 크레딧)을 실주문과 동일하게 통과.
+        사이징은 진입 시점 1회 확정·보유 중 고정(목표수렴 §9).
         extra_capacity(§18): 계획 청산 외 **원장 밖 브로커 보유**의 되돌림 크레딧
         {(symbol,side):amount} — 계획청산 크레딧과 합쳐 "빈 상태 최대" 사이징. 반환 (entry_intents, decisions).
         """
         capacity = self._freed_capacity(liq_intents)
-        for k, v in (extra_capacity or {}).items():
-            capacity[k] = capacity.get(k, 0) + v
+        # §18.2 정정(2026-07-16 LS 문서·실측 확정): 원장 밖(수동/외부) 보유는 **원복 전제**라
+        # 진입 방향과 무관하게 빈-상태 크레딧 → side를 버리고 (symbol, None) 키로 합산한다.
+        # 전략 청산(_freed_capacity)은 같은-편 키 유지 — 리버설은 "청산분 제외한 나머지"로
+        # 사이징하는 게 유저 모델. 두 풀은 credit_for가 합산·consume_credit이 순차 소진.
+        for (sym, _side), v in (extra_capacity or {}).items():
+            _fk = (sym, None)
+            capacity[_fk] = capacity.get(_fk, 0) + v
         captured: list = []
         decisions: list = []
         self._enter_from_preview(by_strategy, strategies, dataset, equity_now,

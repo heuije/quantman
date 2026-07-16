@@ -212,22 +212,59 @@ def test_flat_capacity_sizing_manual_same_direction(isolated_trader):
     assert payload["cycle_summary"]["n_drift"] == 0     # 수동 2는 인수(book)·drift 아님
 
 
-def test_flat_capacity_no_effect_opposite_direction(isolated_trader):
-    """§18 — 부호뒤집기(롱 보유 + 숏 진입)엔 크레딧 미적용(과대 미악화·실측 대기)."""
+def test_flat_capacity_manual_credit_applies_opposite_direction(isolated_trader):
+    """§18.2 정정 — 원장 밖 **롱 2** 보유 + 자동 **숏** 진입(부호뒤집기)에도 빈-상태 크레딧.
+
+    수동은 "전부 취소한 잔고 기준"(§18.1 유저 원칙)이라 진입 방향과 무관하게 되돌린다.
+    근거(2026-07-16 LS 문서·실측 확정): CFOAQ10100은 신규(NewOrdAbleQty)와 청산
+    (LqdtOrdAbleQty)을 분리 반환(예시 38=36+2)하고 우리는 신규만 읽는다 → 보유를 더해야
+    빈-상태. 이중계상 아님. 신규 8 + 보유 2 = 10 → target 숏10 → net = −10 − (+2) = 매도 12.
+    정정 전엔 크레딧 0 → target 숏8 → 매도 10(과소)."""
     t, broker = isolated_trader
     broker._prices[SYM] = 300.0
     broker._balance["futures_order_cash_kr"] = 1_000_000_000
     broker.set_positions([{"symbol": SYM, "qty": 2, "side": "long", "avg_price": 300.0}])
     captured = {}
-    broker.orderable_qty = lambda symbol, side, price: (
-        captured.setdefault(side, price) or 8)
+
+    def _oq(symbol, side, price):       # side 기록 + 신규여력 8 반환(=flat 10 − 보유 2)
+        captured[side] = price
+        return 8
+
+    broker.orderable_qty = _oq
     d = _def_pct(100)
     d["position"]["direction"] = "short"
     by = [{"strategy_id": "s", "candidates": [{"symbol": SYM, "direction": "short"}]}]
     strats = [{"id": "s", "name": "숏", "definition": d, "account_ref": None}]
     t._cycle_body(strats, _ds("2026-05-29", 300.0), None, by, {}, "KRX")
-    # 숏 진입 사이징은 orderable(sell)만(롱 보유 크레딧 미적용) — 과대 미악화.
     assert "sell" in captured, "숏 진입은 orderable(sell)로 사이징"
+    sells = [o for o in broker.submitted if o["side"] == "sell"]
+    assert sum(o["qty"] for o in sells) == 12, \
+        ("빈-상태(신규8+보유2=10) 숏 target − 롱보유(+2) = 매도 12여야 — 실제 "
+         f"{[(o['side'], o['qty']) for o in broker.submitted]}")
+    assert not [o for o in broker.submitted if o["side"] == "buy"]
+
+
+def test_flat_capacity_manual_short_long_entry_mwmw_shape(isolated_trader):
+    """§18.2 정정 — mwmw 2026-07-16 실측 형상 재현: 수동 **숏 4** + 자동 **롱** 진입 50%.
+
+    실측: 신규매수 5(NewOrdAbleQty)·청산매수 4(LqdtOrdAbleQty) → 빈-상태 9.
+    크레딧 미적용이던 정정 전: 5×50% = 롱2 → 매수 6 (실제로 이렇게 체결됐다).
+    정정 후: (5+4)×50% = floor(4.5) = 롱4 → net = +4 − (−4) = 매수 8 (≤ 총 매수가능 9)."""
+    t, broker = isolated_trader
+    broker._prices[SYM] = 300.0
+    broker._balance["futures_order_cash_kr"] = 1_000_000_000
+    broker.set_positions([{"symbol": SYM, "qty": 4, "side": "short", "avg_price": 310.0}])
+    broker.orderable_qty = lambda symbol, side, price: 5   # 신규 5(= flat 9 − 보유 4)
+    d = _def_pct(100)
+    d["position"]["sizing"] = {"mode": "equal_weight", "futures_margin_pct": 50.0}
+    by = [{"strategy_id": "29", "candidates": [{"symbol": SYM, "direction": "long"}]}]
+    strats = [{"id": "29", "name": "오버나이트", "definition": d, "account_ref": None}]
+    t._cycle_body(strats, _ds("2026-05-29", 300.0), None, by, {}, "KRX")
+    buys = [o for o in broker.submitted if o["side"] == "buy"]
+    assert sum(o["qty"] for o in buys) == 8, \
+        ("빈-상태(5+4=9)×50% = 롱4 target − 숏보유(−4) = 매수 8이어야 — 실제 "
+         f"{[(o['side'], o['qty']) for o in broker.submitted]}")
+    assert not [o for o in broker.submitted if o["side"] == "sell"]
 
 
 def test_a1_external_pending_same_direction_nets(isolated_trader):
