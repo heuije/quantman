@@ -107,8 +107,9 @@ class SettingsApp:
         self.cmd_client.start()
 
         # Phase 60 — GitHub releases 최신 버전 체크.
-        # 시작 시 1회 + 사용자가 창에 focus 줄 때마다 (트레이 복원·alt-tab 등). 폴링 없음.
-        # 60s throttle로 빠른 위젯 클릭 시 중복 호출 방지. 이미 새 버전 감지 후엔 skip.
+        # 감지 경로 3개: 시작 시 1회 + focus 시(트레이 복원·alt-tab, 60s throttle)
+        # + 자동설치 틱의 1시간 주기 재체크(방치된 무인 PC 감지 보장, _auto_update_tick).
+        # 이미 새 버전 감지 후엔 재체크 skip.
         self._update_info: dict | None = None
         self._last_update_check = 0.0
         if updater.is_frozen():
@@ -2571,7 +2572,8 @@ class SettingsApp:
     def _check_updates_async(self):
         """background에서 GitHub releases 최신 버전 조회. 새 버전이면 배너 표시.
 
-        호출 경로: 시작 시 1회 + FocusIn 이벤트(사용자가 창에 돌아올 때).
+        호출 경로: 시작 시 1회 + FocusIn 이벤트(사용자가 창에 돌아올 때)
+        + _auto_update_tick의 1시간 주기 재체크(무인 PC도 감지되도록).
         예외는 명시적으로 debug log — silent pass는 4원칙 위반이라 디버깅 가능하게.
         """
         import time
@@ -2721,15 +2723,24 @@ class SettingsApp:
         self.root.quit()    # mainloop 종료 → 프로세스 종료 → updater가 교체 시작
 
     def _auto_update_tick(self):
-        """무인 자동 업데이트 — 새 버전 대기 중이면 안전창에서 조용히 적용(운영자 요청).
+        """무인 자동 업데이트 — 감지와 적용 둘 다 사람 없이 (운영자 요청).
 
-        10분 주기. `_update_info`(새 버전 감지)가 있고 frozen 환경이며 안전창
-        (updater.is_safe_update_window — 장중 미가동·미체결 0·16~21시 KST)이면
-        다이얼로그 없이 background로 다운로드·설치·재시작. 하나라도 어긋나면 이번
-        틱 skip, 다음 틱 재시도(수동 배너는 그대로 노출돼 즉시 업데이트도 가능)."""
+        10분 주기, 두 역할:
+        ① 감지: 미감지 상태면 1시간 throttle로 GitHub 재체크. 시작 1회+FocusIn만으론
+           방치된 무인 운용 PC에서 감지 자체가 안 된다(2026-07-16 실측: 아침 기동 뒤
+           발행된 릴리스를 저녁 안전창 내내 미감지 — 감지가 유인 의존이던 구조적 갭).
+        ② 적용: `_update_info`(새 버전 감지)가 있고 frozen 환경이며 안전창
+           (updater.is_safe_update_window — 장중 미가동·미체결 0·16~21시 KST)이면
+           다이얼로그 없이 background로 다운로드·설치·재시작. 하나라도 어긋나면 이번
+           틱 skip, 다음 틱 재시도(수동 배너는 그대로 노출돼 즉시 업데이트도 가능)."""
         import logging
+        import time
         log = logging.getLogger("localapp.gui.autoupdate")
         try:
+            if (self._update_info is None
+                    and time.time() - self._last_update_check >= 3600.0):
+                threading.Thread(target=self._check_updates_async,
+                                  daemon=True, name="update-recheck").start()
             info = self._update_info
             if info and info.get("url") and updater.is_frozen():
                 from . import intraday_loop, trader
