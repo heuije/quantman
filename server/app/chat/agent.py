@@ -70,7 +70,9 @@ def _history_to_wire(session: Session, conversation_id: int) -> list[dict]:
     return wire
 
 
-MAX_TOOL_ROUNDS = 8     # 한 사용자 턴당 도구 라운드 상한(무한루프·비용 가드)
+MAX_TOOL_ROUNDS = 12    # 한 사용자 턴당 도구 라운드 상한(무한루프 가드). 복합 요청(수급+차트+
+                        # 밸류+추천 등 여러 분석을 한 턴에)이 8라운드에 막혀 미완되던 것을 완화 —
+                        # 답변 완결성 우선(비용보다 '구체적으로 답한다'가 목표).
 
 # 상한 소진 시 부분결과 강제 종합 지시(Phase 1a) — 도구 없는 마지막 1콜에 주입.
 _SYNTH_DIRECTIVE = (
@@ -136,7 +138,9 @@ def _worse(a: str | None, b: str | None) -> str | None:
 # (결정적·재시도 무익)를 갈라 복구 제안을 다르게 준다(막다른 '잠시 후 다시'의 증상 #4a 근본).
 _FAILURE_COPY = {
     "transient": ("일시적인 연결 문제로", "잠시 후 다시 시도해 주세요."),
-    "analysis": ("문제가 생겨", "조건을 단순하게 하거나 종목·기간을 좁혀 다시 시도해 주세요."),
+    # 내부 처리 오류를 사용자 '조건'(종목·기간·복잡도) 탓으로 돌리지 않는다 — 유효한 요청도
+    # 이 메시지를 받으면 "내 질문이 과했나" 오해한다(희제 실사용 신고). 정직히 재시도만 권한다.
+    "analysis": ("오류가 생겨", "잠시 후 다시 시도해 주세요."),
 }
 
 
@@ -345,7 +349,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
             # 진행 라벨(표시 전용·비영속) — LLM 라운드는 스트림 델타가 없을 수 있어(로컬 shim은
             # 텍스트를 끝에 일괄 방출) 이 이벤트가 없으면 화면이 수 분간 정지된 듯 보인다.
             yield ("progress", {"label": f"모델 응답 생성 중 (라운드 {acc['rounds'] + 1})"})
-            with client.messages.stream(model=model, max_tokens=4096, system=system,
+            with client.messages.stream(model=model, max_tokens=8192, system=system,
                                         thinking={"type": "disabled"},   # Sonnet5는 thinking 기본ON→응답에
                                         # thinking블록 포함→멀티턴 히스토리 재구성 시 유실되면 400. 오케스트레이터는
                                         # thinking 불필요(4.6 검증동작)이라 끈다(라운드마다 thinking토큰 낭비도 제거).
@@ -399,7 +403,10 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                         full.update(classify_status(full))
                     except Exception:   # noqa: BLE001 — 품질 주석 실패가 대화를 깨면 안 됨
                         _log.exception("[chat] classify_status 실패 conv=%s", conversation_id)
-                full = attach_methodology(full)   # 백테스트면 structured 방법론 동봉(웹 패널·#7·#1)
+                try:
+                    full = attach_methodology(full)   # 백테스트면 structured 방법론 동봉(웹 패널·#7·#1)
+                except Exception:   # noqa: BLE001 — 방법론 주석은 부가 정보: 실패해도 턴을 깨지 않는다
+                    _log.exception("[chat] attach_methodology 실패 conv=%s", conversation_id)
                 if isinstance(full, dict):
                     worst_status = _worse(worst_status, full.get("status"))
                     if turn_shape is None and full.get("shape"):
@@ -408,7 +415,16 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                 assistant_parts.append({"type": "tool_result", "tool_use_id": b.id,
                                         "name": b.name, "result": full})
                 yield ("tool_result", {"tool_use_id": b.id, "name": b.name, "result": full})
-                content = compact_summary(b.name, full)
+                try:
+                    content = compact_summary(b.name, full)
+                except Exception:   # noqa: BLE001 — compact 요약은 *모델 컨텍스트용 표시 헬퍼*다.
+                    # 실제 결과(full payload)는 이미 UI로 yield됐으므로, 요약 렌더가 어떤 형상에서
+                    # 터져도 최소 요약으로 대체해 턴을 계속한다 — 결과가 멀쩡한데 요약 예외 하나가
+                    # 턴을 통째로 막다른길("처리 중 오류")로 만들던 부류를 근본 차단(희제 실사용 신고).
+                    _log.exception("[chat] compact_summary 실패 conv=%s tool=%s", conversation_id, b.name)
+                    ok_flag = full.get("success", True) if isinstance(full, dict) else True
+                    content = (f"[{b.name}] 결과를 받았습니다(요약 생성 실패 — 결과 카드를 참고해 해석하세요)."
+                               if ok_flag else f"[{b.name} 실패]")
                 sig = _ir_sig(full.get("ir")) if isinstance(full, dict) else None
                 if sig is not None:
                     if sig in seen_sigs:        # ③제어 — 한 턴 내 동일 IR 재실행 = 헛돌이
@@ -457,7 +473,7 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
         yield ("progress", {"label": "부분 결과 종합 중"})
         try:
             synth_text = ""
-            with client.messages.stream(model=model, max_tokens=4096, system=system,
+            with client.messages.stream(model=model, max_tokens=8192, system=system,
                                         thinking={"type": "disabled"}, messages=messages) as stream:
                 for delta in stream.text_stream:
                     if delta:

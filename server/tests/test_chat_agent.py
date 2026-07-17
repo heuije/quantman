@@ -269,7 +269,10 @@ def test_failure_message_class_and_partial():
     m = chat_agent._failure_message("transient", had_partial=False)
     assert "일시적" in m and "다시 시도" in m and "중간 결과" not in m
     m2 = chat_agent._failure_message("analysis", had_partial=True)
-    assert "중간 결과" in m2 and "좁혀" in m2 and "다시 시도" in m2
+    # 내부 오류를 사용자 '조건'(종목·기간·복잡도) 탓으로 돌리지 않는다 — '좁혀/조건을 단순하게'
+    # 같은 blame 문구를 재도입하지 않도록 회귀 가드(희제 실사용 신고 반영).
+    assert "중간 결과" in m2 and "다시 시도" in m2
+    assert "좁혀" not in m2 and "단순하게" not in m2
 
 
 def test_tool_unexpected_raise_yields_structured_result(monkeypatch):
@@ -298,6 +301,34 @@ def test_tool_unexpected_raise_yields_structured_result(monkeypatch):
     rows = s.exec(select(Message).where(Message.conversation_id == conv.id)
                   .order_by(Message.id)).all()
     assert [r.role for r in rows] == ["user", "assistant"]   # 고아 없이 영속
+
+
+def test_compact_summary_raise_does_not_deadend_turn(monkeypatch):
+    """결과 요약(compact_summary) 렌더가 어떤 형상에서 터져도, 결과가 멀쩡한 턴을 통째로
+    막다른길('오류가 생겨')로 만들지 않는다 — 최소 요약으로 대체하고 최종답변까지 도달(F1 근본).
+
+    희제 실사용: 복합 요청(수급+차트+추천)이 크래시하며 "조건을 단순하게" 오안내됐다. compact 요약은
+    모델 컨텍스트용 표시 헬퍼이므로 그 예외가 실제 결과(full payload·이미 UI로 yield)를 무효화해선 안 된다.
+    """
+    s = _mem_session()
+    conv = Conversation(user_id=1); s.add(conv); s.commit(); s.refresh(conv)
+    monkeypatch.setattr(chat_agent, "run_tool",
+                        lambda name, inp: {"success": True, "query": "select",
+                                           "as_of": "2026-06-17", "universe_size": 5,
+                                           "results": [{"symbol": "AAA", "score": 0.8}]})
+
+    def _boom(name, full):      # noqa: ARG001 — 요약 렌더 폭발 시뮬레이션
+        raise RuntimeError("summary render exploded")
+    monkeypatch.setattr(chat_agent, "compact_summary", _boom)
+    queue = [
+        _Resp([_Block(type="tool_use", id="t1", name="screen",
+                      input={"score_ref": "__SELF__.pb_ratio", "top_n": 3})], "tool_use"),
+        _Resp([_Block(type="text", text="상위 종목은 AAA입니다.")], "end_turn"),
+    ]
+    parts = chat_agent.run_chat_turn(s, conv.id, "스크리닝", client=_FakeClient(queue))
+    assert any(p["type"] == "tool_result" and p["result"].get("success") for p in parts)  # 결과 보존
+    assert any(p["type"] == "text" and "AAA" in p["text"] for p in parts)                  # 최종답변 도달
+    assert not any(p["type"] == "text" and "오류가 생겨" in p["text"] for p in parts)        # 막다른길 아님
 
 
 def test_turn_crash_failsoft_notes_partial_and_records_status(monkeypatch):

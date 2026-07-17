@@ -436,8 +436,11 @@ def run_inspect(tool_input: dict) -> dict:
     for c in have:
         col = pd.to_numeric(sub[c], errors="coerce")     # 비수치 컬럼은 None으로(라인차트 안전)
         series[c] = [None if pd.isna(v) else float(v) for v in col]
+    # 요청했으나 데이터에 없는 컬럼 — 조용히 버리지 않고 명시(모델이 '개인 순매수 분석함'처럼
+    # 없는 데이터를 있는 척하는 환각 차단). compact_summary가 이 note를 모델에 표면화한다.
+    missing = [c for c in columns if c not in have]
     return {"success": True, "query": "inspect", "symbol": resolved,
-            "columns": have, "dates": dates, "series": series}
+            "columns": have, "dates": dates, "series": series, "missing": missing}
 
 
 def run_resolve_symbol(tool_input: dict) -> dict:
@@ -634,7 +637,12 @@ def compact_summary(tool_name: str, result: dict) -> str:
                  + (f" ({c['kind']}" + (f"·{c['exchange']}" if c.get("exchange") else "") + ")")
                  for c in (result.get("candidates") or [])]
         return "[resolve_symbol] 후보(관련도순):\n" + "\n".join(lines)
-    return _status_header(result) + _methodology_header(result) + summarize_result(result)
+    # 결측 컬럼(inspect 등) — 모델에 명시해 '없는 데이터를 있는 척'하는 환각을 막는다.
+    miss = result.get("missing") if isinstance(result, dict) else None
+    miss_note = (f"⚠ 요청 컬럼 중 데이터 없음(분석에서 제외): {', '.join(miss)} — 이 지표는 "
+                 "미제공이니 있는 척 답하지 말고 '미제공'이라 밝히고 나머지로 답하세요.\n"
+                 if miss else "")
+    return miss_note + _status_header(result) + _methodology_header(result) + summarize_result(result)
 
 
 def _equity_period(result: dict) -> str | None:
