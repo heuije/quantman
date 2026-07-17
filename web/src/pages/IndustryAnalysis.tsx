@@ -1925,12 +1925,18 @@ export default function IndustryAnalysis() {
               })()}
             </div>
             <IndustryTreemap companies={companies} onPick={pickCompany} rootId={root} />
-            {/* 증감률별 셀 색상 범례 — 트리맵 우측 하단 */}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 0, marginTop: 6 }}>
-              {[-3, -2, -1, 0, 1, 2, 3].map((v) => (
-                <span key={v} style={{ background: colorByChg(v), color: "#fff",
-                  fontSize: 14, fontWeight: 700, padding: "5px 18px" }}>{v > 0 ? "+" : ""}{v}%</span>
-              ))}
+            {/* 하단 — 좌: 종가 기준 안내 / 우: 증감률별 셀 색상 범례(동일 행) */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+              gap: 12, marginTop: 6 }}>
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                해당 트리맵은 시간외 거래를 반영하지 않으며 종가 기준으로 기록된 수익률입니다.
+              </span>
+              <div style={{ display: "flex", gap: 0 }}>
+                {[-3, -2, -1, 0, 1, 2, 3].map((v) => (
+                  <span key={v} style={{ background: colorByChg(v), color: "#fff",
+                    fontSize: 14, fontWeight: 700, padding: "5px 18px" }}>{v > 0 ? "+" : ""}{v}%</span>
+                ))}
+              </div>
             </div>
           </div>
           {/* 트리맵 아래 — 좌: 기업별 수익률 표 / 우: Stream 누적수익률 차트. 가로·세로 동일(stretch). */}
