@@ -136,7 +136,9 @@ def _worse(a: str | None, b: str | None) -> str | None:
 # (결정적·재시도 무익)를 갈라 복구 제안을 다르게 준다(막다른 '잠시 후 다시'의 증상 #4a 근본).
 _FAILURE_COPY = {
     "transient": ("일시적인 연결 문제로", "잠시 후 다시 시도해 주세요."),
-    "analysis": ("문제가 생겨", "조건을 단순하게 하거나 종목·기간을 좁혀 다시 시도해 주세요."),
+    # 내부 처리 오류를 사용자 '조건'(종목·기간·복잡도) 탓으로 돌리지 않는다 — 유효한 요청도
+    # 이 메시지를 받으면 "내 질문이 과했나" 오해한다(희제 실사용 신고). 정직히 재시도만 권한다.
+    "analysis": ("오류가 생겨", "잠시 후 다시 시도해 주세요."),
 }
 
 
@@ -399,7 +401,10 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                         full.update(classify_status(full))
                     except Exception:   # noqa: BLE001 — 품질 주석 실패가 대화를 깨면 안 됨
                         _log.exception("[chat] classify_status 실패 conv=%s", conversation_id)
-                full = attach_methodology(full)   # 백테스트면 structured 방법론 동봉(웹 패널·#7·#1)
+                try:
+                    full = attach_methodology(full)   # 백테스트면 structured 방법론 동봉(웹 패널·#7·#1)
+                except Exception:   # noqa: BLE001 — 방법론 주석은 부가 정보: 실패해도 턴을 깨지 않는다
+                    _log.exception("[chat] attach_methodology 실패 conv=%s", conversation_id)
                 if isinstance(full, dict):
                     worst_status = _worse(worst_status, full.get("status"))
                     if turn_shape is None and full.get("shape"):
@@ -408,7 +413,16 @@ def stream_chat_turn(session: Session, conversation_id: int, user_text: str,
                 assistant_parts.append({"type": "tool_result", "tool_use_id": b.id,
                                         "name": b.name, "result": full})
                 yield ("tool_result", {"tool_use_id": b.id, "name": b.name, "result": full})
-                content = compact_summary(b.name, full)
+                try:
+                    content = compact_summary(b.name, full)
+                except Exception:   # noqa: BLE001 — compact 요약은 *모델 컨텍스트용 표시 헬퍼*다.
+                    # 실제 결과(full payload)는 이미 UI로 yield됐으므로, 요약 렌더가 어떤 형상에서
+                    # 터져도 최소 요약으로 대체해 턴을 계속한다 — 결과가 멀쩡한데 요약 예외 하나가
+                    # 턴을 통째로 막다른길("처리 중 오류")로 만들던 부류를 근본 차단(희제 실사용 신고).
+                    _log.exception("[chat] compact_summary 실패 conv=%s tool=%s", conversation_id, b.name)
+                    ok_flag = full.get("success", True) if isinstance(full, dict) else True
+                    content = (f"[{b.name}] 결과를 받았습니다(요약 생성 실패 — 결과 카드를 참고해 해석하세요)."
+                               if ok_flag else f"[{b.name} 실패]")
                 sig = _ir_sig(full.get("ir")) if isinstance(full, dict) else None
                 if sig is not None:
                     if sig in seen_sigs:        # ③제어 — 한 턴 내 동일 IR 재실행 = 헛돌이
