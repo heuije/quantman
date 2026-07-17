@@ -3323,9 +3323,18 @@ thead th { color: var(--muted); font-weight: 600; }
 .strat-card { display: block; width: 100%; text-align: left; cursor: pointer; font: inherit;
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 15px 17px; color: var(--text); }
-.strat-card:hover { border-color: var(--input-border); }
+/* 커서 올리면 연한 노란색 강조 — 반투명이라 라이트(흰 패널)·다크 양쪽에서 자연스럽게 */
+.strat-card:hover { border-color: var(--accent); background: rgba(255, 224, 102, 0.20); }
 .strat-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.strat-name { font-size: 15px; font-weight: 600; }
+/* 제목 한 줄 고정 — 넘치면 말줄임(…), 뱃지는 우측 고정 */
+.strat-name { font-size: 15px; font-weight: 600; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 라벨:값 메타(설정기간·투자수익률·전략요약) */
+.strat-meta { margin: 12px 0 0; display: grid; gap: 7px; }
+.strat-meta-row { display: grid; grid-template-columns: 78px 1fr; gap: 8px; align-items: baseline; font-size: 12.5px; }
+.strat-meta-row dt { color: var(--muted); white-space: nowrap; }
+.strat-meta-row dd { margin: 0; color: var(--text); }
+.strat-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .strat-status { font-size: 11px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .strat-status.connected { color: var(--green); }
 .strat-target { font-size: 12px; margin: 10px 0 12px; }
