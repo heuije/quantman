@@ -1,8 +1,8 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { CompileQuota } from "../api";
 import type { ChatMessage, ChatPart } from "../types";
-import ChatResultView from "../components/ChatResultView";
+import ChatReport from "../components/ChatReport";
 
 // 라인 아이콘(상단 네비와 동일 스타일 — currentColor stroke)
 const SIc = ({ d }: { d: string }) => (
@@ -21,16 +21,6 @@ const STARTERS: { label: string; icon: string; prompts: string[] }[] = [
     prompts: ["20일선 돌파 매수·5% 익절 전략을 백테스트해줘", "RSI 30 이하 매수 전략의 최근 3년 성과"] },
 ];
 
-// memo — 스트리밍 중 텍스트 델타로 메시지가 갱신돼도 참조가 안 바뀐 tool_result(차트) 파트는
-// 재렌더하지 않는다(델타마다 차트 재렌더되는 렉 회피).
-const PartView = memo(function PartView({ part }: { part: ChatPart }) {
-  if (part.type === "text") return <p className="chat-text">{part.text}</p>;
-  if (part.type === "tool_use")
-    return <div className="chat-tool">{part.progress ? `${part.progress}…` : `🔧 ${part.name} 실행 중…`}</div>;
-  if (part.type === "tool_result") return <ChatResultView result={part.result} />;
-  return null;
-});
-
 export default function ChatLab() {
   const [convId, setConvId] = useState<number | null>(null);
   const [convs, setConvs] = useState<{ id: number; title: string }[]>([]);
@@ -38,9 +28,6 @@ export default function ChatLab() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // 진행 단계 라벨(SSE progress·표시 전용) — 델타/도구 이벤트가 오면 그쪽이 진행 표시를
-  // 대신하므로 비우고, 다음 progress가 오면 다시 채운다.
-  const [progress, setProgress] = useState<string | null>(null);
   // 사용량 카운터 + 운영진 언락(서버 강제 일일 한도). 비번은 sessionStorage에만 보관하고 매 요청에 동봉.
   const [adminPw, setAdminPw] = useState<string>(() => sessionStorage.getItem("chat_admin_pw") || "");
   const [quota, setQuota] = useState<CompileQuota | null>(null);
@@ -158,16 +145,16 @@ export default function ChatLab() {
         cid = conv.id; setConvId(cid);
       }
       await api.streamChatMessage(cid, text, {
-        // 델타는 마지막 파트가 텍스트면 이어붙이고, 아니면(도구 결과 뒤) 새 텍스트 파트를 연다.
-        onDelta: (t) => { setProgress(null); patch((parts) => {
+        // 파트는 계속 누적하되(완료 후 ChatReport가 최종 산출만 렌더·서버 영속과 일치) 스트리밍
+        // 중엔 화면에 진행 서술을 표시하지 않는다. 델타는 마지막 텍스트 파트에 이어붙인다.
+        onDelta: (t) => patch((parts) => {
           const last = parts[parts.length - 1];
           if (last && last.type === "text")
             return [...parts.slice(0, -1), { type: "text", text: last.text + t }];
           return [...parts, { type: "text", text: t }];
-        }); },
-        onToolUse: (p) => { setProgress(null); patch((parts) => [...parts, { type: "tool_use", ...p }]); },
-        onToolResult: (p) => { setProgress(null); patch((parts) => [...parts, { type: "tool_result", ...p }]); },
-        onProgress: (label) => setProgress(label),
+        }),
+        onToolUse: (p) => patch((parts) => [...parts, { type: "tool_use", ...p }]),
+        onToolResult: (p) => patch((parts) => [...parts, { type: "tool_result", ...p }]),
       }, adminPw || undefined);
     } catch (e) {
       const raw = e instanceof Error ? e.message : "";
@@ -181,7 +168,6 @@ export default function ChatLab() {
       patch((parts) => (parts.length ? parts : [{ type: "text", text: msg }]));
     } finally {
       setBusy(false);
-      setProgress(null);
       refreshQuota();              // 턴 후 카운터 갱신(차단 429였어도 used 반영)
       refreshConvs();              // 새 대화 등장 + 첫 메시지 자동제목을 사이드바에 반영
     }
@@ -224,31 +210,18 @@ export default function ChatLab() {
           </div>
         )}
         {messages.map((m, i) => {
-          // 한 메시지에 도구결과가 여럿이면(에이전트 다중 호출) 마지막만 펼치고 이전은 접는다 —
-          // 거의 같은 차트가 난립하던 ④ 표현 결함 차단(③로 재실행이 줄어도 남는 다중호출 대비).
-          let lastTr = -1;
-          m.parts.forEach((p, j) => { if (p.type === "tool_result") lastTr = j; });
+          // 사용자에게 필요 없는 진행 서술(도구 실행·중간 결과·"~하겠습니다" 델타)은 화면에서 제거.
+          // · 진행 중(스트리밍) 어시스턴트 턴: "분석 중…" 한 줄만.
+          // · 완료된 어시스턴트 턴: 최종 산출만 4섹션 보고서(ChatReport)로.
+          const streaming = m.role === "assistant" && busy && i === messages.length - 1;
           return (
             <div key={i} className={"chat-msg " + m.role}>
-              {m.parts.length === 0
-                ? (m.role === "assistant" && busy
-                    ? <p className="chat-text muted">{progress ?? "분석 중"}…</p>
-                    : null)
-                : m.parts.map((p, j) =>
-                    p.type === "tool_result" && j !== lastTr ? (
-                      <details key={j} style={{ margin: "4px 0" }}>
-                        <summary style={{ cursor: "pointer", fontSize: "0.8em", color: "var(--muted)" }}>
-                          📊 중간 분석 결과 (펼치기)
-                        </summary>
-                        <PartView part={p} />
-                      </details>
-                    ) : (
-                      <PartView key={j} part={p} />
-                    ))}
-              {/* 도구 결과 뒤 다음 LLM 라운드(델타 없는 구간)의 진행 표시 — 마지막 버블에만 */}
-              {m.role === "assistant" && busy && progress != null && m.parts.length > 0
-                && i === messages.length - 1
-                && <p className="chat-text muted">{progress}…</p>}
+              {m.role === "user"
+                ? m.parts.map((p, j) => (p.type === "text"
+                    ? <p key={j} className="chat-text">{p.text}</p> : null))
+                : streaming
+                  ? <p className="chat-text muted">분석 중…</p>
+                  : <ChatReport parts={m.parts} />}
             </div>
           );
         })}
