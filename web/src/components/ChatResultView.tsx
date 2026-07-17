@@ -448,7 +448,7 @@ function ContextCard({ context }: { context?: IrStrategyResult["context"] }) {
   );
 }
 
-export default function ChatResultView({ result }: Props) {
+export default function ChatResultView({ result, hideMethodology }: Props & { hideMethodology?: boolean }) {
   // 결과가 IR을 들고 오면(=엔진 분석) 결과 아래에 '엑셀로 내보내기'(증빙)와 '변수 조정'(실시간
   // 재실행) 도구를 붙인다. inspect(원시 dump)·저장 카드 등 IR 없는 결과엔 미노출.
   const ir0 = (result as { ir?: Record<string, unknown> }).ir;
@@ -472,7 +472,7 @@ export default function ChatResultView({ result }: Props) {
     && !isComposite;
   return (
     <>
-      <ChatResultBody result={live.result} />
+      <ChatResultBody result={live.result} hideMethodology={hideMethodology} />
       <ContextCard context={(live.result as unknown as IrStrategyResult).context} />
       {ir0 && EXCEL_SHAPES.has(shape) && <ExcelExportButton ir={live.ir ?? ir0} />}
       {canLink && <AutotradeLinkButton ir={tradableIr as Record<string, unknown>} />}
@@ -665,14 +665,14 @@ function StatusBanner({ status, verdict }: { status: string; verdict?: string })
 // Wave 2 T2 — 분석 방법(provenance.ir_summary) 패널. 사용자가 백테스트 로직(기간·기준자본·종목·
 // 방향·사이징·진입/청산·체결가정)을 보고 결과를 직접 검증하게 한다(증상 #7·#1). 사실 출처는 core
 // execution_summary 단일(서버 attach_methodology가 붙임 — TS에 가정값 중복 없음). DESIGN var 토큰.
-function MethodologyPanel({ m }: { m: NonNullable<IrStrategyResult["methodology"]> }) {
+export function MethodologyPanel({ m, open }: { m: NonNullable<IrStrategyResult["methodology"]>; open?: boolean }) {
   const items = [...(m.confirmed ?? []), ...(m.assumed ?? [])];
   const cap = m.initial_capital != null ? Math.round(m.initial_capital).toLocaleString() : null;
   const head = [m.period ? `기간 ${m.period}` : null, cap ? `기준자본 ${cap}원` : null]
     .filter(Boolean).join(" · ");
   if (items.length === 0 && !head && !m.data_source) return null;
   return (
-    <details className="chat-methodology" style={{
+    <details className="chat-methodology" open={open} style={{
       border: "1px solid var(--border)", background: "var(--panel)",
       borderRadius: 8, padding: "6px 10px", marginBottom: 8, fontSize: 12.5,
     }}>
@@ -701,7 +701,7 @@ function MethodologyPanel({ m }: { m: NonNullable<IrStrategyResult["methodology"
   );
 }
 
-function ChatResultBody({ result }: Props) {
+function ChatResultBody({ result, hideMethodology }: Props & { hideMethodology?: boolean }) {
   const r = result as unknown as IrStrategyResult;
 
   // save_strategy: 저장 완료 카드 (엔진 형상이 아닌 상태 결과 — 레지스트리 밖 선처리)
@@ -738,7 +738,7 @@ function ChatResultBody({ result }: Props) {
     : null;
 
   // T2 자기서술 — 백테스트면 방법론 패널(배너 다음·차트 위). 서버가 backtest 결과에만 붙인다.
-  const method = r.methodology ? <MethodologyPanel m={r.methodology} /> : null;
+  const method = !hideMethodology && r.methodology ? <MethodologyPanel m={r.methodology} /> : null;
 
   // 형상 레지스트리 단일 조회 — 엔진 스탬프(result.shape) 우선, 미스탬프는 deriveShape 폴백.
   const shape = (r as { shape?: string }).shape ?? deriveShape(r);

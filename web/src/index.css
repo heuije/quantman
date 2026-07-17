@@ -3128,9 +3128,45 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 
 /* ── 인라인 결과 차트 (P1a) ───────────────────────────────────────────────── */
-/* assistant 버블이 차트를 담을 때 넓이 확장 */
-.chat-msg.assistant:has(.chat-result) { max-width: 96%; }
+/* assistant 버블이 차트/리포트를 담을 때 넓이 확장 */
+.chat-msg.assistant:has(.chat-result),
+.chat-msg.assistant:has(.chat-report) { max-width: 96%; }
 .chat-result { width: 100%; margin-top: 6px; }
+
+/* ── 보고서 형식 답변 (ChatReport) — 진행 서술 제거 후 최종 산출만 4섹션으로 ───── */
+.chat-report {
+  width: 100%; margin-top: 6px;
+  border: 1px solid var(--border); background: var(--panel);
+  border-radius: 12px; padding: 16px 18px;
+}
+.chat-report-topbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding-bottom: 10px; border-bottom: 1px solid var(--border);
+}
+.chat-report-title { margin: 0; font-size: 16pt; font-weight: 700; color: var(--text); }
+.chat-report-pdf {
+  font-size: 12px; font-weight: 600; padding: 6px 12px; white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: transparent; color: var(--text); cursor: pointer;
+  transition: border-color .12s ease, background .12s ease;
+}
+.chat-report-pdf:hover { border-color: var(--accent); background: var(--accent-soft); }
+.chat-report-section { margin-top: 16px; }
+.chat-report-h {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 8px; font-size: 12pt; font-weight: 700; color: var(--accent-strong);
+}
+.chat-report-h::before {
+  content: ""; width: 3px; height: 15px; border-radius: 2px; background: var(--accent);
+}
+.chat-report-save {
+  font-size: 13px; font-weight: 600; padding: 7px 15px;
+  background: var(--ink); color: #fff; border: none; border-radius: 9px; cursor: pointer;
+  transition: filter .12s ease;
+}
+.chat-report-save:hover { filter: brightness(1.12); }
+.chat-report-save:disabled { background: var(--border); color: var(--muted); cursor: default; }
+.chat-report .chat-result { margin-top: 0; }
 
 /* P4 맥락 카드 — 준실시간 시세·뉴스 사이드카(형상 렌더러와 직교하게 결과 아래 표시) */
 .chat-context {
