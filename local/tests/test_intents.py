@@ -104,15 +104,29 @@ def _kr_row(symbol="005930", side_cd="02", qty=10, px=70000, odno="ORD-X",
 def _mock_broker(daily_ccld_rows=None, overseas_rows=None, raise_kr=False,
                   raise_us=False):
     b = MagicMock()
+    # R2-③: reconcile은 공개 seam(daily_orders_today/overseas_fills_today)을
+    # 우선 사용한다(라우터 관통) — mock도 같은 계약으로 설정.
     if raise_kr:
+        b.daily_orders_today.side_effect = RuntimeError("KIS down")
         b._daily_ccld.side_effect = RuntimeError("KIS down")
     else:
+        b.daily_orders_today.return_value = list(daily_ccld_rows or [])
         b._daily_ccld.return_value = {"output1": daily_ccld_rows or []}
     if raise_us:
+        b.overseas_fills_today.side_effect = RuntimeError("KIS US down")
         b._overseas_ccnl_today.side_effect = RuntimeError("KIS US down")
     else:
+        b.overseas_fills_today.return_value = overseas_rows or []
         b._overseas_ccnl_today.return_value = overseas_rows or []
     return b
+
+
+@pytest.fixture(autouse=True)
+def _no_age_floor(monkeypatch):
+    """레거시 reconcile 테스트는 intent를 '지금' 생성해 즉시 no_fill을 기대한다 —
+    CY-2 나이 하한(60s)을 0으로 낮춰 종전 시맨틱을 검증한다. 하한 자체의 거동은
+    test_order_finality_r2r5.py가 전담 검증."""
+    monkeypatch.setattr(intents, "_NO_FILL_MIN_AGE_SEC", 0)
 
 
 def test_reconcile_match_one_marks_submitted(jpath):
@@ -203,7 +217,7 @@ def test_reconcile_no_submitting_returns_empty(jpath):
 
 
 def test_reconcile_us_symbol_uses_overseas_api(jpath):
-    """US 종목은 _overseas_ccnl_today로 조회."""
+    """US 종목은 해외 체결조회(공개 seam)로 조회 — R2-③ 라우터 관통."""
     intents.begin("2026-05-23", "iid-1", 42, "T", "AAPL", "buy", 5, 200.0,
                   path=jpath)
     broker = _mock_broker(overseas_rows=[
@@ -212,7 +226,7 @@ def test_reconcile_us_symbol_uses_overseas_api(jpath):
          "prcs_stat_name": ""}])
     res = intents.reconcile_submitting(broker, "2026-05-23", path=jpath)
     assert res["matched"] == 1
-    broker._overseas_ccnl_today.assert_called_with("AAPL")
+    broker.overseas_fills_today.assert_called_with("AAPL")
 
 
 # ── end-to-end 크래시 시뮬레이션 ─────────────────────────────────────────────

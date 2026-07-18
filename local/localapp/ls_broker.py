@@ -765,11 +765,15 @@ class LsBroker(_LsAuth):
                     "submitted_at": str(row.get("ordtime") or ""),      # 🟢 HHMMSSMMM
                     "market": "DOMESTIC",
                     "currency": "KRW",
+                    # asset_class — §19 A1 _pend_scope 정합(R6-④, KIS와 동일 수정).
+                    "asset_class": "stock",
                 })
         except Exception as e:
             log.warning("LS 국내 pending 실패: %s", e)
         try:
-            out.extend(self._overseas_pending())
+            for r in self._overseas_pending():
+                r.setdefault("asset_class", "stock")
+                out.append(r)
         except Exception as e:
             log.warning("LS 해외 pending 실패: %s", e)
         return out

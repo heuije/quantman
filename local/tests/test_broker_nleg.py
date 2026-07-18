@@ -40,8 +40,10 @@ def test_futures_only_account_snapshot_no_stock():
 
 
 def test_futures_only_pending_orders_routes_to_futures():
+    # R2-③: pending도 positions(account_snapshot)와 같은 규약 — 계약코드를
+    # 데이터셋 심볼로 정규화해 반환한다(§19 A1 키 매칭).
     r = BrokerRouter(None, _FakeFutures(), resolve=_resolve, dataset_for_code=_d4c)
-    assert r.pending_orders() == [{"order_no": "1", "symbol": "A01609"}]
+    assert r.pending_orders() == [{"order_no": "1", "symbol": "코스피200선물"}]
 
 
 def test_futures_only_buy_routes_to_futures():

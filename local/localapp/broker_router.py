@@ -247,6 +247,32 @@ class BrokerRouter:
             return None, None
 
     # ── 그 외(주식 전용·잔고·여력 등)는 stock으로 위임 ────────────────────────────
+    def pending_orders(self) -> list[dict]:
+        """주식+선물 미체결 병합 (R2-③/R6-④ — 종전 __getattr__ 위임은 stock만).
+
+        선물 미체결이 §19 A1 자기주문 제외와 broker_pending 관측(스냅샷)에 안
+        보이던 맹점을 닫는다. 선물 심볼은 계약코드→데이터셋 심볼로 정규화해
+        account_snapshot 포지션 병합과 같은 규약을 따른다(A1 키 매칭). 한쪽
+        조회 실패는 다른 쪽 유지 — 각 브로커 내부의 국내/해외 병합 패턴과 동일.
+        """
+        out: list[dict] = []
+        if self._stock is not None:
+            try:
+                out.extend(self._stock.pending_orders() or [])
+            except Exception as e:
+                log.warning("pending 병합 — 주식측 실패(선물측 유지): %s", e)
+        if self._futures is not None and hasattr(self._futures, "pending_orders"):
+            try:
+                for r in self._futures.pending_orders() or []:
+                    sym = str(r.get("symbol") or "")
+                    ds = self._d4c(sym) if sym else None
+                    if ds:
+                        r["symbol"] = ds
+                    out.append(r)
+            except Exception as e:
+                log.warning("pending 병합 — 선물측 실패(주식측 유지): %s", e)
+        return out
+
     def __getattr__(self, name):
         # _stock/_futures/_resolve 등 내부 속성은 정상 조회(무한재귀 방지).
         if name.startswith("_"):
