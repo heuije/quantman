@@ -94,3 +94,44 @@ def test_unsafe_after_dawn_window():
     ok, _ = updater.is_safe_update_window(
         _at(7, 5), intraday_running=False, pending_count=0)
     assert ok is False
+
+
+# ── #9(2026-07-19) — KR 비거래일(주말·휴장)은 낮 구간도 안전(06:10~21:00) ────
+
+
+def test_kr_off_day_daytime_safe(monkeypatch):
+    from quant_core import market_calendar as mc
+    monkeypatch.setattr(mc, "is_session_day", lambda m, d: False)
+    ok, _ = updater.is_safe_update_window(
+        _at(10, 30), intraday_running=False, pending_count=0)
+    assert ok is True
+
+
+def test_kr_trading_day_daytime_blocked(monkeypatch):
+    from quant_core import market_calendar as mc
+    monkeypatch.setattr(mc, "is_session_day", lambda m, d: True)
+    ok, reason = updater.is_safe_update_window(
+        _at(10, 30), intraday_running=False, pending_count=0)
+    assert ok is False and "비거래일" in reason
+
+
+def test_kr_off_day_us_night_still_blocked(monkeypatch):
+    """US 야간 구간(21:00~06:10)은 KR 휴장과 무관하게 유지 — US는 따로 개장 가능."""
+    from quant_core import market_calendar as mc
+    monkeypatch.setattr(mc, "is_session_day", lambda m, d: False)
+    assert updater.is_safe_update_window(
+        _at(22, 0), intraday_running=False, pending_count=0)[0] is False
+    assert updater.is_safe_update_window(
+        _at(5, 0), intraday_running=False, pending_count=0)[0] is False
+
+
+def test_calendar_error_falls_back_to_fixed_windows(monkeypatch):
+    """캘린더 조회 불가(범위 밖·미배포) — 기존 고정창만(보수 폴백)."""
+    from quant_core import market_calendar as mc
+
+    def _boom(m, d):
+        raise RuntimeError("캘린더 stale")
+
+    monkeypatch.setattr(mc, "is_session_day", _boom)
+    assert updater.is_safe_update_window(
+        _at(10, 30), intraday_running=False, pending_count=0)[0] is False

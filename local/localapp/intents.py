@@ -160,6 +160,34 @@ def list_submitting_today(date_iso: str,
     return out
 
 
+def submitted_window(date_iso: str, since_iso_ts: str,
+                     path: Path | None = None) -> list[dict]:
+    """이번 발주창(seed ts ≥ since) 활성(submitted) intent 목록 — 동시호가 가드(#16) 소비.
+
+    반환 [{intent_id, symbol, side, qty, ref_price, order_no}] — submitted 상태(주문번호
+    보유·미해소)만. failed(멱등 해제됨)와 submitting(주문번호 미상 — 발주 중/ambiguous라
+    가드가 판단 불가)은 제외. ts 필터로 이전 창(예: 아침) 의도가 종가 가드에 섞이지
+    않는다. 동시호가 창 중엔 단일가 체결 전이라 "활성 = 브로커 미체결로 존재"가 성립 —
+    브로커 미체결에 없으면 유저 취소로 확정할 수 있다(가드의 감지 전제)."""
+    by_intent = _group_by_intent(_read_today(date_iso, path=path))
+    out: list[dict] = []
+    for iid, events in by_intent.items():
+        seed = events[0]
+        if seed.get("phase") != "submitting":
+            continue
+        if str(seed.get("ts", "")) < since_iso_ts:
+            continue
+        if _terminal_status(events) != "submitted":
+            continue
+        order_no = next((str(ev["order_no"]) for ev in reversed(events)
+                         if ev.get("order_no")), "")
+        out.append({"intent_id": iid, "symbol": seed.get("symbol", ""),
+                    "side": seed.get("side", ""), "qty": int(seed.get("qty") or 0),
+                    "ref_price": float(seed.get("ref_price") or 0),
+                    "order_no": order_no})
+    return out
+
+
 # ── reconcile ─────────────────────────────────────────────────────────────────
 
 

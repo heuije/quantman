@@ -150,6 +150,9 @@ def is_safe_update_window(now_kst, *, intraday_running: bool,
          US pre-warm(개장−40분, 야간 DST상 이르면 ~21:50) 전. 새벽창: 미국 정산
          (여름 05:05·겨울 06:05 — 겨울에도 06:05 이후) 뒤 ~ 아침 pre-warm(08:05) 전
          여유 포함 07:00 컷. 아침 pre-warm/개장·종가 사이클은 시각 게이트가 덮는다.
+         **KR 비거래일(주말·휴장, #9 2026-07-19)은 06:10~21:00 연속 허용** — KRX 낮
+         활동(예열·회차·정산)이 전부 skip이라 낮 블록의 이유가 소멸. US 야간 구간
+         (21:00~06:10)은 KR 휴장과 무관하게 유지(US는 KR 휴장일에도 개장 가능).
 
       ④ 사이클 미실행(cycle_in_flight=False) — R5: 시각창 안이라도 catchup·수동
          트리거 사이클이 도는 중이면 재시작이 발주·기장 도중을 끊는다(락 보유 확인).
@@ -163,8 +166,20 @@ def is_safe_update_window(now_kst, *, intraday_running: bool,
         return False, "매매 사이클 실행 중(락 보유) — 종료 후 재평가"
     in_evening = 16 <= now_kst.hour < 21
     in_dawn = now_kst.hour == 6 and now_kst.minute >= 10      # 06:10~06:59
+    in_kr_off_daytime = False
     if not (in_evening or in_dawn):
-        return False, f"안전창(16~21시·06:10~07:00 KST) 밖 — 현재 {now_kst:%H:%M}"
+        # #9(2026-07-19) — KR 비거래일이면 낮 구간(07:00~16:00)도 안전 → 06:10~21:00.
+        # 캘린더 조회 불가(범위 밖·미배포)는 기존 고정창만 사용 — 외부 데이터(배포
+        # 캘린더) 한계에 대한 보수 폴백.
+        if (now_kst.hour, now_kst.minute) >= (6, 10) and now_kst.hour < 21:
+            try:
+                from quant_core import market_calendar as mc
+                in_kr_off_daytime = not mc.is_session_day("KR", now_kst.date())
+            except Exception:
+                in_kr_off_daytime = False
+    if not (in_evening or in_dawn or in_kr_off_daytime):
+        return False, (f"안전창(16~21시·06:10~07:00·KR 비거래일 06:10~21시 KST) 밖"
+                       f" — 현재 {now_kst:%H:%M}")
     return True, "안전창"
 
 

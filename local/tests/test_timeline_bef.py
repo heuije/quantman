@@ -56,3 +56,15 @@ def test_prewarm_realigned(monkeypatch):
     ids = [k for k in jobs if k.startswith("dataset_sync_")]
     assert sorted(ids) == ["dataset_sync_0805", "dataset_sync_0820",
                             "dataset_sync_0832"]
+
+
+def test_auction_guard_windows_registered(monkeypatch):
+    """#16 — 동시호가 가드 4창(발주 직후~단일가 수십 초 전) 등록 회귀 잠금."""
+    jobs = _register(monkeypatch).jobs
+    assert _cron_hm(jobs["guard_open_futures"]["trigger"]) == ("8", "36")
+    assert _cron_hm(jobs["guard_open_stock"]["trigger"]) == ("8", "56")
+    assert _cron_hm(jobs["guard_close_stock"]["trigger"]) == ("15", "26")
+    assert _cron_hm(jobs["guard_close_futures"]["trigger"]) == ("15", "41")
+    kw = jobs["guard_close_futures"]["kwargs"]
+    assert kw["instrument_class"] == "futures" and kw["window"] == "close"
+    assert kw["start_hm"] == (15, 39) and kw["until_hms"] == (15, 44, 30)

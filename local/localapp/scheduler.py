@@ -257,6 +257,25 @@ def register_jobs(sched) -> None:
         id="krx_close_cycle_futures", name="KRX 종가 매도 사이클 (선물·당일매매)",
         misfire_grace_time=300)
 
+    # ── 동시호가 가드(#16 · 2026-07-19) — 창내 수동 개입 실시간 정합 ────────────
+    # 자동 발주 직후~단일가 수십 초 전까지 10초 폴링: 자동 주문 유저 변경은 취소+
+    # 재발주로 복원, 목표 초과 수동 미체결은 최신 주문부터 취소(상세 auction_guard.py).
+    # start_hm = 그 창의 자동 발주 시작 직전(이후 own intent만 이번 창 소속).
+    from . import auction_guard
+    for _cls, _win, _start, _at, _until, _jid in [
+        ("futures", "open", (8, 34), (8, 36), (8, 44, 30), "guard_open_futures"),
+        ("stock", "open", (8, 54), (8, 56), (8, 59, 30), "guard_open_stock"),
+        ("stock", "close", (15, 24), (15, 26), (15, 29, 30), "guard_close_stock"),
+        ("futures", "close", (15, 39), (15, 41), (15, 44, 30), "guard_close_futures"),
+    ]:
+        sched.add_job(
+            auction_guard.run_auction_guard,
+            CronTrigger(day_of_week="mon-fri", hour=_at[0], minute=_at[1],
+                        timezone="Asia/Seoul"),
+            kwargs={"instrument_class": _cls, "window": _win,
+                    "start_hm": _start, "until_hms": _until},
+            id=_jid, name=f"동시호가 가드 ({_win}·{_cls})", misfire_grace_time=60)
+
     # ── 미국(US) 동적 야간 플래너 ────────────────────────────────────────────
     sched.add_job(
         _plan_us_session, kwargs={"sched": sched},

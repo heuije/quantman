@@ -102,23 +102,13 @@ def test_gui_cancel_order_uses_make_broker():
     )
 
 
-def test_run_once_uses_active_cred_ok():
-    """_run_once가 active_cred_ok()를 사용하는지 소스 텍스트 검증."""
+def test_run_once_button_removed():
+    """'지금 한 번 실행' 버튼 제거 잠금(2026-07-19 유저 결정 — 자동 따라잡기·재시도
+    정비 후 실익 없음, 장중 오클릭 실발주 위험만 잔존). 재도입 시 리뷰 필요."""
     gui_path = _LOCAL / "localapp" / "gui.py"
     source = gui_path.read_text(encoding="utf-8")
-
-    start = source.find("def _run_once(")
-    end = source.find("\n    def ", start + 1)
-    if end == -1:
-        end = len(source)
-    fn_src = source[start:end]
-
-    assert "load_kis() is None" not in fn_src, (
-        "_run_once에 아직 load_kis() is None 가드가 남아 있습니다."
-    )
-    assert "active_cred_ok" in fn_src, (
-        "_run_once에 active_cred_ok() 호출이 없습니다."
-    )
+    assert "def _run_once(" not in source
+    assert 'trigger="manual"' not in source
 
 
 # ── 3. runner._wait_for_order_ws: LS 활성 시 즉시 반환 ────────────────────────

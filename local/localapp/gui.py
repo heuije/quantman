@@ -369,8 +369,8 @@ class SettingsApp:
         self.af = ttk.LabelFrame(self.root, text="③ 자동매매")
         self.af.pack(fill="x", **pad)
         _af_desc = ttk.Label(self.af, style="Muted.TLabel", justify="left",
-                             text="시작하면 평일 오전 8시 55분에 자동으로 매매합니다. "
-                                  "‘지금 한 번 실행’으로 즉시 테스트할 수 있습니다.")
+                             text="시작하면 평일 개장·종가 창에서 자동으로 매매하고, "
+                                  "놓친 회차는 스스로 따라잡습니다.")
         _af_desc.pack(anchor="w", padx=12, pady=(8, 4), fill="x")
         self._flow(_af_desc)
         row = ttk.Frame(self.af)
@@ -379,9 +379,9 @@ class SettingsApp:
                                      style="Accent.TButton",
                                      command=self._toggle_auto)
         self.btn_toggle.pack(side="left")
-        self.btn_cycle = ttk.Button(row, text="지금 한 번 실행",
-                                    command=self._run_once)
-        self.btn_cycle.pack(side="left", padx=8)
+        # "지금 한 번 실행" 버튼은 제거(2026-07-19 유저 결정 — 자동 따라잡기·재시도
+        # 정비 후 실익 없음·장중 오클릭 시 실발주 위험만 잔존). cycle_msg 라벨은
+        # 상태 요약(최근 평가금액·보유) 표시용으로 유지.
         self.cycle_msg = ttk.Label(self.af, style="Muted.TLabel", text="")
         self.cycle_msg.pack(anchor="w", padx=12, pady=(2, 8))
 
@@ -2532,33 +2532,6 @@ class SettingsApp:
         except Exception as e:
             log.warning("[boot] 자동매매 자동 재개 실패(수동 시작 필요): %s", e)
 
-    def _run_once(self):
-        if not secrets_store.active_cred_ok():
-            msg = f"{secrets_store.active_cred_label()}을 먼저 등록하세요. (App Key/Secret/계좌번호)"
-            if secrets_store.get_active_broker() == "kis":
-                msg += "\nKIS 모의투자 가입은 무료이며 즉시 발급됩니다."
-            messagebox.showwarning("자격증명 필요", msg)
-            return
-        self.btn_cycle.config(state="disabled")
-        self.cycle_msg.config(text="실행 중... (시세 수집에 시간이 걸릴 수 있습니다)")
-
-        def job():
-            from .runner import run_cycle
-            return run_cycle(trigger="manual")
-
-        def done(payload, err):
-            self.btn_cycle.config(state="normal")
-            if err:
-                self.cycle_msg.config(text=f"오류: {err}")
-            else:
-                b = payload["balance"]
-                self.cycle_msg.config(
-                    text=f"완료 — 평가금액 {b['total_eval']:,}원 · "
-                         f"보유 {len(payload['positions'])}종목 · "
-                         f"체결 {len(payload['trades'])}건")
-            self.refresh_status()
-
-        self._run_bg(job, done)
 
     def _on_close(self):
         if self.on_close_to_tray:
