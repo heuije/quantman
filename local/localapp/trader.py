@@ -200,6 +200,43 @@ def _gap_pct(prev_close: float, cur_price: float) -> float:
     return (cur_price - prev_close) / prev_close * 100
 
 
+def _held_trading_days(dataset: dict, symbol: str, entry_iso: str,
+                       today: date) -> int:
+    """보유 **거래일** 수 — dataset 봉 수 기준 (로드맵 D · 백테스트 파리티).
+
+    백테스트의 held = i − entry_i(봉 수)와 동일 의미. 종전 달력일 산술
+    ((today − entry).days)은 주말·휴장을 세어 hold_days가 긴 전략일수록
+    실전이 백테스트보다 일찍 만기됐다(예: 금 진입 hold_days=5 → 달력일로는
+    수요일, 거래일로는 다음주 금요일). 봉 수 = 실제 거래일이므로 캘린더
+    커버리지(과거 ~수십 일)에도 묶이지 않는다 — 실데이터가 곧 진실.
+
+    사이클은 휴장 게이트(L-03)를 통과한 거래일에만 돌므로, 오늘 봉이 아직
+    없으면(아침 창 — 번들은 전일까지) 오늘을 진행 중인 봉 1개로 센다
+    (백테스트의 "현재 바 i"에 해당). 시세 부재는 예외 — 호출자의 기존
+    파싱 실패 경로(보류·표면화)로 합류한다.
+    """
+    df = dataset.get(symbol)
+    idx = getattr(df, "index", None)
+    if df is None or idx is None or len(idx) == 0:
+        raise ValueError(f"보유 거래일 계산용 시세 없음: {symbol}")
+    entry_d = date.fromisoformat(entry_iso)
+    if entry_d >= today:
+        # 진입 당일 = 진입 바 그 자체 → held 0 (백테스트 i−entry_i=0과 동일).
+        # 이 가드가 없으면 아래 +1 규칙이 당일 재실행(08:52 수렴 등)에서 1을
+        # 만들어 당일매매(hold_days=0)를 종가 전에 조기 청산시킨다.
+        return 0
+    n = 0
+    last_d = None
+    for ts in idx:
+        d = ts.date() if hasattr(ts, "date") else date.fromisoformat(str(ts)[:10])
+        last_d = d if (last_d is None or d > last_d) else last_d
+        if entry_d < d <= today:
+            n += 1
+    if last_d is not None and last_d < today:
+        n += 1        # 오늘(거래일·봉 미도착)을 현재 진행 봉으로 카운트
+    return n
+
+
 def _exit_reason_for(defn: dict, held_days: int,
                      dataset: dict, symbol: str,
                      *, is_close: bool = False) -> tuple[str | None, object | None]:
@@ -453,9 +490,15 @@ class Trader:
             due_close_exit = False
             if _ef == "close" and hd is not None and hd >= 1:
                 try:
-                    held = (kst_today()
-                            - date.fromisoformat(pos.get("entry_date", ""))).days
-                    due_close_exit = held >= hd
+                    # 로드맵 D — 만기 판정을 거래일 수로(달력일은 주말·휴장을 세어
+                    # 조기 경보). 정산 문맥은 dataset 무의존(비상 격리 원칙)이라
+                    # 봉 수 대신 세션 캘린더 카운트를 쓴다. 커버 범위 밖(장기
+                    # 보유·None)이면 판정 보류 — 추정으로 거짓 경보를 만들지
+                    # 않는다(관측 전용 경로·I5 감시).
+                    held = mc.sessions_between(
+                        "KR" if market == "KRX" else "US",
+                        date.fromisoformat(pos.get("entry_date", "")), kst_today())
+                    due_close_exit = held is not None and held >= hd
                 except Exception:
                     due_close_exit = False
             if (hd == 0 or due_close_exit) and int(pos.get("qty") or 0) > 0:
@@ -1892,7 +1935,8 @@ class Trader:
             if hold_days != 0 and _ef != "close":
                 continue
             try:
-                held = (today - date.fromisoformat(pos["entry_date"])).days
+                held = _held_trading_days(dataset, pos["symbol"],
+                                          pos["entry_date"], today)
                 reason, _ = _exit_reason_for(
                     pos["definition"], held, dataset, pos["symbol"], is_close=True)
             except Exception as e:
@@ -1969,7 +2013,8 @@ class Trader:
                     continue          # 종가창 소관 아님 — 유지분으로 target에 기여
             parse_failed = False
             try:
-                held = (today - date.fromisoformat(pos["entry_date"])).days
+                held = _held_trading_days(dataset, pos["symbol"],
+                                          pos["entry_date"], today)
                 reason, _ = _exit_reason_for(
                     pos["definition"], held, dataset, symbol,
                     is_close=(window == "close"))
@@ -2592,12 +2637,13 @@ class Trader:
                    .get("exit") or {}).get("fill")
             if hold_days != 0 and _ef != "close":
                 continue
-            held = (today - date.fromisoformat(pos["entry_date"])).days
             try:
+                held = _held_trading_days(dataset, pos["symbol"],
+                                          pos["entry_date"], today)
                 reason, _ = _exit_reason_for(
                     pos["definition"], held, dataset, pos["symbol"], is_close=True)
             except Exception as e:
-                # 파싱 실패 → skip(고아는 main loop·monitor가 처리)
+                # 파싱·시세 부재 → skip(고아는 main loop·monitor가 처리)
                 log.warning("종가청산 정의 파싱 실패 [%s]: %s", sid, e)
                 continue
             if not reason:
