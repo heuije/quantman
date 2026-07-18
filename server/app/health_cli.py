@@ -31,6 +31,7 @@ _COND_LABEL = {
     "strategy_validity": "전략유효", "broker_ready": "브로커", "cycle_execution": "사이클",
     "decision_output": "판단", "order_placement": "발주", "reconciliation": "정합",
     "ref_price_integrity": "참조가", "target_convergence": "목표수렴",
+    "order_tracking": "발주추적", "journal": "저널",   # R6 — 좀비 pending·기록 유실
 }
 
 

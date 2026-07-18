@@ -36,17 +36,58 @@ def _now() -> str:
     return datetime.now(_KST).isoformat()
 
 
+# R6 관측 — 저널 append 실패의 무증상 삼킴 방지. 실패는 여기 상태로 승격돼
+# diagnostics(journal_status)로 서버에 실리고 건강 모니터가 소비한다.
+# (07-14~17 mwmw orders.jsonl 3일 공백이 경고 로그 한 줄 외 무증상으로 지나간
+# 부류 — 매매는 계속돼야 하므로 best-effort는 유지하되, 실패 사실은 가시화.)
+_journal_status: dict = {"append_failures": 0, "last_error": None,
+                          "last_error_ts": None}
+
+
 def _append(path, obj: dict) -> None:
     """orders/cycles 한 줄 append — state_store 위임 (R5, 최초 생성 시 owner-only ACL).
 
     원시 주문 이벤트(종목·수량·체결가)는 같은 PC 타 사용자에게 노출되면 안 된다.
     로그 기록은 best-effort — 실패해도 매매 사이클을 중단시키지 않는다(체결 진실은
     intents.jsonl·KIS 주문조회이고 이건 보조 로그). fsync 불필요(L-01 대상 아님).
+    실패는 _journal_status로 승격(R6) — 조용한 유실 대신 건강 신호.
     """
     try:
         append_jsonl(obj, path)
     except Exception as e:
+        _journal_status["append_failures"] += 1
+        _journal_status["last_error"] = f"{path.name}: {e}"[:200]
+        _journal_status["last_error_ts"] = _now()
         log.warning("로그 기록 실패 [%s]: %s", path.name, e)
+
+
+def journal_status() -> dict:
+    """저널 관측 블록(R6) — append 실패 누계 + orders.jsonl 마지막 이벤트 시각.
+
+    서버 건강 모니터가 '발주가 있었는데 저널이 침묵'(동결)과 '기록 실패 발생'을
+    원격으로 보게 한다. 진실은 여전히 intents·브로커 조회 — 이것은 관측 채널.
+    """
+    last_ts = None
+    if ORDERS_PATH.exists():
+        try:
+            with open(ORDERS_PATH, "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 4096))
+                tail = f.read().decode("utf-8", errors="ignore")
+            for ln in reversed(tail.splitlines()):
+                if not ln.strip():
+                    continue
+                try:
+                    last_ts = json.loads(ln).get("ts")
+                    break
+                except Exception:
+                    continue      # 경계에서 잘린 줄 — 그 위 줄로
+        except Exception:
+            last_ts = None
+    return {"append_failures": _journal_status["append_failures"],
+            "last_error": _journal_status["last_error"],
+            "last_error_ts": _journal_status["last_error_ts"],
+            "orders_last_event_ts": last_ts}
 
 
 # ── 주문 이벤트 ────────────────────────────────────────────────────────────────

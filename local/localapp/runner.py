@@ -253,6 +253,13 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             log.warning("[calendar] %s", msg)
         if not _mc.is_session_day("KR", today):
             log.info("KRX 휴장일 — 사이클 skip (today=%s)", today.isoformat())
+            # R6/CY-7 — 휴장 skip을 cycles.jsonl에 남긴다. 종전엔 무기록이라
+            # "휴장 skip"과 "앱 다운·cron 미발화"가 사후 식별 불가했다(역방향
+            # 캘린더 오인 silent skip 감사의 전제 관측). catchup은 kind가
+            # "cycle"/"post_close_settlement"일 때만 완료로 매칭하므로 무영향.
+            from . import order_log as _olog
+            _olog.log_cycle([], {"market": market, "kind": "cycle_skipped_holiday",
+                                 "today": today.isoformat(), "trigger": trigger})
             return {"status": "skipped_holiday", "market": "KRX",
                     "today": today.isoformat()}
 

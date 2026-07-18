@@ -108,7 +108,7 @@ const HEALTH_COLOR: Record<HealthStatus, string> = {
 const HEALTH_LABEL: Record<HealthStatus, string> = {
   green: "정상", amber: "주의", red: "이상", unknown: "미상",
 };
-// 9개 조건 — 서버 키 → 한글 짧은 라벨(권장 표시 순서대로).
+// 건강 조건 — 서버 키 → 한글 짧은 라벨(권장 표시 순서대로).
 const CONDITION_ORDER: [key: string, label: string][] = [
   ["runtime", "런타임"],
   ["connectivity", "연결"],
@@ -118,6 +118,8 @@ const CONDITION_ORDER: [key: string, label: string][] = [
   ["cycle_execution", "사이클"],
   ["decision_output", "판단"],
   ["order_placement", "발주"],
+  ["order_tracking", "발주추적"],
+  ["journal", "저널"],
   ["reconciliation", "정합"],
   ["ref_price_integrity", "참조가"],
   ["target_convergence", "목표수렴"],
