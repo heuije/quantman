@@ -16,6 +16,8 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import quant_core as qc
 
@@ -483,6 +485,68 @@ def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dic
             return {"status": "skipped_holiday", "market": "KRX",
                     "today": today.isoformat()}
 
+    # R4-① — 종가창 견고성. 종전엔 outer try·재시도·저널이 전무해(아침창은 4시도
+    # 백오프) blip 1회 = 당일매매 오버나이트(07-16 실측 부류)였다. 시작을 먼저
+    # 저널하고, 창내 짧은 재시도(30/60s) 후에도 실패면 에러 스냅샷·저널로 표면화
+    # (catchup·건강 C6가 소비). 하드컷: 마감 단일가 이후로 넘친 발주는 익일 시가
+    # 체결 위험이라 마감 시각을 넘겨서는 재시도하지 않는다.
+    from . import order_log as _olog
+    _olog.log_cycle([], {"market": market, "kind": "close_cycle_started",
+                         "instrument_class": instrument_class})
+    cutoff = _close_hard_cutoff_kst(market, instrument_class)
+    last_err: Exception | None = None
+    for _wait in (0, 30, 60):
+        if _wait:
+            if (datetime.now(ZoneInfo("Asia/Seoul"))
+                    + timedelta(seconds=_wait)) >= cutoff:
+                log.error("[종가] 하드컷(%s) 임박 — 재시도 중단", cutoff.strftime("%H:%M"))
+                break
+            log.warning("[종가] 실패 — %d초 후 재시도", _wait)
+            time.sleep(_wait)
+        try:
+            return _close_cycle_once(market, instrument_class)
+        except Exception as e:
+            last_err = e
+            log.exception("[종가] 사이클 예외: %s", e)
+        if datetime.now(ZoneInfo("Asia/Seoul")) >= cutoff:
+            break
+    # 전 시도 실패 — 로컬 저널 + 서버 에러 스냅샷(건강 모니터 C6 RED·catchup 미완 인식).
+    _err = f"{type(last_err).__name__}: {last_err}" if last_err else "unknown"
+    _olog.log_cycle([], {"market": market, "kind": "day_trade_close",
+                         "instrument_class": instrument_class, "error": _err})
+    try:
+        push_snapshot({"cycle_summary": {
+            "market": market, "kind": "day_trade_close",
+            "instrument_class": instrument_class,
+            "error": f"종가 사이클 전 시도 실패: {_err}"}})
+    except Exception as pe:
+        log.warning("[종가] 에러 스냅샷 push 실패: %s", pe)
+    return {"status": "error", "market": market, "error": _err}
+
+
+def _close_hard_cutoff_kst(market: str, instrument_class: str) -> datetime:
+    """종가 재시도 하드컷(KST) — 이후 발주는 마감 단일가를 놓쳐 익일 체결 위험.
+
+    KRX: 주식 15:30 · 선물 15:45(마감 단일가 종료). US: 오늘 세션 폐장(KST,
+    서머타임 반영) — 캘린더 조회 실패 시 지금+2분(보수: 사실상 1회 시도).
+    """
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    if market == "KRX":
+        hh, mm = (15, 45) if instrument_class == "futures" else (15, 30)
+        return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    try:
+        from quant_core import market_calendar as _mc
+        et_day = now.astimezone(ZoneInfo("America/New_York")).date()
+        sess = _mc.session_kst("US", et_day)
+        if sess is not None:
+            return sess[1]
+    except Exception as e:
+        log.warning("[종가] US 폐장 시각 조회 실패 — 보수 컷: %s", e)
+    return now + timedelta(minutes=2)
+
+
+def _close_cycle_once(market: str, instrument_class: str) -> dict:
+    """종가 사이클 본문 1회 시도 — run_close_cycle의 재시도 하네스가 감싼다."""
     broker = make_broker()
     trader = Trader(broker)
 
@@ -561,6 +625,26 @@ def run_post_close_settlement(market: str = "KRX") -> dict:
     with _CYCLE_LOCK:
         return _run_settlement_locked(market, kind="post_close_settlement",
                                        label="장 마감 후 settlement")
+
+
+def run_settlement_retry(market: str = "KRX") -> dict | None:
+    """정산 당일 재시도(R4-② — 16:05/16:30 cron). 15:50 정산이 이미 성공했으면 no-op.
+
+    종전엔 정산 실패(잔고 조회 blip·misfire)가 재시도 0으로 그날을 넘겨,
+    당일매매 미청산 감시(I5)·체결 최종 확정이 하루 늦었다. 성공 판정 =
+    cycles.jsonl에 오늘자 post_close_settlement 무-error 기록(내용 기준).
+    """
+    from . import order_log
+    from .trader import kst_today
+    today = kst_today().isoformat()
+    for c in order_log.read_cycles(80):
+        s = c.get("summary") or {}
+        if (s.get("kind") == "post_close_settlement" and s.get("market") == market
+                and not s.get("error") and str(c.get("ts", ""))[:10] == today):
+            log.info("[정산 재시도] 오늘 정산 성공 기록 있음 — no-op")
+            return None
+    log.warning("[정산 재시도] 오늘 정산 성공 기록 없음 — 재실행")
+    return run_post_close_settlement(market)
 
 
 def run_post_open_reconcile(market: str = "US") -> dict:
