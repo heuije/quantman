@@ -1749,6 +1749,7 @@ class Trader:
                 slots_left = 1
 
             bought = 0
+            n_attempted = 0
             for c in cands:
                 if bought >= slots_left:
                     break
@@ -1767,6 +1768,7 @@ class Trader:
                 ledger_key = f"{sid}:{symbol}" if is_multi_key else sid
                 if ledger_key in self.ledger or ledger_key in sold_this_cycle:
                     continue
+                n_attempted += 1
                 if self._try_buy_one_symbol(
                         ledger_key, sid, strat_name, strat_def,
                         symbol, dataset, equity_now, decisions,
@@ -1775,6 +1777,18 @@ class Trader:
                         capacity_credit=capacity_credit, capture=capture):
                     bought += 1
                     n_preview_used += 1
+            # R3 단기 관측 — 사이클 진입 목표(슬롯) 대비 확정 미달을 즉시 표면화.
+            # top-up 부재(SZ-1)로 미달이 다음 회차에서 skip_held+net0으로 조용히
+            # 영구 확정되던 부류의 "신호 없음"을 닫는다(수정 본체인 top-up은
+            # 멱등 원리 트레이드오프가 있어 별도 설계 승인 대상 — 관측 먼저).
+            # 조건: 슬롯을 못 채웠고 + 실패한 시도가 실제로 있었을 때만 —
+            # 후보 부족(bought==attempted)이나 슬롯 충족은 정상이라 무경보.
+            if bought < slots_left and n_attempted > bought:
+                decisions.append(order_log.decision(
+                    "entry_shortfall", sid, strat_name, "",
+                    f"진입 슬롯 {slots_left} 중 확정 {bought} (시도 {n_attempted}"
+                    f"·실패 {n_attempted - bought}: 거부·사이징0·가드). 재실행은 "
+                    "보유분을 목표로 재정의하므로 자동 보충되지 않음(SZ-1)"))
 
         log.info("preview 경로 진입 완료 — %d종목 발주 (신호 재평가 skip)",
                   n_preview_used)

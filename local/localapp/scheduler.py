@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from quant_core import market_calendar as mc
 
@@ -219,6 +220,18 @@ def register_jobs(sched) -> None:
         run_post_close_settlement, kwargs={"market": "KRX"},
         trigger=CronTrigger(day_of_week="mon-fri", hour=15, minute=50, timezone="Asia/Seoul"),
         id="krx_settlement", name="KRX 장 마감 후 settlement", misfire_grace_time=600)
+    # R4-② — 정산 당일 재시도. 15:50 정산이 blip·misfire로 실패하면 종전엔 재시도
+    # 0으로 그날을 넘겼다(당일매매 미청산 감시 I5·체결 최종확정이 하루 지연).
+    # 성공 기록이 있으면 no-op(runner.run_settlement_retry가 cycles.jsonl로 판정).
+    from .runner import run_settlement_retry
+    for _hh, _mm, _jid in [(16, 5, "krx_settlement_retry1"),
+                           (16, 30, "krx_settlement_retry2")]:
+        sched.add_job(
+            run_settlement_retry, kwargs={"market": "KRX"},
+            trigger=CronTrigger(day_of_week="mon-fri", hour=_hh, minute=_mm,
+                                timezone="Asia/Seoul"),
+            id=_jid, name=f"KRX 정산 재시도 ({_hh}:{_mm:02d})",
+            misfire_grace_time=300)
 
     # 종가 매도 사이클(당일매매 hold_days=0) — 주식 종가단일가 15:20~15:30 / 선물 15:35~15:45
     # 구간 내 발주(폐장 5분 전) → 단일가 체결. 진입은 아침 메인 cycle, 청산만 종가창에서 전담.
@@ -286,8 +299,29 @@ def register_jobs(sched) -> None:
     threading.Thread(target=catchup.run_catchup_on_startup,
                       daemon=True, name="catchup-startup").start()
 
+    # R4-③ — 절전(sleep)-wake 감지. APScheduler는 절전을 "시작"으로 보지 않아
+    # misfire된 창이 조용히 사라졌다(F-6 실측: wake 후 catchup 미발동 = 유실 복구
+    # 없음). 5분 주기로 벽시계 점프(>10분)를 감지하면 startup과 동일한 catchup
+    # 스캔을 배경으로 돌린다 — 창내면 재실행·창밖이면 plan이 경보만(멱등:
+    # net=target−broker + intent 저널 게이트가 재실행 안전을 보장).
+    _wake_state = {"last": datetime.now(KST)}
+
+    def _wake_probe():
+        now = datetime.now(KST)
+        gap = (now - _wake_state["last"]).total_seconds()
+        _wake_state["last"] = now
+        if gap > 600:
+            log.warning("[wake] 벽시계 점프 %.0f분 감지 — 절전 해제 추정, "
+                         "catchup 스캔 실행", gap / 60)
+            threading.Thread(target=catchup.run_catchup_on_startup,
+                              daemon=True, name="catchup-wake").start()
+
+    sched.add_job(_wake_probe, IntervalTrigger(minutes=5),
+                  id="wake_probe", name="절전-wake 감지(5분)",
+                  misfire_grace_time=None)
+
     log.info("scheduler jobs registered — KRX cron + US planner + heartbeat + "
-              "dataset + catchup")
+              "dataset + catchup + wake-probe")
 
 
 def start() -> None:
