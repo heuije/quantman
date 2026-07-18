@@ -1178,7 +1178,10 @@ class SettingsApp:
         (계좌 실증거금률)×사용률%(모델A). 브로커 조회가 있어 job(백그라운드)에서 행을 완성한다."""
         def job():
             from . import sync_client
-            preview = sync_client.pull_preview()
+            try:
+                preview = sync_client.pull_preview()
+            except sync_client.PreviewUnavailable:
+                preview = None    # 표시 패널은 재시도 없이 '없음'으로 (다음 60s 폴링이 재시도)
             try:
                 strategies = sync_client.pull_strategies()
             except Exception:
