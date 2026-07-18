@@ -136,7 +136,8 @@ def is_newer(current: str, latest: str) -> bool:
 
 
 def is_safe_update_window(now_kst, *, intraday_running: bool,
-                          pending_count: int) -> tuple[bool, str]:
+                          pending_count: int,
+                          cycle_in_flight: bool = False) -> tuple[bool, str]:
     """무인(자동) 업데이트 안전창 판정 — 주문·데이터·장중 활동과 겹치지 않는 시각.
 
     자동 업데이트는 앱을 재시작하므로, 사이클 발주·번들/preview 다운로드·장중 손절
@@ -149,11 +150,16 @@ def is_safe_update_window(now_kst, *, intraday_running: bool,
          ~21:50) 전. 아침 pre-warm/개장·종가 사이클을 시각으로도 회피(①이 장중은 덮지만
          아침 08:00~08:50 pre-warm/선물사이클·종가 15:30~15:50은 시각 게이트가 덮는다).
 
-    실제 상태(①②) + 보수적 시각창(③) 이중 게이트. 하나라도 어긋나면 (False, 사유)."""
+      ④ 사이클 미실행(cycle_in_flight=False) — R5: 시각창 안이라도 catchup·수동
+         트리거 사이클이 도는 중이면 재시작이 발주·기장 도중을 끊는다(락 보유 확인).
+
+    실제 상태(①②④) + 보수적 시각창(③) 이중 게이트. 하나라도 어긋나면 (False, 사유)."""
     if intraday_running:
         return False, "장중 세션 가동 중"
     if pending_count > 0:
         return False, f"미체결 주문 {pending_count}건 추적 중"
+    if cycle_in_flight:
+        return False, "매매 사이클 실행 중(락 보유) — 종료 후 재평가"
     if not (16 <= now_kst.hour < 21):
         return False, f"안전창(16~21시 KST) 밖 — 현재 {now_kst:%H:%M}"
     return True, "안전창"

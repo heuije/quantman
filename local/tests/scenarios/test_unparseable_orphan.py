@@ -47,6 +47,7 @@ def _inject_orphan(t, broker, sid="orphan1", qty=10):
         "entry_price": 70000, "peak_price": 70000,
         "strategy_name": "삭제된 전략", "definition": _OLD_DEF,
     }
+    t._save()   # R5: cycle이 락 안에서 디스크(SSOT)를 reload하므로 주입을 영속해야 보인다
     broker.set_positions([{"symbol": "005930", "qty": qty, "avg_price": 70000}])
 
 

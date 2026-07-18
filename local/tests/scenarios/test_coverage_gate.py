@@ -88,6 +88,7 @@ def test_cleanup_orphan_uncovered_position(isolated_trader, monkeypatch):
         "entry_price": 350.0, "peak_price": 350.0, "side": "long",
         "strategy_name": "선물전략", "definition": _ir_def(
             {"kind": "single", "symbols": ["코스피200선물"]})}
+    t._save()   # R5: cycle이 디스크(SSOT)를 reload하므로 주입을 영속
     payload = t.cycle(strategies=[], dataset=_DS, buy_candidates=[],
                       risk_limits={"kill_switch_daily_loss_pct": 3.0}, market="KRX")
     orphans = [d for d in payload["decisions"] if d["action"] == "orphan_uncovered"]
@@ -109,6 +110,7 @@ def test_cycle_summary_counts_uncovered(isolated_trader, monkeypatch):
         "entry_price": 350.0, "peak_price": 350.0, "side": "long",
         "strategy_name": "보유선물", "definition": _ir_def(
             {"kind": "single", "symbols": ["코스피200선물"]})}
+    t._save()   # R5: cycle이 디스크(SSOT)를 reload하므로 주입을 영속
     # 진입측: 미커버 선물 전략 후보
     strategies = [{"id": "newfut", "name": "신규선물",
                    "definition": _ir_def({"kind": "single", "symbols": ["코스피200선물"]})}]

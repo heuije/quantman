@@ -163,6 +163,21 @@ def list_submitting_today(date_iso: str,
 # ── reconcile ─────────────────────────────────────────────────────────────────
 
 
+# CY-2 — no_fill 확정의 intent 최소 나이(초). KIS 일별주문조회의 반영 지연 창
+# 안에서 "무흔적=미접수"로 확정하면 멱등 게이트 해제 → 이중 발주 위험.
+_NO_FILL_MIN_AGE_SEC = 60
+
+
+def _intent_age_sec(intent: dict) -> float | None:
+    """seed 레코드 ts(+09:00 ISO) 기준 나이(초). 파싱 불가면 None(하한 미적용)."""
+    try:
+        from datetime import datetime as _dt
+        ts = _dt.fromisoformat(intent["ts"])
+        return (_dt.now(ts.tzinfo) - ts).total_seconds()
+    except Exception:
+        return None
+
+
 def _row_matches(row: dict, intent: dict, is_us: bool) -> bool:
     """KIS 당일 주문 row가 intent와 매칭되는가? symbol/side/qty/price 비교.
 
@@ -232,21 +247,24 @@ def reconcile_submitting(broker, date_iso: str,
         return result
 
     # KR은 한 번에 전 종목 조회. US는 종목별 조회.
+    # R2-③ — 공개 seam(daily_orders_today) 사용: 종전 _daily_ccld 직접 의존은
+    # BrokerRouter.__getattr__의 언더스코어 차단(broker_router.py) 때문에 선물
+    # 라우터 구성 전 유저에서 hasattr=False → 이 백스톱이 구조적 dead였다.
+    # 공개 이름은 라우터가 stock 브로커로 자동 위임하므로 구성 무관 동작.
     kr_rows: list | None
-    if not hasattr(broker, "_daily_ccld"):
-        # LS 등 _daily_ccld 미지원 브로커: KR reconcile skip.
+    if not hasattr(broker, "daily_orders_today"):
+        # LS 등 미지원 브로커: KR reconcile skip.
         # submitting 게이트는 보수적으로 유지 — 정산 reconcile(15:50)이 백스톱.
         log.info(
-            "브로커가 _daily_ccld 미지원(LS 등) — KR intent reconcile skip; "
+            "브로커가 daily_orders_today 미지원(LS 등) — KR intent reconcile skip; "
             "submitting 게이트는 보수적 유지, 정산 reconcile 백스톱"
         )
         kr_rows = None
     else:
         try:
-            body = broker._daily_ccld()  # noqa: SLF001 — reconcile은 raw row가 필요
-            kr_rows = body.get("output1", []) or []
+            kr_rows = broker.daily_orders_today()
         except Exception as e:
-            log.error("KR _daily_ccld 실패 — KR intent reconcile 보류: %s", e)
+            log.error("KR daily_orders_today 실패 — KR intent reconcile 보류: %s", e)
             kr_rows = None
 
     us_rows_cache: dict[str, list | None] = {}
@@ -257,10 +275,13 @@ def reconcile_submitting(broker, date_iso: str,
 
         if is_us:
             if sym not in us_rows_cache:
+                # R2-③ 공개 seam 우선(라우터 관통) — 없으면 종전 프라이빗(하위호환).
+                _us_fn = getattr(broker, "overseas_fills_today", None) \
+                    or getattr(broker, "_overseas_ccnl_today", None)
                 try:
-                    us_rows_cache[sym] = broker._overseas_ccnl_today(sym)  # noqa: SLF001
+                    us_rows_cache[sym] = _us_fn(sym) if _us_fn else None
                 except Exception as e:
-                    log.error("US _overseas_ccnl_today 실패 [%s]: %s", sym, e)
+                    log.error("US 체결조회 실패 [%s]: %s", sym, e)
                     us_rows_cache[sym] = None
             rows = us_rows_cache[sym]
         else:
@@ -283,6 +304,18 @@ def reconcile_submitting(broker, date_iso: str,
                                        "outcome": "matched",
                                        "order_no": order_no, "symbol": sym})
         elif len(matches) == 0:
+            # R2/CY-2 — 나이 하한: 방금(60초 이내) 제출된 intent는 KIS 일별 조회
+            # 반영 지연일 수 있어 no_fill 확정이 이르다. 확정하면 멱등 게이트가
+            # 풀려 같은 창 재실행이 재발주 → 원주문이 뒤늦게 접수돼 있으면 이중
+            # 발주. 라우터 위임(R2-③)으로 이 경로가 살아나는 만큼, 하한이 같은
+            # PR에 있어야 활성화가 리스크를 켜지 않는다(리뷰 부작용 연계).
+            _age = _intent_age_sec(intent)
+            if _age is not None and _age < _NO_FILL_MIN_AGE_SEC:
+                result["details"].append({"intent_id": intent["intent_id"],
+                                           "outcome": "too_fresh",
+                                           "age_sec": round(_age, 1),
+                                           "symbol": sym})
+                continue      # submitting 유지 — 다음 호출에서 재판정
             mark_failed(date_iso, intent["intent_id"],
                         "startup_reconcile_no_fill", path=path)
             result["no_fill"] += 1
