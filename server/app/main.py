@@ -1366,7 +1366,7 @@ def _build_scheduler() -> BackgroundScheduler:
     """매일 정기 갱신 cron 구성 (Phase 31 — 외부 publish 시각에 맞춰 재배치).
 
     구성만 — start()는 lifespan에서. 각 cron은 _run_with_retry로 감싸 실패 시
-    backoff[5,15,30,60,120]분 재시도.
+    backoff[2,2,5,5,10]분 재시도.
 
     job_defaults — 스케줄러 폭주 가드:
     - misfire_grace_time=3600: APScheduler 기본 grace(≈1s)는 GIL/IO로 1초+ 밀린
@@ -1738,7 +1738,7 @@ async def lifespan(app: FastAPI):
     _log.info("cron 시작: "
               "03:00 캘린더 · 04:00 DB pruning · 06:05 KIS-1 · 07:30 dataset글로벌 · "
               "15:45 KRX · 17:00 NAVER · 17:15 기술 · 18:15 dataset한국 · 18:58 KIS-2 KST "
-              "(실패 시 backoff[5,15,30,60,120]분 재시도)")
+              "(실패 시 backoff[2,2,5,5,10]분 재시도)")
     app.state.scheduler = scheduler
     try:
         yield
