@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -35,8 +37,15 @@ def _isolated_paths(monkeypatch, tmp_path):
     yield tmp_path
 
 
-def test_resolve_pending_does_not_timeout_cancel(_isolated_paths):
-    """오래된(예: 6시간 전) 미체결도 우리가 cancel하지 않음 — DAY 정책."""
+def test_resolve_pending_does_not_timeout_cancel(_isolated_paths, monkeypatch):
+    """오래된(예: 6시간 전) *당일* 미체결도 우리가 cancel하지 않음 — DAY 정책.
+
+    이 테스트의 전제는 '같은 거래일 안'이다. KST 00~06시에 실행되면 6시간 전이
+    전날로 넘어가 R2-② 익일 회수(제출일이 지난 unknown의 정당한 종결 —
+    test_order_finality_r2r5 커버 영역)가 발동하므로, kst_today를 제출일로
+    고정해 당일 시나리오를 벽시계와 무관하게 못박는다.
+    """
+    from localapp import trader as trader_mod
     from localapp.trader import Trader
 
     broker = MagicMock()
@@ -44,11 +53,14 @@ def test_resolve_pending_does_not_timeout_cancel(_isolated_paths):
     broker.order_status.return_value = {
         "status": "unknown", "filled_qty": 0, "fill_price": 0}
     trader = Trader(broker)
+    # 6시간 전 발주 (어떤 timeout이든 초과) — '오늘'을 제출일로 고정
+    sub_ts = time.time() - 6 * 3600
+    sub_day = datetime.fromtimestamp(sub_ts, ZoneInfo("Asia/Seoul")).date()
+    monkeypatch.setattr(trader_mod, "kst_today", lambda: sub_day)
     trader.pending = {
         "ORD1": {"symbol": "005930", "side": "buy", "qty": 10,
                  "strategy_id": "s1", "strategy_name": "T1",
-                 # 6시간 전 발주 (어떤 timeout이든 초과)
-                 "submitted_ts": time.time() - 6 * 3600,
+                 "submitted_ts": sub_ts,
                  "limit_price": 60000, "intended_price": 60000,
                  "filled_so_far": 0},
     }
