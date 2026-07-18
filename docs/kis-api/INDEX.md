@@ -1,7 +1,13 @@
 # KIS API Endpoint Index
 
-전체 212 endpoint 색인 (주식 132 + 선물옵션 80). **작업 전 `grep -i <키워드> INDEX.md`로 후보 찾기.**
+전체 213 endpoint 색인 (주식 132 + 선물옵션 80 + 업종/기타 1). **작업 전 `grep -i <키워드> INDEX.md`로 후보 찾기.**
 상세는 `endpoints/{category}/{TR_ID}_*.md` 참조.
+
+## 국내주식 — 업종/기타 (1 endpoint, raw 미보유 — 공식 GitHub 확인)
+
+| TR_ID | API 명 | 모의 |
+|---|---|---|
+| [`CTCA0903R`](endpoints/CTCA0903R_국내휴장일조회.md) | 국내휴장일조회 (개장일=opnd_yn·1일1회 권고·서버 휴장일 신호 수집에 사용) | 미확인 |
 
 ## 국내주식 — 기본시세 (22 endpoints, [raw](raw/국내주식_기본시세.xlsx))
 

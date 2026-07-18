@@ -610,22 +610,23 @@ def fetch_korean_stocks(codes: list[str], start: str = CORE_FLOOR,
     import gc
     from datetime import timezone
 
-    # KST 기준 마지막 마감된 거래일 구하기
+    from quant_core import market_calendar as _mc
+
+    # KST 기준 마지막 마감된 거래일 — 세션 캘린더 기준 (로드맵 A: 평일 산술은
+    # 공휴일·임시휴장을 거래일로 오인해 skip-fence 기준이 실제보다 미래로 갔다.
+    # 방향상 무해(불필요 refetch)였지만 "직전 거래일" 개념을 캘린더로 통일).
     tz_kst = timezone(timedelta(hours=9))
     now_kst = datetime.now(tz_kst)
     today_kst = now_kst.date()
     market_closed = now_kst.time() >= datetime.strptime("15:40:00", "%H:%M:%S").time()
-
-    if today_kst.weekday() < 5:  # 월~금
-        if market_closed:
-            last_closed_market_date = today_kst
-        else:
-            days_to_subtract = 3 if today_kst.weekday() == 0 else 1
-            last_closed_market_date = today_kst - timedelta(days=days_to_subtract)
-    elif today_kst.weekday() == 5:  # 토요일
-        last_closed_market_date = today_kst - timedelta(days=1)  # 금요일
-    else:  # 일요일
-        last_closed_market_date = today_kst - timedelta(days=2)  # 금요일
+    if _mc.is_session_day("KR", today_kst) and market_closed:
+        last_closed_market_date = today_kst
+    else:
+        prev = _mc.prev_session_day("KR", today_kst)
+        # 캘린더 범위 밖(과거 경계)이면 fence를 세울 수 없다 → 어제로 보수 설정
+        # (skip 없이 fetch — over-fetch는 무해, wrong-skip은 결손).
+        last_closed_market_date = prev if prev is not None \
+            else today_kst - timedelta(days=1)
 
     n_ok = n_skip = n_fail = 0
     for i, code in enumerate(codes):
