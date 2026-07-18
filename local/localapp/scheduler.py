@@ -166,10 +166,13 @@ def register_jobs(sched) -> None:
                        EVENT_JOB_ERROR | EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES)
 
     # ── 국내(KRX) 고정 cron ──────────────────────────────────────────────────
+    # 로드맵 E — 장중 감시를 장별 동시호가 시작(08:30)부터로 확장. 종전 08:50은
+    # 선물 개장(08:45) 뒤 5분 감시 공백을 만들었다(CY-5). 동시호가 구간은 체결가
+    # 이벤트가 없어 손절 평가는 자연 무동작(무해) — WS 연결·체결통보만 선행 준비.
     sched.add_job(
         intraday_loop.start,
-        CronTrigger(day_of_week="mon-fri", hour=8, minute=50, timezone="Asia/Seoul"),
-        id="krx_loop_start", name="KRX 장중 loop 시작 (WebSocket)",
+        CronTrigger(day_of_week="mon-fri", hour=8, minute=30, timezone="Asia/Seoul"),
+        id="krx_loop_start", name="KRX 장중 loop 시작 (WebSocket·동시호가부터)",
         misfire_grace_time=600)
     # 아침 사이클 자산군 분리(파이프라인 문제 10 — kr-target-reconciliation.md §15 Phase 4):
     # 선물 정규거래 개장은 08:45(개장 동시호가 08:30~08:45)인데 단일 08:55 사이클은
@@ -194,23 +197,30 @@ def register_jobs(sched) -> None:
     # §19 개장후 수렴 (방향무관 안전망) — 동시호가 체결(선물 08:45·주식 09:00) 반영 후
     # run_cycle 재실행 = 실체결 기준 멱등 수렴(net=target−broker). A1(08:35/15:40) 넷팅이
     # 못 잡은 취소-race·늦은 수동·반대/초과 방향 수동을 **방향무관 drift**로 당일 교정한다.
-    # 선물 08:52(08:50 loop start·WS 안정화 후)·주식 09:05(09:00 단일가 체결 반영 후).
+    # 로드맵 E — 개장+1분(선물 08:46·주식 09:01)으로 당김(종전 08:52/09:05): 수렴 지연
+    # 5~7분 동안 어긋난 상태가 방치되던 것을 축소. loop는 08:30부터라 WS 안정화 선행
+    # 조건은 유지. ⚠ 개장 단일가 체결의 잔고 API 반영 지연이 크면 drift 오판 가능 —
+    # 멱등(저널 게이트·보유 게이트)이라 발주 안전은 유지되나, 반영 지연 실측을 릴리스
+    # 후 관찰 항목으로 둔다(과다 no-op/오경보 시 +1분 조정).
     # 멱등(L-01 재진입 차단·보유 게이트·drift만)이라 교정할 것 없으면 no-op. 마감측은
     # 시장종료(선물 15:45·주식 15:30)로 불가 → 익일 개장 carry(§19.2 원리적 한계).
     sched.add_job(
         run_cycle, kwargs={"market": "KRX", "instrument_class": "futures"},
-        trigger=CronTrigger(day_of_week="mon-fri", hour=8, minute=52, timezone="Asia/Seoul"),
-        id="krx_converge_futures", name="KRX 개장후 수렴 (선물·08:52)",
+        trigger=CronTrigger(day_of_week="mon-fri", hour=8, minute=46, timezone="Asia/Seoul"),
+        id="krx_converge_futures", name="KRX 개장후 수렴 (선물·08:46)",
         misfire_grace_time=120)
     sched.add_job(
         run_cycle, kwargs={"market": "KRX", "instrument_class": "stock"},
-        trigger=CronTrigger(day_of_week="mon-fri", hour=9, minute=5, timezone="Asia/Seoul"),
-        id="krx_converge_stock", name="KRX 개장후 수렴 (주식·09:05)",
+        trigger=CronTrigger(day_of_week="mon-fri", hour=9, minute=1, timezone="Asia/Seoul"),
+        id="krx_converge_stock", name="KRX 개장후 수렴 (주식·09:01)",
         misfire_grace_time=120)
+    # 로드맵 E — loop 종료를 선물 마감(15:45)까지 연장(종전 15:30): 선물 마감측
+    # 15분 감시 공백(CY-5) 해소. 주식은 15:30 이후 체결 이벤트가 없어 무해(리뷰 R4-④).
     sched.add_job(
         intraday_loop.stop,
-        CronTrigger(day_of_week="mon-fri", hour=15, minute=30, timezone="Asia/Seoul"),
-        id="krx_loop_stop", name="KRX 장중 loop 종료", misfire_grace_time=300)
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=45, timezone="Asia/Seoul"),
+        id="krx_loop_stop", name="KRX 장중 loop 종료(선물 마감까지)",
+        misfire_grace_time=300)
     # θ: 정산은 모든 KRX 종가창이 끝난 뒤 1회 — 옛 15:35는 선물 종가청산(15:40
     # 발주 → 단일가 15:35~15:45 체결)보다 먼저 돌아, 그 체결을 그날 안에 확인할
     # 패스가 없었다(2026-06-12 0000004525 미기록 → 수동 복구). 15:50 = 선물
@@ -263,12 +273,15 @@ def register_jobs(sched) -> None:
     threading.Thread(target=sync_client.push_heartbeat,
                       daemon=True, name="heartbeat-initial").start()
 
-    # ── Phase 58-C — dataset bundle 다운로드 (08:00 KST + 재시도) ──────────
-    # server packaging cron 07:45 직후 가져옴. KRX cycle 08:55까지 55분 마진.
-    # 실패 시 08:20, 08:40에 재시도 (cycle 시작 5분 전 마지노선).
+    # ── Phase 58-C — dataset bundle 예열 (로드맵 B 재정렬) ─────────────────
+    # 서버 재포장은 07:30(글로벌 아침판)·08:02+재시도(선물 반영판) — 종전
+    # 시각(08:00/20/40)의 "07:45 포장" 주석은 구체제 유산이었고, 08:40분은
+    # 선물 발주(08:35)보다 늦어 무의미했다. 재정렬: 08:05(선물 반영판 직후)·
+    # 08:20(서버 재시도 흡수)·08:32(선물 발주 전 마지노선). 마지막 방어선은
+    # 종전과 동일하게 각 회차 시작 시 refresh_market_data(변경 없으면 304).
     # 기동 시 1회 background 실행 — 첫 가동/PC 재부팅 시 즉시 fresh.
     from . import datafetch
-    for hm in [(8, 0), (8, 20), (8, 40)]:
+    for hm in [(8, 5), (8, 20), (8, 32)]:
         sched.add_job(
             datafetch.refresh_market_data,
             CronTrigger(hour=hm[0], minute=hm[1], timezone="Asia/Seoul"),
