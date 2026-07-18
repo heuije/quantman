@@ -290,14 +290,17 @@ def clamp_sell_qty(broker_qty: int | None, ledger_qty: int) -> int | None:
 
 
 def credit_for(capacity_credit: dict | None, symbol: str, pos_side: str) -> float:
-    """§18 사이징 크레딧 조회 — 두 풀의 합(같은-편 + 방향무관).
+    """§18 사이징 크레딧 조회 — 두 풀의 합(방향무관 + 같은-편 강등분).
 
-    - `(symbol, pos_side)` = **계획 청산**이 되돌려줄 여력. 진입 방향과 같은 보유만
-      크레딧한다(리버설엔 미적용 — "청산분 제외한 나머지로 사이징"이 유저 모델).
-    - `(symbol, None)` = **원장 밖(수동·외부) 보유**가 되돌려줄 여력. 수동은 "전부 취소한
-      잔고 기준"(§18.1 유저 원칙)이라 **진입 방향과 무관하게** 크레딧한다.
+    - `(symbol, None)` = **방향무관 풀(원칙)**. 계획 청산·원장 밖(수동) 보유 모두
+      "전부 되돌린 빈-상태 잔고" 기준으로 진입 방향과 무관하게 크레딧한다 — 갈아타기
+      (롱청산→숏진입)도 청산분을 반영한 여력으로 진입(2026-07-18 유저 모델 정정).
+    - `(symbol, pos_side)` = **같은-편 강등 풀**. 선물인데 브로커 orderable의 '신규
+      전용' 여부가 미확정(KIS TTTO5105R 실측 대기)이면 Trader._credit_key가 여기로
+      강등한다 — 합산(신규+청산) 의미일 경우 반대편 orderable에 청산분이 이미 포함돼
+      방향무관 크레딧이 이중계상(의도 초과 레버리지)되는 것을 막는 안전 게이트.
 
-    반대편 수동 보유에도 크레딧하는 근거(2026-07-16 LS 문서·실측 확정): CFOAQ10100은
+    크레딧이 이중계상이 아닌 근거(2026-07-16 LS 문서·실측 확정): CFOAQ10100은
     신규(`NewOrdAbleQty`)와 청산(`LqdtOrdAbleQty`)을 **분리 반환**하고(예시 38=36+2)
     우리는 신규만 읽는다 → 보유를 되돌려 더해야 빈-상태 여력이 된다. 이중계상이 아니다.
     (실측: 수동 숏4 보유 시 신규매수 5·청산매수 4 → 빈-상태 9. 크레딧 미적용이라
@@ -2176,26 +2179,78 @@ class Trader:
                 currency=spec.currency, definition=pos.get("definition") or {}))
         return out, indeterminate, reasons
 
-    def _freed_capacity(self, liq_intents: list) -> dict:
-        """청산 의도가 회수할 여력을 **(상품명, side)별**로 합산 — 진입 사이징 크레딧(E1).
+    def _orderable_new_only(self, symbol: str) -> bool:
+        """브로커 orderable(신규 주문가능수량)이 '신규 전용' 의미로 **확정**됐는가.
+
+        리버설(반대편) 크레딧의 안전 게이트(§18.2·2026-07-18) — 브로커가 실측/문서로
+        확정한 플래그(라우터 orderable_new_only)를 노출하면 그 값, 미노출(구 브로커·
+        Mock 미선언)이면 False(같은-편 강등)."""
+        fn = getattr(self.broker, "orderable_new_only", None)
+        return bool(fn(symbol)) if fn is not None else False
+
+    def _credit_key(self, symbol: str, side: str) -> tuple:
+        """사이징 크레딧 풀 키 — **방향무관 (심볼, None)이 원칙**(§18.2 정정 2026-07-18).
+
+        갈아타기(롱청산→숏진입)도 "청산분을 반영한 여력으로 진입"이 유저 모델이다
+        (7/16의 '전략청산=같은편' 한정은 유저 의도 오해로 정정). 단 선물은 브로커
+        orderable이 '신규 전용'일 때만 안전하다: 합산(신규+청산) 의미라면 반대편
+        orderable에 보유 청산분이 이미 포함돼 있어 방향무관 크레딧이 이중계상(의도
+        초과 레버리지)된다. LS는 신규 전용 확정(CFOAQ10100 NewOrdAbleQty — 문서
+        38=36+2 분리+07-16 실측), KIS(TTTO5105R ord_psbl_qty)는 미실측 → 미확정
+        브로커의 선물만 같은-편 키로 강등한다(같은-편 크레딧은 어느 의미에서도 안전:
+        롱 청산분은 매도 방향 청산가능수량이라 매수 orderable에 낄 수 없음). 주식은
+        orderable이 아니라 현금(예수금) 크레딧이고 예수금 조회에 미체결 매도가 반영되지
+        않음이 확정이라 이중계상 여지가 없다 → 항상 방향무관."""
+        if qc.is_futures(symbol) and not self._orderable_new_only(symbol):
+            return (symbol, side)
+        return (symbol, None)
+
+    def _stock_credit_price(self, symbol: str, dataset: dict | None) -> float:
+        """주식 크레딧(청산·되돌림 회수 현금) 추정 기준가 — 실시간 우선(§18·2026-07-19).
+
+        동시호가(사이징 시점)엔 가격이 미확정이라 종전엔 전일 종가로 추정했다 — KRX가
+        동시호가 내내 제공하는 **예상체결가**가 더 정확한 추정치(유저 확정). 폴백 사슬:
+        ① 예상체결가(브로커 seam — KIS FHKST01010200·연속거래면 현재가 반환)
+        ② 현재가(_safe_price) ③ 번들 전일 종가. 사이징 보조 추정이라 조회 실패가
+        계획을 막으면 안 됨 — 실패는 다음 폴백으로(전부 실패 시 0.0 = 호출자 보수 처리).
+        """
+        fn = getattr(self.broker, "expected_fill_price", None)
+        if fn is not None:
+            try:
+                px = float(fn(symbol) or 0)
+                if px > 0:
+                    return px
+            except Exception as e:                # noqa: BLE001 — 보조 조회·폴백 전제
+                log.debug("예상체결가 조회 실패 [%s] — 현재가 폴백: %s", symbol, e)
+        px = self._safe_price(symbol) or 0.0
+        if px > 0:
+            return px
+        sdf = (dataset or {}).get(symbol)
+        if sdf is not None and len(sdf) and "Close" in sdf.columns:
+            try:
+                return float(sdf["Close"].iloc[-1])
+            except Exception:
+                return 0.0
+        return 0.0
+
+    def _freed_capacity(self, liq_intents: list, dataset: dict | None = None) -> dict:
+        """청산 의도가 회수할 여력을 크레딧 풀로 합산 — 진입 사이징 크레딧(E1).
 
         capacity_credit는 물리 주문 기계가 아니라 **사이징 입력**이다(목표수렴 하에서도
         유지 — 같은 사이클 롤에서 청산이 풀어줄 자본을 진입 사이징이 봐야 autotrade-only
-        의도 크기가 나온다). 선물=계약수(orderable에 더함)·주식=현금(수량×기준가).
+        의도 크기가 나온다). 선물=계약수(orderable에 더함)·주식=현금(수량×기준가 —
+        기준가는 _stock_credit_price 실시간 우선, 조회 전패 시 청산 의도의 ref_price).
         호출자(_reconcile_pass)가 브로커 실보유로 클램프한 청산량만 넘겨 유령 여력을
         만들지 않는다(N7 — 수동 선매도분은 이미 브로커 현금/orderable에 반영돼 있음).
-
-        **side별 키(§18)**: 롱 청산은 (심볼,'long')로 키잉 → **롱 진입에만** 크레딧한다.
-        리버설(롱청산→숏진입)에 크레딧하지 않는 건 "청산분을 제외한 나머지 여력으로 진입"이
-        유저 모델이기 때문이다(2026-07-16 확인). 같은 편은 롤=핸드오프라 크레딧이 맞다.
-        ⚠ 이전 주석의 "부호뒤집기 과대사이징 악화 방지"는 **오진**이었다 — orderable은
-        신규 전용(LS NewOrdAbleQty)이라 크레딧 미적용은 과대가 아니라 **과소**를 낳는다(§16.2
-        정정②). 그래서 **원장 밖(수동) 보유**는 방향무관 키 (심볼, None)로 크레딧한다 —
-        plan_entries_captured·credit_for 참조. 이 함수(계획 청산)만 같은-편 규칙이다."""
+        키잉은 _credit_key(방향무관 원칙 + 미확정 브로커 선물만 같은-편 강등)."""
         cap: dict = {}
         for lg in liq_intents:
-            add = lg.qty if qc.is_futures(lg.symbol) else lg.qty * lg.ref_price
-            k = (lg.symbol, lg.position_side)
+            if qc.is_futures(lg.symbol):
+                add = lg.qty
+            else:
+                px = self._stock_credit_price(lg.symbol, dataset) or lg.ref_price
+                add = lg.qty * px
+            k = self._credit_key(lg.symbol, lg.position_side)
             cap[k] = cap.get(k, 0) + add
         return cap
 
@@ -2213,13 +2268,15 @@ class Trader:
         extra_capacity(§18): 계획 청산 외 **원장 밖 브로커 보유**의 되돌림 크레딧
         {(symbol,side):amount} — 계획청산 크레딧과 합쳐 "빈 상태 최대" 사이징. 반환 (entry_intents, decisions).
         """
-        capacity = self._freed_capacity(liq_intents)
-        # §18.2 정정(2026-07-16 LS 문서·실측 확정): 원장 밖(수동/외부) 보유는 **원복 전제**라
-        # 진입 방향과 무관하게 빈-상태 크레딧 → side를 버리고 (symbol, None) 키로 합산한다.
-        # 전략 청산(_freed_capacity)은 같은-편 키 유지 — 리버설은 "청산분 제외한 나머지"로
-        # 사이징하는 게 유저 모델. 두 풀은 credit_for가 합산·consume_credit이 순차 소진.
+        capacity = self._freed_capacity(liq_intents, dataset)
+        # §18.2(2026-07-18 정정): 크레딧은 원칙 **방향무관** — 계획 청산·원장 밖(수동/외부)
+        # 보유 모두 "전부 되돌린 빈-상태 잔고" 기준으로 진입 방향과 무관하게 크레딧한다.
+        # 키잉은 _credit_key 단일 규칙: 선물인데 브로커 orderable의 '신규 전용' 여부가
+        # 미확정(KIS TTTO5105R 실측 대기)이면 같은-편 키로 강등해 반대편 이중계상
+        # (합산 의미일 때 orderable에 청산분이 이미 포함)만 막는다. 두 풀은 credit_for가
+        # 합산·consume_credit이 순차 소진.
         for (sym, _side), v in (extra_capacity or {}).items():
-            _fk = (sym, None)
+            _fk = self._credit_key(sym, _side)
             capacity[_fk] = capacity.get(_fk, 0) + v
         captured: list = []
         decisions: list = []
@@ -2382,13 +2439,8 @@ class Trader:
                 if qc.is_futures(sym):
                     extra_capacity[(sym, side)] = remaining
                 else:
-                    sdf = dataset.get(sym)
-                    px = 0.0
-                    if sdf is not None and len(sdf) and "Close" in sdf.columns:
-                        try:
-                            px = float(sdf["Close"].iloc[-1])
-                        except Exception:
-                            px = 0.0
+                    # §18 주식 되돌림 현금 추정 — 실시간(예상체결가→현재가) 우선, 번들 폴백.
+                    px = self._stock_credit_price(sym, dataset)
                     if px > 0:
                         extra_capacity[(sym, side)] = remaining * px
             # §19 A1 사이징 크레딧 — 외부 pending의 예약 여력을 "빈 상태"로 되돌림(§18과 동일
@@ -2415,9 +2467,7 @@ class Trader:
                         extra_capacity[(disp, side)] = \
                             extra_capacity.get((disp, side), 0) + rem
                     else:
-                        sdf = dataset.get(disp)
-                        px = (float(sdf["Close"].iloc[-1]) if (sdf is not None
-                              and len(sdf) and "Close" in sdf.columns) else 0.0)
+                        px = self._stock_credit_price(disp, dataset)
                         if px > 0:
                             extra_capacity[(disp, side)] = \
                                 extra_capacity.get((disp, side), 0) + rem * px

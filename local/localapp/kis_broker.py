@@ -504,6 +504,30 @@ class KisBroker:
             base=self.quote_base)
         return float(body.get("output", {}).get("stck_prpr", 0))
 
+    def expected_fill_price(self, symbol: str) -> float:
+        """국내주식 동시호가 예상체결가(antc_cnpr) — 없으면(연속거래 등 0) 현재가.
+
+        §18 주식 크레딧 기준가 정밀화(2026-07-19 유저 확정): 사이징 시점(아침 08:35~55·
+        종가 15:25 발주)이 동시호가 창이라 '현재가'는 직전가(전일 종가·15:19가)에 머문다 —
+        FHKST01010200(호가/예상체결) output2의 예상체결가가 단일가 형성 예상치로 더 정확.
+        국내 전용(해외는 동시호가 예상가 미제공) — 비국내·파싱 불가는 0.0(호출자 폴백).
+        """
+        if self._detect_market(symbol) != "DOMESTIC":
+            return 0.0
+        body = self._get_retry(
+            "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+            "FHKST01010200",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol},
+            base=self.quote_base)
+        out2 = body.get("output2") or {}
+        try:
+            antc = float(out2.get("antc_cnpr", 0) or 0)
+            if antc > 0:
+                return antc
+            return float(out2.get("stck_prpr", 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def _open_domestic(self, symbol: str) -> float:
         """국내 당일 시가 — inquire-price 응답의 stck_oprc."""
         body = self._get_retry(

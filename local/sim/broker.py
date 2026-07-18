@@ -63,6 +63,12 @@ class SimBroker:
         return [dict(s) for s in self._statuses.values()
                 if s["status"] in ("submitted", "partial")]
 
+    def orderable_new_only(self, symbol) -> bool:
+        """§18.2 — SimBroker의 orderable_qty(시나리오가 lambda로 주입)는 '신규 전용' 수량을
+        모델링한다(주석 관례: "신규 N(= flat − 보유)"). 신규 전용 확정 브로커로 선언해
+        방향무관 크레딧(원칙 경로)을 기본 검증 — 미확정 브로커 강등은 테스트가 재패치."""
+        return True
+
     # ── 시나리오 제어 ──
     def exec_event(self, order_no: str, qty: int, price: float,
                     hour: str = "100000") -> dict:

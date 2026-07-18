@@ -267,6 +267,86 @@ def test_flat_capacity_manual_short_long_entry_mwmw_shape(isolated_trader):
     assert not [o for o in broker.submitted if o["side"] == "sell"]
 
 
+def test_flat_capacity_manual_opposite_gated_on_unconfirmed_broker(isolated_trader):
+    """§18.2 게이트 — orderable '신규 전용' **미확정** 브로커(KIS TTTO5105R 실측 전)는
+    반대편 수동 크레딧을 같은-편 키로 강등(보류) → 크레딧 0의 v0.9.75 거동으로 안전 후퇴.
+
+    합산(신규+청산) 의미일 가능성이 남은 브로커에 방향무관 크레딧을 더하면 orderable에
+    이미 포함된 청산분과 이중계상(의도 초과 레버리지) — 실측 확정 시 플래그 한 줄로 해제."""
+    t, broker = isolated_trader
+    broker.orderable_new_only = lambda symbol: False           # 미확정 브로커 모델
+    broker._prices[SYM] = 300.0
+    broker._balance["futures_order_cash_kr"] = 1_000_000_000
+    broker.set_positions([{"symbol": SYM, "qty": 4, "side": "short", "avg_price": 310.0}])
+    broker.orderable_qty = lambda symbol, side, price: 5
+    d = _def_pct(100)
+    d["position"]["sizing"] = {"mode": "equal_weight", "futures_margin_pct": 50.0}
+    by = [{"strategy_id": "29", "candidates": [{"symbol": SYM, "direction": "long"}]}]
+    strats = [{"id": "29", "name": "오버나이트", "definition": d, "account_ref": None}]
+    t._cycle_body(strats, _ds("2026-05-29", 300.0), None, by, {}, "KRX")
+    buys = [o for o in broker.submitted if o["side"] == "buy"]
+    assert sum(o["qty"] for o in buys) == 6, \
+        ("게이트: 크레딧 미적용 5×50% = 롱2 target − 숏보유(−4) = 매수 6이어야 — 실제 "
+         f"{[(o['side'], o['qty']) for o in broker.submitted]}")
+
+
+def _reversal_day2_sells(t, broker, monkeypatch, new_only: bool) -> int:
+    """갈아타기 하니스 — D1 #29 롱5 진입·체결 → D2 아침 #29 청산 + 숏(pct 100·
+    orderable(sell)=8) 진입. 반환 = D2 총 매도 계약수(매수 0건은 내부 assert)."""
+    spec = _spec()
+    rate = spec.init_margin_rate or 0.10
+    mult = spec.multiplier
+    broker._balance.update({"cash": 1_000_000_000, "total_eval": 1_000_000_000,
+                            "futures_order_cash_kr": 1_000_000_000})
+    broker._prices[SYM] = 300.0
+    a29 = int(5.5 * 300 * mult * rate)
+    strats29 = [{"id": "29", "name": "오버나이트롱", "definition": _def29(a29),
+                 "account_ref": None}]
+    t.run_close_netting([{"strategy_id": "29", "candidates": [{"symbol": SYM}]}],
+                        strats29, _ds("2026-05-29", 300.0),
+                        market="KRX", instrument_class="futures", risk_limits={})
+    _fill_all(t, broker, 300.0, since=0)
+    assert t.ledger["29"]["qty"] == 5
+    broker.set_positions([{"symbol": SYM, "qty": 5, "side": "long", "avg_price": 300.0}])
+
+    from localapp import trader as tr
+    monkeypatch.setattr(tr, "kst_today", lambda: datetime.date(2026, 6, 2))
+    monkeypatch.setattr(tr, "kst_now", lambda: datetime.datetime(
+        2026, 6, 2, 8, 56, tzinfo=ZoneInfo("Asia/Seoul")))
+    broker._prices[SYM] = 301.0
+    broker.orderable_qty = lambda symbol, side, price: 8       # 신규(sell) 8
+    broker.orderable_new_only = lambda symbol: new_only
+    d = _def_pct(100)
+    d["position"]["direction"] = "short"
+    n_before = len(broker.submitted)
+    t._cycle_body(
+        strats29 + [{"id": "s", "name": "숏", "definition": d, "account_ref": None}],
+        _ds("2026-06-01", 301.0), None,
+        [{"strategy_id": "s", "candidates": [{"symbol": SYM, "direction": "short"}]}],
+        {}, "KRX")
+    orders = broker.submitted[n_before:]
+    assert not [o for o in orders if o["side"] == "buy"], \
+        f"갈아타기: 매수 0건(단일 순방향)이어야 — 실제 {orders}"
+    return sum(o["qty"] for o in orders if o["side"] == "sell")
+
+
+def test_reversal_credit_applies_on_new_only_broker(isolated_trader, monkeypatch):
+    """§18.2(2026-07-18 정정) 갈아타기 — 롱 청산분이 같은 사이클 **숏 진입** 사이징에 크레딧.
+
+    신규 전용 확정 브로커(LS류): 숏 target = floor((orderable 8 + 청산크레딧 5)×100%) = 13
+    → net = −13 − (+5) = **매도 18**(청산 5 + 숏 13·단일 순방향). 정정 전(같은-편 한정)엔
+    크레딧 0 → 매도 13이었다."""
+    t, broker = isolated_trader
+    assert _reversal_day2_sells(t, broker, monkeypatch, new_only=True) == 18
+
+
+def test_reversal_credit_gated_on_unconfirmed_broker(isolated_trader, monkeypatch):
+    """§18.2 게이트 — 미확정 브로커(KIS 실측 전)는 갈아타기 크레딧 보류: 숏 target =
+    floor(8×100%) = 8 → 매도 13(청산 5 + 숏 8). 실측 후 플래그 전환 시 위 테스트 거동."""
+    t, broker = isolated_trader
+    assert _reversal_day2_sells(t, broker, monkeypatch, new_only=False) == 13
+
+
 def test_a1_external_pending_same_direction_nets(isolated_trader):
     """§19 A1 배선 E2E — 동시호가 창 수동 **미체결** 매수 4를 effective current로 반영.
 

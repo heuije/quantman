@@ -17,6 +17,11 @@ _FX_FALLBACK_USDKRW = 1380.0
 
 
 class LsFuturesBroker(_LsAuth):
+    # §18.2 리버설 크레딧 게이트 — orderable_qty(CFOAQ10100 NewOrdAbleQty)가 '신규 전용'임이
+    # 확정된 브로커. 문서가 총(OrdAbleQty)=신규+청산 분리 반환(예시 38=36+2)이고 2026-07-16
+    # prod 실측으로 신규 전용 동작 확인 → 반대편(갈아타기) 진입 크레딧을 더해도 이중계상 없음.
+    ORDERABLE_NEW_ONLY = True
+
     def __init__(self):
         dom = load_ls_futures()
         ovc = load_ls_overseas_futures()

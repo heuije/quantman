@@ -138,6 +138,29 @@ class BrokerRouter:
             log.warning("선물 주문가능수량 조회 실패 [%s %s] — 카탈로그 강등: %s", symbol, side, e)
             return None
 
+    def orderable_new_only(self, symbol) -> bool:
+        """국내 선물 어댑터의 orderable '신규 전용' 확정 플래그(§18.2 리버설 크레딧 게이트).
+
+        True = 문서·실측으로 신규 전용 확정(LS CFOAQ10100 NewOrdAbleQty) — 반대편(갈아타기)
+        진입 크레딧을 더해도 이중계상이 없다. False = 미확정(KIS TTTO5105R 실측 대기)·주식·
+        해외선물(CME)·선물 미구성 — Trader가 리버설 크레딧을 같은-편으로 강등한다.
+        네트워크 조회가 아니라 어댑터 클래스 플래그 읽기라 예외 경로가 없다."""
+        if not self._is_fut(symbol) or futures_market(symbol) == "CME":
+            return False
+        return bool(getattr(self._futures, "ORDERABLE_NEW_ONLY", False))
+
+    def expected_fill_price(self, symbol) -> float:
+        """국내주식 동시호가 예상체결가 — 주식 브로커 위임(§18 크레딧 기준가·보조 조회).
+
+        선물(크레딧=계약수·가격 무관)·주식 브로커 미구성·미구현 어댑터(LS 주식은 예상체결
+        TR 미배선)는 0.0 — 호출자(Trader._stock_credit_price)가 현재가·번들 종가로 폴백."""
+        if self._is_fut(symbol) or self._stock is None:
+            return 0.0
+        fn = getattr(self._stock, "expected_fill_price", None)
+        if fn is None:
+            return 0.0
+        return float(fn(symbol) or 0)
+
     def cancel(self, order_no, symbol, qty):
         # 해외선물 취소(OTFM3003U)는 원주문일자(ORGN_ORD_DT)가 필수인데 이 시그니처엔 없다.
         # 국내 취소 메서드로 잘못 라우팅하면 다른 계좌를 건드리므로 명시 차단(취소는 Trader
