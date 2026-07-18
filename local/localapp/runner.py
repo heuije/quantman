@@ -215,6 +215,62 @@ def _synced_eval_krw(balance: dict) -> int:
 _LAST_DATASET_STATS: dict = {}
 
 
+def _pull_preview_with_retry(label: str = "") -> dict | None:
+    """preview pull — 실패(PreviewUnavailable)만 최대 3회(즉시·+15s·+30s) 재시도.
+
+    아침·종가 창 공용(유저 확정 2026-07-18: 종가창도 동일 재시도). 회차 전체를
+    재던지지 않는 이유: 청산은 preview 무관하게 진행돼야 하므로(진입 재료
+    실패가 청산까지 지연시키면 안 된다) 짧은 자체 재시도만. None(서버가 명시한
+    '후보 없음')은 정상 상태라 재시도하지 않는다. 소진 시 None — 호출자는
+    진입만 차단(청산 진행).
+    """
+    from .sync_client import PreviewUnavailable
+    for _wait in (0, 15, 30):
+        if _wait:
+            log.warning("%spreview pull 실패 — %d초 후 재시도", label, _wait)
+            time.sleep(_wait)
+        try:
+            return pull_preview()
+        except PreviewUnavailable as e:
+            log.warning("%spreview pull 실패: %s", label, e)
+    log.warning("%spreview pull 재시도 소진 — 신규 진입 차단", label)
+    return None
+
+
+def _preview_stale_reason(preview: dict, market: str,
+                          today: "date | None" = None) -> str | None:
+    """preview 후보의 기준 거래일이 직전 거래일보다 낡았으면 사유 문자열 (로드맵 C).
+
+    서버가 후보 계산에 쓴 데이터의 시장별 마지막 봉 날짜(data_as_of)를 로컬이
+    사용 직전 검증한다 — 24h 캐시 잔존·서버 재계산 실패로 며칠 묵은 후보가
+    그대로 진입되는 부류를 닫는다. 신선하면/판정 불가면 None:
+      · data_as_of 부재 = 구버전 서버(버전 전환기) → 검증 없이 통과(종전 거동)
+      · 캘린더 범위 밖/조회 실패 → 차단하지 않음(AL-3: over-block 금지)
+    """
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _Z
+
+    from quant_core import market_calendar as _mc
+
+    key = "KR" if market == "KRX" else "US"
+    as_of = (preview.get("data_as_of") or {}).get(key)
+    if not as_of:
+        return None
+    if today is None:
+        tz = _Z("Asia/Seoul") if key == "KR" else _Z("America/New_York")
+        today = _dt.now(tz).date()
+    try:
+        required = _mc.prev_session_day(key, today)
+    except Exception as e:
+        log.warning("preview 기준일 검증 불가(캘린더): %s", e)
+        return None
+    if required is None:
+        return None
+    if str(as_of) < required.isoformat():
+        return f"후보 기준일 {as_of} < 직전 거래일 {required.isoformat()}"
+    return None
+
+
 def run_cycle(market: str = "KRX", catchup: bool = False,
               reserved: bool = False, trigger: str = "cron",
               instrument_class: str | None = None) -> dict:
@@ -244,6 +300,7 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
 
     # L-03: KRX 휴장일(공휴일·임시휴장)이면 사이클 중단 — 휴장에 매도 발주·
     # stale 시세 평가 방지. US는 동적 야간 플래너가 비세션일을 이미 건너뛴다.
+    # (로드맵 A로 이 판정의 캘린더는 서버 배포 KIS 이중신호 교정본을 상속.)
     if market == "KRX":
         from quant_core import market_calendar as _mc
         from .trader import kst_today
@@ -340,15 +397,24 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             trader = Trader(broker)
 
             # Phase 38.4 — preview 신뢰 + 누락 시 청산만. legacy 평가 경로 제거.
-            preview = None
             _t0 = time.monotonic()
             log.info("[cycle] ③ preview pull 시작")
-            try:
-                preview = pull_preview()
-            except Exception as e:
-                log.warning("preview pull 예외 — 신규 진입 차단: %s", e)
+            # 로드맵 C — 회차 내 재시도(아침·종가 공용 헬퍼). 종전엔 1회 실패가
+            # 곧바로 "진입 차단"으로 확정돼 전략 pull(회차 백오프)과 비대칭이었다.
+            preview = _pull_preview_with_retry()
             log.info("[cycle] ③ preview pull 완료 %.1fs (missing=%s)",
                       time.monotonic() - _t0, preview is None)
+            # 로드맵 C — 기준 거래일 검증. 서버가 후보 계산에 쓴 데이터의 기준
+            # 거래일(data_as_of)이 직전 거래일보다 낡았으면(24h 캐시·서버 재계산
+            # 실패 잔존 등) 그 후보로 진입하지 않는다. 청산은 로컬 dataset·실시간
+            # 가격 기반이라 무관 — 진입만 차단.
+            preview_stale = None
+            if preview is not None:
+                preview_stale = _preview_stale_reason(preview, market)
+                if preview_stale:
+                    log.warning("preview 기준 거래일 낡음 — 신규 진입 보류(청산은 진행): %s",
+                                 preview_stale)
+                    preview = None
             preview_missing = preview is None
             buy_candidates = (preview or {}).get("by_strategy") if preview else []
             if preview_missing:
@@ -396,6 +462,8 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
                       _cs.get("n_skip_held"), _cs.get("n_errors"))
             if preview_missing:
                 payload.setdefault("cycle_summary", {})["preview_missing"] = True
+            if preview_stale:
+                payload.setdefault("cycle_summary", {})["preview_stale"] = preview_stale
             if strategies_pull_failed:
                 payload.setdefault("cycle_summary", {})["strategies_pull_failed"] = True
             cycle_err = None
@@ -559,11 +627,17 @@ def _close_cycle_once(market: str, instrument_class: str) -> dict:
     except Exception as e:
         log.warning("[종가] 전략 pull 실패 — 종가진입 없이 청산만 진행: %s", e)
     if strategies:
-        try:
-            preview = pull_preview()
-            buy_candidates = (preview or {}).get("by_strategy") or []
-        except Exception as e:
-            log.warning("[종가] preview pull 실패 — 종가진입 skip: %s", e)
+        # 로드맵 C(유저 확정) — 종가창도 아침과 동일하게 재시도(즉시·+15s·+30s).
+        # 창(주식 15:25→15:30·선물 15:40→15:45) 내 최대 45초 대기는 수용 범위.
+        # 기준 거래일 검증도 동일 적용 — 묵은 후보로 종가 진입하지 않는다.
+        preview = _pull_preview_with_retry("[종가] ")
+        if preview is not None:
+            _stale = _preview_stale_reason(preview, market)
+            if _stale:
+                log.warning("[종가] preview 기준 거래일 낡음 — 종가진입 skip: %s",
+                             _stale)
+                preview = None
+        buy_candidates = (preview or {}).get("by_strategy") or []
 
     # 자동매매 템플릿(장중 스캔) 진입 후보 — 서버 preview는 일봉(전일)이라 이 부류의 신호
     # ("당일 상한가 마감")를 만들 수 없다(preview엔 "장중 스캔 대기"로 표시). 종가창의

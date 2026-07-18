@@ -66,6 +66,27 @@ def _is_kr_symbol(symbol: str) -> bool:
     return symbol.isdigit() and len(symbol) == 6
 
 
+def _dataset_as_of(dataset: dict) -> dict:
+    """시장별 데이터 기준 거래일 — dataset 내 그 시장 종목 마지막 봉의 최댓값 (로드맵 C).
+
+    로컬앱이 후보 사용 직전 "직전 거래일 이상인가"를 검증하는 하한 도장.
+    max를 쓰는 이유: 개별 laggard(상폐 임박·저유동)로 인한 과차단을 피하고,
+    "서버가 본 가장 새로운 데이터"가 기준 미달이면 확실히 낡은 것이기 때문.
+    매크로(^)·암호화폐(24/7 — '-USD' 접미)는 시장 세션 기준일과 무관해 제외.
+    """
+    out: dict[str, str] = {}
+    for sym, df in dataset.items():
+        if sym.startswith("^") or sym.endswith("-USD"):
+            continue
+        last = _last_date(dataset, sym)
+        if last is None:
+            continue
+        mkt = "KR" if _is_kr_symbol(sym) else "US"
+        if mkt not in out or last > out[mkt]:
+            out[mkt] = last
+    return out
+
+
 def _commission_rate(s: "StrategyIR") -> float:
     """예상 위탁수수료율(편도, 0~1). 단일 출처: 전략 SimSpec.commission이 명시됐으면
     그 값, 없으면 백테스트 default(exec_defaults bt_commission_bps/10000 = 3bps = 0.0003).
@@ -587,6 +608,9 @@ def build_user_preview(session: Session, user_id: int,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "data_source": data_source,
         "available": True,
+        # 로드맵 C — 후보 계산에 쓰인 데이터의 시장별 기준 거래일. 로컬앱이
+        # 사용 직전 "직전 거래일 이상인가"를 검증해 묵은 후보 진입을 차단한다.
+        "data_as_of": _dataset_as_of(dataset),
         "summary": {
             "n_buy_candidates": n_buy_candidates,
             "est_total_buy_amount": total_buy_amount,
