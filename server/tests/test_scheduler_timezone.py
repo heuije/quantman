@@ -58,7 +58,7 @@ def test_hour_cron_fires_at_kst_wall_clock(utc_container_scheduler):
     expect = {
         "kis_master_1st": datetime(2026, 1, 15, 21, 5, tzinfo=UTC),   # 1/16(금) 06:05 KST
         "bonds_daily": datetime(2026, 1, 15, 22, 40, tzinfo=UTC),     # 1/16(금) 07:40 KST
-        "krx_1st": datetime(2026, 1, 15, 6, 45, tzinfo=UTC),          # 당일 15:45 KST
+        "krx_1st": datetime(2026, 1, 15, 6, 50, tzinfo=UTC),          # 당일 15:50 KST
         "naver": datetime(2026, 1, 15, 8, 0, tzinfo=UTC),             # 당일 17:00 KST
         "cot_weekly": datetime(2026, 1, 17, 0, 0, tzinfo=UTC),        # 1/17(토) 09:00 KST
     }

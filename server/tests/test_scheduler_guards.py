@@ -64,7 +64,7 @@ def test_existing_cron_times_unchanged(built_scheduler):
     expect = {
         "dataset_global": ("7", "30"),
         "dataset_kr": ("18", "15"),
-        "krx_1st": ("15", "45"),
+        "krx_1st": ("15", "50"),
     }
     for job_id, (hour, minute) in expect.items():
         f = _trigger_fields(by_id[job_id])

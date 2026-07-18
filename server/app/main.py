@@ -1419,10 +1419,12 @@ def _build_scheduler() -> BackgroundScheduler:
         CronTrigger(minute="*/15", timezone=_TZ_SEOUL),
         id="health_scan", replace_existing=True)
 
-    # 15:45 — KRX 정규장 1차 (15:40 publish 직후)
+    # 15:50 — KRX 정규장 1차 (15:40 publish + 5분 여유). 스냅샷 fetch는 응답 기준일을
+    # 검증하지 않고 최신본을 덮어쓰므로, 발표가 몇 분 늦는 날 15:45 수집은 전일치를
+    # 조용히 담을 수 있다 — 여유 5분으로 그 창을 줄인다(2026-07-19 가이드 Q&A 결정).
     scheduler.add_job(
         lambda: _run_with_retry("krx_1st", _refresh_krx, scheduler),
-        CronTrigger(hour=15, minute=45, timezone=_TZ_SEOUL),
+        CronTrigger(hour=15, minute=50, timezone=_TZ_SEOUL),
         id="krx_1st", replace_existing=True)
 
     # 16:05 + 16:35 — 산업분석 트리맵 가격 캐시 무효화 + 공식 종가 프리워밍.
