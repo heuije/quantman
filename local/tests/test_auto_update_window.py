@@ -68,3 +68,29 @@ def test_boundary_16_safe_21_unsafe():
         _at(20, 59), intraday_running=False, pending_count=0)[0] is True
     assert updater.is_safe_update_window(
         _at(21, 0), intraday_running=False, pending_count=0)[0] is False
+
+
+# ── 로드맵 F — 새벽 안전창 06:10~07:00 ──────────────────────────────────────
+
+
+def test_safe_dawn_window():
+    """06:10~07:00 — 미국 정산(겨울 06:05) 후·아침 pre-warm(08:05) 전 새벽창."""
+    ok, _ = updater.is_safe_update_window(
+        _at(6, 10), intraday_running=False, pending_count=0)
+    assert ok is True
+    ok2, _ = updater.is_safe_update_window(
+        _at(6, 45), intraday_running=False, pending_count=0)
+    assert ok2 is True
+
+
+def test_unsafe_before_dawn_window():
+    """06:05 — 겨울 미국 정산 진행 시각 → 차단."""
+    ok, reason = updater.is_safe_update_window(
+        _at(6, 5), intraday_running=False, pending_count=0)
+    assert ok is False and "06:10" in reason
+
+
+def test_unsafe_after_dawn_window():
+    ok, _ = updater.is_safe_update_window(
+        _at(7, 5), intraday_running=False, pending_count=0)
+    assert ok is False

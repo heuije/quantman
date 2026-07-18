@@ -144,11 +144,12 @@ def is_safe_update_window(now_kst, *, intraday_running: bool,
     감시와 겹치면 그 작업을 유실한다. 유저의 [지금 업데이트] 수동 경로는 이 게이트를
     거치지 않는다(유저가 타이밍 판단). 자동 적용만 아래 **모두** 충족할 때 실행:
 
-      ① 장중 세션(intraday_loop) 미가동 — 08:50~15:30 WebSocket·손절 감시 회피(장중 전체).
+      ① 장중 세션(intraday_loop) 미가동 — WebSocket·손절 감시 회피(장중 전체).
       ② 미체결 주문 0 — 발주-체결 추적 중이면 재시작이 그 창을 끊는다.
-      ③ KST 16:00~21:00 — KRX 정산(15:50) 후·US pre-warm(개장−40분, 야간 DST상 이르면
-         ~21:50) 전. 아침 pre-warm/개장·종가 사이클을 시각으로도 회피(①이 장중은 덮지만
-         아침 08:00~08:50 pre-warm/선물사이클·종가 15:30~15:50은 시각 게이트가 덮는다).
+      ③ KST 16:00~21:00 **또는 06:10~07:00**(로드맵 F) — 저녁창: KRX 정산(15:50) 후·
+         US pre-warm(개장−40분, 야간 DST상 이르면 ~21:50) 전. 새벽창: 미국 정산
+         (여름 05:05·겨울 06:05 — 겨울에도 06:05 이후) 뒤 ~ 아침 pre-warm(08:05) 전
+         여유 포함 07:00 컷. 아침 pre-warm/개장·종가 사이클은 시각 게이트가 덮는다.
 
       ④ 사이클 미실행(cycle_in_flight=False) — R5: 시각창 안이라도 catchup·수동
          트리거 사이클이 도는 중이면 재시작이 발주·기장 도중을 끊는다(락 보유 확인).
@@ -160,8 +161,10 @@ def is_safe_update_window(now_kst, *, intraday_running: bool,
         return False, f"미체결 주문 {pending_count}건 추적 중"
     if cycle_in_flight:
         return False, "매매 사이클 실행 중(락 보유) — 종료 후 재평가"
-    if not (16 <= now_kst.hour < 21):
-        return False, f"안전창(16~21시 KST) 밖 — 현재 {now_kst:%H:%M}"
+    in_evening = 16 <= now_kst.hour < 21
+    in_dawn = now_kst.hour == 6 and now_kst.minute >= 10      # 06:10~06:59
+    if not (in_evening or in_dawn):
+        return False, f"안전창(16~21시·06:10~07:00 KST) 밖 — 현재 {now_kst:%H:%M}"
     return True, "안전창"
 
 

@@ -55,10 +55,17 @@ if not _app_log.handlers:
 # 외부 소스(KIS/KRX/NAVER/yfinance/FRED 등)는 일시 장애가 잦다. 정시 cron이
 # 한 번 실패하면 다음날까지 stale인 게 큰 문제이므로, 실패 시 자동 재시도.
 #
-# 정책: 시도 N회, backoff [5, 15, 30, 60, 120]분. 최대 누적 ~230분 후 포기.
-# 정시 cron이 다시 트리거되면 기존 retry 큐는 모두 cancel하고 다시 시작.
+# 정책: 시도 5회, backoff [2, 2, 5, 5, 10]분 — 누적 24분 후 포기(전 트랙 통일,
+# 로드맵 B·유저 확정 2026-07-18). 정시 cron이 다시 트리거되면 기존 retry 큐는
+# 모두 cancel하고 다시 시작.
+#
+# 종전 [5,15,30,60,120]은 초반이 느슨해 07:30 글로벌 수집 실패가 발주창
+# (08:35/08:55)을 넘겼다. 촘촘·짧게: 07:30 실패 → 07:32/07:34/07:39/07:44/
+# 07:54 · 08:02 선물 실패 → 08:04/08:06/08:11/08:16/08:26 — 전부 로컬 예열
+# (08:05/20/32)·발주 재실행(08:35/40/42)이 받아가는 범위. 24분 넘는 상류
+# 장애는 재시도로 못 살리는 부류(다음 정시 cron·익일 재수집이 백필).
 
-_RETRY_BACKOFFS_MIN = [5, 15, 30, 60, 120]
+_RETRY_BACKOFFS_MIN = [2, 2, 5, 5, 10]
 _RETRY_MAX_ATTEMPTS = 5
 
 # ── 스케줄 tz 앵커 ───────────────────────────────────────────────────────────
@@ -1432,16 +1439,16 @@ def _build_scheduler() -> BackgroundScheduler:
     # krx_futures_panel_chunk(10분·K200 완주분) + kq150_panel_chunk(10분·상장일 소급)가 담당.
     #
     # 2026-07-15 재설계(문제 1·3·4 — kr-target-reconciliation.md §15 Phase 3):
-    # · 08:02 시작 + 커스텀 백오프 [3,6,10,15]분 — 지연일 재시도가 08:05/08:11/08:21/08:36
-    #   으로 발주창(로컬 선물 08:35·주식 08:55 pull) 안에 든다. 재시도 발동 조건은
-    #   _refresh_krx_futures의 신선도 판정("직전 거래일 봉 수신") 예외.
+    # · 08:02 시작. 백오프는 전 트랙 통일 기본값 [2,2,5,5,10]분(로드맵 B) —
+    #   지연일 재시도가 08:04/08:06/08:11/08:16/08:26으로 전부 발주창(로컬 선물
+    #   08:35·주식 08:55 pull) 안에 든다. 재시도 발동 조건은 _refresh_krx_futures의
+    #   신선도 판정("직전 거래일 봉 수신") 예외.
     # · 구 09:35 재시도 cron 삭제 — 08:55 아침 사이클보다 늦어 당일 진입에 무의미했고
     #   (그날 진입은 이미 차단된 후), retry name 공유로 08:02의 재시도 큐를 비우는
     #   충돌도 있었다. 미수신분은 다음 아침 7일 재수집이 자동 백필.
     # job id·retry name은 도입 당시 이름(kospi_futures*) 유지 — 로그 연속성.
     scheduler.add_job(
-        lambda: _run_with_retry("kospi_futures", _refresh_krx_futures, scheduler,
-                                backoffs_min=[3, 6, 10, 15]),
+        lambda: _run_with_retry("kospi_futures", _refresh_krx_futures, scheduler),
         CronTrigger(hour=8, minute=2, timezone=_TZ_SEOUL),
         id="kospi_futures_am", replace_existing=True)
 

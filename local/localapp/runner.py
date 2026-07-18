@@ -4,7 +4,7 @@
   - 전략 풀 실패 → 신규 진입 없이 기존 보유분 청산만 평가
   - 스냅샷 푸시 실패 → 보류 큐에 저장, 다음 사이클에 재전송
 
-체결통보 WebSocket(intraday_loop, 08:50 시작)이 메인 사이클(08:55) 전 ready
+체결통보 WebSocket(intraday_loop, 08:30 시작 — 로드맵 E)이 메인 사이클 전 ready
 상태가 되어야 시초가(09:00) 체결 통보를 push로 받을 수 있다. _wait_for_order_ws
 가 진입 직전 한 번 확인 — 미연결 시 짧게 대기 후 경고 로그 남기고 진행
 (REST 폴링으로 fallback, 데이터 누락은 없음).
@@ -152,7 +152,7 @@ def push_state_snapshot() -> dict | None:
 def _wait_for_order_ws() -> None:
     """메인 사이클 진입 직전 체결통보 WebSocket ready 확인.
 
-    intraday_loop이 08:50에 시작했으면 08:55까지 보통 연결+AES key/iv 수신
+    intraday_loop이 08:30에 시작했으면 발주 사이클까지 보통 연결+AES key/iv 수신
     완료. 그러나 KIS API 지연 시 미연결 가능. 짧게 대기 후 미연결이면 경고만
     남기고 진행 — REST 폴링으로 fallback (데이터 누락 없음, push 지연만).
 
@@ -173,7 +173,7 @@ def _wait_for_order_ws() -> None:
     for attempt in range(1, _ORDER_WS_RETRIES + 2):
         st = intraday_loop.status()
         if not st.get("running"):
-            log.warning("intraday_loop이 시작되지 않음 — 08:50 cron 누락 가능. "
+            log.warning("intraday_loop이 시작되지 않음 — 08:30 cron 누락 가능. "
                          "메인 사이클은 진행 (REST 폴링 fallback)")
             return
         if st.get("order_ws_connected"):
