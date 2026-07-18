@@ -68,8 +68,9 @@ class Settings:
     # 회사(운영자) KIS 실전 앱키 — KRX 휴장일 신호 수집 전용(krx_holiday_source, 로드맵 A).
     # 유저 브로커 자격증명(로컬 PC 전용)과 무관한 서버측 시장정보 조회 키. 미설정 시
     # 휴장일 수집만 비활성(캘린더는 exchange_calendars 단독 — 종전 거동).
-    KIS_APPKEY: str = os.getenv("QP_KIS_APPKEY", "")
-    KIS_APPSECRET: str = os.getenv("QP_KIS_APPSECRET", "")
+    # env 이름은 Railway에 실제 등록된 QP_KIS_DATA_APPKEY/APPSECRET(2026-07-18 유저 확인).
+    KIS_APPKEY: str = os.getenv("QP_KIS_DATA_APPKEY", "")
+    KIS_APPSECRET: str = os.getenv("QP_KIS_DATA_APPSECRET", "")
     # 운영자 자동매매 건강 알림 webhook (Discord/Slack 호환). 유저 알림과 별개 — RED 유저
     # (무발주·데이터결손·앱다운)를 운영자에게 능동 통지(dead-man's-switch). 미설정 시 대시보드만.
     OPERATOR_ALERT_WEBHOOK: str = os.getenv("QP_OPERATOR_ALERT_WEBHOOK", "")
