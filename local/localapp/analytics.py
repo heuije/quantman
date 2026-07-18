@@ -86,6 +86,14 @@ def diagnostics_block(bundle_result: Optional[dict] = None,
         d["bundle"] = br
     if dataset_stats:
         d["dataset"] = dataset_stats
+    # R6 관측 — 저널(orders.jsonl) 기록 건강: append 실패 누계·마지막 이벤트 시각.
+    # 서버 건강 모니터가 '발주는 있는데 저널 침묵'(07-14~17 mwmw 3일 공백 부류)을
+    # 원격 감지하게 한다. 실패해도 진단 블록 자체는 유지(부가 신호).
+    try:
+        from . import order_log as _ol
+        d["journal"] = _ol.journal_status()
+    except Exception as e:
+        d["journal"] = {"error": str(e)[:100]}
     return d
 
 

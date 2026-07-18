@@ -355,6 +355,15 @@ def _save_preview_cache(data: dict) -> None:
         log.warning("preview 캐시 저장 실패: %s", e)
 
 
+class PreviewUnavailable(RuntimeError):
+    """preview를 얻지 못한 *실패* 상태 — 네트워크/서버 오류 + 캐시도 만료.
+
+    "서버가 명시적으로 후보 없음"(404·available=False → None 반환)과 구분한다
+    (로드맵 C): 실패는 회차 내 재시도 가치가 있고, 명시적 없음은 재시도가
+    무의미하다. 종전엔 둘 다 None이라 호출자가 실패를 재시도할 수 없었다.
+    """
+
+
 def pull_preview() -> dict | None:
     """서버 next-day preview를 가져온다 — 매수 후보 확정 정보.
 
@@ -365,12 +374,12 @@ def pull_preview() -> dict | None:
 
     Phase 41 — 서버 일시 장애가 "preview 없음 → 신규 진입 0 → 청산만 발동"으로
     이어지지 않도록 24h 디스크 캐시 fallback. 성공 시 캐시 갱신, 실패 시 TTL
-    이내 캐시 사용 + 경고 로그. 404·available=False는 캐시 fallback 없이
-    None (서버가 명시적으로 preview 없음을 응답한 정상 상태).
+    이내 캐시 사용 + 경고 로그.
 
-    Returns:
-      preview dict ({available, summary, by_strategy, exit_candidates, ...}) 또는
-      네트워크/응답 오류 + 캐시도 만료 시 None — 호출자가 기존 청산-only 경로로.
+    Returns / Raises (로드맵 C — 실패와 '명시적 없음'을 구분):
+      dict — 서버 최신 또는 캐시(TTL 이내) preview
+      None — 서버가 명시적으로 preview 없음 응답(404·available=False, 정상 상태)
+      PreviewUnavailable — 네트워크/응답/파싱 실패 + 캐시도 만료(재시도 가치 있음)
     """
     try:
         # 디바이스 인증 엔드포인트 — 웹용 /preview/next-day(유저 JWT)가 아니라
@@ -383,7 +392,8 @@ def pull_preview() -> dict | None:
         cached = _load_preview_cache()
         if cached is not None:
             log.warning("preview 캐시 사용 (네트워크 장애 fallback)")
-        return cached
+            return cached
+        raise PreviewUnavailable(f"네트워크 실패 + 캐시 만료: {e}") from e
     if r.status_code == 404:
         # 서버가 명시적으로 "preview 없음" 응답 — 캐시 fallback 안 함 (정상 상태).
         return None
@@ -392,7 +402,8 @@ def pull_preview() -> dict | None:
         cached = _load_preview_cache()
         if cached is not None:
             log.warning("preview 캐시 사용 (서버 %s fallback)", r.status_code)
-        return cached
+            return cached
+        raise PreviewUnavailable(f"서버 응답 {r.status_code} + 캐시 만료")
     try:
         data = r.json() or {}
     except Exception as e:
@@ -400,7 +411,8 @@ def pull_preview() -> dict | None:
         cached = _load_preview_cache()
         if cached is not None:
             log.warning("preview 캐시 사용 (JSON 파싱 실패 fallback)")
-        return cached
+            return cached
+        raise PreviewUnavailable(f"JSON 파싱 실패 + 캐시 만료: {e}") from e
     if not data.get("available"):
         return None
     # 성공 — 다음 장애 fallback을 위해 캐시 저장.

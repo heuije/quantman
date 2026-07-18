@@ -200,6 +200,43 @@ def _gap_pct(prev_close: float, cur_price: float) -> float:
     return (cur_price - prev_close) / prev_close * 100
 
 
+def _held_trading_days(dataset: dict, symbol: str, entry_iso: str,
+                       today: date) -> int:
+    """보유 **거래일** 수 — dataset 봉 수 기준 (로드맵 D · 백테스트 파리티).
+
+    백테스트의 held = i − entry_i(봉 수)와 동일 의미. 종전 달력일 산술
+    ((today − entry).days)은 주말·휴장을 세어 hold_days가 긴 전략일수록
+    실전이 백테스트보다 일찍 만기됐다(예: 금 진입 hold_days=5 → 달력일로는
+    수요일, 거래일로는 다음주 금요일). 봉 수 = 실제 거래일이므로 캘린더
+    커버리지(과거 ~수십 일)에도 묶이지 않는다 — 실데이터가 곧 진실.
+
+    사이클은 휴장 게이트(L-03)를 통과한 거래일에만 돌므로, 오늘 봉이 아직
+    없으면(아침 창 — 번들은 전일까지) 오늘을 진행 중인 봉 1개로 센다
+    (백테스트의 "현재 바 i"에 해당). 시세 부재는 예외 — 호출자의 기존
+    파싱 실패 경로(보류·표면화)로 합류한다.
+    """
+    df = dataset.get(symbol)
+    idx = getattr(df, "index", None)
+    if df is None or idx is None or len(idx) == 0:
+        raise ValueError(f"보유 거래일 계산용 시세 없음: {symbol}")
+    entry_d = date.fromisoformat(entry_iso)
+    if entry_d >= today:
+        # 진입 당일 = 진입 바 그 자체 → held 0 (백테스트 i−entry_i=0과 동일).
+        # 이 가드가 없으면 아래 +1 규칙이 당일 재실행(08:52 수렴 등)에서 1을
+        # 만들어 당일매매(hold_days=0)를 종가 전에 조기 청산시킨다.
+        return 0
+    n = 0
+    last_d = None
+    for ts in idx:
+        d = ts.date() if hasattr(ts, "date") else date.fromisoformat(str(ts)[:10])
+        last_d = d if (last_d is None or d > last_d) else last_d
+        if entry_d < d <= today:
+            n += 1
+    if last_d is not None and last_d < today:
+        n += 1        # 오늘(거래일·봉 미도착)을 현재 진행 봉으로 카운트
+    return n
+
+
 def _exit_reason_for(defn: dict, held_days: int,
                      dataset: dict, symbol: str,
                      *, is_close: bool = False) -> tuple[str | None, object | None]:
@@ -453,9 +490,15 @@ class Trader:
             due_close_exit = False
             if _ef == "close" and hd is not None and hd >= 1:
                 try:
-                    held = (kst_today()
-                            - date.fromisoformat(pos.get("entry_date", ""))).days
-                    due_close_exit = held >= hd
+                    # 로드맵 D — 만기 판정을 거래일 수로(달력일은 주말·휴장을 세어
+                    # 조기 경보). 정산 문맥은 dataset 무의존(비상 격리 원칙)이라
+                    # 봉 수 대신 세션 캘린더 카운트를 쓴다. 커버 범위 밖(장기
+                    # 보유·None)이면 판정 보류 — 추정으로 거짓 경보를 만들지
+                    # 않는다(관측 전용 경로·I5 감시).
+                    held = mc.sessions_between(
+                        "KR" if market == "KRX" else "US",
+                        date.fromisoformat(pos.get("entry_date", "")), kst_today())
+                    due_close_exit = held is not None and held >= hd
                 except Exception:
                     due_close_exit = False
             if (hd == 0 or due_close_exit) and int(pos.get("qty") or 0) > 0:
@@ -579,12 +622,27 @@ class Trader:
                 changed = True
             else:
                 # 여전히 미확인 — 다음 폴링/사이클에서 재확인. 로컬 timeout 없음.
-                # δ GC: 7일 넘게 unknown이면 추적 만료 — 조회창을 벗어난 고아가
-                # pending에 영구 잔존하던 결함(실측 448·0000040620) 차단. 실 보유
-                # 정합은 settlement reconcile(보유 diff)이 담당.
                 sub_ts = p.get("submitted_ts")
-                if (status == "unknown" and sub_ts
-                        and time.time() - float(sub_ts) > 7 * 86400):
+                if status != "unknown" or not sub_ts:
+                    continue
+                # R2-② DAY 만료 익일 회수 — KIS DAY 주문은 장마감에 소멸하므로
+                # "제출일이 지났는데 당일 조회창에 무흔적"이면 종결 대상이다.
+                # 단 제출 직후 크래시로 당일 반영을 놓친 '지각 체결' 가능성이
+                # 있어, 반드시 **제출일자 체결내역**으로 확인한 뒤에만 종결한다
+                # (fill 있으면 기장 — 미기장→drift 되팔기 실손 부류 차단).
+                # 확인 불가(미지원 브로커·조회 실패·선물/US)는 아래 7일 GC가
+                # 최후 방어로 유지된다.
+                sub_day = datetime.fromtimestamp(
+                    float(sub_ts), ZoneInfo("Asia/Seoul")).date()
+                if (sub_day < kst_today()
+                        and self._reclaim_expired_pending(order_no, p, sub_day,
+                                                          decisions)):
+                    changed = True
+                    continue
+                # δ GC 백스톱: 7일 넘게 unknown이면 추적 만료 — 조회창을 벗어난
+                # 고아가 pending에 영구 잔존하던 결함(실측 448·0000040620) 차단.
+                # 실 보유 정합은 settlement reconcile(보유 diff)이 담당.
+                if time.time() - float(sub_ts) > 7 * 86400:
                     log.warning("pending GC [%s] %s — 상태 미확인 7일 경과(추적 만료)",
                                 order_no, p.get("symbol"))
                     decisions.append(order_log.decision(
@@ -598,6 +656,64 @@ class Trader:
         if changed:
             # M9: 변경 즉시 영속 — 다른 인스턴스(reload_state)가 항상 최신을 본다.
             self._save()
+
+    def _reclaim_expired_pending(self, order_no: str, p: dict, sub_day,
+                                  decisions: list) -> bool:
+        """제출일이 지난 unknown pending의 확정 종결 시도 (R2-② DAY 만료 익일 회수).
+
+        제출일자 체결내역(fills_on)으로 재확인:
+          · 체결 흔적 없음/취소 → DAY 만료 확정 — timeout 기록 후 추적 종결
+            (종전엔 7일 GC까지 좀비 잔존 — mwmw 510 실측 부류)
+          · 체결 흔적 있음 → **지각 기장** 후 종결 — 제출 직후 크래시로 당일
+            반영을 놓친 체결이 미기장 → 다음 사이클 drift 되팔기(실손)로
+            이어지는 부류를 막는다(리뷰 부작용 가드: fill 부재 확인 후에만 dead).
+
+        범위: KR 주식만(fills_on = 국내 일별체결). 선물·US·미지원 브로커(LS는
+        t0434 status 어휘 실측 후)·조회 실패는 False — 호출자의 7일 GC가 최후
+        방어로 유지된다(확정 불가 시 추적 유지가 안전 측).
+        """
+        symbol = p.get("symbol", "")
+        from . import market_index
+        if qc.is_futures(symbol) or market_index.is_us(symbol):
+            return False
+        fills_on = getattr(self.broker, "fills_on", None)
+        if fills_on is None:
+            return False
+        try:
+            rows = fills_on(sub_day.strftime("%Y%m%d"))
+        except Exception as e:
+            log.warning("익일 회수 조회 실패 [%s] — 7일 GC 백스톱 유지: %s",
+                        order_no, e)
+            return False
+        row = next((r for r in rows
+                    if canonical_odno(r.get("odno", "")) == canonical_odno(order_no)),
+                   None)
+        filled = int(row.get("filled_qty", 0) or 0) if row else 0
+        if row and filled > 0:
+            already = int(p.get("filled_so_far", 0) or 0)
+            delta = filled - already
+            if delta > 0:
+                self._apply_fill(order_no, p, delta,
+                                 float(row.get("fill_price", 0) or 0), decisions)
+            log.warning("지각 체결 회수 [%s] %s %d주 — 제출일(%s) 체결이 미기장 "
+                        "상태였음(크래시 추정). 기장 후 종결", order_no, symbol, delta,
+                        sub_day.isoformat())
+            del self.pending[order_no]
+            return True
+        # 무흔적(접수 실패 추정) 또는 미체결/취소 — DAY 만료 확정.
+        order_log.log_order("timeout", symbol, p.get("side", ""), p.get("qty", 0),
+                            order_no=order_no,
+                            intended_price=p.get("intended_price"),
+                            limit_price=p.get("limit_price"),
+                            strategy_name=p.get("strategy_name", ""),
+                            reason="DAY 만료 확정(제출일 체결내역 무체결) — 익일 회수",
+                            kind=p.get("kind", ""))
+        decisions.append(order_log.decision(
+            "unfilled", p.get("strategy_id", ""), p.get("strategy_name", ""),
+            symbol, f"DAY 만료 확정 — 제출일({sub_day.isoformat()}) 체결내역 "
+                    "무체결, 익일 회수(R2)"))
+        del self.pending[order_no]
+        return True
 
     def _record_contract_meta(self, sid: str, symbol: str) -> None:
         """신규 진입 ledger에 라이브 계약코드·만기일ISO 부착 (M6 만기 자동청산).
@@ -1749,6 +1865,7 @@ class Trader:
                 slots_left = 1
 
             bought = 0
+            n_attempted = 0
             for c in cands:
                 if bought >= slots_left:
                     break
@@ -1767,6 +1884,7 @@ class Trader:
                 ledger_key = f"{sid}:{symbol}" if is_multi_key else sid
                 if ledger_key in self.ledger or ledger_key in sold_this_cycle:
                     continue
+                n_attempted += 1
                 if self._try_buy_one_symbol(
                         ledger_key, sid, strat_name, strat_def,
                         symbol, dataset, equity_now, decisions,
@@ -1775,6 +1893,18 @@ class Trader:
                         capacity_credit=capacity_credit, capture=capture):
                     bought += 1
                     n_preview_used += 1
+            # R3 단기 관측 — 사이클 진입 목표(슬롯) 대비 확정 미달을 즉시 표면화.
+            # top-up 부재(SZ-1)로 미달이 다음 회차에서 skip_held+net0으로 조용히
+            # 영구 확정되던 부류의 "신호 없음"을 닫는다(수정 본체인 top-up은
+            # 멱등 원리 트레이드오프가 있어 별도 설계 승인 대상 — 관측 먼저).
+            # 조건: 슬롯을 못 채웠고 + 실패한 시도가 실제로 있었을 때만 —
+            # 후보 부족(bought==attempted)이나 슬롯 충족은 정상이라 무경보.
+            if bought < slots_left and n_attempted > bought:
+                decisions.append(order_log.decision(
+                    "entry_shortfall", sid, strat_name, "",
+                    f"진입 슬롯 {slots_left} 중 확정 {bought} (시도 {n_attempted}"
+                    f"·실패 {n_attempted - bought}: 거부·사이징0·가드). 재실행은 "
+                    "보유분을 목표로 재정의하므로 자동 보충되지 않음(SZ-1)"))
 
         log.info("preview 경로 진입 완료 — %d종목 발주 (신호 재평가 skip)",
                   n_preview_used)
@@ -1892,7 +2022,8 @@ class Trader:
             if hold_days != 0 and _ef != "close":
                 continue
             try:
-                held = (today - date.fromisoformat(pos["entry_date"])).days
+                held = _held_trading_days(dataset, pos["symbol"],
+                                          pos["entry_date"], today)
                 reason, _ = _exit_reason_for(
                     pos["definition"], held, dataset, pos["symbol"], is_close=True)
             except Exception as e:
@@ -1969,7 +2100,8 @@ class Trader:
                     continue          # 종가창 소관 아님 — 유지분으로 target에 기여
             parse_failed = False
             try:
-                held = (today - date.fromisoformat(pos["entry_date"])).days
+                held = _held_trading_days(dataset, pos["symbol"],
+                                          pos["entry_date"], today)
                 reason, _ = _exit_reason_for(
                     pos["definition"], held, dataset, symbol,
                     is_close=(window == "close"))
@@ -2592,12 +2724,13 @@ class Trader:
                    .get("exit") or {}).get("fill")
             if hold_days != 0 and _ef != "close":
                 continue
-            held = (today - date.fromisoformat(pos["entry_date"])).days
             try:
+                held = _held_trading_days(dataset, pos["symbol"],
+                                          pos["entry_date"], today)
                 reason, _ = _exit_reason_for(
                     pos["definition"], held, dataset, pos["symbol"], is_close=True)
             except Exception as e:
-                # 파싱 실패 → skip(고아는 main loop·monitor가 처리)
+                # 파싱·시세 부재 → skip(고아는 main loop·monitor가 처리)
                 log.warning("종가청산 정의 파싱 실패 [%s]: %s", sid, e)
                 continue
             if not reason:
@@ -2922,6 +3055,13 @@ class Trader:
                        catchup: bool = False, reserved: bool = False,
                        cycle_id: str = "",
                        instrument_class: str | None = None) -> dict:
+        # R5(CY-1) — 락 확보 직후 디스크 상태 재적재. 이 Trader 인스턴스는 락 밖
+        # (runner의 broker 준비 단계)에서 생성돼 그 시점 사본을 들고 있는데, 백오프
+        # 재시도가 08:40/42/52 cron·WS 체결 스레드와 겹치면 상대가 그 사이 저장한
+        # 변이(체결 반영·pending 마감)를 낡은 사본 위 통저장이 덮어쓴다(lost-update
+        # — 체결 소실 → 무손절 노출 부류). 락 안 reload 1줄이 "낡은 사본" 자체를
+        # 제거한다. 모든 변이 지점은 락 안 즉시 _save이므로 잃는 변경도 없다.
+        self.reload_state()
         # Q5(데드락 방지): _in_cycle 플래그를 try/finally로 보장 — 예외 발생 시에도
         # 반드시 reset되어야 다음 cycle에서 _apply_fill의 평가가 정상 동작.
         self._in_cycle = True

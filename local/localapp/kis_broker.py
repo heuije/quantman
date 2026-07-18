@@ -855,24 +855,57 @@ class KisBroker:
                 "message": d.get("msg1", ""),
                 "msg_cd": d.get("msg_cd", "")}
 
-    def _daily_ccld(self) -> dict:
-        """당일 주문체결 조회 — 미체결·체결·취소 모두 포함.
+    def _daily_ccld(self, start: str | None = None,
+                    end: str | None = None) -> dict:
+        """일별 주문체결 조회 — 미체결·체결·취소 모두 포함. 기본 = 당일.
 
         KIS 공식 spec: TTTC0081R / VTTC0081R (3개월 이내). v0.8.4 이전엔
         TTTC8001R 사용 — KIS grace로 동작했으나 공식 미명시.
+        start/end("YYYYMMDD") — R2 익일 회수의 제출일자 조회용(기본 인자면
+        종전과 byte-identical 당일 조회).
         """
         tr = "VTTC0081R" if self.virtual else "TTTC0081R"
         today = datetime.now().strftime("%Y%m%d")
         return self._get_retry(
             "/uapi/domestic-stock/v1/trading/inquire-daily-ccld", tr, {
                 "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_cd,
-                "INQR_STRT_DT": today, "INQR_END_DT": today,
+                "INQR_STRT_DT": start or today, "INQR_END_DT": end or today,
                 "SLL_BUY_DVSN_CD": "00", "INQR_DVSN": "00",
                 "PDNO": "", "CCLD_DVSN": "00",
                 "ORD_GNO_BRNO": "", "ODNO": "",
                 "INQR_DVSN_3": "00", "INQR_DVSN_1": "",
                 "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
             })
+
+    # ── R2 공개 종결·조회 seam ────────────────────────────────────────────────
+    # reconcile(intents)·익일 회수(trader)가 쓰는 조회를 **공개 이름**으로 노출한다.
+    # 라우터(BrokerRouter.__getattr__)가 언더스코어를 차단해 _daily_ccld 직접 의존이
+    # 선물 라우터 구성 유저에서 구조적 dead였다(리뷰 R2-ⓑ) — 공개 이름은 라우터가
+    # stock 브로커로 자동 위임하므로 구성 무관하게 동작한다.
+
+    def daily_orders_today(self) -> list[dict]:
+        """당일 국내 주문 raw rows(output1) — intents.reconcile_submitting 매칭용."""
+        return self._daily_ccld().get("output1", []) or []
+
+    def fills_on(self, date_yyyymmdd: str) -> list[dict]:
+        """지정일 국내 주문의 (주문번호·체결량·체결평균가) 목록 — 익일 회수 확인용.
+
+        DAY 만료로 당일 조회창을 벗어난 pending의 '체결됐었나'를 제출일자로
+        재확인한다(R2-② — fill 부재 확인 없이 만료 종결하면 크래시로 미기장된
+        지각 체결이 drift 되팔기 실손으로 이어지는 부류).
+        """
+        body = self._daily_ccld(start=date_yyyymmdd, end=date_yyyymmdd)
+        out = []
+        for row in body.get("output1", []) or []:
+            out.append({"odno": row.get("odno", ""),
+                        "filled_qty": int(row.get("tot_ccld_qty", 0) or 0),
+                        "fill_price": float(row.get("avg_prvs", 0) or 0),
+                        "cancelled": row.get("cncl_yn", "") == "Y"})
+        return out
+
+    def overseas_fills_today(self, symbol: str) -> list:
+        """당일 해외 체결 rows — intents US reconcile 매칭용(공개 seam)."""
+        return self._overseas_ccnl_today(symbol)
 
     def order_status(self, order_no: str, symbol: str | None = None, *,
                      hint: dict | None = None) -> dict:
@@ -1079,12 +1112,17 @@ class KisBroker:
                     "limit_price": float(row.get("ord_unpr", 0) or 0),
                     "ord_branch": row.get("ord_gno_brno", ""),
                     "submitted_at": row.get("ord_tmd", ""),
-                    "market": "DOMESTIC", "currency": "KRW",
+                    # asset_class — §19 A1 _pend_scope 정합(R6-④): 종가 주식창
+                    # (instrument_class="stock")이 이 키로 필터하는데 부재 시
+                    # ""≠"stock"이라 주식 pending이 스코프에서 전부 배제됐다.
+                    "market": "DOMESTIC", "currency": "KRW", "asset_class": "stock",
                 })
         except Exception as e:
             log.warning("국내 미체결 조회 실패: %s", e)
         try:
-            out.extend(self._overseas_pending())
+            for r in self._overseas_pending():
+                r.setdefault("asset_class", "stock")
+                out.append(r)
         except Exception as e:
             log.warning("해외 미체결 조회 실패: %s", e)
         return out

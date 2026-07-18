@@ -1178,7 +1178,10 @@ class SettingsApp:
         (계좌 실증거금률)×사용률%(모델A). 브로커 조회가 있어 job(백그라운드)에서 행을 완성한다."""
         def job():
             from . import sync_client
-            preview = sync_client.pull_preview()
+            try:
+                preview = sync_client.pull_preview()
+            except sync_client.PreviewUnavailable:
+                preview = None    # 표시 패널은 재시도 없이 '없음'으로 (다음 60s 폴링이 재시도)
             try:
                 strategies = sync_client.pull_strategies()
             except Exception:
@@ -2754,9 +2757,15 @@ class SettingsApp:
                     pending_count = len(pending or {})
                 except Exception:
                     pending_count = 1     # 조회 실패 = 보수적으로 미체결 있다고 간주(skip)
+                # R5 — 사이클 락 보유 확인(비차단 시도). catchup·수동 트리거가 도는
+                # 중의 재시작이 발주·기장 도중을 끊는 창을 닫는다. GUI 스레드는
+                # _CYCLE_LOCK을 절대 잡지 않으므로 비차단 시도가 안전하다.
+                cycle_busy = not trader._CYCLE_LOCK.acquire(blocking=False)
+                if not cycle_busy:
+                    trader._CYCLE_LOCK.release()
                 safe, reason = updater.is_safe_update_window(
                     trader.kst_now(), intraday_running=intraday_running,
-                    pending_count=pending_count)
+                    pending_count=pending_count, cycle_in_flight=cycle_busy)
                 if safe:
                     log.info("[auto-update] 안전창 진입 — %s 무인 설치 시작", info["tag"])
                     self._auto_apply_update(info)

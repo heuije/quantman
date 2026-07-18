@@ -221,3 +221,18 @@ def prev_session_day(market: str, day: date) -> date | None:
     days = _load(market)["sorted_days"]
     i = bisect.bisect_left(days, day.isoformat())
     return date.fromisoformat(days[i - 1]) if i > 0 else None
+
+
+def sessions_between(market: str, start: date, end: date) -> int | None:
+    """(start, end] 구간의 정규 거래일 수. start가 캘린더 커버 범위 밖이면 None.
+
+    보유 거래일 산정(로드맵 D)의 캘린더 경로 — dataset이 없는 문맥(정산 관측 등)
+    에서 쓴다. 커버 범위(번들·서버 pull은 과거 ~수십 일)를 벗어난 start는 정확한
+    카운트가 불가능하므로 None을 반환한다 — 호출자는 판정을 보류한다(추정 금지).
+    """
+    days = _load(market)["sorted_days"]
+    if not days or start.isoformat() < days[0]:
+        return None
+    lo = bisect.bisect_right(days, start.isoformat())
+    hi = bisect.bisect_right(days, end.isoformat())
+    return max(0, hi - lo)

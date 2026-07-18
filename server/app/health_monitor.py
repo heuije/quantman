@@ -186,12 +186,58 @@ def evaluate_health(
             "message": "라이브 전략 있는데 매매 사이클이 데이터 결손으로 0발주 "
                        "(설치 이래 무발주 사고 시그니처)"})
     elif cs.get("n_rejected"):
+        # R6 — 사유 라벨 첨부(저널 rejection_reasons top1): "거부 N건"만으론
+        # 운영자가 원인(증거금·장마감·가격제한)을 원격 식별 못 하던 가시성 보강.
+        _top = ((cp.get("rejection_reasons") or {}).get("reasons") or [{}])[0]
+        _why = f" — {_top['label']}" if _top.get("label") else ""
         conditions["order_placement"] = _cond(
-            AMBER, f"주문 거부 {cs.get('n_rejected')}건")
+            AMBER, f"주문 거부 {cs.get('n_rejected')}건{_why}")
     elif (n_bought or 0) > 0:
         conditions["order_placement"] = _cond(GREEN, f"발주 {n_bought}건 체결")
     else:
         conditions["order_placement"] = _cond(GREEN, "발주 없음(정상 무후보 또는 진입창 밖)")
+
+    # ── C12 발주 추적 정체 (pending 좀비 — R6) ──
+    # 브로커가 거부/만료시켰는데 status 어휘 갭(R2)으로 종결 분류가 안 되면 pending이
+    # submitted로 표류한다(mwmw 510 = 7일 좀비 실측). n_rejected(분류 성공 전제)와
+    # 독립인 유일한 신호가 이 나이 — 24h 넘으면 AMBER, 72h 넘으면 RED(대시보드
+    # 표시·자동 페이징 없음: C9와 같은 정책. 다음 GC·수동 정리 유도가 목적).
+    _pend = p.get("pending_local") or []
+    _now_epoch = now.timestamp()
+    _ages_hr = [(_now_epoch - float(e.get("submitted_ts") or _now_epoch)) / 3600
+                for e in _pend if isinstance(e, dict)]
+    _stale_pend = [a for a in _ages_hr if a > 24]
+    if not _pend:
+        conditions["order_tracking"] = _cond(GREEN, "추적 중 미체결 없음")
+    elif not _stale_pend:
+        conditions["order_tracking"] = _cond(
+            GREEN, f"추적 중 {len(_pend)}건 (전부 24h 이내)")
+    else:
+        _oldest_d = max(_stale_pend) / 24
+        _st = RED if max(_stale_pend) > 72 else AMBER
+        conditions["order_tracking"] = _cond(
+            _st, f"미종결 발주 추적 {len(_stale_pend)}건 — 최고령 {_oldest_d:.1f}일 "
+                 "(거부·만료가 미분류된 좀비 의심)")
+
+    # ── C13 저널 기록 (orders.jsonl — R6) ──
+    # append 실패·침묵의 무증상 삼킴 방지(07-14~17 mwmw 3일 공백 부류). 실패 누계는
+    # 클라 재시작 시 리셋되는 세션 카운터 — 0이 아니면 지금 세션에서 실패가 실제
+    # 발생 중이라는 뜻이라 그 자체로 신호.
+    _journal = diag.get("journal") or {}
+    _jf = int(_journal.get("append_failures") or 0)
+    if _jf > 0:
+        conditions["journal"] = _cond(
+            AMBER, f"주문 저널 기록 실패 {_jf}건 — 마지막: "
+                   f"{_journal.get('last_error') or '?'} (기록 유실 위험)")
+    elif _journal:
+        _last_ev = _journal.get("orders_last_event_ts")
+        _traded = (n_bought or 0) + (cs.get("n_sold") or 0)
+        if _traded > 0 and not _last_ev:
+            conditions["journal"] = _cond(
+                AMBER, "사이클 매매가 있는데 주문 저널이 비어 있음 — 동결 의심")
+        else:
+            conditions["journal"] = _cond(GREEN, "저널 기록 정상")
+    # diag.journal 자체가 없으면(구버전 클라) 조건 미생성 — UNKNOWN 강요 대신 생략.
 
     # ── C5 브로커/계좌 준비 ──
     # P2 emit: health.broker_ready(bool)·active_broker + 기존 account_handles + 토큰경고(warnings).

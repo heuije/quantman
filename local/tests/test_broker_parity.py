@@ -106,27 +106,29 @@ def test_p3_ls_no_daily_ccld_is_conservative_gate(tmp_path):
     )
 
 
-def test_p3_kis_path_unchanged(tmp_path):
-    """_daily_ccld 있는 브로커(KIS 모킹)는 기존 경로 그대로 — KIS 동작 불변."""
+def test_p3_kis_path_unchanged(tmp_path, monkeypatch):
+    """KIS 브로커(공개 seam 지원)는 매칭 경로 정상 — R2-③에서 조회가
+    daily_orders_today(라우터 관통 공개 seam)로 이관됐다."""
     from unittest.mock import MagicMock
     from localapp import intents
 
+    monkeypatch.setattr(intents, "_NO_FILL_MIN_AGE_SEC", 0)   # 지금-생성 intent 검증용
     jpath = tmp_path / "intents.jsonl"
     intents.begin("2026-06-19", "iid-kis-1", 42, "T", "005930", "buy", 10, 70000,
                   path=jpath)
 
     broker = MagicMock()
-    broker._daily_ccld.return_value = {"output1": [
+    broker.daily_orders_today.return_value = [
         {"pdno": "005930", "sll_buy_dvsn_cd": "02",
          "ord_qty": 10, "ord_unpr": 70000, "odno": "ORD-K1",
          "cncl_yn": "N"}
-    ]}
+    ]
 
     result = intents.reconcile_submitting(broker, "2026-06-19", path=jpath)
 
-    # KIS 경로: 매칭 1건 → matched=1 (기존 동작 불변)
+    # KIS 경로: 매칭 1건 → matched=1
     assert result["matched"] == 1, f"KIS 경로 matched 불일치: {result}"
-    broker._daily_ccld.assert_called_once()
+    broker.daily_orders_today.assert_called_once()
 
 
 # ── P4: 브로커별 WS 팩토리 (make_quote_ws / make_order_ws) ──────────────────

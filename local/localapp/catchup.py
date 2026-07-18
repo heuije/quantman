@@ -67,13 +67,18 @@ class CatchupPlan:
     krx_stop_loss_check: bool = False
     us_stop_loss_check: bool = False
 
+    # R4-③ — KRX 종가창 catch-up: 창내 기동 시 놓친 종가 사이클 클래스 목록
+    # ("stock"/"futures"). 창 밖 잔존 위험은 정산 I5(daytrade_unclosed)가 표면화.
+    krx_close_classes: list = field(default_factory=list)
+
     # 디버그·로그용 — 어떤 entry 보고 판단했는지
     reasons: list[str] = field(default_factory=list)
 
     def has_any(self) -> bool:
         return any((self.krx_settlement_needed, self.us_settlement_needed,
                     self.krx_cycle_needed, self.us_cycle_needed,
-                    self.krx_stop_loss_check, self.us_stop_loss_check))
+                    self.krx_stop_loss_check, self.us_stop_loss_check,
+                    bool(self.krx_close_classes)))
 
     def __str__(self) -> str:
         parts = []
@@ -344,6 +349,35 @@ def _decide_catchup_plan(now: datetime | None = None) -> CatchupPlan:
                     f"US settlement 누락 — 마지막 settle={last_us_settle}, "
                     f"대상close={prev_close_kst}, "
                     f"누락 영업일={plan.us_settlement_days_missed}")
+
+    # ── KRX 종가창 catch-up (R4-③) — 창내 기동 시 놓친 종가 사이클 ────────
+    # 종전엔 catchup 항목 자체가 없어 종가창(15:25/15:40) misfire·앱 다운이
+    # 곧 당일매매 오버나이트(07-16 실측 부류)였다. 창(주식 15:20~15:30 /
+    # 선물 15:35~15:45) 안에서 기동했고 오늘 그 클래스의 day_trade_close
+    # 무-error 기록이 없으면 재실행한다(멱등 — 넷팅·intent 게이트).
+    try:
+        _kr_open_today = mc.is_session_day("KR", now.date())
+    except Exception:
+        _kr_open_today = False
+    if now.weekday() < 5 and _kr_open_today:
+        for _cls, _lo, _hi in (("stock", time(15, 20), time(15, 30)),
+                               ("futures", time(15, 35), time(15, 45))):
+            if not (_lo <= now.time() <= _hi):
+                continue
+            done = False
+            for e in entries:
+                s = e.get("summary") or {}
+                ts = _entry_ts(e)
+                if (s.get("kind") == "day_trade_close"
+                        and s.get("market") == "KRX" and not s.get("error")
+                        and s.get("instrument_class") in (_cls, None)
+                        and ts is not None and ts.date() == now.date()):
+                    done = True
+                    break
+            if not done:
+                plan.krx_close_classes.append(_cls)
+                plan.reasons.append(
+                    f"KRX 종가창({_cls}) 창내 미실행 — 재실행 (오버나이트 방지)")
 
     # ── KRX 장중 catch-up (cycle + 손절) ─────────────────────────────────
     if _is_krx_intraday(now):
@@ -622,6 +656,18 @@ def run_catchup_on_startup() -> dict:
         except Exception as e:
             log.exception("catch-up stop-loss US 실행 실패: %s", e)
             results["us_stop_loss"] = {"error": str(e)}
+
+    # 2.5) 종가창 catch-up (R4-③) — 창내 재실행. 손절 다음·풀사이클 전
+    #      (창이 좁아 시간 우선). run_close_cycle 자체가 재시도·하드컷 보유.
+    for _cls in plan.krx_close_classes:
+        try:
+            from .runner import run_close_cycle
+            results[f"krx_close_{_cls}"] = {
+                "summary": (run_close_cycle("KRX", _cls) or {}).get(
+                    "cycle_summary", {})}
+        except Exception as e:
+            log.exception("catch-up 종가(%s) 실행 실패: %s", _cls, e)
+            results[f"krx_close_{_cls}"] = {"error": str(e)}
 
     # 3) full cycle catch-up (장중 missed) — 진입+청산. 마지막 (가장 무거움).
     if plan.krx_cycle_needed:

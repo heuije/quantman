@@ -975,6 +975,39 @@ def _refresh_us_market_caps() -> None:
     us_metrics_cache.refresh()
 
 
+def _verify_kr_calendar_vs_data() -> None:
+    """실데이터 보정(로드맵 A) — 캘린더 판정과 실제 봉 존재를 교차검증.
+
+    프로브 종목(삼성전자 005930 — 상장 이래 항상 거래)의 저장 패널 마지막
+    봉으로 두 방향의 캘린더 오인을 감지한다:
+      ① 캘린더 개장일인데 당일 봉 없음 → 수집 결손 또는 캘린더가 휴장을
+         놓침(07-17형과 반대로 이 시각까지 봉이 없으면 실제 휴장 의심)
+      ② 캘린더 휴장일인데 당일 봉 있음 → 캘린더가 개장일을 휴장으로 오인
+         (역방향 — silent skip이라 더 위험한 부류)
+    판정 변경은 하지 않는다 — error 경보로 운영자·Railway 로그에 표면화만.
+    (판정 자체의 권위는 KIS 이중신호(calendar_cache overlay)가 담당.)
+    """
+    from quant_core import data_fetcher as _dfx
+    from quant_core import market_calendar as _mc
+    try:
+        today_kst = datetime.now(ZoneInfo(_TZ_SEOUL)).date()
+        panel = _dfx._load_existing("005930")
+        if panel.empty:
+            _log.error("[실데이터보정] 프로브(005930) 패널이 비어 있음 — 수집 전면 결손 의심")
+            return
+        last_bar = panel.index[-1].date()
+        cal_open = _mc.is_session_day("KR", today_kst)
+        has_today = last_bar >= today_kst
+        if cal_open and not has_today:
+            _log.error("[실데이터보정] 캘린더=개장일인데 당일 봉 없음 (마지막 봉 %s) — "
+                       "수집 결손 또는 실제 휴장(캘린더 오인) 의심", last_bar)
+        elif not cal_open and has_today:
+            _log.error("[실데이터보정] 캘린더=휴장일인데 당일 봉 존재 — 개장일을 휴장으로 "
+                       "오인(역방향) 의심. KIS 휴장일 신호·캘린더 소스 점검 필요")
+    except Exception as e:
+        _log.warning("[실데이터보정] 교차검증 실패(경보 기능만 영향): %s", e)
+
+
 def _refresh_kr_dataset() -> None:
     """한국 데이터셋 — KIS 마스터 KOSPI/KOSDAQ 거래 가능 종목 OHLC + 등록 전략 해외 코드 union.
 
@@ -997,6 +1030,7 @@ def _refresh_kr_dataset() -> None:
     if kr_codes:
         _log.info("한국 종목 fetch: %d 종목", len(kr_codes))
         data_fetcher.fetch_korean_stocks(kr_codes, verbose=False)
+        _verify_kr_calendar_vs_data()
 
     # 2. 해외 유니버스 rebuild — 등록 전략의 해외 심볼은 by_code(KIS master) 조회로만 추가됐어
     #    KIS US master ⊆ 라, rebuild(NASDAQ Trader ∪ KIS US master)가 자동 포함한다.

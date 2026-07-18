@@ -16,6 +16,8 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import quant_core as qc
 
@@ -213,6 +215,62 @@ def _synced_eval_krw(balance: dict) -> int:
 _LAST_DATASET_STATS: dict = {}
 
 
+def _pull_preview_with_retry(label: str = "") -> dict | None:
+    """preview pull — 실패(PreviewUnavailable)만 최대 3회(즉시·+15s·+30s) 재시도.
+
+    아침·종가 창 공용(유저 확정 2026-07-18: 종가창도 동일 재시도). 회차 전체를
+    재던지지 않는 이유: 청산은 preview 무관하게 진행돼야 하므로(진입 재료
+    실패가 청산까지 지연시키면 안 된다) 짧은 자체 재시도만. None(서버가 명시한
+    '후보 없음')은 정상 상태라 재시도하지 않는다. 소진 시 None — 호출자는
+    진입만 차단(청산 진행).
+    """
+    from .sync_client import PreviewUnavailable
+    for _wait in (0, 15, 30):
+        if _wait:
+            log.warning("%spreview pull 실패 — %d초 후 재시도", label, _wait)
+            time.sleep(_wait)
+        try:
+            return pull_preview()
+        except PreviewUnavailable as e:
+            log.warning("%spreview pull 실패: %s", label, e)
+    log.warning("%spreview pull 재시도 소진 — 신규 진입 차단", label)
+    return None
+
+
+def _preview_stale_reason(preview: dict, market: str,
+                          today: "date | None" = None) -> str | None:
+    """preview 후보의 기준 거래일이 직전 거래일보다 낡았으면 사유 문자열 (로드맵 C).
+
+    서버가 후보 계산에 쓴 데이터의 시장별 마지막 봉 날짜(data_as_of)를 로컬이
+    사용 직전 검증한다 — 24h 캐시 잔존·서버 재계산 실패로 며칠 묵은 후보가
+    그대로 진입되는 부류를 닫는다. 신선하면/판정 불가면 None:
+      · data_as_of 부재 = 구버전 서버(버전 전환기) → 검증 없이 통과(종전 거동)
+      · 캘린더 범위 밖/조회 실패 → 차단하지 않음(AL-3: over-block 금지)
+    """
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _Z
+
+    from quant_core import market_calendar as _mc
+
+    key = "KR" if market == "KRX" else "US"
+    as_of = (preview.get("data_as_of") or {}).get(key)
+    if not as_of:
+        return None
+    if today is None:
+        tz = _Z("Asia/Seoul") if key == "KR" else _Z("America/New_York")
+        today = _dt.now(tz).date()
+    try:
+        required = _mc.prev_session_day(key, today)
+    except Exception as e:
+        log.warning("preview 기준일 검증 불가(캘린더): %s", e)
+        return None
+    if required is None:
+        return None
+    if str(as_of) < required.isoformat():
+        return f"후보 기준일 {as_of} < 직전 거래일 {required.isoformat()}"
+    return None
+
+
 def run_cycle(market: str = "KRX", catchup: bool = False,
               reserved: bool = False, trigger: str = "cron",
               instrument_class: str | None = None) -> dict:
@@ -242,6 +300,7 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
 
     # L-03: KRX 휴장일(공휴일·임시휴장)이면 사이클 중단 — 휴장에 매도 발주·
     # stale 시세 평가 방지. US는 동적 야간 플래너가 비세션일을 이미 건너뛴다.
+    # (로드맵 A로 이 판정의 캘린더는 서버 배포 KIS 이중신호 교정본을 상속.)
     if market == "KRX":
         from quant_core import market_calendar as _mc
         from .trader import kst_today
@@ -253,6 +312,13 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             log.warning("[calendar] %s", msg)
         if not _mc.is_session_day("KR", today):
             log.info("KRX 휴장일 — 사이클 skip (today=%s)", today.isoformat())
+            # R6/CY-7 — 휴장 skip을 cycles.jsonl에 남긴다. 종전엔 무기록이라
+            # "휴장 skip"과 "앱 다운·cron 미발화"가 사후 식별 불가했다(역방향
+            # 캘린더 오인 silent skip 감사의 전제 관측). catchup은 kind가
+            # "cycle"/"post_close_settlement"일 때만 완료로 매칭하므로 무영향.
+            from . import order_log as _olog
+            _olog.log_cycle([], {"market": market, "kind": "cycle_skipped_holiday",
+                                 "today": today.isoformat(), "trigger": trigger})
             return {"status": "skipped_holiday", "market": "KRX",
                     "today": today.isoformat()}
 
@@ -331,15 +397,24 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             trader = Trader(broker)
 
             # Phase 38.4 — preview 신뢰 + 누락 시 청산만. legacy 평가 경로 제거.
-            preview = None
             _t0 = time.monotonic()
             log.info("[cycle] ③ preview pull 시작")
-            try:
-                preview = pull_preview()
-            except Exception as e:
-                log.warning("preview pull 예외 — 신규 진입 차단: %s", e)
+            # 로드맵 C — 회차 내 재시도(아침·종가 공용 헬퍼). 종전엔 1회 실패가
+            # 곧바로 "진입 차단"으로 확정돼 전략 pull(회차 백오프)과 비대칭이었다.
+            preview = _pull_preview_with_retry()
             log.info("[cycle] ③ preview pull 완료 %.1fs (missing=%s)",
                       time.monotonic() - _t0, preview is None)
+            # 로드맵 C — 기준 거래일 검증. 서버가 후보 계산에 쓴 데이터의 기준
+            # 거래일(data_as_of)이 직전 거래일보다 낡았으면(24h 캐시·서버 재계산
+            # 실패 잔존 등) 그 후보로 진입하지 않는다. 청산은 로컬 dataset·실시간
+            # 가격 기반이라 무관 — 진입만 차단.
+            preview_stale = None
+            if preview is not None:
+                preview_stale = _preview_stale_reason(preview, market)
+                if preview_stale:
+                    log.warning("preview 기준 거래일 낡음 — 신규 진입 보류(청산은 진행): %s",
+                                 preview_stale)
+                    preview = None
             preview_missing = preview is None
             buy_candidates = (preview or {}).get("by_strategy") if preview else []
             if preview_missing:
@@ -387,6 +462,8 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
                       _cs.get("n_skip_held"), _cs.get("n_errors"))
             if preview_missing:
                 payload.setdefault("cycle_summary", {})["preview_missing"] = True
+            if preview_stale:
+                payload.setdefault("cycle_summary", {})["preview_stale"] = preview_stale
             if strategies_pull_failed:
                 payload.setdefault("cycle_summary", {})["strategies_pull_failed"] = True
             cycle_err = None
@@ -476,6 +553,68 @@ def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dic
             return {"status": "skipped_holiday", "market": "KRX",
                     "today": today.isoformat()}
 
+    # R4-① — 종가창 견고성. 종전엔 outer try·재시도·저널이 전무해(아침창은 4시도
+    # 백오프) blip 1회 = 당일매매 오버나이트(07-16 실측 부류)였다. 시작을 먼저
+    # 저널하고, 창내 짧은 재시도(30/60s) 후에도 실패면 에러 스냅샷·저널로 표면화
+    # (catchup·건강 C6가 소비). 하드컷: 마감 단일가 이후로 넘친 발주는 익일 시가
+    # 체결 위험이라 마감 시각을 넘겨서는 재시도하지 않는다.
+    from . import order_log as _olog
+    _olog.log_cycle([], {"market": market, "kind": "close_cycle_started",
+                         "instrument_class": instrument_class})
+    cutoff = _close_hard_cutoff_kst(market, instrument_class)
+    last_err: Exception | None = None
+    for _wait in (0, 30, 60):
+        if _wait:
+            if (datetime.now(ZoneInfo("Asia/Seoul"))
+                    + timedelta(seconds=_wait)) >= cutoff:
+                log.error("[종가] 하드컷(%s) 임박 — 재시도 중단", cutoff.strftime("%H:%M"))
+                break
+            log.warning("[종가] 실패 — %d초 후 재시도", _wait)
+            time.sleep(_wait)
+        try:
+            return _close_cycle_once(market, instrument_class)
+        except Exception as e:
+            last_err = e
+            log.exception("[종가] 사이클 예외: %s", e)
+        if datetime.now(ZoneInfo("Asia/Seoul")) >= cutoff:
+            break
+    # 전 시도 실패 — 로컬 저널 + 서버 에러 스냅샷(건강 모니터 C6 RED·catchup 미완 인식).
+    _err = f"{type(last_err).__name__}: {last_err}" if last_err else "unknown"
+    _olog.log_cycle([], {"market": market, "kind": "day_trade_close",
+                         "instrument_class": instrument_class, "error": _err})
+    try:
+        push_snapshot({"cycle_summary": {
+            "market": market, "kind": "day_trade_close",
+            "instrument_class": instrument_class,
+            "error": f"종가 사이클 전 시도 실패: {_err}"}})
+    except Exception as pe:
+        log.warning("[종가] 에러 스냅샷 push 실패: %s", pe)
+    return {"status": "error", "market": market, "error": _err}
+
+
+def _close_hard_cutoff_kst(market: str, instrument_class: str) -> datetime:
+    """종가 재시도 하드컷(KST) — 이후 발주는 마감 단일가를 놓쳐 익일 체결 위험.
+
+    KRX: 주식 15:30 · 선물 15:45(마감 단일가 종료). US: 오늘 세션 폐장(KST,
+    서머타임 반영) — 캘린더 조회 실패 시 지금+2분(보수: 사실상 1회 시도).
+    """
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    if market == "KRX":
+        hh, mm = (15, 45) if instrument_class == "futures" else (15, 30)
+        return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    try:
+        from quant_core import market_calendar as _mc
+        et_day = now.astimezone(ZoneInfo("America/New_York")).date()
+        sess = _mc.session_kst("US", et_day)
+        if sess is not None:
+            return sess[1]
+    except Exception as e:
+        log.warning("[종가] US 폐장 시각 조회 실패 — 보수 컷: %s", e)
+    return now + timedelta(minutes=2)
+
+
+def _close_cycle_once(market: str, instrument_class: str) -> dict:
+    """종가 사이클 본문 1회 시도 — run_close_cycle의 재시도 하네스가 감싼다."""
     broker = make_broker()
     trader = Trader(broker)
 
@@ -488,11 +627,17 @@ def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dic
     except Exception as e:
         log.warning("[종가] 전략 pull 실패 — 종가진입 없이 청산만 진행: %s", e)
     if strategies:
-        try:
-            preview = pull_preview()
-            buy_candidates = (preview or {}).get("by_strategy") or []
-        except Exception as e:
-            log.warning("[종가] preview pull 실패 — 종가진입 skip: %s", e)
+        # 로드맵 C(유저 확정) — 종가창도 아침과 동일하게 재시도(즉시·+15s·+30s).
+        # 창(주식 15:25→15:30·선물 15:40→15:45) 내 최대 45초 대기는 수용 범위.
+        # 기준 거래일 검증도 동일 적용 — 묵은 후보로 종가 진입하지 않는다.
+        preview = _pull_preview_with_retry("[종가] ")
+        if preview is not None:
+            _stale = _preview_stale_reason(preview, market)
+            if _stale:
+                log.warning("[종가] preview 기준 거래일 낡음 — 종가진입 skip: %s",
+                             _stale)
+                preview = None
+        buy_candidates = (preview or {}).get("by_strategy") or []
 
     # 자동매매 템플릿(장중 스캔) 진입 후보 — 서버 preview는 일봉(전일)이라 이 부류의 신호
     # ("당일 상한가 마감")를 만들 수 없다(preview엔 "장중 스캔 대기"로 표시). 종가창의
@@ -554,6 +699,26 @@ def run_post_close_settlement(market: str = "KRX") -> dict:
     with _CYCLE_LOCK:
         return _run_settlement_locked(market, kind="post_close_settlement",
                                        label="장 마감 후 settlement")
+
+
+def run_settlement_retry(market: str = "KRX") -> dict | None:
+    """정산 당일 재시도(R4-② — 16:05/16:30 cron). 15:50 정산이 이미 성공했으면 no-op.
+
+    종전엔 정산 실패(잔고 조회 blip·misfire)가 재시도 0으로 그날을 넘겨,
+    당일매매 미청산 감시(I5)·체결 최종 확정이 하루 늦었다. 성공 판정 =
+    cycles.jsonl에 오늘자 post_close_settlement 무-error 기록(내용 기준).
+    """
+    from . import order_log
+    from .trader import kst_today
+    today = kst_today().isoformat()
+    for c in order_log.read_cycles(80):
+        s = c.get("summary") or {}
+        if (s.get("kind") == "post_close_settlement" and s.get("market") == market
+                and not s.get("error") and str(c.get("ts", ""))[:10] == today):
+            log.info("[정산 재시도] 오늘 정산 성공 기록 있음 — no-op")
+            return None
+    log.warning("[정산 재시도] 오늘 정산 성공 기록 없음 — 재실행")
+    return run_post_close_settlement(market)
 
 
 def run_post_open_reconcile(market: str = "US") -> dict:

@@ -669,3 +669,72 @@ def test_compute_preserves_latest_settlement_error_over_content_cycle():
     r = rows[0]
     assert r["conditions"]["cycle_execution"]["status"] == RED
     assert "cycle_error" in {a["code"] for a in r["alert_reasons"]}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# R6 관측 확장 — 발주 추적 정체(order_tracking) · 저널(journal) · 거부 사유 라벨
+# ─────────────────────────────────────────────────────────────────────────
+
+def _base_cycle_payload(**cs):
+    return {"cycle_summary": {"kind": "cycle", **cs},
+            "diagnostics": {"bundle": {"result": "ok"},
+                             "dataset": {"needed": 5, "loaded": 5}}}
+
+
+def test_pending_zombie_amber_then_red_not_paged():
+    """24h 초과 pending = AMBER, 72h 초과 = RED — 둘 다 자동 페이징 없음(C9 정책).
+
+    브로커 거부/만료가 status 어휘 갭(R2)으로 미분류되면 n_rejected=0인 채
+    pending만 표류한다(mwmw 510 = 7일 좀비) — 이 나이가 유일한 독립 신호."""
+    p = _base_cycle_payload(n_bought=0)
+    p["pending_local"] = [{"submitted_ts": (_NOW - timedelta(hours=30)).timestamp()}]
+    r = _eval(p)
+    assert r["conditions"]["order_tracking"]["status"] == AMBER
+    assert "order_tracking" not in _codes(r) and not _codes(r)
+
+    p["pending_local"] = [{"submitted_ts": (_NOW - timedelta(hours=100)).timestamp()}]
+    r2 = _eval(p)
+    assert r2["conditions"]["order_tracking"]["status"] == RED
+    assert not _codes(r2)          # RED여도 대시보드 표시만(비페이징)
+
+
+def test_pending_fresh_is_green():
+    p = _base_cycle_payload(n_bought=1)
+    p["pending_local"] = [{"submitted_ts": (_NOW - timedelta(hours=2)).timestamp()}]
+    r = _eval(p)
+    assert r["conditions"]["order_tracking"]["status"] == GREEN
+
+
+def test_journal_append_failures_amber():
+    p = _base_cycle_payload(n_bought=1)
+    p["diagnostics"]["journal"] = {"append_failures": 2,
+                                    "last_error": "orders.jsonl: PermissionError",
+                                    "orders_last_event_ts": "2026-07-13T08:00:00+09:00"}
+    r = _eval(p)
+    assert r["conditions"]["journal"]["status"] == AMBER
+    assert "기록 실패 2건" in r["conditions"]["journal"]["detail"]
+
+
+def test_journal_silent_with_trades_amber():
+    """매매가 있었는데 저널 이벤트가 전무 — 동결(07-14~17 mwmw 공백 부류) 의심."""
+    p = _base_cycle_payload(n_bought=1, n_sold=1)
+    p["diagnostics"]["journal"] = {"append_failures": 0,
+                                    "orders_last_event_ts": None}
+    r = _eval(p)
+    assert r["conditions"]["journal"]["status"] == AMBER
+    assert "동결 의심" in r["conditions"]["journal"]["detail"]
+
+
+def test_journal_absent_old_client_no_condition():
+    """구버전 클라(journal 블록 없음) — 조건 미생성(강제 UNKNOWN 대신 생략)."""
+    r = _eval(_base_cycle_payload(n_bought=1))
+    assert "journal" not in r["conditions"]
+
+
+def test_rejected_detail_includes_top_reason_label():
+    p = _base_cycle_payload(n_bought=0, n_rejected=3)
+    p["rejection_reasons"] = {"reasons": [
+        {"label": "rejected: 증거금 부족", "n": 3}]}
+    r = _eval(p)
+    c = r["conditions"]["order_placement"]
+    assert c["status"] == AMBER and "증거금 부족" in c["detail"]
