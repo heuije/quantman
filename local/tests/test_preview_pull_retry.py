@@ -133,3 +133,47 @@ def test_stale_reason_calendar_out_of_range_passes(monkeypatch):
     monkeypatch.setattr(mc, "prev_session_day", lambda m, d: None)
     assert _preview_stale_reason({"data_as_of": {"KR": "2020-01-01"}}, "KRX",
                                  today=date(2026, 7, 18)) is None
+
+
+# ── 공용 재시도 헬퍼 (아침·종가 — 유저 확정: 종가창도 동일 3회) ───────────────
+
+
+def test_retry_helper_recovers_after_failures(monkeypatch):
+    from localapp import runner
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    seq = iter([PreviewUnavailable("x"), PreviewUnavailable("y"),
+                {"available": True, "by_strategy": []}])
+
+    def fake_pull():
+        v = next(seq)
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    monkeypatch.setattr(runner, "pull_preview", fake_pull)
+    assert runner._pull_preview_with_retry() == {"available": True,
+                                                  "by_strategy": []}
+
+
+def test_retry_helper_definitive_none_no_retry(monkeypatch):
+    from localapp import runner
+    calls = {"n": 0}
+
+    def fake_pull():
+        calls["n"] += 1
+        return None                      # 서버가 명시한 '후보 없음'(정상)
+
+    monkeypatch.setattr(runner, "pull_preview", fake_pull)
+    assert runner._pull_preview_with_retry() is None
+    assert calls["n"] == 1               # 재시도 없음
+
+
+def test_retry_helper_exhausts_to_none(monkeypatch):
+    from localapp import runner
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+
+    def fake_pull():
+        raise PreviewUnavailable("down")
+
+    monkeypatch.setattr(runner, "pull_preview", fake_pull)
+    assert runner._pull_preview_with_retry("[종가] ") is None

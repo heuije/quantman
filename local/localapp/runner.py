@@ -213,6 +213,28 @@ def _synced_eval_krw(balance: dict) -> int:
 _LAST_DATASET_STATS: dict = {}
 
 
+def _pull_preview_with_retry(label: str = "") -> dict | None:
+    """preview pull — 실패(PreviewUnavailable)만 최대 3회(즉시·+15s·+30s) 재시도.
+
+    아침·종가 창 공용(유저 확정 2026-07-18: 종가창도 동일 재시도). 회차 전체를
+    재던지지 않는 이유: 청산은 preview 무관하게 진행돼야 하므로(진입 재료
+    실패가 청산까지 지연시키면 안 된다) 짧은 자체 재시도만. None(서버가 명시한
+    '후보 없음')은 정상 상태라 재시도하지 않는다. 소진 시 None — 호출자는
+    진입만 차단(청산 진행).
+    """
+    from .sync_client import PreviewUnavailable
+    for _wait in (0, 15, 30):
+        if _wait:
+            log.warning("%spreview pull 실패 — %d초 후 재시도", label, _wait)
+            time.sleep(_wait)
+        try:
+            return pull_preview()
+        except PreviewUnavailable as e:
+            log.warning("%spreview pull 실패: %s", label, e)
+    log.warning("%spreview pull 재시도 소진 — 신규 진입 차단", label)
+    return None
+
+
 def _preview_stale_reason(preview: dict, market: str,
                           today: "date | None" = None) -> str | None:
     """preview 후보의 기준 거래일이 직전 거래일보다 낡았으면 사유 문자열 (로드맵 C).
@@ -366,27 +388,11 @@ def run_cycle(market: str = "KRX", catchup: bool = False,
             trader = Trader(broker)
 
             # Phase 38.4 — preview 신뢰 + 누락 시 청산만. legacy 평가 경로 제거.
-            preview = None
             _t0 = time.monotonic()
             log.info("[cycle] ③ preview pull 시작")
-            # 로드맵 C — 회차 내 재시도. 종전엔 1회 실패가 곧바로 "진입 차단"으로
-            # 확정돼 전략 pull(회차 백오프 재시도)과 비대칭이었다. 회차 전체를
-            # 재던지지 않는 이유: 청산은 preview 무관하게 진행돼야 하므로
-            # (진입 재료 실패가 청산까지 지연시키면 안 된다) 짧은 자체 재시도만.
-            # None(서버가 명시한 '후보 없음')은 정상 상태라 재시도하지 않는다 —
-            # 실패(PreviewUnavailable)만 재시도. 소진 시 진입 차단(청산은 진행).
-            from .sync_client import PreviewUnavailable
-            for _wait in (0, 15, 30):
-                if _wait:
-                    log.warning("preview pull 실패 — %d초 후 재시도", _wait)
-                    time.sleep(_wait)
-                try:
-                    preview = pull_preview()
-                    break
-                except PreviewUnavailable as e:
-                    log.warning("preview pull 실패: %s", e)
-            else:
-                log.warning("preview pull 재시도 소진 — 신규 진입 차단")
+            # 로드맵 C — 회차 내 재시도(아침·종가 공용 헬퍼). 종전엔 1회 실패가
+            # 곧바로 "진입 차단"으로 확정돼 전략 pull(회차 백오프)과 비대칭이었다.
+            preview = _pull_preview_with_retry()
             log.info("[cycle] ③ preview pull 완료 %.1fs (missing=%s)",
                       time.monotonic() - _t0, preview is None)
             # 로드맵 C — 기준 거래일 검증. 서버가 후보 계산에 쓴 데이터의 기준
@@ -550,11 +556,17 @@ def run_close_cycle(market: str = "KRX", instrument_class: str = "stock") -> dic
     except Exception as e:
         log.warning("[종가] 전략 pull 실패 — 종가진입 없이 청산만 진행: %s", e)
     if strategies:
-        try:
-            preview = pull_preview()
-            buy_candidates = (preview or {}).get("by_strategy") or []
-        except Exception as e:
-            log.warning("[종가] preview pull 실패 — 종가진입 skip: %s", e)
+        # 로드맵 C(유저 확정) — 종가창도 아침과 동일하게 재시도(즉시·+15s·+30s).
+        # 창(주식 15:25→15:30·선물 15:40→15:45) 내 최대 45초 대기는 수용 범위.
+        # 기준 거래일 검증도 동일 적용 — 묵은 후보로 종가 진입하지 않는다.
+        preview = _pull_preview_with_retry("[종가] ")
+        if preview is not None:
+            _stale = _preview_stale_reason(preview, market)
+            if _stale:
+                log.warning("[종가] preview 기준 거래일 낡음 — 종가진입 skip: %s",
+                             _stale)
+                preview = None
+        buy_candidates = (preview or {}).get("by_strategy") or []
 
     # 자동매매 템플릿(장중 스캔) 진입 후보 — 서버 preview는 일봉(전일)이라 이 부류의 신호
     # ("당일 상한가 마감")를 만들 수 없다(preview엔 "장중 스캔 대기"로 표시). 종가창의
