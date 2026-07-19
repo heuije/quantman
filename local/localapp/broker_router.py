@@ -290,6 +290,10 @@ class BrokerRouter:
                     sym = str(r.get("symbol") or "")
                     ds = self._d4c(sym) if sym else None
                     if ds:
+                        # §19 A1 계약 키 보존 — 표시심볼로 덮기 전 원시 계약코드를
+                        # 남겨야 external_pending_by_key가 plan 키(계약코드)와 매칭
+                        # 된다(정규화가 키를 지우던 라이브 무동작 결함 C1).
+                        r.setdefault("contract_code", sym)
                         r["symbol"] = ds
                     out.append(r)
             except Exception as e:

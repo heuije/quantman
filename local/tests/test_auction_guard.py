@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""동시호가 가드(#16) — plan_guard_actions(순수 계획)·intents.submitted_window 단위.
+"""동시호가 가드(#16) — plan_guard_actions(순수 계획)·intents.submitted_window·루프 단위.
 
-검산식 D = [보유 + own잔여 + 외부잔여] − [원장 + 이번 창 own 의도] 를 고정하고,
-유저 확정 규칙(전량 체결 가정·최신 주문부터·전량 취소만·과잉 개입 금지)을 잠근다.
-루프/스케줄 배선은 tests/test_timeline_bef.py(잡 레지스트리)가 커버.
+검산식 D = [보유 + own잔여 + 외부잔여] − [원장 + 이번 창 own **전략** 의도] 를 고정하고
+(드리프트 교정 의도는 목표변 제외 — G3), 유저 확정 규칙(전량 체결 가정·최신 주문부터·
+전량 취소만·과잉 개입 금지)과 2026-07-19 감사 수정(G1 취소 거절 검사·G2 우주 제한·
+G4 주문번호 정규형/side)을 잠근다. 스케줄 배선은 tests/test_timeline_bef.py가 커버.
 """
 from __future__ import annotations
 
@@ -16,14 +17,14 @@ if str(_LOCAL_DIR) not in sys.path:
     sys.path.insert(0, str(_LOCAL_DIR))
 
 from localapp import intents
-from localapp.auction_guard import GuardPlan, plan_guard_actions
+from localapp.auction_guard import GuardPlan, _canon, _sort_key, plan_guard_actions
 
 S = "코스피200선물"
 
 
-def _own(iid, side, qty, order_no):
-    return {"intent_id": iid, "symbol": S, "side": side, "qty": qty,
-            "ref_price": 300.0, "order_no": order_no}
+def _own(iid, side, qty, order_no, strategy_id="s"):
+    return {"intent_id": iid, "strategy_id": strategy_id, "symbol": S,
+            "side": side, "qty": qty, "ref_price": 300.0, "order_no": order_no}
 
 
 def _pend(order_no, side, remain, sym=S):
@@ -133,3 +134,155 @@ def test_submitted_window_filters(tmp_path):
     out = intents.submitted_window(d, "2026-06-01T15:39:00+09:00", path=p)
     assert [(o["intent_id"], o["order_no"], o["side"], o["qty"])
             for o in out] == [("w1", "W1", "buy", 3)]
+    assert out[0]["strategy_id"] == "s"          # G3 — 드리프트 판별용 노출
+
+
+# ── 2026-07-19 감사 수정 — G2 우주 제한 · G3 드리프트 제외 · G4 정규형 ─────────
+def test_unmanaged_symbol_untouched():
+    """G2 — own 의도·원장에 없는 심볼(비전략 보유·수동 전용)은 가드 불간섭.
+
+    종전엔 positions∪pendings 전체가 우주라 원장 0·보유 +14 심볼의 수동 매수를
+    D=+14+q로 취소했다 — 수렴 엔진의 '목표 없음=hold'와 모순."""
+    kq = "코스닥150선물"
+    plan = plan_guard_actions({kq: 14}, {}, [], [],
+                              [_pend("77", "buy", 2, sym=kq)])
+    assert plan == GuardPlan()
+
+
+def test_drift_intent_excluded_from_target_side():
+    """G3 — 드리프트 교정 의도(원장 불변)는 목표변 제외·좌변 잔여엔 포함.
+
+    원장 −3·보유 −12·드리프트 buy 9: 종전 산식은 D=−9로 시작해 수동 매수 초과
+    (+5)를 want=sell로 방치했다. 수정 후 D=0 시작·초과 매수만 정확히 취소."""
+    drift = _own("d1", "buy", 9, "500", strategy_id="DRIFT:open")
+    ok = plan_guard_actions({S: -12}, {S: -3}, [drift],
+                            [_pend("500", "buy", 9)], [])
+    assert ok == GuardPlan()
+    plan = plan_guard_actions({S: -12}, {S: -3}, [drift],
+                              [_pend("500", "buy", 9)], [_pend("900", "buy", 5)])
+    assert plan.cancels == [("900", S, 5)] and plan.rerun is False
+
+
+def test_ambiguous_side_holds_symbol():
+    """G4ⓑ — side 판독 불가 미체결(KIS 선물 필드 미검증 "")은 부호 불능 — 보류·관측."""
+    plan = plan_guard_actions({S: 0}, {S: 2}, [], [], [_pend("1", "", 3)])
+    assert plan.cancels == [] and plan.rerun is False
+    assert any(d["action"] == "guard_skip_ambiguous" for d in plan.decisions)
+
+
+def test_trim_latest_numeric_not_lexicographic():
+    """정렬 — 무패딩 번호 자릿수 경계(9993 vs 12345)에서 숫자 기준 최신 우선."""
+    plan = plan_guard_actions({S: 0}, {S: 0}, [], [],
+                              [_pend("9993", "buy", 1), _pend("12345", "buy", 1)])
+    assert [c[0] for c in plan.cancels] == ["12345", "9993"]
+
+
+def test_canon_and_sort_key():
+    """G4ⓐ — KIS zero-pad ODNO ↔ 체결조회 strip 번호가 같은 정규형으로 매칭."""
+    assert _canon("0000031808") == _canon(" 31808 ") == "31808"
+    assert _sort_key("9993") < _sort_key("12345")
+
+
+# ── run_auction_guard 루프 — G0 시간대·G1 취소 거절·복원 확정 (1틱 하니스) ────
+def _run_one_tick(monkeypatch, broker, submitted, read_today):
+    """가드 루프를 정확히 1틱 실행하는 하니스 — 시간·달력·러너·저널 격리.
+
+    이 하니스 자체가 G0 회귀 잠금이다: until이 naive면 kst_now(aware) 비교에서
+    TypeError로 한 틱도 못 돈다(v0.9.79 릴리스본의 실결함 — 수정 검증)."""
+    import datetime as _dt
+
+    from quant_core import market_calendar as mc
+
+    from localapp import auction_guard as ag
+    from localapp import runner as runner_mod
+    from localapp import trader as trader_mod
+
+    KST = ag.KST
+    t0 = _dt.datetime(2026, 6, 1, 8, 36, tzinfo=KST)
+    calls = {"n": 0}
+
+    def fake_now():
+        calls["n"] += 1
+        return t0 if calls["n"] <= 1 else t0.replace(hour=9)
+
+    class _FakeTrader:
+        def __init__(self, b):
+            self.ledger = {}
+
+        def reload_state(self):
+            pass
+
+    reruns: list = []
+    failed: list = []
+    cycles: list = []
+    monkeypatch.setattr(trader_mod, "kst_now", fake_now)
+    monkeypatch.setattr(trader_mod, "kst_today", lambda: t0.date())
+    monkeypatch.setattr(trader_mod, "Trader", _FakeTrader)
+    monkeypatch.setattr(mc, "is_session_day", lambda m, d: True)
+    monkeypatch.setattr(runner_mod, "make_broker", lambda: broker)
+    monkeypatch.setattr(runner_mod, "run_cycle",
+                        lambda **kw: reruns.append(kw) or {})
+    monkeypatch.setattr(runner_mod, "run_close_cycle",
+                        lambda *a: reruns.append(a) or {})
+    monkeypatch.setattr(ag._time, "sleep", lambda s: None)
+    monkeypatch.setattr(intents, "submitted_window",
+                        lambda d, since, path=None: list(submitted))
+    monkeypatch.setattr(intents, "_read_today", lambda d, path=None: list(read_today))
+    monkeypatch.setattr(intents, "mark_failed",
+                        lambda d, iid, reason: failed.append(iid))
+    monkeypatch.setattr(ag.order_log, "log_cycle",
+                        lambda dec, meta: cycles.append((dec, meta)))
+    out = ag.run_auction_guard("futures", "open", (8, 34), (8, 44, 30))
+    return out, reruns, failed, broker
+
+
+class _LoopBroker:
+    """pending 조회 시퀀스·취소 응답을 주입하는 루프 하니스 브로커."""
+
+    def __init__(self, pend_seq, cancel_resp):
+        self._seq = [list(x) for x in pend_seq]
+        self._cancel_resp = cancel_resp
+        self.cancelled: list = []
+
+    def pending_orders(self):
+        return list(self._seq.pop(0)) if len(self._seq) > 1 else list(self._seq[0])
+
+    def cancel(self, order_no, symbol, qty):
+        self.cancelled.append((order_no, symbol, qty))
+        return self._cancel_resp
+
+    def account_snapshot(self):
+        return {"balance": {}, "positions": []}
+
+
+def _fut_pend(order_no, side, remain):
+    return {"order_no": order_no, "symbol": S, "side": side, "remain_qty": remain,
+            "market": "DOMESTIC", "asset_class": "futures"}
+
+
+def test_loop_cancel_rejection_blocks_reorder(monkeypatch):
+    """G1 — 취소 거절({"success": False})이면 intent 해제·재실행 금지(이중 발주 차단)."""
+    own = [_own("i1", "buy", 5, "101")]
+    pend = [_fut_pend("101", "buy", 2)]           # 유저 감량 상태 지속
+    broker = _LoopBroker([pend], {"success": False, "message": "거절"})
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker, own, [{"order_no": "101"}])
+    assert b.cancelled == [("101", S, 2)]         # 취소는 시도했으나
+    assert failed == [] and reruns == []          # 거절 → 해제·재발주 모두 보류
+    assert out["n_cancel"] == 0
+
+
+def test_loop_restore_confirms_then_reorders(monkeypatch):
+    """복원 정상 경로 — 재확인 조회(race 봉합) 후 취소 성공·소멸 확인 → 해제+재실행.
+
+    pending 시퀀스: 최초 조회·복원 재확인 조회는 감량 잔여 노출, 취소 후 확인
+    조회는 소멸([]) — 그때만 mark_failed·run_cycle이 발화해야 한다."""
+    own = [_own("i1", "buy", 5, "0000000101")]    # 저널은 zero-pad(KIS 형)
+    pend = [_fut_pend("101", "buy", 2)]           # 조회는 무패딩 — 정규형 매칭(G4ⓐ)
+    broker = _LoopBroker([pend, pend, []], {"success": True})
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker, own, [{"order_no": "0000000101"}])
+    assert b.cancelled == [("101", S, 2)]
+    assert failed == ["i1"]
+    assert len(reruns) == 1 and reruns[0]["instrument_class"] == "futures"
+    assert out["n_cancel"] == 1

@@ -2467,6 +2467,13 @@ class Trader:
                         extra_capacity[(disp, side)] = \
                             extra_capacity.get((disp, side), 0) + rem
                     else:
+                        # C2(2026-07-19 감사) — 주식 '매도' 미체결 잔량은 크레딧 금지:
+                        # 잔고 hldg_qty가 매도 미체결 중에도 전량 유지라 같은 주식
+                        # 가치가 위 §18 보유 크레딧(_avail)에 이미 계상돼 있다(취소
+                        # 시 늘어나는 현금 없음 — 이중계상). '매수' 미체결(side long)
+                        # 은 예약 현금의 환급이라 중복 없음 — 유지.
+                        if side == "short":
+                            continue
                         px = self._stock_credit_price(disp, dataset)
                         if px > 0:
                             extra_capacity[(disp, side)] = \

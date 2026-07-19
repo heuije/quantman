@@ -129,6 +129,36 @@ def test_external_pending_scope_and_qty_fallback():
     assert signed == {S: 3} and remain == {(S, "long"): 3}
 
 
+def test_external_pending_prefers_contract_code_key():
+    """C1(2026-07-19 감사) — 라우터가 표시심볼로 정규화한 선물 pending은 보존된
+    원시 계약코드(contract_code)로 키잉해야 plan 키(계약코드)와 매칭된다.
+    표시심볼 키잉이면 §19 incl·크레딧이 라이브에서 영원히 miss(무동작)였다."""
+    row = _pend("E9", "코스피200선물", "buy", 4)
+    row["contract_code"] = "A0169000"
+    signed, remain = external_pending_by_key(
+        [row], own_order_nos=set(), scope_ok=lambda p: True, key_of=lambda s: s)
+    assert signed == {"A0169000": 4}
+    assert remain == {("A0169000", "long"): 4}
+
+
+def test_router_preserves_contract_code_on_normalized_futures_pending():
+    """C1 배선 — BrokerRouter가 pending 심볼을 데이터셋 심볼로 덮기 전 원시
+    계약코드를 contract_code로 남긴다(위 헬퍼의 키 소스)."""
+    from localapp.broker_router import BrokerRouter
+
+    class _Fut:
+        def pending_orders(self):
+            return [{"order_no": "1", "symbol": "A0169000", "side": "buy",
+                     "remain_qty": 2, "market": "DOMESTIC",
+                     "asset_class": "futures"}]
+
+    r = BrokerRouter(stock=None, futures=_Fut(), resolve=lambda s: s,
+                     dataset_for_code=lambda c: "코스피200선물")
+    rows = r.pending_orders()
+    assert rows[0]["symbol"] == "코스피200선물"
+    assert rows[0]["contract_code"] == "A0169000"
+
+
 def test_manual_presold_roll_restores():
     """§6 07-14 08:55: 원장 5(청산예정)·수동선매도로 브로커 0·진입 6
     → 상쇄 5(handoff) + 잔여진입 1 실발주 + drift 복원 5 = 순매수 6."""

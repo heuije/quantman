@@ -69,12 +69,15 @@ def external_pending_by_key(pending, own_order_nos, scope_ok, key_of):
     pending: broker.pending_orders() — [{order_no, symbol, side, remain_qty|qty, ...}].
     own_order_nos: 자기 발주 order_no 집합(intents 저널 mark_submitted). 이 order_no는 제외.
     scope_ok(p)→bool: 이 미체결이 이번 사이클 범위(시장·자산군)인가 — 호출자가 dict 필드
-        (market·asset_class)로 판정(심볼 파싱 대신). key_of(sym)→positions/ledger와 동일
-        계약 키(선물=계약코드·주식=심볼).
-    반환 (signed_by_key, remain_by_sym_side): 넷팅용 부호수량 + 사이징 크레딧용 잔량.
+        (market·asset_class)로 판정(심볼 파싱 대신). 키는 행의 contract_code(라우터가
+        정규화 전 보존한 원시 계약코드 — 선물)를 우선하고, 없으면 key_of(sym)(주식=심볼).
+        표시심볼로 키잉하면 plan 키(계약코드)와 영원히 miss라 A1이 라이브에서
+        무동작이었다(2026-07-19 감사 C1).
+    반환 (signed_by_key, remain_by_key_side): 넷팅용 부호수량 + 사이징 크레딧용 잔량 —
+        둘 다 같은 계약 키로 키잉(크레딧 역매핑 _code2disp도 계약 키를 기대).
     """
     signed_by_key: dict[str, int] = {}
-    remain_by_sym_side: dict[tuple[str, str], int] = {}
+    remain_by_key_side: dict[tuple[str, str], int] = {}
     for p in pending or []:
         ono = str(p.get("order_no") or "")
         if ono and ono in own_order_nos:
@@ -86,12 +89,12 @@ def external_pending_by_key(pending, own_order_nos, scope_ok, key_of):
         rem = int(p.get("remain_qty") or p.get("qty") or 0)
         if not sym or rem <= 0:
             continue
-        key = key_of(sym)
+        key = str(p.get("contract_code") or "").strip() or key_of(sym)
         signed_by_key[key] = signed_by_key.get(key, 0) + (rem if side == "buy" else -rem)
         pos_side = "long" if side == "buy" else "short"
-        remain_by_sym_side[(sym, pos_side)] = \
-            remain_by_sym_side.get((sym, pos_side), 0) + rem
-    return signed_by_key, remain_by_sym_side
+        remain_by_key_side[(key, pos_side)] = \
+            remain_by_key_side.get((key, pos_side), 0) + rem
+    return signed_by_key, remain_by_key_side
 
 
 @dataclass(frozen=True)
