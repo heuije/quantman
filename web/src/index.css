@@ -3129,8 +3129,10 @@ thead th { color: var(--muted); font-weight: 600; }
 
 /* ── 인라인 결과 차트 (P1a) ───────────────────────────────────────────────── */
 /* assistant 버블이 차트/리포트를 담을 때 넓이 확장 */
-.chat-msg.assistant:has(.chat-result),
-.chat-msg.assistant:has(.chat-report) { max-width: 96%; }
+.chat-msg.assistant:has(.chat-result) { max-width: 96%; }
+/* 리포트는 정식 문서 — 버블을 풀폭·stretch로 채워 좌측정렬 96%가 만들던 '우측 공백'을 없애고
+   차트·표를 좌우 대칭으로 가운데 정렬한다(PDF도 max-width:100%라 동일). */
+.chat-msg.assistant:has(.chat-report) { max-width: 100%; align-self: stretch; padding-left: 0; padding-right: 0; }
 .chat-result { width: 100%; margin-top: 6px; }
 
 /* ── 보고서 형식 답변 (ChatReport) — 진행 서술 제거 후 최종 산출만 4섹션으로 ───── */
@@ -3152,6 +3154,12 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .chat-report-pdf:hover { border-color: var(--accent); background: var(--accent-soft); }
 .chat-report-section { margin-top: 16px; }
+/* 결과 평문 요약 — 기술 경고 위, 초중급 투자자가 결론부터 읽도록 강조 콜아웃. */
+.report-summary {
+  margin: 0 0 12px; padding: 11px 14px; border-radius: 10px;
+  background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text); font-size: 13.5px; line-height: 1.6; font-weight: 500;
+}
 .chat-report-h {
   display: flex; align-items: center; gap: 8px;
   margin: 0 0 8px; font-size: 12pt; font-weight: 700; color: var(--accent-strong);

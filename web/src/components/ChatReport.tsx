@@ -10,30 +10,90 @@
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import type { ChatPart, IrStrategyDef, IrStrategyResult } from "../types";
+import type { ChatPart, IrEventStat, IrStrategyDef, IrStrategyResult } from "../types";
 import ChatResultView, { MethodologyPanel } from "./ChatResultView";
 
 type TextPart = Extract<ChatPart, { type: "text" }>;
 type ResultPart = Extract<ChatPart, { type: "tool_result" }>;
 
-// 리포트 DOM을 새 창으로 복제해 인쇄(→ 브라우저 'PDF로 저장'). 페이지 스타일을 함께 실어
-// 색·표·차트(인라인 SVG)를 보존하고, 인쇄본에서는 버튼·입력 등 상호작용 요소를 숨긴다.
+// 라이트(화이트) 상태의 리포트 DOM을 새 창으로 복제해 인쇄(→ 브라우저 'PDF로 저장').
+// 차트 색은 CSS var를 못 받아 렌더 시점 팔레트로 SVG에 박히므로, 복제 前 문서를 라이트 테마로
+// 전환해 차트·표를 화이트로 remount시킨 뒤(2×rAF 후 페인트 완료) 복제하고 원래 테마를 복원한다.
 function printReportToPdf(el: HTMLElement, title: string) {
-  const styles = Array.from(document.querySelectorAll('style,link[rel="stylesheet"]'))
-    .map((n) => n.outerHTML).join("\n");
-  const w = window.open("", "_blank", "width=920,height=1200");
-  if (!w) { window.alert("팝업이 차단되어 PDF 창을 열 수 없습니다. 팝업을 허용해 주세요."); return; }
-  w.document.write(
-    `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${title}</title>${styles}` +
-    "<style>body{background:#fff;padding:28px;margin:0}" +
-    ".chat-report{border:none;box-shadow:none;max-width:100%;margin:0}" +
-    ".chat-report button,.chat-report input,.chat-report select,.report-actions{display:none!important}" +
-    "@page{margin:14mm}</style></head>" +
-    `<body>${el.outerHTML}</body></html>`);
-  w.document.close();
-  const go = () => { try { w.focus(); w.print(); } catch { /* 사용자가 창을 닫았을 수 있음 */ } };
-  w.onload = go;
-  setTimeout(go, 700);   // onload가 이미 지난 경우 대비
+  const root = document.documentElement;
+  const prev = root.getAttribute("data-theme");
+  root.setAttribute("data-theme", "light");           // 차트·표·토큰을 화이트로 (ChatResultView remount)
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const html = el.outerHTML;                         // 라이트 상태 스냅샷
+    if (prev == null) root.removeAttribute("data-theme"); else root.setAttribute("data-theme", prev);
+    const styles = Array.from(document.querySelectorAll('style,link[rel="stylesheet"]'))
+      .map((n) => n.outerHTML).join("\n");
+    const w = window.open("", "_blank", "width=920,height=1200");
+    if (!w) { window.alert("팝업이 차단되어 PDF 창을 열 수 없습니다. 팝업을 허용해 주세요."); return; }
+    w.document.write(
+      `<!doctype html><html lang="ko" data-theme="light"><head><meta charset="utf-8"><title>${title}</title>${styles}` +
+      "<style>:root,html{color-scheme:light}body{background:#fff;padding:28px;margin:0}" +
+      ".chat-report{border:none;box-shadow:none;max-width:100%;margin:0}" +
+      ".chat-report button,.chat-report input,.chat-report select,.report-actions{display:none!important}" +
+      "@page{margin:14mm}</style></head>" +
+      `<body>${html}</body></html>`);
+    w.document.close();
+    const go = () => { try { w.focus(); w.print(); } catch { /* 사용자가 창을 닫았을 수 있음 */ } };
+    w.onload = go;
+    setTimeout(go, 700);   // onload가 이미 지난 경우 대비
+  }));
+}
+
+// 결과를 초중급 투자자용 평문 1~2문장으로 요약 — 기술 경고(생존편향·워밍업 등)만 보고 뜻을
+// 못 읽는 문제 해결. 결과 숫자에서 결정적으로 생성(LLM 의존 X). 단위: mean·prob_positive=%, p_value=0~1.
+function resultSummary(r: IrStrategyResult): string | null {
+  const shape = (r as { shape?: string }).shape;
+
+  // 이벤트 스터디 — 진입 후(또는 이벤트 전) 평균 수익 + 승률(양+ 비율) + 유의성
+  if (shape === "event_study" || (r.axis === "time" && r.overall && (r as { windows?: unknown }).windows)) {
+    const overall = r.overall as Record<string, IrEventStat> | undefined;
+    const windows = ((r as { windows?: number[] }).windows) ?? [];
+    if (overall && windows.length) {
+      const fwd = windows.filter((w) => Number(w) > 0).sort((a, b) => b - a);
+      const key = fwd.length ? fwd[0] : [...windows].sort((a, b) => a - b)[0];
+      const o = overall[String(key)];
+      if (o && o.mean != null) {
+        const isPre = Number(key) < 0;
+        const m = o.mean;                       // %
+        const wr = o.prob_positive ?? null;     // % (0~100)
+        const sig = o.p_value != null && o.p_value < 0.05;
+        const mag = Math.abs(m) < 2 ? "소폭 " : "";
+        const dir = m >= 0 ? `${mag}플러스(+${m.toFixed(1)}%)` : `${mag}마이너스(${m.toFixed(1)}%)`;
+        const label = isPre ? `급등 전 ${-Number(key)}일 구간` : `진입 후 ${key}일간`;
+        let s = `${label} 평균 수익은 ${dir}입니다`;
+        if (wr != null) {
+          s += `. 수익이 난 비율(승률)은 ${wr.toFixed(0)}%로 `;
+          s += wr < 50
+            ? "절반 이상이 오히려 손실이라, 방향성 베팅으로 신뢰하기 어려운 불안정한 패턴입니다"
+            : wr < 55
+              ? "50%를 겨우 넘는 수준이라 방향성이 뚜렷하지 않습니다"
+              : "비교적 일관되게 상승하는 편입니다";
+        }
+        s += sig ? ` (통계적으로 유의, p=${o.p_value!.toFixed(3)}).`
+                 : " (다만 통계적 유의성은 약합니다).";
+        return s;
+      }
+    }
+  }
+
+  // 백테스트(simulate) — 누적·연평균·최대낙폭·샤프 (total_return·cagr·mdd=분수 ×100, sharpe=원값)
+  const met = (r as { metrics?: Record<string, number | null> }).metrics;
+  if ((shape === "simulate" || (met && (r as { equity?: unknown }).equity)) && met && met.total_return != null) {
+    const pc = (v?: number | null) => v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`;
+    const sh = met.sharpe;
+    const grade = sh == null ? ""
+      : sh >= 1 ? " 위험 대비 수익이 양호한 편입니다."
+      : sh >= 0.5 ? " 위험 대비 수익은 보통 수준입니다."
+      : " 위험 대비 수익이 부진합니다.";
+    return `이 전략은 누적 ${pc(met.total_return)}(연평균 ${pc(met.cagr)})의 성과에 최대낙폭 ${pc(met.max_drawdown)}, 샤프 ${sh == null ? "—" : sh.toFixed(2)}입니다.${grade}`;
+  }
+
+  return null;
 }
 
 export default function ChatReport({ parts, title = "분석 리포트" }: { parts: ChatPart[]; title?: string }) {
@@ -57,6 +117,7 @@ export default function ChatReport({ parts, title = "분석 리포트" }: { part
 
   const r = finalResult as unknown as IrStrategyResult;
   const methodology = r.methodology;
+  const summary = resultSummary(r);   // 결과 평문 요약(있을 때만)
   const ir = (finalResult as { ir?: Record<string, unknown> }).ir;
   const alreadySavedId = (finalResult as { strategy_id?: number }).strategy_id;
 
@@ -93,6 +154,7 @@ export default function ChatReport({ parts, title = "분석 리포트" }: { part
       {/* ② 분석 결과 (엑셀 내보내기 유지 — ChatResultView 내부) */}
       <section className="chat-report-section">
         <h4 className="chat-report-h">분석 결과</h4>
+        {summary && <p className="report-summary">{summary}</p>}
         <ChatResultView result={finalResult} hideMethodology />
       </section>
 

@@ -24,6 +24,7 @@ import { Link } from "react-router-dom";
 import { Fragment, useState, type ReactElement } from "react";
 import EquityChart from "./EquityChart";
 import { StatNote } from "./StatGlossary";
+import { chartC, useThemeName } from "../chartColors";
 import ExcelExportButton from "./ExcelExportButton";
 import AutotradeLinkButton from "./AutotradeLinkButton";
 import ParamControls, { type AdjustableParam } from "./ParamControls";
@@ -94,7 +95,7 @@ function InspectPanel({ data, columns, height, colorOf }: {
   return (
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 8 }}>
-        <CartesianGrid stroke="#2b323e" />
+        <CartesianGrid stroke={chartC.grid} />
         <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={48} />
         <YAxis tick={{ fontSize: 10 }} width={52} domain={["auto", "auto"]}
                tickFormatter={(v) => inspectFmt(Number(v))} />
@@ -470,9 +471,12 @@ export default function ChatResultView({ result, hideMethodology }: Props & { hi
   const isComposite = !!(tradableIr as { components?: unknown[] } | undefined)?.components?.length;
   const canLink = AUTOTRADE_SHAPES.has(shape) && status !== "degenerate" && !!tradableIr
     && !isComposite;
+  // 테마 전환(다크↔라이트, PDF 화이트 인쇄) 시 결과 본문을 remount해 recharts가 라이브 팔레트(C)를
+  // 새로 읽게 한다 — 차트 색이 CSS var를 못 받아 렌더 시점에만 반영되므로 key 교체로 강제 재렌더.
+  const theme = useThemeName();
   return (
     <>
-      <ChatResultBody result={live.result} hideMethodology={hideMethodology} />
+      <ChatResultBody key={theme} result={live.result} hideMethodology={hideMethodology} />
       <ContextCard context={(live.result as unknown as IrStrategyResult).context} />
       {ir0 && EXCEL_SHAPES.has(shape) && <ExcelExportButton ir={live.ir ?? ir0} />}
       {canLink && <AutotradeLinkButton ir={tradableIr as Record<string, unknown>} />}

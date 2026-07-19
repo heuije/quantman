@@ -3,6 +3,7 @@ import {
   CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer,
   Scatter, Tooltip, XAxis, YAxis,
 } from "recharts";
+import { useChartColors, type ChartColors } from "../chartColors";
 
 interface Point { date: string; value: number | null }
 type Trade = Record<string, string | number | null>;
@@ -13,12 +14,8 @@ interface Props {
   trades?: Trade[];        // 있으면 진입▲/청산▼ 지점을 자산곡선 위에 마킹
 }
 
-/* recharts SVG는 CSS var를 못 받아 토큰값(DESIGN.md)을 직접 인라인한다.
-   변경 시 web/src/index.css :root와 동기화. up=매수/상승(빨강), down=매도/하락(파랑). */
-const C = {
-  accent: "#d4a738", muted: "#8b94a3", grid: "#2b323e",
-  up: "#de3033", down: "#1668c4", ink: "#d2d8e0", panel: "#1c212b",
-};
+/* recharts SVG는 CSS var를 못 받아 토큰값을 직접 인라인한다 — 테마(다크·라이트·PDF화이트)에
+   따라 useChartColors()로 읽어 넘긴다. up=매수/상승(빨강), down=매도/하락(파랑). */
 
 // 전체기간 백테스트는 equity가 수천 포인트(15년 ≈ 3,700 거래일)·trades가 수천 건까지 커지고,
 // recharts는 포인트·SVG 노드 수에 비례해 느려져 그대로 그리면 메인스레드가 멎는다.
@@ -32,17 +29,17 @@ const won = (v: number | null | undefined) =>
 const px = (v: number | null | undefined) =>
   v == null ? "—" : `@${Number(v).toLocaleString()}`;   // 종목 통화 단위 미상 → @가격 중립표기
 
-// 매수 ▲ (자산곡선 점 위에 위쪽 삼각형)
-function BuyMarker({ cx, cy }: { cx?: number; cy?: number }) {
+// 매수 ▲ (자산곡선 점 위에 위쪽 삼각형). color=채움, outline=배경색 테두리(어떤 테마서도 대비).
+function BuyMarker({ cx, cy, color, outline }: { cx?: number; cy?: number; color?: string; outline?: string }) {
   if (cx == null || cy == null) return null;
   return <path d={`M${cx},${cy - 7} L${cx - 6},${cy + 5} L${cx + 6},${cy + 5} Z`}
-    fill={C.up} stroke="#fff" strokeWidth={1} />;
+    fill={color} stroke={outline} strokeWidth={1} />;
 }
 // 매도 ▼ (아래쪽 삼각형)
-function SellMarker({ cx, cy }: { cx?: number; cy?: number }) {
+function SellMarker({ cx, cy, color, outline }: { cx?: number; cy?: number; color?: string; outline?: string }) {
   if (cx == null || cy == null) return null;
   return <path d={`M${cx},${cy + 7} L${cx - 6},${cy - 5} L${cx + 6},${cy - 5} Z`}
-    fill={C.down} stroke="#fff" strokeWidth={1} />;
+    fill={color} stroke={outline} strokeWidth={1} />;
 }
 
 interface Row {
@@ -63,27 +60,27 @@ interface Row {
 const pctFmt = (v: number | null | undefined) =>
   v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
 
-function ChartTooltip({ active, payload, label, pct }:
-  { active?: boolean; payload?: { payload: Row }[]; label?: string; pct?: boolean }) {
+function ChartTooltip({ active, payload, label, pct, c }:
+  { active?: boolean; payload?: { payload: Row }[]; label?: string; pct?: boolean; c: ChartColors }) {
   if (!active || !payload?.length) return null;
   const row = payload[0].payload;
   const sv = pct ? pctFmt(row["전략%"]) : won(row.전략);
   const bv = pct ? pctFmt(row["Buy&Hold%"]) : won(row["Buy&Hold"]);
   return (
     <div style={{
-      background: C.panel, border: `1px solid ${C.grid}`, borderRadius: 8,
-      padding: "8px 10px", fontSize: 12, color: C.muted,
+      background: c.panel, border: `1px solid ${c.grid}`, borderRadius: 8,
+      padding: "8px 10px", fontSize: 12, color: c.muted,
     }}>
-      <div style={{ fontWeight: 600, color: C.ink, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontWeight: 600, color: c.text, marginBottom: 4 }}>{label}</div>
       <div>전략 {sv}</div>
       {row["Buy&Hold"] != null && <div>Buy&Hold {bv}</div>}
       {row.buyInfo.map((b, k) => (
-        <div key={`b${k}`} style={{ color: C.up, marginTop: 2 }}>
+        <div key={`b${k}`} style={{ color: c.up, marginTop: 2 }}>
           ▲ 매수 {b.sym ? `${b.sym} ` : ""}{px(b.price)}
         </div>
       ))}
       {row.sellInfo.map((s, k) => (
-        <div key={`s${k}`} style={{ color: C.down, marginTop: 2 }}>
+        <div key={`s${k}`} style={{ color: c.down, marginTop: 2 }}>
           ▼ 매도 {s.sym ? `${s.sym} ` : ""}{px(s.price)}
           {s.ret != null ? ` (${s.ret >= 0 ? "+" : ""}${s.ret.toFixed(1)}%)` : ""}
         </div>
@@ -94,6 +91,7 @@ function ChartTooltip({ active, payload, label, pct }:
 
 /** 자산곡선 차트 — 전략 vs Buy&Hold. trades가 있으면 진입▲/청산▼ 마킹. */
 function EquityChart({ equity, benchmark, trades }: Props) {
+  const C = useChartColors();
   const tradeCount = trades?.length ?? 0;
   // 거래 마커 기본값 = 건수 기반(과다 마커는 SVG 노드 폭발). 사용자 토글은 해당 결과(trades
   // 참조)에만 유효 — 새 결과로 바뀌면 기본값 복귀(이전 결과의 토글이 대용량 결과에 박제 방지).
@@ -205,13 +203,13 @@ function EquityChart({ equity, benchmark, trades }: Props) {
           </label>
         )}
       </div>
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={260}>
         <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
           <CartesianGrid stroke={C.grid} />
           <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={50} />
           <YAxis tickFormatter={pct ? (v) => `${Math.round(Number(v))}%` : fmt}
                  tick={{ fontSize: 11 }} width={52} />
-          <Tooltip content={<ChartTooltip pct={pct} />} />
+          <Tooltip content={<ChartTooltip pct={pct} c={C} />} />
           <Legend />
           <Line type="monotone" dataKey={stratKey} name="전략" stroke={C.accent}
                 dot={false} strokeWidth={2} isAnimationActive={false} />
@@ -220,11 +218,11 @@ function EquityChart({ equity, benchmark, trades }: Props) {
                 isAnimationActive={false} />
           {hasTrades && showTrades && (
             <Scatter name="매수" dataKey={buyKey} fill={C.up}
-                     shape={<BuyMarker />} legendType="triangle" isAnimationActive={false} />
+                     shape={<BuyMarker color={C.up} outline={C.panel} />} legendType="triangle" isAnimationActive={false} />
           )}
           {hasTrades && showTrades && (
             <Scatter name="매도" dataKey={sellKey} fill={C.down}
-                     shape={<SellMarker />} legendType="triangle" isAnimationActive={false} />
+                     shape={<SellMarker color={C.down} outline={C.panel} />} legendType="triangle" isAnimationActive={false} />
           )}
         </ComposedChart>
       </ResponsiveContainer>
