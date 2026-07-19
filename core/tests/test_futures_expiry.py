@@ -9,9 +9,10 @@
   cme_nq           : 인도월 3번째 금요일 (CME 주가지수)
   cme_btc          : 인도월 마지막 금요일 (CME 암호화폐)
 
-영업일은 주말만 제외하는 보수적 근사 — 거래소 휴장일은 모델링하지 않는다(피드 없음).
-만기 자동청산은 roll_lead_days 마진(≥5일)만큼 *앞서* 청산하므로, 미모델 휴장일(최대
-1~2일 오차)이 있어도 항상 실제 만기 전에 닫힌다. 이 마진이 근사의 안전 가드다.
+KR 규칙(2번째 목요일)은 교정 캘린더(market_calendar)를 참조해 휴장 목요일을 직전
+거래일로 앞당긴다(KRX 순연 규정). 캘린더 로드 실패·범위 밖은 미보정 근사로 후퇴.
+CME 규칙은 주말만 제외하는 보수적 근사 유지(휴장 피드 없음) — roll_lead_days
+마진(≥5일)이 오차를 흡수한다.
 
     cd platform/core && python -m pytest tests/test_futures_expiry.py -q
 """
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from quant_core import futures_expiry
 from quant_core.futures_expiry import last_trading_date, roll_lead_days
 
 
@@ -27,6 +29,44 @@ def test_kospi200_second_thursday():
     assert last_trading_date("kospi200_2nd_thu", 2026, 6) == date(2026, 6, 11)
     assert last_trading_date("kospi200_2nd_thu", 2026, 9) == date(2026, 9, 10)
     assert last_trading_date("kospi200_2nd_thu", 2026, 12) == date(2026, 12, 10)
+
+
+# ── KR 휴장 순연 — 교정 캘린더 참조 (KRX 규정: 휴장이면 직전 거래일) ─────────────
+def test_kr_expiry_moves_to_prev_session_on_holiday(monkeypatch):
+    holiday = date(2026, 9, 10)                       # 2번째 목요일이 휴장이라 가정
+    monkeypatch.setattr(futures_expiry.market_calendar, "is_session_day",
+                        lambda m, d: not (m == "KR" and d == holiday))
+    assert last_trading_date("kospi200_2nd_thu", 2026, 9) == date(2026, 9, 9)
+    assert last_trading_date("kosdaq150_2nd_thu", 2026, 9) == date(2026, 9, 9)
+
+
+def test_kr_expiry_walks_over_consecutive_holidays(monkeypatch):
+    holidays = {date(2026, 9, 10), date(2026, 9, 9)}  # 목·수 연속 휴장 → 화요일
+    monkeypatch.setattr(futures_expiry.market_calendar, "is_session_day",
+                        lambda m, d: d not in holidays)
+    assert last_trading_date("kospi200_2nd_thu", 2026, 9) == date(2026, 9, 8)
+
+
+def test_kr_expiry_falls_back_on_calendar_load_error(monkeypatch):
+    def boom(market, d):
+        raise futures_expiry.market_calendar.CalendarError("캘린더 로드 실패")
+    monkeypatch.setattr(futures_expiry.market_calendar, "is_session_day", boom)
+    assert last_trading_date("kospi200_2nd_thu", 2026, 9) == date(2026, 9, 10)
+
+
+def test_kr_expiry_falls_back_when_out_of_coverage(monkeypatch):
+    # 범위 밖은 예외가 아니라 전부 False — 상한 10일 도달 후 미보정 근사로 후퇴.
+    monkeypatch.setattr(futures_expiry.market_calendar, "is_session_day",
+                        lambda m, d: False)
+    assert last_trading_date("kospi200_2nd_thu", 2026, 9) == date(2026, 9, 10)
+
+
+def test_cme_rules_never_touch_calendar(monkeypatch):
+    def boom(market, d):
+        raise AssertionError("CME 규칙이 KR 캘린더를 참조하면 안 된다")
+    monkeypatch.setattr(futures_expiry.market_calendar, "is_session_day", boom)
+    assert last_trading_date("cme_nq", 2026, 6) == date(2026, 6, 19)
+    assert last_trading_date("cme_gc", 2026, 6) == date(2026, 6, 26)
 
 
 # ── COMEX 금속(GC/SI) — 인도월 3번째 마지막 영업일 ──────────────────────────────
