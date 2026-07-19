@@ -3154,6 +3154,12 @@ thead th { color: var(--muted); font-weight: 600; }
 }
 .chat-report-pdf:hover { border-color: var(--accent); background: var(--accent-soft); }
 .chat-report-section { margin-top: 16px; }
+/* 결과 평문 요약 — 기술 경고 위, 초중급 투자자가 결론부터 읽도록 강조 콜아웃. */
+.report-summary {
+  margin: 0 0 12px; padding: 11px 14px; border-radius: 10px;
+  background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text); font-size: 13.5px; line-height: 1.6; font-weight: 500;
+}
 .chat-report-h {
   display: flex; align-items: center; gap: 8px;
   margin: 0 0 8px; font-size: 12pt; font-weight: 700; color: var(--accent-strong);

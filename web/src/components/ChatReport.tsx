@@ -10,7 +10,7 @@
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import type { ChatPart, IrStrategyDef, IrStrategyResult } from "../types";
+import type { ChatPart, IrEventStat, IrStrategyDef, IrStrategyResult } from "../types";
 import ChatResultView, { MethodologyPanel } from "./ChatResultView";
 
 type TextPart = Extract<ChatPart, { type: "text" }>;
@@ -44,6 +44,58 @@ function printReportToPdf(el: HTMLElement, title: string) {
   }));
 }
 
+// 결과를 초중급 투자자용 평문 1~2문장으로 요약 — 기술 경고(생존편향·워밍업 등)만 보고 뜻을
+// 못 읽는 문제 해결. 결과 숫자에서 결정적으로 생성(LLM 의존 X). 단위: mean·prob_positive=%, p_value=0~1.
+function resultSummary(r: IrStrategyResult): string | null {
+  const shape = (r as { shape?: string }).shape;
+
+  // 이벤트 스터디 — 진입 후(또는 이벤트 전) 평균 수익 + 승률(양+ 비율) + 유의성
+  if (shape === "event_study" || (r.axis === "time" && r.overall && (r as { windows?: unknown }).windows)) {
+    const overall = r.overall as Record<string, IrEventStat> | undefined;
+    const windows = ((r as { windows?: number[] }).windows) ?? [];
+    if (overall && windows.length) {
+      const fwd = windows.filter((w) => Number(w) > 0).sort((a, b) => b - a);
+      const key = fwd.length ? fwd[0] : [...windows].sort((a, b) => a - b)[0];
+      const o = overall[String(key)];
+      if (o && o.mean != null) {
+        const isPre = Number(key) < 0;
+        const m = o.mean;                       // %
+        const wr = o.prob_positive ?? null;     // % (0~100)
+        const sig = o.p_value != null && o.p_value < 0.05;
+        const mag = Math.abs(m) < 2 ? "소폭 " : "";
+        const dir = m >= 0 ? `${mag}플러스(+${m.toFixed(1)}%)` : `${mag}마이너스(${m.toFixed(1)}%)`;
+        const label = isPre ? `급등 전 ${-Number(key)}일 구간` : `진입 후 ${key}일간`;
+        let s = `${label} 평균 수익은 ${dir}입니다`;
+        if (wr != null) {
+          s += `. 수익이 난 비율(승률)은 ${wr.toFixed(0)}%로 `;
+          s += wr < 50
+            ? "절반 이상이 오히려 손실이라, 방향성 베팅으로 신뢰하기 어려운 불안정한 패턴입니다"
+            : wr < 55
+              ? "50%를 겨우 넘는 수준이라 방향성이 뚜렷하지 않습니다"
+              : "비교적 일관되게 상승하는 편입니다";
+        }
+        s += sig ? ` (통계적으로 유의, p=${o.p_value!.toFixed(3)}).`
+                 : " (다만 통계적 유의성은 약합니다).";
+        return s;
+      }
+    }
+  }
+
+  // 백테스트(simulate) — 누적·연평균·최대낙폭·샤프 (total_return·cagr·mdd=분수 ×100, sharpe=원값)
+  const met = (r as { metrics?: Record<string, number | null> }).metrics;
+  if ((shape === "simulate" || (met && (r as { equity?: unknown }).equity)) && met && met.total_return != null) {
+    const pc = (v?: number | null) => v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`;
+    const sh = met.sharpe;
+    const grade = sh == null ? ""
+      : sh >= 1 ? " 위험 대비 수익이 양호한 편입니다."
+      : sh >= 0.5 ? " 위험 대비 수익은 보통 수준입니다."
+      : " 위험 대비 수익이 부진합니다.";
+    return `이 전략은 누적 ${pc(met.total_return)}(연평균 ${pc(met.cagr)})의 성과에 최대낙폭 ${pc(met.max_drawdown)}, 샤프 ${sh == null ? "—" : sh.toFixed(2)}입니다.${grade}`;
+  }
+
+  return null;
+}
+
 export default function ChatReport({ parts, title = "분석 리포트" }: { parts: ChatPart[]; title?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "done" | "error">("idle");
@@ -65,6 +117,7 @@ export default function ChatReport({ parts, title = "분석 리포트" }: { part
 
   const r = finalResult as unknown as IrStrategyResult;
   const methodology = r.methodology;
+  const summary = resultSummary(r);   // 결과 평문 요약(있을 때만)
   const ir = (finalResult as { ir?: Record<string, unknown> }).ir;
   const alreadySavedId = (finalResult as { strategy_id?: number }).strategy_id;
 
@@ -101,6 +154,7 @@ export default function ChatReport({ parts, title = "분석 리포트" }: { part
       {/* ② 분석 결과 (엑셀 내보내기 유지 — ChatResultView 내부) */}
       <section className="chat-report-section">
         <h4 className="chat-report-h">분석 결과</h4>
+        {summary && <p className="report-summary">{summary}</p>}
         <ChatResultView result={finalResult} hideMethodology />
       </section>
 
