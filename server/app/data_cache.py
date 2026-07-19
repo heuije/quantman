@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import OrderedDict
 
 import pandas as pd
 import quant_core as qc
@@ -48,6 +49,11 @@ _CHECK_INTERVAL = 10.0          # 세대 확인 최소 간격(초) — 읽기당
 # 보조 패널(펀더/컨센서스/수급) 전체 캐시 — get_projected가 호출마다 디스크 전독하던 aux(~18s)를
 # 프로세스당 1회로. 가격 raw·dataset과 같은 생성 세대로 무효화(_clear_locked·_maybe_reload).
 _aux_cache: dict[str, dict] = {}
+# get_projected 결과 캐시(한 대화 내 반복 재계산 제거) — 바운드 LRU. docstring의 "상주 안 함"
+# 불변식을 지키려 소수(_PROJ_CACHE_MAX)만 보관하고, 키에 _version을 넣어 재빌드 시 자동 stale.
+# adjust_analysis(숫자만 바꿔 재실행)·다중 screen처럼 (cols,symbols,recent_days)가 같은 재호출이 HIT.
+_proj_cache: "OrderedDict[tuple, dict[str, pd.DataFrame]]" = OrderedDict()
+_PROJ_CACHE_MAX = 6
 
 
 def _clear_locked() -> None:
@@ -60,6 +66,7 @@ def _clear_locked() -> None:
     _version += 1
     _built_generation = None
     _aux_cache.clear()
+    _proj_cache.clear()
 
 
 def _maybe_reload() -> None:
@@ -127,6 +134,31 @@ def _aux_all(kind: str, loader) -> dict:
 
 
 def get_projected(columns, symbols=None, recent_days=None) -> dict[str, pd.DataFrame]:
+    """컬럼 프로젝션 dataset — 바운드 LRU 캐시(한 대화 내 반복 재계산 제거) 위에 얹은 얇은 래퍼.
+
+    같은 (버전, 컬럼셋, 심볼셋, recent_days)면 재계산 없이 캐시 히트. 키에 _version을 넣어
+    데이터 재빌드(_clear_locked bump)·다른 프로세스 변경(_maybe_reload) 시 자동 stale.
+    반환은 dict 얕은 복사 — 프레임은 읽기전용 공유(소비처는 reindex/copy로 파생만, 검증됨:
+    _scoped·엔진이 dataset[sym]을 in-place 변형하지 않음). 심볼 순서는 원본 인자 순서 보존.
+    """
+    _maybe_reload()
+    key = (_version, frozenset(columns),
+           None if symbols is None else frozenset(symbols), recent_days)
+    with _lock:
+        hit = _proj_cache.get(key)
+        if hit is not None:
+            _proj_cache.move_to_end(key)
+    if hit is not None:
+        return dict(hit)
+    out = _projected_impl(columns, symbols, recent_days)
+    with _lock:
+        _proj_cache[key] = out
+        while len(_proj_cache) > _PROJ_CACHE_MAX:
+            _proj_cache.popitem(last=False)
+    return dict(out)
+
+
+def _projected_impl(columns, symbols=None, recent_days=None) -> dict[str, pd.DataFrame]:
     """요청 지표 컬럼만 계산한 dataset(컬럼 프로젝션). symbols=None이면 전 유니버스.
 
     raw 공유 캐시에서 compute_columns로 그때그때 계산하며 **상주시키지 않는다**(호출자가
