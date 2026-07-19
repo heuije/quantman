@@ -103,6 +103,9 @@ def _fake_app(acct_type, virtual=True, key="AK", secret="SC", acct="12345678-03"
         setup_collapsed=False,
         refresh_status=lambda: None,
         _push_state_async=lambda: None,
+        # 저장≠활성 분리(07-19) — 활성화 정책은 broker_activation_mode 순수 테스트가
+        # 커버(test_broker_aware_guards). 여기선 슬롯 라우팅만 검증하므로 무동작 스텁.
+        _maybe_activate_broker=lambda target: None,
     )
     fs._wizard_selected_cred = (
         lambda: gui.SettingsApp._wizard_selected_cred(fs))

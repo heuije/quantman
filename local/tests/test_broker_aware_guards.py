@@ -173,3 +173,39 @@ def test_wait_for_order_ws_kis_with_hts_checks_ws(monkeypatch):
     assert 'get_active_broker() != "kis"' in fn_src, (
         "_wait_for_order_ws에 LS 브로커 게이트(get_active_broker()!=\"kis\")가 없습니다"
     )
+
+
+# ── 활성 브로커 저장≠전환 분리(2026-07-19 사고) ──────────────────────────────
+
+
+def test_broker_activation_mode_policy():
+    """등록만 하러 온 유저 보호 — 타 브로커 사용 가능 상태면 ask, 아니면 silent."""
+    from localapp.gui import SettingsApp
+    m = SettingsApp.broker_activation_mode
+    assert m("ls", "ls", True) == "noop"
+    assert m("ls", "kis", True) == "ask"       # LS 병행 → 명시 확인 후에만 전환
+    assert m("kis", "ls", True) == "ask"
+    assert m("kis", "ls", False) == "silent"   # 단일 브로커 온보딩 → 조용히 선언
+    assert m("ls", "kis", False) == "silent"
+
+
+def test_radio_click_does_not_flip_active_broker():
+    """라디오=탐색 전용 — 클릭 즉시 set_active_broker 하던 사고 경로 제거 잠금.
+    저장 경로 둘(_ls_save·_wizard_save)은 정책 헬퍼를 경유해야 한다."""
+    source = (_LOCAL / "localapp" / "gui.py").read_text(encoding="utf-8")
+    start = source.find("def _on_broker_choice_change(")
+    body = source[start:source.find("\n    def ", start + 1)]
+    assert "secrets_store.set_active_broker" not in body   # 실호출 금지(docstring 언급은 허용)
+    for fn in ("def _ls_save(", "def _wizard_save("):
+        s2 = source.find(fn)
+        assert "_maybe_activate_broker(" in source[s2:source.find("\n    def ", s2 + 1)], fn
+
+
+def test_runner_binds_secrets_via_module():
+    """runner가 get_active_broker/load_kis를 모듈-레벨 from-import로 바인딩하면
+    테스트 monkeypatch가 안 뚫려 실 keyring 의존 flaky(07-19 실측) — 모듈 경유 잠금."""
+    src = (_LOCAL / "localapp" / "runner.py").read_text(encoding="utf-8")
+    assert "from .secrets_store import load_kis, get_active_broker" not in src
+    fn_start = src.find("def _wait_for_order_ws(")
+    fn_src = src[fn_start: src.find("\ndef ", fn_start + 1)]
+    assert "secrets_store.get_active_broker()" in fn_src

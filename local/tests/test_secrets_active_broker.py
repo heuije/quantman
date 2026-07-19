@@ -54,5 +54,5 @@ def test_make_broker_routes_to_ls(monkeypatch):
     # sys.modules 객체(lb)의 LsBroker 속성을 patch하면 그 값을 집어온다(A5 해제 시 그대로 통과).
     import localapp.ls_broker as lb
     monkeypatch.setattr(lb, "LsBroker", lambda: "LS_INSTANCE")
-    monkeypatch.setattr(runner, "load_kis", lambda: None)
+    monkeypatch.setattr(secrets_store, "load_kis", lambda: None)   # 07-19: 모듈 경유 통일
     assert runner.make_broker() == "LS_INSTANCE"

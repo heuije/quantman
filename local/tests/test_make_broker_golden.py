@@ -4,9 +4,8 @@ make_broker의 반환 '구조'(타입·leg·resolve 콜백)를 잠가, P2(라우
 기존 KIS 2조합을 한 바이트도 안 바꾸는지 보장한다.
 
 hermetic: 실 keyring·네트워크와 무관하게 — (1) 브로커/리졸버 __init__을 무력화하고
-(2) make_broker가 분기에 *실제 조회하는 바인딩*을 패치한다. 주의: runner는 `load_kis`를
-모듈 레벨(runner.load_kis)로 import하고, `get_active_broker`·futures 로더는 함수 내 지연
-import(secrets_store 조회)다 — 그래서 패치 대상 모듈이 다르다(아래).
+(2) make_broker가 조회하는 secrets_store 모듈 attr을 패치한다(07-19 통일: runner의
+from-import 바인딩을 제거해 모든 자격 조회가 secrets_store 경유 — 패치 지점 단일화).
 """
 import pytest
 
@@ -25,9 +24,7 @@ def hermetic(monkeypatch):
     monkeypatch.setattr(ContractResolver, "__init__", lambda self: None)
 
     def setcreds(*, kis=None, kis_fut=None, kis_ovf=None, broker="kis"):
-        # load_kis: runner 모듈 레벨 바인딩(make_broker line 67)
-        monkeypatch.setattr(runner, "load_kis", lambda: kis)
-        # get_active_broker·futures 로더: 함수 내 지연 import → secrets_store 조회
+        monkeypatch.setattr(secrets_store, "load_kis", lambda: kis)
         monkeypatch.setattr(secrets_store, "get_active_broker", lambda: broker)
         monkeypatch.setattr(secrets_store, "load_kis_futures", lambda: kis_fut)
         monkeypatch.setattr(secrets_store, "load_kis_overseas_futures", lambda: kis_ovf)

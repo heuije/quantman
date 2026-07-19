@@ -25,7 +25,11 @@ from .broker import Broker
 from .config import PENDING_PATH
 from .state_store import save_json
 from .logging_setup import setup_logging
-from .secrets_store import load_kis, get_active_broker
+# ⚠ get_active_broker/load_kis는 from-import(이름 바인딩) 금지 — 모듈 경유 호출.
+# 바인딩하면 테스트의 secrets_store 모듈 attr monkeypatch가 안 뚫려 실제 keyring
+# 상태에 의존하는 flaky가 된다(2026-07-19 실측: 이 PC 활성 브로커에 따라
+# test_broker_aware_guards 단독 실행이 갈렸다).
+from . import secrets_store
 from .sync_client import (pull_krx_status, pull_preview, pull_risk_limits,
                             pull_strategies, push_snapshot)
 from .trader import Trader
@@ -71,7 +75,7 @@ def make_broker() -> Broker:
     # ── KIS 경로 — 존재하는 leg만 구성(주식 단독=bare 유지=무변경, 선물 포함=라우터) ──
     from .secrets_store import load_kis_futures, load_kis_overseas_futures
     stock = None
-    if load_kis() is not None:
+    if secrets_store.load_kis() is not None:
         from .kis_broker import KisBroker          # KIS 자격증명 필요 시에만 import
         stock = KisBroker()
     has_fut = bool(load_kis_futures() or load_kis_overseas_futures())
@@ -162,10 +166,10 @@ def _wait_for_order_ws() -> None:
     REST 폴링이 체결 인지 fallback이므로 데이터 누락 없음.
     """
     # (b) KIS 전용: LS 활성 시 KIS WS 경로는 완전 무관 — 즉시 반환.
-    if get_active_broker() != "kis":
+    if secrets_store.get_active_broker() != "kis":
         return
 
-    kis = load_kis() or {}
+    kis = secrets_store.load_kis() or {}
     if not kis.get("hts_id"):
         return  # 체결통보 WebSocket disabled — 확인 불필요
 

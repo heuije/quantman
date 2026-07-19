@@ -1673,11 +1673,44 @@ class SettingsApp:
                 command=self._on_broker_choice_change,
             ).pack(side="left", padx=(0, 28))
 
+    @staticmethod
+    def broker_activation_mode(current: str, target: str, other_ready: bool) -> str:
+        """자격증명 저장 후 활성 브로커 처리 정책 — 저장≠활성 분리(순수·테스트 대상).
+
+        2026-07-19 사고: KIS 자격증명을 "등록만" 하러 화면을 연 유저의 활성
+        브로커가 라디오 클릭만으로 플립돼, LS 자동매매가 KIS로 발주될 뻔했다.
+        반환: "noop"(이미 그 브로커 활성) · "silent"(다른 브로커 자격증명 없음 —
+        단일 브로커 온보딩이라 조용히 선언·기존 UX 보존) · "ask"(다른 브로커
+        사용 가능 상태 — 명시 확인 후에만 전환)."""
+        if current == target:
+            return "noop"
+        return "ask" if other_ready else "silent"
+
+    def _maybe_activate_broker(self, target: str) -> None:
+        """자격증명 저장 직후 활성 브로커 선언 — 정책은 broker_activation_mode."""
+        other = "ls" if target == "kis" else "kis"
+        mode = self.broker_activation_mode(
+            secrets_store.get_active_broker(), target,
+            secrets_store.broker_ready(other))
+        if mode == "noop":
+            return
+        if mode == "ask" and not messagebox.askyesno(
+                "활성 브로커 전환",
+                f"자동매매 활성 브로커를 {target.upper()}(으)로 전환할까요?\n\n"
+                "아니오 = 자격증명만 저장하고 활성 브로커는 지금 것을 유지합니다\n"
+                "(다른 브로커는 등록만 해두고 계속 기존 브로커로 매매)."):
+            return
+        secrets_store.set_active_broker(target)
+        self.broker_choice.set(target)
+        self._balance_broker = None    # 전환 시 잔고 브로커 캐시 무효화(stale 재사용 방지)
+
     def _on_broker_choice_change(self) -> None:
-        """브로커 라디오 변경 → 저장 + 화면 전환."""
-        choice = self.broker_choice.get()
-        secrets_store.set_active_broker(choice)
-        self._balance_broker = None    # 전환 시 잔고 브로커 캐시 무효화(stale 브로커 재사용 방지)
+        """브로커 라디오 변경 → 설정 화면 전환(**탐색 전용 — 활성 브로커 불변**).
+
+        종전엔 클릭 즉시 set_active_broker라, 다른 브로커를 등록만 하러 화면을
+        여는 행위가 활성을 플립시켰다(2026-07-19 실사고 — LS 자동매매 유저가
+        KIS 등록 중 월요일 발주 브로커가 바뀔 뻔). 활성 전환은 저장 시
+        _maybe_activate_broker가 정책(단일 브로커=조용히·복수=명시 확인)으로 수행."""
         # 브로커 전환 시 setup_collapsed 해제 → 자격증명 폼 노출
         self.setup_collapsed = False
         # _setup_mode 강제 무효화 — 같은 mode여도 pack 레이아웃 재구성 필요
@@ -1796,10 +1829,9 @@ class SettingsApp:
             secrets_store.save_ls_overseas_futures(key, secret, acct, virtual=virtual)
         else:   # 국내주식·해외주식
             secrets_store.save_ls(key, secret, acct, virtual=virtual)
-        # 어떤 자산군이든 LS 폼에서 저장 = LS 사용 의도 → active broker 일관 선언
-        # (P2 make_broker가 선물 단독 구성을 지원 — 주식 없이 선물만으로도 동작).
-        secrets_store.set_active_broker("ls")
-        self.broker_choice.set("ls")
+        # 활성 전환은 정책 경유(저장≠활성 분리) — 단일 브로커 온보딩은 조용히
+        # 선언(P2 선물 단독 구성 지원 유지), KIS 병행 유저는 명시 확인 후에만.
+        self._maybe_activate_broker("ls")
         self.ls_e_secret.delete(0, "end")
         self._ls_status.configure(fg=GREEN,
                                   text=f"저장됨 ({acct_type}). 키는 이 PC를 떠나지 않습니다.")
@@ -2514,6 +2546,8 @@ class SettingsApp:
 
         self.e_secret.delete(0, "end")
         self.setup_collapsed = True
+        # 활성 전환은 정책 경유(저장≠활성 분리 — LS 병행 유저는 명시 확인 후에만).
+        self._maybe_activate_broker("kis")
         messagebox.showinfo(
             "저장 완료",
             f"KIS 자격증명을 저장했습니다 ({saved_label}). "
