@@ -16,24 +16,32 @@ import ChatResultView, { MethodologyPanel } from "./ChatResultView";
 type TextPart = Extract<ChatPart, { type: "text" }>;
 type ResultPart = Extract<ChatPart, { type: "tool_result" }>;
 
-// 리포트 DOM을 새 창으로 복제해 인쇄(→ 브라우저 'PDF로 저장'). 페이지 스타일을 함께 실어
-// 색·표·차트(인라인 SVG)를 보존하고, 인쇄본에서는 버튼·입력 등 상호작용 요소를 숨긴다.
+// 라이트(화이트) 상태의 리포트 DOM을 새 창으로 복제해 인쇄(→ 브라우저 'PDF로 저장').
+// 차트 색은 CSS var를 못 받아 렌더 시점 팔레트로 SVG에 박히므로, 복제 前 문서를 라이트 테마로
+// 전환해 차트·표를 화이트로 remount시킨 뒤(2×rAF 후 페인트 완료) 복제하고 원래 테마를 복원한다.
 function printReportToPdf(el: HTMLElement, title: string) {
-  const styles = Array.from(document.querySelectorAll('style,link[rel="stylesheet"]'))
-    .map((n) => n.outerHTML).join("\n");
-  const w = window.open("", "_blank", "width=920,height=1200");
-  if (!w) { window.alert("팝업이 차단되어 PDF 창을 열 수 없습니다. 팝업을 허용해 주세요."); return; }
-  w.document.write(
-    `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${title}</title>${styles}` +
-    "<style>body{background:#fff;padding:28px;margin:0}" +
-    ".chat-report{border:none;box-shadow:none;max-width:100%;margin:0}" +
-    ".chat-report button,.chat-report input,.chat-report select,.report-actions{display:none!important}" +
-    "@page{margin:14mm}</style></head>" +
-    `<body>${el.outerHTML}</body></html>`);
-  w.document.close();
-  const go = () => { try { w.focus(); w.print(); } catch { /* 사용자가 창을 닫았을 수 있음 */ } };
-  w.onload = go;
-  setTimeout(go, 700);   // onload가 이미 지난 경우 대비
+  const root = document.documentElement;
+  const prev = root.getAttribute("data-theme");
+  root.setAttribute("data-theme", "light");           // 차트·표·토큰을 화이트로 (ChatResultView remount)
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const html = el.outerHTML;                         // 라이트 상태 스냅샷
+    if (prev == null) root.removeAttribute("data-theme"); else root.setAttribute("data-theme", prev);
+    const styles = Array.from(document.querySelectorAll('style,link[rel="stylesheet"]'))
+      .map((n) => n.outerHTML).join("\n");
+    const w = window.open("", "_blank", "width=920,height=1200");
+    if (!w) { window.alert("팝업이 차단되어 PDF 창을 열 수 없습니다. 팝업을 허용해 주세요."); return; }
+    w.document.write(
+      `<!doctype html><html lang="ko" data-theme="light"><head><meta charset="utf-8"><title>${title}</title>${styles}` +
+      "<style>:root,html{color-scheme:light}body{background:#fff;padding:28px;margin:0}" +
+      ".chat-report{border:none;box-shadow:none;max-width:100%;margin:0}" +
+      ".chat-report button,.chat-report input,.chat-report select,.report-actions{display:none!important}" +
+      "@page{margin:14mm}</style></head>" +
+      `<body>${html}</body></html>`);
+    w.document.close();
+    const go = () => { try { w.focus(); w.print(); } catch { /* 사용자가 창을 닫았을 수 있음 */ } };
+    w.onload = go;
+    setTimeout(go, 700);   // onload가 이미 지난 경우 대비
+  }));
 }
 
 export default function ChatReport({ parts, title = "분석 리포트" }: { parts: ChatPart[]; title?: string }) {

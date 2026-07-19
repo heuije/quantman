@@ -9,14 +9,11 @@ import type {
   IrPortfolioDiagnosis, IrRegressionResult, IrSingleReport, IrSweepBucket, NewsDigestResult,
   PrescribeResult,
 } from "../types";
+import { chartC as C } from "../chartColors";
 
-/* recharts SVG는 CSS var를 못 받아 토큰값(DESIGN.md)을 직접 인라인한다(EquityChart와 동일 규약).
-   변경 시 web/src/index.css :root와 동기화. up=상승/이익(빨강) · down=하락/손실(파랑, 한국 관례). */
-const C = {
-  accent: "#d4a738", strong: "#e0b958", muted: "#8b94a3", grid: "#2b323e",
-  text: "#d2d8e0", up: "#de3033", down: "#1668c4", upSoft: "rgba(222,48,51,0.18)", downSoft: "rgba(22,104,196,0.22)",
-  panel: "#1c212b",   // 다크 카드 배경
-};
+/* recharts SVG는 CSS var를 못 받아 토큰값을 직접 인라인한다 — C는 접근 시마다 현재 테마(다크·
+   라이트·PDF화이트) 토큰을 읽는 라이브 팔레트(chartColors.ts). up=상승/이익(빨강)·down=하락(파랑).
+   테마 전환 시 차트 재렌더는 ChatResultView의 key={useThemeName()} remount가 담당. */
 
 const num = (v: unknown): number => Number(String(v).split("=").pop());
 const f2 = (v: number | null | undefined) =>
@@ -135,7 +132,7 @@ export function SweepChart({ axis, buckets, axes }: {
             }}>{mm.label}</button>
         ))}
       </div>
-      <ResponsiveContainer width="100%" height={272}>
+      <ResponsiveContainer width="100%" height={260}>
         {numericX ? (
           <LineChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
             <CartesianGrid stroke={C.grid} />
@@ -243,7 +240,7 @@ export function ICChart({ windows, byWindow }: {
   const Tip = tip([["평균 IC", "value"], ["IR", "ir"], ["t", "t"], ["p", "p"], ["표본", "n"]]);
   return (
     <Box title="시각화" sub="예측 horizon별 평균 IC. 0에서 멀고 유의(진한 막대)할수록 예측력 ↑">
-      <ResponsiveContainer width="100%" height={240}>
+      <ResponsiveContainer width="100%" height={260}>
         <BarChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
           <CartesianGrid stroke={C.grid} vertical={false} />
           <XAxis dataKey="label" tick={{ fontSize: 11 }} />
@@ -331,13 +328,16 @@ function Badge({ children, tone = "muted" }:
 const pct = (v: number | null | undefined) =>
   v == null || Number.isNaN(v) ? "—" : `${(v * 100).toFixed(2)}%`;
 
+// 색 프로퍼티는 getter — 스프레드/style 사용 시점(=렌더)에 C(라이브 팔레트)를 읽어 테마 반응.
 const tdStyle: React.CSSProperties = {
-  padding: "5px 8px", borderBottom: `1px solid ${C.grid}`, fontSize: 12,
-  color: C.text, fontVariantNumeric: "tabular-nums",
+  padding: "5px 8px", fontSize: 12, fontVariantNumeric: "tabular-nums",
+  get borderBottom() { return `1px solid ${C.grid}`; },
+  get color() { return C.text; },
 };
 const thStyle: React.CSSProperties = {
-  padding: "5px 8px", borderBottom: `2px solid ${C.grid}`, fontSize: 11,
-  color: C.muted, fontWeight: 600, textAlign: "left", whiteSpace: "nowrap",
+  padding: "5px 8px", fontSize: 11, fontWeight: 600, textAlign: "left", whiteSpace: "nowrap",
+  get borderBottom() { return `2px solid ${C.grid}`; },
+  get color() { return C.muted; },
 };
 
 // 작은 KPI 카드 래퍼.
@@ -353,10 +353,12 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   );
 }
 
-// 신규 동사용 커스텀 툴팁(모듈 스코프 — 렌더마다 재생성 방지). 다필드라 tip()로는 표현 불가.
+// 신규 동사용 커스텀 툴팁(모듈 스코프 — 렌더마다 재생성 방지). 색은 getter로 테마 반응.
 const tipBox: React.CSSProperties = {
-  background: C.panel, border: `1px solid ${C.grid}`, borderRadius: 8,
-  padding: "8px 10px", fontSize: 12, color: C.muted,
+  borderRadius: 8, padding: "8px 10px", fontSize: 12,
+  get background() { return C.panel; },
+  get border() { return `1px solid ${C.grid}`; },
+  get color() { return C.muted; },
 };
 function SectorPieTip({ active, payload }: {
   active?: boolean; payload?: { payload: { name: string; value: number } }[];
