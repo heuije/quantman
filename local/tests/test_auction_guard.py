@@ -184,7 +184,8 @@ def test_canon_and_sort_key():
 
 
 # ── run_auction_guard 루프 — G0 시간대·G1 취소 거절·복원 확정 (1틱 하니스) ────
-def _run_one_tick(monkeypatch, broker, submitted, read_today):
+def _run_one_tick(monkeypatch, broker, submitted, read_today, cycles_today=(),
+                  ledger=None):
     """가드 루프를 정확히 1틱 실행하는 하니스 — 시간·달력·러너·저널 격리.
 
     이 하니스 자체가 G0 회귀 잠금이다: until이 naive면 kst_now(aware) 비교에서
@@ -207,7 +208,7 @@ def _run_one_tick(monkeypatch, broker, submitted, read_today):
 
     class _FakeTrader:
         def __init__(self, b):
-            self.ledger = {}
+            self.ledger = dict(ledger or {})
 
         def reload_state(self):
             pass
@@ -232,6 +233,8 @@ def _run_one_tick(monkeypatch, broker, submitted, read_today):
                         lambda d, iid, reason: failed.append(iid))
     monkeypatch.setattr(ag.order_log, "log_cycle",
                         lambda dec, meta: cycles.append((dec, meta)))
+    monkeypatch.setattr(ag.order_log, "read_cycles",
+                        lambda limit=80: list(cycles_today))
     out = ag.run_auction_guard("futures", "open", (8, 34), (8, 44, 30))
     return out, reruns, failed, broker
 
@@ -239,9 +242,10 @@ def _run_one_tick(monkeypatch, broker, submitted, read_today):
 class _LoopBroker:
     """pending 조회 시퀀스·취소 응답을 주입하는 루프 하니스 브로커."""
 
-    def __init__(self, pend_seq, cancel_resp):
+    def __init__(self, pend_seq, cancel_resp, positions=None):
         self._seq = [list(x) for x in pend_seq]
         self._cancel_resp = cancel_resp
+        self._positions = list(positions or [])
         self.cancelled: list = []
 
     def pending_orders(self):
@@ -252,7 +256,7 @@ class _LoopBroker:
         return self._cancel_resp
 
     def account_snapshot(self):
-        return {"balance": {}, "positions": []}
+        return {"balance": {}, "positions": list(self._positions)}
 
 
 def _fut_pend(order_no, side, remain):
@@ -286,3 +290,64 @@ def test_loop_restore_confirms_then_reorders(monkeypatch):
     assert failed == ["i1"]
     assert len(reruns) == 1 and reruns[0]["instrument_class"] == "futures"
     assert out["n_cancel"] == 1
+
+
+# ── 목표 확정 게이트(2026-07-20 유저 정련) — 전멸 시 수동 존중·확정 후 정합 ──
+def _cycle_rec(kind, icls, ts="2026-06-01T08:35:20+09:00", error=None):
+    s = {"kind": kind, "market": "KRX", "instrument_class": icls}
+    if error:
+        s["error"] = error
+    return {"ts": ts, "summary": s}
+
+
+def test_loop_holds_before_target_confirmed(monkeypatch):
+    """사이클 완료 기록도 own 의도도 없으면(전멸·발주 전 지연) 수동 미체결을
+    취소하지 않는다 — stale 원장 강제 금지. guard_hold_no_target 관측 1회만."""
+    pend = [_fut_pend("300", "buy", 3)]
+    broker = _LoopBroker([pend], {"success": True})
+    out, reruns, failed, b = _run_one_tick(monkeypatch, broker, [], [])
+    assert b.cancelled == [] and reruns == [] and failed == []
+    assert out["n_cancel"] == 0 and out["n_decisions"] == 1
+
+
+def test_loop_gate_opens_via_zero_order_cycle_record(monkeypatch):
+    """0건 발주로 완료된 사이클 기록 = "변화 없음" 확정 목표 — 원장 기준 정합 재개."""
+    pend = [_fut_pend("300", "sell", 2)]
+    broker = _LoopBroker([pend], {"success": True},
+                         positions=[{"symbol": S, "qty": 5, "side": "long"}])
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker, [], [],
+        cycles_today=[_cycle_rec("cycle", "futures")],
+        ledger={"p1": {"symbol": S, "qty": 5, "side": "long"}})
+    assert b.cancelled == [("300", S, 2)]
+    assert out["n_cancel"] == 1
+
+
+def test_loop_errored_cycle_record_keeps_hold(monkeypatch):
+    """error로 끝난 사이클 기록은 목표 확정이 아니다 — 보류 유지(catchup 계약 미러)."""
+    pend = [_fut_pend("300", "sell", 2)]
+    broker = _LoopBroker([pend], {"success": True},
+                         positions=[{"symbol": S, "qty": 5, "side": "long"}])
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker, [], [],
+        cycles_today=[_cycle_rec("cycle", "futures", error="서버 불가")],
+        ledger={"p1": {"symbol": S, "qty": 5, "side": "long"}})
+    assert b.cancelled == [] and out["n_cancel"] == 0
+
+
+def test_target_confirmed_predicate(monkeypatch):
+    """창별 kind 매핑·클래스 일치(full-scope None 포함)·당일 ts·무-error 술어."""
+    import datetime as _dt
+
+    from localapp import auction_guard as ag
+
+    today = _dt.date(2026, 6, 1)
+    rows = [_cycle_rec("day_trade_close", "futures"),
+            _cycle_rec("cycle", "stock"),
+            _cycle_rec("cycle", "futures", ts="2026-05-30T08:35:00+09:00")]
+    monkeypatch.setattr(ag.order_log, "read_cycles", lambda limit=80: rows)
+    assert ag._target_confirmed(today, "close", "futures") is True
+    assert ag._target_confirmed(today, "open", "futures") is False
+    monkeypatch.setattr(ag.order_log, "read_cycles",
+                        lambda limit=80: [_cycle_rec("catchup_cycle", None)])
+    assert ag._target_confirmed(today, "open", "futures") is True

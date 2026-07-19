@@ -31,10 +31,13 @@ indeterminate로 hold하는 것과 동일하게 가드도 손대지 않는다 �
 보유를 움직이므로). 넷팅 book leg(원장 즉시 기장)·A1 선반영은 양변 대칭이라
 A1 인수 외부 미체결은 D=0으로 자연 보호된다(테스트 고정).
 
-알려진 한계(관측·수렴이 흡수): 창 시작~사이클 발주 완료 사이 틱은 own 의도가
-비어 D=ext가 되므로, 사이클이 곧 A1로 인수할 수동 미체결을 먼저 취소할 수
-있다(최종 포지션은 동일 — 사이클이 그만큼 실발주). 사이클 지연(백오프) 시 이
-구간이 길어진다.
+목표 확정 게이트(2026-07-20 유저 정련): 이번 창 담당 사이클의 무-error 완료
+기록(0건 발주 포함)도, 이번 창 own 의도도 없는 동안(발주 전 지연·백오프·사이클
+전멸)은 stale 원장을 목표로 강제하지 않는다 — 개입 전면 보류·관측만
+(guard_hold_no_target). 그 틈의 수동 미체결은 취소되지 않고, 사이클이 성공하면
+A1로 인수되며, 끝내 실패하면 창밖 수동과 동일하게 수렴·drift가 사후 정합한다.
+own 의도가 하나라도 제출됐으면(부분 제출 크래시 포함) 그 leg 기준 정합을 즉시
+시작한다.
 
 관측: 모든 개입·보류는 order_log 결정 + cycles.jsonl(kind=auction_guard)로
 기록되고(반복 관측성 결정은 심볼당 1회), 재실행이 발생하면 그 사이클의 스냅샷
@@ -73,6 +76,31 @@ def _sort_key(order_no) -> str:
     """"최신 주문부터" 정렬 키 — 정규형을 고정폭으로 재패딩해 자릿수 경계
     (99999→100000)에서도 사전순=숫자순이 되게 한다."""
     return _canon(order_no).zfill(24)
+
+
+def _target_confirmed(today, window: str, instrument_class: str) -> bool:
+    """이번 창의 전략 목표가 확정됐는가 — 개입(트리밍·복원) 게이트(2026-07-20 유저 정련).
+
+    확정 = 오늘 이 창 담당 사이클의 무-error 완료 기록 존재(개장=cycle/
+    catchup_cycle·마감=day_trade_close·full-scope(None) 포함). 0건 발주로 끝난
+    사이클도 "변화 없음"이라는 확정 목표라 게이트를 연다. 판정 술어는 catchup의
+    창내 재실행 판정(kind·market·error·instrument_class·당일 ts)과 동일 계약.
+    own 의도 존재는 호출자가 여는 별도 빠른 경로 — 부분 제출 크래시도 제출된
+    leg 기준 정합은 유지해야 하므로 이 함수는 완료 기록만 본다."""
+    kinds = ("cycle", "catchup_cycle") if window == "open" else ("day_trade_close",)
+    for e in order_log.read_cycles(limit=80):
+        s = e.get("summary") or {}
+        if (s.get("kind") not in kinds or s.get("market") != "KRX"
+                or s.get("error")
+                or s.get("instrument_class") not in (instrument_class, None)):
+            continue
+        try:
+            ts = datetime.fromisoformat(str(e.get("ts") or ""))
+        except ValueError:
+            continue
+        if ts.date() == today:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -284,9 +312,30 @@ def run_auction_guard(instrument_class: str, window: str,
         own_p, ext_p = _classify(pend, own_win_nos, all_own_nos)
         return own_list, own_p, ext_p
 
+    gate_open = False
     while kst_now() < until:
         try:
             own_list, own_p, ext_p = _fetch_classified()
+            if not gate_open:
+                # 목표 확정 게이트 — 한번 열리면 창 끝까지 유지: own 복원이
+                # intent를 failed로 돌린 뒤 재실행이 실패해 의도가 비어도, 이미
+                # 확정된 목표 기준 정합을 계속한다(닫으면 복원 도중 무방비).
+                gate_open = bool(own_list) or _target_confirmed(
+                    today, window, instrument_class)
+            if not gate_open:
+                # 사이클 미완료(발주 전 지연·백오프·전멸) — stale 원장을 목표로
+                # 강제하지 않는다(수동 존중·관측만). 성공 시 A1 인수, 끝내 실패
+                # 시 창밖 수동과 동일하게 수렴이 사후 정합.
+                if ("", "guard_hold_no_target") not in emitted:
+                    d = order_log.decision(
+                        "guard_hold_no_target", "", "", "",
+                        "이번 창 담당 사이클 미완료 — 목표 미확정: 개입 보류"
+                        "(수동 존중·수렴 몫)")
+                    all_decisions.append(d)
+                    emitted.add(("", "guard_hold_no_target"))
+                    log.warning("[가드] guard_hold_no_target — 목표 미확정, 개입 보류")
+                _time.sleep(poll_sec)
+                continue
             trader.reload_state()
             ledger_signed: dict = {}
             for pos in trader.ledger.values():
