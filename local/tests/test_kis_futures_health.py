@@ -49,3 +49,40 @@ def test_balance_reject_returns_not_ok():
         out = kis_futures_health.test_credentials("k", "s", "99999999-03", virtual=True)
     assert out["ok"] is False
     assert "계좌" in out["msg"] or "40570000" in (out.get("msg_cd") or "")
+
+
+def test_overseas_token_only_ok():
+    """해외선물(account_kind=overseas_futures) — 토큰만 검증·잔고 TR 미호출(실전 전용·미실측)."""
+    token = _resp(200, {"access_token": "T"})
+    with patch("localapp.kis_futures_health.requests.post",
+               return_value=token) as post, \
+         patch("localapp.kis_futures_health.requests.get") as get:
+        out = kis_futures_health.test_credentials(
+            "k", "s", "12345678-08", virtual=False,
+            account_kind="overseas_futures")
+    assert out["ok"] is True
+    assert "후속" in out["msg"]          # 계좌 검증 한계를 정직하게 표기
+    get.assert_not_called()              # 잔고 조회 없음 (토큰 검증만)
+    # 실전 도메인 사용 확인
+    assert "openapivts" not in post.call_args[0][0]
+
+
+def test_overseas_forces_real_domain_even_if_virtual_passed():
+    """해외선물은 KIS 모의 미지원 — virtual=True로 불려도 실전 도메인으로 강제."""
+    token = _resp(200, {"access_token": "T"})
+    with patch("localapp.kis_futures_health.requests.post",
+               return_value=token) as post:
+        out = kis_futures_health.test_credentials(
+            "k", "s", "12345678-08", virtual=True,
+            account_kind="overseas_futures")
+    assert out["ok"] is True
+    assert "openapivts" not in post.call_args[0][0]
+
+
+def test_overseas_token_fail_not_ok():
+    with patch("localapp.kis_futures_health.requests.post",
+               return_value=_resp(403, {"error_description": "invalid appkey"})):
+        out = kis_futures_health.test_credentials(
+            "k", "s", "12345678-08", virtual=False,
+            account_kind="overseas_futures")
+    assert out["ok"] is False

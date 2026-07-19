@@ -35,10 +35,35 @@ def json_loads(s: str):
 
 _LOG_PATH_NAME = "logs/localapp.log"
 
-# LS 계좌 종류 — 자산군별 별도 모의계좌(별도 키)라 secrets_store 저장 슬롯이 분리된다.
-_LS_ACCT_STOCK = "국내주식·해외주식"      # → save_ls (LsBroker 기반 + LS 활성화)
-_LS_ACCT_FUTURES = "국내선물"            # → save_ls_futures
-_LS_ACCT_OV_FUTURES = "해외선물"         # → save_ls_overseas_futures
+# 계좌 종류(자산군 슬롯) — 자산군별 별도 계좌·키라 secrets_store 저장 슬롯이 분리된다.
+# KIS wizard·LS 폼 공용 라벨: 선택에 따라 save_kis/save_ls · save_*_futures ·
+# save_*_overseas_futures 로 분기한다.
+_ACCT_STOCK = "국내주식·해외주식"
+_ACCT_FUTURES = "국내선물"
+_ACCT_OV_FUTURES = "해외선물"
+
+# KIS wizard Step 3 — 계좌 종류별 안내문·계좌번호 예시 라벨.
+_KIS_DESC_STOCK = (
+    "KIS 마이페이지에서 발급받은 App Key · App Secret · 계좌번호를 입력하세요. "
+    "HTS ID는 KIS HTS·영웅문 로그인 ID로, 실시간 체결통보(WebSocket) "
+    "구독에만 사용됩니다. 미입력 시 REST 폴링으로 fallback (체결 인지가 "
+    "다소 늦지만 자금 안전엔 영향 없음). 키는 이 PC의 Windows 자격증명 "
+    "저장소에만 저장되며, 플랫폼 서버로 전송되지 않습니다.")
+_KIS_DESC_FUTURES = (
+    "국내선물은 선물옵션 전용 계좌(상품코드 03)가 필요합니다 — 주식 계좌(-01)와 "
+    "별개이며, 그 계좌로 발급·등록한 App Key · App Secret을 입력하세요. "
+    "모의투자를 지원하므로 모의로 먼저 검증한 뒤 실전 전환을 권장합니다. "
+    "키는 이 PC의 Windows 자격증명 저장소에만 저장되며, 플랫폼 서버로 전송되지 않습니다.")
+_KIS_DESC_OV_FUTURES = (
+    "해외선물은 해외선물옵션 전용 계좌(상품코드 08)가 필요합니다 — 주식·국내선물 "
+    "계좌와 별개이며, 그 계좌로 발급·등록한 App Key · App Secret을 입력하세요. "
+    "⚠ KIS 해외선물은 모의투자를 지원하지 않아 실전 계좌로 저장됩니다. "
+    "키는 이 PC의 Windows 자격증명 저장소에만 저장되며, 플랫폼 서버로 전송되지 않습니다.")
+_KIS_ACCT_HINTS = {
+    _ACCT_STOCK: ("계좌번호 (예: 50001234-01)", _KIS_DESC_STOCK),
+    _ACCT_FUTURES: ("계좌번호 (예: 12345678-03)", _KIS_DESC_FUTURES),
+    _ACCT_OV_FUTURES: ("계좌번호 (예: 12345678-08)", _KIS_DESC_OV_FUTURES),
+}
 
 # 색상 팔레트 — DESIGN.md / web index.css :root 와 동기화 (2026-05-22 정제)
 BG = "#faf9f6"            # 따뜻한 크림 배경
@@ -991,19 +1016,9 @@ class SettingsApp:
             text="③ 자동매매        " + ("실행 중" if running else "중지됨"))
         self.btn_toggle.config(text="자동매매 중지" if running else "자동매매 시작")
 
-        if kis:
-            self.e_key.delete(0, "end")
-            self.e_key.insert(0, kis["app_key"])
-            self.e_acct.delete(0, "end")
-            self.e_acct.insert(0, kis["account_no"])
-            # v0.9.15 — HTS ID도 미리 채움 (재편집 시 사용자가 다시 입력 안 해도 됨).
-            # secret은 보안상 미리 채우지 않음 (사용자가 매번 재입력).
-            self.e_hts.delete(0, "end")
-            self.e_hts.insert(0, kis.get("hts_id", ""))
-            # 시세용 실전 앱키 — 키만 미리 채움(시크릿은 secret과 동일하게 매번 재입력).
-            if hasattr(self, "e_quote_key"):
-                self.e_quote_key.delete(0, "end")
-                self.e_quote_key.insert(0, kis.get("quote_app_key", ""))
+        # 선택된 계좌 종류 슬롯의 저장값 미리 채움 (재편집 시 재입력 불필요 —
+        # secret류는 보안상 매번 재입력). 슬롯별 분기는 _wizard_prefill_from_store.
+        self._wizard_prefill_from_store()
         # LS 폼 — 저장된 값 미리 채움 (secret은 보안상 매번 재입력)
         if ls:
             self.ls_e_key.delete(0, "end")
@@ -1686,13 +1701,13 @@ class SettingsApp:
 
         # 계좌 종류 — 자산군별 별도 모의계좌(별도 키)라 저장 슬롯이 분리된다.
         #   선택에 따라 _ls_save가 save_ls / save_ls_futures / save_ls_overseas_futures로 분기.
-        self.ls_acct_type = tk.StringVar(value=_LS_ACCT_STOCK)
+        self.ls_acct_type = tk.StringVar(value=_ACCT_STOCK)
         type_row = ttk.Frame(box)
         type_row.pack(fill="x", pady=4)
         ttk.Label(type_row, text="계좌 종류", width=22, anchor="w").pack(side="left")
         ttk.Combobox(type_row, textvariable=self.ls_acct_type, state="readonly",
-                     width=20, values=[_LS_ACCT_STOCK, _LS_ACCT_FUTURES,
-                                       _LS_ACCT_OV_FUTURES]).pack(side="left")
+                     width=20, values=[_ACCT_STOCK, _ACCT_FUTURES,
+                                       _ACCT_OV_FUTURES]).pack(side="left")
 
         self.ls_e_key = self._make_wizard_entry(box, "App Key")
         self.ls_e_secret = self._make_wizard_entry(box, "App Secret", show="*")
@@ -1739,8 +1754,8 @@ class SettingsApp:
         virtual = bool(self.ls_virtual_var.get())
         # 계좌유형 → read TR 선택(ls_health.account_kind). 저장 분기(_ls_save)와 동일 매핑.
         acct_type = self.ls_acct_type.get()
-        kind = ("futures" if acct_type == _LS_ACCT_FUTURES
-                else "overseas_futures" if acct_type == _LS_ACCT_OV_FUTURES
+        kind = ("futures" if acct_type == _ACCT_FUTURES
+                else "overseas_futures" if acct_type == _ACCT_OV_FUTURES
                 else "stock")
         self._ls_status.configure(fg=MUTED, text="LS 서버에 연결 중...")
         self._ls_test_btn.configure(state="disabled")
@@ -1774,9 +1789,9 @@ class SettingsApp:
             return
         virtual = bool(self.ls_virtual_var.get())
         acct_type = self.ls_acct_type.get()
-        if acct_type == _LS_ACCT_FUTURES:
+        if acct_type == _ACCT_FUTURES:
             secrets_store.save_ls_futures(key, secret, acct, virtual=virtual)
-        elif acct_type == _LS_ACCT_OV_FUTURES:
+        elif acct_type == _ACCT_OV_FUTURES:
             secrets_store.save_ls_overseas_futures(key, secret, acct, virtual=virtual)
         else:   # 국내주식·해외주식
             secrets_store.save_ls(key, secret, acct, virtual=virtual)
@@ -2174,28 +2189,44 @@ class SettingsApp:
             font=("Segoe UI", 11, "bold"),
             background=PANEL, foreground=TEXT)
         self._wizard_step3_title.pack(anchor="w")
-        ttk.Label(
+        self._wizard_step3_desc = ttk.Label(
             f, style="Muted.TLabel", wraplength=580, justify="left",
-            text="KIS 마이페이지에서 발급받은 App Key · App Secret · 계좌번호를 입력하세요. "
-                 "HTS ID는 KIS HTS·영웅문 로그인 ID로, 실시간 체결통보(WebSocket) "
-                 "구독에만 사용됩니다. 미입력 시 REST 폴링으로 fallback (체결 인지가 "
-                 "다소 늦지만 자금 안전엔 영향 없음). 키는 이 PC의 Windows 자격증명 "
-                 "저장소에만 저장되며, 플랫폼 서버로 전송되지 않습니다."
-        ).pack(anchor="w", pady=(8, 8))
+            text=_KIS_DESC_STOCK)
+        self._wizard_step3_desc.pack(anchor="w", pady=(8, 8))
+
+        # 계좌 종류 — LS 폼과 동일한 자산군 슬롯 패턴. 선택에 따라 _wizard_save가
+        # save_kis / save_kis_futures / save_kis_overseas_futures 로 분기한다
+        # (선물 계좌를 주식 슬롯에 잘못 저장하던 실사용 사고의 근본 차단 — 연결 테스트도
+        # 슬롯별 TR로 검증해 계좌·슬롯 불일치를 등록 시점에 거른다).
+        self.kis_acct_type = tk.StringVar(value=_ACCT_STOCK)
+        type_row = ttk.Frame(f)
+        type_row.pack(fill="x", pady=4)
+        ttk.Label(type_row, text="계좌 종류", width=22, anchor="w").pack(side="left")
+        cb = ttk.Combobox(type_row, textvariable=self.kis_acct_type, state="readonly",
+                          width=20, values=[_ACCT_STOCK, _ACCT_FUTURES,
+                                            _ACCT_OV_FUTURES])
+        cb.pack(side="left")
+        cb.bind("<<ComboboxSelected>>", self._wizard_on_acct_type_change)
 
         # 입력란
         self.e_key = self._make_wizard_entry(f, "App Key")
         self.e_secret = self._make_wizard_entry(f, "App Secret", show="*")
         self.e_acct = self._make_wizard_entry(f, "계좌번호 (예: 50001234-01)")
+        # 주식 전용 필드 묶음 — 선물 슬롯에선 통째로 숨긴다(save_kis_futures에 없는 필드).
+        self._wizard_stock_rows = tk.Frame(f, bg=PANEL)
+        self._wizard_stock_rows.pack(fill="x")
         # v0.9.15 — HTS ID (선택): KIS WebSocket 체결통보 H0STCNI0/H0GSCNI0의 tr_key.
         # KIS HTS 또는 영웅문에 로그인할 때 쓰는 사용자 ID (이메일 아님). 없으면
         # 체결통보 WebSocket 구독 skip → REST 폴링이 fill 인지 (~수십초 지연).
-        self.e_hts = self._make_wizard_entry(f, "HTS ID (선택 — 실시간 체결통보용)")
+        self.e_hts = self._make_wizard_entry(self._wizard_stock_rows,
+                                             "HTS ID (선택 — 실시간 체결통보용)")
         # 시세용 실전 앱키 — KIS는 시세를 실전 도메인 전용 제공 + 모의 앱키 거부(EGW02004)라,
         # 모의투자도 시세 조회엔 별도 실전 앱키가 필수. 주문은 위 모의 앱키, 시세만 이 키로.
         # 실전투자 선택 시엔 위 App Key가 곧 실전이라 비워도 됨.
-        self.e_quote_key = self._make_wizard_entry(f, "시세용 실전 App Key (모의투자 시 필수)")
-        self.e_quote_secret = self._make_wizard_entry(f, "시세용 실전 App Secret (모의투자 시 필수)", show="*")
+        self.e_quote_key = self._make_wizard_entry(
+            self._wizard_stock_rows, "시세용 실전 App Key (모의투자 시 필수)")
+        self.e_quote_secret = self._make_wizard_entry(
+            self._wizard_stock_rows, "시세용 실전 App Secret (모의투자 시 필수)", show="*")
 
         # 입력 변경 시 결과·버튼 reset (다시 테스트해야 저장 가능)
         for ent in (self.e_key, self.e_secret, self.e_acct, self.e_hts,
@@ -2218,6 +2249,7 @@ class SettingsApp:
             nav, text="🔌 연결 테스트", style="Accent.TButton",
             command=self._wizard_test_connection)
         self._wizard_action_btn.pack(side="right")
+        self._wizard_apply_acct_type()   # 초기(주식) 제목·안내문·필드 구성 적용
         return f
 
     def _make_wizard_entry(self, parent, label: str, show: str | None = None) -> ttk.Entry:
@@ -2227,8 +2259,11 @@ class SettingsApp:
         """
         row = ttk.Frame(parent)
         row.pack(fill="x", pady=4)
-        ttk.Label(row, text=label, width=22, anchor="w").pack(side="left")
+        lbl = ttk.Label(row, text=label, width=22, anchor="w")
+        lbl.pack(side="left")
         ent = ttk.Entry(row)
+        # 계좌 종류 전환 시 라벨(예시 계좌번호 등)을 바꿀 수 있게 참조 부착
+        ent.label_widget = lbl
         if show:
             ent.configure(show=show)
         ent.pack(side="left", fill="x", expand=True)
@@ -2244,6 +2279,77 @@ class SettingsApp:
         # 붙여넣기 직후에도 정화
         ent.bind("<<Paste>>", lambda _e: ent.after(1, _sanitize))
         return ent
+
+    # ── Step 3 계좌 종류 슬롯 (LS 폼과 대칭) ─────────────────────────────────────
+
+    def _wizard_selected_cred(self) -> dict | None:
+        """선택된 계좌 종류의 저장 슬롯 자격증명 (없으면 None)."""
+        acct_type = self.kis_acct_type.get()
+        if acct_type == _ACCT_FUTURES:
+            return secrets_store.load_kis_futures()
+        if acct_type == _ACCT_OV_FUTURES:
+            return secrets_store.load_kis_overseas_futures()
+        return secrets_store.load_kis()
+
+    def _wizard_on_acct_type_change(self, _e=None) -> None:
+        """Step 3 계좌 종류 변경 — 이전 슬롯 잔존값 제거 + 새 슬롯 프리필·모드 채택 +
+        화면 구성 갱신 + 연결 테스트 무효화(슬롯 바뀌면 다시 검증)."""
+        self._wizard_prefill_from_store(clear=True)
+        self._wizard_adopt_stored_mode()
+        self._wizard_apply_acct_type()
+        self._wizard_reset_test_state()
+
+    def _wizard_adopt_stored_mode(self) -> None:
+        """선택 슬롯에 저장된 모의/실전 모드를 wizard 상태로 채택(저장값 있을 때만) —
+        실전 슬롯이 Step 2의 모의 선택에 덮여 조용히 모의로 재저장되는 것을 방지."""
+        cred = self._wizard_selected_cred()
+        if cred:
+            self._wizard_virtual_var.set(
+                "virtual" if cred.get("virtual", True) else "real")
+            self._wizard_on_mode_change()
+
+    def _wizard_apply_acct_type(self) -> None:
+        """계좌 종류에 맞춰 Step 3 제목·안내문·계좌번호 예시·주식 전용 필드를 갱신."""
+        acct_type = self.kis_acct_type.get()
+        hint, desc = _KIS_ACCT_HINTS[acct_type]
+        self._wizard_step3_desc.configure(text=desc)
+        self.e_acct.label_widget.configure(text=hint)
+        if acct_type == _ACCT_STOCK:
+            self._wizard_stock_rows.pack(fill="x", before=self._wizard_test_status)
+        else:
+            self._wizard_stock_rows.pack_forget()
+        if acct_type == _ACCT_OV_FUTURES:
+            mode = "실전 전용"       # KIS 해외선물 모의 미지원
+        else:
+            mode = "모의투자" if self.wizard_virtual else "실전투자"
+        self._wizard_step3_title.configure(
+            text=f"3 / 3   ·   자격증명 입력 ({acct_type} · {mode})")
+
+    def _wizard_prefill_from_store(self, clear: bool = False) -> None:
+        """선택된 계좌 종류 슬롯의 저장값을 입력란에 미리 채움 (secret류는 보안상 제외).
+
+        clear=True(계좌 종류 전환 시)는 이전 슬롯 값이 입력란에 남아 엉뚱한 슬롯으로
+        저장되는 것을 막기 위해 전 필드를 먼저 비운다. clear=False(refresh_status)는
+        저장값 있을 때만 덮어쓴다(기존 주식 프리필과 동일 의미)."""
+        acct_type = self.kis_acct_type.get()
+        cred = self._wizard_selected_cred()
+        if clear:
+            for ent in (self.e_key, self.e_secret, self.e_acct, self.e_hts,
+                        self.e_quote_key, self.e_quote_secret):
+                ent.delete(0, "end")
+        if not cred:
+            return
+
+        def _fill(ent, value):
+            ent.delete(0, "end")
+            ent.insert(0, value or "")
+
+        _fill(self.e_key, cred.get("app_key"))
+        _fill(self.e_acct, cred.get("account_no"))
+        if acct_type == _ACCT_STOCK:
+            _fill(self.e_hts, cred.get("hts_id", ""))
+            # 시세용 실전 앱키 — 키만 미리 채움(시크릿은 secret과 동일하게 매번 재입력)
+            _fill(self.e_quote_key, cred.get("quote_app_key", ""))
 
     def _wizard_show_step(self, step: int) -> None:
         """Step 1-3 중 하나만 보이게 토글."""
@@ -2275,9 +2381,8 @@ class SettingsApp:
                 self.wizard_virtual = True
                 self._wizard_on_mode_change()
                 return
-        # Step 3 제목·테스트 결과 모드별로 갱신
-        mode = "모의투자" if self.wizard_virtual else "실전투자"
-        self._wizard_step3_title.configure(text=f"3 / 3   ·   자격증명 입력 ({mode})")
+        # Step 3 제목·테스트 결과 모드별로 갱신 (계좌 종류 포함 — 단일 갱신 경로)
+        self._wizard_apply_acct_type()
         self._wizard_reset_test_state()
         self._wizard_show_step(3)
 
@@ -2310,13 +2415,26 @@ class SettingsApp:
                 text="App Key·Secret·계좌번호를 모두 입력하세요.")
             return
 
+        # 클릭 시점 값 캡처 — 백그라운드 진행 중 화면 조작이 결과를 오염시키지 않게.
+        acct_type = self.kis_acct_type.get()
+        virtual = self.wizard_virtual
         self._wizard_action_btn.configure(state="disabled")
         self._wizard_test_status.configure(
             fg=MUTED, text="KIS 서버 호출 중...")
 
         def work():
-            return kis_health.test_credentials(key, secret, acct,
-                                                virtual=self.wizard_virtual)
+            # 계좌 종류별 검증 TR 분기 — 선물 슬롯은 선물 잔고 TR로 검증하므로
+            # 주식 계좌를 선물 슬롯에(또는 반대로) 넣는 실수가 여기서 걸러진다.
+            if acct_type == _ACCT_FUTURES:
+                from . import kis_futures_health
+                return kis_futures_health.test_credentials(key, secret, acct,
+                                                           virtual=virtual)
+            if acct_type == _ACCT_OV_FUTURES:
+                from . import kis_futures_health
+                return kis_futures_health.test_credentials(
+                    key, secret, acct, virtual=False,
+                    account_kind="overseas_futures")
+            return kis_health.test_credentials(key, secret, acct, virtual=virtual)
 
         def done(result, err):
             self._wizard_action_btn.configure(state="normal")
@@ -2341,7 +2459,8 @@ class SettingsApp:
         self._run_bg(work, done)
 
     def _wizard_save(self) -> None:
-        """Step 3 [저장] — 연결 테스트 통과 상태에서만 활성.
+        """Step 3 [저장] — 연결 테스트 통과 상태에서만 활성. 계좌 종류 슬롯별 분기
+        (save_kis / save_kis_futures / save_kis_overseas_futures — LS 폼과 대칭).
 
         저장 후 setup_collapsed=True → 페어링도 끝났으면 자동으로 정상 모드 복귀
         (③ 자동매매/Notebook 다시 표시). 페어링이 아직 안 끝났으면 ② 페어링만 펼친
@@ -2352,31 +2471,54 @@ class SettingsApp:
         key = self.e_key.get().strip()
         secret = self.e_secret.get().strip()
         acct = self.e_acct.get().strip()
-        hts_id = self.e_hts.get().strip()  # v0.9.15 — 선택 입력, 빈 문자열이면 WS 구독 skip
-        quote_key = self.e_quote_key.get().strip()
-        quote_secret = self.e_quote_secret.get().strip()
-        # 모의투자는 시세용 실전 앱키 필수 — 없으면 장중 손절/청산이 현재가 미수신으로 무력화.
-        # KIS가 모의 앱키의 실전 시세 도메인 호출을 거부(EGW02004)하기 때문.
-        if self.wizard_virtual and not (quote_key and quote_secret):
-            messagebox.showerror(
-                "시세용 실전 앱키 필요",
-                "모의투자는 시세 조회에 실전 앱키가 필수입니다.\n\n"
-                "KIS 개발자센터에서 실전 App Key/Secret을 발급해 "
-                "'시세용 실전 App Key/Secret' 칸에 입력하세요.\n"
-                "(주문은 위 모의 앱키로, 시세만 실전 앱키로 호출됩니다.)")
-            return
-        secrets_store.save_kis(key, secret, acct, virtual=self.wizard_virtual,
-                                hts_id=hts_id, quote_app_key=quote_key,
-                                quote_app_secret=quote_secret)
+        acct_type = self.kis_acct_type.get()
+
+        if acct_type == _ACCT_FUTURES:
+            secrets_store.save_kis_futures(key, secret, acct,
+                                           virtual=self.wizard_virtual)
+            mode = "모의투자" if self.wizard_virtual else "실전투자"
+            saved_label = f"{acct_type} · {mode}"
+        elif acct_type == _ACCT_OV_FUTURES:
+            # KIS 해외선물은 모의 미지원(실전 전용) — Step 2에서 모의를 골랐다면
+            # 실전 계좌로 저장됨을 명시 확인(조용한 실전 전환 금지).
+            if self.wizard_virtual and not messagebox.askyesno(
+                    "실전 계좌 확인",
+                    "KIS 해외선물은 모의투자를 지원하지 않습니다.\n"
+                    "이 자격증명은 실전 계좌로 저장·사용됩니다.\n\n"
+                    "계속하시겠습니까?"):
+                return
+            secrets_store.save_kis_overseas_futures(key, secret, acct,
+                                                    virtual=False)
+            saved_label = f"{acct_type} · 실전 전용"
+        else:
+            hts_id = self.e_hts.get().strip()  # v0.9.15 — 선택 입력, 빈 문자열이면 WS 구독 skip
+            quote_key = self.e_quote_key.get().strip()
+            quote_secret = self.e_quote_secret.get().strip()
+            # 모의투자는 시세용 실전 앱키 필수 — 없으면 장중 손절/청산이 현재가 미수신으로 무력화.
+            # KIS가 모의 앱키의 실전 시세 도메인 호출을 거부(EGW02004)하기 때문.
+            if self.wizard_virtual and not (quote_key and quote_secret):
+                messagebox.showerror(
+                    "시세용 실전 앱키 필요",
+                    "모의투자는 시세 조회에 실전 앱키가 필수입니다.\n\n"
+                    "KIS 개발자센터에서 실전 App Key/Secret을 발급해 "
+                    "'시세용 실전 App Key/Secret' 칸에 입력하세요.\n"
+                    "(주문은 위 모의 앱키로, 시세만 실전 앱키로 호출됩니다.)")
+                return
+            secrets_store.save_kis(key, secret, acct, virtual=self.wizard_virtual,
+                                    hts_id=hts_id, quote_app_key=quote_key,
+                                    quote_app_secret=quote_secret)
+            self.e_quote_secret.delete(0, "end")
+            mode = "모의투자" if self.wizard_virtual else "실전투자"
+            saved_label = f"{acct_type} · {mode}"
+
         self.e_secret.delete(0, "end")
-        self.e_quote_secret.delete(0, "end")
         self.setup_collapsed = True
-        mode = "모의투자" if self.wizard_virtual else "실전투자"
         messagebox.showinfo(
             "저장 완료",
-            f"KIS 자격증명을 저장했습니다 ({mode}). "
+            f"KIS 자격증명을 저장했습니다 ({saved_label}). "
             "키는 이 PC를 떠나지 않습니다.\n\n"
-            "다음 단계: ② 플랫폼 계정 연결.")
+            "다른 자산군(국내선물·해외선물 등)은 [계좌 종류]를 바꿔 추가 등록할 수 "
+            "있습니다. 처음 설정이라면 다음 단계는 ② 플랫폼 계정 연결입니다.")
         self.refresh_status()
         # 새 핸들(모의→실전 전환 등)을 웹 AccountPicker에 즉시 반영 — 저장만으론 서버 스냅샷이
         # 다음 사이클·상태변경까지 stale이라 방금 등록한 계좌가 웹에 안 뜬다(best-effort).
@@ -2389,13 +2531,16 @@ class SettingsApp:
         받았을 때 Step 3만 다시 입력하면 됨.
         """
         # 활성 브로커의 자격증명에서 virtual 모드를 읽어 wizard에 미리 채움.
-        _b = secrets_store.get_active_broker()
-        existing = secrets_store.load_ls() if _b == "ls" else secrets_store.load_kis()
-        if existing:
-            self.wizard_virtual = bool(existing.get("virtual", True))
-            self._wizard_virtual_var.set("virtual" if self.wizard_virtual else "real")
-            mode = "모의투자" if self.wizard_virtual else "실전투자"
-            self._wizard_step3_title.configure(text=f"3 / 3   ·   자격증명 입력 ({mode})")
+        if secrets_store.get_active_broker() == "ls":
+            existing = secrets_store.load_ls()
+            if existing:
+                self.wizard_virtual = bool(existing.get("virtual", True))
+                self._wizard_virtual_var.set(
+                    "virtual" if self.wizard_virtual else "real")
+        else:
+            # KIS — 선택된 계좌 종류 슬롯 기준으로 모드 채택(슬롯별 모의/실전 분리)
+            self._wizard_adopt_stored_mode()
+        self._wizard_apply_acct_type()
         self._wizard_reset_test_state()
         self._wizard_show_step(3)
 

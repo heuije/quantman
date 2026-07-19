@@ -27,13 +27,17 @@ _VTS = "https://openapivts.koreainvestment.com:29443"
 
 
 def test_credentials(app_key: str, app_secret: str,
-                     account_no: str, virtual: bool) -> dict[str, Any]:
+                     account_no: str, virtual: bool,
+                     account_kind: str = "futures") -> dict[str, Any]:
     """KIS 선물 자격증명을 *저장 없이* 검증.
 
     Args:
         app_key, app_secret: KIS Open API 발급 키.
         account_no: "12345678-03" 또는 "1234567803" (선물 상품코드 03).
         virtual: True=모의(VTS 도메인+VTFO6118R), False=실전(실전 도메인+CTFO6118R).
+        account_kind: "futures"(국내선물) | "overseas_futures"(해외선물).
+            해외선물은 KIS가 모의 미지원(실전 전용)이라 실전 도메인 토큰 발급만
+            검증하고 계좌 조회 검증은 후속(ls_health overseas_futures와 동일 한계).
 
     Returns:
         {
@@ -43,6 +47,8 @@ def test_credentials(app_key: str, app_secret: str,
           "msg_cd": str | None,
         }
     """
+    if account_kind == "overseas_futures":
+        virtual = False              # KIS 해외선물 모의 미지원 — 항상 실전 도메인
     base = _VTS if virtual else _REAL
 
     # 1) 토큰 발급
@@ -64,6 +70,13 @@ def test_credentials(app_key: str, app_secret: str,
                 "msg": _format_kis_error(
                     token_body, fallback=f"토큰 발급 실패 (HTTP {r.status_code}) — App Key/Secret 확인"),
                 "rt_cd": token_body.get("rt_cd"), "msg_cd": token_body.get("msg_cd")}
+
+    if account_kind == "overseas_futures":
+        # 해외선물 잔고 TR(OTFM1412R)은 실전 전용·미실측 — 등록 시점엔 토큰(App Key/
+        # Secret)만 결정적으로 검증하고 계좌번호 검증은 후속으로 정직하게 한계 표기.
+        return {"ok": True,
+                "msg": "App Key·Secret 유효 (실전) — 해외선물 계좌 조회 검증은 후속(실전 전용)",
+                "rt_cd": "0", "msg_cd": None}
 
     # 2) 계좌번호 파싱 — "12345678-03" 또는 "1234567803" (선물 상품코드 기본 03)
     norm = account_no.replace("-", "").strip()
