@@ -209,6 +209,28 @@ def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def write_version_marker() -> None:
+    """설치 폴더에 버전 파일명 마커(VERSION-<버전>.txt)를 기록·구버전 마커 제거.
+
+    제자리 업데이트 특성상 설치 폴더명은 최초 다운로드 시점 버전으로 영원히
+    남는다(2026-07-19 실측: v0.9.80 설치본이 'MyStock-v0.9.33-beta' 폴더에 있어
+    로그·mtime으로만 역추적 가능). 외부 도구·운영 진단·에이전트가 파일 목록만
+    보고 현재 버전을 알 수 있게, 앱 기동마다 exe 옆에 마커를 갱신한다(업데이트
+    재시작 = 곧 갱신). frozen 전용 — 실패는 무해(읽기전용 폴더 등)라 debug만."""
+    if not is_frozen():
+        return
+    from . import __version__
+    root = Path(sys.executable).resolve().parent
+    try:
+        marker = root / f"VERSION-{__version__}.txt"
+        for old in root.glob("VERSION-*.txt"):
+            if old != marker:
+                old.unlink()
+        marker.write_text(__version__ + "\n", encoding="utf-8")
+    except OSError as e:
+        logging.getLogger("localapp.updater").debug("버전 마커 기록 실패(무해): %s", e)
+
+
 def _download_zip(url: str, dest: Path,
                    progress_cb: Optional[Callable[[int, int], None]] = None) -> None:
     """zip 다운로드 (스트리밍). progress_cb(downloaded, total) — total은 0 가능."""

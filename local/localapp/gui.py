@@ -138,6 +138,7 @@ class SettingsApp:
         self._update_info: dict | None = None
         self._last_update_check = 0.0
         if updater.is_frozen():
+            updater.write_version_marker()   # 설치 폴더에 현재 버전 파일명 마커
             threading.Thread(target=self._check_updates_async,
                               daemon=True, name="update-check").start()
             self.root.bind("<FocusIn>", self._on_focus_in_check_updates, add="+")
@@ -2922,6 +2923,11 @@ class SettingsApp:
                 "자동 업데이트는 빌드된 .exe에서만 동작합니다.\n"
                 "개발 환경에선 git pull을 사용하세요.")
             return
+        # 수동(배너 클릭) 설치도 로그 표식을 남긴다 — 종전엔 무인 경로만
+        # "[auto-update]"를 남겨, 클릭 설치가 로그로 식별 불가했다(07-19 실측).
+        import logging
+        logging.getLogger("localapp.gui.autoupdate").info(
+            "[update] 수동 설치 시작(배너 클릭) — %s", info["tag"])
 
         dlg = tk.Toplevel(self.root)
         dlg.title("업데이트 진행 중")

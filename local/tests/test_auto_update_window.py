@@ -135,3 +135,29 @@ def test_calendar_error_falls_back_to_fixed_windows(monkeypatch):
     monkeypatch.setattr(mc, "is_session_day", _boom)
     assert updater.is_safe_update_window(
         _at(10, 30), intraday_running=False, pending_count=0)[0] is False
+
+
+# ── 버전 파일명 마커(2026-07-19) — 제자리 업데이트의 폴더명 낡음 보완 ─────────
+
+
+def test_version_marker_written_and_old_removed(monkeypatch, tmp_path):
+    """frozen 기동 시 VERSION-<버전>.txt 기록 + 구버전 마커 제거."""
+    exe = tmp_path / "MyStock.exe"
+    exe.write_bytes(b"")
+    monkeypatch.setattr(updater.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updater.sys, "executable", str(exe))
+    (tmp_path / "VERSION-0.0.1.txt").write_text("0.0.1", encoding="utf-8")
+    updater.write_version_marker()
+    import localapp
+    cur = tmp_path / f"VERSION-{localapp.__version__}.txt"
+    assert cur.exists()
+    assert cur.read_text(encoding="utf-8").strip() == localapp.__version__
+    assert not (tmp_path / "VERSION-0.0.1.txt").exists()
+
+
+def test_version_marker_noop_in_dev(monkeypatch, tmp_path):
+    """개발 환경(비-frozen)은 무동작 — 리포 폴더에 마커를 만들지 않는다."""
+    monkeypatch.setattr(updater.sys, "executable", str(tmp_path / "python.exe"))
+    monkeypatch.delattr(updater.sys, "frozen", raising=False)
+    updater.write_version_marker()
+    assert list(tmp_path.glob("VERSION-*.txt")) == []
