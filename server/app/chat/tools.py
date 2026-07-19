@@ -317,6 +317,53 @@ def assemble_ir(tool_name: str, tool_input: dict) -> dict:
 
 # ── 데이터셋 로드 ─────────────────────────────────────────────────────────────
 
+def _attr_isin_clauses(cond) -> list[tuple[str, list]]:
+    """조건 트리에서 is_in(attribute(attr), values) 절 추출 — 단일 is_in 또는 최상위 logic-AND
+    아래의 것들만. OR·미인식 구조면 [](narrowing 없음). 가격/팩터 절은 무시한다(엔진이 로드 後
+    전체 스크리너를 재적용하므로, 프리필터가 superset이면 결과 불변 — 여기선 속성 절만 본다)."""
+    if not isinstance(cond, dict):
+        return []
+    op = cond.get("op")
+    inputs = cond.get("inputs") or {}
+    if op == "is_in":
+        sig = inputs.get("signal") or {}
+        if sig.get("op") == "attribute":
+            attr = (sig.get("params") or {}).get("attr")
+            vals = (cond.get("params") or {}).get("values") or []
+            if attr and vals:
+                return [(str(attr), list(vals))]
+        return []
+    if op == "logic" and str((cond.get("params") or {}).get("logic", "AND")).upper() == "AND":
+        out: list[tuple[str, list]] = []
+        for child in inputs.values():
+            out += _attr_isin_clauses(child)
+        return out
+    return []            # OR·기타 → 안전하게 narrowing 포기(전 종목 로드)
+
+
+def _market_prefilter_symbols(ir: dict):
+    """유니버스 스크리너가 시장(Market) 필터를 담으면 로드 前에 해당 거래소 종목만 부분집합으로
+    해결한다 — 코스피/코스닥/나스닥/뉴욕 등. 전 16k종목을 계산 후 버리던 것을 수백으로 줄인다
+    (시세·지표 로드 0, 정적 ticker_db 조회). 반환 subset은 최종 결과의 superset(엔진이 로드 後
+    같은 함수 symbol_market으로 스크리너를 재적용) → 결과 불변. Market 절이 없거나 매칭 종목이
+    없으면 None(현행대로 전 종목 로드 — 안전 폴백). ⚠ Market만 좁힌다: 엔진과 정확 일치라 확실히
+    안전하다. Sector·가격 등 다른 절은 좁히지 않고 엔진 재적용에 맡긴다(여전히 superset·정합)."""
+    screener = (ir.get("universe") or {}).get("screener")
+    market_vals: list = []
+    for attr, values in _attr_isin_clauses((screener or {}).get("condition")):
+        if attr == "Market":
+            market_vals += values
+    if not market_vals:
+        return None
+    from quant_core.expression_parser import market_match_values, symbol_market
+    from .. import data_cache
+    allow = set(market_match_values(market_vals))
+    if not allow:
+        return None
+    subset = [s for s in data_cache.get_symbol_index() if symbol_market(s) in allow]
+    return subset or None      # 빈 결과(프리필터 이상)면 전 종목 로드로 폴백
+
+
 def _load_dataset(ir: dict) -> dict:
     """IR이 참조하는 데이터셋 로드 — ir.py /ir/strategy와 동일 전략.
 
@@ -337,7 +384,9 @@ def _load_dataset(ir: dict) -> dict:
         return qc.load_dataset_for(needed)
     cols = needed_columns(sir)
     if cols is not None:
-        return data_cache.get_projected(cols, symbols=None,
+        # 시장(Market) 스크리너면 로드 前에 거래소 종목만 부분집합으로 — 전 16k종목 계산 회피.
+        subset = _market_prefilter_symbols(ir)
+        return data_cache.get_projected(cols, symbols=subset,
                                         recent_days=400 if sir.query == "select" else None)
     from ..data_cache import get_dataset
     return get_dataset()
@@ -376,6 +425,30 @@ def _run_engine(ir: dict, dataset: dict) -> dict:
 
 # ── 도구 실행 ─────────────────────────────────────────────────────────────────
 
+def _default_scan_window(ir: dict) -> str | None:
+    """기간 미지정 시 simulation.start를 최근 5년으로 채운다 — 챗 simulate 전용(엔진/골든 기본
+    동작은 불변, SimSpec 모델 기본 None 유지). 이미 start/end가 있거나 기간분할(study.split_*)이면
+    손대지 않는다. '2개월 내 50% 급등' 같은 조건은 이벤트 '창 크기'일 뿐 스캔 범위가 아니라,
+    미지정 시 전 이력(≈20년)을 훑던 걸 최근 5년으로 좁혀 표본은 충분히 두면서 계산을 줄인다.
+    반환: 주입한 start(YYYY-MM-DD) 또는 None(미주입) — 호출측이 회신에 안내."""
+    sim = ir.get("simulation")
+    if not isinstance(sim, dict):
+        sim = ir["simulation"] = {}
+    if sim.get("start") or sim.get("end"):
+        return None
+    study = ir.get("study") or {}
+    if study.get("split_period") or study.get("split_dates"):
+        return None            # 기간분할은 기간 자체가 분석 축 — 전체 이력이 의미 있음
+    from datetime import date
+    t = date.today()
+    try:
+        start = date(t.year - 5, t.month, t.day)
+    except ValueError:         # 2/29 → 2/28
+        start = date(t.year - 5, t.month, 28)
+    sim["start"] = start.isoformat()
+    return sim["start"]
+
+
 def run_simulate(session, user_id, tool_input: dict) -> dict:
     """전략 NL → compile_strategy(검증 IR) → 백테스트. 모델이 IR을 추측하지 않는다(부류 제거).
 
@@ -389,6 +462,7 @@ def run_simulate(session, user_id, tool_input: dict) -> dict:
     if not comp.get("success"):
         return {"success": False, "error": comp.get("error") or "전략을 IR로 컴파일하지 못했습니다."}
     ir = comp["ir"]
+    scan_start = _default_scan_window(ir)   # 기간 미지정 시 최근 5년 주입(챗 전용) + 아래 회신 안내
     # DB 커넥션 반납 — 백테스트 compute(_load_dataset·strategy_from_spec, 수 초) 동안 커넥션을
     # 쥐지 않는다(preview C1과 동일 부류·agent 루프의 LLM 왕복 반납과 짝). compile_strategy가 연
     # 읽기 트랜잭션을 여기서 커밋해 반납하고, 이후는 DB 미접근 순수 계산이다.
@@ -401,6 +475,10 @@ def run_simulate(session, user_id, tool_input: dict) -> dict:
         res["adjustable"] = param_manifest(ir)   # 실시간 변수조정 노브(웹 '변수 조정' 패널)
         res["explanation"] = comp.get("explanation")
         res["assumptions"] = comp.get("assumptions") or []
+        if scan_start:
+            res["assumptions"] = list(res["assumptions"]) + [
+                f"조사 기간을 지정하지 않아 최근 5년({scan_start}~)으로 분석했습니다. "
+                "더 넓은 기간을 원하시면 기간을 지정해 다시 요청해 주세요."]
     return res
 
 
