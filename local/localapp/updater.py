@@ -328,7 +328,17 @@ def _write_updater_bat(bat_path: Path, src_dir: Path, dst_dir: Path,
         f'start "" "{app_exe}"\r\n'
         "goto :NOTIFY\r\n"
         ":LOCKED\r\n"
-        # 앱이 안 닫혀 폴더 잠금 — 스왑 자체가 안 일어나 기존 그대로.
+        # 앱이 안 닫혀 폴더 잠금 — 스왑 자체가 안 일어나 **기존 설치는 그대로**다.
+        # 그런데 bat은 스왑 시도 전에 이미 앱을 taskkill했으므로, 여기서 재실행하지
+        # 않으면 "앱 강제종료 + 미재시작" = 자동매매 완전 정지로 남는다(:ROLLBACK엔
+        # 재실행이 있는데 이 분기만 빠져 있었다). 재실행은 **MessageBox 앞**이어야
+        # 한다 — 아래 powershell MessageBox::Show는 사용자가 OK를 누를 때까지
+        # 블로킹이라, 뒤에 두면 그동안 앱이 죽은 채로 방치된다.
+        f'start "" "{app_exe}"\r\n'
+        # 사후 판별용 흔적 — bat은 자기 자신을 삭제하고 앱은 taskkill로 죽어
+        # 어디에도 로그가 안 남는다(MessageBox 문구도 :ROLLBACK과 동일해 구분 불가).
+        'echo [LOCKED] swap skipped - install folder was locked '
+        '(app not closed within retry limit) >> "%TEMP%\\quantman-update.log"\r\n'
         ":NOTIFY\r\n"
         "powershell -NoProfile -Command "
         '"Add-Type -AssemblyName PresentationFramework; '

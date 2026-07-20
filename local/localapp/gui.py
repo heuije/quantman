@@ -2740,9 +2740,17 @@ class SettingsApp:
             import logging
             logging.getLogger("localapp.updater").debug("최신 버전 조회 실패: %s", e)
             return
-        if info and updater.is_newer(__version__, info["tag"]):
-            self._update_info = info
-            self.root.after(0, self._show_update_banner)
+        if not (info and updater.is_newer(__version__, info["tag"])):
+            return
+        # 캐시와의 상향 비교 — 종전엔 "실행 중 버전보다 새로운가"만 봐서, 캐시에
+        # 옛 태그(v0.9.77)가 박혀 있으면 재조회가 성공해도 그대로 남았다.
+        # **리바인딩만** 한다(in-place 변형 금지) — 설치 경로들이 진입 시점에 이 dict를
+        # 로컬 변수로 바인딩하므로, 변조하면 다운로드 URL과 태그가 도중에 갈린다.
+        cur = self._update_info
+        if cur is not None and not updater.is_newer(cur.get("tag", ""), info["tag"]):
+            return
+        self._update_info = info
+        self.root.after(0, self._show_update_banner)
 
     def _on_focus_in_check_updates(self, event):
         """사용자가 창에 focus 줄 때 재체크. throttle·guard로 낭비 차단."""
@@ -2750,9 +2758,10 @@ class SettingsApp:
         # FocusIn은 child 위젯에도 발생 — root 외엔 무시.
         if event.widget is not self.root:
             return
-        # 이미 새 버전 감지·배너 표시 중이면 재체크 불필요.
-        if self._update_info is not None:
-            return
+        # ⚠ 종전엔 "이미 감지했으면 재체크 불필요"로 조기 반환했다. `_update_info`를
+        # 비우는 경로가 없어 한 번 채워지면 프로세스 수명 내내 고정 — 그 사이 더 새
+        # 릴리스가 나와도 영영 못 보고 **한 홉씩만** 전진했다(실측: mwmw가 v0.9.77
+        # 설치·재시작 후에야 v0.9.82 감지, 클릭 2회). 낭비 방지는 throttle이 담당한다.
         # 1분 throttle — 위젯 사이 빠른 클릭 시 중복 호출 방지.
         if time.time() - self._last_update_check < 60.0:
             return
@@ -2905,8 +2914,9 @@ class SettingsApp:
         import time
         log = logging.getLogger("localapp.gui.autoupdate")
         try:
-            if (self._update_info is None
-                    and time.time() - self._last_update_check >= 3600.0):
+            # 감지 여부를 게이트로 쓰지 않는다(위 _on_focus_in_check_updates 주석) —
+            # throttle만으로 충분하고, 게이트로 쓰면 캐시가 옛 태그에 고정된다.
+            if time.time() - self._last_update_check >= 3600.0:
                 threading.Thread(target=self._check_updates_async,
                                   daemon=True, name="update-recheck").start()
             info = self._update_info
