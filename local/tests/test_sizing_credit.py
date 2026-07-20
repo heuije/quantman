@@ -272,3 +272,30 @@ def test_trace_sizing_keys_by_symbol_and_side():
     t._trace_sizing(S, "short", orderable_raw=8, credit=2, capacity=10, pct=50.0, target=5)
     assert set(t._sizing_trace) == {f"{S}|long", f"{S}|short"}
     assert t._sizing_trace[f"{S}|short"]["target"] == 5
+
+
+# ── 관측(2026-07-20) — 조용한 skip 제거: 발주/미발주 사유는 전부 결정으로 ────────
+# 원격(서버 스냅샷)에서 "왜 주문이 없었나"를 답하려면 탈락 사유가 decisions에 있어야
+# 한다. 종전엔 진입측만 skip_idempotent를 남기고 매도·환매·drift·청산hold·종가skip은
+# INFO 로그뿐이라, 유저 PC 없이는 진단이 불가능했다(mwmw 07-20 실비용).
+def test_no_silent_skip_paths_in_source():
+    """조용한 skip 금지 — 각 차단 지점이 결정을 동반하는지 소스로 고정."""
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent
+           / "localapp" / "trader.py").read_text(encoding="utf-8")
+    # (로그 문구, 그 지점이 남겨야 할 action)
+    for log_text, action in (
+        ("중복 매도 차단", "skip_idempotent"),
+        ("중복 환매 차단", "skip_idempotent"),
+        ("중복 drift 교정 차단", "skip_idempotent"),
+        ("청산 in-flight", "skip_exit_inflight"),
+        ("KIS 실보유 0/미상", "skip_close_no_holding"),
+    ):
+        i = src.index(log_text)
+        window = src[max(0, i - 900):i]      # 로그 직전 블록에 결정이 있어야 한다
+        assert f'"{action}"' in window, \
+            f"'{log_text}' 지점이 결정({action}) 없이 조용히 skip한다"
+    # A1 두 분기도 동일 계약
+    assert '"external_pending"' in src and '"external_pending_unavailable"' in src

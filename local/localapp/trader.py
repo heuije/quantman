@@ -1280,6 +1280,11 @@ class Trader:
         # 막는다. intent journal이 cycle/장중/catch-up·재기동을 가로지르는 단일 출처.
         today_iso = kst_today().isoformat()
         if intents.is_active(today_iso, sid, symbol, "sell"):
+            # 관측 대칭(2026-07-20): 진입측만 skip_idempotent 결정을 남기고 매도·환매·
+            # drift는 INFO 로그뿐이라 원격에서 "왜 청산 주문이 없나"를 못 봤다.
+            decisions.append(order_log.decision(
+                "skip_idempotent", sid, strat_name, symbol,
+                "오늘 이미 발주된 매도 intent 존재 — 중복 차단"))
             log.info("[L-01] 중복 매도 차단 %s/%s", sid, symbol)
             return
         intent_id = intents.new_intent_id()
@@ -1349,6 +1354,9 @@ class Trader:
         """
         today_iso = kst_today().isoformat()
         if intents.is_active(today_iso, sid, symbol, "buy"):
+            decisions.append(order_log.decision(
+                "skip_idempotent", sid, strat_name, symbol,
+                "오늘 이미 발주된 환매(숏청산) intent 존재 — 중복 차단"))
             log.info("[L-01] 중복 환매 차단 %s/%s", sid, symbol)
             return
         intent_id = intents.new_intent_id()
@@ -2161,6 +2169,12 @@ class Trader:
             # 발주·미마감)이면 재계획하지 않는다. leg를 빼고 net 산술만 남기면 자기
             # 주문과 상쇄되는 워시 주문이 나가므로, 심볼 통째 hold가 유일하게 안전.
             if intents.is_active(today_iso, sid, symbol, exit_side):
+                # 관측(2026-07-20): 종전엔 INFO 로그뿐이라 "왜 이 심볼만 계획에서
+                # 빠졌나"가 원격에서 안 보였다(심볼 통째 hold = 진입까지 함께 보류).
+                decisions.append(order_log.decision(
+                    "skip_exit_inflight", str(sid), "", symbol,
+                    f"청산 intent 활성({exit_side}) — 이 심볼 이번 사이클 보류"
+                    "(자기주문 상쇄 워시 방지·다음 창 재평가)"))
                 log.info("[목표수렴] 청산 in-flight [%s/%s] — 이번 사이클 hold", sid, symbol)
                 indeterminate.add(symbol)
                 continue
@@ -2338,6 +2352,9 @@ class Trader:
         dkey = f"DRIFT:{window}"
         # §14 멱등 — 같은 창·심볼·방향의 교정이 오늘 이미 발주됐으면 재발주 금지.
         if intents.is_active(today_iso, dkey, symbol, side):
+            decisions.append(order_log.decision(
+                "skip_idempotent", dkey, "목표수렴", symbol,
+                f"오늘 이미 발주된 교정({side}) intent 존재 — 중복 차단"))
             log.info("[L-01] 중복 drift 교정 차단 %s %s", symbol, side)
             return
         intent_id = intents.new_intent_id()
@@ -2868,6 +2885,13 @@ class Trader:
             held_now = held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side)
             clamped = clamp_sell_qty(held_now, sell_qty)
             if not clamped:                           # None=잔고 미상, 0=외부 매도(보유 0) → skip
+                # 관측(2026-07-20): 종가 청산이 조용히 건너뛰어지던 유일한 경로.
+                # "종가에 왜 청산이 안 됐나"의 직접 사유라 원격에 남겨야 한다.
+                decisions.append(order_log.decision(
+                    "skip_close_no_holding", str(sid), pos.get("strategy_name", ""),
+                    pos["symbol"],
+                    f"종가청산 skip — 브로커 실보유 {'미상' if held_now is None else 0}"
+                    f"(원장 {sell_qty}). 외부 매도·조회 실패 추정 — 정산 reconcile이 대조"))
                 log.info("[종가청산] %s KIS 실보유 0/미상 — 발주 skip", pos["symbol"])
                 continue
             if pos_side == "short":
