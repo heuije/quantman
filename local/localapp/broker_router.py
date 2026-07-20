@@ -161,7 +161,9 @@ class BrokerRouter:
             return 0.0
         return float(fn(symbol) or 0)
 
-    def cancel(self, order_no, symbol, qty):
+    def cancel(self, order_no, symbol, qty, *, partial: bool = False):
+        # partial(부분취소 의사)은 그대로 위임 — 네 어댑터 모두 같은 키워드를 받는다
+        # (KIS는 잔량전부 플래그로 전송, LS는 취소수량 필드뿐이라 미사용).
         # 해외선물 취소(OTFM3003U)는 원주문일자(ORGN_ORD_DT)가 필수인데 이 시그니처엔 없다.
         # 국내 취소 메서드로 잘못 라우팅하면 다른 계좌를 건드리므로 명시 차단(취소는 Trader
         # 핫패스 아님 — KIS DAY 자동취소). 라이브 배선은 ORD_DT 보관 후 overseas_cancel 직접 호출(M10).
@@ -169,7 +171,8 @@ class BrokerRouter:
             raise NotImplementedError(
                 "해외선물 취소는 원주문일자(ORGN_ORD_DT)가 필요 — broker.overseas_cancel 직접 호출. "
                 "(라우터 취소는 ORD_DT 미보유; M10 라이브 배선에서 주문 ORD_DT 추적 후 연결)")
-        return self._broker(symbol).cancel(order_no, self._code(symbol), qty)
+        return self._broker(symbol).cancel(order_no, self._code(symbol), qty,
+                                           partial=partial)
 
     def order_status(self, order_no, symbol=None, hint=None):
         # 선물 order_status는 1-arg(order_no), 주식은 2-arg(order_no, symbol).

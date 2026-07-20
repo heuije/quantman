@@ -21,7 +21,11 @@ class Broker(Protocol):
     def sell_limit(self, symbol: str, qty: int, limit_price: int) -> dict: ...
     def buy_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict: ...   # 미국 예약 매수(지정가)
     def sell_resv_limit(self, symbol: str, qty: int, limit_price: float) -> dict: ...  # 미국 예약 매도(지정가)
-    def cancel(self, order_no: str, symbol: str, qty: int) -> dict: ...
+    # partial: True면 잔량 중 qty만 취소(부분취소) — 동시호가 가드의 초과분 트리밍.
+    # KIS 계열은 잔량전부 플래그(QTY_ALL_ORD_YN·RMN_QTY_YN)로 의사를 전송하고,
+    # LS 계열은 취소수량 필드만 있어 인자를 받되 쓰지 않는다(구현 docstring 참조).
+    def cancel(self, order_no: str, symbol: str, qty: int, *,
+               partial: bool = False) -> dict: ...
     # hint: 해외(미국) 체결 매칭 보조({side,qty,reserved,submitted_ts,exclude_odnos}).
     # 예약주문 접수번호≠체결번호공간(실측 2026-06-11) 해소용 — 비해외 구현은 무시.
     def order_status(self, order_no: str, symbol: str | None = None,

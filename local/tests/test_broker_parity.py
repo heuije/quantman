@@ -1,8 +1,9 @@
-"""LS 브로커 엔진 패리티 회귀 (P1·P3·P4).
+"""LS 브로커 엔진 패리티 회귀 (P1·P3·P4·P5).
 
 P1 — Broker Protocol의 account_snapshot 시그니처가 실제 구현과 일치
 P3 — reconcile_submitting이 _daily_ccld 없는 브로커에서 AttributeError 없이 graceful skip
 P4 — make_quote_ws/make_order_ws 팩토리가 브로커별 WS(kis/ls)를 선택
+P5 — cancel(partial=…) 부분취소 계약을 Protocol·4어댑터·라우터가 모두 지원
 """
 from __future__ import annotations
 
@@ -209,3 +210,51 @@ def test_p4_order_ws_kis_no_hts_returns_none(monkeypatch):
     monkeypatch.setattr(intraday_loop, "load_kis", lambda: {})
     ws = intraday_loop.make_order_ws(_FakeWsBroker(), lambda e: None, "KRX")
     assert ws is None
+
+
+# ── P5: 부분취소(partial) 계약 — Protocol·4어댑터·라우터 동시 지원 ─────────────
+# 동시호가 가드가 목표 초과 수동 미체결에서 "초과분만" 걷으려면 취소 수량 의사를
+# 어댑터까지 전달해야 한다. KIS 계열은 잔량전부 플래그가 수량을 지배하고(실측
+# 2026-07-20 모의 국내선물: 3계약 미체결에 ORD_QTY=1 취소 시 RMN_QTY_YN "N"→잔량 2,
+# "Y"→잔량 0으로 남은 2 전부 취소), LS 계열은 대응 필드가 없어 인자를 받되 쓰지
+# 않는다. 한 구현이라도 인자를 안 받으면 **그 브로커를 쓰는 유저에게서만** 가드
+# 부분취소가 TypeError로 조용히 실패한다(주식 창은 LsBroker 경로까지 도달).
+
+def test_p5_cancel_accepts_partial_kwarg_on_every_broker():
+    """cancel(partial=…)이 Protocol·KIS/LS 주식·KIS/LS 선물·라우터 전부에 있다."""
+    from localapp.broker import Broker
+    from localapp.broker_router import BrokerRouter
+    from localapp.kis_broker import KisBroker
+    from localapp.kis_futures_broker import KisFuturesBroker
+    from localapp.ls_broker import LsBroker
+    from localapp.ls_futures_broker import LsFuturesBroker
+
+    for owner in (Broker, KisBroker, KisFuturesBroker, LsBroker,
+                  LsFuturesBroker, BrokerRouter):
+        p = inspect.signature(owner.cancel).parameters.get("partial")
+        assert p is not None, f"{owner.__name__}.cancel에 partial 파라미터가 없습니다"
+        assert p.kind is inspect.Parameter.KEYWORD_ONLY, (
+            f"{owner.__name__}.cancel의 partial은 키워드 전용이어야 합니다"
+            " — 기존 3-인자 호출자(trader·gui·verify) 무영향 보장")
+        assert p.default is False, (
+            f"{owner.__name__}.cancel의 partial 기본값은 False(전량 취소)여야 합니다")
+
+
+def test_p5_kis_domestic_cancel_body_flag_follows_partial():
+    """KIS 국내주식 취소 바디 QTY_ALL_ORD_YN — 기본 Y(전량) · partial이면 N(일부).
+
+    KB 정의 'Y@전량 N@일부'(docs/kis-api/.../TTTC0013U_주식주문-정정취소.md).
+    국내주식 자체 실측은 없으나 같은 성격의 선물 필드(RMN_QTY_YN)가 실측
+    2026-07-20에서 문서대로 동작했다 — Y는 ORD_QTY를 무시하고 잔량 전부를 취소한다."""
+    from localapp.kis_broker import KisBroker
+
+    b = KisBroker.__new__(KisBroker)
+    b.virtual, b.cano, b.acnt_cd = True, "12345678", "01"
+    seen: list = []
+    b._post_retry = lambda path, tr, body, **kw: (
+        seen.append(body), {"rt_cd": "0", "msg1": "", "msg_cd": ""})[1]
+
+    b.cancel("0000000101", "005930", 5)                    # 전량(기존 호출자 형태)
+    b.cancel("0000000101", "005930", 2, partial=True)      # 부분
+    assert [x["QTY_ALL_ORD_YN"] for x in seen] == ["Y", "N"]
+    assert [x["ORD_QTY"] for x in seen] == ["5", "2"]

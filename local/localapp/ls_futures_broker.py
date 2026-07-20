@@ -178,7 +178,12 @@ class LsFuturesBroker(_LsAuth):
     def sell_resv_limit(self, *a, **k):
         raise NotImplementedError("국내선물 예약주문 미지원")
 
-    def cancel(self, order_no, symbol, qty):
+    def cancel(self, order_no, symbol, qty, *, partial: bool = False):
+        """미체결 취소 — CancQty가 곧 취소 수량이라 부분/전량이 같은 경로다.
+
+        partial은 KIS 계열의 잔량전부 플래그(QTY_ALL_ORD_YN·RMN_QTY_YN)를 위한
+        브로커 공통 계약이라 받기만 하고 쓰지 않는다 — LS는 대응 필드가 없다
+        (실측 2026-07-20: CancQty 부분취소 수리·t0434에 원주문번호 유지·ordrem만 감소)."""
         resp = self._post("/futureoption/order", "CFOAT00300",
                           {"CFOAT00300InBlock1": {
                               "OrgOrdNo": int(order_no) if str(order_no).isdigit() else order_no,

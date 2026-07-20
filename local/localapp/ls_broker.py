@@ -566,8 +566,15 @@ class LsBroker(_LsAuth):
         r = normalize_ls_order_resp(resp, ordno_field="OrdNo")
         return {"success": r["success"], "message": r["message"], "msg_cd": r["msg_cd"]}
 
-    def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
+    def cancel(self, order_no: str, symbol: str, qty: int, *,
+               partial: bool = False) -> dict:
         """미체결 주문 취소. 해외=COSAT00301(08), 국내=CSPAT00801.
+
+        partial은 KIS 계열의 잔량전부 플래그(QTY_ALL_ORD_YN·RMN_QTY_YN)를 위한
+        브로커 공통 계약이라 받기만 하고 쓰지 않는다 — LS는 대응 필드가 없고
+        OrdQty가 곧 취소 수량이다(LsFuturesBroker.cancel과 동일 사유). 이 인자를
+        받지 않으면 동시호가 가드의 부분취소가 LS 주식 계정에서만 TypeError로
+        조용히 실패한다(주식 창 guard_open_stock·guard_close_stock 경로).
 
         PATH "/stock/order" — 신규/정정/취소 모두 동일 경로, tr_cd 헤더로 TR 구분.
         커뮤니티 래퍼 대조 확인: "/stock/order-cancel" 경로는 404 반환.

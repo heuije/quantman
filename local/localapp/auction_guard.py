@@ -8,10 +8,14 @@
   ① 자동 주문 유저 변경(취소·감량) → 잔여 전량 취소 + intent failed 마킹 후
      해당 창 사이클 재실행(멱등 재계획이 정확 수량을 재발주). 정정으로 수량
      증가가 불가한 브로커 제약상 "깨끗이 지우고 재발주"가 유일한 복원 경로.
-  ② 외부(수동) 미체결이 목표를 초과 → **최신 주문부터 전량 취소**(유저 확정).
-     부분 정정(감량)은 브로커 실측 전이라 미사용 — 다음 주문을 통째로 취소하면
-     초과분을 넘는 경우 그 직전에서 멈춘다(과잉 개입 금지 — 잔여는 개장+1분
-     수렴/익일 수렴 몫).
+  ② 외부(수동) 미체결이 목표를 초과 → **최신 주문부터 초과분만 취소**(유저 확정).
+     잔량이 초과분보다 크면 그만큼만 부분취소한다 — 통째 취소(과잉 개입)도 초과
+     방치도 없다. 근거 = LS CFOAT00300 CancQty 실계좌 실측(2026-07-20): 부분취소가
+     수리되고 t0434 미체결에 **원주문번호가 유지된 채 ordrem만 감소**(신주문번호
+     미발급)라 own/ext 분류·주문번호 추적이 깨지지 않는다. 같은 방향 수동 주문을
+     다 걷어도 남는 초과분만 수렴 몫. 취소가 미체결 조회에 반영되기까지 10~20초가
+     걸리는데(실측 2026-07-20) 폴링은 10초라, 창 누적 "남기려는 잔량"으로 유효
+     잔량을 눌러 같은 초과분의 반복 취소를 막는다(_eff_remain).
 
 스코프 = KRX 동시호가 4창(선물 개장·주식 개장·주식 마감·선물 마감). 창 중엔
 단일가 체결 전이라 보유·원장이 변하지 않아 창 시작 스냅샷으로 고정 가능하고,
@@ -106,21 +110,48 @@ def _target_confirmed(today, window: str, instrument_class: str) -> bool:
 @dataclass(frozen=True)
 class GuardPlan:
     """한 틱의 조치 계획 — plan_guard_actions(순수)의 산출물."""
-    cancels: list = field(default_factory=list)        # [(order_no, symbol, remain_qty)]
+    cancels: list = field(default_factory=list)        # [(order_no, symbol, cancel_qty)]
     fail_intents: list = field(default_factory=list)   # [(intent_id, reason)]
     restored_symbols: list = field(default_factory=list)  # own 복원 대상 심볼(카운트용)
     rerun: bool = False
     decisions: list = field(default_factory=list)
+    # cancels 중 잔량 일부만 취소한 주문번호 — 취소 후에도 원주문번호가 살아남는
+    # 것이 정상이라(실측 2026-07-20) 실행부의 소멸 재확인에서 제외한다.
+    partial_cancels: set = field(default_factory=set)
+    # 외부 미체결 취소가 **수리되면** 그 주문에 기록할 잔량(주문번호 → 남길 수량).
+    # 실행부가 창 누적 dict로 옮겨 다음 틱 유효 잔량에 쓴다(_eff_remain).
+    trim_to: dict = field(default_factory=dict)
 
 
 def _signed(side, qty) -> int:
     return int(qty or 0) * (1 if str(side) == "buy" else -1)
 
 
+def _eff_remain(p: dict, trimmed_to: dict) -> int:
+    """외부 미체결의 **유효 잔량** — 이번 창 우리 취소 요청을 반영한 값.
+
+    브로커 미체결 조회가 취소를 반영하는 데 10~20초 걸리는데(실측 2026-07-20:
+    취소 후 t+10s 생존·t+20s 소멸) 가드 폴링은 10초다. 옛 잔량 그대로 초과분을
+    다시 계산하면 같은 주문을 두 번 자른다 — 종전 전량취소는 재발행이 브로커
+    거절("이미 취소")로 무해했지만 **부분취소는 거절되지 않고 실제로 더 취소된다**
+    (과잉 개입).
+
+    누적값은 "취소 수리 후 남기려는 잔량"이라 조회값과 **작은 쪽**을 취한다:
+    미반영 구간(조회가 큼)엔 우리 기록이, 반영된 뒤(조회가 이미 줄어듦)엔 조회가
+    진실이다. 누적을 "취소한 수량"으로 두고 조회값에서 빼는 형태는 반영 후 한 번
+    더 빠져 D가 반대로 기울고(새 초과분 방치·반대편 과잉취소) 그 왜곡이 창 끝까지
+    남는다 — 반영이 창 초반에 끝나므로 그게 오히려 정상 구간이다.
+    """
+    q = int(p.get("remain_qty") or 0)
+    cap = trimmed_to.get(str(p.get("order_no")))
+    return q if cap is None else max(0, min(q, cap))
+
+
 def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
                        own_intents: list, own_pendings: list,
                        ext_pendings: list,
-                       restores_done: dict | None = None) -> GuardPlan:
+                       restores_done: dict | None = None,
+                       trimmed_to: dict | None = None) -> GuardPlan:
     """한 틱의 조치 계획(순수 — IO 없음, 단위 테스트 대상).
 
     own_intents: 이번 창의 활성 자동 의도
@@ -128,9 +159,13 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
     own_pendings / ext_pendings: 브로커 미체결 [{order_no, symbol, side, remain_qty}]
         — 호출자가 own/ext 분류를 마친 상태(오늘 전체 own 주문은 ext에서 제외).
     restores_done: 창 누적 심볼별 own 복원 횟수(상한 가드).
+    trimmed_to: 창 누적 외부 주문별 "취소 수리 후 남기려는 잔량"(_eff_remain).
     """
     restores_done = restores_done or {}
+    trimmed_to = trimmed_to or {}
     cancels: list = []
+    partials: set = set()
+    trim_to: dict = {}
     fails: list = []
     restored: list = []
     decisions: list = []
@@ -177,39 +212,49 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
             rerun = True
             continue        # 복원 틱엔 외부 트리밍 보류 — 재발주로 목표 재정립 후 다음 틱
 
-        # ② 외부(수동) 미체결 초과 — 최신 주문부터 전량 취소.
-        exts = sorted(exts_all, key=lambda p: _sort_key(p.get("order_no")),
-                      reverse=True)
-        ext_signed = sum(_signed(p["side"], p["remain_qty"]) for p in exts)
+        # ② 외부(수동) 미체결 초과 — 최신 주문부터 초과분만 취소.
+        # 잔량은 이번 창 우리 취소 요청을 반영한 **유효 잔량**으로 센다. 검산식 D의
+        # 외부항도 같은 값이라야 이미 자른 몫이 D에서 자연히 빠져 추가 취소가 안
+        # 나간다 — 개별 주문만 막고 D를 그대로 두면 같은 초과분이 다음 주문으로
+        # 넘어가 과잉 취소가 재발한다.
+        exts = [(p, _eff_remain(p, trimmed_to))
+                for p in sorted(exts_all, key=lambda p: _sort_key(p.get("order_no")),
+                                reverse=True)]
+        ext_signed = sum(_signed(p["side"], q) for p, q in exts)
         d = ((positions_signed.get(sym, 0) + op_signed + ext_signed)
              - (ledger_signed.get(sym, 0) + oi_strategy))
         if d == 0 or not exts:
             continue
         want = "buy" if d > 0 else "sell"
         remain = abs(d)
-        stopped_short = False
-        for p in exts:
+        for p, q in exts:
             if remain == 0:
                 break
-            if str(p["side"]) != want:
+            if str(p["side"]) != want or q == 0:
                 continue
-            q = int(p["remain_qty"] or 0)
-            if q > remain:
-                stopped_short = True
-                break
-            cancels.append((str(p["order_no"]), sym, q))
+            # 잔량이 초과분보다 크면 초과분만 부분취소 — 통째 취소는 과잉 개입,
+            # 방치는 왕복 수수료·슬리피지. 부분취소 수리·원주문번호 유지는 실측
+            # 확인(2026-07-20 LS CFOAT00300 · KIS 국내선물).
+            n = min(q, remain)
+            cancels.append((str(p["order_no"]), sym, n))
+            trim_to[str(p["order_no"])] = q - n
+            if n < q:
+                partials.add(str(p["order_no"]))
+            what = (f"{p['side']} {n} of {q} 부분취소" if n < q
+                    else f"{p['side']} {n} 전량취소")
             decisions.append(order_log.decision(
                 "guard_ext_trim", "", "", sym,
-                f"목표 초과 수동 미체결 취소(최신 우선) — {p['side']} {q}"
+                f"목표 초과 수동 미체결 취소(최신 우선) — {what}"
                 f" (주문 {p['order_no']})"))
-            remain -= q
+            remain -= n
         if remain > 0:
-            why = ("다음 수동 주문 통째 취소는 과잉이라 보류(부분정정 실측 전)"
-                   if stopped_short else "취소 가능한 같은 방향 수동 주문 소진")
+            # 부분취소 도입 후 남는 잔여는 "같은 방향 수동 주문 고갈" 하나뿐이다
+            # (초과분이 다음 주문 잔량보다 커서 멈추던 경우가 사라짐).
             decisions.append(order_log.decision(
                 "guard_ext_residual", "", "", sym,
-                f"수동 초과 잔여 {want} {remain} — {why} · 수렴 몫"))
-    return GuardPlan(cancels, fails, restored, rerun, decisions)
+                f"수동 초과 잔여 {want} {remain} — 취소 가능한 같은 방향 수동"
+                " 주문 소진 · 수렴 몫"))
+    return GuardPlan(cancels, fails, restored, rerun, decisions, partials, trim_to)
 
 
 def run_auction_guard(instrument_class: str, window: str,
@@ -280,6 +325,9 @@ def run_auction_guard(instrument_class: str, window: str,
     since_iso = datetime.combine(today, time(*start_hm), tzinfo=KST).isoformat()
     until = datetime.combine(today, time(*until_hms), tzinfo=KST)
     restores: dict = {}
+    # 창 누적 "취소 수리 후 남기려는 잔량"(주문번호 → 수량) — restores와 같은 패턴의
+    # 창 상태. 취소가 **수리된 뒤에만** 기록한다(거절분을 기록하면 반대로 과소 취소).
+    trimmed_to: dict = {}
     all_decisions: list = []
     emitted: set = set()          # (symbol, action) — 반복 관측 결정 dedup(9f)
     n_cancel = 0
@@ -347,14 +395,16 @@ def run_auction_guard(instrument_class: str, window: str,
                     -q if pos.get("side", "long") == "short" else q)
 
             plan = plan_guard_actions(positions_signed, ledger_signed,
-                                      own_list, own_p, ext_p, restores)
+                                      own_list, own_p, ext_p, restores,
+                                      trimmed_to)
             if plan.fail_intents:
                 # 관측 race 봉합(감사 9c): 발주 직후 OMS 반영 지연으로 "저널엔
                 # 있는데 미체결에 없음"이 유저 취소로 오인될 수 있다 — 한 번 더
                 # 조회해 같은 판정일 때만 복원한다(거짓 복원=이중 발주).
                 own_list, own_p, ext_p = _fetch_classified()
                 plan = plan_guard_actions(positions_signed, ledger_signed,
-                                          own_list, own_p, ext_p, restores)
+                                          own_list, own_p, ext_p, restores,
+                                          trimmed_to)
 
             # 관측 결정은 조치 유무와 무관하게 기록(9f) — 반복류는 심볼당 1회.
             # emitted 마킹은 실제 기록 시점(하단)에만 — 실패 틱에 마킹만 되고
@@ -368,7 +418,9 @@ def run_auction_guard(instrument_class: str, window: str,
                 with _CYCLE_LOCK:
                     for order_no, sym, qty in plan.cancels:
                         try:
-                            r = broker.cancel(order_no, sym, qty)
+                            r = broker.cancel(
+                                order_no, sym, qty,
+                                partial=order_no in plan.partial_cancels)
                         except Exception as e:
                             log.warning("guard 취소 실패 [%s 주문 %s]: %s",
                                         sym, order_no, e)
@@ -382,18 +434,30 @@ def run_auction_guard(instrument_class: str, window: str,
                                         sym, order_no, r.get("message", ""))
                             ok_all = False
                             break
+                        # 수리된 취소만 창 누적에 기록 — 다음 틱이 이 몫을 뺀 유효
+                        # 잔량으로 D를 세어 같은 초과분을 다시 자르지 않는다. 거절분을
+                        # 기록하면 반대로 과소 취소(초과 방치)가 된다.
+                        if order_no in plan.trim_to:
+                            trimmed_to[order_no] = plan.trim_to[order_no]
                         n_cancel += 1
                     if ok_all and plan.fail_intents:
                         # 취소 "접수"≠"확정" — 재발주 전에 실제 소멸을 재확인.
                         # 남아 있으면 이번 틱 보류(다음 틱 재평가·이중 발주 차단).
+                        # 부분취소분은 제외 — 원주문번호를 유지한 채 잔량만 줄어
+                        # 살아남는 것이 정상 거동이라(실측 2026-07-20) 생존을
+                        # "취소 미확정"으로 읽으면 같은 틱에 섞인 다른 심볼의 own
+                        # 복원이 헛보류된다. 이 재확인의 목적은 재발주 전 이중
+                        # 발주 차단인데 부분취소는 재발주를 동반하지 않는다.
+                        full_cancels = [o for o, _s, _q in plan.cancels
+                                        if o not in plan.partial_cancels]
                         try:
                             live = {_canon(p.get("order_no"))
                                     for p in (broker.pending_orders() or [])
                                     if _pend_scope(p)}
                         except Exception as e:
                             log.warning("guard 취소 확인 조회 실패 — 이번 틱 보류: %s", e)
-                            live = {_canon(o) for o, _s, _q in plan.cancels}
-                        if any(_canon(o) in live for o, _s, _q in plan.cancels):
+                            live = {_canon(o) for o in full_cancels}
+                        if any(_canon(o) in live for o in full_cancels):
                             log.info("guard 취소 확정 대기 — 재발주 다음 틱으로 보류")
                             ok_all = False
                     if ok_all:

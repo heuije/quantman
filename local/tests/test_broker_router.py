@@ -18,6 +18,7 @@ class _Fake:
     def __init__(self, tag):
         self.tag = tag
         self.calls = []
+        self.cancel_partials = []      # cancel(partial=…) 위임 확인용
 
     def buy(self, symbol, qty):
         self.calls.append(("buy", symbol, qty)); return {"tag": self.tag}
@@ -43,8 +44,9 @@ class _Fake:
     def today_open(self, symbol):
         self.calls.append(("today_open", symbol)); return 99.0
 
-    def cancel(self, order_no, symbol, qty):
-        self.calls.append(("cancel", order_no, symbol, qty)); return {"tag": self.tag}
+    def cancel(self, order_no, symbol, qty, *, partial=False):
+        self.calls.append(("cancel", order_no, symbol, qty))
+        self.cancel_partials.append(partial); return {"tag": self.tag}
 
 
 class _FakeStock(_Fake):
@@ -171,6 +173,21 @@ def test_cancel_and_order_status_routing():
     r.order_status("ORD3", "코스피200선물")
     assert ("order_status", "ORD1", "005930") in stock.calls
     assert ("order_status", "ORD3") in fut.calls
+
+
+def test_cancel_forwards_partial_flag_to_both_legs():
+    """부분취소 의사(partial)는 주식·선물 어느 leg로 라우팅되든 그대로 위임된다.
+
+    KIS 계열은 이 플래그로 잔량전부 필드(QTY_ALL_ORD_YN·RMN_QTY_YN)를 정하는데,
+    실측 2026-07-20에서 "Y"는 ORD_QTY를 무시하고 잔량 전부를 취소했다 — 라우터가
+    플래그를 흘리면 가드의 초과분 트리밍이 유저 주문 통째 취소로 바뀐다.
+    기본값(미지정)은 종전과 동일한 전량 취소."""
+    r, stock, fut = _router()
+    r.cancel("ORD1", "005930", 10)
+    r.cancel("ORD1", "005930", 3, partial=True)
+    r.cancel("ORD3", "코스피200선물", 1, partial=True)
+    assert stock.cancel_partials == [False, True]
+    assert fut.cancel_partials == [True]
 
 
 # ── 해외선물(CME) phase2 dispatch — order_status·cancel·price (M10 라이브 완성) ────
