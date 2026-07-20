@@ -20,7 +20,7 @@ class _NoDbSession:
 def test_tool_schemas_present():
     names = {t["name"] for t in TOOL_SCHEMAS}
     assert names == {"screen", "compare", "simulate", "save_strategy", "describe", "inspect",
-                     "adjust_analysis", "research_news", "resolve_symbol"}
+                     "adjust_analysis", "research_news", "resolve_symbol", "analyze_event"}
 
 
 def test_assemble_compare_makes_valid_compare_ir():
@@ -694,3 +694,65 @@ def test_inspect_miss_suggests_candidates(monkeypatch):
     out = tools.run_inspect({"symbol": "노바렉수", "columns": ["Close"]})   # 오타 질의
     assert out["success"] is False
     assert "노바렉스" in out["error"] and "194700" in out["error"]
+
+
+# ── analyze_event: 이벤트 스터디 결정적 조립(NL 컴파일 우회) ──────────────────
+from app.chat.tools import _build_event_ir, run_analyze_event, compact_summary as _cs
+from quant_core.ir_engine.spec import validate_strategy
+
+
+def _valid(ir):
+    s = StrategyIR.model_validate(ir)                 # 스키마
+    errs = [i for i in validate_strategy(s) if getattr(i, "is_error", False)]
+    return s, errs
+
+
+def test_build_event_ir_market_valid():
+    """코스피 급등 이벤트 IR — Market 스크리너(프리필터 트리거)·relate·전조 음수창 검증 통과."""
+    ir = _build_event_ir(["KOSPI"], {"ref": "pct_change_20d", "op": ">=", "value": 50},
+                         windows=[-20, 20, 40], basis="close", lookback_years=5)
+    s, errs = _valid(ir)
+    assert not errs, errs
+    assert s.query == "relate" and s.study.event is not None
+    assert s.universe.kind == "all" and "screener" in ir["universe"]
+    assert ir["universe"]["screener"]["condition"]["params"]["values"] == ["KOSPI"]
+    assert sorted(s.study.windows) == [-20, 20, 40]
+    assert ir["simulation"]["start"].endswith("-07-20") or ir["simulation"]["start"][:4].isdigit()
+
+
+def test_build_event_ir_symbols_list():
+    """symbols 지정 시 kind=list(특정 종목 이벤트 스터디)."""
+    ir = _build_event_ir(None, {"ref": "rsi_14", "op": ">=", "value": 70},
+                         windows=[20], basis="close", lookback_years=3, symbols=["005930"])
+    s, errs = _valid(ir)
+    assert not errs, errs
+    assert s.universe.kind == "list" and s.universe.symbols == ["005930"]
+
+
+def test_analyze_event_input_validation():
+    assert run_analyze_event({"events": []})["success"] is False           # 빈 events
+    assert run_analyze_event({"events": [{"ref": "x", "op": "~", "value": 1}]})["success"] is False  # 잘못된 op
+    bad_w = run_analyze_event({"events": [{"ref": "rsi_14", "op": ">=", "value": 70}], "windows": [0]})
+    assert bad_w["success"] is False and "윈도우 0" in bad_w["error"]        # 0 윈도우 금지
+
+
+def test_analyze_event_unknown_column_graceful():
+    """알 수 없는 지표 컬럼은 전체를 깨지 않고 해당 이벤트만 실패로 표기(엔진 로드 전 차단)."""
+    out = run_analyze_event({"events": [{"ref": "not_a_real_col", "op": ">=", "value": 1}]})
+    assert out["success"] is False
+    assert out["results"][0]["success"] is False and "알 수 없는" in out["results"][0]["error"]
+
+
+def test_analyze_event_compact_summary_renders_per_indicator():
+    """compact 요약이 지표별 헤더(◆)·윈도 평균·hit-rate를 모델이 읽게 렌더한다."""
+    fake = {"success": True, "tool": "analyze_event", "market": "코스피",
+            "lookback_years": 5, "windows": [-20, 20],
+            "results": [{"label": "거래량 급증", "event": {"ref": "volume_ratio", "op": ">=", "value": 2},
+                         "success": True, "n_events": 100,
+                         "stats": {"-20": {"mean_pct": 6.7, "p_value": 0.0, "n": 100},
+                                   "20": {"mean_pct": 0.1, "p_value": 0.8, "n": 98}},
+                         "hit_rate": {"threshold_pct": 50.0, "by_window": {"20": {"prob_pct": 1.7, "n": 98}}}}]}
+    text = _cs("analyze_event", fake)
+    assert "◆ 거래량 급증" in text and "이벤트 100건" in text
+    assert "-20일: 평균 +6.70%" in text
+    assert "≥50.0% 확률: 1.7%" in text
