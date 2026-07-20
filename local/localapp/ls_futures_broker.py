@@ -16,6 +16,23 @@ log = logging.getLogger("localapp.ls_futures_broker")
 _FX_FALLBACK_USDKRW = 1380.0
 
 
+def _root_ordno(odno: str, parent: dict[str, str]) -> str:
+    """정정·취소 체인의 뿌리 주문번호 — OrgOrdNo를 전이적으로 거슬러 올라간다.
+
+    LS는 정정 시 **새 주문번호를 발급하고 OrgOrdNo에 원번호**를 남긴다(실측 2026-07-20
+    CFOAQ00600: 41→43·29→54·16→59). 정정의 정정(다단)이 가능하므로 뿌리까지 올라간다.
+    자기참조·순환은 방문 집합으로 끊는다(무한루프 금지 — 브로커 응답을 신뢰하지 않음).
+    """
+    seen = {odno}
+    cur = odno
+    while True:
+        nxt = parent.get(cur)
+        if not nxt or nxt in seen:
+            return cur
+        seen.add(nxt)
+        cur = nxt
+
+
 class LsFuturesBroker(_LsAuth):
     # §18.2 리버설 크레딧 게이트 — orderable_qty(CFOAQ10100 NewOrdAbleQty)가 '신규 전용'임이
     # 확정된 브로커. 문서가 총(OrdAbleQty)=신규+청산 분리 반환(예시 38=36+2)이고 2026-07-16
@@ -192,7 +209,22 @@ class LsFuturesBroker(_LsAuth):
 
     def order_status(self, order_no, symbol=None, hint=None):
         """체결 인지 — t0434 chegb='0'(전체)로 filled/cancelled 포함 조회(lesson #3).
-        ⚠ G-DF3: status 문자열 실측 전 — '취소' 포함 시 cancelled, 그 외 cheqty/ordrem로 판정."""
+
+        판정은 **수량**으로 한다(status 문자열은 보조). 실측 2026-07-20 t0434 어휘는
+        `{접수, 취소확인, 완료}` 3종인데 **`완료`가 체결과 취소 양쪽에 쓰인다**:
+
+          | status | cheqty | ordrem | 실제 |
+          |--------|--------|--------|------|
+          | 접수   | 0      | >0     | 살아있음 |
+          | 완료   | >0     | 0      | 체결 |
+          | 완료   | 0      | 0      | **취소로 종결**(체결 없음) |
+          | 취소확인 | 0    | 0      | 취소 확인행(자식 — orgordno≠0) |
+
+        종전(G-DF3 실측 전)엔 `완료/cheqty=0`이 어느 분기에도 안 걸려 마지막 `submitted`로
+        떨어졌다 → 취소된 주문이 당일 내내 "살아있음"으로 보고돼 pending이 안 풀리고,
+        로컬앱 "미체결 0" 게이트가 막혀 **무인 자동 업데이트까지 차단**됐다(mwmw 실계좌
+        좀비의 당일 메커니즘). 잔량 0 · 체결 0이면 어떤 어휘가 오든 종결이다.
+        """
         try:
             rows = self._ccld_raw("0").get("t0434OutBlock1") or []
         except Exception as e:
@@ -206,12 +238,12 @@ class LsFuturesBroker(_LsAuth):
             status = str(row.get("status") or "")
             if "취소" in status:
                 st = "cancelled"
-            elif rem == 0 and che > 0:
-                st = "filled"
             elif che > 0:
-                st = "partial"
-            else:
+                st = "filled" if rem == 0 else "partial"
+            elif rem > 0:
                 st = "submitted"
+            else:
+                st = "cancelled"        # 잔량0·체결0 = 체결 없이 종결(취소·소멸)
             return {"order_no": order_no, "status": st, "filled_qty": che, "remain_qty": rem,
                     "fill_price": float(row.get("cheprice") or row.get("price") or 0)}
         return {"order_no": order_no, "status": "unknown", "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
@@ -235,6 +267,66 @@ class LsFuturesBroker(_LsAuth):
                         "limit_price": float(row.get("price") or 0),
                         "market": "DOMESTIC", "currency": "KRW", "asset_class": "futures"})
         return out
+
+    def _fills_raw(self, date_yyyymmdd: str) -> dict:
+        """CFOAQ00600 주문체결내역 기간조회 — 하루치(시작=종료 일자). 실측 2026-07-20.
+
+        AcntNo/InptPwd를 싣지 않는다 — 같은 엔드포인트(/futureoption/accno)의
+        CFOAQ50600·CFOAQ10100과 동일하다(LS appkey는 계좌 단위라 게이트웨이가 계좌를
+        해석한다). 비거래일 구간은 rsp_cd="00707"(내역 없음)+OutBlock3 부재로 정상
+        응답되므로 별도 코드 분기 없이 호출자의 `or []`가 빈 목록으로 처리한다.
+        """
+        return self._post("/futureoption/accno", "CFOAQ00600",
+                          {"CFOAQ00600InBlock1": {
+                              "RecCnt": 1,
+                              "QrySrtDt": date_yyyymmdd, "QryEndDt": date_yyyymmdd,
+                              "FnoClssCode": "00", "PrdgrpCode": "00",
+                              "PrdtExecTpCode": "0", "StnlnSeqTp": "4",
+                              "CommdaCode": "99"}})
+
+    def fills_on(self, date_yyyymmdd: str, symbol: str | None = None) -> list[dict]:
+        """지정일 국내선물 체결의 (주문번호·체결량·체결평균가) 목록 — 익일 회수(R2) 확인용.
+
+        DAY 만료로 당일 조회창(t0434)을 벗어난 pending이 '체결됐었나'를 제출일자로
+        재확인한다. 체결 부재를 확인하지 않고 만료 종결하면, 미기장 체결이 다음 사이클
+        drift 되팔기(실손)로 이어지는 부류가 열린다.
+
+        symbol은 라우터 통일 시그니처를 위해 받되 **사용하지 않는다** — CFOAQ00600이
+        계좌 전체 주문을 한 번에 주기 때문이다(같은 파일 order_status(order_no, symbol=None)
+        선례와 동일).
+
+        실측 2026-07-20 CFOAQ00600OutBlock3 형상:
+          · OrdNo·ExecQty는 int, ExecPrc·OrdPrc는 str("1352.60") — 타입 혼재라 정규화 필요.
+          · 체결행 = CtrctTime이 비어있지 않고 ExecQty>0. 접수/확인행은 CtrctTime=""·ExecQty=0.
+          · 분할체결은 이미 주문 단위로 집계돼 단일 행으로 온다(앱 로그 4회 분할 438계약 = 1행 438).
+          · OrgOrdNo = 정정·취소 체인(41→43·29→54·16→59, 체인 없으면 0).
+
+        🔴 정정 체인의 자식 체결은 **원주문 체결로 합산**한다. 사용자가 HTS로 앱 주문을
+        정정하면 LS가 새 주문번호를 발급하므로, 원번호로만 조회하면 무체결로 오종결하고
+        그 체결이 미기장된 채 drift 되팔기(실손)로 샌다 — 이 경로의 존재 이유다.
+        (취소도 자식 행을 만들지만 ExecQty=0이라 합계에 영향이 없다.)
+        """
+        rows = self._fills_raw(date_yyyymmdd).get("CFOAQ00600OutBlock3") or []
+        parent: dict[str, str] = {}
+        for row in rows:
+            org = canonical_odno(row.get("OrgOrdNo"))
+            if org:                          # OrgOrdNo=0 → canonical "" = 체인 없음
+                parent[canonical_odno(row.get("OrdNo"))] = org
+        agg: dict[str, dict] = {}            # 원주문번호 → {qty: 체결수량, notional: 체결대금}
+        for row in rows:
+            if not str(row.get("CtrctTime") or "").strip():
+                continue                     # 접수·확인행(체결시각 없음) 제외
+            qty = int(float(row.get("ExecQty") or 0))
+            if qty <= 0:
+                continue
+            root = _root_ordno(canonical_odno(row.get("OrdNo")), parent)
+            cell = agg.setdefault(root, {"qty": 0, "notional": 0.0})
+            cell["qty"] += qty
+            cell["notional"] += qty * float(row.get("ExecPrc") or 0)
+        # qty>0인 행만 담기므로 0나눗셈 없음. 여러 행이 한 원주문으로 합쳐지면 체결수량 가중평균.
+        return [{"odno": odno, "filled_qty": c["qty"],
+                 "fill_price": c["notional"] / c["qty"]}
+                for odno, c in agg.items()]
 
     def orderable_qty(self, code: str, side: str, price) -> int:
         """국내선물 신규 주문가능 계약수(CFOAQ10100 NewOrdAbleQty). 모델 A 라이브 사이징의 브로커 기준값.
