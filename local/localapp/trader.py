@@ -343,6 +343,13 @@ class Trader:
         self.ledger: dict[str, dict] = _load_json(LEDGER_PATH, {})
         self.equity: list[dict] = _load_json(EQUITY_PATH, [])
         self.pending: dict[str, dict] = _load_json(PENDING_ORDERS_PATH, {})
+        # 사이클 사이징 근거(관측 전용·2026-07-20) — {symbol|side: {...}}. 사이클 시작에
+        # 비우고 요약에 실어 보낸다. 목표 수량의 근거(브로커 원값·크레딧·사용률)가 서버에
+        # 없어 mwmw 07-20 조사에서 원장 산술로 역산해야 했던 것의 근본 해소.
+        self._sizing_trace: dict[str, dict] = {}
+        # A1(외부·수동 미체결 인수) 결과 {계약키: 부호수량} — 종전엔 INFO 로그뿐이라
+        # 원격 진단 불가였다. 수렴 패스마다 갱신하고 사이클 요약에 실어 보낸다.
+        self._a1_trace: dict = {}
         # 미국 매수여력 모드 (cycle에서 risk_limits로 설정). 기본 통합증거금.
         self._us_bp_mode: str = "integrated"
         # Q5: 체결 후(_apply_fill) 즉시 kill switch 평가용 한도. cycle 진입 시
@@ -1036,6 +1043,16 @@ class Trader:
             {"closed": n_closed, "external": external,
              "realized": round(realized_total, 2)}))
 
+    def _trace_sizing(self, symbol: str, pos_side: str, *, orderable_raw,
+                      credit: int, capacity, pct, target: int) -> None:
+        """모델A 사이징 근거 1건 보존 — 관측 전용(사이징 결과에 영향 없음).
+
+        capacity = orderable_raw + credit("빈 상태 최대"), target = floor(pct% × capacity).
+        orderable_raw=None은 브로커 조회 실패(발주 보류)를 뜻한다."""
+        self._sizing_trace[f"{symbol}|{pos_side}"] = {
+            "orderable_raw": orderable_raw, "credit": int(credit),
+            "capacity": capacity, "pct": pct, "target": int(target)}
+
     def _apply_netted_leg(self, leg, decisions: list[dict],
                           reason: str | None = None) -> None:
         """넷팅 핸드오프 1건(진입/청산 leg)을 합성 체결로 원장 반영 — 브로커 미호출·수수료 0.
@@ -1268,6 +1285,11 @@ class Trader:
         # 막는다. intent journal이 cycle/장중/catch-up·재기동을 가로지르는 단일 출처.
         today_iso = kst_today().isoformat()
         if intents.is_active(today_iso, sid, symbol, "sell"):
+            # 관측 대칭(2026-07-20): 진입측만 skip_idempotent 결정을 남기고 매도·환매·
+            # drift는 INFO 로그뿐이라 원격에서 "왜 청산 주문이 없나"를 못 봤다.
+            decisions.append(order_log.decision(
+                "skip_idempotent", sid, strat_name, symbol,
+                "오늘 이미 발주된 매도 intent 존재 — 중복 차단"))
             log.info("[L-01] 중복 매도 차단 %s/%s", sid, symbol)
             return
         intent_id = intents.new_intent_id()
@@ -1337,6 +1359,9 @@ class Trader:
         """
         today_iso = kst_today().isoformat()
         if intents.is_active(today_iso, sid, symbol, "buy"):
+            decisions.append(order_log.decision(
+                "skip_idempotent", sid, strat_name, symbol,
+                "오늘 이미 발주된 환매(숏청산) intent 존재 — 중복 차단"))
             log.info("[L-01] 중복 환매 차단 %s/%s", sid, symbol)
             return
         intent_id = intents.new_intent_id()
@@ -1677,6 +1702,11 @@ class Trader:
             if oq_fn is not None:
                 side = "sell" if is_short else "buy"
                 orderable = oq_fn(symbol, side, prev_close)
+                # 관측(2026-07-20): 브로커 원값과 크레딧을 분리 보존 — 합산 후 값만 남기면
+                # "목표가 왜 N인가"를 사후에 역산해야 한다(mwmw 07-20 조사 실비용).
+                _orderable_raw = int(orderable) if orderable is not None else None
+                _credit = (int(credit_for(capacity_credit, symbol, _pos_side))
+                           if (orderable is not None and capacity_credit) else 0)
                 if orderable is not None and capacity_credit:
                     # E1/N7/§18: 같은-계약 보유가 되돌려줄 여력(계약수)을 크레딧 — orderable은
                     # 브로커의 **신규**주문가능수량(LS NewOrdAbleQty·청산분 제외)이라 여기에
@@ -1692,11 +1722,17 @@ class Trader:
                     qty = 0
                     log.warning("[모델A] %s 브로커 주문가능수량 조회 실패 — 발주 보류"
                                 "(카탈로그 추정 2배 과대 사이징 회피)", symbol)
+                    self._trace_sizing(symbol, _pos_side, orderable_raw=None,
+                                       credit=0, capacity=None, pct=None, target=0)
                 else:
                     pct = ir_live.futures_margin_pct_of(_ir)
                     qty = ir_live.model_a_qty(qty, orderable, pct)
-                    log.info("[모델A] %s 주문가능 %d계약 → %d계약 (%s)", symbol, orderable, qty,
+                    log.info("[모델A] %s 주문가능 %d(브로커 %s + 크레딧 %d) → 목표 %d계약 (%s)",
+                             symbol, orderable, _orderable_raw, _credit, qty,
                              f"사용률 {pct:g}%" if pct is not None else "정액 클램프")
+                    self._trace_sizing(symbol, _pos_side, orderable_raw=_orderable_raw,
+                                       credit=_credit, capacity=orderable, pct=pct,
+                                       target=int(qty))
 
         # 가용 현금 한도 — 주식만. 선물은 event_buy_qty가 이미 증거금으로 클램프했고,
         # cash//prev_close(현금÷지수가)는 선물 계약수에 무의미(과대 → 비바인딩)하므로 제외.
@@ -2138,6 +2174,12 @@ class Trader:
             # 발주·미마감)이면 재계획하지 않는다. leg를 빼고 net 산술만 남기면 자기
             # 주문과 상쇄되는 워시 주문이 나가므로, 심볼 통째 hold가 유일하게 안전.
             if intents.is_active(today_iso, sid, symbol, exit_side):
+                # 관측(2026-07-20): 종전엔 INFO 로그뿐이라 "왜 이 심볼만 계획에서
+                # 빠졌나"가 원격에서 안 보였다(심볼 통째 hold = 진입까지 함께 보류).
+                decisions.append(order_log.decision(
+                    "skip_exit_inflight", str(sid), "", symbol,
+                    f"청산 intent 활성({exit_side}) — 이 심볼 이번 사이클 보류"
+                    "(자기주문 상쇄 워시 방지·다음 창 재평가)"))
                 log.info("[목표수렴] 청산 in-flight [%s/%s] — 이번 사이클 hold", sid, symbol)
                 indeterminate.add(symbol)
                 continue
@@ -2317,6 +2359,9 @@ class Trader:
         dkey = f"DRIFT:{window}"
         # §14 멱등 — 같은 창·심볼·방향의 교정이 오늘 이미 발주됐으면 재발주 금지.
         if intents.is_active(today_iso, dkey, symbol, side):
+            decisions.append(order_log.decision(
+                "skip_idempotent", dkey, "목표수렴", symbol,
+                f"오늘 이미 발주된 교정({side}) intent 존재 — 중복 차단"))
             log.info("[L-01] 중복 drift 교정 차단 %s %s", symbol, side)
             return
         intent_id = intents.new_intent_id()
@@ -2391,6 +2436,7 @@ class Trader:
         # skip(08:52 수렴이 백업 — A1은 최적화, 수렴이 정합 보장).
         ext_signed: dict = {}
         ext_remain: dict = {}
+        self._a1_trace = {}          # 이번 수렴 패스의 A1 결과만(관측 전용)
         _pend_fn = getattr(self.broker, "pending_orders", None)
         if _pend_fn is not None:
             try:
@@ -2410,10 +2456,26 @@ class Trader:
                     _pend_fn() or [], _own, _pend_scope, lambda s: s)
                 if ext_signed:
                     log.info("[A1] 외부(수동) 미체결 반영: %s", ext_signed)
+                    # 관측(2026-07-20): 종전엔 이 INFO 로그가 유일한 흔적이라 원격
+                    # (서버 스냅샷)에서 "외부 미체결을 얼마나 인수했는지"를 볼 수 없었다.
+                    # 수동 개입 진단의 핵심 입력이므로 결정으로 승격한다(계약키·부호수량만
+                    # — 자격증명·계좌번호 없음). 부호: +매수 / −매도.
+                    self._a1_trace = {str(k): int(v) for k, v in ext_signed.items()}
+                    decisions.append(order_log.decision(
+                        "external_pending", "", "", "",
+                        "외부(수동) 미체결 인수: "
+                        + ", ".join(f"{k} {v:+d}" for k, v in sorted(self._a1_trace.items()))
+                        + " — 목표 계산에 선반영(넷팅·사이징 크레딧)"))
             except Exception as e:
                 log.warning("[A1] 외부 미체결 조회 실패 — pending 넷팅 skip"
                             "(08:52 수렴 백업): %s", e)
                 ext_signed, ext_remain = {}, {}
+                # 조회 실패는 **동작이 바뀌는** 사건(A1 skip → 창내 인수 없음 → 개장후
+                # 수렴이 백업). 종전엔 WARNING 로그뿐이라 원격에서 안 보였다.
+                self._a1_trace = {"__error__": repr(e)[:200]}
+                decisions.append(order_log.decision(
+                    "external_pending_unavailable", "", "", "",
+                    f"외부 미체결 조회 실패 — A1 인수 skip(개장후 수렴이 백업): {e}"))
 
         entry_intents: list = []
         if not entries_blocked and buy_candidates is not None:
@@ -2443,6 +2505,16 @@ class Trader:
             for (sym, side), remaining in _avail.items():
                 if remaining <= 0:
                     continue
+                # 관측(2026-07-20) — 계획 청산으로 소비되고 남은 이 잔량이 곧 **원장 밖
+                # 브로커 보유**(수동/외부 체결분)다. 엔진은 이미 이걸 알고 사이징 크레딧에
+                # 넣고 목표에 흡수하는데, 아무 기록도 남기지 않아 mwmw 07-20 조사에서
+                # 넷팅 leg로 역산해야 했다. 여기서 명시한다(사이징·발주에 영향 없음).
+                decisions.append(order_log.decision(
+                    "absorbed_external", "", "", sym,
+                    f"원장 밖 브로커 보유 {side} {int(remaining)} — 전략 목표에 흡수"
+                    "(수동/외부 체결 추정 · 사이징 되돌림 크레딧 포함)"))
+                log.warning("[흡수] 원장 밖 보유 %s %s %d계약 — 목표에 편입(외부 체결 추정)",
+                            sym, side, int(remaining))
                 if qc.is_futures(sym):
                     extra_capacity[(sym, side)] = remaining
                 else:
@@ -2820,6 +2892,13 @@ class Trader:
             held_now = held_qty_from_snapshot(snap_pre, pos["symbol"], pos_side)
             clamped = clamp_sell_qty(held_now, sell_qty)
             if not clamped:                           # None=잔고 미상, 0=외부 매도(보유 0) → skip
+                # 관측(2026-07-20): 종가 청산이 조용히 건너뛰어지던 유일한 경로.
+                # "종가에 왜 청산이 안 됐나"의 직접 사유라 원격에 남겨야 한다.
+                decisions.append(order_log.decision(
+                    "skip_close_no_holding", str(sid), pos.get("strategy_name", ""),
+                    pos["symbol"],
+                    f"종가청산 skip — 브로커 실보유 {'미상' if held_now is None else 0}"
+                    f"(원장 {sell_qty}). 외부 매도·조회 실패 추정 — 정산 reconcile이 대조"))
                 log.info("[종가청산] %s KIS 실보유 0/미상 — 발주 skip", pos["symbol"])
                 continue
             if pos_side == "short":
@@ -3151,6 +3230,7 @@ class Trader:
                      instrument_class: str | None = None) -> dict:
         today = today or kst_today()
         decisions: list[dict] = []
+        self._sizing_trace = {}          # 이번 사이클 근거만 담기(관측 전용)
 
         # 옛 Phase 48 P1-B의 시간 기반 KIS 점검 가드(평일 03:00~06:00 등)는 제거.
         # 이유: KIS 공식 점검 시간 doc 부재로 보수적 추정 차단했으나, 실측 probe
@@ -3366,6 +3446,18 @@ class Trader:
             "n_pending_unresolved": sum(
                 1 for p in self.pending.values()
                 if _market_group_safe(p.get("symbol", "")) == market),
+            # 관측(2026-07-20) — 목표 수량의 근거. "왜 N계약인가"를 서버에서 즉답하기
+            # 위한 사이징 추적(브로커 원값·크레딧·사용률·목표). 빈 dict면 미해당(주식·sim).
+            "sizing": dict(self._sizing_trace),
+            # 원장 밖 브로커 보유를 전략 목표에 흡수한 건수 — 넷팅 leg에서 역산해야
+            # 했던 것(mwmw 07-20)을 명시화. 상세는 decisions의 absorbed_external.
+            "n_absorbed_external": sum(
+                1 for d in decisions if d["action"] == "absorbed_external"),
+            # A1 — 외부(수동) **미체결 주문**을 목표에 선반영한 결과 {계약키: 부호수량}.
+            # 위 absorbed_external(원장 밖 **보유**)과 다른 축이다: 이쪽은 아직 체결 전인
+            # 수동 주문. 종전엔 INFO 로그뿐이라 원격 진단이 불가했다.
+            # {"__error__": ...}면 조회 실패로 A1 skip(개장후 수렴이 백업).
+            "external_pending": dict(self._a1_trace),
             "kill_switch": ks_active,
             "equity_pre": equity_now,
             "equity_post": equity_post,    # ε: 통합 자산(KRW) — equity_pre와 동일 정의

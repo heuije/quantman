@@ -120,6 +120,13 @@ class InstrumentSpec:
     multiplier: float         # [소비] point value: 선물 1pt = multiplier 통화단위. equity=1.0
     tick: float               # [소비] 최소 호가단위 — round_to_tick(tick=)로 선물 체결가 라운딩. equity=0.0(주식은 tick_size 표)
     currency: str             # [소비] "KRW" | "USD"
+    # ⚠ 라이브 사이징은 이 값을 **쓰지 않는다**(모델 A — 브로커 orderable_qty가 1차 기준).
+    #    거래소·브로커가 종목·시장상황별로 수시 조정하는 값이라 우리가 추정하면 틀린다.
+    #    여기 0.198은 백테스트·화면 표시(명목/증거금/레버리지)용 근사치다.
+    #    **실측 2026-07-20(LS·코스피200선물): 실제 ≤ 19.52%** — 카탈로그 19.8%로 계약수를
+    #    예측하면 floor 경계에서 1계약씩 어긋난다(그날 목표 4 예측 vs 실제 5의 원인).
+    #    라이브 계약수를 예측·검증할 땐 반드시 브로커 응답(CFOAQ10100 NewOrdAbleQty)이나
+    #    cycle_summary.sizing.orderable_raw를 근거로 쓸 것.
     init_margin_rate: float   # [소비] 개시증거금률(notional 대비). equity=1.0(전액)
     maint_margin_rate: float  # [예약·E1b] 유지증거금률. 현재 엔진은 SimSpec.maintenance_margin_pct(사용자값) 사용
     expiry_rule: str          # [예약] 만기 캘린더 키 — 국내선물은 패널 마지막 존재일로 대체(미사용). equity=""
