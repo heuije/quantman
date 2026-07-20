@@ -219,7 +219,24 @@ def _synced_eval_krw(balance: dict) -> int:
 _LAST_DATASET_STATS: dict = {}
 
 
-def _pull_preview_with_retry(label: str = "") -> dict | None:
+def _retry_waits_fit(deadline, wait_sec: float, label: str, what: str) -> bool:
+    """이 대기를 하고도 마감 단일가 전인가 (deadline=None이면 제약 없음).
+
+    종전엔 재시도 sleep이 하드컷을 보지 않았다. 종가창은 창 자체가 5분(선물
+    15:40→15:45)이라 45초 대기가 마감 단일가를 넘길 수 있고, 넘긴 발주는 익일
+    시가에 체결된다(의도치 않은 오버나이트). 동시호가 가드가 창 끝에서 재실행할
+    수 있게 되면서 실제 위험이 됐다 — 가드는 15:44:30까지 돈다.
+    """
+    if deadline is None:
+        return True
+    if datetime.now(ZoneInfo("Asia/Seoul")) + timedelta(seconds=wait_sec) < deadline:
+        return True
+    log.error("%s하드컷(%s) 임박 — %s 재시도 중단", label,
+              deadline.strftime("%H:%M:%S"), what)
+    return False
+
+
+def _pull_preview_with_retry(label: str = "", deadline=None) -> dict | None:
     """preview pull — 실패(PreviewUnavailable)만 최대 3회(즉시·+15s·+30s) 재시도.
 
     아침·종가 창 공용(유저 확정 2026-07-18: 종가창도 동일 재시도). 회차 전체를
@@ -227,10 +244,14 @@ def _pull_preview_with_retry(label: str = "") -> dict | None:
     실패가 청산까지 지연시키면 안 된다) 짧은 자체 재시도만. None(서버가 명시한
     '후보 없음')은 정상 상태라 재시도하지 않는다. 소진 시 None — 호출자는
     진입만 차단(청산 진행).
+
+    deadline: 이 시각을 넘길 대기는 하지 않는다(종가 하드컷). None이면 무제약.
     """
     from .sync_client import PreviewUnavailable
     for _wait in (0, 15, 30):
         if _wait:
+            if not _retry_waits_fit(deadline, _wait, label, "preview"):
+                break
             log.warning("%spreview pull 실패 — %d초 후 재시도", label, _wait)
             time.sleep(_wait)
         try:
@@ -239,6 +260,34 @@ def _pull_preview_with_retry(label: str = "") -> dict | None:
             log.warning("%spreview pull 실패: %s", label, e)
     log.warning("%spreview pull 재시도 소진 — 신규 진입 차단", label)
     return None
+
+
+def _pull_strategies_with_retry(label: str = "",
+                                deadline=None) -> tuple[list[dict], bool]:
+    """전략 pull — preview와 동일하게 최대 3회(즉시·+15s·+30s) 재시도.
+
+    반환 ``(strategies, failed)``. 소진해도 예외를 올리지 않는다 — **청산은 진입
+    재료와 무관하게 진행되어야 한다**(fail-soft). 대신 failed=True로 호출자가
+    cycle_summary에 표면화한다.
+
+    아침 경로(run_cycle)는 cycle backoff 루프 안에서 pull_strategies를 재시도하고
+    소진 시 ``strategies_pull_failed``로 표면화하는데(리뷰 D4-3), 종가 경로만
+    `except`로 흡수하고 재시도가 0회였다 — 일시 502 하나로 그날 종가 진입이 통째
+    소실되고 그 사실이 어디에도 남지 않았다. 종가창은 아침처럼 회차 전체를 재던질
+    수 없다(창이 5분뿐이라 청산이 밀린다). 그래서 재시도를 이 자리로 좁힌다.
+    """
+    for _wait in (0, 15, 30):
+        if _wait:
+            if not _retry_waits_fit(deadline, _wait, label, "전략 pull"):
+                break
+            log.warning("%s전략 pull 실패 — %d초 후 재시도", label, _wait)
+            time.sleep(_wait)
+        try:
+            return pull_strategies(), False
+        except Exception as e:
+            log.warning("%s전략 pull 실패: %s", label, e)
+    log.error("%s전략 pull 재시도 소진 — 신규 진입 없이 청산만 진행", label)
+    return [], True
 
 
 def _preview_stale_reason(preview: dict, market: str,
@@ -624,22 +673,26 @@ def _close_cycle_once(market: str, instrument_class: str) -> dict:
 
     # 종가매수 진입 후보 — 전략·preview pull(아침 cycle과 동일 소스). pull 실패해도 청산은
     # 진행한다(fail-soft): 진입 없이 당일매매 청산만.
-    strategies: list[dict] = []
+    # 재시도 대기는 하드컷(주식 15:30·선물 15:45 마감 단일가)을 넘지 않는다 — 넘긴
+    # 발주는 익일 시가 체결이라 의도치 않은 오버나이트가 된다.
+    cutoff = _close_hard_cutoff_kst(market, instrument_class)
     buy_candidates: list[dict] = []
-    try:
-        strategies = pull_strategies()
-    except Exception as e:
-        log.warning("[종가] 전략 pull 실패 — 종가진입 없이 청산만 진행: %s", e)
+    preview_missing = False
+    preview_stale: str | None = None
+    strategies, strategies_pull_failed = _pull_strategies_with_retry(
+        "[종가] ", deadline=cutoff)
     if strategies:
         # 로드맵 C(유저 확정) — 종가창도 아침과 동일하게 재시도(즉시·+15s·+30s).
-        # 창(주식 15:25→15:30·선물 15:40→15:45) 내 최대 45초 대기는 수용 범위.
         # 기준 거래일 검증도 동일 적용 — 묵은 후보로 종가 진입하지 않는다.
-        preview = _pull_preview_with_retry("[종가] ")
-        if preview is not None:
+        preview = _pull_preview_with_retry("[종가] ", deadline=cutoff)
+        if preview is None:
+            preview_missing = True
+        else:
             _stale = _preview_stale_reason(preview, market)
             if _stale:
                 log.warning("[종가] preview 기준 거래일 낡음 — 종가진입 skip: %s",
                              _stale)
+                preview_stale = _stale
                 preview = None
         buy_candidates = (preview or {}).get("by_strategy") or []
 
@@ -672,6 +725,19 @@ def _close_cycle_once(market: str, instrument_class: str) -> dict:
     payload = trader.run_close_netting(
         buy_candidates, strategies, dataset,
         market=market, instrument_class=instrument_class, risk_limits=risk_limits)
+
+    # 진입 재료 실패를 요약에 표면화 — 아침 경로(run_cycle)와 동일 계약. 종전엔
+    # WARNING 로그가 유일한 흔적이라 "왜 종가 진입이 0건인가"를 원격에서 알 수
+    # 없었고, 사이클은 정상 종료로 기록됐다. `error`를 쓰지 않는 이유: 그 필드는
+    # 동시호가 가드의 목표 확정 게이트·catchup 재실행 판정이 소비하므로, 청산이
+    # 정상 완료된 사이클을 error로 표시하면 가드가 창 내내 개입을 보류한다.
+    _cs = payload.setdefault("cycle_summary", {})
+    if strategies_pull_failed:
+        _cs["strategies_pull_failed"] = True
+    if preview_missing:
+        _cs["preview_missing"] = True
+    if preview_stale:
+        _cs["preview_stale"] = preview_stale
 
     try:
         push_snapshot(payload)
