@@ -167,6 +167,40 @@ def test_build_cancel_body():
     assert b["ORD_PRCS_DVSN_CD"] == "02"
 
 
+def test_build_cancel_body_partial_sets_remain_flag_n():
+    """부분취소 = RMN_QTY_YN "N" — 실측 2026-07-20 N/Y 대조로 확정된 계약.
+
+    3계약 미체결에 ORD_QTY=1로 취소할 때 N은 잔량 2(요청분만), Y는 잔량 0(ORD_QTY를
+    무시하고 남은 2 전부)이었다 — **플래그가 수량을 지배한다**. 두 응답 모두
+    40630000(성공)이라 응답만으론 구분 불가라, 이 한 필드가 "초과분만 자르기"와
+    "유저 주문 통째 취소"를 가르는 유일한 지점이다.
+    """
+    b = build_futures_cancel_body(cano="50188802", acnt_prdt_cd="03",
+                                  order_no="0000005605", qty=1, partial=True)
+    assert b["RMN_QTY_YN"] == "N"
+    assert b["ORD_QTY"] == "1"                 # 취소 수량은 그대로 전송
+    # 나머지 필드는 전량취소 바디와 동일 — 부분취소가 별도 경로가 아님을 고정.
+    full = build_futures_cancel_body(cano="50188802", acnt_prdt_cd="03",
+                                     order_no="0000005605", qty=1)
+    assert ({k: v for k, v in b.items() if k != "RMN_QTY_YN"}
+            == {k: v for k, v in full.items() if k != "RMN_QTY_YN"})
+
+
+def test_cancel_forwards_partial_to_body():
+    """KisFuturesBroker.cancel(partial=…)이 바디 플래그까지 배선됐는지(기본=전량)."""
+    import localapp.kis_futures_broker as kfb
+
+    seen: list = []
+    b = kfb.KisFuturesBroker.__new__(kfb.KisFuturesBroker)
+    b.cano, b.acnt_prdt_cd, b.virtual, b.base = "50188802", "03", True, kfb._VTS
+    b._headers = lambda tr: {"tr_id": tr}
+    b._order_post = lambda url, headers, body: seen.append(body) or {"success": True}
+
+    b.cancel("0000005605", "A01606", 1)
+    b.cancel("0000005605", "A01606", 1, partial=True)
+    assert [x["RMN_QTY_YN"] for x in seen] == ["Y", "N"]
+
+
 def test_overseas_limit_buy_routes_to_overseas_endpoint(monkeypatch):
     """overseas_buy_limit은 해외 엔드포인트로 라우팅하고 올바른 바디를 전송해야 한다."""
     import localapp.kis_futures_broker as kfb

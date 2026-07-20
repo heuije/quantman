@@ -195,7 +195,12 @@ class LsFuturesBroker(_LsAuth):
     def sell_resv_limit(self, *a, **k):
         raise NotImplementedError("국내선물 예약주문 미지원")
 
-    def cancel(self, order_no, symbol, qty):
+    def cancel(self, order_no, symbol, qty, *, partial: bool = False):
+        """미체결 취소 — CancQty가 곧 취소 수량이라 부분/전량이 같은 경로다.
+
+        partial은 KIS 계열의 잔량전부 플래그(QTY_ALL_ORD_YN·RMN_QTY_YN)를 위한
+        브로커 공통 계약이라 받기만 하고 쓰지 않는다 — LS는 대응 필드가 없다
+        (실측 2026-07-20: CancQty 부분취소 수리·t0434에 원주문번호 유지·ordrem만 감소)."""
         resp = self._post("/futureoption/order", "CFOAT00300",
                           {"CFOAT00300InBlock1": {
                               "OrgOrdNo": int(order_no) if str(order_no).isdigit() else order_no,
@@ -248,10 +253,19 @@ class LsFuturesBroker(_LsAuth):
                     "fill_price": float(row.get("cheprice") or row.get("price") or 0)}
         return {"order_no": order_no, "status": "unknown", "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
 
-    def pending_orders(self):
+    def pending_orders(self, *, strict: bool = False):
+        """미체결 목록. strict=True면 조회 실패를 **예외로 전파**한다.
+
+        기본(False)은 종전대로 빈 목록 강등 — 스냅샷·관측 소비자는 부분 정보라도
+        받는 게 낫다. 반대로 동시호가 가드는 "미체결에 없음 = 유저 취소"로 읽으므로,
+        조회 실패가 빈 목록으로 보이면 자기 주문을 취소된 것으로 오판해 재발주한다
+        (이중 발주). 실패와 진짜 공집합은 그 소비자에겐 정반대 의미다.
+        """
         try:
             rows = self._ccld_raw("2").get("t0434OutBlock1") or []
         except Exception as e:
+            if strict:
+                raise
             log.warning("LS선물 pending 실패: %s", e)
             return []
         out = []

@@ -162,7 +162,9 @@ class BrokerRouter:
             return 0.0
         return float(fn(symbol) or 0)
 
-    def cancel(self, order_no, symbol, qty):
+    def cancel(self, order_no, symbol, qty, *, partial: bool = False):
+        # partial(부분취소 의사)은 그대로 위임 — 네 어댑터 모두 같은 키워드를 받는다
+        # (KIS는 잔량전부 플래그로 전송, LS는 취소수량 필드뿐이라 미사용).
         # 해외선물 취소(OTFM3003U)는 원주문일자(ORGN_ORD_DT)가 필수인데 이 시그니처엔 없다.
         # 국내 취소 메서드로 잘못 라우팅하면 다른 계좌를 건드리므로 명시 차단(취소는 Trader
         # 핫패스 아님 — KIS DAY 자동취소). 라이브 배선은 ORD_DT 보관 후 overseas_cancel 직접 호출(M10).
@@ -170,7 +172,8 @@ class BrokerRouter:
             raise NotImplementedError(
                 "해외선물 취소는 원주문일자(ORGN_ORD_DT)가 필요 — broker.overseas_cancel 직접 호출. "
                 "(라우터 취소는 ORD_DT 미보유; M10 라이브 배선에서 주문 ORD_DT 추적 후 연결)")
-        return self._broker(symbol).cancel(order_no, self._code(symbol), qty)
+        return self._broker(symbol).cancel(order_no, self._code(symbol), qty,
+                                           partial=partial)
 
     def order_status(self, order_no, symbol=None, hint=None):
         # 선물 order_status는 1-arg(order_no), 주식은 2-arg(order_no, symbol).
@@ -294,23 +297,30 @@ class BrokerRouter:
             return None, None
 
     # ── 그 외(주식 전용·잔고·여력 등)는 stock으로 위임 ────────────────────────────
-    def pending_orders(self) -> list[dict]:
+    def pending_orders(self, *, strict: bool = False) -> list[dict]:
         """주식+선물 미체결 병합 (R2-③/R6-④ — 종전 __getattr__ 위임은 stock만).
 
         선물 미체결이 §19 A1 자기주문 제외와 broker_pending 관측(스냅샷)에 안
         보이던 맹점을 닫는다. 선물 심볼은 계약코드→데이터셋 심볼로 정규화해
         account_snapshot 포지션 병합과 같은 규약을 따른다(A1 키 매칭). 한쪽
         조회 실패는 다른 쪽 유지 — 각 브로커 내부의 국내/해외 병합 패턴과 동일.
+
+        strict=True면 **어느 한쪽이라도 실패하면 예외를 전파**한다. 부분 목록은
+        동시호가 가드에겐 빈 목록과 같은 위험이다 — 빠진 쪽에 own 주문이 있으면
+        "유저가 취소했다"로 오판해 이중 발주하기 때문이다. 이 소비자에겐 "불완전
+        하면 실패"가 곧 안전이다.
         """
         out: list[dict] = []
         if self._stock is not None:
             try:
-                out.extend(self._stock.pending_orders() or [])
+                out.extend(self._stock.pending_orders(strict=strict) or [])
             except Exception as e:
+                if strict:
+                    raise
                 log.warning("pending 병합 — 주식측 실패(선물측 유지): %s", e)
         if self._futures is not None and hasattr(self._futures, "pending_orders"):
             try:
-                for r in self._futures.pending_orders() or []:
+                for r in self._futures.pending_orders(strict=strict) or []:
                     sym = str(r.get("symbol") or "")
                     ds = self._d4c(sym) if sym else None
                     if ds:
@@ -321,6 +331,8 @@ class BrokerRouter:
                         r["symbol"] = ds
                     out.append(r)
             except Exception as e:
+                if strict:
+                    raise
                 log.warning("pending 병합 — 선물측 실패(주식측 유지): %s", e)
         return out
 

@@ -566,8 +566,15 @@ class LsBroker(_LsAuth):
         r = normalize_ls_order_resp(resp, ordno_field="OrdNo")
         return {"success": r["success"], "message": r["message"], "msg_cd": r["msg_cd"]}
 
-    def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
+    def cancel(self, order_no: str, symbol: str, qty: int, *,
+               partial: bool = False) -> dict:
         """미체결 주문 취소. 해외=COSAT00301(08), 국내=CSPAT00801.
+
+        partial은 KIS 계열의 잔량전부 플래그(QTY_ALL_ORD_YN·RMN_QTY_YN)를 위한
+        브로커 공통 계약이라 받기만 하고 쓰지 않는다 — LS는 대응 필드가 없고
+        OrdQty가 곧 취소 수량이다(LsFuturesBroker.cancel과 동일 사유). 이 인자를
+        받지 않으면 동시호가 가드의 부분취소가 LS 주식 계정에서만 TypeError로
+        조용히 실패한다(주식 창 guard_open_stock·guard_close_stock 경로).
 
         PATH "/stock/order" — 신규/정정/취소 모두 동일 경로, tr_cd 헤더로 TR 구분.
         커뮤니티 래퍼 대조 확인: "/stock/order-cancel" 경로는 404 반환.
@@ -655,6 +662,8 @@ class LsBroker(_LsAuth):
         try:
             rows = self._overseas_ccld_raw("2").get("COSAQ00102OutBlock3") or []
         except Exception as e:
+            if strict:
+                raise
             log.warning("LS 해외 pending 실패: %s", e)
             return []
         out = []
@@ -736,10 +745,14 @@ class LsBroker(_LsAuth):
         return {"order_no": order_no, "status": "unknown",
                 "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
 
-    def pending_orders(self) -> list[dict]:
+    def pending_orders(self, *, strict: bool = False) -> list[dict]:
         """미체결 주문 목록 — 국내 t0425 + 해외 COSAQ00102(ExecYn='2') 병합.
 
         실패는 비치명적 — 국내·해외 각각 로그 후 [] 반환.
+
+        strict=True면 조회 실패를 **예외로 전파**한다(동시호가 가드 전용 —
+        실패가 빈 목록으로 보이면 자기 주문을 유저 취소로 오판해 이중 발주).
+        기본 False는 종전대로 로그 후 부분/빈 목록 강등.
         ⚠ t0425OutBlock1 medosu 필드: "매수"/"매도" 문자열 반환 — A2 KB 🟢.
         ⚠ hname(종목명) 필드: t0425OutBlock1에 포함 여부 미확인 — 없으면 "".
         ⚠ submitted_at: ordtime 형식(HHMMSSMMM) — A2 KB 🟢.
@@ -769,6 +782,8 @@ class LsBroker(_LsAuth):
                     "asset_class": "stock",
                 })
         except Exception as e:
+            if strict:
+                raise
             log.warning("LS 국내 pending 실패: %s", e)
         try:
             for r in self._overseas_pending():

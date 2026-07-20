@@ -16,7 +16,7 @@ class _FakeFutures:
         return {"account": {"equity": 1_000_000.0, "order_cash": 500_000.0},
                 "positions": [{"symbol": "A01609", "qty": 1}]}
 
-    def pending_orders(self):
+    def pending_orders(self, *, strict: bool = False):
         return [{"order_no": "1", "symbol": "A01609"}]
 
     def buy(self, code, qty):

@@ -840,8 +840,19 @@ class KisBroker:
                                         "NASD")
 
     def cancel(self, order_no: str, symbol: str, qty: int,
-               ord_branch: str = "") -> dict:
-        """미체결 주문 전량 취소 — 국내/해외 시장에 따라 endpoint 분기."""
+               ord_branch: str = "", *, partial: bool = False) -> dict:
+        """미체결 주문 취소 — 국내/해외 시장에 따라 endpoint 분기.
+
+        partial=True = 잔량 중 qty만 취소(부분취소). 기본 False는 종전 전량 취소와
+        byte-identical이다. 국내 QTY_ALL_ORD_YN은 KB 정의가 'Y@전량 N@일부'
+        (docs/kis-api/endpoints/domestic-order/TTTC0013U_주식주문-정정취소.md)라
+        그 필드로 의사를 전송한다. **국내주식 자체 실측은 없다(문서 정의 근거).**
+        다만 같은 성격의 선물 필드(RMN_QTY_YN)는 실측 2026-07-20에서 문서대로
+        동작했다 — "Y"는 ORD_QTY를 무시하고 잔량 전부를 취소한다. 즉 플래그를
+        "Y"로 둔 채 부분취소를 요청하면 주문 전체가 취소되므로, 수량만으로
+        부분취소가 될 것이라 가정하지 않는다.
+        해외는 잔량전부 플래그 자체가 없어(KB TTTT1004U 요청 필드표) ORD_QTY가
+        곧 취소 수량 — 전달할 필드가 없으므로 만들지 않는다."""
         from . import market_index
         if symbol and market_index.is_us(symbol):
             return self._cancel_overseas(order_no, symbol, qty)
@@ -854,14 +865,18 @@ class KisBroker:
                 "ORGN_ODNO": order_no, "ORD_DVSN": "00",
                 "RVSE_CNCL_DVSN_CD": "02",       # 02 = 취소
                 "ORD_QTY": str(qty), "ORD_UNPR": "0",
-                "QTY_ALL_ORD_YN": "Y",
+                "QTY_ALL_ORD_YN": "N" if partial else "Y",
             }, timeout=10)
         return {"success": d.get("rt_cd") == "0",
                 "message": d.get("msg1", ""),
                 "msg_cd": d.get("msg_cd", "")}
 
     def _cancel_overseas(self, order_no: str, symbol: str, qty: int) -> dict:
-        """해외 미체결 취소 — order-rvsecncl (VTTT1004U/TTTT1004U)."""
+        """해외 미체결 취소 — order-rvsecncl (VTTT1004U/TTTT1004U).
+
+        잔량전부 플래그(국내 QTY_ALL_ORD_YN 상당)가 요청 규격에 없다 — ORD_QTY가
+        곧 취소 수량이라 부분/전량이 같은 경로다(KB TTTT1004U 요청 필드표 대조
+        2026-07-20). 없는 필드를 추측으로 만들지 않는다."""
         from . import market_index
         tr = "VTTT1004U" if self.virtual else "TTTT1004U"
         d = self._post_retry(
@@ -1114,10 +1129,14 @@ class KisBroker:
                 })
         return out
 
-    def pending_orders(self) -> list[dict]:
+    def pending_orders(self, *, strict: bool = False) -> list[dict]:
         """현재 미체결 잔량이 있는 주문 목록 — 국내 + 해외(미국) 통합.
 
         해외 조회 실패는 비치명적 — 국내 목록은 유지(견고성).
+
+        strict=True면 조회 실패를 **예외로 전파**한다(동시호가 가드 전용 —
+        실패가 빈 목록으로 보이면 자기 주문을 유저 취소로 오판해 이중 발주).
+        기본 False는 종전대로 로그 후 부분/빈 목록 강등.
         """
         out = []
         try:
@@ -1145,11 +1164,15 @@ class KisBroker:
                     "market": "DOMESTIC", "currency": "KRW", "asset_class": "stock",
                 })
         except Exception as e:
+            if strict:
+                raise
             log.warning("국내 미체결 조회 실패: %s", e)
         try:
             for r in self._overseas_pending():
                 r.setdefault("asset_class", "stock")
                 out.append(r)
         except Exception as e:
+            if strict:
+                raise
             log.warning("해외 미체결 조회 실패: %s", e)
         return out

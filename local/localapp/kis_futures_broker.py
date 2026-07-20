@@ -150,11 +150,22 @@ def build_futures_order_body(*, cano: str, acnt_prdt_cd: str, symbol: str,
     }
 
 
-def build_futures_cancel_body(*, cano: str, acnt_prdt_cd: str, order_no, qty: int) -> dict:
-    """VTTO1103U/TTTO1103U 취소 바디(전량). 순수함수 — 단위검증 대상.
+def build_futures_cancel_body(*, cano: str, acnt_prdt_cd: str, order_no, qty: int,
+                              partial: bool = False) -> dict:
+    """VTTO1103U/TTTO1103U 취소 바디. 순수함수 — 단위검증 대상.
 
-    취소: RVSE_CNCL_DVSN_CD=02·UNIT_PRICE=0·KRX_NMPR_CNDT_CD=0·ORD_DVSN_CD=01·RMN_QTY_YN=Y.
+    취소: RVSE_CNCL_DVSN_CD=02·UNIT_PRICE=0·KRX_NMPR_CNDT_CD=0·ORD_DVSN_CD=01.
     ORD_QTY는 모의계좌 필수(전량이라도 입력).
+
+    RMN_QTY_YN(잔량전부주문여부) = 기본 "Y"(전량) · partial=True면 "N"(일부).
+    실측 2026-07-20(KIS 모의 국내선물 — 3계약 미체결에 ORD_QTY=1로 N/Y 대조):
+        N → 잔량 2 (요청한 1만 취소)   ·   Y → 잔량 0 (ORD_QTY 무시·남은 2 전부 취소)
+    ⇒ **플래그가 수량을 지배한다.** 문서 정의('Y@전량 N@일부')대로 동작하므로
+    "Y" 하드코딩 상태로 부분취소를 요청하면 주문 전체가 취소된다 — 동시호가 가드가
+    초과분만 걷으려다 유저 수동 주문을 통째로 날리는 부류.
+    ⚠ 두 취소 모두 40630000(성공)을 반환해 **응답만으로는 구분 불가**다. 검증은
+    취소 후 미체결 재조회의 잔량(`qty`)으로만 가능하다 — `ord_qty`는 원 주문수량이라
+    부분취소로 줄지 않는다.
     """
     return {
         "ORD_PRCS_DVSN_CD": "02",
@@ -166,7 +177,7 @@ def build_futures_cancel_body(*, cano: str, acnt_prdt_cd: str, order_no, qty: in
         "UNIT_PRICE": "0",
         "NMPR_TYPE_CD": "",
         "KRX_NMPR_CNDT_CD": "0",
-        "RMN_QTY_YN": "Y",                  # 전량
+        "RMN_QTY_YN": "N" if partial else "Y",   # Y@전량 · N@일부(부분취소)
         "FUOP_ITEM_DVSN_CD": "",
         "ORD_DVSN_CD": "01",
     }
@@ -692,9 +703,10 @@ class KisFuturesBroker:
     # spec 확보 완료(취소 order-rvsecncl, 체결조회 inquire-ccnl).
     # 추측 발주 방지를 위해 라이브 라운드트립 검증 전까지 미구현 유지.
 
-    def cancel(self, order_no: str, symbol: str, qty: int) -> dict:
+    def cancel(self, order_no: str, symbol: str, qty: int, *,
+               partial: bool = False) -> dict:
         body = build_futures_cancel_body(cano=self.cano, acnt_prdt_cd=self.acnt_prdt_cd,
-                                         order_no=order_no, qty=qty)
+                                         order_no=order_no, qty=qty, partial=partial)
         tr = "VTTO1103U" if self.virtual else "TTTO1103U"
         return self._order_post(f"{self.base}{_CANCEL_PATH}", self._headers(tr), body)
 
@@ -713,7 +725,9 @@ class KisFuturesBroker:
     def order_status(self, order_no: str) -> dict:
         return parse_ccnl_order_status(self._inquire_ccnl(), order_no)
 
-    def pending_orders(self) -> list[dict]:
+    def pending_orders(self, *, strict: bool = False) -> list[dict]:
+        """미체결 목록. 이 어댑터는 조회 예외를 삼키지 않으므로 strict 무관하게
+        실패가 전파된다 — 인자는 브로커 공통 계약(Broker Protocol) 통일용."""
         rows = self._inquire_ccnl(only_unfilled=True).get("output1") or []
         # 미체결 쿼리(CCLD_NCCS_DVSN=02)는 취소/정정 주문(orgn_odno≠0)도 함께 반환한다 — 이는
         # resting 신규주문이 아니므로 제외(라이브 2026-06-09: 취소주문이 pending으로 오보고됨).
