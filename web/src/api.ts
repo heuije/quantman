@@ -115,10 +115,12 @@ export type ChatStreamHandlers = {
   onProgress?: (label: string) => void;  // 진행 단계 라벨(라운드 생성 중 등) — 표시 전용·비영속
 };
 
+// 반환값 = 서버가 턴 완료(`done` 이벤트)를 명시했는지. false면 스트림이 완료 신호 없이 끝난 것
+// (탭 백그라운드화로 연결이 조용히 끊김 등) = 턴은 서버에서 진행 중 → 호출측이 재접속 폴링으로 전환.
 async function streamChatMessage(
   conversationId: number, message: string, h: ChatStreamHandlers,
   adminPassword?: string,
-): Promise<void> {
+): Promise<boolean> {
   const t = tokenStore.get();
   const res = await fetch(`${BASE}/chat/stream`, {
     method: "POST",
@@ -138,6 +140,7 @@ async function streamChatMessage(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
+  let completed = false;      // 서버 `done` 이벤트 수신 = 턴이 실제로 완료됨(연결 단절과 구분).
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -154,10 +157,11 @@ async function streamChatMessage(
       else if (ev === "tool_use") h.onToolUse(payload);
       else if (ev === "tool_result") h.onToolResult(payload);
       else if (ev === "progress") h.onProgress?.(payload.label ?? "");
-      // "done"·기타 이벤트는 무시 — 스트림 종료는 reader done으로 감지한다.
-      // (서버 keepalive 주석 프레임은 event: 라인이 없어 위 `if (!ev) continue`가 걸러낸다.)
+      else if (ev === "done") completed = true;   // 서버가 턴 완료를 명시(reader done만으론 단절과 구분 불가)
+      // 기타 이벤트는 무시. (서버 keepalive 주석 프레임은 event: 라인이 없어 위 `if (!ev) continue`가 걸러낸다.)
     }
   }
+  return completed;   // false = 완료 신호 없이 스트림 종료(연결 단절) → 호출측이 재접속 폴링
 }
 
 export const api = {
