@@ -73,6 +73,13 @@ def _dataset_as_of(dataset: dict) -> dict:
     max를 쓰는 이유: 개별 laggard(상폐 임박·저유동)로 인한 과차단을 피하고,
     "서버가 본 가장 새로운 데이터"가 기준 미달이면 확실히 낡은 것이기 때문.
     매크로(^)·암호화폐(24/7 — '-USD' 접미)는 시장 세션 기준일과 무관해 제외.
+
+    시장 분류는 **`instrument_region`**(통화 기준 SSOT)이다 — `_is_kr_symbol`(6자리
+    숫자)을 쓰면 한글 표시심볼인 국내선물('코스피200선물')이 US로 떨어져, 선물만
+    거래하는 유저에겐 KR 키가 아예 생기지 않는다. 그러면 로컬의 기준일 게이트
+    (`runner._preview_stale_reason`)가 키 부재를 "구버전 서버"로 읽고 fail-open
+    통과시켜 **안전장치가 구조적으로 무효**가 된다(:176이 같은 이유로 이미
+    instrument_region을 쓴다 — 여기만 누락돼 있었다).
     """
     out: dict[str, str] = {}
     for sym, df in dataset.items():
@@ -81,7 +88,7 @@ def _dataset_as_of(dataset: dict) -> dict:
         last = _last_date(dataset, sym)
         if last is None:
             continue
-        mkt = "KR" if _is_kr_symbol(sym) else "US"
+        mkt = "KR" if _instrument_region(sym) == "KRX" else "US"
         if mkt not in out or last > out[mkt]:
             out[mkt] = last
     return out
