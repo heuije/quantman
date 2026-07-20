@@ -197,7 +197,7 @@ export default function ChatLab() {
         const conv = await api.createConversation();
         cid = conv.id; setConvId(cid);
       }
-      await api.streamChatMessage(cid, text, {
+      const completed = await api.streamChatMessage(cid, text, {
         // 파트는 계속 누적하되(완료 후 ChatReport가 최종 산출만 렌더·서버 영속과 일치) 스트리밍
         // 중엔 화면에 진행 서술을 표시하지 않는다. 델타는 마지막 텍스트 파트에 이어붙인다.
         onDelta: (t) => patch((parts) => {
@@ -209,6 +209,14 @@ export default function ChatLab() {
         onToolUse: (p) => patch((parts) => [...parts, { type: "tool_use", ...p }]),
         onToolResult: (p) => patch((parts) => [...parts, { type: "tool_result", ...p }]),
       }, adminPw || undefined);
+      // 스트림이 서버 `done` 없이 끝남 = 탭 백그라운드화 등으로 연결이 조용히 끊긴 것(에러 미발생).
+      // 턴은 서버에서 계속 진행 중이므로, 미완성 assistant 버블을 걷고 재접속 폴링으로 이어받는다
+      // ("분석 중" 문구가 사라지지 않고 유지된다). 완료(completed)면 이 대화가 여전히 화면일 때만 렌더.
+      if (!completed && cid != null) {
+        setMessages((m) => (m.length && m[m.length - 1].role === "assistant"
+          && m[m.length - 1].parts.length === 0 ? m.slice(0, -1) : m));
+        resumePendingTurn(cid);
+      }
     } catch (e) {
       const raw = e instanceof Error ? e.message : "";
       // 전송층 단절(TypeError: Failed to fetch 등)은 서버가 턴을 계속 완주·영속하므로(routers/chat.py
