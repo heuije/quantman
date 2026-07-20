@@ -721,6 +721,19 @@ def _close_cycle_once(market: str, instrument_class: str) -> dict:
     # 오버나이트 진입이 겹치면 브로커 왕복 없이 원장 이관해 수수료를 제거한다. 넷팅 대상이
     # 없으면 잔여=전체라 기존처럼 청산 먼저→진입. record_cycle 기본 True(넷팅이 청산+진입을
     # 한 payload로 통합 — 별도 병합 불필요).
+    # N5 진짜 바인딩 지점 — **발주 직전** 하드컷 검사. 재시도 sleep만 막아서는
+    # 부족하다: 전략·preview·risk_limits가 각각 HTTP timeout(15s)까지 끌면 재시도
+    # 0회로도 45초가 흘러 마감 단일가를 넘긴다(가드가 창 끝에 재실행하면 더 빠듯).
+    # 넘긴 진입 발주는 익일 시가 체결 = 의도치 않은 오버나이트.
+    # **청산은 계속한다** — 마감 후 청산 미발주는 오버나이트를 확정시키지만 진입은
+    # 하루 미루면 그만이다(비대칭 손실).
+    entry_cutoff_missed = False
+    if buy_candidates and datetime.now(ZoneInfo("Asia/Seoul")) >= cutoff:
+        log.error("[종가] 하드컷(%s) 경과 — 종가 진입 %d건 skip(청산은 진행)",
+                  cutoff.strftime("%H:%M:%S"), len(buy_candidates))
+        buy_candidates = []
+        entry_cutoff_missed = True
+
     risk_limits = pull_risk_limits() if buy_candidates else None
     payload = trader.run_close_netting(
         buy_candidates, strategies, dataset,
@@ -738,6 +751,8 @@ def _close_cycle_once(market: str, instrument_class: str) -> dict:
         _cs["preview_missing"] = True
     if preview_stale:
         _cs["preview_stale"] = preview_stale
+    if entry_cutoff_missed:
+        _cs["entry_cutoff_missed"] = True
 
     try:
         push_snapshot(payload)

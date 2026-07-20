@@ -299,3 +299,71 @@ def test_close_cycle_surfaces_strategies_pull_failure(_close_env, monkeypatch):
     out = runner._close_cycle_once("KRX", "futures")
     captured.update(out)
     assert captured["cycle_summary"].get("strategies_pull_failed") is True
+
+
+def test_entry_dropped_when_hard_cutoff_passed_but_exit_proceeds(_close_env, monkeypatch):
+    """N5의 진짜 바인딩 지점 — **발주 직전** 컷오프 검사.
+
+    재시도 sleep만 막아서는 부족하다: 전략·preview·risk_limits가 각각 HTTP
+    timeout(15s)까지 끌면 **재시도 0회로도** 45초가 흘러 마감 단일가를 넘긴다.
+    컷을 넘겼으면 진입 후보를 비우되 **청산은 반드시 진행**한다 — 마감 후 청산
+    미발주는 오버나이트를 확정시키지만, 진입은 하루 미루면 그만이다.
+    """
+    monkeypatch.setattr(runner, "make_broker", lambda: object())
+    monkeypatch.setattr(runner, "pull_strategies", lambda: [{"id": "s1"}])
+    monkeypatch.setattr(runner, "_pull_preview_with_retry",
+                        lambda *a, **k: {"by_strategy": [{"strategy_id": "s1",
+                                                          "candidates": [{"symbol": "005930"}]}]})
+    monkeypatch.setattr(runner, "_preview_stale_reason", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "pull_risk_limits", lambda: {})
+    monkeypatch.setattr(runner, "_close_hard_cutoff_kst", _cutoff_in(-1))  # 이미 지남
+
+    seen: dict = {}
+
+    class _FakeTrader:
+        ledger: dict = {}
+
+        def __init__(self, b):
+            pass
+
+        def run_close_netting(self, buy_candidates, strategies, dataset, **kw):
+            seen["buy_candidates"] = buy_candidates
+            return {"cycle_summary": {"kind": "day_trade_close"}}
+
+    monkeypatch.setattr(runner, "Trader", _FakeTrader)
+    monkeypatch.setattr(runner.qc, "load_dataset_for", lambda *a, **k: {})
+    out = runner._close_cycle_once("KRX", "futures")
+
+    assert seen["buy_candidates"] == [], "컷오프 이후인데 진입 후보가 살아있다"
+    assert "run_close_netting" or True   # 청산 경로는 호출됨(위 seen이 증거)
+    assert out["cycle_summary"].get("entry_cutoff_missed") is True
+
+
+def test_entry_kept_when_within_cutoff(_close_env, monkeypatch):
+    """컷 이전이면 진입 후보가 그대로 — 거짓 차단 금지."""
+    monkeypatch.setattr(runner, "make_broker", lambda: object())
+    monkeypatch.setattr(runner, "pull_strategies", lambda: [{"id": "s1"}])
+    cands = [{"strategy_id": "s1", "candidates": [{"symbol": "005930"}]}]
+    monkeypatch.setattr(runner, "_pull_preview_with_retry",
+                        lambda *a, **k: {"by_strategy": cands})
+    monkeypatch.setattr(runner, "_preview_stale_reason", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "pull_risk_limits", lambda: {})
+    monkeypatch.setattr(runner, "_close_hard_cutoff_kst", _cutoff_in(600))
+
+    seen: dict = {}
+
+    class _FakeTrader:
+        ledger: dict = {}
+
+        def __init__(self, b):
+            pass
+
+        def run_close_netting(self, buy_candidates, strategies, dataset, **kw):
+            seen["buy_candidates"] = buy_candidates
+            return {"cycle_summary": {"kind": "day_trade_close"}}
+
+    monkeypatch.setattr(runner, "Trader", _FakeTrader)
+    monkeypatch.setattr(runner.qc, "load_dataset_for", lambda *a, **k: {})
+    out = runner._close_cycle_once("KRX", "futures")
+    assert seen["buy_candidates"] == cands
+    assert "entry_cutoff_missed" not in out["cycle_summary"]

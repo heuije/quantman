@@ -40,3 +40,30 @@ def test_dataset_as_of_per_market_max():
 def test_dataset_as_of_empty_dataset():
     from app.preview_engine import _dataset_as_of
     assert _dataset_as_of({}) == {}
+
+
+def test_dataset_as_of_classifies_domestic_futures_as_kr():
+    """N6 — 국내선물(한글 표시심볼)이 US로 오분류돼 KR 키가 아예 안 생기던 결함.
+
+    `_is_kr_symbol`은 '6자리 숫자'만 KR로 인정한다. '코스피200선물'은 isdigit()가
+    False라 US 버킷으로 떨어졌고, **선물만 거래하는 유저에게는 data_as_of에 KR 키가
+    없어** 로컬의 기준일 게이트(`_preview_stale_reason`)가 fail-open으로 통과했다 —
+    안전장치가 구조적으로 무효였다. 같은 부류 버그를 core가 이미
+    `instrument_region`으로 한 곳에 모아 뒀는데(exec_defaults docstring이 이 사례를
+    명시) `_dataset_as_of`만 그 해결을 안 쓰고 있었다.
+    """
+    from app.preview_engine import _dataset_as_of
+
+    out = _dataset_as_of({
+        "코스피200선물": _df("2026-07-17"),
+        "코스닥150선물": _df("2026-07-16"),
+        "NVDA": _df("2026-07-15"),
+    })
+    assert out.get("KR") == "2026-07-17", f"국내선물이 KR로 분류돼야 — 실제 {out}"
+    assert out.get("US") == "2026-07-15"
+
+
+def test_dataset_as_of_futures_only_user_gets_kr_key():
+    """선물 전용 유저(주식 0종목) — KR 키가 반드시 생겨야 게이트가 살아난다."""
+    from app.preview_engine import _dataset_as_of
+    assert _dataset_as_of({"코스피200선물": _df("2026-07-17")}) == {"KR": "2026-07-17"}

@@ -172,6 +172,7 @@ def test_reconcile_drift_is_amber_not_paged():
     """mwmw excess:4 형상 — 대시보드엔 AMBER로 뜨되 자동 페이징 안 함(양성 잦음)."""
     payload = {"cycle_summary": {"kind": "post_close_settlement", "n_bought": 0},
                "reconciliation": {"has_drift": False,
+                                  "checked_at": "2026-07-20T06:50:00+00:00",
                                   "external_extras": [{"symbol": "코스피200선물", "excess": 4}]}}
     res = _eval(payload)
     assert res["conditions"]["reconciliation"]["status"] == AMBER
@@ -183,8 +184,10 @@ def test_healthy_full_cycle_all_green():
                "diagnostics": {"bundle": {"result": "ok"},
                                "dataset": {"needed": 50, "loaded": 50}},
                "health": {"account_handles": [{"account_id": "uuid", "broker": "kis"}]},
-               "reconciliation": {"has_drift": False, "external_extras": []}}
+               "reconciliation": {"has_drift": False, "external_extras": [],
+                                  "checked_at": "2026-07-20T06:50:00+00:00"}}
     res = _eval(payload)
+    assert res["conditions"]["reconciliation"]["status"] == GREEN
     assert res["overall"] == GREEN
     assert res["alert_reasons"] == []
 
@@ -557,7 +560,8 @@ def test_content_payload_backfills_data_freshness():
 def test_reconciliation_reads_latest_not_content():
     """C9 정합은 latest overall(reconcile push가 최신 drift)에서 읽는다 — content_payload 무시."""
     reconcile = {"cycle_summary": {"kind": "post_open_reconcile"},
-                 "reconciliation": {"has_drift": True, "external_extras": [{"symbol": "X"}]}}
+                 "reconciliation": {"has_drift": True, "external_extras": [{"symbol": "X"}],
+                                    "checked_at": "2026-07-20T06:50:00+00:00"}}
     clean_cycle = {"cycle_summary": {"kind": "cycle", "n_bought": 1},
                    "diagnostics": {"bundle": {"result": "ok"}},
                    "reconciliation": {"has_drift": False}}
@@ -738,3 +742,67 @@ def test_rejected_detail_includes_top_reason_label():
     r = _eval(p)
     c = r["conditions"]["order_placement"]
     assert c["status"] == AMBER and "증거금 부족" in c["detail"]
+
+
+# ── N3 — C9가 "확인했더니 정합"과 "확인한 적 없음"을 같은 GREEN으로 접던 결함 ──
+# 실측 2026-07-20: 최근 40스냅샷 중 reconciliation 키 보유 9건(정산 push만). 나머지
+# 31건의 GREEN은 전부 무데이터였고, 세션에서 그 GREEN을 "원장↔브로커 정합"의 근거로
+# 인용했다. `checked_at`(reconcile_ledger가 항상 채움)의 부재가 "점검 미완료"의
+# 신뢰할 수 있는 판별자다 — 실패 경로(`{"error": ...}`)에는 이 키가 없다.
+
+_CHECKED = "2026-07-20T06:50:00+00:00"
+
+
+def test_reconciliation_no_data_is_unknown_not_green():
+    """정합 신호가 아예 없으면 GREEN이 아니라 UNKNOWN."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "n_bought": 1}})
+    assert res["conditions"]["reconciliation"]["status"] == UNKNOWN
+
+
+def test_reconciliation_failure_is_unknown_not_green():
+    """🔴 무데이터보다 나쁜 케이스 — 잔고 조회 실패가 '정합'으로 표시되던 것.
+
+    로컬 `reconcile_with_kis`는 실패 시 `{"error": ...}`만 담아 push하는데, C9가
+    error 키를 전혀 읽지 않아 has_drift=False·extras=[]로 GREEN이 됐다.
+    """
+    res = _eval({"cycle_summary": {"kind": "post_close_settlement"},
+                 "reconciliation": {"error": "KIS 잔고 조회 실패: timeout"}})
+    c = res["conditions"]["reconciliation"]
+    assert c["status"] == UNKNOWN
+    assert "timeout" in c["detail"], "실패 사유가 detail에 보여야 진단 가능"
+
+
+def test_reconciliation_checked_and_clean_is_green_with_time():
+    """실제로 점검했고 깨끗하면 GREEN — 확인 시각을 함께 노출."""
+    res = _eval({"cycle_summary": {"kind": "post_close_settlement"},
+                 "reconciliation": {"has_drift": False, "external_extras": [],
+                                    "checked_at": _CHECKED}})
+    c = res["conditions"]["reconciliation"]
+    assert c["status"] == GREEN and _CHECKED[:10] in c["detail"]
+
+
+def test_reconciliation_blocked_is_labelled_as_uncheckable_not_drift():
+    """선물 신원계층 파손(잔고 조회 실패·계약코드 미인식)은 '점검 불가'이지 'drift'가 아니다.
+
+    로컬이 `reconcile_blocked`를 실으면서 has_drift도 True로 강제하는데(웹훅 알림이
+    그 플래그에 의존), 서버가 그걸 "포지션 정합 drift(외부/미등록 0건)"로 렌더해
+    운영자가 원인을 오독했다. 같은 부류 — 판정 불가를 기존 범주로 접기.
+    """
+    res = _eval({"cycle_summary": {"kind": "post_close_settlement"},
+                 "reconciliation": {"has_drift": True, "external_extras": [],
+                                    "checked_at": _CHECKED,
+                                    "reconcile_blocked": {"fetch_failed": ["futures"],
+                                                          "unmapped_codes": []}}})
+    c = res["conditions"]["reconciliation"]
+    assert c["status"] == AMBER
+    assert "drift" not in c["detail"], f"drift로 오라벨링됨: {c['detail']}"
+
+
+def test_reconciliation_unknown_does_not_degrade_overall_or_page():
+    """UNKNOWN은 종합 등급·자동 페이징을 건드리지 않는다 — 장중 노이즈 방지."""
+    res = _eval({"cycle_summary": {"kind": "cycle", "market": "KRX", "n_bought": 2},
+                 "diagnostics": {"bundle": {"result": "ok"},
+                                 "dataset": {"needed": 50, "loaded": 50}},
+                 "health": {"account_handles": [{"account_id": "u", "broker": "kis"}]}})
+    assert res["conditions"]["reconciliation"]["status"] == UNKNOWN
+    assert res["overall"] == GREEN and res["alert_reasons"] == []
