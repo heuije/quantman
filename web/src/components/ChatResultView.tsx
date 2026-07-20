@@ -18,7 +18,8 @@
  */
 
 import {
-  CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ReferenceLine,
+  ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { Link } from "react-router-dom";
 import { Fragment, useState, type ReactElement } from "react";
@@ -303,6 +304,114 @@ function CohortComparison({ result }: { result: IrStrategyResult }) {
                           {" "}(p{o.p_value != null ? o.p_value.toFixed(3) : "—"})</span>
                       </td>);
                   })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <StatNote keys={["p_value"]} />
+    </div>
+  );
+}
+
+// ── analyze_event(전조·후행 이벤트 스터디) — 후보 지표 × 윈도우 통일 표 + 막대그래프 ──
+// 여러 후보 이벤트(거래량·수급·RSI 등)를 결정적으로 조립·실행한 다중 결과(tool="analyze_event").
+// 통일 규격: 지표별 행 × 윈도우 열(전N일=전조 구간수익·+N일=forward 수익) + 대표 지표 막대그래프.
+type AeStat = { mean_pct?: number | null; p_value?: number | null; n?: number | null };
+type AeRow = {
+  label?: string; event?: { ref?: string; op?: string; value?: number };
+  success?: boolean; n_events?: number | null; error?: string;
+  stats?: Record<string, AeStat>;
+  hit_rate?: { threshold_pct?: number; by_window?: Record<string, { prob_pct?: number; n?: number }> };
+};
+type AeResult = { market?: string; windows?: number[]; event_basis?: string;
+  lookback_years?: number; results?: AeRow[] };
+
+function AnalyzeEventView({ result }: { result: IrStrategyResult }) {
+  const ae = result as unknown as AeResult;
+  const rows = ae.results ?? [];
+  const wins = (ae.windows ?? []).map(Number);
+  const posWins = wins.filter((w) => w > 0).sort((a, b) => b - a);
+  const primW = posWins.length ? posWins[0] : [...wins].sort((a, b) => a - b)[0];  // 대표: 최대 forward, 없으면 최전조
+  const hasHit = rows.some((r) => r.hit_rate?.by_window);
+  const thr = rows.find((r) => r.hit_rate)?.hit_rate?.threshold_pct;
+  const ok = rows.filter((r) => r.success);
+  const wlabel = (w: number) => (w < 0 ? `전${-w}일` : `+${w}일`);
+
+  // 대표 막대그래프 — 지표별 대표값(급등확률 있으면 hit-rate, 없으면 대표 윈도우 평균수익%).
+  const useHit = hasHit && primW > 0;
+  const chart = ok.map((r) => {
+    const hv = r.hit_rate?.by_window?.[String(primW)]?.prob_pct;
+    const mv = r.stats?.[String(primW)]?.mean_pct;
+    return { label: r.label ?? r.event?.ref ?? "", value: useHit ? (hv ?? null) : (mv ?? null) };
+  }).filter((d) => d.value != null);
+  const chartTitle = useHit
+    ? `이벤트 후 +${primW}일 내 ≥${thr}% 급등 확률(%) — 지표별`
+    : `${wlabel(primW)} 평균수익(%) — 지표별`;
+
+  return (
+    <div className="chat-result">
+      <div className="muted" style={{ fontSize: "0.8em", marginBottom: 6 }}>
+        이벤트 스터디 — {ae.market ?? "전체"} · 최근 {ae.lookback_years ?? 5}년 · 후보 {rows.length}개 지표
+        (전N일=이벤트 직전 구간 누적수익 · +N일=이벤트 후 forward 수익 · 손익 아님)
+      </div>
+
+      {chart.length > 0 && (
+        <>
+          <div className="muted" style={{ fontSize: "0.78em", margin: "2px 0 2px" }}>{chartTitle}</div>
+          <ResponsiveContainer width="100%" height={Math.max(180, chart.length * 34 + 40)}>
+            <BarChart data={chart} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 8 }}>
+              <CartesianGrid stroke={chartC.grid} horizontal={false} />
+              <XAxis type="number" tick={{ fontSize: 11 }}
+                domain={useHit ? [0, "dataMax"] : ["dataMin", "dataMax"]} />
+              <YAxis type="category" dataKey="label" tick={{ fontSize: 11 }} width={116} />
+              <Tooltip formatter={(v) => `${Number(Array.isArray(v) ? v[0] : (v ?? 0)).toFixed(1)}%`}
+                contentStyle={{ background: chartC.panel, border: `1px solid ${chartC.grid}`, fontSize: 12 }} />
+              {!useHit && <ReferenceLine x={0} stroke={chartC.muted} strokeDasharray="3 3" />}
+              <Bar dataKey="value" isAnimationActive={false}>
+                {chart.map((d, i) => (
+                  <Cell key={i} fill={useHit ? chartC.accent : ((d.value ?? 0) >= 0 ? chartC.up : chartC.down)} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </>
+      )}
+
+      <div style={{ overflowX: "auto" }}>
+        <table className="sweep-table">
+          <thead><tr>
+            <th>지표 (이벤트 조건)</th><th>표본</th>
+            {wins.map((w) => <th key={w}>{wlabel(w)} 평균%(p)</th>)}
+            {hasHit && <th>급등확률 (+{posWins[0] ?? primW}일 ≥{thr}%)</th>}
+          </tr></thead>
+          <tbody>
+            {rows.map((r, ri) => {
+              const cond = r.event ? `${r.event.ref} ${r.event.op} ${r.event.value}` : "";
+              if (!r.success) return (
+                <tr key={ri}><td>{r.label ?? cond}</td>
+                  <td colSpan={wins.length + 1 + (hasHit ? 1 : 0)} className="muted">
+                    {r.error ?? "실행 실패"}</td></tr>);
+              const hw = posWins[0] ?? primW;
+              const hit = r.hit_rate?.by_window?.[String(hw)]?.prob_pct;
+              return (
+                <tr key={ri}>
+                  <td>{r.label ?? cond}
+                    {r.label && cond && <span className="muted" style={{ fontSize: "0.85em" }}> · {cond}</span>}</td>
+                  <td>{r.n_events ?? "—"}</td>
+                  {wins.map((w) => {
+                    const o = r.stats?.[String(w)] ?? {};
+                    const sig = o.p_value != null && o.p_value < 0.05;
+                    return (
+                      <td key={w} className={(o.mean_pct ?? 0) >= 0 ? "pos" : "neg"}
+                          style={sig ? { fontWeight: 700 } : undefined}>
+                        {fmt(o.mean_pct, "")}
+                        <span className="muted" style={{ fontSize: "0.85em" }}>
+                          {" "}(p{o.p_value != null ? o.p_value.toFixed(3) : "—"})</span>
+                      </td>);
+                  })}
+                  {hasHit && <td>{hit != null ? `${hit.toFixed(1)}%` : "—"}</td>}
                 </tr>
               );
             })}
@@ -743,6 +852,12 @@ function ChatResultBody({ result, hideMethodology }: Props & { hideMethodology?:
 
   // T2 자기서술 — 백테스트면 방법론 패널(배너 다음·차트 위). 서버가 backtest 결과에만 붙인다.
   const method = !hideMethodology && r.methodology ? <MethodologyPanel m={r.methodology} /> : null;
+
+  // analyze_event(다중 후보 이벤트 스터디) — 엔진 shape 밖 도구 결과라 레지스트리 前 선처리
+  // (통일 표+막대그래프로 렌더 — 미처리 시 "분석 완료" 폴백 칩으로 떨어지던 것을 대체).
+  if ((r as { tool?: string }).tool === "analyze_event") {
+    return <>{banner}{warnBanner}<AnalyzeEventView result={r} /></>;
+  }
 
   // 형상 레지스트리 단일 조회 — 엔진 스탬프(result.shape) 우선, 미스탬프는 deriveShape 폴백.
   const shape = (r as { shape?: string }).shape ?? deriveShape(r);
