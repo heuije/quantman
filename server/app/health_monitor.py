@@ -296,13 +296,36 @@ def evaluate_health(
         conditions["strategy_validity"] = _cond(UNKNOWN, "preview 이력 없음")
 
     # ── C9 사후 정합 (reconcile drift — 대시보드 표시, 자동 페이징 안 함) ──
+    # "확인했더니 정합"과 "확인한 적 없음"을 같은 GREEN으로 접으면 안 된다(2026-07-20):
+    # 정합 신호는 15:50 정산 push에만 실려 실측 40스냅샷 중 9건뿐인데, 나머지 31건의
+    # GREEN이 "원장↔브로커 정합"으로 읽혀 진단 근거로 인용됐다. 더 나쁜 건 실패 경로 —
+    # 로컬이 잔고 조회 실패 시 `{"error": ...}`만 push하는데 그것도 GREEN이 됐다.
+    # `checked_at`(analytics.reconcile_ledger가 항상 채움)의 부재가 "점검 미완료"의
+    # 판별자다. UNKNOWN은 종합 등급·페이징을 건드리지 않아 장중 노이즈가 되지 않는다.
     rec = p.get("reconciliation") or {}
     extras = rec.get("external_extras") or []
-    if rec.get("has_drift") or extras:
+    blocked = rec.get("reconcile_blocked") or {}
+    if rec.get("error"):
+        conditions["reconciliation"] = _cond(
+            UNKNOWN, f"정합 점검 실패 — {rec['error']}")
+    elif not rec.get("checked_at"):
+        conditions["reconciliation"] = _cond(
+            UNKNOWN, "정합 미점검 — 점검은 15:50 정산에 수행(장중 미점검이 정상)")
+    elif blocked:
+        # 로컬이 이 경우 has_drift도 True로 강제한다(웹훅 알림이 그 플래그에 의존).
+        # 종전엔 아래 drift 분기에 걸려 "포지션 정합 drift(외부/미등록 0건)"로 렌더돼
+        # 운영자가 원인을 오독했다 — 이건 drift가 아니라 **점검 자체가 불가**한 상태다.
+        _why = ", ".join(filter(None, [
+            f"잔고 조회 실패 {blocked.get('fetch_failed')}" if blocked.get("fetch_failed") else "",
+            f"계약코드 미인식 {blocked.get('unmapped_codes')}" if blocked.get("unmapped_codes") else ""]))
+        conditions["reconciliation"] = _cond(
+            AMBER, f"정합 점검 불가 — 선물 신원계층 파손({_why})")
+    elif rec.get("has_drift") or extras:
         conditions["reconciliation"] = _cond(
             AMBER, f"포지션 정합 drift(외부/미등록 {len(extras)}건)")
     else:
-        conditions["reconciliation"] = _cond(GREEN, "원장↔브로커 정합")
+        conditions["reconciliation"] = _cond(
+            GREEN, f"원장↔브로커 정합 (점검 {rec['checked_at']})")
 
     # ── C10 참조가 오염 (원장 진입가 ↔ 브로커 실평균 괴리) ──
     # stale 번들 봉을 참조가로 쓰면(trader freshness 가드 부재) 원장 entry_price가 브로커

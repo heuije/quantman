@@ -350,6 +350,12 @@ class Trader:
         # A1(외부·수동 미체결 인수) 결과 {계약키: 부호수량} — 종전엔 INFO 로그뿐이라
         # 원격 진단 불가였다. 수렴 패스마다 갱신하고 사이클 요약에 실어 보낸다.
         self._a1_trace: dict = {}
+        # 이번 수렴 패스가 **목표를 확정한** 심볼(목표 0 포함) — 동시호가 가드가
+        # 자기 우주를 정하는 데 쓴다. 원장에 행이 남지 않는 목표(청산 완료·넷팅
+        # book)를 "목표 없음"과 구분하기 위한 것이다: 가드 우주가 `own 의도 ∪ 원장`
+        # 뿐이면 book으로 원장 행이 지워진 심볼이 통째로 안 보인다(A1 인수 수동
+        # 주문이 취소되면 그 심볼에 물리 노출이 남는데도 감지 불가).
+        self._target_syms: list = []
         # 미국 매수여력 모드 (cycle에서 risk_limits로 설정). 기본 통합증거금.
         self._us_bp_mode: str = "integrated"
         # Q5: 체결 후(_apply_fill) 즉시 kill switch 평가용 한도. cycle 진입 시
@@ -561,6 +567,33 @@ class Trader:
         with _CYCLE_LOCK:
             self._resolve_pending_locked(decisions)
 
+    @staticmethod
+    def _resolve_intent(p: dict, outcome: str) -> None:
+        """이 pending의 intent를 저널에서 종결 — 멱등 게이트 해제(intents.mark_resolved).
+
+        pending에서 주문이 사라지는 **모든** 지점에서 호출한다. 종전엔 성공 종결
+        경로가 없어 체결된 주문이 종일 게이트를 점유했다(N1 — japan1 438계약
+        오버나이트). intent_id는 _after_submit이 pending 레코드에 실어 둔다.
+
+        구버전 pending_orders.json(필드 부재)은 조용히 skip — 종전 거동(보수적
+        차단)으로 남을 뿐이라 마이그레이션이 필요 없다.
+        """
+        if p.get("drift"):
+            # 🔴 drift 교정 게이트는 **창 단위 1회**가 불변식이라 체결로 풀지 않는다.
+            # 키가 이미 창을 담고(`DRIFT:{window}`), drift 체결은 _apply_fill 초입에서
+            # 조기 return해 **원장을 바꾸지 않으므로** 다른 멱등 경로와 달리 "원장이
+            # 갱신돼 다음 계산에서 자연히 사라진다"는 자기제한 피드백이 없다 —
+            # 재발주를 막는 건 오직 브로커 스냅샷이 diff 0을 보여주는 것뿐이다.
+            # scheduler.py의 개장후 수렴(08:46) 주석이 "잔고 API 반영 지연이 크면
+            # drift 오판 가능 — 멱등(저널 게이트)이라 발주 안전은 유지"라고 이 전제를
+            # 명문화한다. N1이 풀려던 건 "하루 두 번 같은 방향 청산"인데 drift는
+            # 키에 창이 들어 있어 애초에 그 문제가 없다.
+            return
+        iid = p.get("intent_id")
+        idate = p.get("intent_date")
+        if iid and idate:
+            intents.mark_resolved(str(idate), str(iid), outcome)
+
     def _resolve_pending_locked(self, decisions: list[dict]) -> None:
         if not self.pending:
             return
@@ -604,6 +637,7 @@ class Trader:
                 if delta > 0:
                     self._apply_fill(order_no, p, delta, fill_px, decisions)
                 del self.pending[order_no]
+                self._resolve_intent(p, "filled")
                 changed = True
                 if exec_odno:
                     newly_claimed.append(exec_odno)
@@ -618,7 +652,29 @@ class Trader:
                     changed = True
                     if exec_odno:
                         newly_claimed.append(exec_odno)
-            elif status == "cancelled":
+            elif status in ("cancelled", "rejected"):
+                # rejected — KIS 국내선물 order_status가 rjct_qty>0을 이 어휘로 준다
+                # (kis_futures_broker). 종전엔 어느 분기에도 안 걸려 아래 unknown으로
+                # 떨어졌고, 당일 조회창엔 흔적이 남아 익일 회수도 못 해 7일 GC까지
+                # pending·멱등 게이트가 함께 잠겼다. 취소와 같은 종결이다(주문 소멸).
+                #
+                # ⚠ 종결 전에 **미기장 체결분을 먼저 기장**한다. 취소·거부는 체결과
+                # 배타가 아니다 — 부분체결 후 잔량 취소(장마감 자동취소가 대표적)나
+                # 부분체결 후 잔량 거부(rjct_qty>0)에서 filled_qty가 함께 온다.
+                # 종전엔 이 분기가 filled를 통째로 무시해 그 체결이 영구 미기장됐고,
+                # 다음 사이클 목표수렴이 "안 팔린 줄 알고" 되팔아 실손이 났다
+                # (2026-07-14 drift 되팔기와 같은 부류). 게이트를 푸는 지금은 더
+                # 위험하다 — 종전엔 pending 잔존이 우연히 그 오류를 덮었다.
+                _cf = int(st.get("filled_qty", 0) or 0)
+                _already = int(p.get("filled_so_far", 0) or 0)
+                if _cf > _already:
+                    self._apply_fill(order_no, p, _cf - _already,
+                                     float(st.get("fill_price", 0) or 0), decisions)
+                    log.warning("[%s] 종결 전 미기장 체결 %d주 기장 — %s",
+                                order_no, _cf - _already, status)
+                _why = ("주문 거부(rjct) — 브로커가 주문을 생성하지 않음"
+                        if status == "rejected"
+                        else "미체결 cancelled (장마감 자동 취소 또는 외부 취소)")
                 order_log.log_order("cancelled", p["symbol"], p["side"], p["qty"],
                                     order_no=order_no,
                                     intended_price=p.get("intended_price"),
@@ -627,9 +683,9 @@ class Trader:
                                     kind=p.get("kind", ""))
                 decisions.append(order_log.decision(
                     "unfilled", p.get("strategy_id", ""),
-                    p.get("strategy_name", ""), p["symbol"],
-                    "미체결 cancelled (장마감 자동 취소 또는 외부 취소)"))
+                    p.get("strategy_name", ""), p["symbol"], _why))
                 del self.pending[order_no]
+                self._resolve_intent(p, status)
                 changed = True
             else:
                 # 여전히 미확인 — 다음 폴링/사이클에서 재확인. 로컬 timeout 없음.
@@ -661,6 +717,7 @@ class Trader:
                         p.get("strategy_name", ""), p.get("symbol", ""),
                         "상태 미확인 7일 경과 — 추적 만료(GC)"))
                     del self.pending[order_no]
+                    self._resolve_intent(p, "gc")
                     changed = True
         if newly_claimed:
             _register_claimed_fills(newly_claimed)
@@ -714,6 +771,7 @@ class Trader:
                         "상태였음(크래시 추정). 기장 후 종결", order_no, symbol, delta,
                         sub_day.isoformat())
             del self.pending[order_no]
+            self._resolve_intent(p, "reclaimed_filled")
             return True
         # 무흔적(접수 실패 추정) 또는 미체결/취소 — DAY 만료 확정.
         order_log.log_order("timeout", symbol, p.get("side", ""), p.get("qty", 0),
@@ -728,6 +786,7 @@ class Trader:
             symbol, f"DAY 만료 확정 — 제출일({sub_day.isoformat()}) 체결내역 "
                     "무체결, 익일 회수(R2)"))
         del self.pending[order_no]
+        self._resolve_intent(p, "reclaimed_expired")
         return True
 
     def _record_contract_meta(self, sid: str, symbol: str) -> None:
@@ -1278,7 +1337,16 @@ class Trader:
 
     def _submit_sell(self, sid: str, strat_name: str, symbol: str, qty: int,
                      ref_price: float, policy: dict, reason: str,
-                     decisions: list[dict], liquidation: bool = False) -> None:
+                     decisions: list[dict], liquidation: bool = False) -> bool:
+        """반환: **이 호출이 실제로 브로커에 주문을 접수시켰나**.
+
+        종전엔 항상 None이라 호출자가 "멱등 차단됐다 / 거부됐다 / 접수됐다"를 구분할
+        수 없었다. catch-up 손절 배너가 그 정보 없이 `decisions` 증가분으로 발주 수를
+        추정하다 **양방향으로 틀렸다** — 접수됐지만 미체결이면 decision이 없어 0으로
+        세고(허위 안전신호), 멱등 차단·예외·거부는 decision을 남겨 발주로 셌다.
+        발주 예외(ambiguous — 접수됐을 수도 있음)는 보수적으로 False: "우리가 주문을
+        냈다"고 유저에게 단언하지 않는다(그 사건은 error 결정으로 따로 표면화된다).
+        """
         # L-01: 매도 멱등 단일 게이트(모든 매도 경로 공유) — 오늘 같은 (sid, symbol)
         # 매도 intent가 활성이면 재발주 차단. EOD cycle·장중 tick 손절·catch-up이
         # 첫 매도 미체결(KIS 잔고 미감소)인 동안 같은 포지션을 동시 평가해도 이중매도를
@@ -1291,7 +1359,7 @@ class Trader:
                 "skip_idempotent", sid, strat_name, symbol,
                 "오늘 이미 발주된 매도 intent 존재 — 중복 차단"))
             log.info("[L-01] 중복 매도 차단 %s/%s", sid, symbol)
-            return
+            return False
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell",
                       qty, ref_price)
@@ -1310,7 +1378,7 @@ class Trader:
                 log.error("미국 예약매도 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
-                return
+                return False
             log.info("[us-resv] %s 예약매도 지정가 limit=%s", symbol, limit)
         elif _currency_of(symbol) == "USD":
             # 미국 즉시매도(종가 청산 cycle) — 지정가(00). KIS 연속장 시장가 미지원이라
@@ -1326,7 +1394,7 @@ class Trader:
                 log.error("미국 매도 지정가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
-                return
+                return False
             log.info("[us-close] %s 즉시 매도 지정가 limit=%s", symbol, limit)
         else:
             # 국내 즉시 매도 — 시장가. 종가 동시호가 발주 → 종가 단일가 체결.
@@ -1341,12 +1409,13 @@ class Trader:
                 log.error("매도 시장가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
-                return
+                return False
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
-        self._after_submit(r, sid, strat_name, None, symbol, "sell", qty,
-                            ref_price, limit, policy, decisions, reason=reason,
-                            today_iso=today_iso, intent_id=intent_id, kind="청산",
-                            liquidation=liquidation)
+        return self._after_submit(
+            r, sid, strat_name, None, symbol, "sell", qty,
+            ref_price, limit, policy, decisions, reason=reason,
+            today_iso=today_iso, intent_id=intent_id, kind="청산",
+            liquidation=liquidation)
 
     def _submit_close_short(self, sid: str, strat_name: str, symbol: str, qty: int,
                             ref_price: float, policy: dict, reason: str,
@@ -1421,8 +1490,11 @@ class Trader:
                       policy: dict, decisions: list[dict], reason: str,
                       today_iso: str = "", intent_id: str = "",
                       kind: str = "", liquidation: bool = False,
-                      drift: bool = False) -> None:
+                      drift: bool = False) -> bool:
         """submit 결과를 후처리: pending 등록 / 즉시 체결 반영 / 거부 로깅.
+
+        반환: **브로커가 주문을 실제로 받았나**(거부=False, 접수·즉시체결=True).
+        호출자가 "주문을 냈다"를 유저에게 보고할 때 쓴다(_submit_sell docstring 참조).
 
         kind: "진입"|"청산"|"교정" — 발주 메서드가 명시(_submit_buy·_submit_open_short=진입,
         _submit_sell·_submit_close_short=청산, _submit_drift=교정). pending 레코드에 실어
@@ -1446,13 +1518,17 @@ class Trader:
             if intent_id:
                 intents.mark_failed(today_iso, intent_id,
                                     f"KIS 거부: {r.get('message', '')}")
-            return
+            return False
         p = {
             "order_no": order_no, "strategy_id": sid,
             "strategy_name": strat_name, "symbol": symbol, "side": side,
             "qty": qty, "limit_price": limit_price,
             "intended_price": intended_price,
             "submitted_ts": time.time(),
+            # L-01 종결 배선 — 이 주문이 pending에서 사라질 때 어느 intent를 닫아야
+            # 하는지. order_no로 저널을 역스캔할 수도 있지만, 정정·재접수로 번호가
+            # 바뀌거나 ambiguous가 콤마결합 번호를 쓰는 경우가 있어 직접 싣는다.
+            "intent_id": intent_id, "intent_date": today_iso,
             # Q7: timeout_sec 필드 제거 — _resolve_pending이 timeout cancel을
             # 더 이상 사용하지 않음. KIS DAY 정책으로 마감 시 자동 cancel.
             "definition": strat_def or {}, "reason": reason, "kind": kind,
@@ -1476,7 +1552,8 @@ class Trader:
         fill_price = float(r.get("price", 0) or 0)
         if filled >= qty and fill_price > 0:
             self._apply_fill(order_no, p, filled, fill_price, decisions)
-            return
+            self._resolve_intent(p, "filled")   # pending을 거치지 않는 종결 경로
+            return True
         # 그렇지 않으면 pending에 등록 → 다음 사이클 또는 _wait_pending이 폴링.
         # M3: pending 등록도 cycle·WS 체결 thread와 같은 락으로 직렬화.
         with _CYCLE_LOCK:
@@ -1484,6 +1561,7 @@ class Trader:
             # M9/L-01: 발주 직후 즉시 영속 — cycle 끝 저장까지의 크래시 유실창 제거
             # (intents 저널이 중복발주는 막지만, pending 유실은 체결 추적을 끊었다).
             self._save()
+        return True
 
     def _wait_pending(self, timeout_sec: int, poll_sec: int,
                       decisions: list[dict]) -> None:
@@ -2647,6 +2725,11 @@ class Trader:
             plan_intents, ledger_signed, broker_signed,
             excluded_keys, symbol_of=symbol_of, external_pending=ext_signed)
 
+        # 목표를 확정한 심볼 = plan이 만들어진 심볼. indeterminate(§13 판정 불가)는
+        # build_symbol_plans가 이미 제외하므로 "목표 0"과 "목표 없음"이 여기서 갈린다.
+        # 가드가 이 목록을 자기 우주에 더해 원장 행이 없는 목표도 감시한다.
+        self._target_syms = sorted({p.symbol for p in plans})
+
         n_netted = 0
         commission_saved = 0.0
         n_drift = 0
@@ -2812,6 +2895,9 @@ class Trader:
                            "n_netted": int(n_netted),
                            "commission_saved_krw": round(commission_saved, 2),
                            "n_drift": int(n_drift),
+                           # 가드 우주용 — 아침 요약과 같은 계약(위 cycle_summary 주석).
+                           # 마감창은 장 종료로 창밖 교정 기회가 없어 특히 중요하다.
+                           "target_symbols": list(self._target_syms),
                            "n_bought": n_bought})
 
     def liquidate_day_trades(self, dataset: dict, instrument_class: str, *,
@@ -3458,6 +3544,9 @@ class Trader:
             # 수동 주문. 종전엔 INFO 로그뿐이라 원격 진단이 불가했다.
             # {"__error__": ...}면 조회 실패로 A1 skip(개장후 수렴이 백업).
             "external_pending": dict(self._a1_trace),
+            # 이번 창이 목표를 확정한 심볼(목표 0 포함) — 동시호가 가드가 우주에
+            # 더해 원장 행 없는 목표까지 감시한다(auction_guard._window_summary).
+            "target_symbols": list(self._target_syms),
             "kill_switch": ks_active,
             "equity_pre": equity_now,
             "equity_post": equity_post,    # ε: 통합 자산(KRW) — equity_pre와 동일 정의

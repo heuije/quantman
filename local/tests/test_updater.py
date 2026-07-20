@@ -93,3 +93,50 @@ def test_updater_bat_swap_succeeds_when_cmd_cwd_is_install_dir(tmp_path):
     assert (install / "marker_new.txt").exists(), "스왑 실패 — 새 빌드 미적용(cwd 자기잠금?)"
     assert (install / "_internal" / "python311.dll").exists(), "_internal 미복사"
     assert not (install / "marker_old.txt").exists(), "옛 빌드 잔존 — clean replace 안 됨"
+
+
+# bat 라벨은 **줄 단위**로 잡는다 — `goto :LOCKED`가 라벨보다 먼저 나오므로
+# 단순 index(":LOCKED")는 goto를 집어 :ROLLBACK 블록까지 슬라이스에 섞인다.
+# 그 블록엔 재실행이 있어 테스트가 **거짓 통과**한다(실제로 한 번 겪었다).
+_LABEL_LOCKED = "\r\n:LOCKED\r\n"
+_LABEL_NOTIFY = "\r\n:NOTIFY\r\n"
+
+
+def _locked_branch(tmp_path):
+    """생성된 updater.bat에서 :LOCKED ~ :NOTIFY 구간만 잘라 반환."""
+    from localapp.updater import _write_updater_bat
+
+    bat = tmp_path / "updater.bat"
+    exe = tmp_path / "app" / "MyStock.exe"
+    _write_updater_bat(bat, tmp_path / "src" / "app", tmp_path / "app", exe)
+    content = bat.read_bytes().decode("cp949", errors="replace")
+    lo = content.index(_LABEL_LOCKED)
+    return content[lo:content.index(_LABEL_NOTIFY, lo)], exe
+
+
+# ── N7 — :LOCKED 분기가 앱을 재시작하지 않아 자동매매가 완전 정지하던 결함 ──
+def test_updater_bat_restarts_app_when_swap_locked(tmp_path):
+    """폴더 잠금으로 스왑 실패(:LOCKED) 시에도 앱을 재실행한다.
+
+    bat은 스왑 **전에** 이미 앱을 taskkill한다. :LOCKED 라벨엔 재실행 줄이 없어
+    곧바로 :NOTIFY(MessageBox)로 fall-through했다 — 결과는 "앱 강제종료 + 미재시작"
+    = 자동매매 완전 정지. :ROLLBACK엔 재실행이 있는데 :LOCKED만 빠져 있었다.
+
+    재실행은 **MessageBox 앞**이어야 한다 — powershell MessageBox::Show는 사용자가
+    OK를 누를 때까지 블로킹이라, 뒤에 두면 그동안 앱이 죽은 채로 남는다.
+    """
+    branch, exe = _locked_branch(tmp_path)
+    assert "start " in branch, ":LOCKED에 앱 재실행이 없다 — 앱이 죽은 채 잔존"
+    assert str(exe) in branch
+
+
+def test_updater_bat_locked_leaves_diagnosable_trace(tmp_path):
+    """:LOCKED 실패가 사후 판별 가능한 흔적을 남긴다.
+
+    종전엔 MessageBox 하나뿐이고 그마저 :ROLLBACK과 문구가 같아 구분 불가였다.
+    bat은 자기 자신을 삭제하고 앱은 taskkill로 죽어 로그도 못 남긴다.
+    """
+    branch, _ = _locked_branch(tmp_path)
+    assert "quantman-update.log" in branch, "실패 흔적이 어디에도 안 남는다"
+
+
