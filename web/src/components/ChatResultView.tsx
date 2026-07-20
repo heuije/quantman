@@ -567,6 +567,16 @@ export default function ChatResultView({ result, hideMethodology }: Props & { hi
   const [live, setLive] = useState<{ ir: Record<string, unknown> | undefined; result: Record<string, unknown> }>(
     { ir: ir0, result },
   );
+  // 대화 세션 전환 시 도표만 직전 대화 값으로 고정되던 버그(희제 실사용 신고) 수정:
+  // 챗 메시지 리스트가 index key라 세션을 바꿔도 같은 ChatResultView 인스턴스가 재사용되는데,
+  // live는 useState 초기값(마운트 1회)이라 result prop이 바뀌어도 갱신되지 않아 차트가 이전
+  // 결과로 남았다(텍스트는 parts 직접 렌더라 정상 — 증상과 일치). result 참조가 바뀌면(=다른
+  // 분석) live를 새 결과로 리셋한다(React 권장 '렌더 중 상태 조정'·변수조정 미리보기는 그대로).
+  const [baseResult, setBaseResult] = useState(result);
+  if (result !== baseResult) {
+    setBaseResult(result);
+    setLive({ ir: ir0, result });
+  }
   // 엑셀 버튼은 증빙 지원 형상에만 — 시각화 전용 형상(상관 히트맵 등)은 숨김.
   const shape = (live.result as { shape?: string }).shape
     ?? deriveShape(live.result as unknown as IrStrategyResult);
