@@ -210,6 +210,17 @@ def test_flat_capacity_sizing_manual_same_direction(isolated_trader):
         f"빈-상태(10) − 보유(2) = 순매수 8이어야 — 실제 {[(o['side'],o['qty']) for o in broker.submitted]}"
     assert not [o for o in broker.submitted if o["side"] == "sell"]
     assert payload["cycle_summary"]["n_drift"] == 0     # 수동 2는 인수(book)·drift 아님
+    # 관측(2026-07-20) — 흡수 사실이 명시돼야 한다. mwmw 07-20 조사에서 "브로커 4계약
+    # 중 2는 무엇인가"를 넷팅 leg로 역산해야 했던 것의 근본 해소.
+    cs = payload["cycle_summary"]
+    assert cs["n_absorbed_external"] == 1
+    absorbed = [d for d in payload["decisions"] if d["action"] == "absorbed_external"]
+    assert len(absorbed) == 1 and absorbed[0]["symbol"] == SYM
+    assert "2" in absorbed[0]["reason"]                 # 흡수 수량이 사유에 남음
+    # 관측 — 목표 수량의 근거(브로커 원값 8 + 되돌림 크레딧 2 = 10, 100% → 목표 10)
+    tr = cs["sizing"][f"{SYM}|long"]
+    assert tr["orderable_raw"] == 8 and tr["credit"] == 2
+    assert tr["capacity"] == 10 and tr["target"] == 10
 
 
 def test_flat_capacity_manual_credit_applies_opposite_direction(isolated_trader):

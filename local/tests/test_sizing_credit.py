@@ -235,3 +235,40 @@ def test_router_expected_fill_price_delegation():
                         resolve=lambda s: s).expected_fill_price("005930") == 0.0
     assert BrokerRouter(stock=None, futures=None,
                         resolve=lambda s: s).expected_fill_price("005930") == 0.0
+
+
+# ── 관측(2026-07-20) — 사이징 근거·원장 밖 흡수 기록 ──────────────────────────
+# mwmw 07-20 조사에서 "목표가 왜 N인가"와 "브로커 4계약 중 2는 무엇인가"를
+# 원장 산술로 역산해야 했다. 그 두 사실을 사이클 요약·결정에 명시화한 계약을 고정한다.
+def test_trace_sizing_records_breakdown():
+    """브로커 원값과 크레딧이 **분리** 보존돼야 목표 역산이 불필요해진다."""
+    t = Trader.__new__(Trader)
+    t._sizing_trace = {}
+    t._trace_sizing(S, "long", orderable_raw=6, credit=4, capacity=10,
+                    pct=50.0, target=5)
+    tr = t._sizing_trace[f"{S}|long"]
+    assert tr == {"orderable_raw": 6, "credit": 4, "capacity": 10,
+                  "pct": 50.0, "target": 5}
+    # capacity = 원값 + 크레딧, target = floor(pct% × capacity) 가 읽는 쪽에서 검산 가능
+    assert tr["capacity"] == tr["orderable_raw"] + tr["credit"]
+    assert tr["target"] == int(tr["capacity"] * tr["pct"] / 100.0)
+
+
+def test_trace_sizing_marks_orderable_query_failure():
+    """브로커 조회 실패(발주 보류)는 orderable_raw=None으로 구분 — 0계약과 다른 사유."""
+    t = Trader.__new__(Trader)
+    t._sizing_trace = {}
+    t._trace_sizing(S, "long", orderable_raw=None, credit=0, capacity=None,
+                    pct=None, target=0)
+    tr = t._sizing_trace[f"{S}|long"]
+    assert tr["orderable_raw"] is None and tr["target"] == 0
+
+
+def test_trace_sizing_keys_by_symbol_and_side():
+    """롱·숏 진입이 같은 사이클에 있으면 각각 보존(덮어쓰기 금지)."""
+    t = Trader.__new__(Trader)
+    t._sizing_trace = {}
+    t._trace_sizing(S, "long", orderable_raw=6, credit=0, capacity=6, pct=50.0, target=3)
+    t._trace_sizing(S, "short", orderable_raw=8, credit=2, capacity=10, pct=50.0, target=5)
+    assert set(t._sizing_trace) == {f"{S}|long", f"{S}|short"}
+    assert t._sizing_trace[f"{S}|short"]["target"] == 5

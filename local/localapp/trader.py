@@ -342,6 +342,10 @@ class Trader:
         self.ledger: dict[str, dict] = _load_json(LEDGER_PATH, {})
         self.equity: list[dict] = _load_json(EQUITY_PATH, [])
         self.pending: dict[str, dict] = _load_json(PENDING_ORDERS_PATH, {})
+        # 사이클 사이징 근거(관측 전용·2026-07-20) — {symbol|side: {...}}. 사이클 시작에
+        # 비우고 요약에 실어 보낸다. 목표 수량의 근거(브로커 원값·크레딧·사용률)가 서버에
+        # 없어 mwmw 07-20 조사에서 원장 산술로 역산해야 했던 것의 근본 해소.
+        self._sizing_trace: dict[str, dict] = {}
         # 미국 매수여력 모드 (cycle에서 risk_limits로 설정). 기본 통합증거금.
         self._us_bp_mode: str = "integrated"
         # Q5: 체결 후(_apply_fill) 즉시 kill switch 평가용 한도. cycle 진입 시
@@ -1031,6 +1035,16 @@ class Trader:
             {"closed": n_closed, "external": external,
              "realized": round(realized_total, 2)}))
 
+    def _trace_sizing(self, symbol: str, pos_side: str, *, orderable_raw,
+                      credit: int, capacity, pct, target: int) -> None:
+        """모델A 사이징 근거 1건 보존 — 관측 전용(사이징 결과에 영향 없음).
+
+        capacity = orderable_raw + credit("빈 상태 최대"), target = floor(pct% × capacity).
+        orderable_raw=None은 브로커 조회 실패(발주 보류)를 뜻한다."""
+        self._sizing_trace[f"{symbol}|{pos_side}"] = {
+            "orderable_raw": orderable_raw, "credit": int(credit),
+            "capacity": capacity, "pct": pct, "target": int(target)}
+
     def _apply_netted_leg(self, leg, decisions: list[dict],
                           reason: str | None = None) -> None:
         """넷팅 핸드오프 1건(진입/청산 leg)을 합성 체결로 원장 반영 — 브로커 미호출·수수료 0.
@@ -1672,6 +1686,11 @@ class Trader:
             if oq_fn is not None:
                 side = "sell" if is_short else "buy"
                 orderable = oq_fn(symbol, side, prev_close)
+                # 관측(2026-07-20): 브로커 원값과 크레딧을 분리 보존 — 합산 후 값만 남기면
+                # "목표가 왜 N인가"를 사후에 역산해야 한다(mwmw 07-20 조사 실비용).
+                _orderable_raw = int(orderable) if orderable is not None else None
+                _credit = (int(credit_for(capacity_credit, symbol, _pos_side))
+                           if (orderable is not None and capacity_credit) else 0)
                 if orderable is not None and capacity_credit:
                     # E1/N7/§18: 같은-계약 보유가 되돌려줄 여력(계약수)을 크레딧 — orderable은
                     # 브로커의 **신규**주문가능수량(LS NewOrdAbleQty·청산분 제외)이라 여기에
@@ -1687,11 +1706,17 @@ class Trader:
                     qty = 0
                     log.warning("[모델A] %s 브로커 주문가능수량 조회 실패 — 발주 보류"
                                 "(카탈로그 추정 2배 과대 사이징 회피)", symbol)
+                    self._trace_sizing(symbol, _pos_side, orderable_raw=None,
+                                       credit=0, capacity=None, pct=None, target=0)
                 else:
                     pct = ir_live.futures_margin_pct_of(_ir)
                     qty = ir_live.model_a_qty(qty, orderable, pct)
-                    log.info("[모델A] %s 주문가능 %d계약 → %d계약 (%s)", symbol, orderable, qty,
+                    log.info("[모델A] %s 주문가능 %d(브로커 %s + 크레딧 %d) → 목표 %d계약 (%s)",
+                             symbol, orderable, _orderable_raw, _credit, qty,
                              f"사용률 {pct:g}%" if pct is not None else "정액 클램프")
+                    self._trace_sizing(symbol, _pos_side, orderable_raw=_orderable_raw,
+                                       credit=_credit, capacity=orderable, pct=pct,
+                                       target=int(qty))
 
         # 가용 현금 한도 — 주식만. 선물은 event_buy_qty가 이미 증거금으로 클램프했고,
         # cash//prev_close(현금÷지수가)는 선물 계약수에 무의미(과대 → 비바인딩)하므로 제외.
@@ -2436,6 +2461,16 @@ class Trader:
             for (sym, side), remaining in _avail.items():
                 if remaining <= 0:
                     continue
+                # 관측(2026-07-20) — 계획 청산으로 소비되고 남은 이 잔량이 곧 **원장 밖
+                # 브로커 보유**(수동/외부 체결분)다. 엔진은 이미 이걸 알고 사이징 크레딧에
+                # 넣고 목표에 흡수하는데, 아무 기록도 남기지 않아 mwmw 07-20 조사에서
+                # 넷팅 leg로 역산해야 했다. 여기서 명시한다(사이징·발주에 영향 없음).
+                decisions.append(order_log.decision(
+                    "absorbed_external", "", "", sym,
+                    f"원장 밖 브로커 보유 {side} {int(remaining)} — 전략 목표에 흡수"
+                    "(수동/외부 체결 추정 · 사이징 되돌림 크레딧 포함)"))
+                log.warning("[흡수] 원장 밖 보유 %s %s %d계약 — 목표에 편입(외부 체결 추정)",
+                            sym, side, int(remaining))
                 if qc.is_futures(sym):
                     extra_capacity[(sym, side)] = remaining
                 else:
@@ -3144,6 +3179,7 @@ class Trader:
                      instrument_class: str | None = None) -> dict:
         today = today or kst_today()
         decisions: list[dict] = []
+        self._sizing_trace = {}          # 이번 사이클 근거만 담기(관측 전용)
 
         # 옛 Phase 48 P1-B의 시간 기반 KIS 점검 가드(평일 03:00~06:00 등)는 제거.
         # 이유: KIS 공식 점검 시간 doc 부재로 보수적 추정 차단했으나, 실측 probe
@@ -3359,6 +3395,13 @@ class Trader:
             "n_pending_unresolved": sum(
                 1 for p in self.pending.values()
                 if _market_group_safe(p.get("symbol", "")) == market),
+            # 관측(2026-07-20) — 목표 수량의 근거. "왜 N계약인가"를 서버에서 즉답하기
+            # 위한 사이징 추적(브로커 원값·크레딧·사용률·목표). 빈 dict면 미해당(주식·sim).
+            "sizing": dict(self._sizing_trace),
+            # 원장 밖 브로커 보유를 전략 목표에 흡수한 건수 — 넷팅 leg에서 역산해야
+            # 했던 것(mwmw 07-20)을 명시화. 상세는 decisions의 absorbed_external.
+            "n_absorbed_external": sum(
+                1 for d in decisions if d["action"] == "absorbed_external"),
             "kill_switch": ks_active,
             "equity_pre": equity_now,
             "equity_post": equity_post,    # ε: 통합 자산(KRW) — equity_pre와 동일 정의
