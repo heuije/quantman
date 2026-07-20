@@ -4,8 +4,9 @@
   (symbol, None) = **방향무관 풀(원칙)** — 계획 청산·원장 밖(수동) 보유 모두 "빈-상태
                    잔고 기준"으로 진입 방향과 무관하게 크레딧(갈아타기 포함).
   (symbol, side) = **같은-편 강등 풀** — 선물인데 브로커 orderable의 '신규 전용' 여부가
-                   미확정(KIS TTTO5105R 실측 대기)일 때 _credit_key가 강등하는 안전 게이트
-                   (합산 의미면 반대편 orderable에 청산분이 이미 포함 → 이중계상 방지).
+                   미확정일 때 _credit_key가 강등하는 안전 게이트(합산 의미면 반대편
+                   orderable에 청산분이 이미 포함 → 이중계상 방지). LS·KIS 국내선물은
+                   둘 다 신규 전용으로 실측 확정(2026-07-20) — 게이트는 미확정 어댑터용.
 
 시나리오 레벨(원장·발주·체결)은 tests/scenarios/test_target_reconciliation.py.
 """
@@ -132,7 +133,7 @@ def test_credit_key_direction_free_on_new_only_broker():
 
 
 def test_credit_key_demotes_futures_on_unconfirmed_broker():
-    """미확정 브로커(KIS TTTO5105R 실측 전) — 같은-편 키 강등(반대편 이중계상 방지)."""
+    """미확정 브로커 — 같은-편 키 강등(반대편 이중계상 방지)."""
     assert _StubTrader(_StubBroker(False))._credit_key(S, "long") == (S, "long")
 
 
@@ -200,11 +201,29 @@ def test_freed_capacity_stock_uses_live_price_over_intent_ref():
 
 # ── 어댑터 플래그·라우터 위임 계약 ────────────────────────────────────────────
 def test_broker_flags_contract():
-    """KIS는 TTTO5105R ord_psbl_qty 의미 실측(모의 왕복) 확정 전 False 잠금."""
+    """두 국내선물 어댑터 모두 orderable = **신규 전용** 실측 확정.
+
+    LS CFOAQ10100 NewOrdAbleQty(2026-07-16) · KIS TTTO5105R ord_psbl_qty(2026-07-20:
+    무보유 9/9 → 롱1 보유 후 8/8 — 합산이면 sell이 9로 유지됐어야 함).
+    """
     from localapp.kis_futures_broker import KisFuturesBroker
     from localapp.ls_futures_broker import LsFuturesBroker
     assert LsFuturesBroker.ORDERABLE_NEW_ONLY is True
-    assert KisFuturesBroker.ORDERABLE_NEW_ONLY is False
+    assert KisFuturesBroker.ORDERABLE_NEW_ONLY is True
+
+
+def test_kis_futures_reaches_direction_free_credit_pool():
+    """실 어댑터 경로 잠금 — KIS 선물도 라우터를 거쳐 방향무관(갈아타기) 크레딧을 받는다.
+
+    플래그가 되돌아가면 사이징이 조용히 과소해지므로(리버설만 손해) 클래스로 고정한다.
+    """
+    from localapp.broker_router import BrokerRouter
+    from localapp.kis_futures_broker import KisFuturesBroker
+
+    r = BrokerRouter(stock=None, futures=KisFuturesBroker.__new__(KisFuturesBroker),
+                     resolve=lambda s: "101V6000")
+    assert r.orderable_new_only(S) is True
+    assert _StubTrader(r)._credit_key(S, "long") == (S, None)
 
 
 def test_router_delegates_flag_and_defaults_false():

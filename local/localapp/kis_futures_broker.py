@@ -315,15 +315,18 @@ def normalize_order_resp(d: dict) -> dict:
 class KisFuturesBroker:
     """국내선물옵션 거래 클라이언트(계약수 기반). 선물옵션 계좌 자격증명을 로컬에서 읽는다.
 
-    ⚠ standalone — Trader 자동 루프에 배선되지 않음(임의 발주 없음). 모의 검증 후 배선(#4 phase2).
+    선물 자격증명이 등록된 KIS 유저는 runner.make_broker()가 이 어댑터를
+    BrokerRouter의 futures 다리로 물린다 — 즉 자동 루프의 실발주 경로다.
+    (종전 docstring의 "standalone·미배선"은 배선 완료 후 갱신되지 않은 서술이었다.)
     """
 
-    # §18.2 리버설 크레딧 게이트 — TTTO5105R ord_psbl_qty가 '신규 전용'인지 '신규+청산 합산'
-    # 인지 미실측(KB 미기록). 합산이면 반대편 orderable에 보유 청산분이 이미 포함돼 크레딧이
-    # 이중계상(의도 초과 레버리지)되므로 실측 확정 전 False(리버설 크레딧만 같은-편 강등 —
-    # 같은-편 크레딧은 어느 의미에서도 안전). 모의 실측 후: 신규 전용이면 True로 전환,
-    # 합산이면 False 유지가 정답(orderable 자체가 이미 빈-상태 여력이라 크레딧 불요).
-    ORDERABLE_NEW_ONLY = False
+    # §18.2 리버설 크레딧 게이트 — TTTO5105R ord_psbl_qty = **신규 전용**(실측 확정).
+    # 실측 2026-07-20(KIS 모의 국내선물·코스피200): 무보유에서 buy 9 / sell 9 →
+    # 롱 1계약 보유 후 sell 8 / buy 8. '신규+청산 합산'이었다면 보유분 청산이 얹혀
+    # sell 이 9로 유지돼야 하는데 8로 줄었다 ⇒ 청산 여력이 포함되지 않는다.
+    # ⇒ 반대편 진입 사이징에 청산 회수증거금을 크레딧으로 더해도 이중계상이 아니다
+    #    (합산 의미였다면 크레딧이 의도 초과 레버리지가 되어 False 유지가 정답이었다).
+    ORDERABLE_NEW_ONLY = True
 
     def __init__(self):
         # 지연 import — 순수 헬퍼는 keyring 없이 테스트 가능

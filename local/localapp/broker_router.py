@@ -141,9 +141,10 @@ class BrokerRouter:
     def orderable_new_only(self, symbol) -> bool:
         """국내 선물 어댑터의 orderable '신규 전용' 확정 플래그(§18.2 리버설 크레딧 게이트).
 
-        True = 문서·실측으로 신규 전용 확정(LS CFOAQ10100 NewOrdAbleQty) — 반대편(갈아타기)
-        진입 크레딧을 더해도 이중계상이 없다. False = 미확정(KIS TTTO5105R 실측 대기)·주식·
-        해외선물(CME)·선물 미구성 — Trader가 리버설 크레딧을 같은-편으로 강등한다.
+        True = 문서·실측으로 신규 전용 확정(LS CFOAQ10100 NewOrdAbleQty 07-16 ·
+        KIS TTTO5105R ord_psbl_qty 07-20) — 반대편(갈아타기) 진입 크레딧을 더해도
+        이중계상이 없다. False = 미확정 어댑터·주식·해외선물(CME)·선물 미구성 —
+        Trader가 리버설 크레딧을 같은-편으로 강등한다.
         네트워크 조회가 아니라 어댑터 클래스 플래그 읽기라 예외 경로가 없다."""
         if not self._is_fut(symbol) or futures_market(symbol) == "CME":
             return False

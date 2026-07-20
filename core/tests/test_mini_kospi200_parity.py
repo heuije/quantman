@@ -29,7 +29,11 @@ def test_mini_catalog_is_kr_futures_one_fifth_multiplier():
     sp = instrument_spec(MINI)
     assert is_futures(MINI) and instrument_category(MINI) == "kr_futures"
     assert sp.multiplier == instrument_spec(REG).multiplier / 5   # 50,000 = 250,000/5
-    assert sp.currency == "KRW" and sp.tick == instrument_spec(REG).tick
+    assert sp.currency == "KRW"
+    # 호가단위는 정규와 **다르다** — 미니 0.02 vs 정규 0.05(실측 2026-07-20 LS t8435
+    # 마스터·0.05 배수 지정가의 `01403 호가단위` 거부). 데이터는 정규 패널 앨리어스라
+    # "미니 = 정규 축소판"으로 보기 쉬운데, 틱만은 승수처럼 비례하지 않는다.
+    assert sp.tick == 0.02 and instrument_spec(REG).tick == 0.05
 
 
 def _always_true() -> Node:
