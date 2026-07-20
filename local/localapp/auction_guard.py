@@ -68,6 +68,11 @@ _MAX_RESTORES_PER_SYMBOL = 2
 # 경우(사이징 0·DRIFT 멱등·하드컷)가 있어 상한이 없으면 창 내내 매 틱 사이클을 돈다.
 _MAX_CONVERGE_RERUNS = 2
 
+# 창 **전체**의 목표 미달 재실행 총량 상한(심볼 무관). 심볼별 상한만 두면 갭 심볼이
+# 시차를 두고 나타날 때 창 내내 full cycle이 돌아 가드가 정작 감시를 못 한다 —
+# run_close_cycle은 동기 호출이라 그 시간만큼 폴링이 멈춘다.
+_MAX_GAP_RERUNS_PER_WINDOW = 3
+
 # 반복 틱마다 같은 내용이 재발생하는 관측 전용 결정 — 창당 심볼당 1회만 기록.
 _ONCE_ACTIONS = {"guard_ext_residual", "guard_own_giveup", "guard_skip_ambiguous",
                  "guard_hold_unsettled"}
@@ -149,6 +154,9 @@ class GuardPlan:
     trim_to: dict = field(default_factory=dict)
     # 목표 미달로 재실행을 요청한 심볼(창 누적 카운트용 — _MAX_CONVERGE_RERUNS).
     gap_symbols: list = field(default_factory=list)
+    # 이번 틱에 목표 미달 갭이 **관측된** 심볼(조치 여부 무관) — 실행부가 연속
+    # 관측 횟수를 누적해 미체결 조회 반영 지연 1틱짜리 헛갭을 걸러낸다.
+    gap_seen: list = field(default_factory=list)
 
 
 def _signed(side, qty) -> int:
@@ -205,7 +213,8 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
                        trimmed_to: dict | None = None,
                        now: datetime | None = None,
                        converge_reruns: dict | None = None,
-                       target_symbols: set | None = None) -> GuardPlan:
+                       target_symbols: set | None = None,
+                       gap_streak: dict | None = None) -> GuardPlan:
     """한 틱의 조치 계획(순수 — IO 없음, 단위 테스트 대상).
 
     own_intents: 이번 창의 활성 자동 의도
@@ -221,7 +230,9 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
     trimmed_to = trimmed_to or {}
     converge_reruns = converge_reruns or {}
     target_symbols = target_symbols or set()
+    gap_streak = gap_streak or {}
     gap_symbols: list = []
+    gap_seen: list = []
     cancels: list = []
     partials: set = set()
     trim_to: dict = {}
@@ -317,7 +328,24 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
             #
             # own 주문이 살아있으면 손대지 않는다 — 단일가에 체결될 몫이라 재발주는
             # 이중 발주 위험만 만든다(원주문·재발주가 같은 단일가에 둘 다 체결).
-            if op:
+            if op or oi:
+                # 우리 주문·의도가 살아있으면 손대지 않는다. `op`(브로커 미체결)만
+                # 보면 부족하다 — 저널엔 있는데 조회에 아직 안 보이는 구간이 있고,
+                # DRIFT 의도가 전략 의도를 상쇄해 oi_total==0인 조합에선 브랜치 ①도
+                # 통과한다. 둘 중 하나라도 있으면 보류.
+                continue
+            # 🔴 반영 지연 유예 — 외부 미체결이 "조회에 안 보임" **한 틱**만으로
+            # 실주문을 유발하면 안 된다. 미체결 조회는 10~20초 지연이 실측됐고
+            # (2026-07-20) 폴링은 10초다. 살아있는 수동 주문이 한 틱 안 보인 사이
+            # 재실행하면 drift 매도가 나가고 그 수동 주문도 단일가에 체결돼
+            # **오버셀**이 된다 — 브랜치 ①이 _OWN_SETTLE_SEC로 막는 것과 같은 부류.
+            # 연속 2틱(≈20초) 관측된 갭만 조치한다.
+            gap_seen.append(sym)
+            if gap_streak.get(sym, 0) < 1:
+                decisions.append(order_log.decision(
+                    "guard_gap_pending", "", "", sym,
+                    f"목표 미달 의심(D {d:+d}) — 미체결 조회 반영 지연 배제를 위해"
+                    " 다음 틱 재확인 후 조치"))
                 continue
             if converge_reruns.get(sym, 0) >= _MAX_CONVERGE_RERUNS:
                 decisions.append(order_log.decision(
@@ -362,7 +390,7 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
                 f"수동 초과 잔여 {want} {remain} — 취소 가능한 같은 방향 수동"
                 " 주문 소진 · 수렴 몫"))
     return GuardPlan(cancels, fails, restored, rerun, decisions, partials, trim_to,
-                     gap_symbols)
+                     gap_symbols, gap_seen)
 
 
 def run_auction_guard(instrument_class: str, window: str,
@@ -435,6 +463,12 @@ def run_auction_guard(instrument_class: str, window: str,
     restores: dict = {}
     # 창 누적 심볼별 "목표 미달 재실행" 횟수 — restores와 같은 패턴(상한 가드).
     converge: dict = {}
+    # 심볼별 **연속** 갭 관측 횟수. 미체결 조회 반영 지연으로 한 틱만 비어 보이는
+    # 헛갭을 걸러낸다 — 갭이 사라진 틱엔 0으로 리셋해야 '연속'이 성립한다.
+    gap_streak: dict = {}
+    # 창 전체 재실행 총량 상한 — 심볼별 상한만 있으면 갭 심볼이 시차를 두고
+    # 발생할 때 창 내내 full cycle이 돈다(가드가 감시를 못 하게 된다).
+    n_gap_reruns = 0
     # 창 누적 "취소 수리 후 남기려는 잔량"(주문번호 → 수량) — restores와 같은 패턴의
     # 창 상태. 취소가 **수리된 뒤에만** 기록한다(거절분을 기록하면 반대로 과소 취소).
     trimmed_to: dict = {}
@@ -523,7 +557,8 @@ def run_auction_guard(instrument_class: str, window: str,
                                       own_list, own_p, ext_p, restores,
                                       trimmed_to, now=kst_now(),
                                       converge_reruns=converge,
-                                      target_symbols=_target_syms)
+                                      target_symbols=_target_syms,
+                                      gap_streak=gap_streak)
             if plan.fail_intents:
                 # 관측 race 봉합(감사 9c): 발주 직후 OMS 반영 지연으로 "저널엔
                 # 있는데 미체결에 없음"이 유저 취소로 오인될 수 있다 — 한 번 더
@@ -535,7 +570,8 @@ def run_auction_guard(instrument_class: str, window: str,
                                           own_list, own_p, ext_p, restores,
                                           trimmed_to, now=kst_now(),
                                           converge_reruns=converge,
-                                          target_symbols=_target_syms)
+                                          target_symbols=_target_syms,
+                                          gap_streak=gap_streak)
 
             # 관측 결정은 조치 유무와 무관하게 기록(9f) — 반복류는 심볼당 1회.
             # emitted 마킹은 실제 기록 시점(하단)에만 — 실패 틱에 마킹만 되고
@@ -603,7 +639,21 @@ def run_auction_guard(instrument_class: str, window: str,
                     restores[s] = restores.get(s, 0) + 1
                 for gs in plan.gap_symbols:
                     converge[gs] = converge.get(gs, 0) + 1
-                if plan.rerun:
+                # 연속 관측 누적 — 이번 틱에 안 보인 심볼은 0으로 리셋(연속이라야
+                # 반영 지연 헛갭을 거른다).
+                _seen = set(plan.gap_seen)
+                for gs in list(gap_streak):
+                    if gs not in _seen:
+                        gap_streak[gs] = 0
+                for gs in _seen:
+                    gap_streak[gs] = gap_streak.get(gs, 0) + 1
+                if plan.rerun and plan.gap_symbols and                         n_gap_reruns >= _MAX_GAP_RERUNS_PER_WINDOW:
+                    log.warning("[가드] 창 재실행 총량 상한(%d) 도달 — 목표 미달 "
+                                "보정 중단(%s)", _MAX_GAP_RERUNS_PER_WINDOW,
+                                plan.gap_symbols)
+                elif plan.rerun:
+                    if plan.gap_symbols:
+                        n_gap_reruns += 1
                     try:
                         if window == "open":
                             run_cycle(market="KRX",

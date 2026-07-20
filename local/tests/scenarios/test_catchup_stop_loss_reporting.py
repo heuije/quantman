@@ -153,3 +153,52 @@ def test_banner_shows_close_window_catchup():
     유저는 아무것도 못 봤다."""
     out = _summary({"krx_close_futures": {"n_bought": 0, "n_sold": 1, "n_netted": 0}})
     assert "krx_close_futures" in out and "매도 1건" in out
+
+
+def test_intraday_hook_preserves_submit_result(isolated_trader, monkeypatch):
+    """🔴 장중 loop의 매도 hook이 `_submit_sell` 반환값을 삼키면 N8이 통째로 무효다.
+
+    intraday_loop은 push 훅을 걸려고 `trader._submit_sell`을 래퍼로 교체한다.
+    그 래퍼가 원 함수 반환값을 버리면 항상 None → `placed`가 falsy →
+    `submitted_count`가 영영 0. 그리고 영향은 장중 loop에 그치지 않는다 —
+    catch-up이 `trader._submit_sell`을 그대로 넘겨받으므로(catchup.py:529),
+    loop가 도는 08:30~15:45 내내 **catch-up 배너의 발주 수까지** 무효가 된다.
+
+    프로덕션 래퍼(`make_sell_hook`)를 직접 구동한다 — 재현물이 아니라.
+    """
+    from localapp import intraday_loop
+    t, broker = isolated_trader
+    _held(t, broker)
+    broker._prices[_SYM] = 66000
+    monkeypatch.setattr(intraday_loop, "_push_after_sell",
+                        lambda b, d: None, raising=False)
+
+    class _Mgr:
+        decisions: list = []
+
+    hook = intraday_loop.make_sell_hook(t, broker, _Mgr(), t._submit_sell)
+    placed = hook("s1", "손절전략", _SYM, 10, 70000.0,
+                  {"sell_tolerance_pct": 1.0}, "손절", [])
+    assert placed is True, "래퍼가 발주 성공 여부를 삼켰다 — N8 집계가 무효화된다"
+
+
+def test_intraday_hook_reports_blocked_submit_as_not_placed(isolated_trader, monkeypatch):
+    """멱등 차단으로 주문이 안 나갔으면 래퍼도 False를 전달한다."""
+    from localapp import intents, intraday_loop
+    from localapp.trader import kst_today
+    t, broker = isolated_trader
+    _held(t, broker)
+    broker._prices[_SYM] = 66000
+    monkeypatch.setattr(intraday_loop, "_push_after_sell",
+                        lambda b, d: None, raising=False)
+    iid = intents.new_intent_id()
+    today = kst_today().isoformat()
+    intents.begin(today, iid, "s1", "손절전략", _SYM, "sell", 10, 70000.0)
+    intents.mark_submitted(today, iid, "PRE-1")
+
+    class _Mgr:
+        decisions: list = []
+
+    hook = intraday_loop.make_sell_hook(t, broker, _Mgr(), t._submit_sell)
+    assert hook("s1", "손절전략", _SYM, 10, 70000.0,
+                {"sell_tolerance_pct": 1.0}, "손절", []) is False

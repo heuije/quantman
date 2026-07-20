@@ -100,3 +100,33 @@ def test_cancelled_order_releases_gate(isolated_trader):
 
     assert intents.is_active(_TODAY, _SID, _SYM, "sell") is False, \
         "취소 종결된 intent가 여전히 활성 — 정당한 재발주가 종일 차단됨"
+
+
+def test_partial_fill_then_cancel_books_the_fill_before_terminating(isolated_trader):
+    """🔴 취소·거부는 체결과 배타가 아니다 — 종결 전 미기장 체결분을 기장한다.
+
+    부분체결 후 잔량이 장마감 자동취소되면 `order_status`가 status=cancelled와
+    filled_qty>0을 함께 준다. 종전 분기는 filled를 통째로 무시하고 pending만 지워
+    그 체결이 **영구 미기장**됐다 — 다음 사이클 목표수렴이 "안 팔린 줄 알고"
+    되팔아 실손이 나는 부류(2026-07-14 drift 되팔기).
+
+    N1이 게이트까지 풀면서 더 위험해졌다: 종전엔 pending 잔존이 우연히 그 오류를
+    덮어줬는데(멱등 게이트 점유 = 재발주 차단), 이제는 덮이지 않는다.
+    """
+    t, broker = isolated_trader
+    broker._prices[_SYM] = 70000.0
+    scenario.buy_and_fill(t, broker, _SID, _SYM, 10, 70000.0)
+    qty_before = t.ledger[_SID]["qty"]
+    assert qty_before == 10
+
+    t._submit_sell(_SID, "T", _SYM, 10, 70000.0, _POLICY, "청산", [])
+    o1 = _sells(broker)[-1]["order_no"]
+    # 4주만 체결되고 잔량 6은 장마감 자동취소 — 브로커는 둘을 함께 보고한다.
+    broker._statuses[o1].update(status="cancelled", filled_qty=4,
+                                remain_qty=0, fill_price=69000.0)
+    t._resolve_pending([])
+
+    assert o1 not in t.pending
+    assert t.ledger[_SID]["qty"] == 6, (
+        f"체결 4주가 기장되지 않았다(원장 {t.ledger[_SID]['qty']}) — 다음 사이클이 "
+        "되팔아 실손")

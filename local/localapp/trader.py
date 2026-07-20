@@ -646,6 +646,21 @@ class Trader:
                 # (kis_futures_broker). 종전엔 어느 분기에도 안 걸려 아래 unknown으로
                 # 떨어졌고, 당일 조회창엔 흔적이 남아 익일 회수도 못 해 7일 GC까지
                 # pending·멱등 게이트가 함께 잠겼다. 취소와 같은 종결이다(주문 소멸).
+                #
+                # ⚠ 종결 전에 **미기장 체결분을 먼저 기장**한다. 취소·거부는 체결과
+                # 배타가 아니다 — 부분체결 후 잔량 취소(장마감 자동취소가 대표적)나
+                # 부분체결 후 잔량 거부(rjct_qty>0)에서 filled_qty가 함께 온다.
+                # 종전엔 이 분기가 filled를 통째로 무시해 그 체결이 영구 미기장됐고,
+                # 다음 사이클 목표수렴이 "안 팔린 줄 알고" 되팔아 실손이 났다
+                # (2026-07-14 drift 되팔기와 같은 부류). 게이트를 푸는 지금은 더
+                # 위험하다 — 종전엔 pending 잔존이 우연히 그 오류를 덮었다.
+                _cf = int(st.get("filled_qty", 0) or 0)
+                _already = int(p.get("filled_so_far", 0) or 0)
+                if _cf > _already:
+                    self._apply_fill(order_no, p, _cf - _already,
+                                     float(st.get("fill_price", 0) or 0), decisions)
+                    log.warning("[%s] 종결 전 미기장 체결 %d주 기장 — %s",
+                                order_no, _cf - _already, status)
                 _why = ("주문 거부(rjct) — 브로커가 주문을 생성하지 않음"
                         if status == "rejected"
                         else "미체결 cancelled (장마감 자동 취소 또는 외부 취소)")

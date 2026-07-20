@@ -328,6 +328,7 @@ def test_entry_dropped_when_hard_cutoff_passed_but_exit_proceeds(_close_env, mon
 
         def run_close_netting(self, buy_candidates, strategies, dataset, **kw):
             seen["buy_candidates"] = buy_candidates
+            seen["risk_limits"] = kw.get("risk_limits")
             return {"cycle_summary": {"kind": "day_trade_close"}}
 
     monkeypatch.setattr(runner, "Trader", _FakeTrader)
@@ -335,8 +336,11 @@ def test_entry_dropped_when_hard_cutoff_passed_but_exit_proceeds(_close_env, mon
     out = runner._close_cycle_once("KRX", "futures")
 
     assert seen["buy_candidates"] == [], "컷오프 이후인데 진입 후보가 살아있다"
-    assert "run_close_netting" or True   # 청산 경로는 호출됨(위 seen이 증거)
     assert out["cycle_summary"].get("entry_cutoff_missed") is True
+    # 🔴 진입을 잘라도 risk_limits는 가져와야 한다 — 그날 마지막 일일손실 한도
+    # 재평가·킬스위치 판정의 입력이고, 킬스위치는 수동 해제까지 영속하는 상태라
+    # 여기서 건너뛰면 breach가 영구 소실된다.
+    assert seen["risk_limits"] is not None, "컷 초과 사이클에서 킬스위치 평가가 소실"
 
 
 def test_entry_kept_when_within_cutoff(_close_env, monkeypatch):

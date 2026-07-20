@@ -124,7 +124,9 @@ def test_uncovered_gap_reruns_when_no_live_order_remains():
     수동 매도4를 믿고 청산을 book했는데 유저가 취소한 형상. 자를 외부 주문이
     없으므로 종전엔 `not exts`로 조용히 넘어갔다(= 오버나이트 확정).
     """
-    plan = plan_guard_actions({S: 4}, {}, [], [], [], target_symbols={S})
+    # gap_streak={S: 1} = 직전 틱에도 같은 갭을 봤다(연속 2틱 = 반영 지연 배제).
+    plan = plan_guard_actions({S: 4}, {}, [], [], [], target_symbols={S},
+                              gap_streak={S: 1})
     assert plan.rerun is True, "목표와 현실이 어긋났는데 재실행이 발동하지 않음"
     assert plan.cancels == [] and plan.fail_intents == [], \
         "미달 보정은 취소·intent 되돌림이 아니라 재실행으로만"
@@ -149,6 +151,33 @@ def test_uncovered_gap_not_triggered_while_own_order_live():
     assert plan.rerun is False
 
 
+def test_uncovered_gap_first_observation_does_not_order():
+    """🔴 한 틱만 보인 갭으로는 절대 발주하지 않는다 — 반영 지연 배제.
+
+    미체결 조회는 10~20초 지연이 실측됐고(2026-07-20) 폴링은 10초다. 살아있는
+    수동 주문이 한 틱 안 보인 사이 재실행하면 drift 매도가 나가고, 그 수동 주문도
+    단일가에 체결돼 **오버셀**이 된다 — 브랜치 ①이 _OWN_SETTLE_SEC로 막는 것과
+    정확히 같은 부류. (이 유예가 없던 초안을 적대적 리뷰가 CRITICAL로 잡았다.)
+    """
+    plan = plan_guard_actions({S: 4}, {}, [], [], [], target_symbols={S})
+    assert plan.rerun is False, "첫 관측만으로 실주문을 유발하면 오버셀 위험"
+    assert plan.gap_seen == [S], "관측 자체는 보고돼야 다음 틱에 연속으로 센다"
+    assert [d for d in plan.decisions if d["action"] == "guard_gap_pending"]
+
+
+def test_uncovered_gap_holds_when_own_intent_alive_even_if_broker_shows_none():
+    """저널엔 our 의도가 있는데 브로커 미체결에 안 보이는 구간 — 무개입.
+
+    `op`(브로커)만 보면 부족하다: DRIFT 의도가 전략 의도를 상쇄해 oi_total==0이면
+    브랜치 ①도 통과하므로, 우리 주문이 살아있는데 분기 ③이 발동할 수 있었다.
+    """
+    own = [_own("x1", "sell", 5, "700"), _own("d1", "buy", 5, "701",
+                                              strategy_id="DRIFT:close")]
+    plan = plan_guard_actions({S: 4}, {}, own, [], [], target_symbols={S},
+                              gap_streak={S: 5})
+    assert plan.rerun is False
+
+
 def test_uncovered_gap_ignores_symbol_without_confirmed_target():
     """G2 유지 — 이번 창이 목표를 세우지 않은 심볼(비전략 보유)은 불간섭."""
     plan = plan_guard_actions({S: 4}, {}, [], [], [], target_symbols=set())
@@ -157,15 +186,16 @@ def test_uncovered_gap_ignores_symbol_without_confirmed_target():
 
 def test_uncovered_gap_rerun_capped():
     """재실행이 D를 못 지우는 경우(사이징0·하드컷) 창 내내 반복하지 않는다."""
-    plan = plan_guard_actions({S: 4}, {}, [], [], [],
-                              converge_reruns={S: 2}, target_symbols={S})
+    plan = plan_guard_actions({S: 4}, {}, [], [], [], converge_reruns={S: 2},
+                              target_symbols={S}, gap_streak={S: 1})
     assert plan.rerun is False
     assert [d for d in plan.decisions if d["action"] == "guard_gap_giveup"]
 
 
 def test_uncovered_gap_counts_symbol_for_cap():
     """재실행 발동 시 상한 카운트를 위해 심볼을 보고한다."""
-    plan = plan_guard_actions({S: 4}, {}, [], [], [], target_symbols={S})
+    plan = plan_guard_actions({S: 4}, {}, [], [], [], target_symbols={S},
+                              gap_streak={S: 1})
     assert plan.gap_symbols == [S]
 
 
@@ -735,16 +765,22 @@ _CYCLE_DONE = ({"ts": "2026-06-01T08:35:00+09:00",
                             "target_symbols": [S]}},)
 
 
-def test_loop_uncovered_gap_triggers_rerun(monkeypatch):
-    """원장0(북킹됨)·보유4·미체결 전무 → 창내 재실행이 실제로 호출된다.
+def test_loop_uncovered_gap_triggers_rerun_on_second_tick(monkeypatch):
+    """원장0(북킹됨)·보유4·미체결 전무 → **연속 2틱** 관측 후 창내 재실행.
 
     A1이 인수한 수동 주문을 유저가 취소한 형상. 창 안에서 잡지 못하면 종가창에선
-    장 종료로 교정 기회가 사라져 오버나이트가 확정된다.
+    장 종료로 교정 기회가 사라져 오버나이트가 확정된다. 단, 첫 틱은 미체결 조회
+    반영 지연일 수 있어 조치하지 않는다(가드 브랜치 ①의 _OWN_SETTLE_SEC와 같은 부류).
     """
     broker = _LoopBroker([[]], {"success": True}, positions=[_fut_pos(4)])
     out, reruns, failed, b = _run_one_tick(
-        monkeypatch, broker, [], [], cycles_today=_CYCLE_DONE, ledger={})
-    assert len(reruns) == 1, f"재실행 미발동: {reruns}"
+        monkeypatch, broker, [], [], cycles_today=_CYCLE_DONE, ledger={}, ticks=1)
+    assert reruns == [], "첫 틱에 발주하면 반영 지연 헛갭에서 오버셀"
+
+    broker2 = _LoopBroker([[]], {"success": True}, positions=[_fut_pos(4)])
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker2, [], [], cycles_today=_CYCLE_DONE, ledger={}, ticks=2)
+    assert len(reruns) == 1, f"2틱 연속 갭인데 재실행 미발동: {reruns}"
     assert b.cancelled == [] and failed == [], "미달 보정은 취소·intent 되돌림 없이"
 
 
@@ -752,7 +788,7 @@ def test_loop_uncovered_gap_rerun_capped_across_ticks(monkeypatch):
     """재실행이 D를 못 지워도(러너 stub이라 보유 불변) 창 누적 상한에서 멈춘다."""
     broker = _LoopBroker([[]], {"success": True}, positions=[_fut_pos(4)])
     out, reruns, failed, b = _run_one_tick(
-        monkeypatch, broker, [], [], cycles_today=_CYCLE_DONE, ledger={}, ticks=5)
+        monkeypatch, broker, [], [], cycles_today=_CYCLE_DONE, ledger={}, ticks=8)
     assert len(reruns) == 2, f"상한(_MAX_CONVERGE_RERUNS=2) 초과: {len(reruns)}회"
 
 

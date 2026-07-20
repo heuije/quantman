@@ -223,6 +223,31 @@ def _on_exec_event(trader: Trader, broker: Broker, evt: dict) -> None:
         log.warning("[order-ws] push 실패: %s", e)
 
 
+def make_sell_hook(trader, broker: Broker, manager, original_submit):
+    """장중 매도 발주 래퍼 — 디스크 최신화 + 발주 후 즉시 push.
+
+    **반드시 `original_submit`의 반환값을 그대로 돌려준다.** `_submit_sell`은
+    "이 호출이 실제로 브로커에 주문을 접수시켰나"를 bool로 답하는데(N8), 래퍼가
+    그걸 삼키면 항상 None이 되어 손절 발주 집계가 다시 거짓이 된다 — 그리고 그
+    영향은 장중 loop에만 그치지 않는다: catch-up이 `trader._submit_sell`을 그대로
+    넘겨받으므로(catchup.py), loop가 도는 08:30~15:45 내내 catch-up 배너의 발주
+    수까지 함께 무효가 된다.
+
+    클로저가 아니라 모듈 레벨 팩토리인 이유는 이 계약을 테스트 가능하게 두기
+    위해서다 — 반환값 유실은 조용히 일어나고 어떤 신호도 남기지 않는다.
+    """
+    def _hook_submit(*args, **kwargs):
+        # M9: 장중 매도는 장수명 인스턴스 경로 — 발주 전 디스크 최신화(SSOT).
+        # cycle 인스턴스가 바꾼 ledger/pending(매도 멱등·중복 차단의 기준)을
+        # stale 메모리로 평가하지 않는다.
+        trader.reload_state()
+        placed = original_submit(*args, **kwargs)
+        _push_after_sell(broker, manager.decisions[-1:])
+        return placed
+
+    return _hook_submit
+
+
 def _push_after_sell(broker: Broker, decisions: list[dict]) -> None:
     """매도 발주 직후 즉시 서버에 push — 사용자 화면 빠른 반영."""
     if not decisions:
@@ -557,16 +582,8 @@ def start(market: str = "KRX") -> dict:
             order_ws = None
 
         # 매도 발주 시 push hook
-        original_submit = trader._submit_sell
-
-        def _hook_submit(*args, **kwargs):
-            # M9: 장중 매도는 장수명 인스턴스 경로 — 발주 전 디스크 최신화(SSOT).
-            # cycle 인스턴스가 바꾼 ledger/pending(매도 멱등·중복 차단의 기준)을
-            # stale 메모리로 평가하지 않는다.
-            trader.reload_state()
-            original_submit(*args, **kwargs)
-            _push_after_sell(broker, manager.decisions[-1:])
-
+        _hook_submit = make_sell_hook(trader, broker, manager,
+                                       trader._submit_sell)
         trader._submit_sell = _hook_submit
         manager._submit_sell = _hook_submit
 

@@ -734,7 +734,11 @@ def _close_cycle_once(market: str, instrument_class: str) -> dict:
         buy_candidates = []
         entry_cutoff_missed = True
 
-    risk_limits = pull_risk_limits() if buy_candidates else None
+    # `entry_cutoff_missed`로 후보를 비웠어도 risk_limits는 그대로 가져온다 —
+    # 이 값이 그날 마지막 일일손실 한도 재평가·킬스위치 판정의 입력이고, 킬스위치는
+    # 수동 해제까지 영속하는 상태라 여기서 건너뛰면 breach가 영구 소실된다.
+    # (후보가 애초에 없던 사이클은 종전대로 조회하지 않는다 — 서버 호출 절약.)
+    risk_limits = pull_risk_limits() if (buy_candidates or entry_cutoff_missed) else None
     payload = trader.run_close_netting(
         buy_candidates, strategies, dataset,
         market=market, instrument_class=instrument_class, risk_limits=risk_limits)
