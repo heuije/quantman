@@ -216,8 +216,51 @@ RESOLVE_SYMBOL_TOOL = {
     },
 }
 
+ANALYZE_EVENT_TOOL = {
+    "name": "analyze_event",
+    "description": (
+        "이벤트 스터디(전조·후행 분석) — 특정 조건(이벤트)이 발생한 날을 기준으로 그 **전**(음수 윈도우=이벤트 "
+        "직전 구간 누적수익=전조)과 **후**(양수 윈도우=forward 누적수익)의 가격 경로를 종목군 전체에서 집계한다. "
+        "'최근 5년 2개월 내 50% 급등 종목의 전조증상', '거래량 급증/RSI 과열 뒤 오를 확률', '이벤트 후 평균 수익·낙폭' "
+        "같은 질문에 쓴다. 여러 후보 지표를 **events 배열에 넣어 한 번에** 비교하면(예: 거래량비율·외국인순매수·RSI·이격도) "
+        "어떤 조건이 급등을 선행/후행하는지 한 콜로 본다. "
+        "⚠ 이런 이벤트 분석을 simulate(nl)로 표현하지 말 것 — 느린 NL 컴파일·반복 실패의 원인. 이 도구는 NL 컴파일 없이 "
+        "결정적으로 조립돼 빠르다. 지표 컬럼 예: pct_change_20d(20일 수익%)·pct_change_5d·volume_ratio·foreign_net_buy·"
+        "inst_net_buy·rsi_14·ma_dev_20d·ma_dev_60d·high_dev_20d·short_volume_ratio·momentum_12_1m."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "market": {"type": "string",
+                       "description": "시장(거래소): '코스피'·'코스닥'·'국장'(코스피+코스닥)·'전체' 등. 미지정 시 전체. symbols 지정 시 무시."},
+            "symbols": {"type": "array", "items": {"type": "string"},
+                        "description": "특정 종목(들)에서만 이벤트 스터디(예: ['005930']). 지정 시 market 무시. 생략 시 시장 전체."},
+            "events": {
+                "type": "array",
+                "description": ("분석할 이벤트(조건) 목록. 각 후보 지표를 개별 이벤트로 넣으면 한 콜로 비교. "
+                                "예: 급등=ref:pct_change_20d,op:'>=',value:50 / 거래량급증=ref:volume_ratio,op:'>=',value:2."),
+                "items": {"type": "object", "properties": {
+                    "label": {"type": "string", "description": "이벤트 이름(예: '거래량 급증'). 결과 표기용(생략 가능)."},
+                    "ref": {"type": "string", "description": "지표 컬럼명(예: pct_change_20d, volume_ratio, rsi_14)."},
+                    "op": {"type": "string", "enum": [">=", ">", "<=", "<"], "description": "비교 연산자."},
+                    "value": {"type": "number", "description": "임계값(예: 50=20일 50%급등, 2=거래량 2배, 70=RSI 70)."},
+                }, "required": ["ref", "op", "value"]},
+            },
+            "windows": {"type": "array", "items": {"type": "integer"},
+                        "description": ("이벤트 기준 오프셋 거래일. 음수=이벤트 전(전조 구간 누적수익), 양수=이벤트 후(forward "
+                                        "누적수익). 0은 불가. 1개월≈20·2개월≈40. 기본 [-20, 20, 40].")},
+            "event_basis": {"type": "string", "enum": ["close", "intraday", "excess"],
+                            "description": "기준(기본 close). 전조(음수 윈도우)는 close만. excess=시장초과수익."},
+            "lookback_years": {"type": "integer", "description": "분석 기간(년). 기본 5."},
+            "hit_threshold": {"type": "number",
+                              "description": ("설정 시 각 **양수** 윈도우에서 forward 누적수익 ≥ 이 값(%)일 확률(hit-rate)을 "
+                                              "함께 산출 — '이 신호 뒤 N% 오를 확률' 질문용(예: 50).")},
+        },
+        "required": ["events"],
+    },
+}
+
 TOOL_SCHEMAS = [SCREEN_TOOL, COMPARE_TOOL, SIMULATE_TOOL, SAVE_STRATEGY_TOOL, DESCRIBE_TOOL, INSPECT_TOOL,
-                ADJUST_TOOL, RESEARCH_NEWS_TOOL, RESOLVE_SYMBOL_TOOL]
+                ADJUST_TOOL, RESEARCH_NEWS_TOOL, RESOLVE_SYMBOL_TOOL, ANALYZE_EVENT_TOOL]
 
 
 # ── IR 조립 ──────────────────────────────────────────────────────────────────
@@ -521,6 +564,133 @@ def run_inspect(tool_input: dict) -> dict:
             "columns": have, "dates": dates, "series": series, "missing": missing}
 
 
+_EVENT_OPS = {">=", ">", "<=", "<"}
+
+
+def _build_event_ir(market_values: list[str] | None, event: dict, windows: list[int],
+                    basis: str, lookback_years: int, symbols: list[str] | None = None) -> dict:
+    """이벤트 스터디 relate IR을 **결정적으로** 조립(NL 컴파일 우회) — analyze_event 전용.
+
+    screen/compare와 동일 철학: 모델이 IR을 추측/컴파일하지 않고 구조화 입력 → 코드 조립.
+    symbols 지정 시 kind=list, 아니면 kind=all(+Market 스크리너로 _load_dataset 프리필터 발동).
+    """
+    from datetime import date
+    ref = str(event["ref"]).strip()
+    op = str(event.get("op") or ">=")
+    val = float(event["value"])
+    ev_node = {"op": "compare", "params": {"op": op},
+               "inputs": {"left": {"op": "data", "params": {"ref": ref}},
+                          "right": {"op": "const", "params": {"value": val}}}}
+    if symbols:
+        universe = {"kind": "list", "symbols": list(symbols)}
+    elif market_values:
+        universe = {"kind": "all", "screener": {"condition": {
+            "op": "is_in", "inputs": {"signal": {"op": "attribute", "params": {"attr": "Market"}}},
+            "params": {"values": market_values, "match": "contains"}}}}
+    else:
+        universe = {"kind": "all"}
+    t = date.today()
+    try:
+        start = date(t.year - lookback_years, t.month, t.day)
+    except ValueError:                                   # 2/29 → 2/28
+        start = date(t.year - lookback_years, t.month, 28)
+    return {"name": "이벤트 분석", "universe": universe,
+            "signal": {"op": "data", "params": {"ref": "__SELF__.Close"}},   # 명목(이벤트 스터디 미사용)
+            "query": "relate",
+            "study": {"event": ev_node, "windows": windows, "event_basis": basis},
+            "simulation": {"start": start.isoformat()}}
+
+
+def _event_window_stats(overall: dict) -> dict:
+    """엔진 overall(윈도별 summarize_events) → 모델·UI용 슬림 요약(평균·유의성·낙폭·표본)."""
+    out: dict = {}
+    for w, st in (overall or {}).items():
+        if not isinstance(st, dict):
+            continue
+        out[str(w)] = {"mean_pct": st.get("mean"), "p_value": st.get("p_value"),
+                       "n": st.get("n"), "mean_mae_pct": st.get("mean_mae"),
+                       "payoff_ratio": st.get("payoff_ratio")}
+    return out
+
+
+def run_analyze_event(tool_input: dict) -> dict:
+    """이벤트 스터디(전조·후행) — 여러 후보 이벤트를 결정적으로 조립·순차 실행해 한 결과로 collate.
+
+    각 이벤트 = relate+event IR(코드 조립, NL 컴파일 0). 데이터셋은 data_cache가 캐시하므로
+    첫 이벤트만 콜드 로드하고 이후는 warm(초). simulate로 이벤트를 표현하던 느린 팬아웃·컴파일
+    실패 재시도를 근본 제거한다(chat-perf 실측: 지표당 48~147s LLM 컴파일 → ~10s 엔진).
+    """
+    from quant_core.expression_parser import market_match_values
+    from quant_core.ir_engine.run import event_records
+
+    events = tool_input.get("events") or []
+    if not isinstance(events, list) or not events:
+        return {"success": False, "error": "analyze_event: 분석할 events(조건 목록)가 필요합니다."}
+    for e in events:
+        if not isinstance(e, dict) or not e.get("ref") or e.get("value") is None:
+            return {"success": False, "error": "analyze_event: 각 event에 ref·op·value가 필요합니다."}
+        if str(e.get("op") or ">=") not in _EVENT_OPS:
+            return {"success": False, "error": f"analyze_event: op은 {sorted(_EVENT_OPS)} 중 하나여야 합니다."}
+
+    symbols = [str(s).strip() for s in (tool_input.get("symbols") or []) if str(s).strip()]
+    market = str(tool_input.get("market") or "").strip()
+    mv = (market_match_values([market]) or None) if (market and not symbols
+          and market not in ("전체", "전체시장", "all", "ALL")) else None
+    windows = [int(w) for w in (tool_input.get("windows") or [-20, 20, 40])]
+    if 0 in windows:
+        return {"success": False, "error": "analyze_event: 윈도우 0은 사용할 수 없습니다(전조=음수, 후행=양수)."}
+    basis = str(tool_input.get("event_basis") or "close")
+    lookback = int(tool_input.get("lookback_years") or 5)
+    hit = tool_input.get("hit_threshold")
+    hit = float(hit) if hit is not None else None
+    pos_windows = sorted(w for w in windows if w > 0)
+
+    # 알 수 없는 지표 컬럼은 조용히 빈 결과가 되지 않게 미리 걸러 안내(자가수정 유도).
+    valid_cols = set(qc.get_all_indicator_columns()) | {"Open", "High", "Low", "Close", "Volume"}
+
+    results: list[dict] = []
+    for e in events:
+        ref = str(e["ref"]).strip()
+        label = str(e.get("label") or ref)
+        ev_desc = {"ref": ref, "op": str(e.get("op") or ">="), "value": float(e["value"])}
+        if ref.split(".")[-1] not in valid_cols:
+            results.append({"label": label, "event": ev_desc, "success": False,
+                            "error": f"알 수 없는 지표 컬럼: {ref}"})
+            continue
+        ir = _build_event_ir(mv, e, windows, basis, lookback, symbols=symbols or None)
+        dataset = _load_dataset(ir)
+        res = _run_engine(ir, dataset)
+        if not (isinstance(res, dict) and res.get("success")):
+            results.append({"label": label, "event": ev_desc, "success": False,
+                            "error": (res or {}).get("error", "실행 실패"), "ir": ir})
+            continue
+        entry = {"label": label, "event": ev_desc, "success": True,
+                 "n_events": res.get("n_events"), "windows": res.get("windows"),
+                 "stats": _event_window_stats(res.get("overall")),
+                 "accounting": res.get("accounting"), "ir": ir}
+        if hit is not None and pos_windows:
+            rec = event_records(ir, dataset)
+            hr: dict = {}
+            if rec.get("ok"):
+                for w in pos_windows:
+                    vals = [ev["ends"].get(w) for ev in rec["events"] if w in (ev.get("ends") or {})]
+                    vals = [v for v in vals if v is not None]
+                    if vals:
+                        hr[str(w)] = {"prob_pct": round(100.0 * sum(1 for v in vals if v >= hit) / len(vals), 1),
+                                      "n": len(vals)}
+                entry["hit_rate"] = {"threshold_pct": hit, "by_window": hr,
+                                     "truncated": rec.get("truncated", False)}
+        results.append(entry)
+
+    ok = any(r.get("success") for r in results)
+    return {"success": ok, "tool": "analyze_event", "query": "relate",
+            "market": (",".join(symbols) if symbols else (market or "전체")),
+            "market_values": mv, "symbols": symbols or None, "windows": windows,
+            "event_basis": basis, "lookback_years": lookback, "results": results,
+            "note": ("음수 윈도우=이벤트 직전 구간 누적수익(전조), 양수=이벤트 후 forward 누적수익. "
+                     "이벤트일 기준 가격 경로 통계이며 예측(보장)이 아니라 과거 조건부 평균이다.")}
+
+
 def run_resolve_symbol(tool_input: dict) -> dict:
     """이름·통용어 → 심볼 후보(발견성 — WS5). 엔진 우회 retrieval.
 
@@ -545,6 +715,8 @@ def run_tool(tool_name: str, tool_input: dict) -> dict:
     """
     if tool_name == "inspect":
         return run_inspect(tool_input)   # 원시 시계열 dump — IR 없음(엑셀 증빙 대상 아님)
+    if tool_name == "analyze_event":      # 이벤트 스터디 — 결정적 조립(NL 컴파일 우회·다중 이벤트 collate)
+        return run_analyze_event(tool_input)
     if tool_name == "resolve_symbol":     # 심볼 발견 — 엔진 우회(WS5)
         return run_resolve_symbol(tool_input)
     if tool_name == "research_news":      # 뉴스 리서치 — 엔진 우회(수집+본문+Haiku 다이제스트)
@@ -715,6 +887,29 @@ def compact_summary(tool_name: str, result: dict) -> str:
                  + (f" ({c['kind']}" + (f"·{c['exchange']}" if c.get("exchange") else "") + ")")
                  for c in (result.get("candidates") or [])]
         return "[resolve_symbol] 후보(관련도순):\n" + "\n".join(lines)
+    if tool_name == "analyze_event" or result.get("tool") == "analyze_event":
+        head = (f"[analyze_event] {result.get('market')} · 기간 {result.get('lookback_years')}년 · "
+                f"윈도우 {result.get('windows')} (음수=전조 구간수익, 양수=forward 수익)")
+        lines = [head]
+        for r in (result.get("results") or []):
+            ev = r.get("event") or {}
+            title = f"◆ {r.get('label')} ({ev.get('ref')} {ev.get('op')} {ev.get('value')})"
+            if not r.get("success"):
+                lines.append(f"{title}: 실패 — {r.get('error')}")
+                continue
+            lines.append(f"{title}: 이벤트 {r.get('n_events')}건")
+            for w, st in (r.get("stats") or {}).items():
+                m = st.get("mean_pct"); p = st.get("p_value"); n = st.get("n")
+                seg = f"  {w}일: 평균 {m:+.2f}%" if isinstance(m, (int, float)) else f"  {w}일: -"
+                if isinstance(p, (int, float)):
+                    seg += f" (p={p:.3f}, n={n})"
+                lines.append(seg)
+            hr = r.get("hit_rate")
+            if hr:
+                for w, h in (hr.get("by_window") or {}).items():
+                    lines.append(f"  {w}일 forward ≥{hr.get('threshold_pct')}% 확률: {h.get('prob_pct')}% (n={h.get('n')})")
+        lines.append("※ 과거 조건부 통계이며 예측·보장이 아님. 음수 윈도우가 전조 구간 누적수익.")
+        return "\n".join(lines)
     # 결측 컬럼(inspect 등) — 모델에 명시해 '없는 데이터를 있는 척'하는 환각을 막는다.
     miss = result.get("missing") if isinstance(result, dict) else None
     miss_note = (f"⚠ 요청 컬럼 중 데이터 없음(분석에서 제외): {', '.join(miss)} — 이 지표는 "
