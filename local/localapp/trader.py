@@ -350,6 +350,12 @@ class Trader:
         # A1(외부·수동 미체결 인수) 결과 {계약키: 부호수량} — 종전엔 INFO 로그뿐이라
         # 원격 진단 불가였다. 수렴 패스마다 갱신하고 사이클 요약에 실어 보낸다.
         self._a1_trace: dict = {}
+        # 이번 수렴 패스가 **목표를 확정한** 심볼(목표 0 포함) — 동시호가 가드가
+        # 자기 우주를 정하는 데 쓴다. 원장에 행이 남지 않는 목표(청산 완료·넷팅
+        # book)를 "목표 없음"과 구분하기 위한 것이다: 가드 우주가 `own 의도 ∪ 원장`
+        # 뿐이면 book으로 원장 행이 지워진 심볼이 통째로 안 보인다(A1 인수 수동
+        # 주문이 취소되면 그 심볼에 물리 노출이 남는데도 감지 불가).
+        self._target_syms: list = []
         # 미국 매수여력 모드 (cycle에서 risk_limits로 설정). 기본 통합증거금.
         self._us_bp_mode: str = "integrated"
         # Q5: 체결 후(_apply_fill) 즉시 kill switch 평가용 한도. cycle 진입 시
@@ -2679,6 +2685,11 @@ class Trader:
             plan_intents, ledger_signed, broker_signed,
             excluded_keys, symbol_of=symbol_of, external_pending=ext_signed)
 
+        # 목표를 확정한 심볼 = plan이 만들어진 심볼. indeterminate(§13 판정 불가)는
+        # build_symbol_plans가 이미 제외하므로 "목표 0"과 "목표 없음"이 여기서 갈린다.
+        # 가드가 이 목록을 자기 우주에 더해 원장 행이 없는 목표도 감시한다.
+        self._target_syms = sorted({p.symbol for p in plans})
+
         n_netted = 0
         commission_saved = 0.0
         n_drift = 0
@@ -2844,6 +2855,9 @@ class Trader:
                            "n_netted": int(n_netted),
                            "commission_saved_krw": round(commission_saved, 2),
                            "n_drift": int(n_drift),
+                           # 가드 우주용 — 아침 요약과 같은 계약(위 cycle_summary 주석).
+                           # 마감창은 장 종료로 창밖 교정 기회가 없어 특히 중요하다.
+                           "target_symbols": list(self._target_syms),
                            "n_bought": n_bought})
 
     def liquidate_day_trades(self, dataset: dict, instrument_class: str, *,
@@ -3490,6 +3504,9 @@ class Trader:
             # 수동 주문. 종전엔 INFO 로그뿐이라 원격 진단이 불가했다.
             # {"__error__": ...}면 조회 실패로 A1 skip(개장후 수렴이 백업).
             "external_pending": dict(self._a1_trace),
+            # 이번 창이 목표를 확정한 심볼(목표 0 포함) — 동시호가 가드가 우주에
+            # 더해 원장 행 없는 목표까지 감시한다(auction_guard._window_summary).
+            "target_symbols": list(self._target_syms),
             "kill_switch": ks_active,
             "equity_pre": equity_now,
             "equity_post": equity_post,    # ε: 통합 자산(KRW) — equity_pre와 동일 정의

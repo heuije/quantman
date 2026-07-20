@@ -64,6 +64,10 @@ KST = ZoneInfo("Asia/Seoul")
 # 맞대응 방지. 초과 시 관측만 남기고 물러난다(잔여는 수렴 몫).
 _MAX_RESTORES_PER_SYMBOL = 2
 
+# 목표 미달(살아있는 주문 0인데 D≠0) 재실행의 창 누적 상한. 재실행이 D를 못 지우는
+# 경우(사이징 0·DRIFT 멱등·하드컷)가 있어 상한이 없으면 창 내내 매 틱 사이클을 돈다.
+_MAX_CONVERGE_RERUNS = 2
+
 # 반복 틱마다 같은 내용이 재발생하는 관측 전용 결정 — 창당 심볼당 1회만 기록.
 _ONCE_ACTIONS = {"guard_ext_residual", "guard_own_giveup", "guard_skip_ambiguous",
                  "guard_hold_unsettled"}
@@ -97,13 +101,20 @@ def _sort_key(order_no) -> str:
     return _canon(order_no).zfill(24)
 
 
-def _target_confirmed(today, window: str, instrument_class: str) -> bool:
-    """이번 창의 전략 목표가 확정됐는가 — 개입(트리밍·복원) 게이트(2026-07-20 유저 정련).
+def _window_summary(today, window: str, instrument_class: str) -> dict | None:
+    """이번 창 담당 사이클의 **가장 최근** 무-error 완료 요약 (없으면 None).
 
-    확정 = 오늘 이 창 담당 사이클의 무-error 완료 기록 존재(개장=cycle/
-    catchup_cycle·마감=day_trade_close·full-scope(None) 포함). 0건 발주로 끝난
-    사이클도 "변화 없음"이라는 확정 목표라 게이트를 연다. 판정 술어는 catchup의
-    창내 재실행 판정(kind·market·error·instrument_class·당일 ts)과 동일 계약.
+    두 가지를 함께 답한다:
+      ① 목표 확정 여부 — None이 아니면 개입(트리밍·복원) 게이트가 열린다
+         (2026-07-20 유저 정련). 확정 = 오늘 이 창 담당 사이클의 무-error 완료
+         기록(개장=cycle/catchup_cycle·마감=day_trade_close·full-scope(None) 포함).
+         0건 발주로 끝난 사이클도 "변화 없음"이라는 확정 목표라 게이트를 연다.
+         판정 술어는 catchup의 창내 재실행 판정과 동일 계약.
+      ② ``target_symbols`` — 그 사이클이 목표를 확정한 심볼(목표 0 포함).
+         가드 우주(G2)를 이만큼 넓히는 데 쓴다.
+
+    **가장 최근**을 쓰는 이유: 창내 재실행이 새 기록을 남기므로 옛 목표로 판정하면
+    방금 세운 목표를 못 본다. read_cycles는 최신순이라 첫 매칭이 최신이다.
     own 의도 존재는 호출자가 여는 별도 빠른 경로 — 부분 제출 크래시도 제출된
     leg 기준 정합은 유지해야 하므로 이 함수는 완료 기록만 본다."""
     kinds = ("cycle", "catchup_cycle") if window == "open" else ("day_trade_close",)
@@ -118,8 +129,8 @@ def _target_confirmed(today, window: str, instrument_class: str) -> bool:
         except ValueError:
             continue
         if ts.date() == today:
-            return True
-    return False
+            return s
+    return None
 
 
 @dataclass(frozen=True)
@@ -136,6 +147,8 @@ class GuardPlan:
     # 외부 미체결 취소가 **수리되면** 그 주문에 기록할 잔량(주문번호 → 남길 수량).
     # 실행부가 창 누적 dict로 옮겨 다음 틱 유효 잔량에 쓴다(_eff_remain).
     trim_to: dict = field(default_factory=dict)
+    # 목표 미달로 재실행을 요청한 심볼(창 누적 카운트용 — _MAX_CONVERGE_RERUNS).
+    gap_symbols: list = field(default_factory=list)
 
 
 def _signed(side, qty) -> int:
@@ -190,7 +203,9 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
                        ext_pendings: list,
                        restores_done: dict | None = None,
                        trimmed_to: dict | None = None,
-                       now: datetime | None = None) -> GuardPlan:
+                       now: datetime | None = None,
+                       converge_reruns: dict | None = None,
+                       target_symbols: set | None = None) -> GuardPlan:
     """한 틱의 조치 계획(순수 — IO 없음, 단위 테스트 대상).
 
     own_intents: 이번 창의 활성 자동 의도
@@ -204,6 +219,9 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
     """
     restores_done = restores_done or {}
     trimmed_to = trimmed_to or {}
+    converge_reruns = converge_reruns or {}
+    target_symbols = target_symbols or set()
+    gap_symbols: list = []
     cancels: list = []
     partials: set = set()
     trim_to: dict = {}
@@ -211,8 +229,17 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
     restored: list = []
     decisions: list = []
     rerun = False
-    # 가드 우주 = own 의도 ∪ 원장 심볼만(G2) — 비관리 심볼의 보유·수동 주문 불간섭.
-    syms = ({i["symbol"] for i in own_intents} | set(ledger_signed))
+    # 가드 우주 = own 의도 ∪ 원장 심볼 ∪ **이번 창이 목표를 확정한 심볼**(G2).
+    # 비관리 심볼(엔진이 목표를 갖지 않는 보유·미등록 상품)은 여전히 불간섭이다 —
+    # target_symbols는 이번 창 사이클이 실제로 목표를 세운 심볼만 담는다(§13
+    # indeterminate는 build_symbol_plans가 제외).
+    #
+    # 세 번째 항이 필요한 이유: **"목표 0"과 "목표 없음"이 원장에서 같은 모습**이다.
+    # 넷팅 book leg이 포지션을 지우면 원장 행이 사라지고 실주문도 0건이라 own 의도도
+    # 없어, 목표가 0인 심볼이 우주 밖으로 떨어진다. A1이 인수한 수동 미체결이 취소되면
+    # 바로 그 심볼에 물리 노출이 남는데 가드가 구조적으로 못 본다.
+    syms = ({i["symbol"] for i in own_intents} | set(ledger_signed)
+            | set(target_symbols))
     for sym in sorted(syms):
         oi = [i for i in own_intents if i["symbol"] == sym]
         op = [p for p in own_pendings if p["symbol"] == sym]
@@ -274,7 +301,36 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
         ext_signed = sum(_signed(p["side"], q) for p, q in exts)
         d = ((positions_signed.get(sym, 0) + op_signed + ext_signed)
              - (ledger_signed.get(sym, 0) + oi_strategy))
-        if d == 0 or not exts:
+        if d == 0:
+            continue
+        if not exts:
+            # ③ 목표 미달 — D≠0인데 자를 외부 미체결이 없다. 우리 주문(op)도 없으면
+            # 이 어긋남을 이 창에서 해소할 주체가 **아무도 없다**.
+            #
+            # §19 A1은 동시호가 수동 미체결을 "곧 체결될 보유"로 선반영한다. 그 전제로
+            # 우리 청산이 넷팅(book)돼 실주문 0건이 되는데, 유저가 그 수동 주문을
+            # 취소하면 정확히 이 형상이 된다 — 원장은 청산됐고 물리 보유는 그대로.
+            # 아침창은 08:46 개장후 수렴이 교정하지만 **종가창은 장 종료(선물 15:45)로
+            # 교정 기회가 없어**(§19.2 "익일 개장 carry") 창 안에서 재실행하지 않으면
+            # 오버나이트가 확정된다. D는 이미 이 값을 정확히 계산하고 있었고, 종전
+            # `not exts` 단축이 그것을 버리고 있었을 뿐이다.
+            #
+            # own 주문이 살아있으면 손대지 않는다 — 단일가에 체결될 몫이라 재발주는
+            # 이중 발주 위험만 만든다(원주문·재발주가 같은 단일가에 둘 다 체결).
+            if op:
+                continue
+            if converge_reruns.get(sym, 0) >= _MAX_CONVERGE_RERUNS:
+                decisions.append(order_log.decision(
+                    "guard_gap_giveup", "", "", sym,
+                    f"목표 미달 재실행 {_MAX_CONVERGE_RERUNS}회 도달 — 창내 중단"
+                    f"(어긋남 {d:+d} 잔존·수동 정리 필요)"))
+                continue
+            decisions.append(order_log.decision(
+                "guard_uncovered_gap", "", "", sym,
+                f"목표와 보유가 어긋났는데(D {d:+d}) 해소할 미체결이 없음 — 창내"
+                " 재실행으로 목표 재수립(A1 인수 수동주문 취소 추정)"))
+            gap_symbols.append(sym)
+            rerun = True
             continue
         want = "buy" if d > 0 else "sell"
         remain = abs(d)
@@ -305,7 +361,8 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
                 "guard_ext_residual", "", "", sym,
                 f"수동 초과 잔여 {want} {remain} — 취소 가능한 같은 방향 수동"
                 " 주문 소진 · 수렴 몫"))
-    return GuardPlan(cancels, fails, restored, rerun, decisions, partials, trim_to)
+    return GuardPlan(cancels, fails, restored, rerun, decisions, partials, trim_to,
+                     gap_symbols)
 
 
 def run_auction_guard(instrument_class: str, window: str,
@@ -376,6 +433,8 @@ def run_auction_guard(instrument_class: str, window: str,
     since_iso = datetime.combine(today, time(*start_hm), tzinfo=KST).isoformat()
     until = datetime.combine(today, time(*until_hms), tzinfo=KST)
     restores: dict = {}
+    # 창 누적 심볼별 "목표 미달 재실행" 횟수 — restores와 같은 패턴(상한 가드).
+    converge: dict = {}
     # 창 누적 "취소 수리 후 남기려는 잔량"(주문번호 → 수량) — restores와 같은 패턴의
     # 창 상태. 취소가 **수리된 뒤에만** 기록한다(거절분을 기록하면 반대로 과소 취소).
     trimmed_to: dict = {}
@@ -426,12 +485,12 @@ def run_auction_guard(instrument_class: str, window: str,
                 log.warning("guard 미체결 조회 실패 — 이번 틱 보류: %s", e)
                 _time.sleep(poll_sec)
                 continue
+            _win_summary = _window_summary(today, window, instrument_class)
             if not gate_open:
                 # 목표 확정 게이트 — 한번 열리면 창 끝까지 유지: own 복원이
                 # intent를 failed로 돌린 뒤 재실행이 실패해 의도가 비어도, 이미
                 # 확정된 목표 기준 정합을 계속한다(닫으면 복원 도중 무방비).
-                gate_open = bool(own_list) or _target_confirmed(
-                    today, window, instrument_class)
+                gate_open = bool(own_list) or _win_summary is not None
             if not gate_open:
                 # 사이클 미완료(발주 전 지연·백오프·전멸) — stale 원장을 목표로
                 # 강제하지 않는다(수동 존중·관측만). 성공 시 A1 인수, 끝내 실패
@@ -446,6 +505,10 @@ def run_auction_guard(instrument_class: str, window: str,
                     log.warning("[가드] guard_hold_no_target — 목표 미확정, 개입 보류")
                 _time.sleep(poll_sec)
                 continue
+            # 이번 창이 목표를 확정한 심볼 — 가드 우주에 더한다(원장 행이 없는
+            # 목표 0까지 감시). 창 스코프 밖 심볼은 걸러 우주를 넓히지 않는다.
+            _target_syms = {s for s in ((_win_summary or {}).get("target_symbols")
+                                        or []) if _in_scope_sym(s)}
             trader.reload_state()
             ledger_signed: dict = {}
             for pos in trader.ledger.values():
@@ -458,7 +521,9 @@ def run_auction_guard(instrument_class: str, window: str,
 
             plan = plan_guard_actions(positions_signed, ledger_signed,
                                       own_list, own_p, ext_p, restores,
-                                      trimmed_to, now=kst_now())
+                                      trimmed_to, now=kst_now(),
+                                      converge_reruns=converge,
+                                      target_symbols=_target_syms)
             if plan.fail_intents:
                 # 관측 race 봉합(감사 9c): 발주 직후 OMS 반영 지연으로 "저널엔
                 # 있는데 미체결에 없음"이 유저 취소로 오인될 수 있다 — 한 번 더
@@ -468,7 +533,9 @@ def run_auction_guard(instrument_class: str, window: str,
                 own_list, own_p, ext_p = _fetch_classified()
                 plan = plan_guard_actions(positions_signed, ledger_signed,
                                           own_list, own_p, ext_p, restores,
-                                          trimmed_to, now=kst_now())
+                                          trimmed_to, now=kst_now(),
+                                          converge_reruns=converge,
+                                          target_symbols=_target_syms)
 
             # 관측 결정은 조치 유무와 무관하게 기록(9f) — 반복류는 심볼당 1회.
             # emitted 마킹은 실제 기록 시점(하단)에만 — 실패 틱에 마킹만 되고
@@ -527,19 +594,25 @@ def run_auction_guard(instrument_class: str, window: str,
                     if ok_all:
                         for iid, reason in plan.fail_intents:
                             intents.mark_failed(today.isoformat(), iid, reason)
-                if ok_all:
-                    for s in plan.restored_symbols:
-                        restores[s] = restores.get(s, 0) + 1
-                    if plan.rerun:
-                        try:
-                            if window == "open":
-                                run_cycle(market="KRX",
-                                          instrument_class=instrument_class,
-                                          trigger="auction_guard")
-                            else:
-                                run_close_cycle("KRX", instrument_class)
-                        except Exception as e:
-                            log.exception("guard 재실행 실패: %s", e)
+            # 창 누적·재실행은 취소 분기 **밖**이다 — 종전엔 이 블록이 `if
+            # plan.cancels or plan.fail_intents` 안에 중첩돼, 취소를 동반하지 않는
+            # 재실행(목표 미달 보정)은 계획만 서고 실행되지 않았다. 브랜치 ①(own
+            # 복원)은 항상 취소를 동반해 그 결함이 드러나지 않았다.
+            if ok_all:
+                for s in plan.restored_symbols:
+                    restores[s] = restores.get(s, 0) + 1
+                for gs in plan.gap_symbols:
+                    converge[gs] = converge.get(gs, 0) + 1
+                if plan.rerun:
+                    try:
+                        if window == "open":
+                            run_cycle(market="KRX",
+                                      instrument_class=instrument_class,
+                                      trigger="auction_guard")
+                        else:
+                            run_close_cycle("KRX", instrument_class)
+                    except Exception as e:
+                        log.exception("guard 재실행 실패: %s", e)
             if ok_all and fresh_dec:
                 all_decisions.extend(fresh_dec)
                 for d in fresh_dec:

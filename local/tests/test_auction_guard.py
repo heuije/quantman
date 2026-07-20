@@ -107,6 +107,68 @@ def test_exit_window_math_and_late_manual_sell():
     assert plan.cancels == [("900", S, 3)]
 
 
+# ── A1 흡수분 소멸 — 살아있는 주문 0인데 D≠0이면 창내 재실행 ─────────────────
+# §19 A1은 동시호가 수동 미체결을 "곧 체결될 보유"로 선반영한다. 그 전제로 우리 청산이
+# 넷팅(book)돼 **실주문 0건**이 되는데, 유저가 그 수동 주문을 취소하면 물리 노출이
+# 남는다. 아침창은 08:46 개장후 수렴이 교정하지만 **종가창은 장 종료(선물 15:45)로
+# 교정 기회가 없다**(scheduler.py "익일 개장 carry" 주석 = §19.2 원리적 한계) —
+# 창 안에서 잡지 못하면 오버나이트가 확정된다.
+#
+# 검산식 D는 이미 이 어긋남을 정확히 계산하고 있었다. 놓친 건 `not exts` 단축이
+# 그 값을 버리고 있었다는 것 — 자를 외부 주문이 없다고 해서 어긋남이 없는 게 아니다.
+
+
+def test_uncovered_gap_reruns_when_no_live_order_remains():
+    """A1 흡수분 취소 — 원장0(북킹됨)·보유4·살아있는 주문 0 → D=4 → 창내 재실행.
+
+    수동 매도4를 믿고 청산을 book했는데 유저가 취소한 형상. 자를 외부 주문이
+    없으므로 종전엔 `not exts`로 조용히 넘어갔다(= 오버나이트 확정).
+    """
+    plan = plan_guard_actions({S: 4}, {}, [], [], [], target_symbols={S})
+    assert plan.rerun is True, "목표와 현실이 어긋났는데 재실행이 발동하지 않음"
+    assert plan.cancels == [] and plan.fail_intents == [], \
+        "미달 보정은 취소·intent 되돌림이 아니라 재실행으로만"
+    assert [d for d in plan.decisions if d["action"] == "guard_uncovered_gap"]
+
+
+def test_uncovered_gap_not_triggered_while_external_alive():
+    """A1 인수분이 **살아있는 동안**은 무행동 — 전량 체결 가정이 아직 유효하다."""
+    plan = plan_guard_actions({S: 4}, {}, [], [], [_pend("050", "sell", 4)],
+                              target_symbols={S})
+    assert plan == GuardPlan(), "수동 주문이 살아있는데 재실행하면 이중 발주"
+
+
+def test_uncovered_gap_not_triggered_while_own_order_live():
+    """우리 주문이 살아있으면 재실행하지 않는다 — 단일가에 체결될 몫이다.
+
+    보유15·원장10·own 매도10(잔여10): D=5지만 own이 in-flight이므로 창내
+    재발주는 이중 발주 위험만 만든다(DRIFT 멱등이 막아도 헛사이클).
+    """
+    own = [_own("x1", "sell", 10, "700")]
+    plan = plan_guard_actions({S: 15}, {S: 10}, own, [_pend("700", "sell", 10)], [])
+    assert plan.rerun is False
+
+
+def test_uncovered_gap_ignores_symbol_without_confirmed_target():
+    """G2 유지 — 이번 창이 목표를 세우지 않은 심볼(비전략 보유)은 불간섭."""
+    plan = plan_guard_actions({S: 4}, {}, [], [], [], target_symbols=set())
+    assert plan == GuardPlan(), "목표 없는 심볼까지 재실행하면 G2 위반"
+
+
+def test_uncovered_gap_rerun_capped():
+    """재실행이 D를 못 지우는 경우(사이징0·하드컷) 창 내내 반복하지 않는다."""
+    plan = plan_guard_actions({S: 4}, {}, [], [], [],
+                              converge_reruns={S: 2}, target_symbols={S})
+    assert plan.rerun is False
+    assert [d for d in plan.decisions if d["action"] == "guard_gap_giveup"]
+
+
+def test_uncovered_gap_counts_symbol_for_cap():
+    """재실행 발동 시 상한 카운트를 위해 심볼을 보고한다."""
+    plan = plan_guard_actions({S: 4}, {}, [], [], [], target_symbols={S})
+    assert plan.gap_symbols == [S]
+
+
 # ── 창 누적 유효 잔량(trimmed_to) — 부분취소 반복 발행 차단 ──────────────────
 # 실측 2026-07-20: 취소가 브로커 미체결 조회에 반영되기까지 10~20초 걸리는데 가드
 # 폴링은 10초다. 옛 잔량 그대로 초과분을 다시 계산하면 같은 주문을 두 번 자른다 —
@@ -618,8 +680,12 @@ def test_loop_errored_cycle_record_keeps_hold(monkeypatch):
     assert b.cancelled == [] and out["n_cancel"] == 0
 
 
-def test_target_confirmed_predicate(monkeypatch):
-    """창별 kind 매핑·클래스 일치(full-scope None 포함)·당일 ts·무-error 술어."""
+def test_window_summary_predicate(monkeypatch):
+    """창별 kind 매핑·클래스 일치(full-scope None 포함)·당일 ts·무-error 술어.
+
+    반환이 bool에서 **요약 dict**로 바뀌었다 — 목표 확정 여부(None 여부)와
+    target_symbols(가드 우주 확장분)를 한 번의 읽기로 함께 답한다.
+    """
     import datetime as _dt
 
     from localapp import auction_guard as ag
@@ -629,8 +695,71 @@ def test_target_confirmed_predicate(monkeypatch):
             _cycle_rec("cycle", "stock"),
             _cycle_rec("cycle", "futures", ts="2026-05-30T08:35:00+09:00")]
     monkeypatch.setattr(ag.order_log, "read_cycles", lambda limit=80: rows)
-    assert ag._target_confirmed(today, "close", "futures") is True
-    assert ag._target_confirmed(today, "open", "futures") is False
+    assert ag._window_summary(today, "close", "futures") is not None
+    assert ag._window_summary(today, "open", "futures") is None
     monkeypatch.setattr(ag.order_log, "read_cycles",
                         lambda limit=80: [_cycle_rec("catchup_cycle", None)])
-    assert ag._target_confirmed(today, "open", "futures") is True
+    assert ag._window_summary(today, "open", "futures") is not None
+
+
+def test_window_summary_returns_latest_for_reruns(monkeypatch):
+    """창내 재실행이 새 기록을 남기므로 **최신** 요약을 써야 한다 — 옛 목표로
+    판정하면 방금 재수립한 목표를 못 본다(read_cycles는 최신순)."""
+    import datetime as _dt
+
+    from localapp import auction_guard as ag
+
+    today = _dt.date(2026, 6, 1)
+    newer = _cycle_rec("cycle", "futures")
+    newer["summary"]["target_symbols"] = ["NEW"]
+    older = _cycle_rec("cycle", "futures")
+    older["summary"]["target_symbols"] = ["OLD"]
+    monkeypatch.setattr(ag.order_log, "read_cycles", lambda limit=80: [newer, older])
+    assert ag._window_summary(today, "open", "futures")["target_symbols"] == ["NEW"]
+
+
+# ── A1 흡수분 소멸 — 루프 배선(창 누적 상한이 실제로 동작하는가) ─────────────
+# 하니스는 개장창(window="open")을 돈다 — 목표 미달 판정 자체는 창 무관이고,
+# 재실행 라우팅(open→run_cycle · close→run_close_cycle)은 기존 복원 테스트가 덮는다.
+# 실제 위험이 큰 쪽은 종가창이다(장 종료로 창밖 교정 기회가 없음 — §19.2).
+def _fut_pos(qty, sym=S, side="long"):
+    return {"symbol": sym, "qty": qty, "side": side}
+
+
+# 목표 확정 게이트(guard_hold_no_target) 통과용 — 이번 창 담당 사이클의 무-error
+# 완료 기록. A1 오상쇄는 **사이클이 돌아 book 정산을 마친 뒤** 생기는 형상이라
+# 실제로도 이 기록이 있는 상태다.
+_CYCLE_DONE = ({"ts": "2026-06-01T08:35:00+09:00",
+                "summary": {"kind": "cycle", "market": "KRX",
+                            "instrument_class": "futures",
+                            "target_symbols": [S]}},)
+
+
+def test_loop_uncovered_gap_triggers_rerun(monkeypatch):
+    """원장0(북킹됨)·보유4·미체결 전무 → 창내 재실행이 실제로 호출된다.
+
+    A1이 인수한 수동 주문을 유저가 취소한 형상. 창 안에서 잡지 못하면 종가창에선
+    장 종료로 교정 기회가 사라져 오버나이트가 확정된다.
+    """
+    broker = _LoopBroker([[]], {"success": True}, positions=[_fut_pos(4)])
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker, [], [], cycles_today=_CYCLE_DONE, ledger={})
+    assert len(reruns) == 1, f"재실행 미발동: {reruns}"
+    assert b.cancelled == [] and failed == [], "미달 보정은 취소·intent 되돌림 없이"
+
+
+def test_loop_uncovered_gap_rerun_capped_across_ticks(monkeypatch):
+    """재실행이 D를 못 지워도(러너 stub이라 보유 불변) 창 누적 상한에서 멈춘다."""
+    broker = _LoopBroker([[]], {"success": True}, positions=[_fut_pos(4)])
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker, [], [], cycles_today=_CYCLE_DONE, ledger={}, ticks=5)
+    assert len(reruns) == 2, f"상한(_MAX_CONVERGE_RERUNS=2) 초과: {len(reruns)}회"
+
+
+def test_loop_no_gap_rerun_when_ledger_matches_broker(monkeypatch):
+    """정상(원장=보유) — 재실행 없음. 거짓 발동은 헛사이클·이중 발주 위험."""
+    broker = _LoopBroker([[]], {"success": True}, positions=[_fut_pos(4)])
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker, [], [], cycles_today=_CYCLE_DONE,
+        ledger={"s1": {"symbol": S, "qty": 4, "side": "long"}})
+    assert reruns == []

@@ -565,3 +565,42 @@ def test_fetch_failed_holds_held_symbols(isolated_trader):
     assert broker.submitted == [], "부분 스냅샷으로 drift 교정/청산 금지"
     assert t.ledger["29"]["qty"] == 5
     assert any(d["action"] == "drift_eval_skipped" for d in payload["decisions"])
+
+
+def test_booked_away_exit_symbol_still_reported_as_target(isolated_trader):
+    """A1이 청산을 통째 흡수해 **원장 행도 실주문도 남지 않는** 형상에서도
+    그 심볼이 `target_symbols`에 보고된다.
+
+    왜 필요한가: 동시호가 가드의 우주는 `own 의도 ∪ 원장 심볼`(G2)인데, 이 형상은
+    둘 다 비어 가드가 심볼을 **구조적으로 못 본다**. 유저가 그 수동 매도를 취소하면
+    물리 노출이 그대로 남고, 종가창은 장 종료로 창밖 교정 기회가 없다(§19.2).
+    원인은 원장에서 **"목표 0"과 "목표 없음"이 같은 모습(행 부재)** 이라는 것 —
+    사이클이 "목표를 확정한 심볼"을 따로 보고해 그 구분을 되살린다.
+    """
+    t, broker = isolated_trader
+    spec = _spec()
+    broker._prices[SYM] = 300.0
+    a = int(5.5 * 304 * spec.multiplier * (spec.init_margin_rate or 0.1))
+    # 당일매매(hold_days=0) 롱 5 보유 → 종가창에서 청산 대상.
+    t.ledger["27"] = {"symbol": SYM, "qty": 5, "side": "long", "entry_price": 300.0,
+                      "peak_price": 300.0, "entry_date": "2026-06-01",
+                      "strategy_name": "역추종", "definition": _def27(a)}
+    broker.set_positions([{"symbol": SYM, "qty": 5, "side": "long",
+                           "avg_price": 300.0}])
+    # 유저가 같은 방향(매도 5) 수동 미체결을 걸어둔 상태 — A1이 전량 인수한다.
+    broker.pending_orders = lambda: [
+        {"order_no": "MANUAL9", "symbol": SYM, "side": "sell", "remain_qty": 5,
+         "market": "DOMESTIC", "asset_class": "futures"}]
+
+    p = t.run_close_netting([], [], _ds("2026-06-01", 300.0),
+                            market="KRX", instrument_class="futures",
+                            risk_limits={})
+
+    # 전제 — A1이 흡수해 실발주 0건이고 원장 행이 사라졌다(이게 사각지대의 형상).
+    assert broker.submitted == [], f"A1 인수 형상 전제 깨짐: {broker.submitted}"
+    assert "27" not in t.ledger, "book leg이 원장 포지션을 지운 상태여야 한다"
+
+    tsyms = p["cycle_summary"].get("target_symbols") or []
+    assert SYM in tsyms, (
+        "원장 행이 사라진 목표 0 심볼이 보고되지 않으면 가드가 A1 인수분 취소를 "
+        f"영영 감지하지 못한다 — 실제 {tsyms}")
