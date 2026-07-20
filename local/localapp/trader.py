@@ -346,6 +346,9 @@ class Trader:
         # 비우고 요약에 실어 보낸다. 목표 수량의 근거(브로커 원값·크레딧·사용률)가 서버에
         # 없어 mwmw 07-20 조사에서 원장 산술로 역산해야 했던 것의 근본 해소.
         self._sizing_trace: dict[str, dict] = {}
+        # A1(외부·수동 미체결 인수) 결과 {계약키: 부호수량} — 종전엔 INFO 로그뿐이라
+        # 원격 진단 불가였다. 수렴 패스마다 갱신하고 사이클 요약에 실어 보낸다.
+        self._a1_trace: dict = {}
         # 미국 매수여력 모드 (cycle에서 risk_limits로 설정). 기본 통합증거금.
         self._us_bp_mode: str = "integrated"
         # Q5: 체결 후(_apply_fill) 즉시 kill switch 평가용 한도. cycle 진입 시
@@ -2409,6 +2412,7 @@ class Trader:
         # skip(08:52 수렴이 백업 — A1은 최적화, 수렴이 정합 보장).
         ext_signed: dict = {}
         ext_remain: dict = {}
+        self._a1_trace = {}          # 이번 수렴 패스의 A1 결과만(관측 전용)
         _pend_fn = getattr(self.broker, "pending_orders", None)
         if _pend_fn is not None:
             try:
@@ -2428,10 +2432,26 @@ class Trader:
                     _pend_fn() or [], _own, _pend_scope, lambda s: s)
                 if ext_signed:
                     log.info("[A1] 외부(수동) 미체결 반영: %s", ext_signed)
+                    # 관측(2026-07-20): 종전엔 이 INFO 로그가 유일한 흔적이라 원격
+                    # (서버 스냅샷)에서 "외부 미체결을 얼마나 인수했는지"를 볼 수 없었다.
+                    # 수동 개입 진단의 핵심 입력이므로 결정으로 승격한다(계약키·부호수량만
+                    # — 자격증명·계좌번호 없음). 부호: +매수 / −매도.
+                    self._a1_trace = {str(k): int(v) for k, v in ext_signed.items()}
+                    decisions.append(order_log.decision(
+                        "external_pending", "", "", "",
+                        "외부(수동) 미체결 인수: "
+                        + ", ".join(f"{k} {v:+d}" for k, v in sorted(self._a1_trace.items()))
+                        + " — 목표 계산에 선반영(넷팅·사이징 크레딧)"))
             except Exception as e:
                 log.warning("[A1] 외부 미체결 조회 실패 — pending 넷팅 skip"
                             "(08:52 수렴 백업): %s", e)
                 ext_signed, ext_remain = {}, {}
+                # 조회 실패는 **동작이 바뀌는** 사건(A1 skip → 창내 인수 없음 → 개장후
+                # 수렴이 백업). 종전엔 WARNING 로그뿐이라 원격에서 안 보였다.
+                self._a1_trace = {"__error__": repr(e)[:200]}
+                decisions.append(order_log.decision(
+                    "external_pending_unavailable", "", "", "",
+                    f"외부 미체결 조회 실패 — A1 인수 skip(개장후 수렴이 백업): {e}"))
 
         entry_intents: list = []
         if not entries_blocked and buy_candidates is not None:
@@ -3402,6 +3422,11 @@ class Trader:
             # 했던 것(mwmw 07-20)을 명시화. 상세는 decisions의 absorbed_external.
             "n_absorbed_external": sum(
                 1 for d in decisions if d["action"] == "absorbed_external"),
+            # A1 — 외부(수동) **미체결 주문**을 목표에 선반영한 결과 {계약키: 부호수량}.
+            # 위 absorbed_external(원장 밖 **보유**)과 다른 축이다: 이쪽은 아직 체결 전인
+            # 수동 주문. 종전엔 INFO 로그뿐이라 원격 진단이 불가했다.
+            # {"__error__": ...}면 조회 실패로 A1 skip(개장후 수렴이 백업).
+            "external_pending": dict(self._a1_trace),
             "kill_switch": ks_active,
             "equity_pre": equity_now,
             "equity_post": equity_post,    # ε: 통합 자산(KRW) — equity_pre와 동일 정의

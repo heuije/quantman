@@ -385,8 +385,37 @@ def test_a1_external_pending_same_direction_nets(isolated_trader):
     assert orders == [("buy", 1)], \
         f"§19 A1: target5 − 수동pending4 = 순매수 1 — 실제 {orders}"
     assert p["cycle_summary"]["n_drift"] == 0        # 수동 pending은 인수(book)·drift 아님
+    # 관측(2026-07-20) — A1 인수 결과가 **원격(서버 스냅샷)에서 보여야** 한다.
+    # 종전엔 `[A1] 외부(수동) 미체결 반영: {...}` INFO 로그가 유일한 흔적이라
+    # 유저 PC 없이는 "얼마를 인수했는지" 진단이 불가능했다.
+    a1 = [d for d in p["decisions"] if d["action"] == "external_pending"]
+    assert len(a1) == 1 and "+4" in a1[0]["reason"], \
+        f"A1 인수 결정이 남아야 — 실제 {[d['action'] for d in p['decisions']]}"
     _fill_all(t, broker, 300.0, since=0)
     assert t.ledger["29"]["qty"] == 5                # 전략이 flat target 5 소유(수동4 인수+자동1)
+
+
+def test_a1_query_failure_is_observable(isolated_trader):
+    """A1 조회 실패는 **동작이 바뀌는** 사건 — 결정으로 표면화(종전 WARNING 로그뿐).
+
+    실패 시 A1 인수를 건너뛰므로 창내 과매수가 가능하고 개장후 수렴이 백업한다.
+    원격에서 이 분기를 구분할 수 없으면 "왜 과매수했나"를 진단할 수 없다."""
+    t, broker = isolated_trader
+    broker._prices[SYM] = 300.0
+    broker._balance.update({"cash": 1_000_000_000, "total_eval": 1_000_000_000,
+                            "futures_order_cash_kr": 1_000_000_000})
+    broker.orderable_qty = lambda symbol, side, price: 100
+
+    def _boom():
+        raise RuntimeError("t0434 timeout")
+    broker.pending_orders = _boom
+    strats = [{"id": "29", "name": "오버나이트롱", "definition": _def29(300 * 250_000),
+               "account_ref": None}]
+    by = [{"strategy_id": "29", "candidates": [{"symbol": SYM}]}]
+    p = t.run_close_netting(by, strats, _ds("2026-05-29", 300.0),
+                            market="KRX", instrument_class="futures", risk_limits={})
+    fail = [d for d in p["decisions"] if d["action"] == "external_pending_unavailable"]
+    assert len(fail) == 1 and "t0434 timeout" in fail[0]["reason"]
 
 
 def test_a1_opposite_pending_excluded_normal_order(isolated_trader):
