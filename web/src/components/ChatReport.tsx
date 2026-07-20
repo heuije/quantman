@@ -35,6 +35,8 @@ function printReportToPdf(el: HTMLElement, title: string) {
       "<style>:root,html{color-scheme:light}body{background:#fff;padding:28px;margin:0}" +
       ".chat-report{border:none;box-shadow:none;max-width:100%;margin:0}" +
       ".chat-report button,.chat-report input,.chat-report select,.report-actions{display:none!important}" +
+      // '내 전략 등록'은 인터랙션(저장 버튼)·상태 안내라 정적 PDF엔 무의미 → 섹션 통째 숨김.
+      ".report-no-pdf{display:none!important}" +
       "@page{margin:14mm}</style></head>" +
       `<body>${html}</body></html>`);
     w.document.close();
@@ -48,6 +50,41 @@ function printReportToPdf(el: HTMLElement, title: string) {
 // 못 읽는 문제 해결. 결과 숫자에서 결정적으로 생성(LLM 의존 X). 단위: mean·prob_positive=%, p_value=0~1.
 function resultSummary(r: IrStrategyResult): string | null {
   const shape = (r as { shape?: string }).shape;
+
+  // analyze_event — 후보 지표 다중 이벤트 스터디: 대표 지표 + 예측력 평가를 한두 줄로.
+  if ((r as { tool?: string }).tool === "analyze_event") {
+    const ae = r as unknown as { windows?: number[]; results?: Array<{
+      label?: string; success?: boolean; event?: { ref?: string };
+      stats?: Record<string, { mean_pct?: number | null }>;
+      hit_rate?: { threshold_pct?: number; by_window?: Record<string, { prob_pct?: number }> }; }> };
+    const ok = (ae.results ?? []).filter((x) => x.success);
+    if (!ok.length) return null;
+    const pos = (ae.windows ?? []).map(Number).filter((w) => w > 0).sort((a, b) => b - a);
+    const w = pos.length ? pos[0] : null;
+    const hasHit = ok.some((x) => x.hit_rate?.by_window);
+    const thr = ok.find((x) => x.hit_rate)?.hit_rate?.threshold_pct;
+    let best: (typeof ok)[number] | null = null;
+    let bestVal = -Infinity;
+    for (const x of ok) {
+      const v = hasHit && w != null
+        ? (x.hit_rate?.by_window?.[String(w)]?.prob_pct ?? -Infinity)
+        : (w != null ? (x.stats?.[String(w)]?.mean_pct ?? -Infinity) : -Infinity);
+      if (v > bestVal) { bestVal = v; best = x; }
+    }
+    if (!best || !Number.isFinite(bestVal)) return null;
+    const name = best.label ?? best.event?.ref ?? "특정 지표";
+    if (hasHit && w != null) {
+      return `후보 지표 ${ok.length}개 중 '${name}'가 이벤트 후 ${w}일 내 ≥${thr}% 급등 확률 ${bestVal.toFixed(1)}%로 가장 높았습니다. `
+        + (bestVal < 15
+          ? "다만 어느 지표도 급등을 뚜렷이 예고하진 못해(대부분 한 자릿수 확률), 급등은 대체로 예고 없이 빠르게 시작되는 편입니다."
+          : "이 신호는 급등에 앞서는 유의미한 선행 신호로 볼 만합니다.");
+    }
+    if (w != null) {
+      const m = best.stats?.[String(w)]?.mean_pct ?? 0;
+      return `후보 지표 ${ok.length}개 중 '${name}'의 이벤트 후 ${w}일 평균수익이 ${m >= 0 ? "+" : ""}${m.toFixed(1)}%로 가장 두드러졌습니다.`;
+    }
+    return `후보 지표 ${ok.length}개를 이벤트 전후 수익 경로로 비교했습니다.`;
+  }
 
   // 이벤트 스터디 — 진입 후(또는 이벤트 전) 평균 수익 + 승률(양+ 비율) + 유의성
   if (shape === "event_study" || (r.axis === "time" && r.overall && (r as { windows?: unknown }).windows)) {
@@ -166,8 +203,8 @@ export default function ChatReport({ parts, title = "분석 리포트" }: { part
           : <p className="muted" style={{ fontSize: 12.5, margin: 0 }}>추가 제안이 없습니다.</p>}
       </section>
 
-      {/* ④ 내 전략 등록 */}
-      <section className="chat-report-section">
+      {/* ④ 내 전략 등록 (PDF에선 숨김 — 정적 문서에 무의미한 인터랙션/상태) */}
+      <section className="chat-report-section report-no-pdf">
         <h4 className="chat-report-h">내 전략 등록</h4>
         {typeof alreadySavedId === "number" ? (
           <p className="muted" style={{ fontSize: 12.5, margin: 0 }}>
