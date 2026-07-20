@@ -756,6 +756,25 @@ def test_loop_uncovered_gap_rerun_capped_across_ticks(monkeypatch):
     assert len(reruns) == 2, f"상한(_MAX_CONVERGE_RERUNS=2) 초과: {len(reruns)}회"
 
 
+def test_loop_resolved_own_order_is_never_reclassified_as_external(monkeypatch):
+    """🔴 N1의 가드측 안전 속성 — 종결된 own 주문이 **외부(수동)로 오분류되지 않는다**.
+
+    N1 수정으로 `submitted_window`가 resolved intent를 제외하게 됐다(활성만 반환).
+    그러면 그 주문번호가 `own_win_nos`에서 빠지는데, 만약 ext로 떨어지면 가드가
+    **자기 주문을 수동 주문으로 보고 취소**한다. 실제로는 `all_own_nos`가
+    `_read_today` 전건(phase 무관)에서 오므로 여전히 걸려 '다른 창 own = 불간섭'으로
+    분류된다. 이 경로가 깨지면 조용한 자기주문 취소가 되므로 회귀로 고정한다.
+    """
+    # submitted_window(=이번 창 활성)엔 없지만 저널엔 order_no가 남은 상태 = 종결됨.
+    broker = _LoopBroker([[_fut_pend("777", "sell", 3)]], {"success": True},
+                         positions=[_fut_pos(3)])
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker, [], [{"order_no": "777"}],
+        cycles_today=_CYCLE_DONE,
+        ledger={"s1": {"symbol": S, "qty": 3, "side": "long"}})
+    assert b.cancelled == [], f"종결된 자기 주문을 수동으로 오인해 취소함: {b.cancelled}"
+
+
 def test_loop_no_gap_rerun_when_ledger_matches_broker(monkeypatch):
     """정상(원장=보유) — 재실행 없음. 거짓 발동은 헛사이클·이중 발주 위험."""
     broker = _LoopBroker([[]], {"success": True}, positions=[_fut_pos(4)])
