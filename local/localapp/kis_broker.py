@@ -911,12 +911,15 @@ class KisBroker:
         """당일 국내 주문 raw rows(output1) — intents.reconcile_submitting 매칭용."""
         return self._daily_ccld().get("output1", []) or []
 
-    def fills_on(self, date_yyyymmdd: str) -> list[dict]:
+    def fills_on(self, date_yyyymmdd: str, symbol: str | None = None) -> list[dict]:
         """지정일 국내 주문의 (주문번호·체결량·체결평균가) 목록 — 익일 회수 확인용.
 
         DAY 만료로 당일 조회창을 벗어난 pending의 '체결됐었나'를 제출일자로
         재확인한다(R2-② — fill 부재 확인 없이 만료 종결하면 크래시로 미기장된
         지각 체결이 drift 되팔기 실손으로 이어지는 부류).
+
+        symbol은 라우터 통일 시그니처를 위해 받되 **사용하지 않는다** — 일별체결조회가
+        계좌 전체 주문을 한 번에 주기 때문이다(호출자는 항상 symbol을 넘긴다).
         """
         body = self._daily_ccld(start=date_yyyymmdd, end=date_yyyymmdd)
         out = []

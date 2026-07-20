@@ -185,6 +185,29 @@ class BrokerRouter:
             return base.order_status(order_no, symbol)
         return base.order_status(order_no, symbol, hint=hint)
 
+    def fills_on(self, date_yyyymmdd, symbol=None):
+        """지정일 체결내역(주문번호별 합계) — 심볼로 라우팅(익일 회수 R2).
+
+        **반환 계약**: list = 조회 성공(빈 리스트 = 지원하지만 그날 체결 없음) /
+        **None = 미지원**(그 브로커에 제출일자 체결조회 어휘가 없음). 둘을 섞으면 안 된다 —
+        호출자(Trader._reclaim_expired_pending)는 []를 '무체결 확정'으로 읽어 pending을
+        종결하고, None이면 종결하지 않고 7일 GC 백스톱을 유지한다.
+
+        심볼 라우팅이 필수인 이유: __getattr__ 위임은 stock을 우선하므로, 주식(KIS)+
+        선물(LS) 계정에서 선물 pending을 KIS 국내 일별체결에서 찾게 된다 → 항상 무흔적
+        → 오종결. 라우팅이 그 새 결함을 닫는다.
+
+        해외선물(CME)은 None — LS fills_on은 국내(CFOAQ00600) 전용이라 CME 주문을 국내
+        계좌에서 조회하면 마찬가지로 무흔적 오종결이 난다. 해외 체결 어휘(CIDBQ02400)
+        배선은 해외선물 라이브 활성화(M10)에서.
+        """
+        if self._is_fut(symbol) and futures_market(symbol) == "CME":
+            return None
+        fn = getattr(self._broker(symbol), "fills_on", None)
+        if fn is None:
+            return None                      # KIS 선물 등 — 제출일자 체결조회 어휘 미배선
+        return fn(date_yyyymmdd, symbol)
+
     # ── 잔고 스냅샷: stock + 선물(국내·해외) 병합 + 심볼 정규화 (M7) ──────────────────
     def account_snapshot(self, overseas=True):
         """주식 스냅샷에 선물 포지션을 병합. 선물 계약코드→데이터셋 심볼로 정규화.

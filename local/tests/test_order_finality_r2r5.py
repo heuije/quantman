@@ -67,6 +67,50 @@ def test_router_delegates_public_seam():
     assert r.daily_orders_today()[0]["odno"] == "1"
 
 
+# ── 1-b. 라우터 fills_on — 심볼 라우팅 + 미지원(None) 계약 ────────────────────
+
+
+def test_router_fills_on_routes_by_symbol():
+    """__getattr__(stock 우선) 위임이면 선물 pending을 KIS 일별체결에서 찾아 오종결한다."""
+    seen = []
+
+    class _S:
+        def fills_on(self, ymd, symbol=None):
+            seen.append(("stock", ymd, symbol))
+            return [{"odno": "1", "filled_qty": 1, "fill_price": 70000.0}]
+
+    class _F:
+        def fills_on(self, ymd, symbol=None):
+            seen.append(("fut", ymd, symbol))
+            return [{"odno": "9", "filled_qty": 2, "fill_price": 1102.5}]
+
+    r = _router(_S(), _F())
+    assert r.fills_on("20260720", "코스피200선물")[0]["odno"] == "9"
+    assert r.fills_on("20260720", "005930")[0]["odno"] == "1"
+    assert seen == [("fut", "20260720", "코스피200선물"),
+                    ("stock", "20260720", "005930")]     # symbol 그대로 전달
+
+
+def test_router_fills_on_none_when_broker_unsupported():
+    """미지원(KIS 선물처럼 fills_on 부재) → None. 빈 리스트(지원+무내역)와 반드시 구분."""
+    class _S:
+        def fills_on(self, ymd, symbol=None):
+            return []
+
+    r = _router(_S(), _FutB())                            # _FutB엔 fills_on 없음
+    assert r.fills_on("20260720", "코스피200선물") is None
+    assert r.fills_on("20260720", "005930") == []
+
+
+def test_router_fills_on_none_for_overseas_futures():
+    """해외선물(CME)은 None — LS fills_on은 국내(CFOAQ00600) 전용이라 항상 무흔적 오종결."""
+    class _F:
+        def fills_on(self, ymd, symbol=None):
+            raise AssertionError("CME는 국내 체결조회로 라우팅되면 안 된다")
+
+    assert _router(None, _F()).fills_on("20260720", "금선물") is None
+
+
 # ── 2·3. intents reconcile — 공개 seam + no_fill 나이 하한 ──────────────────
 
 
@@ -141,7 +185,7 @@ def _trader_with(broker):
 
 def test_reclaim_no_trace_finalizes(monkeypatch):
     class _B:
-        def fills_on(self, ymd):
+        def fills_on(self, ymd, symbol=None):
             return []                     # 제출일 체결내역 무흔적
 
     t = _trader_with(_B())
@@ -154,7 +198,7 @@ def test_reclaim_no_trace_finalizes(monkeypatch):
 
 def test_reclaim_late_fill_is_booked(monkeypatch):
     class _B:
-        def fills_on(self, ymd):
+        def fills_on(self, ymd, symbol=None):
             return [{"odno": "42", "filled_qty": 3, "fill_price": 101.0,
                      "cancelled": False}]
 
@@ -176,11 +220,78 @@ def test_reclaim_out_of_scope_returns_false():
     t = _trader_with(_B())
     assert t._reclaim_expired_pending("42", t.pending["42"],
                                        date.today() - timedelta(days=1), []) is False
-    # 선물 심볼 — 범위 밖(7일 GC 백스톱 유지)
+    # 선물 심볼도 브로커가 미지원이면 동일(7일 GC 백스톱 유지)
     t2 = _trader_with(_B())
     t2.pending["42"]["symbol"] = "코스피200선물"
     assert t2._reclaim_expired_pending("42", t2.pending["42"],
                                         date.today() - timedelta(days=1), []) is False
+
+
+# ── 4-b. 선물 익일 회수 — LS CFOAQ00600 어휘 실측(2026-07-20) 후 범위 편입 ──────
+
+
+def _futures_trader(broker):
+    t = _trader_with(broker)
+    t.pending["42"]["symbol"] = "코스피200선물"
+    return t
+
+
+def test_reclaim_futures_late_fill_is_booked(monkeypatch):
+    """선물 지각 체결도 기장 후 종결 — 미기장 체결이 drift 되팔기로 새던 실손 차단."""
+    class _B:
+        def fills_on(self, ymd, symbol=None):
+            return [{"odno": "42", "filled_qty": 3, "fill_price": 1102.5}]
+
+    t = _futures_trader(_B())
+    booked = []
+    monkeypatch.setattr(t, "_apply_fill",
+                        lambda order_no, p, qty, px, dec, **k:
+                        booked.append((order_no, qty, px)))
+    ok = t._reclaim_expired_pending("42", t.pending["42"],
+                                     date.today() - timedelta(days=1), [])
+    assert ok and "42" not in t.pending
+    assert booked == [("42", 3, 1102.5)]
+
+
+def test_reclaim_futures_no_trace_finalizes():
+    """선물 좀비 pending(무흔적)은 익일 확정 종결 — 7일 GC까지 잔존하던 부류 해소."""
+    class _B:
+        def fills_on(self, ymd, symbol=None):
+            return []
+
+    t = _futures_trader(_B())
+    decisions: list = []
+    ok = t._reclaim_expired_pending("42", t.pending["42"],
+                                     date.today() - timedelta(days=1), decisions)
+    assert ok and "42" not in t.pending
+    assert decisions and "DAY 만료 확정" in decisions[0]["reason"]
+
+
+def test_reclaim_passes_symbol_to_fills_on():
+    """symbol을 넘겨야 라우터가 선물 브로커로 라우팅한다(안 넘기면 KIS 오조회)."""
+    seen = {}
+
+    class _B:
+        def fills_on(self, ymd, symbol=None):
+            seen.update(ymd=ymd, symbol=symbol)
+            return []
+
+    t = _futures_trader(_B())
+    sub_day = date.today() - timedelta(days=1)
+    t._reclaim_expired_pending("42", t.pending["42"], sub_day, [])
+    assert seen == {"ymd": sub_day.strftime("%Y%m%d"), "symbol": "코스피200선물"}
+
+
+def test_reclaim_none_result_keeps_gc_backstop():
+    """라우터 None(미지원) → 종결 금지. 빈 리스트(무체결 확정)로 읽으면 오종결 실손."""
+    class _B:
+        def fills_on(self, ymd, symbol=None):
+            return None
+
+    t = _futures_trader(_B())
+    assert t._reclaim_expired_pending("42", t.pending["42"],
+                                       date.today() - timedelta(days=1), []) is False
+    assert "42" in t.pending          # 추적 유지 — 7일 GC가 최후 방어
 
 
 # ── 5. R5 — 락 안 reload + 업데이트 게이트 ──────────────────────────────────

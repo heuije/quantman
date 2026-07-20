@@ -620,7 +620,7 @@ class Trader:
                 decisions.append(order_log.decision(
                     "unfilled", p.get("strategy_id", ""),
                     p.get("strategy_name", ""), p["symbol"],
-                    "미체결 cancelled (KIS 마감 자동 취소 또는 외부 취소)"))
+                    "미체결 cancelled (장마감 자동 취소 또는 외부 취소)"))
                 del self.pending[order_no]
                 changed = True
             else:
@@ -633,7 +633,7 @@ class Trader:
                 # 단 제출 직후 크래시로 당일 반영을 놓친 '지각 체결' 가능성이
                 # 있어, 반드시 **제출일자 체결내역**으로 확인한 뒤에만 종결한다
                 # (fill 있으면 기장 — 미기장→drift 되팔기 실손 부류 차단).
-                # 확인 불가(미지원 브로커·조회 실패·선물/US)는 아래 7일 GC가
+                # 확인 불가(미지원 브로커·조회 실패·US/해외선물)는 아래 7일 GC가
                 # 최후 방어로 유지된다.
                 sub_day = datetime.fromtimestamp(
                     float(sub_ts), ZoneInfo("Asia/Seoul")).date()
@@ -671,23 +671,27 @@ class Trader:
             반영을 놓친 체결이 미기장 → 다음 사이클 drift 되팔기(실손)로
             이어지는 부류를 막는다(리뷰 부작용 가드: fill 부재 확인 후에만 dead).
 
-        범위: KR 주식만(fills_on = 국내 일별체결). 선물·US·미지원 브로커(LS는
-        t0434 status 어휘 실측 후)·조회 실패는 False — 호출자의 7일 GC가 최후
-        방어로 유지된다(확정 불가 시 추적 유지가 안전 측).
+        범위: KR 주식(KIS 국내 일별체결) + KR 선물(LS CFOAQ00600 주문체결내역
+        기간조회 — 어휘 실측 2026-07-20). US·해외선물(CME)·미지원 브로커(KIS 선물)·
+        조회 실패는 False — 호출자의 7일 GC가 최후 방어로 유지된다(확정 불가 시
+        추적 유지가 안전 측). 라우터가 None(미지원)을 주면 빈 리스트(= 무체결 확정)와
+        구분해 종결하지 않는다.
         """
         symbol = p.get("symbol", "")
         from . import market_index
-        if qc.is_futures(symbol) or market_index.is_us(symbol):
-            return False
+        if market_index.is_us(symbol):
+            return False                      # US는 별도 조회 어휘(해외 체결내역) — 미배선
         fills_on = getattr(self.broker, "fills_on", None)
         if fills_on is None:
             return False
         try:
-            rows = fills_on(sub_day.strftime("%Y%m%d"))
+            rows = fills_on(sub_day.strftime("%Y%m%d"), symbol)
         except Exception as e:
             log.warning("익일 회수 조회 실패 [%s] — 7일 GC 백스톱 유지: %s",
                         order_no, e)
             return False
+        if rows is None:
+            return False                      # 라우터 '미지원' 명시 — 빈 리스트(무체결 확정)와 구분
         row = next((r for r in rows
                     if canonical_odno(r.get("odno", "")) == canonical_odno(order_no)),
                    None)

@@ -1,8 +1,13 @@
 """LsFuturesBroker 응답 정규화 전수 — account 2-TR·order normalize·t0434 status·pending 필터.
-⚠ fixture는 research 기반. Phase D-C 모의 E2E 후 실측 교체."""
+
+fixture 출처: t0434 status 어휘와 CFOAQ00600 체결내역은 **실측**(2026-07-20 모의 캡처
+`퀀트/measure/out/2026-07-20/raw.jsonl`). 나머지(account·quote 계열)는 아직 research 기반.
+"""
 from __future__ import annotations
 import sys
 from pathlib import Path
+
+import pytest
 _LOCAL = Path(__file__).resolve().parent.parent
 if str(_LOCAL) not in sys.path:
     sys.path.insert(0, str(_LOCAL))
@@ -140,7 +145,7 @@ def test_order_status_filled_from_t0434(monkeypatch):
 def test_order_status_cancelled(monkeypatch):
     b = _broker()
     monkeypatch.setattr(b, "_ccld_raw", lambda chegb: {"t0434OutBlock1": [
-        {"ordno": "5", "orgordno": "0", "qty": "1", "cheqty": "0", "ordrem": "0", "status": "취소완료"}]}, raising=False)
+        {"ordno": "5", "orgordno": "0", "qty": "1", "cheqty": "0", "ordrem": "0", "status": "취소확인"}]}, raising=False)
     assert b.order_status("5", symbol="101V6000")["status"] == "cancelled"
 
 
@@ -148,6 +153,30 @@ def test_order_status_unknown_when_absent(monkeypatch):
     b = _broker()
     monkeypatch.setattr(b, "_ccld_raw", lambda chegb: {"t0434OutBlock1": []}, raising=False)
     assert b.order_status("999", symbol="101V6000")["status"] == "unknown"
+
+
+@pytest.mark.parametrize("status,cheqty,ordrem,expect", [
+    ("접수", "0", "3", "submitted"),      # 살아있음
+    ("완료", "3", "0", "filled"),         # 체결 종결
+    ("완료", "1", "2", "partial"),        # 부분체결·잔량 있음
+    ("완료", "0", "0", "cancelled"),      # 🔴 취소 종결 — 종전엔 submitted로 오판
+    ("취소확인", "0", "0", "cancelled"),   # 취소 확인행
+])
+def test_order_status_maps_measured_t0434_vocabulary(monkeypatch, status, cheqty,
+                                                     ordrem, expect):
+    """실측 2026-07-20 t0434 어휘 `{접수, 취소확인, 완료}` 전 조합 매핑 고정.
+
+    핵심은 4번째 행 — **`완료`가 체결과 취소 양쪽에 쓰인다**. 종전 판정은
+    `"취소" in status` → `cheqty>0` 순으로만 봐서 `완료/cheqty=0`이 마지막
+    `submitted`로 떨어졌고, 취소된 주문이 당일 내내 pending에 남아 "미체결 0"
+    게이트(무인 자동 업데이트 조건)를 막았다. 잔량 0·체결 0이면 어떤 어휘가
+    오든 종결이라는 계약을 여기서 잠근다.
+    """
+    b = _broker()
+    monkeypatch.setattr(b, "_ccld_raw", lambda chegb: {"t0434OutBlock1": [
+        {"ordno": "41", "orgordno": "0", "qty": "3", "cheqty": cheqty,
+         "ordrem": ordrem, "cheprice": "1098.55", "status": status}]}, raising=False)
+    assert b.order_status("41", symbol="101V6000")["status"] == expect
 
 
 def test_pending_excludes_modify_cancel_rows(monkeypatch):
@@ -225,3 +254,125 @@ def test_orderable_qty_bad_side_raises_value_error(monkeypatch):
     monkeypatch.setattr(b, "_post", lambda *a, **k: _OQ_OK, raising=False)
     with pytest.raises(ValueError):
         b.orderable_qty("101V6000", "hold", 342.0)
+
+
+# --- fills_on (CFOAQ00600 주문체결내역 기간조회) — 익일 회수 R2 -------------------
+# fixture = 실측 2026-07-20 CFOAQ00600OutBlock3 형상 그대로(OrdNo·ExecQty int / 가격 str).
+
+
+def _row(ordno, *, org=0, exec_qty=0, exec_prc="0.00", ctrct_time="",
+         ord_tp="접수", ord_qty=1, ord_prc="1098.55"):
+    """실측 행 1건. 체결행 = CtrctTime 있음 + ExecQty>0 + OrdTpNm 빈 문자열."""
+    return {"OrdDt": "20260720", "OrdNo": ordno, "OrgOrdNo": org,
+            "OrdTime": "083307085", "FnoIsuNo": "A0169000",
+            "IsuNm": "코스피200 F 202609", "BnsTpNm": "매수", "MrcTpNm": "",
+            "FnoOrdprcPtnCode": "00", "FnoOrdprcPtnNm": "지정가",
+            "OrdPrc": ord_prc, "OrdQty": ord_qty, "OrdTpNm": ord_tp,
+            "ExecTpNm": "환매", "ExecPrc": exec_prc, "ExecQty": exec_qty,
+            "CtrctTime": ctrct_time, "CtrctNo": 0, "ExecNo": 0, "BnsplAmt": 0,
+            "UnercQty": 0, "UserId": "tester", "CommdaCode": "40",
+            "CommdaCodeNm": ""}
+
+
+def _fills(monkeypatch, b, rows):
+    monkeypatch.setattr(b, "_fills_raw",
+                        lambda ymd: {"CFOAQ00600OutBlock3": rows}, raising=False)
+
+
+def test_fills_on_sends_single_day_inblock(monkeypatch):
+    """QrySrtDt=QryEndDt=제출일. AcntNo/InptPwd는 싣지 않는다(CFOAQ50600·CFOAQ10100 동일)."""
+    b = _broker()
+    captured = {}
+
+    def _post(path, tr, body, **k):
+        captured.update(path=path, tr=tr, ib=body["CFOAQ00600InBlock1"])
+        return {"CFOAQ00600OutBlock3": []}
+    monkeypatch.setattr(b, "_post", _post, raising=False)
+    b.fills_on("20260720", "코스피200선물")
+    assert captured["tr"] == "CFOAQ00600"
+    assert captured["path"] == "/futureoption/accno"
+    ib = captured["ib"]
+    assert ib["QrySrtDt"] == "20260720" and ib["QryEndDt"] == "20260720"
+    assert ib["FnoClssCode"] == "00" and ib["StnlnSeqTp"] == "4"
+    assert "AcntNo" not in ib and "InptPwd" not in ib
+
+
+def test_fills_on_keeps_only_executed_rows(monkeypatch):
+    """접수·확인 행(CtrctTime=""·ExecQty=0)은 제외 — 체결행만. int/str 타입 정규화."""
+    b = _broker()
+    _fills(monkeypatch, b, [
+        _row(16),                                                   # 접수(무체결)
+        _row(17, ord_tp="확인"),                                    # 확인(무체결)
+        _row(18, exec_qty=438, exec_prc="1352.60",
+             ctrct_time="090012345", ord_tp="", ord_qty=438),       # 체결
+    ])
+    out = b.fills_on("20260720")
+    assert out == [{"odno": "18", "filled_qty": 438, "fill_price": 1352.60}]
+    assert isinstance(out[0]["filled_qty"], int)                    # int 정규화
+    assert isinstance(out[0]["fill_price"], float)                  # str "1352.60" → float
+
+
+def test_fills_on_sums_modify_chain_to_root(monkeypatch):
+    """정정 자식(41→43)의 체결을 원주문 41의 체결로 합산 — 원번호 조회 오종결 차단."""
+    b = _broker()
+    _fills(monkeypatch, b, [
+        _row(41, ord_qty=5),                                        # 원주문 접수
+        _row(43, org=41, exec_qty=5, exec_prc="1100.00",
+             ctrct_time="101500000", ord_tp="", ord_qty=5),         # 정정 후 체결
+    ])
+    assert b.fills_on("20260720") == [
+        {"odno": "41", "filled_qty": 5, "fill_price": 1100.0}]
+
+
+def test_fills_on_resolves_multi_level_chain(monkeypatch):
+    """다단 정정(16→59→60)도 뿌리 16으로 전이 해소."""
+    b = _broker()
+    _fills(monkeypatch, b, [
+        _row(16, ord_qty=3),
+        _row(59, org=16, ord_tp="확인", ord_qty=3),
+        _row(60, org=59, exec_qty=3, exec_prc="1102.50",
+             ctrct_time="112233444", ord_tp="", ord_qty=3),
+    ])
+    assert b.fills_on("20260720") == [
+        {"odno": "16", "filled_qty": 3, "fill_price": 1102.5}]
+
+
+def test_fills_on_chain_uses_qty_weighted_average(monkeypatch):
+    """원주문 부분체결 + 정정 자식 체결 → 체결수량 가중평균가."""
+    b = _broker()
+    _fills(monkeypatch, b, [
+        _row(41, exec_qty=2, exec_prc="1100.00", ctrct_time="100000000",
+             ord_tp="", ord_qty=5),
+        _row(43, org=41, exec_qty=3, exec_prc="1102.50",
+             ctrct_time="101500000", ord_tp="", ord_qty=3),
+    ])
+    # (2×1100.00 + 3×1102.50) / 5 = 1101.50
+    assert b.fills_on("20260720") == [
+        {"odno": "41", "filled_qty": 5, "fill_price": 1101.5}]
+
+
+def test_fills_on_cancel_child_does_not_change_total(monkeypatch):
+    """취소도 자식 행을 만들지만 ExecQty=0이라 합계에 영향 없음."""
+    b = _broker()
+    _fills(monkeypatch, b, [
+        _row(29, exec_qty=1, exec_prc="1098.55", ctrct_time="090000000",
+             ord_tp="", ord_qty=2),
+        _row(54, org=29, ord_tp="확인", ord_qty=1),                 # 취소 자식(무체결)
+    ])
+    assert b.fills_on("20260720") == [
+        {"odno": "29", "filled_qty": 1, "fill_price": 1098.55}]
+
+
+def test_fills_on_empty_response_returns_empty(monkeypatch):
+    """비거래일 등 rsp_cd="00707"(내역 없음)은 정상 응답 — OutBlock3 부재 → []."""
+    b = _broker()
+    monkeypatch.setattr(b, "_post", lambda *a, **k: {
+        "rsp_cd": "00707", "rsp_msg": "조회할 내역이 없습니다."}, raising=False)
+    assert b.fills_on("20260719", "코스피200선물") == []
+
+
+def test_root_ordno_breaks_self_reference_and_cycle():
+    """자기참조·순환 응답에도 무한루프 금지(브로커 응답 무신뢰)."""
+    assert lfb._root_ordno("7", {"7": "7"}) == "7"
+    assert lfb._root_ordno("1", {"1": "2", "2": "1"}) in ("1", "2")
+    assert lfb._root_ordno("3", {}) == "3"
