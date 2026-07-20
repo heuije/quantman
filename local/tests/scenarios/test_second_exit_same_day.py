@@ -130,3 +130,51 @@ def test_partial_fill_then_cancel_books_the_fill_before_terminating(isolated_tra
     assert t.ledger[_SID]["qty"] == 6, (
         f"체결 4주가 기장되지 않았다(원장 {t.ledger[_SID]['qty']}) — 다음 사이클이 "
         "되팔아 실손")
+
+
+def test_drift_gate_stays_locked_after_fill(isolated_trader):
+    """🔴 drift 교정 게이트는 체결로 풀리면 안 된다 — 창 단위 1회가 불변식.
+
+    drift 주문은 체결돼도 **원장을 바꾸지 않는다**(`_apply_fill` 초입 조기 return).
+    그래서 다른 멱등 경로와 달리 "원장이 갱신돼 다음 계산에서 자연히 사라진다"는
+    자기제한 피드백이 없다 — 재발주를 막는 건 오직 브로커 스냅샷이 diff 0을
+    보여주는 것뿐이다. 그런데 scheduler.py의 개장후 수렴(선물 08:46) 주석이
+    "개장 단일가 체결의 잔고 API 반영 지연이 크면 drift 오판 가능 — **멱등(저널
+    게이트)이라 발주 안전은 유지**"라고 그 전제를 명문화하고 있다.
+
+    N1이 체결 시 게이트를 풀면서 이 방어가 사라졌다: 08:35 drift buy 3이 체결 →
+    게이트 해제 → 08:46 수렴이 아직 반영 안 된 잔고로 diff를 +3으로 재계산 →
+    buy 3 재발주 → 초과 노출 3(다음 사이클이 되팔며 왕복 비용).
+    키(`DRIFT:{window}`)가 이미 창을 담고 있어, N1이 풀려던 "하루 두 번 같은 방향
+    청산"과는 애초에 다른 문제다.
+    """
+    t, broker = isolated_trader
+    broker._prices[_SYM] = 70000.0
+    dec: list = []
+    t._submit_drift(_SYM, 3, "open", dec)
+
+    buys = [s for s in broker.submitted if s["side"] == "buy"]
+    assert len(buys) == 1, f"전제: drift 매수가 나가야 한다 — {broker.submitted}"
+    o1 = buys[-1]["order_no"]
+    scenario.inject_ws_fill(t, broker, o1, 3, 70000.0)
+    assert o1 not in t.pending, "전제: 전량 체결로 pending에서 회수"
+
+    assert intents.is_active(_TODAY, "DRIFT:open", _SYM, "buy") is True, \
+        "drift 게이트가 체결로 풀렸다 — 반영 지연 잔고로 같은 교정이 재발주된다"
+
+    # 같은 창 재실행에서 실제로 재발주가 차단되는지도 확인.
+    n_before = len(broker.submitted)
+    t._submit_drift(_SYM, 3, "open", dec)
+    assert len(broker.submitted) == n_before, "같은 창 drift 교정이 이중 발주됨"
+
+
+def test_drift_gate_is_still_per_window(isolated_trader):
+    """단, 창이 다르면(open→close) 여전히 교정할 수 있어야 한다 — 키가 창을 담는다."""
+    t, broker = isolated_trader
+    broker._prices[_SYM] = 70000.0
+    dec: list = []
+    t._submit_drift(_SYM, 3, "open", dec)
+    n_after_open = len(broker.submitted)
+    t._submit_drift(_SYM, 3, "close", dec)
+    assert len(broker.submitted) == n_after_open + 1, \
+        "종가창 drift 교정이 아침창 게이트에 막혔다"

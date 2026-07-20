@@ -647,12 +647,18 @@ def run_auction_guard(instrument_class: str, window: str,
                         gap_streak[gs] = 0
                 for gs in _seen:
                     gap_streak[gs] = gap_streak.get(gs, 0) + 1
-                if plan.rerun and plan.gap_symbols and                         n_gap_reruns >= _MAX_GAP_RERUNS_PER_WINDOW:
+                # 🔴 창 총량 상한은 **갭 전용** 재실행만 억제한다. 브랜치 ①(own
+                # 복원)이 같은 틱에 섞였으면 이미 잔여를 취소하고 intent를 failed로
+                # 풀어 놓은 상태라, 재발주를 건너뛰면 "취소됨 + 게이트 해제 + 재발주
+                # 없음" = 청산이 통째로 사라진다. 상한이 그걸 막아서는 안 된다.
+                _gap_only = bool(plan.gap_symbols) and not plan.restored_symbols
+                if (plan.rerun and _gap_only
+                        and n_gap_reruns >= _MAX_GAP_RERUNS_PER_WINDOW):
                     log.warning("[가드] 창 재실행 총량 상한(%d) 도달 — 목표 미달 "
                                 "보정 중단(%s)", _MAX_GAP_RERUNS_PER_WINDOW,
                                 plan.gap_symbols)
                 elif plan.rerun:
-                    if plan.gap_symbols:
+                    if _gap_only:
                         n_gap_reruns += 1
                     try:
                         if window == "open":

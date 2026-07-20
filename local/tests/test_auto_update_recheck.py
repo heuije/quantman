@@ -88,7 +88,7 @@ def test_tick_rechecks_even_after_detection(monkeypatch):
     쓸 이유가 없다.
     """
     _run_threads_inline(monkeypatch)
-    app = _make_app(update_info={"tag": "v0.9.77", "url": "https://x/z.zip"},
+    app = _make_app(update_info={"tag": "v99.0.0", "url": "https://x/z.zip"},
                     last_check=time.time() - 3700)
     app._auto_update_tick()
     assert app._rechecks == [True], "감지 상태가 재체크를 막으면 한 홉씩만 전진한다"
@@ -98,7 +98,7 @@ def test_tick_rechecks_even_after_detection(monkeypatch):
 def test_tick_throttle_applies_after_detection_too(monkeypatch):
     """단, throttle은 그대로 — 감지 여부와 무관하게 1시간 간격."""
     _run_threads_inline(monkeypatch)
-    app = _make_app(update_info={"tag": "v0.9.77", "url": "https://x/z.zip"},
+    app = _make_app(update_info={"tag": "v99.0.0", "url": "https://x/z.zip"},
                     last_check=time.time() - 3000)
     app._auto_update_tick()
     assert app._rechecks == []
@@ -106,6 +106,10 @@ def test_tick_throttle_applies_after_detection_too(monkeypatch):
 
 
 # ── N2 — 더 새 버전이 나오면 캐시를 교체한다(리바인딩) ──────────────────────
+# ⚠ 태그는 실행 중 앱 버전(__version__)보다 **확실히 높은** v99.x를 쓴다.
+# `_check_updates_async`의 첫 게이트가 `is_newer(__version__, tag)`라, 실제 버전에
+# 근접한 태그를 쓰면 릴리스가 진행될수록 어떤 테스트는 실패하고 어떤 테스트는
+# 공허 통과한다(대체된 옛 테스트가 v99.0.0을 쓴 이유가 정확히 이것이다).
 def _async_app(monkeypatch, cached, latest_tag):
     from localapp import updater as _up
     app = object.__new__(gui.SettingsApp)
@@ -126,18 +130,18 @@ def test_check_replaces_cache_when_newer_release_appears(monkeypatch):
     회귀로 고정하는 역할만 한다(짝: test_check_does_not_downgrade_cached_tag —
     그쪽은 수정 전 실패하는 판별 테스트다).
     """
-    app = _async_app(monkeypatch, {"tag": "v0.9.90", "url": "https://x/a.zip"},
-                     "v0.9.95")
+    app = _async_app(monkeypatch, {"tag": "v99.0.0", "url": "https://x/a.zip"},
+                     "v99.9.9")
     app._check_updates_async()
-    assert app._update_info["tag"] == "v0.9.95"
+    assert app._update_info["tag"] == "v99.9.9"
 
 
 def test_check_does_not_downgrade_cached_tag(monkeypatch):
     """더 낮은 태그로는 교체하지 않는다 — GitHub가 옛 릴리스를 먼저 주는 경우."""
-    app = _async_app(monkeypatch, {"tag": "v0.9.95", "url": "https://x/a.zip"},
-                     "v0.9.90")
+    app = _async_app(monkeypatch, {"tag": "v99.9.9", "url": "https://x/a.zip"},
+                     "v99.0.0")
     app._check_updates_async()
-    assert app._update_info["tag"] == "v0.9.95"
+    assert app._update_info["tag"] == "v99.9.9"
 
 
 def test_check_rebinds_dict_not_mutates(monkeypatch):
@@ -147,10 +151,10 @@ def test_check_rebinds_dict_not_mutates(monkeypatch):
     ⚠ 이것도 수정 전 통과한다 — 재조회 빈도를 올리는 수정이 in-flight 설치를 깨지
     않는다는 **불변식 고정**이 목적이다(재조회가 잦아질수록 이 창이 넓어진다).
     """
-    cached = {"tag": "v0.9.90", "url": "https://x/a.zip"}
-    app = _async_app(monkeypatch, cached, "v0.9.95")
+    cached = {"tag": "v99.0.0", "url": "https://x/a.zip"}
+    app = _async_app(monkeypatch, cached, "v99.9.9")
     in_flight = app._update_info          # 설치 경로가 잡아둔 참조
     app._check_updates_async()
-    assert in_flight == {"tag": "v0.9.90", "url": "https://x/a.zip"}, (
+    assert in_flight == {"tag": "v99.0.0", "url": "https://x/a.zip"}, (
         "in-flight 설치가 보던 dict가 변조됐다")
     assert app._update_info is not in_flight

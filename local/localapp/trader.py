@@ -578,6 +578,17 @@ class Trader:
         구버전 pending_orders.json(필드 부재)은 조용히 skip — 종전 거동(보수적
         차단)으로 남을 뿐이라 마이그레이션이 필요 없다.
         """
+        if p.get("drift"):
+            # 🔴 drift 교정 게이트는 **창 단위 1회**가 불변식이라 체결로 풀지 않는다.
+            # 키가 이미 창을 담고(`DRIFT:{window}`), drift 체결은 _apply_fill 초입에서
+            # 조기 return해 **원장을 바꾸지 않으므로** 다른 멱등 경로와 달리 "원장이
+            # 갱신돼 다음 계산에서 자연히 사라진다"는 자기제한 피드백이 없다 —
+            # 재발주를 막는 건 오직 브로커 스냅샷이 diff 0을 보여주는 것뿐이다.
+            # scheduler.py의 개장후 수렴(08:46) 주석이 "잔고 API 반영 지연이 크면
+            # drift 오판 가능 — 멱등(저널 게이트)이라 발주 안전은 유지"라고 이 전제를
+            # 명문화한다. N1이 풀려던 건 "하루 두 번 같은 방향 청산"인데 drift는
+            # 키에 창이 들어 있어 애초에 그 문제가 없다.
+            return
         iid = p.get("intent_id")
         idate = p.get("intent_date")
         if iid and idate:
