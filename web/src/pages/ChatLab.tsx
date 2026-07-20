@@ -27,6 +27,10 @@ export default function ChatLab() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  // 재개(resume) — 새로고침·탭복귀 시 서버에서 계속 도는 턴의 완성 답변을 폴링으로 이어받는 상태.
+  // 이 탭이 스트리밍을 직접 돌리는 busy와 구분(busy=이 탭 전송, resuming=끊긴 턴 재접속).
+  const [resuming, setResuming] = useState(false);
+  const pollRef = useRef<{ cancel: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 사용량 카운터 + 운영진 언락(서버 강제 일일 한도). 비번은 sessionStorage에만 보관하고 매 요청에 동봉.
   const [adminPw, setAdminPw] = useState<string>(() => sessionStorage.getItem("chat_admin_pw") || "");
@@ -44,7 +48,53 @@ export default function ChatLab() {
   }, [adminPw]);
   useEffect(() => { refreshQuota(); }, [refreshQuota]);
 
+  const refreshConvs = useCallback(() => {
+    api.listConversations().then(setConvs).catch(() => {/* 목록 갱신 실패는 무해 */});
+  }, []);
+
+  // 진행 중 폴링 중단(대화 전환·새 대화·언마운트 시).
+  const stopPoll = useCallback(() => {
+    if (pollRef.current) pollRef.current.cancel = true;
+    pollRef.current = null;
+    setResuming(false);
+  }, []);
+
+  // 끊긴 턴 재접속 — 서버는 클라 끊김과 무관하게 턴을 끝까지 실행·영속하므로(routers/chat.py
+  // producer 스레드), 대화 히스토리를 폴링해 assistant 답변이 영속되면 이어받는다. 새로고침·탭복귀·
+  // 전송 중 연결단절 모두 이 경로로 완성 답변을 되찾는다(수동 새로고침 없이).
+  const resumePendingTurn = useCallback((cid: number) => {
+    if (pollRef.current) pollRef.current.cancel = true;
+    const tok = { cancel: false };
+    pollRef.current = tok;
+    setResuming(true);
+    const started = Date.now();
+    const MAX_MS = 8 * 60 * 1000;       // 콜드 로드+다지표 이벤트 스터디 여유(그 뒤 안내)
+    (async () => {
+      while (!tok.cancel) {
+        await new Promise((r) => setTimeout(r, 2500));
+        if (tok.cancel) return;
+        let full;
+        try { full = await api.getConversation(cid); }
+        catch { continue; }             // 일시 네트워크 오류는 계속 폴링(턴은 서버에서 진행 중)
+        if (tok.cancel) return;
+        const last = full.messages[full.messages.length - 1];
+        if (last && last.role === "assistant" && last.parts.length > 0) {
+          setMessages(full.messages);   // 완성 답변 영속됨 — 이어받아 렌더
+          pollRef.current = null; setResuming(false);
+          refreshConvs();
+          return;
+        }
+        if (Date.now() - started > MAX_MS) {
+          pollRef.current = null; setResuming(false);
+          setError("분석이 예상보다 오래 걸리거나 중단됐을 수 있어요. 잠시 후 이 대화를 다시 열거나 다시 시도해 주세요.");
+          return;
+        }
+      }
+    })();
+  }, [refreshConvs]);
+
   // 마운트 시 최근 대화 복원 — 다른 탭 갔다 와도 직전 대화가 보이도록(④ 영속; 서버에 이미 보관).
+  // 마지막 메시지가 미답변 user면 = 진행 중이던 턴 → 재접속 폴링으로 완성 답변을 이어받는다.
   useEffect(() => {
     let alive = true;
     api.listConversations()
@@ -54,12 +104,15 @@ export default function ChatLab() {
         if (list.length === 0) return undefined;
         const recent = list.reduce((a, b) => (b.id > a.id ? b : a));
         return api.getConversation(recent.id).then((full) => {
-          if (alive) { setConvId(full.id); setMessages(full.messages); }
+          if (!alive) return;
+          setConvId(full.id); setMessages(full.messages);
+          const last = full.messages[full.messages.length - 1];
+          if (last && last.role === "user") resumePendingTurn(full.id);   // 진행 중 턴 이어받기
         });
       })
       .catch(() => {/* 복원 실패는 빈(새) 대화로 시작 — 무해 */});
-    return () => { alive = false; };
-  }, []);
+    return () => { alive = false; stopPoll(); };
+  }, [resumePendingTurn, stopPoll]);
 
   async function unlockLimit() {
     const pw = window.prompt("운영진 비밀번호를 입력하면 일일 사용 한도가 상향됩니다.");
@@ -84,20 +137,20 @@ export default function ChatLab() {
   }
 
   function newChat() {        // 복원된/현재 대화를 두고 새 대화 시작(복원이 덫이 되지 않도록)
+    stopPoll();
     setConvId(null);
     setMessages([]);
     setError(null);
   }
 
-  const refreshConvs = useCallback(() => {
-    api.listConversations().then(setConvs).catch(() => {/* 목록 갱신 실패는 무해 */});
-  }, []);
-
   async function selectConv(id: number) {
     if (id === convId || busy) return;
+    stopPoll();
     try {
       const full = await api.getConversation(id);
       setConvId(full.id); setMessages(full.messages); setError(null);
+      const last = full.messages[full.messages.length - 1];
+      if (last && last.role === "user") resumePendingTurn(full.id);   // 진행 중 턴 이어받기
     } catch { setError("대화를 불러오지 못했습니다."); }
   }
 
@@ -121,7 +174,7 @@ export default function ChatLab() {
 
   async function send(preset?: string) {
     const text = (preset ?? input).trim();
-    if (!text || busy) return;
+    if (!text || busy || resuming) return;
     setBusy(true); setError(null);
     setInput("");
     // 사용자 메시지 + 스트리밍으로 채워나갈 빈 assistant 메시지를 함께 추가
@@ -138,8 +191,8 @@ export default function ChatLab() {
         return copy;
       });
 
+    let cid = convId;
     try {
-      let cid = convId;
       if (cid == null) {
         const conv = await api.createConversation();
         cid = conv.id; setConvId(cid);
@@ -158,14 +211,20 @@ export default function ChatLab() {
       }, adminPw || undefined);
     } catch (e) {
       const raw = e instanceof Error ? e.message : "";
-      // 전송층 단절(TypeError: Failed to fetch 등)은 원문이 사용자에게 무의미하고, 서버는
-      // 턴을 계속 완주·영속하므로(keepalive 래퍼) 재열람 안내가 정직한 표면이다.
-      const msg = (e instanceof TypeError || /fetch|network/i.test(raw))
-        ? "연결이 끊겼습니다. 분석은 서버에서 계속 진행됩니다 — 잠시 후 이 대화를 다시 열면 완성된 답변이 표시됩니다."
-        : (raw || "오류가 발생했습니다.");
-      setError(msg);
-      // 프론트 단계 오류(429 한도 초과 안내 포함)로 빈 assistant 버블이 남으면 그 문구로 채운다.
-      patch((parts) => (parts.length ? parts : [{ type: "text", text: msg }]));
+      // 전송층 단절(TypeError: Failed to fetch 등)은 서버가 턴을 계속 완주·영속하므로(routers/chat.py
+      // producer 스레드) 오류가 아니라 '재접속'이다 — 낙관적 빈 assistant 버블을 걷고 폴링으로 완성
+      // 답변을 자동으로 이어받는다(수동 새로고침 불필요). 그 외(429 한도 등)만 에러 문구로 표면화.
+      const disconnected = e instanceof TypeError || /fetch|network/i.test(raw);
+      if (disconnected && cid != null) {
+        setMessages((m) => (m.length && m[m.length - 1].role === "assistant"
+          && m[m.length - 1].parts.length === 0 ? m.slice(0, -1) : m));
+        resumePendingTurn(cid);
+      } else {
+        const msg = raw || "오류가 발생했습니다.";
+        setError(msg);
+        // 프론트 단계 오류(429 한도 초과 안내 포함)로 빈 assistant 버블이 남으면 그 문구로 채운다.
+        patch((parts) => (parts.length ? parts : [{ type: "text", text: msg }]));
+      }
     } finally {
       setBusy(false);
       refreshQuota();              // 턴 후 카운터 갱신(차단 429였어도 used 반영)
@@ -225,6 +284,13 @@ export default function ChatLab() {
             </div>
           );
         })}
+        {resuming && (
+          <div className="chat-msg assistant">
+            <p className="chat-text muted">
+              🔄 이전 분석이 서버에서 계속 진행 중입니다. 탭을 떠나거나 새로고침해도 유지되며, 완료되면 자동으로 표시됩니다…
+            </p>
+          </div>
+        )}
       </div>
       {error && <div className="chat-error">{error}</div>}
       {quota && (
@@ -250,10 +316,10 @@ export default function ChatLab() {
           placeholder="메시지를 입력하세요… (Enter 전송, Shift+Enter 줄바꿈)"
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
-          disabled={busy}
+          disabled={busy || resuming}
         />
         <button type="button" className="chat-send" onClick={() => void send()}
-          disabled={busy || !input.trim()}>전송</button>
+          disabled={busy || resuming || !input.trim()}>전송</button>
       </div>
       </div>
     </div>
