@@ -27,7 +27,7 @@ _KST = ZoneInfo("Asia/Seoul")
 
 
 class _StockB:
-    def pending_orders(self):
+    def pending_orders(self, *, strict: bool = False):
         return [{"order_no": "1", "symbol": "005930", "asset_class": "stock"}]
 
     def daily_orders_today(self):
@@ -35,7 +35,7 @@ class _StockB:
 
 
 class _FutB:
-    def pending_orders(self):
+    def pending_orders(self, *, strict: bool = False):
         return [{"order_no": "9", "symbol": "101W9000", "asset_class": "futures"}]
 
 
@@ -53,7 +53,7 @@ def test_router_merges_stock_and_futures_pending():
 
 def test_router_one_side_failure_keeps_other():
     class _BadStock:
-        def pending_orders(self):
+        def pending_orders(self, *, strict: bool = False):
             raise RuntimeError("kis down")
 
     out = _router(_BadStock(), _FutB()).pending_orders()

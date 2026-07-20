@@ -65,7 +65,22 @@ KST = ZoneInfo("Asia/Seoul")
 _MAX_RESTORES_PER_SYMBOL = 2
 
 # 반복 틱마다 같은 내용이 재발생하는 관측 전용 결정 — 창당 심볼당 1회만 기록.
-_ONCE_ACTIONS = {"guard_ext_residual", "guard_own_giveup", "guard_skip_ambiguous"}
+_ONCE_ACTIONS = {"guard_ext_residual", "guard_own_giveup", "guard_skip_ambiguous",
+                 "guard_hold_unsettled"}
+
+# 브로커 접수 후 미체결 조회에 반영되기까지의 유예(초). 이 안에 있는 own 의도는
+# "미체결에 안 보임"을 **유저 취소로 단정하지 않는다**.
+#
+# 근거: 브로커 미체결 조회는 접수를 즉시 반영하지 않는다(실측 2026-07-20 — 가드
+# 취소가 t+10s엔 미반영·t+20s엔 반영). 가드 폴링은 10초라, 반영 전 틱에서
+# op_signed(0) ≠ oi_total(±N)이 성립해 브랜치 ①이 "유저가 취소했다"로 오판한다.
+# 그 결과 intent를 failed로 풀고 사이클을 재실행 → 원주문이 살아있는 채 같은
+# 주문이 한 번 더 나가 **이중 발주**가 된다(동시호가 단일가라 둘 다 체결).
+# 같은 부류를 intents.py의 no_fill 확정이 `_NO_FILL_MIN_AGE_SEC`로 이미 막고
+# 있었는데(주석에 "이중 발주"라고 명시) 가드 브랜치 ①에만 빠져 있었다.
+# 60초 = 실측 반영 지연(≤20s)의 3배 여유. 창(개장 8:36~8:44:30·마감 15:41~15:44:30)
+# 안에서 유예가 끝나므로 유저 취소 복원 기능 자체는 유지된다.
+_OWN_SETTLE_SEC = 60.0
 
 
 def _canon(order_no) -> str:
@@ -127,6 +142,29 @@ def _signed(side, qty) -> int:
     return int(qty or 0) * (1 if str(side) == "buy" else -1)
 
 
+def _unsettled(own_intents: list, now: datetime | None) -> bool:
+    """이 심볼의 own 의도 중 **브로커 접수 반영 유예 안**인 것이 있나(_OWN_SETTLE_SEC).
+
+    now=None(테스트 기본)이면 유예를 적용하지 않는다 — 기존 단위테스트의
+    "시간 무관 판정" 계약을 유지하기 위함이고, 실행부는 항상 now를 넘긴다.
+    accepted_ts 파싱 불가(구버전 저널·필드 부재)는 **유예 적용**(보수) — 나이를
+    모르면 "충분히 늙었다"고 단정할 수 없다.
+    """
+    if now is None:
+        return False
+    for i in own_intents:
+        ts = str(i.get("accepted_ts") or "")
+        if not ts:
+            return True
+        try:
+            age = (now - datetime.fromisoformat(ts)).total_seconds()
+        except Exception:
+            return True
+        if age < _OWN_SETTLE_SEC:
+            return True
+    return False
+
+
 def _eff_remain(p: dict, trimmed_to: dict) -> int:
     """외부 미체결의 **유효 잔량** — 이번 창 우리 취소 요청을 반영한 값.
 
@@ -151,15 +189,18 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
                        own_intents: list, own_pendings: list,
                        ext_pendings: list,
                        restores_done: dict | None = None,
-                       trimmed_to: dict | None = None) -> GuardPlan:
+                       trimmed_to: dict | None = None,
+                       now: datetime | None = None) -> GuardPlan:
     """한 틱의 조치 계획(순수 — IO 없음, 단위 테스트 대상).
 
     own_intents: 이번 창의 활성 자동 의도
-        [{intent_id, strategy_id, symbol, side, qty, order_no}]
+        [{intent_id, strategy_id, symbol, side, qty, order_no, accepted_ts}]
     own_pendings / ext_pendings: 브로커 미체결 [{order_no, symbol, side, remain_qty}]
         — 호출자가 own/ext 분류를 마친 상태(오늘 전체 own 주문은 ext에서 제외).
     restores_done: 창 누적 심볼별 own 복원 횟수(상한 가드).
     trimmed_to: 창 누적 외부 주문별 "취소 수리 후 남기려는 잔량"(_eff_remain).
+    now: 판정 기준 시각(KST). own 의도의 브로커 접수 반영 유예 판정에만 쓴다
+        (_OWN_SETTLE_SEC). None이면 유예 미적용 — 실행부는 항상 넘긴다.
     """
     restores_done = restores_done or {}
     trimmed_to = trimmed_to or {}
@@ -193,6 +234,16 @@ def plan_guard_actions(positions_signed: dict, ledger_signed: dict,
 
         # ① 자동 주문 유저 변경 감지 — 의도(저널)와 브로커 잔여가 어긋남.
         if op_signed != oi_total:
+            # 반영 유예 — 방금 접수된 own 주문은 미체결 조회에 아직 안 보일 수 있다.
+            # 그 구간의 불일치는 "유저 취소"가 아니라 "미반영"이므로 판단을 미룬다.
+            # 이 가드가 없으면 intent를 failed로 풀고 재실행해 **이중 발주**가 된다
+            # (원주문은 살아있고 동시호가 단일가라 둘 다 체결 — 상세 _OWN_SETTLE_SEC).
+            if _unsettled(oi, now):
+                decisions.append(order_log.decision(
+                    "guard_hold_unsettled", "", "", sym,
+                    f"자동 주문 접수 반영 대기(의도 {oi_total:+d} vs 잔여 {op_signed:+d})"
+                    f" — {_OWN_SETTLE_SEC:g}초 유예 내라 유저 취소로 단정하지 않음"))
+                continue
             if restores_done.get(sym, 0) >= _MAX_RESTORES_PER_SYMBOL:
                 decisions.append(order_log.decision(
                     "guard_own_giveup", "", "", sym,
@@ -350,7 +401,11 @@ def run_auction_guard(instrument_class: str, window: str,
         return own_p, ext_p
 
     def _fetch_classified():
-        pend = [p for p in (broker.pending_orders() or []) if _pend_scope(p)]
+        # strict=True — 조회 실패를 빈/부분 목록으로 강등받지 않는다. 가드는 "미체결에
+        # 없음"을 유저 취소로 읽으므로, 실패가 공집합으로 보이면 자기 주문을 취소된
+        # 것으로 오판해 재발주한다(이중 발주). 예외는 호출자가 잡아 이번 틱을 보류.
+        pend = [p for p in (broker.pending_orders(strict=True) or [])
+                if _pend_scope(p)]
         own_list = [i for i in intents.submitted_window(today.isoformat(), since_iso)
                     if _in_scope_sym(i["symbol"])]
         own_win_nos = {_canon(i["order_no"]) for i in own_list if i["order_no"]}
@@ -363,7 +418,14 @@ def run_auction_guard(instrument_class: str, window: str,
     gate_open = False
     while kst_now() < until:
         try:
-            own_list, own_p, ext_p = _fetch_classified()
+            try:
+                own_list, own_p, ext_p = _fetch_classified()
+            except Exception as e:
+                # 미체결 조회 실패 — 브로커 상태를 모르는 채로는 어떤 판정도 위험하다
+                # (공집합으로 읽으면 own 오판·ext 과잉취소). 이번 틱 전면 보류.
+                log.warning("guard 미체결 조회 실패 — 이번 틱 보류: %s", e)
+                _time.sleep(poll_sec)
+                continue
             if not gate_open:
                 # 목표 확정 게이트 — 한번 열리면 창 끝까지 유지: own 복원이
                 # intent를 failed로 돌린 뒤 재실행이 실패해 의도가 비어도, 이미
@@ -396,15 +458,17 @@ def run_auction_guard(instrument_class: str, window: str,
 
             plan = plan_guard_actions(positions_signed, ledger_signed,
                                       own_list, own_p, ext_p, restores,
-                                      trimmed_to)
+                                      trimmed_to, now=kst_now())
             if plan.fail_intents:
                 # 관측 race 봉합(감사 9c): 발주 직후 OMS 반영 지연으로 "저널엔
                 # 있는데 미체결에 없음"이 유저 취소로 오인될 수 있다 — 한 번 더
                 # 조회해 같은 판정일 때만 복원한다(거짓 복원=이중 발주).
+                # ⚠ 즉시 재조회라 반영 지연 자체는 못 넘는다 — 그건 _OWN_SETTLE_SEC
+                #    유예가 담당한다(이 재조회는 순간적 조회 흔들림만 거른다).
                 own_list, own_p, ext_p = _fetch_classified()
                 plan = plan_guard_actions(positions_signed, ledger_signed,
                                           own_list, own_p, ext_p, restores,
-                                          trimmed_to)
+                                          trimmed_to, now=kst_now())
 
             # 관측 결정은 조치 유무와 무관하게 기록(9f) — 반복류는 심볼당 1회.
             # emitted 마킹은 실제 기록 시점(하단)에만 — 실패 틱에 마킹만 되고
@@ -452,7 +516,7 @@ def run_auction_guard(instrument_class: str, window: str,
                                         if o not in plan.partial_cancels]
                         try:
                             live = {_canon(p.get("order_no"))
-                                    for p in (broker.pending_orders() or [])
+                                    for p in (broker.pending_orders(strict=True) or [])
                                     if _pend_scope(p)}
                         except Exception as e:
                             log.warning("guard 취소 확인 조회 실패 — 이번 틱 보류: %s", e)

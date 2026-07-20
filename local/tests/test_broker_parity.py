@@ -11,6 +11,8 @@ import inspect
 import sys
 from pathlib import Path
 
+import pytest
+
 _LOCAL = Path(__file__).resolve().parent.parent
 if str(_LOCAL) not in sys.path:
     sys.path.insert(0, str(_LOCAL))
@@ -258,3 +260,65 @@ def test_p5_kis_domestic_cancel_body_flag_follows_partial():
     b.cancel("0000000101", "005930", 2, partial=True)      # 부분
     assert [x["QTY_ALL_ORD_YN"] for x in seen] == ["Y", "N"]
     assert [x["ORD_QTY"] for x in seen] == ["5", "2"]
+
+
+# ── P6: pending_orders(strict=) 계약 — 조회 실패를 공집합으로 강등받지 않기 ────
+# 동시호가 가드는 "미체결 목록에 내 주문이 없음"을 유저 취소로 읽는다. 어댑터들이
+# 조회 실패를 로그+빈/부분 목록으로 강등하면(스냅샷·관측엔 그게 맞다) 가드에겐
+# 실패와 진짜 공집합이 구분되지 않아, 살아있는 자기 주문을 취소된 것으로 오판해
+# 재발주한다 — 동시호가 단일가라 원주문과 함께 **둘 다 체결**된다.
+# 한 구현이라도 인자를 안 받으면 그 브로커를 쓰는 유저에게서만 TypeError로 조용히
+# 실패하므로(가드는 그 틱을 통째로 건너뛴다) 시그니처를 전수 고정한다.
+
+def test_p6_pending_orders_accepts_strict_kwarg_on_every_broker():
+    from localapp.broker import Broker
+    from localapp.broker_router import BrokerRouter
+    from localapp.kis_broker import KisBroker
+    from localapp.kis_futures_broker import KisFuturesBroker
+    from localapp.ls_broker import LsBroker
+    from localapp.ls_futures_broker import LsFuturesBroker
+
+    for owner in (Broker, KisBroker, KisFuturesBroker, LsBroker,
+                  LsFuturesBroker, BrokerRouter):
+        p = inspect.signature(owner.pending_orders).parameters.get("strict")
+        assert p is not None, f"{owner.__name__}.pending_orders에 strict가 없습니다"
+        assert p.kind is inspect.Parameter.KEYWORD_ONLY, (
+            f"{owner.__name__}.pending_orders의 strict는 키워드 전용이어야 합니다"
+            " — 기존 무인자 호출자(trader 스냅샷·라우터 병합) 무영향 보장")
+        assert p.default is False, (
+            f"{owner.__name__}.pending_orders의 strict 기본값은 False여야 합니다"
+            " (종전 강등 거동 유지 — 가드만 True로 올린다)")
+
+
+def test_p6_ls_futures_strict_raises_instead_of_empty_list():
+    """LS 선물 — 기본은 빈 목록 강등, strict면 예외 전파."""
+    from localapp.ls_futures_broker import LsFuturesBroker
+
+    b = LsFuturesBroker.__new__(LsFuturesBroker)
+
+    def _boom(_chegb):
+        raise RuntimeError("t0434 타임아웃")
+
+    b._ccld_raw = _boom
+    assert b.pending_orders() == []                      # 종전 거동
+    with pytest.raises(RuntimeError):
+        b.pending_orders(strict=True)
+
+
+def test_p6_router_strict_raises_on_either_leg():
+    """라우터 — 부분 목록도 가드에겐 위험. 한쪽만 실패해도 strict면 전파."""
+    from localapp.broker_router import BrokerRouter
+
+    class _Ok:
+        def pending_orders(self, *, strict: bool = False):
+            return [{"order_no": "1", "symbol": "005930", "side": "buy",
+                     "remain_qty": 1}]
+
+    class _Bad:
+        def pending_orders(self, *, strict: bool = False):
+            raise RuntimeError("선물 조회 실패")
+
+    r = BrokerRouter(stock=_Ok(), futures=_Bad(), resolve=lambda s: "101V6000")
+    assert len(r.pending_orders()) == 1                  # 종전: 주식측 유지
+    with pytest.raises(RuntimeError):
+        r.pending_orders(strict=True)

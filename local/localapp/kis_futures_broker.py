@@ -722,7 +722,9 @@ class KisFuturesBroker:
     def order_status(self, order_no: str) -> dict:
         return parse_ccnl_order_status(self._inquire_ccnl(), order_no)
 
-    def pending_orders(self) -> list[dict]:
+    def pending_orders(self, *, strict: bool = False) -> list[dict]:
+        """미체결 목록. 이 어댑터는 조회 예외를 삼키지 않으므로 strict 무관하게
+        실패가 전파된다 — 인자는 브로커 공통 계약(Broker Protocol) 통일용."""
         rows = self._inquire_ccnl(only_unfilled=True).get("output1") or []
         # 미체결 쿼리(CCLD_NCCS_DVSN=02)는 취소/정정 주문(orgn_odno≠0)도 함께 반환한다 — 이는
         # resting 신규주문이 아니므로 제외(라이브 2026-06-09: 취소주문이 pending으로 오보고됨).

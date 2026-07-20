@@ -1126,10 +1126,14 @@ class KisBroker:
                 })
         return out
 
-    def pending_orders(self) -> list[dict]:
+    def pending_orders(self, *, strict: bool = False) -> list[dict]:
         """현재 미체결 잔량이 있는 주문 목록 — 국내 + 해외(미국) 통합.
 
         해외 조회 실패는 비치명적 — 국내 목록은 유지(견고성).
+
+        strict=True면 조회 실패를 **예외로 전파**한다(동시호가 가드 전용 —
+        실패가 빈 목록으로 보이면 자기 주문을 유저 취소로 오판해 이중 발주).
+        기본 False는 종전대로 로그 후 부분/빈 목록 강등.
         """
         out = []
         try:
@@ -1157,11 +1161,15 @@ class KisBroker:
                     "market": "DOMESTIC", "currency": "KRW", "asset_class": "stock",
                 })
         except Exception as e:
+            if strict:
+                raise
             log.warning("국내 미체결 조회 실패: %s", e)
         try:
             for r in self._overseas_pending():
                 r.setdefault("asset_class", "stock")
                 out.append(r)
         except Exception as e:
+            if strict:
+                raise
             log.warning("해외 미체결 조회 실패: %s", e)
         return out

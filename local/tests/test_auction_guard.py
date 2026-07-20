@@ -24,9 +24,16 @@ from localapp.auction_guard import GuardPlan, _canon, _sort_key, plan_guard_acti
 S = "코스피200선물"
 
 
-def _own(iid, side, qty, order_no, strategy_id="s"):
+# 루프 하니스의 가짜 현재시각(_run_one_tick) = 2026-06-01 08:36 KST.
+# own 의도 기본 accepted_ts는 그보다 120초 앞 — 접수 반영 유예(_OWN_SETTLE_SEC=60)를
+# 이미 지난 상태라, 유예 게이트가 아니라 복원 로직 자체를 검증하게 된다.
+_ACCEPTED_OLD = "2026-06-01T08:34:00+09:00"
+
+
+def _own(iid, side, qty, order_no, strategy_id="s", accepted_ts=_ACCEPTED_OLD):
     return {"intent_id": iid, "strategy_id": strategy_id, "symbol": S,
-            "side": side, "qty": qty, "ref_price": 300.0, "order_no": order_no}
+            "side": side, "qty": qty, "ref_price": 300.0, "order_no": order_no,
+            "accepted_ts": accepted_ts}
 
 
 def _pend(order_no, side, remain, sym=S):
@@ -173,6 +180,69 @@ def test_restore_cap_gives_up():
     assert any(d["action"] == "guard_own_giveup" for d in plan.decisions)
 
 
+# ── 접수 반영 유예(_OWN_SETTLE_SEC) — "미체결에 없음"≠"유저 취소" ──────────────
+# 브로커 미체결 조회는 접수를 즉시 반영하지 않는다(실측 2026-07-20: 취소가 t+10s엔
+# 미반영·t+20s엔 반영). 폴링은 10초라 반영 전 틱에서 own 주문이 통째로 안 보인다.
+# 그걸 유저 취소로 읽으면 intent를 풀고 재실행 → 원주문이 살아있는 채 같은 주문이
+# 한 번 더 나가 **이중 발주**(동시호가 단일가라 둘 다 체결)가 된다.
+import datetime as _dt  # noqa: E402
+
+_NOW = _dt.datetime(2026, 6, 1, 8, 36, tzinfo=_dt.timezone(_dt.timedelta(hours=9)))
+
+
+def _at(sec_ago: float) -> str:
+    return (_NOW - _dt.timedelta(seconds=sec_ago)).isoformat()
+
+
+def test_fresh_own_intent_holds_instead_of_restoring():
+    """접수 10초 전 own 의도가 미체결에 안 보임 — 유예 내라 복원하지 않는다."""
+    plan = plan_guard_actions(
+        {S: 0}, {S: 0}, [_own("i1", "buy", 5, "101", accepted_ts=_at(10))], [], [],
+        now=_NOW)
+    assert plan.cancels == [] and plan.fail_intents == [] and plan.rerun is False
+    hold = [d for d in plan.decisions if d["action"] == "guard_hold_unsettled"]
+    assert len(hold) == 1 and "유예" in hold[0]["reason"]
+
+
+def test_settled_own_intent_still_restores():
+    """유예를 지난(120초 전 접수) 의도는 종전대로 복원 — 기능을 죽이지 않았다."""
+    plan = plan_guard_actions(
+        {S: 0}, {S: 0}, [_own("i1", "buy", 5, "101", accepted_ts=_at(120))], [], [],
+        now=_NOW)
+    assert plan.rerun is True and plan.fail_intents[0][0] == "i1"
+    assert not [d for d in plan.decisions if d["action"] == "guard_hold_unsettled"]
+
+
+def test_missing_accepted_ts_is_treated_as_unsettled():
+    """accepted_ts 부재(구버전 저널·필드 유실) — 나이를 모르면 보수적으로 보류."""
+    plan = plan_guard_actions(
+        {S: 0}, {S: 0}, [_own("i1", "buy", 5, "101", accepted_ts="")], [], [],
+        now=_NOW)
+    assert plan.rerun is False
+    assert any(d["action"] == "guard_hold_unsettled" for d in plan.decisions)
+
+
+def test_settle_gate_is_per_symbol_and_only_gates_branch_one():
+    """유예는 own 브랜치만 막는다 — 같은 틱의 **다른 심볼** ext 트리밍은 그대로.
+
+    유예가 전역 보류였다면 초과 수동 주문이 창을 넘겨 수렴 몫으로 밀린다."""
+    kq = "코스닥150선물"
+    fresh = dict(_own("i1", "buy", 5, "101", accepted_ts=_at(5)))
+    ext = {"order_no": "300", "symbol": kq, "side": "buy", "remain_qty": 2}
+    plan = plan_guard_actions({S: 0, kq: 0}, {S: 0, kq: 0},
+                              [fresh], [], [ext], now=_NOW)
+    assert plan.cancels == [("300", kq, 2)]          # 다른 심볼 ext는 정상 취소
+    assert plan.rerun is False                        # own 심볼은 보류
+    assert any(d["action"] == "guard_hold_unsettled" for d in plan.decisions)
+
+
+def test_now_none_keeps_legacy_time_independent_contract():
+    """now 미전달(단위테스트 기본) — 유예 미적용으로 종전 판정 그대로."""
+    plan = plan_guard_actions(
+        {S: 0}, {S: 0}, [_own("i1", "buy", 5, "101", accepted_ts=_at(1))], [], [])
+    assert plan.rerun is True
+
+
 # ── intents.submitted_window — 창 필터·상태 필터 ─────────────────────────────
 def test_submitted_window_filters(tmp_path):
     p = tmp_path / "intents.jsonl"
@@ -275,11 +345,16 @@ def _run_one_tick(monkeypatch, broker, submitted, read_today, cycles_today=(),
 
     KST = ag.KST
     t0 = _dt.datetime(2026, 6, 1, 8, 36, tzinfo=KST)
-    calls = {"n": 0}
+    # 틱 경계는 **루프 끝의 sleep**으로 센다 — kst_now() 호출 횟수로 세면 본문에서
+    # 시각을 한 번 더 읽는 것만으로(예: plan_guard_actions의 반영유예 판정) 창이
+    # 조기 종료돼 테스트가 프로덕션과 다른 횟수를 돈다.
+    slept = {"n": 0}
 
     def fake_now():
-        calls["n"] += 1
-        return t0 if calls["n"] <= ticks else t0.replace(hour=9)
+        return t0 if slept["n"] < ticks else t0.replace(hour=9)
+
+    def fake_sleep(_s):
+        slept["n"] += 1
 
     class _FakeTrader:
         def __init__(self, b):
@@ -300,7 +375,7 @@ def _run_one_tick(monkeypatch, broker, submitted, read_today, cycles_today=(),
                         lambda **kw: reruns.append(kw) or {})
     monkeypatch.setattr(runner_mod, "run_close_cycle",
                         lambda *a: reruns.append(a) or {})
-    monkeypatch.setattr(ag._time, "sleep", lambda s: None)
+    monkeypatch.setattr(ag._time, "sleep", fake_sleep)
     monkeypatch.setattr(intents, "submitted_window",
                         lambda d, since, path=None: list(submitted))
     monkeypatch.setattr(intents, "_read_today", lambda d, path=None: list(read_today))
@@ -318,14 +393,21 @@ class _LoopBroker:
     """pending 조회 시퀀스·취소 응답을 주입하는 루프 하니스 브로커."""
 
     def __init__(self, pend_seq, cancel_resp, positions=None):
-        self._seq = [list(x) for x in pend_seq]
+        # 예외 원소는 조회 실패 주입 — 그대로 보관하고 호출 시 raise.
+        self._seq = [x if isinstance(x, BaseException) else list(x)
+                     for x in pend_seq]
         self._cancel_resp = cancel_resp
         self._positions = list(positions or [])
         self.cancelled: list = []
         self.partials: list = []          # cancel(partial=…) 수신 기록
 
-    def pending_orders(self):
-        return list(self._seq.pop(0)) if len(self._seq) > 1 else list(self._seq[0])
+    def pending_orders(self, *, strict: bool = False):
+        nxt = self._seq.pop(0) if len(self._seq) > 1 else self._seq[0]
+        # 시퀀스 원소가 예외면 조회 실패 재현 — strict 소비자(가드)는 이걸 빈 목록으로
+        # 강등받으면 안 된다(실패를 공집합으로 읽으면 own 오판 → 이중 발주).
+        if isinstance(nxt, BaseException):
+            raise nxt
+        return list(nxt)
 
     def cancel(self, order_no, symbol, qty, *, partial=False):
         self.cancelled.append((order_no, symbol, qty))
@@ -367,6 +449,58 @@ def test_loop_restore_confirms_then_reorders(monkeypatch):
     assert failed == ["i1"]
     assert len(reruns) == 1 and reruns[0]["instrument_class"] == "futures"
     assert out["n_cancel"] == 1
+
+
+def test_loop_pending_query_failure_holds_tick_not_treated_as_empty(monkeypatch):
+    """미체결 조회 실패는 **공집합이 아니다** — 그 틱 전면 보류(실행부 회귀).
+
+    브로커 어댑터들은 조회 실패를 로그+빈 목록으로 강등한다(스냅샷·관측엔 그게 맞다).
+    가드가 그 빈 목록을 그대로 받으면 own 주문이 "사라졌다"로 보여 유저 취소로 오판,
+    intent를 풀고 재실행해 **이중 발주**한다. 그래서 가드만 strict=True로 조회하고,
+    예외가 오면 아무 판정도 하지 않는다.
+
+    스텁은 **실제 어댑터 거동을 그대로 재현**한다 — strict=False면 빈 목록 강등,
+    strict=True면 전파. 그래야 가드에서 strict를 빼는 순간 이 테스트가 실제로
+    깨진다(강등된 []를 유저 취소로 읽어 복원이 발화)."""
+    own = [_own("i1", "buy", 5, "101")]            # 유예는 이미 지난 의도
+
+    class _DegradingBroker(_LoopBroker):
+        def pending_orders(self, *, strict: bool = False):
+            if strict:
+                raise RuntimeError("t0434 타임아웃")
+            return []                              # 어댑터의 실패→빈목록 강등
+
+    broker = _DegradingBroker([[]], {"success": True})
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker, own, [{"order_no": "101"}])
+    assert b.cancelled == [] and failed == [] and reruns == []
+    assert out["n_cancel"] == 0
+
+
+def test_loop_fresh_intent_not_restored(monkeypatch):
+    """실행부가 now를 넘겨 반영 유예가 **실제로** 걸리는지(배선 회귀).
+
+    순수 함수 테스트는 now를 직접 넣지만, run_auction_guard가 now 전달을 빠뜨리면
+    유예는 코드에 있어도 라이브에서 무효다(now=None → 게이트 미적용). 하니스 시각은
+    08:36이므로 08:35:40 접수(20초 전)는 유예 안 — 복원이 나가면 안 된다."""
+    own = [_own("i1", "buy", 5, "101", accepted_ts="2026-06-01T08:35:40+09:00")]
+    broker = _LoopBroker([[]], {"success": True})      # 미체결에 안 보임
+    out, reruns, failed, b = _run_one_tick(
+        monkeypatch, broker, own, [{"order_no": "101"}])
+    assert b.cancelled == [] and failed == [] and reruns == []
+
+
+def test_loop_guard_requests_strict_pending(monkeypatch):
+    """가드는 strict=True로 조회한다 — 어댑터의 실패→빈목록 강등을 받지 않겠다는 의사."""
+    seen: list = []
+
+    class _B(_LoopBroker):
+        def pending_orders(self, *, strict: bool = False):
+            seen.append(strict)
+            return []
+
+    _run_one_tick(monkeypatch, _B([[]], {"success": True}), [], [])
+    assert seen and all(seen), f"strict=True로 호출돼야 — 실제 {seen}"
 
 
 def test_loop_partial_cancel_does_not_block_own_restore(monkeypatch):

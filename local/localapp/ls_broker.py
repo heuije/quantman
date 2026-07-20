@@ -662,6 +662,8 @@ class LsBroker(_LsAuth):
         try:
             rows = self._overseas_ccld_raw("2").get("COSAQ00102OutBlock3") or []
         except Exception as e:
+            if strict:
+                raise
             log.warning("LS 해외 pending 실패: %s", e)
             return []
         out = []
@@ -743,10 +745,14 @@ class LsBroker(_LsAuth):
         return {"order_no": order_no, "status": "unknown",
                 "filled_qty": 0, "remain_qty": 0, "fill_price": 0.0}
 
-    def pending_orders(self) -> list[dict]:
+    def pending_orders(self, *, strict: bool = False) -> list[dict]:
         """미체결 주문 목록 — 국내 t0425 + 해외 COSAQ00102(ExecYn='2') 병합.
 
         실패는 비치명적 — 국내·해외 각각 로그 후 [] 반환.
+
+        strict=True면 조회 실패를 **예외로 전파**한다(동시호가 가드 전용 —
+        실패가 빈 목록으로 보이면 자기 주문을 유저 취소로 오판해 이중 발주).
+        기본 False는 종전대로 로그 후 부분/빈 목록 강등.
         ⚠ t0425OutBlock1 medosu 필드: "매수"/"매도" 문자열 반환 — A2 KB 🟢.
         ⚠ hname(종목명) 필드: t0425OutBlock1에 포함 여부 미확인 — 없으면 "".
         ⚠ submitted_at: ordtime 형식(HHMMSSMMM) — A2 KB 🟢.
@@ -776,6 +782,8 @@ class LsBroker(_LsAuth):
                     "asset_class": "stock",
                 })
         except Exception as e:
+            if strict:
+                raise
             log.warning("LS 국내 pending 실패: %s", e)
         try:
             for r in self._overseas_pending():

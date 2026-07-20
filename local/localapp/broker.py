@@ -30,7 +30,11 @@ class Broker(Protocol):
     # 예약주문 접수번호≠체결번호공간(실측 2026-06-11) 해소용 — 비해외 구현은 무시.
     def order_status(self, order_no: str, symbol: str | None = None,
                      hint: dict | None = None) -> dict: ...
-    def pending_orders(self) -> list[dict]: ...
+    # strict: True면 **완전한 목록을 못 만들었을 때 예외**를 던진다. 기본 False는
+    # 종전대로 실패를 로그+부분/빈 목록으로 강등한다(스냅샷·관측 용도는 그게 맞다).
+    # 동시호가 가드는 "미체결에 없음"을 유저 취소로 읽으므로, 조회 실패가 빈 목록으로
+    # 보이면 자기 주문을 취소된 것으로 오판해 이중 발주한다 → 가드만 strict=True.
+    def pending_orders(self, *, strict: bool = False) -> list[dict]: ...
     # 종가창 급등/상한가 스캔 — 자동매매 템플릿 limit_up_close_v1의 장중 실시간 관측
     # (15:2x 마감 동시호가 중 예상체결가 랭킹). 반환 row:
     #   {symbol, name, price(예상체결가), change_pct(전일 대비 %), is_limit_up(예상체결가≥상한가),

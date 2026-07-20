@@ -147,7 +147,7 @@ def test_router_preserves_contract_code_on_normalized_futures_pending():
     from localapp.broker_router import BrokerRouter
 
     class _Fut:
-        def pending_orders(self):
+        def pending_orders(self, *, strict: bool = False):
             return [{"order_no": "1", "symbol": "A0169000", "side": "buy",
                      "remain_qty": 2, "market": "DOMESTIC",
                      "asset_class": "futures"}]

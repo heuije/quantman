@@ -60,7 +60,7 @@ class _FakeStock(_Fake):
     def order_status(self, order_no, symbol=None):
         self.calls.append(("order_status", order_no, symbol)); return {"tag": "stock"}
 
-    def pending_orders(self):
+    def pending_orders(self, *, strict: bool = False):
         self.calls.append(("pending_orders",)); return []
 
 
