@@ -341,8 +341,8 @@ def test_reversal_credit_applies_on_new_only_broker(isolated_trader, monkeypatch
 
 
 def test_reversal_credit_gated_on_unconfirmed_broker(isolated_trader, monkeypatch):
-    """§18.2 게이트 — 미확정 브로커(KIS 실측 전)는 갈아타기 크레딧 보류: 숏 target =
-    floor(8×100%) = 8 → 매도 13(청산 5 + 숏 8). 실측 후 플래그 전환 시 위 테스트 거동."""
+    """§18.2 게이트 — orderable 의미 미확정 어댑터는 갈아타기 크레딧 보류: 숏 target =
+    floor(8×100%) = 8 → 매도 13(청산 5 + 숏 8). LS·KIS는 실측 확정으로 위 테스트 거동."""
     t, broker = isolated_trader
     assert _reversal_day2_sells(t, broker, monkeypatch, new_only=False) == 13
 
