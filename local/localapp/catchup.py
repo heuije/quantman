@@ -94,6 +94,10 @@ class CatchupPlan:
             parts.append("KRX stop-loss")
         if self.us_stop_loss_check:
             parts.append("US stop-loss")
+        if self.krx_close_classes:
+            # 종전 누락 — 종가창 catch-up만 있는 계획이 "(none)"으로 출력돼,
+            # 로그·배너가 "할 일 없음"이라 말하는 동안 실제로 종가 청산을 발주했다.
+            parts.append(f"KRX close({'/'.join(self.krx_close_classes)})")
         return ", ".join(parts) if parts else "(none)"
 
 
@@ -534,7 +538,11 @@ def _catchup_stop_loss(market: str, broker, trader) -> dict:
     # on_tick이 peak=max(ledger.peak, 현재가)로 보정하지만 '진입↔재기동 사이의 고점'은
     # 못 잡아 catch-up 트레일이 약하게 트리거될 수 있다. 고정 손절/익절(entry 기준)은
     # 무영향. 장중 고점 조회(분봉)는 드문 PC-off 경로 대비 비용이 커 도입하지 않는다.
-    fired_before = len(manager.decisions)
+    # 발주 수는 매니저의 실발주 카운터로 센다. 종전엔 decisions 증가분을 썼는데
+    # 그건 발주 수가 아니다(양방향 오집계 — manager.submitted_count 주석 참조).
+    fired_before = manager.submitted_count
+    evaluated = 0        # 실제로 손절 평가(on_tick)까지 간 건수
+    skipped = 0          # 현재가를 못 얻어 **판정 자체가 불가**했던 건수
 
     # Q5(AL-4): _CYCLE_LOCK으로 정상 cycle·settlement과 직렬화.
     with _CYCLE_LOCK:
@@ -545,18 +553,23 @@ def _catchup_stop_loss(market: str, broker, trader) -> dict:
             except Exception as e:
                 log.warning("catch-up stop-loss [%s] %s 현재가 조회 실패: %s",
                              market, symbol, e)
+                skipped += 1
                 continue
             if cur <= 0:
                 log.warning("catch-up stop-loss [%s] %s 현재가 0/음수 — skip",
                              market, symbol)
+                skipped += 1
                 continue
             manager.on_tick(symbol, cur)
+            evaluated += 1
 
-    fired = len(manager.decisions) - fired_before
-    log.info("catch-up stop-loss [%s] checked=%d fired=%d",
-              market, len(positions), fired)
-    return {"checked": len(positions), "fired": fired,
-            "decisions": list(manager.decisions), "error": None}
+    fired = manager.submitted_count - fired_before
+    log.info("catch-up stop-loss [%s] 보유=%d 평가=%d 판정불가=%d 발주=%d",
+              market, len(positions), evaluated, skipped, fired)
+    # checked = **평가한** 건수(보유 건수가 아니다). 종전엔 len(positions)라, 현재가
+    # 조회가 전건 실패해도 "보유 N건 → 손절선 안전"이라는 허위 안전신호가 나갔다.
+    return {"checked": evaluated, "skipped": skipped, "held": len(positions),
+            "fired": fired, "decisions": list(manager.decisions), "error": None}
 
 
 def _prepare_helpers() -> tuple[object, object] | None:
@@ -710,7 +723,16 @@ def _save_result(plan: CatchupPlan, results: dict) -> None:
             out["plan_summary"] = v.get("plan_summary", "")
         elif k.endswith("_stop_loss"):
             out["checked"] = v.get("checked", 0)
+            out["skipped"] = v.get("skipped", 0)
+            out["held"] = v.get("held", 0)
             out["fired"] = v.get("fired", 0)
+        elif k.startswith("krx_close_"):
+            # 종전 누락 — 종가창 catch-up 결과 키가 어느 분기에도 안 걸려 배너에서
+            # 통째로 비가시였다(다른 결과가 없으면 배너 자체가 안 떴다).
+            cs = v.get("summary") or {}
+            out["n_bought"] = cs.get("n_bought", 0)
+            out["n_sold"] = cs.get("n_sold", 0)
+            out["n_netted"] = cs.get("n_netted", 0)
         elif k.endswith("_cycle"):
             cs = v.get("cycle_summary") or {}
             out["n_bought"] = cs.get("n_bought", 0)

@@ -2824,11 +2824,23 @@ class SettingsApp:
                 parts.append(f"  · {k}: ❌ {v['error']}")
             elif k.endswith("_stop_loss"):
                 checked = v.get("checked", 0)
+                skipped = v.get("skipped", 0)
                 fired = v.get("fired", 0)
-                if checked == 0:
+                if checked == 0 and skipped == 0:
                     continue  # 보유 종목 0건 — 표시 생략
-                fire_mark = f"🔴 {fired}건 손절 발주" if fired > 0 else "✓ 손절선 안전"
-                parts.append(f"  · {k}: 보유 {checked}건 → {fire_mark}")
+                # "KRX stop-loss"만 보여 유저가 '손절 발생'으로 오독했다(실측 2026-07-20).
+                # 점검(평가)과 발동(실발주)을 명시 분리하고, 판정 불가는 숨기지 않는다 —
+                # 조회 실패분을 '안전'으로 접으면 그게 곧 허위 안전신호다.
+                fire_mark = (f"🔴 발동 {fired}건(매도 발주)" if fired > 0
+                             else "✓ 발동 없음")
+                tail = f" · ⚠ 판정불가 {skipped}건" if skipped else ""
+                parts.append(f"  · {k}: 손절 점검 {checked}건 → {fire_mark}{tail}")
+            elif k.startswith("krx_close_"):
+                nb = v.get("n_bought", 0)
+                ns = v.get("n_sold", 0)
+                nn = v.get("n_netted", 0)
+                net_tail = f" 넷팅 {nn}건" if nn else ""
+                parts.append(f"  · {k}: 종가 매수 {nb}건 매도 {ns}건{net_tail}")
             elif k.endswith("_cycle"):
                 nb = v.get("n_bought", 0)
                 ns = v.get("n_sold", 0)

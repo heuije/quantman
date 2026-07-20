@@ -46,6 +46,10 @@ class IntradayStopManager:
         self.broker = broker
         self._get_ledger = get_ledger
         self._submit_sell = submit_sell_fn
+        # 이 매니저가 **실제로 브로커에 접수시킨** 손절 매도 건수. decisions 증가분은
+        # 발주 수의 대용이 될 수 없다 — 접수됐지만 미체결이면 decision이 없고,
+        # 멱등 차단·예외·거부는 decision을 남긴다(양방향 오집계).
+        self.submitted_count = 0
         self.dataset = dataset or {}
         self._sold_today: set[str] = set()
         self._lock = threading.Lock()
@@ -170,12 +174,17 @@ class IntradayStopManager:
 
                 strat_name = pos.get("strategy_name", "")
                 try:
-                    self._submit_sell(
+                    # 반환값 = 브로커가 실제로 주문을 받았나. 멱등 차단·거부는 False라
+                    # 발주 건수로 세지 않는다(catch-up 배너가 이 수를 유저에게 보고).
+                    placed = self._submit_sell(
                         ledger_key, strat_name, symbol, sell_qty, price,
                         policy, reason, self.decisions)
                     self._sold_today.add(ledger_key)
-                    log.info("[intraday-stop] %s 매도 발주: %s @ %s원 (사유 %s)",
-                              symbol, sell_qty, price, reason)
+                    if placed:
+                        self.submitted_count += 1
+                    log.info("[intraday-stop] %s 매도 %s: %s @ %s원 (사유 %s)",
+                              symbol, "발주" if placed else "미발주(차단·거부)",
+                              sell_qty, price, reason)
                 except Exception as e:
                     log.error("[intraday-stop] %s 매도 발주 실패: %s", symbol, e)
 
@@ -184,6 +193,7 @@ class IntradayStopManager:
         with self._lock:
             self._sold_today.clear()
             self.decisions.clear()
+            self.submitted_count = 0
 
     def held_symbols(self) -> set[str]:
         """현재 보유 종목 코드 셋 — WebSocket 구독 갱신용."""

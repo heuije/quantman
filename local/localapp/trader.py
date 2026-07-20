@@ -1311,7 +1311,16 @@ class Trader:
 
     def _submit_sell(self, sid: str, strat_name: str, symbol: str, qty: int,
                      ref_price: float, policy: dict, reason: str,
-                     decisions: list[dict], liquidation: bool = False) -> None:
+                     decisions: list[dict], liquidation: bool = False) -> bool:
+        """반환: **이 호출이 실제로 브로커에 주문을 접수시켰나**.
+
+        종전엔 항상 None이라 호출자가 "멱등 차단됐다 / 거부됐다 / 접수됐다"를 구분할
+        수 없었다. catch-up 손절 배너가 그 정보 없이 `decisions` 증가분으로 발주 수를
+        추정하다 **양방향으로 틀렸다** — 접수됐지만 미체결이면 decision이 없어 0으로
+        세고(허위 안전신호), 멱등 차단·예외·거부는 decision을 남겨 발주로 셌다.
+        발주 예외(ambiguous — 접수됐을 수도 있음)는 보수적으로 False: "우리가 주문을
+        냈다"고 유저에게 단언하지 않는다(그 사건은 error 결정으로 따로 표면화된다).
+        """
         # L-01: 매도 멱등 단일 게이트(모든 매도 경로 공유) — 오늘 같은 (sid, symbol)
         # 매도 intent가 활성이면 재발주 차단. EOD cycle·장중 tick 손절·catch-up이
         # 첫 매도 미체결(KIS 잔고 미감소)인 동안 같은 포지션을 동시 평가해도 이중매도를
@@ -1324,7 +1333,7 @@ class Trader:
                 "skip_idempotent", sid, strat_name, symbol,
                 "오늘 이미 발주된 매도 intent 존재 — 중복 차단"))
             log.info("[L-01] 중복 매도 차단 %s/%s", sid, symbol)
-            return
+            return False
         intent_id = intents.new_intent_id()
         intents.begin(today_iso, intent_id, sid, strat_name, symbol, "sell",
                       qty, ref_price)
@@ -1343,7 +1352,7 @@ class Trader:
                 log.error("미국 예약매도 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"예약발주 예외: {e}"))
-                return
+                return False
             log.info("[us-resv] %s 예약매도 지정가 limit=%s", symbol, limit)
         elif _currency_of(symbol) == "USD":
             # 미국 즉시매도(종가 청산 cycle) — 지정가(00). KIS 연속장 시장가 미지원이라
@@ -1359,7 +1368,7 @@ class Trader:
                 log.error("미국 매도 지정가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
-                return
+                return False
             log.info("[us-close] %s 즉시 매도 지정가 limit=%s", symbol, limit)
         else:
             # 국내 즉시 매도 — 시장가. 종가 동시호가 발주 → 종가 단일가 체결.
@@ -1374,12 +1383,13 @@ class Trader:
                 log.error("매도 시장가 발주 실패 [%s]: %s", symbol, e)
                 decisions.append(order_log.decision(
                     "error", sid, strat_name, symbol, f"발주 예외: {e}"))
-                return
+                return False
         intents.mark_submitted(today_iso, intent_id, r.get("order_no", "") or "")
-        self._after_submit(r, sid, strat_name, None, symbol, "sell", qty,
-                            ref_price, limit, policy, decisions, reason=reason,
-                            today_iso=today_iso, intent_id=intent_id, kind="청산",
-                            liquidation=liquidation)
+        return self._after_submit(
+            r, sid, strat_name, None, symbol, "sell", qty,
+            ref_price, limit, policy, decisions, reason=reason,
+            today_iso=today_iso, intent_id=intent_id, kind="청산",
+            liquidation=liquidation)
 
     def _submit_close_short(self, sid: str, strat_name: str, symbol: str, qty: int,
                             ref_price: float, policy: dict, reason: str,
@@ -1454,8 +1464,11 @@ class Trader:
                       policy: dict, decisions: list[dict], reason: str,
                       today_iso: str = "", intent_id: str = "",
                       kind: str = "", liquidation: bool = False,
-                      drift: bool = False) -> None:
+                      drift: bool = False) -> bool:
         """submit 결과를 후처리: pending 등록 / 즉시 체결 반영 / 거부 로깅.
+
+        반환: **브로커가 주문을 실제로 받았나**(거부=False, 접수·즉시체결=True).
+        호출자가 "주문을 냈다"를 유저에게 보고할 때 쓴다(_submit_sell docstring 참조).
 
         kind: "진입"|"청산"|"교정" — 발주 메서드가 명시(_submit_buy·_submit_open_short=진입,
         _submit_sell·_submit_close_short=청산, _submit_drift=교정). pending 레코드에 실어
@@ -1479,7 +1492,7 @@ class Trader:
             if intent_id:
                 intents.mark_failed(today_iso, intent_id,
                                     f"KIS 거부: {r.get('message', '')}")
-            return
+            return False
         p = {
             "order_no": order_no, "strategy_id": sid,
             "strategy_name": strat_name, "symbol": symbol, "side": side,
@@ -1514,7 +1527,7 @@ class Trader:
         if filled >= qty and fill_price > 0:
             self._apply_fill(order_no, p, filled, fill_price, decisions)
             self._resolve_intent(p, "filled")   # pending을 거치지 않는 종결 경로
-            return
+            return True
         # 그렇지 않으면 pending에 등록 → 다음 사이클 또는 _wait_pending이 폴링.
         # M3: pending 등록도 cycle·WS 체결 thread와 같은 락으로 직렬화.
         with _CYCLE_LOCK:
@@ -1522,6 +1535,7 @@ class Trader:
             # M9/L-01: 발주 직후 즉시 영속 — cycle 끝 저장까지의 크래시 유실창 제거
             # (intents 저널이 중복발주는 막지만, pending 유실은 체결 추적을 끊었다).
             self._save()
+        return True
 
     def _wait_pending(self, timeout_sec: int, poll_sec: int,
                       decisions: list[dict]) -> None:
