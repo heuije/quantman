@@ -561,6 +561,22 @@ class Trader:
         with _CYCLE_LOCK:
             self._resolve_pending_locked(decisions)
 
+    @staticmethod
+    def _resolve_intent(p: dict, outcome: str) -> None:
+        """이 pending의 intent를 저널에서 종결 — 멱등 게이트 해제(intents.mark_resolved).
+
+        pending에서 주문이 사라지는 **모든** 지점에서 호출한다. 종전엔 성공 종결
+        경로가 없어 체결된 주문이 종일 게이트를 점유했다(N1 — japan1 438계약
+        오버나이트). intent_id는 _after_submit이 pending 레코드에 실어 둔다.
+
+        구버전 pending_orders.json(필드 부재)은 조용히 skip — 종전 거동(보수적
+        차단)으로 남을 뿐이라 마이그레이션이 필요 없다.
+        """
+        iid = p.get("intent_id")
+        idate = p.get("intent_date")
+        if iid and idate:
+            intents.mark_resolved(str(idate), str(iid), outcome)
+
     def _resolve_pending_locked(self, decisions: list[dict]) -> None:
         if not self.pending:
             return
@@ -604,6 +620,7 @@ class Trader:
                 if delta > 0:
                     self._apply_fill(order_no, p, delta, fill_px, decisions)
                 del self.pending[order_no]
+                self._resolve_intent(p, "filled")
                 changed = True
                 if exec_odno:
                     newly_claimed.append(exec_odno)
@@ -618,7 +635,14 @@ class Trader:
                     changed = True
                     if exec_odno:
                         newly_claimed.append(exec_odno)
-            elif status == "cancelled":
+            elif status in ("cancelled", "rejected"):
+                # rejected — KIS 국내선물 order_status가 rjct_qty>0을 이 어휘로 준다
+                # (kis_futures_broker). 종전엔 어느 분기에도 안 걸려 아래 unknown으로
+                # 떨어졌고, 당일 조회창엔 흔적이 남아 익일 회수도 못 해 7일 GC까지
+                # pending·멱등 게이트가 함께 잠겼다. 취소와 같은 종결이다(주문 소멸).
+                _why = ("주문 거부(rjct) — 브로커가 주문을 생성하지 않음"
+                        if status == "rejected"
+                        else "미체결 cancelled (장마감 자동 취소 또는 외부 취소)")
                 order_log.log_order("cancelled", p["symbol"], p["side"], p["qty"],
                                     order_no=order_no,
                                     intended_price=p.get("intended_price"),
@@ -627,9 +651,9 @@ class Trader:
                                     kind=p.get("kind", ""))
                 decisions.append(order_log.decision(
                     "unfilled", p.get("strategy_id", ""),
-                    p.get("strategy_name", ""), p["symbol"],
-                    "미체결 cancelled (장마감 자동 취소 또는 외부 취소)"))
+                    p.get("strategy_name", ""), p["symbol"], _why))
                 del self.pending[order_no]
+                self._resolve_intent(p, status)
                 changed = True
             else:
                 # 여전히 미확인 — 다음 폴링/사이클에서 재확인. 로컬 timeout 없음.
@@ -661,6 +685,7 @@ class Trader:
                         p.get("strategy_name", ""), p.get("symbol", ""),
                         "상태 미확인 7일 경과 — 추적 만료(GC)"))
                     del self.pending[order_no]
+                    self._resolve_intent(p, "gc")
                     changed = True
         if newly_claimed:
             _register_claimed_fills(newly_claimed)
@@ -714,6 +739,7 @@ class Trader:
                         "상태였음(크래시 추정). 기장 후 종결", order_no, symbol, delta,
                         sub_day.isoformat())
             del self.pending[order_no]
+            self._resolve_intent(p, "reclaimed_filled")
             return True
         # 무흔적(접수 실패 추정) 또는 미체결/취소 — DAY 만료 확정.
         order_log.log_order("timeout", symbol, p.get("side", ""), p.get("qty", 0),
@@ -728,6 +754,7 @@ class Trader:
             symbol, f"DAY 만료 확정 — 제출일({sub_day.isoformat()}) 체결내역 "
                     "무체결, 익일 회수(R2)"))
         del self.pending[order_no]
+        self._resolve_intent(p, "reclaimed_expired")
         return True
 
     def _record_contract_meta(self, sid: str, symbol: str) -> None:
@@ -1453,6 +1480,10 @@ class Trader:
             "qty": qty, "limit_price": limit_price,
             "intended_price": intended_price,
             "submitted_ts": time.time(),
+            # L-01 종결 배선 — 이 주문이 pending에서 사라질 때 어느 intent를 닫아야
+            # 하는지. order_no로 저널을 역스캔할 수도 있지만, 정정·재접수로 번호가
+            # 바뀌거나 ambiguous가 콤마결합 번호를 쓰는 경우가 있어 직접 싣는다.
+            "intent_id": intent_id, "intent_date": today_iso,
             # Q7: timeout_sec 필드 제거 — _resolve_pending이 timeout cancel을
             # 더 이상 사용하지 않음. KIS DAY 정책으로 마감 시 자동 cancel.
             "definition": strat_def or {}, "reason": reason, "kind": kind,
@@ -1476,6 +1507,7 @@ class Trader:
         fill_price = float(r.get("price", 0) or 0)
         if filled >= qty and fill_price > 0:
             self._apply_fill(order_no, p, filled, fill_price, decisions)
+            self._resolve_intent(p, "filled")   # pending을 거치지 않는 종결 경로
             return
         # 그렇지 않으면 pending에 등록 → 다음 사이클 또는 _wait_pending이 폴링.
         # M3: pending 등록도 cycle·WS 체결 thread와 같은 락으로 직렬화.

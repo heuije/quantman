@@ -191,6 +191,7 @@ def _on_exec_event(trader: Trader, broker: Broker, evt: dict) -> None:
             trader._apply_fill(raw_odno, p, filled_qty, fill_price, decisions,
                                 partial=False)
             del pending[key]
+            trader._resolve_intent(p, "filled")   # L-01 멱등 게이트 해제(전량체결)
         else:
             # 부분 체결
             trader._apply_fill(raw_odno, p, filled_qty, fill_price, decisions,

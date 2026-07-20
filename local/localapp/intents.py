@@ -90,6 +90,34 @@ def mark_failed(date_iso: str, intent_id: str, error: str,
     }, path=path)
 
 
+def mark_resolved(date_iso: str, intent_id: str, outcome: str,
+                  path: Path | None = None) -> None:
+    """Phase C(종결) — 이 intent의 브로커 주문이 **더 이상 살아있지 않다**.
+
+    종전엔 저널이 intent의 *끝*을 기록하지 않았다. ``submitted``는 "브로커가
+    접수했다"는 뜻인데 ``is_active``가 이를 "아직 살아있다"로 읽어, 체결이 끝난
+    주문이 종일 게이트를 점유했다. 그 결과 같은 전략이 하루에 두 번 같은 방향으로
+    청산해야 하면 두 번째가 ``trader._plan_exit_intents``에서 심볼 통째 hold로
+    막혔다 — 2026-07-20 floo.japan1 #30에서 코스닥150선물 438계약이 실제로
+    청산되지 못하고 오버나이트로 넘어갔다.
+
+    호출 지점 = **``trader.pending``에서 주문이 사라지는 곳**(체결·취소·거부·
+    익일 회수·GC·WS 전량체결). ``_apply_fill`` 내부가 아니다 — drift 교정 체결은
+    거기서 조기 return하므로(원장 불변) 훅이 영영 실행되지 않는다.
+
+    **부분체결에는 쓰지 않는다.** 잔량이 살아있는데 게이트를 풀면 §19 A1이 자기
+    주문을 목표 계산에서 제외하므로(자기 워시 방지) 그 잔량이 반영되지 않은 채
+    같은 방향 추가 발주가 나간다.
+
+    누락은 fail-safe다 — 종결을 못 쓰면 종전과 똑같이 보수적으로 차단된다.
+    outcome: "filled" | "cancelled" | "reclaimed" | "gc" (관측용 사유).
+    """
+    _append_fsync({
+        "ts": _now_kst_iso(), "date": date_iso, "phase": "resolved",
+        "intent_id": intent_id, "outcome": outcome,
+    }, path=path)
+
+
 # ── read / status ─────────────────────────────────────────────────────────────
 
 
@@ -132,16 +160,24 @@ def _terminal_status(events_for_intent: list[dict]) -> str:
 
 def is_active(date_iso: str, strategy_id, symbol: str, side: str,
               path: Path | None = None) -> bool:
-    """오늘 (sid, sym, side) intent가 submitting 또는 submitted 상태로 존재?
+    """오늘 (sid, sym, side)로 낸 주문이 **아직 살아있는가**?
 
-    cycle의 후보 루프 멱등 게이트. failed로 끝난 intent는 무시(재시도 허용).
+    cycle의 후보 루프 멱등 게이트. 활성 = ``submitting``(주문번호 미상 — 접수
+    여부를 모르므로 보수적 차단) 또는 ``submitted``(접수 확인·미종결).
+    게이트를 푸는 종결은 두 종류다:
+      · ``failed``  — 주문이 생성되지 않았다(거부·미접수·가드 취소 확정).
+      · ``resolved`` — 주문이 생성됐다가 죽었다(체결·취소·소멸). mark_resolved 참조.
+
+    strategy_id는 문자열로 정규화해 비교한다 — 저널은 JSON이라 int 42로 기록된
+    intent를 str "42"로 조회하면 원타입 ``==``에서 miss가 나 게이트가 조용히
+    통과된다(이 게이트의 실패 방향은 이중 발주라 정규화가 안전 측).
     """
     by_intent = _group_by_intent(_read_today(date_iso, path=path))
     for iid, events in by_intent.items():
         seed = events[0]
         if seed.get("phase") != "submitting":
             continue
-        if (seed.get("strategy_id") == strategy_id
+        if (str(seed.get("strategy_id")) == str(strategy_id)
                 and seed.get("symbol") == symbol
                 and seed.get("side") == side):
             if _terminal_status(events) in ("submitting", "submitted"):
