@@ -212,3 +212,68 @@ def test_rebuild_skips_when_panel_shallower_than_existing(monkeypatch, tmp_path)
     assert _df.rebuild_futures_continuous("코스피200선물") == 0         # 얕음 → skip
     kept = _df._load_existing("코스피200선물")
     assert kept.index.min() == pd.Timestamp("2010-01-04")             # 기존 깊은 시리즈 유지
+
+
+# ── _fetch_day 응답 분류 — 에러 페이로드를 휴장([])으로 접지 않는다 (2026-07-21) ──
+#
+# 종전 `return blk if blk is not None else []`는 KRX가 HTTP 200 + OutBlock 없는
+# JSON(미신청 서비스·키 오류)을 줄 때 그것을 "휴장"으로 접었다. 호출자는 `rows == []`를
+# 정상 수집으로 세고 커서를 전진 → **그 구간 영구 유실 + ok=True라 재시도도 안 걸림.**
+# 형제 marketcap_krx._fetch_day가 같은 부류를 사본에서만 고쳤던 것을 뿌리로 승격했다.
+
+
+class _Resp:
+    def __init__(self, payload, *, status=200, ctype="application/json", raises=False):
+        self.status_code = status
+        self.headers = {"content-type": ctype}
+        self._payload = payload
+        self._raises = raises
+
+    def json(self):
+        if self._raises:
+            raise ValueError("malformed body")
+        return self._payload
+
+
+def _patch_get(monkeypatch, resp):
+    monkeypatch.setenv("KRX_API_KEY", "testkey")
+    monkeypatch.setattr(kx.requests, "get", lambda *a, **k: resp, raising=False)
+
+
+def test_fetch_day_error_payload_is_failure_not_holiday(monkeypatch):
+    """🔴 핵심 회귀: 200 + OutBlock 부재 = 실패(None) — 휴장([])이 아니다."""
+    _patch_get(monkeypatch, _Resp({"msg": "not subscribed", "code": "E0001"}))
+    assert kx._fetch_day("svc", "20260721") is None
+
+
+def test_fetch_day_holiday_is_empty_list(monkeypatch):
+    """진짜 휴장은 OutBlock이 **빈 리스트로 존재** → [] (커서 전진이 옳다)."""
+    _patch_get(monkeypatch, _Resp({"OutBlock_1": []}))
+    assert kx._fetch_day("svc", "20260721") == []
+
+
+def test_fetch_day_success_returns_rows(monkeypatch):
+    _patch_get(monkeypatch, _Resp({"OutBlock_1": [{"IDX_NM": "KRX 300"}]}))
+    assert kx._fetch_day("svc", "20260721") == [{"IDX_NM": "KRX 300"}]
+
+
+def test_fetch_day_malformed_json_body_is_failure(monkeypatch):
+    """content-type은 json인데 본문이 깨진 경우 — 예외 전파 대신 실패로 분류."""
+    _patch_get(monkeypatch, _Resp(None, raises=True))
+    assert kx._fetch_day("svc", "20260721") is None
+
+
+def test_fetch_day_non_200_is_failure(monkeypatch):
+    _patch_get(monkeypatch, _Resp({"OutBlock_1": []}, status=500))
+    assert kx._fetch_day("svc", "20260721") is None
+
+
+def test_error_payload_propagates_to_caller_as_fail(monkeypatch, tmp_path):
+    """부정 대조: 에러 페이로드가 fetch_* 수준에서 ok=False·days=0으로 보고돼야 한다.
+
+    종전 동작(=[])이면 days=1·ok=True로 **조용히 거짓 완료**했다.
+    """
+    _setup(monkeypatch, tmp_path)
+    _patch_get(monkeypatch, _Resp({"msg": "not subscribed"}))
+    res = kx.fetch_market_indicators("20260626", "20260626")     # 실제 _fetch_day 경유
+    assert res["ok"] is False and res["days"] == 0 and res["fail"] > 0

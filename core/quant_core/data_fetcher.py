@@ -621,14 +621,21 @@ def fetch_stock_price(name: str, ticker: str, start: str = CORE_FLOOR) -> pd.Dat
 # ── FinanceDataReader (KRX ETF) ───────────────────────────────────────────────
 
 def _fdr_history(ticker: str, start: str) -> pd.DataFrame:
-    """FinanceDataReader 원시 OHLCV fetch → tz-naive 컬럼 정제. 증분·전체 재수집 공용(테스트 monkeypatch 지점)."""
+    """FinanceDataReader 원시 OHLCV fetch → tz-naive 컬럼 정제. 증분·전체 재수집 공용(테스트 monkeypatch 지점).
+
+    미확정(세션 미마감) trailing 봉은 _drop_provisional_tail이 제거한다 — `fetch_fdr`은
+    `fetch_yfinance`와 **같은 진입점(fetch_all)**을 타면서 스킵 펜스조차 없고
+    `start=마지막봉+1`이라, 장중에 한 번 미확정 봉이 저장되면 재조회 자체가 사라져
+    **영구 동결**된다(^GSPC 07-20 사고와 동일 구조·자가치유 없음). FDR_SYMBOLS는 전부
+    6자리 숫자 KRX 코드라 _session_cutoff_for가 KR 워터마크로 라우팅한다.
+    """
     df = fdr.DataReader(ticker, start)
     if df is None or df.empty:
         return pd.DataFrame()
     cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
     df = df[cols].copy()
     df.index = pd.to_datetime(df.index).tz_localize(None)
-    return df
+    return _drop_provisional_tail(df, ticker)
 
 
 def fetch_fdr(symbol_name: str, ticker: str, start: str = CORE_FLOOR) -> pd.DataFrame:
@@ -720,6 +727,17 @@ def fetch_korean_stocks(codes: list[str], start: str = CORE_FLOOR,
         cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
         df = df[cols].copy()
         df.index = pd.to_datetime(df.index).tz_localize(None)
+        # 미확정 봉 드롭 — 위 skip-fence와 **같은 워터마크**를 쓴다. 펜스는 "최신이면
+        # 재요청 안 함"이고 이건 "받아온 게 미확정이면 저장 안 함"으로 방향만 반대인 한 쌍이다.
+        # 펜스는 갭(신규상장·백필 중·연휴)이 있으면 우회되는데, 그때 장중 봉이 저장되면
+        # 다음 날부터 last_date가 최신이라 펜스에 걸려 **영구 동결**된다(^GSPC 07-20 사고 구조).
+        # 여기선 코드를 추론하지 않고 이미 계산된 KR 워터마크를 그대로 쓴다(문자 포함 KRX
+        # 코드가 isdigit() 추론에서 US로 오라우팅되는 부류를 원천 차단).
+        df = df[df.index.date <= last_closed_market_date]
+        if df.empty:
+            n_skip += 1
+            del existing, df
+            continue
         merged = _merge(existing, df)
         _save(code, merged)
         n_ok += 1
@@ -1145,6 +1163,12 @@ def _fetch_overseas_batched(codes: list[str], start: str, batch: int,
                 if df.empty:
                     continue
                 df.index = pd.to_datetime(df.index).tz_localize(None)
+                # 미확정 봉 드롭 — 이 경로는 `_yf_history`를 거치지 않는 두 번째 yf 진입점이다.
+                # 자매 `backfill_overseas_depth`는 `end=`가 오늘 봉을 구조적으로 배제하지만
+                # 여기는 end가 없어 US 정규장(22:30~05:00 KST) 중 실행되면 형성 중 봉이 들어온다.
+                df = _drop_provisional_tail(df, code)
+                if df.empty:
+                    continue
                 merged = _merge(_load_existing(code), df)
                 _save(code, merged)
                 done += 1

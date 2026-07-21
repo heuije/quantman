@@ -7,8 +7,9 @@ MKTCAP(시총)·ACC_TRDVAL(거래대금)·LIST_SHRS(상장주식수). 이력 201
 
 ⚠ **`sto` 서비스는 KRX 포털에서 별도 신청 필요**(서비스 단위 인가 — idx/bon/drv/etp 기신청과
 별개). 미신청 상태의 에러 페이로드를 휴장 빈응답으로 오인하면 커서가 데이터 없이 침묵 전진
-(거짓 완료)하므로, generic `_fetch_day`를 쓰지 않고 **OutBlock 존재를 명시 검사**하는 전용
-fetcher를 둔다: OutBlock 없음(에러)=None(실패·커서 유지·재시도) / OutBlock 빈 리스트=휴장.
+(거짓 완료)한다. 판정 규칙: OutBlock 없음(에러)=None(실패·커서 유지·재시도) / OutBlock 빈
+리스트=휴장([]). 2026-07-21에 이 규칙이 `krx_openapi._fetch_day`(뿌리)로 승격돼 이제 양쪽이
+같다 — 여기 전용 fetcher가 남은 이유는 **timeout 기본값(60s)뿐**이다(전종목 응답이 무겁다).
 
 저장: 종목별 parquet(`marketcap/{code}.parquet`, as_of=거래일 인덱스) — flow_kr 패턴.
 컬럼: market_cap·trade_value·shares_listed. **수집만 먼저** — indicators/엔진 소비 배선은

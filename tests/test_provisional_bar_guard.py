@@ -170,3 +170,109 @@ def test_fetch_yfinance_incident_end_to_end(tmp_path, monkeypatch):
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ── 같은 부류 나머지 진입점 (2026-07-21 전수 스캔) ──────────────────────────────
+#
+# `_yf_history` 말고도 parquet에 봉을 쓰는 경로가 3개 더 있었고 전부 미가드였다:
+#   ① `_fdr_history`(fetch_fdr)        — 스킵 펜스조차 없음 → **영구 동결**(^GSPC와 동일)
+#   ② `fetch_korean_stocks`            — 펜스는 있으나 갭이 생기면 우회 → **영구 동결**
+#   ③ `_fetch_overseas_batched`        — end= 없는 yf.download. 자가치유형(1~3거래일)
+# ①②는 `fetch_all`을 통해 ^GSPC와 **같은 부팅/cron 트리거**를 탄다.
+
+
+def test_fdr_history_drops_provisional(monkeypatch):
+    """① FDR: KRX 장중 봉이 저장 전에 드롭된다(FDR_SYMBOLS는 6자리 숫자 → KR 라우팅)."""
+    fake = _ohlcv(["2026-07-17", "2026-07-20", "2026-07-21"])
+    monkeypatch.setattr(dfh.fdr, "DataReader", lambda t, s: fake)
+    monkeypatch.setattr(dfh, "_last_closed_kr_date", lambda: date(2026, 7, 20))  # 07-21 장중
+
+    out = dfh._fdr_history("261220", "2026-01-01")
+    assert list(out.index.date) == [date(2026, 7, 17), date(2026, 7, 20)]
+
+
+def test_fdr_history_negative_control(monkeypatch):
+    """부정 대조 — 가드를 끄면 미확정 봉이 통과한다."""
+    fake = _ohlcv(["2026-07-20", "2026-07-21"])
+    monkeypatch.setattr(dfh.fdr, "DataReader", lambda t, s: fake)
+    monkeypatch.setattr(dfh, "_drop_provisional_tail", lambda df, t: df)
+
+    out = dfh._fdr_history("261220", "2026-01-01")
+    assert list(out.index.date)[-1] == date(2026, 7, 21)
+
+
+def test_fetch_fdr_would_freeze_forever_without_guard(tmp_path, monkeypatch):
+    """① end-to-end — `fetch_fdr`엔 스킵 펜스가 없어 한 번 오염되면 재조회가 사라진다.
+
+    장중 저장 → 다음 호출의 `start = 마지막봉+1`이 미래라 FDR이 빈 응답 → `return existing`
+    → 그 값이 **영원히** 남는다. 가드가 그 첫 저장을 막는지 확인한다.
+    """
+    monkeypatch.setattr(dfh, "_parquet_path", lambda s: tmp_path / f"{s}.parquet")
+    monkeypatch.setattr(dfh, "mark_data_dirty", lambda: None)
+    _ohlcv(["2026-07-17", "2026-07-20"], closes=[100.0, 101.0]).to_parquet(
+        tmp_path / "코스피200선물ETF.parquet")
+
+    # (1) 07-21 장중 — FDR이 형성 중 봉(99.0)을 준다
+    monkeypatch.setattr(dfh.fdr, "DataReader",
+                        lambda t, s: _ohlcv(["2026-07-21"], closes=[99.0]))
+    monkeypatch.setattr(dfh, "_last_closed_kr_date", lambda: date(2026, 7, 20))
+    out1 = dfh.fetch_fdr("코스피200선물ETF", "261220")
+    assert out1.index[-1].date() == date(2026, 7, 20), "장중 미확정 봉을 저장하면 안 된다"
+    assert 99.0 not in out1["Close"].values
+
+    # (2) 15:40 마감 후 — 최종값(103.0)이 저장된다
+    monkeypatch.setattr(dfh.fdr, "DataReader",
+                        lambda t, s: _ohlcv(["2026-07-21"], closes=[103.0]))
+    monkeypatch.setattr(dfh, "_last_closed_kr_date", lambda: date(2026, 7, 21))
+    out2 = dfh.fetch_fdr("코스피200선물ETF", "261220")
+    assert out2.loc["2026-07-21", "Close"] == 103.0
+
+
+def test_fetch_korean_stocks_drops_provisional(tmp_path, monkeypatch):
+    """② 펜스 우회 시나리오 — 갭이 있는 종목은 fetch되는데, 그때 장중 봉이 섞여 온다.
+
+    펜스(`last_date >= last_closed`)는 최신 종목만 막는다. 원장이 07-17에 멈춘 종목은
+    펜스를 통과해 fetch되고, 응답에 형성 중 07-21 봉이 들어 있으면 종전엔 그대로 저장됐다.
+    저장되면 다음 날부터 펜스에 걸려 **영구 동결**된다.
+    """
+    monkeypatch.setattr(dfh, "_parquet_path", lambda s: tmp_path / f"{s}.parquet")
+    monkeypatch.setattr(dfh, "mark_data_dirty", lambda: None)
+    _ohlcv(["2026-07-16", "2026-07-17"]).to_parquet(tmp_path / "005930.parquet")  # 갭 보유
+    monkeypatch.setattr(dfh, "_last_closed_kr_date", lambda: date(2026, 7, 20))   # 07-21 장중
+    monkeypatch.setattr(dfh.fdr, "DataReader",
+                        lambda c, s: _ohlcv(["2026-07-20", "2026-07-21"], closes=[70000.0, 69000.0]))
+
+    res = dfh.fetch_korean_stocks(["005930"])
+    stored = dfh._load_existing("005930")
+    assert res["ok"] == 1
+    assert stored.index[-1].date() == date(2026, 7, 20), "07-21 장중 봉이 저장되면 안 된다"
+    assert 69000.0 not in stored["Close"].values
+
+
+def test_fetch_korean_stocks_keeps_closed_session_bar(tmp_path, monkeypatch):
+    """② 부정 대조 — 마감된 세션 봉은 그대로 저장돼야 한다(과잉 드롭 방지)."""
+    monkeypatch.setattr(dfh, "_parquet_path", lambda s: tmp_path / f"{s}.parquet")
+    monkeypatch.setattr(dfh, "mark_data_dirty", lambda: None)
+    _ohlcv(["2026-07-16", "2026-07-17"]).to_parquet(tmp_path / "005930.parquet")
+    monkeypatch.setattr(dfh, "_last_closed_kr_date", lambda: date(2026, 7, 21))   # 마감 후
+    monkeypatch.setattr(dfh.fdr, "DataReader",
+                        lambda c, s: _ohlcv(["2026-07-20", "2026-07-21"], closes=[70000.0, 69000.0]))
+
+    dfh.fetch_korean_stocks(["005930"])
+    stored = dfh._load_existing("005930")
+    assert stored.index[-1].date() == date(2026, 7, 21)
+    assert 69000.0 in stored["Close"].values
+
+
+def test_overseas_batched_drops_provisional(tmp_path, monkeypatch):
+    """③ `_yf_history`를 우회하는 두 번째 yf 진입점(end= 없는 yf.download)."""
+    monkeypatch.setattr(dfh, "_parquet_path", lambda s: tmp_path / f"{s}.parquet")
+    monkeypatch.setattr(dfh, "mark_data_dirty", lambda: None)
+    monkeypatch.setattr(dfh, "_last_closed_us_date", lambda: date(2026, 7, 20))   # 07-21 장중
+    monkeypatch.setattr(dfh.yf, "download",
+                        lambda *a, **k: _ohlcv(["2026-07-20", "2026-07-21"], closes=[150.0, 149.0]))
+
+    dfh._fetch_overseas_batched(["AAPL"], "2026-01-01", 50)
+    stored = dfh._load_existing("AAPL")
+    assert stored.index[-1].date() == date(2026, 7, 20), "US 장중 봉이 저장되면 안 된다"
+    assert 149.0 not in stored["Close"].values
