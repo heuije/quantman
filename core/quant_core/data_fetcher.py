@@ -484,15 +484,82 @@ def save_user_stocks(stocks: list[dict]):
 
 # ── yfinance (지수/선물/개별종목) ─────────────────────────────────────────────
 
+# 미확정 봉 가드의 region 라우팅 — 티커별 '마지막 마감 세션일' 워터마크를 어느 시장 기준으로
+# 잡을지. **세션 캘린더가 있는 US·KR만 가드**하고, 그 외(JP/HK/EU 지수)는 워터마크를 세울 수
+# 없어 미적용(현 동작 유지·별도 follow-up). 잘못된 시장의 워터마크를 적용하면 그 시장의
+# 신선한 당일 봉을 오드롭하므로 region을 섞지 않는다.
+_KR_YF_TICKERS = frozenset({"^KS11", "^KQ11"})           # 코스피·코스닥 지수
+_UNGUARDED_YF_TICKERS = frozenset({                       # 세션 캘린더 부재 → 가드 미적용
+    "^N225",                 # 닛케이 (JP)
+    "^HSI",                  # 항셍 (HK)
+    "^FTSE",                 # FTSE100 (UK)
+    "^GDAXI", "^STOXX50E",   # DAX·유로스톡스50 (EU)
+})
+
+
+def _last_closed_kr_date() -> date | None:
+    """마지막으로 마감된 KRX 정규장 거래일 (Asia/Seoul, 15:30 마감 + 10분 여유).
+
+    **세션 캘린더 기준** — 평일 산술은 공휴일·임시휴장을 거래일로 오인한다(2026-07-17
+    임시휴장 실측). 캘린더 범위 밖이면 None. 캘린더 로드 실패는 예외를 그대로 올려
+    호출자가 보수적으로 처리한다(가드는 무동작, fetch_korean_stocks의 skip-fence는 어제).
+    """
+    from datetime import timezone
+
+    from quant_core import market_calendar as _mc
+
+    now_kst = datetime.now(timezone(timedelta(hours=9)))
+    today_kst = now_kst.date()
+    market_closed = now_kst.time() >= datetime.strptime("15:40:00", "%H:%M:%S").time()
+    if _mc.is_session_day("KR", today_kst) and market_closed:
+        return today_kst
+    return _mc.prev_session_day("KR", today_kst)
+
+
+def _session_cutoff_for(ticker: str) -> date | None:
+    """이 티커의 '마지막 마감 세션일' — 미확정 봉 판별 워터마크. 가드 미적용이면 None."""
+    if ticker in _KR_YF_TICKERS or ticker.isdigit():
+        return _last_closed_kr_date()
+    if ticker in _UNGUARDED_YF_TICKERS:
+        return None
+    return _last_closed_us_date()
+
+
+def _drop_provisional_tail(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """미확정(세션 미마감) trailing 봉을 제거한다 (2026-07-21 인시던트 근본수정).
+
+    yfinance `history`는 그 시장 정규장이 열려 있는 동안 호출되면 **형성 중인 당일 봉**을
+    미완성 Close·저거래량으로 그대로 반환한다. 그 봉이 저장되면 증분 fetch가 마지막 봉을
+    재조회하지 않아 영구 동결됐고(^GSPC 07-20=7495.04 미확정이 실계좌 #27 방향을 롱→숏
+    역전시킨 사고), 종전의 clock 기반 `now.hour<20` 스킵은 주말/휴장 갭에 뚫렸다. 여기서
+    **데이터 기준**(그 시장의 마지막 마감 세션일 워터마크)으로 date가 그보다 뒤인 trailing
+    봉을 드롭한다. 워터마크는 과대평가만 하므로 드롭이 과하면 다음 fetch가 재수집(무해)하고,
+    **미확정 봉을 남기는 과소 드롭은 발생하지 않는다**.
+
+    region은 _session_cutoff_for가 라우팅한다(US·KR만 가드·그 외 None=미적용).
+    """
+    if df.empty:
+        return df
+    try:
+        cutoff = _session_cutoff_for(ticker)
+    except Exception:             # 캘린더 로드 실패 등 — 보수적 무동작(전량 유지)
+        return df
+    if cutoff is None:            # 워터마크 없음(tz 불가·가드 미적용 시장)
+        return df
+    return df[df.index.date <= cutoff]
+
+
 def _yf_history(ticker: str, start: str) -> pd.DataFrame:
-    """yfinance 원시 OHLCV fetch → tz-naive 컬럼 정제. 증분·전체 재수집 공용(테스트 monkeypatch 지점)."""
+    """yfinance 원시 OHLCV fetch → tz-naive 컬럼 정제. 증분·전체 재수집 공용(테스트 monkeypatch 지점).
+
+    미확정(세션 미마감) trailing 봉은 _drop_provisional_tail이 제거한다(2026-07-21 인시던트)."""
     df = yf.Ticker(ticker).history(start=start, auto_adjust=True)
     if df is None or df.empty:
         return pd.DataFrame()
     cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
     df = df[cols].copy()
     df.index = pd.to_datetime(df.index).tz_localize(None)
-    return df
+    return _drop_provisional_tail(df, ticker)
 
 
 def _heal_stored_break(symbol_name: str, ticker: str, existing: pd.DataFrame, history_fn):
@@ -528,8 +595,10 @@ def fetch_yfinance(symbol_name: str, ticker: str, start: str = CORE_FLOOR) -> pd
         # 이미 오늘 데이터(UTC)까지 다 있다면 yfinance 호출 스킵
         if last_date >= today_utc:
             return existing
-        # 마지막 데이터 날짜가 어제인데, 오늘 US 장 마감(20:00 UTC / 16:00 EDT) 전이라면 스킵
-        # (장 마감 전에는 오늘자 신규 일봉이 없거나 미완성이며, 무엇보다 yfinance timezone 버그를 완벽히 차단함)
+        # 마감 전 불필요한 재조회를 줄이는 **효율** 스킵. 미확정 봉 방어(정확성)는 이제
+        # _yf_history의 _drop_provisional_tail이 데이터 기준으로 담당한다 — 이 clock 기반
+        # 조건은 주말/휴장 갭에 뚫렸었고(2026-07-21 인시던트), fetch가 진행돼도 미확정
+        # trailing 봉은 저장 전에 드롭되므로 여기서 안 걸러도 오염되지 않는다.
         if last_date >= today_utc - timedelta(days=1) and now_utc.hour < 20:
             return existing
         start = (existing.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -610,23 +679,14 @@ def fetch_korean_stocks(codes: list[str], start: str = CORE_FLOOR,
     import gc
     from datetime import timezone
 
-    from quant_core import market_calendar as _mc
-
     # KST 기준 마지막 마감된 거래일 — 세션 캘린더 기준 (로드맵 A: 평일 산술은
     # 공휴일·임시휴장을 거래일로 오인해 skip-fence 기준이 실제보다 미래로 갔다.
     # 방향상 무해(불필요 refetch)였지만 "직전 거래일" 개념을 캘린더로 통일).
-    tz_kst = timezone(timedelta(hours=9))
-    now_kst = datetime.now(tz_kst)
-    today_kst = now_kst.date()
-    market_closed = now_kst.time() >= datetime.strptime("15:40:00", "%H:%M:%S").time()
-    if _mc.is_session_day("KR", today_kst) and market_closed:
-        last_closed_market_date = today_kst
-    else:
-        prev = _mc.prev_session_day("KR", today_kst)
-        # 캘린더 범위 밖(과거 경계)이면 fence를 세울 수 없다 → 어제로 보수 설정
-        # (skip 없이 fetch — over-fetch는 무해, wrong-skip은 결손).
-        last_closed_market_date = prev if prev is not None \
-            else today_kst - timedelta(days=1)
+    # 산출은 _last_closed_kr_date()가 단일 출처 — 미확정 봉 가드도 같은 함수를 쓴다.
+    today_kst = datetime.now(timezone(timedelta(hours=9))).date()
+    # 캘린더 범위 밖(과거 경계)이면 fence를 세울 수 없다 → 어제로 보수 설정
+    # (skip 없이 fetch — over-fetch는 무해, wrong-skip은 결손).
+    last_closed_market_date = _last_closed_kr_date() or (today_kst - timedelta(days=1))
 
     n_ok = n_skip = n_fail = 0
     for i, code in enumerate(codes):
