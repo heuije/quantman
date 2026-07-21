@@ -484,15 +484,52 @@ def save_user_stocks(stocks: list[dict]):
 
 # ── yfinance (지수/선물/개별종목) ─────────────────────────────────────────────
 
+# 비-US 세계지수 — 미확정 봉 가드(US 16:00 ET 마감 워터마크)에서 제외한다.
+# 이들은 자기 시장 마감 후 07:30 cron에 수집돼 현재 오염이 없고(2026-07-21 인시던트 스캔),
+# US 워터마크를 적용하면 그 시장의 신선한 당일 봉을 몇 시간 늦게 저장하게 된다. 각 시장
+# 세션 캘린더 기반 가드는 별도 follow-up(market_calendar가 US/KR만 커버). 숫자 티커(KR 상장)도 제외.
+_NON_US_YF_TICKERS = frozenset({
+    "^KS11", "^KQ11",        # 코스피·코스닥 (KR)
+    "^N225",                 # 닛케이 (JP)
+    "^HSI",                  # 항셍 (HK)
+    "^FTSE",                 # FTSE100 (UK)
+    "^GDAXI", "^STOXX50E",   # DAX·유로스톡스50 (EU)
+})
+
+
+def _drop_provisional_tail(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """미확정(세션 미마감) trailing 봉을 제거한다 (2026-07-21 인시던트 근본수정).
+
+    yfinance `history`는 US 정규장이 열려 있는 동안 호출되면 **형성 중인 당일 봉**을
+    미완성 Close·저거래량으로 그대로 반환한다. 그 봉이 저장되면 증분 fetch가 마지막 봉을
+    재조회하지 않아 영구 동결됐고(^GSPC 07-20=7495.04 미확정이 실계좌 #27 방향을 롱→숏
+    역전시킨 사고), 종전의 clock 기반 `now.hour<20` 스킵은 주말/휴장 갭에 뚫렸다. 여기서
+    **데이터 기준**(마지막 마감 US 거래일 = 16:00 ET 워터마크)으로 date가 그보다 뒤인
+    trailing 봉을 드롭한다. 워터마크는 과대평가만 하므로(공휴일) 드롭이 과하면 다음 fetch가
+    재수집(무해)하고, **미확정 봉을 남기는 과소 드롭은 발생하지 않는다**.
+
+    US-region 심볼에만 적용 — 비-US 지수(_NON_US_YF_TICKERS)·숫자 티커(KR)는 US 마감
+    워터마크가 그 시장의 신선한 봉을 오드롭하므로 제외(현 동작 유지·별도 follow-up).
+    """
+    if df.empty or ticker in _NON_US_YF_TICKERS or ticker.isdigit():
+        return df
+    cutoff = _last_closed_us_date()
+    if cutoff is None:            # tz 확인 불가 — 보수적 무동작(전량 유지)
+        return df
+    return df[df.index.date <= cutoff]
+
+
 def _yf_history(ticker: str, start: str) -> pd.DataFrame:
-    """yfinance 원시 OHLCV fetch → tz-naive 컬럼 정제. 증분·전체 재수집 공용(테스트 monkeypatch 지점)."""
+    """yfinance 원시 OHLCV fetch → tz-naive 컬럼 정제. 증분·전체 재수집 공용(테스트 monkeypatch 지점).
+
+    미확정(세션 미마감) trailing 봉은 _drop_provisional_tail이 제거한다(2026-07-21 인시던트)."""
     df = yf.Ticker(ticker).history(start=start, auto_adjust=True)
     if df is None or df.empty:
         return pd.DataFrame()
     cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
     df = df[cols].copy()
     df.index = pd.to_datetime(df.index).tz_localize(None)
-    return df
+    return _drop_provisional_tail(df, ticker)
 
 
 def _heal_stored_break(symbol_name: str, ticker: str, existing: pd.DataFrame, history_fn):
@@ -528,8 +565,10 @@ def fetch_yfinance(symbol_name: str, ticker: str, start: str = CORE_FLOOR) -> pd
         # 이미 오늘 데이터(UTC)까지 다 있다면 yfinance 호출 스킵
         if last_date >= today_utc:
             return existing
-        # 마지막 데이터 날짜가 어제인데, 오늘 US 장 마감(20:00 UTC / 16:00 EDT) 전이라면 스킵
-        # (장 마감 전에는 오늘자 신규 일봉이 없거나 미완성이며, 무엇보다 yfinance timezone 버그를 완벽히 차단함)
+        # 마감 전 불필요한 재조회를 줄이는 **효율** 스킵. 미확정 봉 방어(정확성)는 이제
+        # _yf_history의 _drop_provisional_tail이 데이터 기준으로 담당한다 — 이 clock 기반
+        # 조건은 주말/휴장 갭에 뚫렸었고(2026-07-21 인시던트), fetch가 진행돼도 미확정
+        # trailing 봉은 저장 전에 드롭되므로 여기서 안 걸러도 오염되지 않는다.
         if last_date >= today_utc - timedelta(days=1) and now_utc.hour < 20:
             return existing
         start = (existing.index[-1] + timedelta(days=1)).strftime("%Y-%m-%d")
