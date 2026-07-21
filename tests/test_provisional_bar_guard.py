@@ -50,20 +50,46 @@ def test_keeps_final_us_bar(monkeypatch):
     assert list(out.index.date) == [date(2026, 7, 16), date(2026, 7, 17), date(2026, 7, 20)]
 
 
-def test_non_us_index_never_dropped(monkeypatch):
-    """비-US 지수(^KS11 등)엔 US 워터마크를 적용하지 않는다(신선한 봉 오드롭 방지)."""
+def test_unguarded_markets_never_dropped(monkeypatch):
+    """세션 캘린더가 없는 시장(JP/HK/UK/EU)엔 워터마크 미적용 — 신선한 봉 오드롭 방지."""
     monkeypatch.setattr(dfh, "_last_closed_us_date", lambda: date(2026, 7, 17))
+    monkeypatch.setattr(dfh, "_last_closed_kr_date", lambda: date(2026, 7, 17))
     df = _ohlcv(["2026-07-16", "2026-07-17", "2026-07-20"])
-    for t in ("^KS11", "^KQ11", "^N225", "^HSI", "^FTSE", "^GDAXI", "^STOXX50E"):
+    for t in ("^N225", "^HSI", "^FTSE", "^GDAXI", "^STOXX50E"):
         out = dfh._drop_provisional_tail(df, t)
         assert len(out) == 3, f"{t} 오드롭"
 
 
-def test_numeric_ticker_never_dropped(monkeypatch):
-    """숫자 티커(KR 상장)도 US 워터마크 제외."""
-    monkeypatch.setattr(dfh, "_last_closed_us_date", lambda: date(2026, 7, 17))
-    df = _ohlcv(["2026-07-16", "2026-07-20"])
-    assert len(dfh._drop_provisional_tail(df, "261220")) == 2
+def test_kr_uses_its_own_calendar_not_us(monkeypatch):
+    """KR 지수는 **KR 캘린더**로 가드 — US 워터마크를 쓰면 신선한 KR 봉을 오드롭한다.
+
+    16:00 KST 상황: KR은 이미 마감(07-21 봉 최종)인데 US 07-21 세션은 미마감.
+    US 워터마크(07-20)를 쓰면 신선한 07-21 KR 봉이 잘못 드롭된다.
+    """
+    monkeypatch.setattr(dfh, "_last_closed_kr_date", lambda: date(2026, 7, 21))  # KR 마감
+    monkeypatch.setattr(dfh, "_last_closed_us_date", lambda: date(2026, 7, 20))  # US 미마감
+    df = _ohlcv(["2026-07-20", "2026-07-21"])
+    for t in ("^KS11", "^KQ11", "261220"):
+        out = dfh._drop_provisional_tail(df, t)
+        assert len(out) == 2, f"{t}: KR 마감 후 신선한 07-21 봉이 유지돼야(US 워터마크 오적용 금지)"
+
+
+def test_kr_drops_provisional_during_kr_session(monkeypatch):
+    """KR 장중(마감 전)엔 형성 중인 KR 당일 봉을 드롭한다 — US와 같은 부류 방어."""
+    monkeypatch.setattr(dfh, "_last_closed_kr_date", lambda: date(2026, 7, 20))  # 07-21 장중
+    df = _ohlcv(["2026-07-20", "2026-07-21"])
+    for t in ("^KS11", "^KQ11", "261220"):
+        out = dfh._drop_provisional_tail(df, t)
+        assert list(out.index.date) == [date(2026, 7, 20)], f"{t}: 장중 미확정 봉 드롭 실패"
+
+
+def test_calendar_failure_is_conservative(monkeypatch):
+    """캘린더 로드 실패(예외)면 드롭하지 않는다 — fetch를 깨지 않는 보수적 무동작."""
+    def _boom():
+        raise RuntimeError("calendar unavailable")
+    monkeypatch.setattr(dfh, "_last_closed_kr_date", _boom)
+    df = _ohlcv(["2026-07-20", "2026-07-21"])
+    assert len(dfh._drop_provisional_tail(df, "^KS11")) == 2
 
 
 def test_no_watermark_no_drop(monkeypatch):

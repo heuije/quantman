@@ -73,15 +73,22 @@
 
 **근본수정 = 저장 choke point `_yf_history`에서 "미확정(세션 미마감) trailing 봉"을 저장 전 드롭.**
 `core/quant_core/data_fetcher.py`:
-- 신규 `_drop_provisional_tail(df, ticker)`: US-region 심볼은 `date > _last_closed_us_date()`(16:00 ET 워터마크)인
-  trailing 봉을 드롭. `_yf_history` 마지막에 호출 → **증분·전체 재수집·healing 전 경로 커버**(단일 choke point).
-- `_NON_US_YF_TICKERS`(^KS11·^KQ11·^N225·^HSI·^FTSE·^GDAXI·^STOXX50E)·숫자 티커(KR) **제외** — US 워터마크가
-  그 시장 신선 봉을 오드롭하므로. 오염은 전부 US라 이걸로 커버(비-US는 현 동작 유지·별도 follow-up).
+- 신규 `_drop_provisional_tail(df, ticker)`: `date > 그 시장의 마지막 마감 세션일` 워터마크인 trailing 봉을 드롭.
+  `_yf_history` 마지막에 호출 → **증분·전체 재수집·healing 전 경로 커버**(단일 choke point).
+- **region 라우팅 `_session_cutoff_for(ticker)`** — 세션 캘린더가 있는 **US·KR 둘 다 가드**:
+  · US(^GSPC·^IXIC·^DJI·=F 선물·US 개별주) → `_last_closed_us_date()`(16:00 ET)
+  · **KR(^KS11·^KQ11·숫자 티커) → 신규 `_last_closed_kr_date()`(15:40 KST·`market_calendar` 기반이라 공휴일 인식)**
+  · JP/HK/EU(^N225·^HSI·^FTSE·^GDAXI·^STOXX50E) → None=미적용(세션 캘린더 부재·별도 follow-up)
+  ⚠ **region을 섞으면 안 된다** — US 워터마크를 KR에 적용하면 KR 마감 후 신선한 당일 봉을 오드롭(테스트로 고정).
+- `_last_closed_kr_date()`는 `fetch_korean_stocks`의 인라인 계산을 **추출·단일 출처화**(중복 제거·DRY).
 - clock 기반 스킵(`now.hour<20`) 주석 정정 — 정확성 방어는 이제 드롭 가드가 담당(스킵은 효율 목적만).
-- 워터마크는 **과대평가만**(공휴일)이라 과잉 드롭은 다음 fetch가 재수집(무해), **미확정 봉 잔존(과소 드롭)은 없다**.
+- 워터마크는 **과대평가만**이라 과잉 드롭은 다음 fetch가 재수집(무해), **미확정 봉 잔존(과소 드롭)은 없다**.
+  캘린더 로드 실패는 예외를 삼켜 **무동작**(fetch를 깨지 않음).
 
-**검증**: `tests/test_provisional_bar_guard.py` 8개 통과(단위·`_yf_history` 통합·**부정 대조**·인시던트 E2E) +
-기존 관련 164개 회귀 0 + **실데이터 검증**(마감 후 실제 `_yf_history("^GSPC")`가 07-20=**7443.28** 최종 유지, 오드롭 없음).
+**검증**: `tests/test_provisional_bar_guard.py` **10개** 통과(단위·region 라우팅·KR 자기캘린더·**부정 대조**·
+캘린더 실패 보수동작·`_yf_history` 통합·인시던트 E2E) + 기존 관련 **164개 회귀 0**(`fetch_korean_stocks` 리팩터 포함) +
+**실데이터 검증**(마감 후 실제 `_yf_history("^GSPC")`가 07-20=**7443.28** 최종 유지·오드롭 없음 / KR 장중 실캘린더가
+`_last_closed_kr_date()=07-20`을 정확히 반환해 07-21 미확정 봉 차단).
 ⇒ 이 수정 하에선 07-20 신호가 −0.19%→**롱**으로 나와 사고 미발생.
 
 - **기각한 대안**: (b)덮어쓰기 merge — `_merge`가 이미 `keep=last`(:306)나 그 날짜를 재요청 안 해 무의미.
