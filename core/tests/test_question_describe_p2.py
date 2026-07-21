@@ -29,8 +29,9 @@ def _single_df(prices, pb=None, n_pad=0):
     return pd.DataFrame(cols, index=idx)
 
 
-# 단일종목 픽스처: 첫 130일 100, 다음 130일 200 (단조비감소). 260포인트.
-_RAMP = [100.0] * 130 + [200.0] * 130
+# 단일종목 픽스처: 앞 300영업일 100, 마지막 40영업일 200 (단조비감소, 총 340포인트 ≈ 16개월).
+# 달력 앵커 검증용 — 1개월 전은 200구간(최근 40일 ≈ 1.8개월)이라 1m=0%, 3/6/12개월 전은 100구간이라 +100%.
+_RAMP = [100.0] * 300 + [200.0] * 40
 _DS_SINGLE = {"AAA": _single_df(_RAMP, pb=1.5)}
 
 
@@ -50,11 +51,14 @@ def test_single_report_golden():
     res = run_query(_report_ir(), _DS_SINGLE)
     assert res["success"] and res["report"] == "single"
     assert res["sector"] == "Other"            # 합성 심볼 폴백
-    assert res["data_points"] == 260
+    assert res["data_points"] == 340
     p = res["price"]
     assert p["last"] == 200.0
-    assert p["returns"]["12m"] == 1.0          # 200/100-1 (close[-253]=100)
-    assert p["returns"]["6m"] == 0.0           # close[-127]=200
+    # 달력 앵커: 1개월 전=200구간(최근 40영업일≈1.8개월)→0%, 3/6/12개월 전=100구간→+100%.
+    assert p["returns"]["1m"] == 0.0
+    assert p["returns"]["3m"] == 1.0
+    assert p["returns"]["6m"] == 1.0
+    assert p["returns"]["12m"] == 1.0
     assert p["high_52w"] == 200.0 and p["low_52w"] == 100.0
     assert res["risk"]["max_drawdown"] == 0.0  # 단조비감소
     assert res["risk"]["vol_annualized"] > 0   # 점프 1회로 변동성>0

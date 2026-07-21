@@ -947,7 +947,7 @@ def _build_describe_single(ir, dataset, result, disp: str) -> bytes:
         raw.freeze_panes = "A4"
     _methodology(wb, ir, f"{disp} — 종목 분석 방법론", [
         ("값/수식", "요약 지표는 엔진 산출값. '원자료' 종가로 52주 고저·연변동성을 라이브 수식으로 재계산해 대조(엔진값과 일치 확인용)."),
-        ("수익률", "1/3/6/12개월 = 해당 영업일수 전 종가 대비 변화(%)."),
+        ("수익률", "1/3/6/12개월 = 달력 기준 N개월 전 날짜의 종가 대비 변화(%)."),
         ("펀더멘털", "데이터에 있으면 표기, 없으면 빈칸 — 정직(가짜 채움 없음)."),
     ], S, result=result)
     return _save(wb)

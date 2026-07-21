@@ -1120,13 +1120,20 @@ def run_describe_report(strategy: StrategyIR, dataset: dict) -> dict:
     asof = close.index[-1]
     last = float(close.iloc[-1])
 
-    def _ret(days):
-        if len(close) <= days:
+    # 기간수익률은 **달력(캘린더) 기준** 앵커 — "N개월 전 날짜의 가장 최근 종가" 대비 변화.
+    # (종전 고정 거래일수 21/63/126/252는 '12개월'이 실제로 ~12.4개월[한국장 연 ~246거래일이라
+    # 252거래일>1년]을 가리켜, 네이버·KRX 등 달력 기준 외부·타 경로와 값이 어긋났다 — 희제 실사용 신고.)
+    def _ret(months):
+        target = asof - pd.DateOffset(months=months)
+        prior = close[close.index <= target]
+        if prior.empty:                       # 이력이 그 기간에 못 미치면 None(가짜 채움 금지)
             return None
-        prev = float(close.iloc[-1 - days])
+        prev = float(prior.iloc[-1])
         return (last / prev - 1.0) if prev > 0 else None
-    returns = {"1m": _ret(21), "3m": _ret(63), "6m": _ret(126), "12m": _ret(252)}
+    returns = {"1m": _ret(1), "3m": _ret(3), "6m": _ret(6), "12m": _ret(12)}
 
+    # 52주 고저는 ~252거래일 창 유지 — 엑셀 원자료 시트의 라이브 교차검증 수식(252행)과 정합.
+    # (range 지표라 기간수익률과 달리 2주 앵커 차이에 둔감 — 신고된 수익률 문제와 별개.)
     win = close.iloc[-252:]
     hi_52w, lo_52w = float(win.max()), float(win.min())
     pct_from_high = (last / hi_52w - 1.0) if hi_52w > 0 else None
