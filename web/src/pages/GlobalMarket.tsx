@@ -259,7 +259,7 @@ export default function GlobalMarket() {
   const [selCom, setSelCom] = useState<string | null>(null);   // 차트로 펼친 원자재 심볼
   const [selBat, setSelBat] = useState<BatteryMetal | null>(null);   // 차트로 펼친 배터리광물
   const [econPage, setEconPage] = useState(0);   // 경제지표 과거 페이지네이션
-  const [page, setPage] = useState<"summary" | "bonds">("summary");   // 서브페이지
+  const [page, setPage] = useState<"지수" | "원자재" | "경제지표" | "뉴스">("지수");   // 하위 탭
   const [showSrc, setShowSrc] = useState(false);   // 데이터 출처 — 좌측 통합·접기(기본 숨김)
 
   useEffect(() => {
@@ -389,19 +389,21 @@ export default function GlobalMarket() {
       <p style={{ color: "var(--muted)", marginTop: 0, fontSize: 13 }}>
         세계 주요 지수·원자재 선물·미국 경제지표·국채 금리를 한 화면에. Source: FinanceDataReader · TradingView · FRED · MOF · ECB.
       </p>
-      {/* 서브페이지 탭 — Summary(기존 화면) / 국채 금리 */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-        {([["summary", "Summary"], ["bonds", "국채 금리"]] as const).map(([k, label]) => (
+      {/* 하위 탭 — 지수 / 원자재 선물 / US 경제지표 / 글로벌 뉴스 (investing.com식 언더라인 탭) */}
+      <div style={{ display: "flex", gap: 2, marginBottom: 16, borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
+        {([["지수", "지수", "INDEX"], ["원자재", "원자재 선물", "FUTURES"],
+           ["경제지표", "US 경제지표", "ECONOMY"], ["뉴스", "글로벌 뉴스", "NEWS"]] as const).map(([k, label, en]) => (
           <button key={k} type="button" onClick={() => setPage(k)}
-            style={{ fontSize: 13, fontWeight: 700, padding: "6px 18px", borderRadius: 8, cursor: "pointer",
-              border: `1px solid ${page === k ? "#4f8ff5" : "var(--border)"}`,
-              background: page === k ? "rgba(79,143,245,0.16)" : "transparent",
-              color: page === k ? "#4f8ff5" : "var(--muted)" }}>{label}</button>
+            style={{ appearance: "none", background: "none", border: "none", cursor: "pointer",
+              fontSize: 14, fontWeight: 700, padding: "9px 16px 11px", position: "relative",
+              color: page === k ? "var(--text)" : "var(--muted)",
+              boxShadow: page === k ? "inset 0 -3px 0 var(--accent)" : "none" }}>
+            {label}<span style={{ fontSize: 10, fontWeight: 400, color: "var(--muted)", marginLeft: 5, letterSpacing: 0.3 }}>{en}</span>
+          </button>
         ))}
       </div>
 
-      {page === "bonds" && <BondsPage />}
-      {page === "summary" && (<>
+      {page === "지수" && (<>
       {/* 1. 세계 10대 지수 */}
       <div className="panel">
         <h3 style={{ marginTop: 0 }}>세계 10대 지수 <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>(선택 구간 시작점 대비 %)</span></h3>
@@ -439,9 +441,11 @@ export default function GlobalMarket() {
           </ResponsiveContainer>
         </div>
       </div>
+      </>)}
 
+      {page === "원자재" && (<>
       {/* 2. 원자재 선물 — 에너지 / 금속·배터리광물 두 박스(열 폭 일치, 기준일자·스크롤) → 클릭 차트 */}
-      <div className="panel" style={{ marginTop: 16 }}>
+      <div className="panel">
         <h3 style={{ marginTop: 0 }}>원자재 선물 <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>(에너지 · 금속·배터리광물 · 행 클릭 시 차트)</span></h3>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 16, alignItems: "start" }}>
           {comTable("에너지", energyRows)}
@@ -484,9 +488,11 @@ export default function GlobalMarket() {
           )}
         </div>
       </div>
+      </>)}
 
+      {page === "경제지표" && (<>
       {/* 3. 미국 경제지표 — 연내 예정(컨센서스) + 과거(실제 vs 컨센서스) 최장기간 */}
-      <div className="panel" style={{ marginTop: 16 }}>
+      <div className="panel">
         <h3 style={{ marginTop: 0 }}>미국 경제지표 <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>(실제 vs 컨센서스{econSpan.length === 2 ? ` · ${econSpan[0]}~${econSpan[1]}` : ""} · 연내 예정 포함)</span></h3>
 
         {econUp.length > 0 && (
@@ -563,9 +569,14 @@ export default function GlobalMarket() {
         </p>
       </div>
 
-      {/* 4. 금리·연준·물가 뉴스 */}
-      <div className="panel" style={{ marginTop: 16 }}>
-        <h3 style={{ marginTop: 0 }}>금리 · 연준 · 물가 뉴스</h3>
+      {/* 국채 금리 — US 경제지표 탭에 흡수(미 국채 수익률) */}
+      <div style={{ marginTop: 16 }}><BondsPage /></div>
+      </>)}
+
+      {page === "뉴스" && (<>
+      {/* 4. 글로벌 시장 뉴스 */}
+      <div className="panel">
+        <h3 style={{ marginTop: 0 }}>글로벌 시장 뉴스 <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>(금리·연준·물가·매크로)</span></h3>
         <SectorNewsPanel kw={MACRO_KW} />
       </div>
       </>)}
