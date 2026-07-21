@@ -55,9 +55,15 @@ if not _app_log.handlers:
 # 외부 소스(KIS/KRX/NAVER/yfinance/FRED 등)는 일시 장애가 잦다. 정시 cron이
 # 한 번 실패하면 다음날까지 stale인 게 큰 문제이므로, 실패 시 자동 재시도.
 #
-# 정책: 시도 5회, backoff [2, 2, 5, 5, 10]분 — 누적 24분 후 포기(전 트랙 통일,
-# 로드맵 B·유저 확정 2026-07-18). 정시 cron이 다시 트리거되면 기존 retry 큐는
-# 모두 cancel하고 다시 시작.
+# 정책: 첫 시도 + **재시도 5회**(총 6시도), backoff [2, 2, 5, 5, 10]분 — 누적 24분
+# 후 포기(전 트랙 통일, 로드맵 B·유저 확정 2026-07-18). 정시 cron이 다시 트리거되면
+# 기존 retry 큐는 모두 cancel하고 다시 시작.
+#
+# ⚠ 상한은 **재시도 횟수**로 센다(첫 시도 제외). 종전 `_RETRY_MAX_ATTEMPTS`는 첫
+# 시도까지 포함해 세는 `>=` 비교라 5시도(+14분)에서 멈췄고, backoff 마지막 원소 `10`이
+# 한 번도 안 쓰이는 죽은 값이었다 — 아래 두 주석("08:26"·"누적 24분")이 기술하는 의도와
+# 코드가 어긋나 있었다(2026-07-21 수정). 이름을 `_RETRY_MAX_RETRIES`로 바꿔 로그 문구
+# ("최대 재시도")·주석·코드가 모두 같은 것을 뜻하게 한다.
 #
 # 종전 [5,15,30,60,120]은 초반이 느슨해 07:30 글로벌 수집 실패가 발주창
 # (08:35/08:55)을 넘겼다. 촘촘·짧게: 07:30 실패 → 07:32/07:34/07:39/07:44/
@@ -66,7 +72,7 @@ if not _app_log.handlers:
 # 장애는 재시도로 못 살리는 부류(다음 정시 cron·익일 재수집이 백필).
 
 _RETRY_BACKOFFS_MIN = [2, 2, 5, 5, 10]
-_RETRY_MAX_ATTEMPTS = 5
+_RETRY_MAX_RETRIES = 5      # 첫 시도 제외 — 총 6시도
 
 # ── 스케줄 tz 앵커 ───────────────────────────────────────────────────────────
 # 모든 cron 라벨 시각은 KST. ⚠ apscheduler 3.x에서 CronTrigger "인스턴스"는
@@ -105,9 +111,9 @@ def _run_with_retry(name: str, fn: Callable[[], object],
             _log.info("[%s] 성공 (시도 %d)", name, state["attempt"])
         except Exception as e:
             _log.exception("[%s] 시도 %d 실패: %s", name, state["attempt"], e)
-            if state["attempt"] >= _RETRY_MAX_ATTEMPTS:
+            if state["attempt"] > _RETRY_MAX_RETRIES:
                 _log.error("[%s] 최대 재시도(%d) 도달 — 다음 정시 cron까지 포기",
-                           name, _RETRY_MAX_ATTEMPTS)
+                           name, _RETRY_MAX_RETRIES)
                 return
             backoff_min = _backoffs[
                 min(state["attempt"] - 1, len(_backoffs) - 1)]

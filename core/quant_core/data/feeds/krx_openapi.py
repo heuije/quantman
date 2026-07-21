@@ -46,7 +46,13 @@ def is_active() -> bool:
 def _fetch_day(service: str, bas_dd: str, timeout: int = 30):
     """공식 KRX API 하루치 호출 → row dict 리스트.
 
-    반환: list(성공·휴장 포함 — 휴장은 []), None(네트워크/HTTP 실패 — 호출자가 재시도).
+    반환: list(성공·휴장 포함 — 휴장은 []), None(실패 — 호출자가 `fail += 1`로 세고 재시도).
+
+    🔴 **에러 페이로드를 `[]`로 접지 않는다.** KRX는 미신청 서비스·키 오류에도 HTTP 200 +
+    JSON을 주는데 그 본문엔 OutBlock 리스트가 없다. 종전엔 `blk is None → []`로 접어
+    호출자가 "휴장(데이터 없음)"으로 읽고 **커서를 전진**시켰다 — 그 구간이 영구 유실되고
+    `ok=True`라 재시도도 안 걸리는 조용한 거짓 완료. 형제 `marketcap_krx._fetch_day`가
+    이 부류를 이미 진단해 **사본에서만** 고쳤던 것을 뿌리로 승격한다(2026-07-21).
     """
     key = _key()
     if not key:
@@ -58,9 +64,12 @@ def _fetch_day(service: str, bas_dd: str, timeout: int = 30):
         return None
     if r.status_code != 200 or "json" not in r.headers.get("content-type", "").lower():
         return None
-    j = r.json()
+    try:
+        j = r.json()
+    except Exception:
+        return None
     blk = next((j[k] for k in j if isinstance(j[k], list)), None)
-    return blk if blk is not None else []
+    return blk      # None=에러 페이로드(OutBlock 부재) — 휴장 []와 구분한다(위 docstring)
 
 
 def _f(x):
