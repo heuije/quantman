@@ -406,7 +406,9 @@ export default function GlobalMarket() {
       {page === "지수" && (<>
       {/* 1. 세계 10대 지수 */}
       <div className="panel">
-        <h3 style={{ marginTop: 0 }}>세계 10대 지수 <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>(선택 구간 시작점 대비 %)</span></h3>
+        {/* 제목에 '수익률' 명시 — 그래프가 지수 *레벨*이 아니라 구간 시작일 대비 *누적수익률(%)*
+            이라 처음 보면 시세로 오독된다는 실사용 피드백 반영. */}
+        <h3 style={{ marginTop: 0 }}>세계 10대 지수 수익률 <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12 }}>(지수 레벨이 아닌 선택 구간 시작일 대비 누적 %)</span></h3>
         {/* 현재값·등락 요약 — 클릭하여 그래프에서 켜고 끄기 */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
           {(idx?.items || []).map((it, i) => (
