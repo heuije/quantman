@@ -61,8 +61,13 @@
 |------|-----|------|
 | `--bg` | `#13161c` | 페이지 배경(차콜) |
 | `--panel` | `#1c212b` | 카드·패널(약간 밝은 차콜) |
+| `--panel-2` | `#222836` | **카드 안 보조 면** — 표 헤더·요약행 음영 |
 | `--border` | `#2b323e` | 테두리·구분선 |
+| `--grid` | `#242b37` | **표 행 구분선**(border보다 옅게 — 밀도 높은 표의 시선 소음 감소) |
 | `--input-border` | `#3a4250` | 입력 테두리(카드 위 대비 확보) |
+
+> 라이트 테마 대응값: `--panel-2 #f8fafc` · `--grid #eef1f5` · `--bg #f2f4f7` · `--border #e4e9f0`.
+> `--shadow-card`는 라이트에서만 `0 1px 3px rgba(18,30,50,.05)`(다크는 `none` — 배경 대비로 충분).
 | `--text` | `#d2d8e0` | 본문 글자(라이트 그레이) |
 | `--muted` | `#8b94a3` | 보조 텍스트(슬레이트) |
 
@@ -120,8 +125,13 @@
 
 ## 6. 간격·레이아웃
 
-- 패널 `padding: 20px`, 패널 간 `margin-bottom: 18px`.
-- 모서리 반경 `--radius: 10px`(칩·버튼 7~8px, 알약형 pill 999px).
+- 패널 `padding: 20px`, 패널 간 `margin-bottom: 18px`, `box-shadow: var(--shadow-card)`.
+- 모서리 반경 `--radius: 14px`(칩·버튼 7~8px, 알약형 pill 999px).
+- **섹션 헤더 `.sec-head`** — 좌측 골드 3px 바 + 16px 굵은 제목(+우측 `.sec-more` 보조문구).
+  카드 묶음 위 구분에 사용(한국경제식 섹션 구분).
+- **데이터 표(공통)** — 헤더는 `--panel-2` 음영 + 11.5px 굵은 뮤트 라벨, 행 구분선은 `--grid`,
+  `tbody tr:hover`는 `--panel-2`. 숫자는 우측정렬 + tabular-nums(공공 통계 포털식 정갈한 표).
+  `table`·`.sweep-table` 모두 동일 규칙.
 - 본문 컨테이너 `.main-inner` `padding: 28px 32px`, `max-width: 1100px`
   (개별종목분석은 `.dashboard-fullwidth`로 1100px 캡 해제).
 - **밀도:** HOME·산업분석은 `zoom: 0.67`(`.mod-std`·`.industry-67`) — 브라우저 67%
