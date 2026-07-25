@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { stockSearchMatch } from "../format";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ComposedChart, Bar, Line, Scatter, XAxis, YAxis, Tooltip, ResponsiveContainer,
   CartesianGrid, Legend, ReferenceLine,
@@ -8,7 +8,7 @@ import {
 import Plotly from "plotly.js-dist-min";
 import { api } from "../api";
 import type { IndustryData, IndustryCompany, SymbolDetail, SymbolPoint, KrExtras,
-  StockOpinion, OpinionStance, SectorNews } from "../types";
+  StockOpinion, OpinionStance, SectorNews, SectorNewsItem } from "../types";
 
 // 한국식 시장 색 (상승=빨강 / 하락=파랑)
 const UP = "#de3033", DOWN = "#1668c4", ACCENT = "#c4982b";
@@ -1061,14 +1061,49 @@ const nameNewsKw = (name?: string) =>
   name ? { kr: [`${name} 실적`, `${name} 주가`, `${name} 공시`, name], glob: [name] }
        : { kr: ["증시", "코스피", "코스닥", "실적", "공시"], glob: ["Korea stocks", "KOSPI"] };
 
+// 뉴스 한 열(국내/글로벌 각각) — 독립 페이지네이션. 실시간 뉴스 좌(국내)·우(글로벌) 분할용.
+function NewsColumn({ title, items }: { title: string; items: SectorNewsItem[] }) {
+  const [page, setPage] = useState(0);
+  const PER = 15;
+  const pages = Math.max(1, Math.ceil(items.length / PER));
+  const curPage = Math.min(page, pages - 1);
+  const shown = items.slice(curPage * PER, curPage * PER + PER);
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text)", marginBottom: 8,
+        paddingBottom: 6, borderBottom: "2px solid var(--border)" }}>{title}</div>
+      {items.length === 0 ? (
+        <p style={{ color: "var(--muted)", fontSize: 13 }}>관련 뉴스가 없습니다.</p>
+      ) : (<>
+        <div style={{ maxHeight: 720, overflowY: "auto" }} className="scroll-gold">
+          {shown.map((n, i) => (
+            <a key={curPage * PER + i} href={n.url} target="_blank" rel="noreferrer"
+              style={{ display: "block", padding: "8px 2px", borderBottom: "1px solid var(--border)", textDecoration: "none", color: "inherit" }}>
+              <div style={{ fontWeight: 600, fontSize: "11.5pt", color: DOWN }}>{n.title}</div>
+              {n.title_ko && <div style={{ fontSize: "10.5pt", color: "var(--muted)", marginTop: 2 }}>{n.title_ko}</div>}
+              <div style={{ fontSize: "11pt", color: "var(--muted)", marginTop: 3 }}>{n.date ? `${n.date} · ` : ""}{n.source}</div>
+            </a>
+          ))}
+        </div>
+        {pages > 1 && (
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", alignItems: "center", marginTop: 10 }}>
+            <button type="button" className="ghost sm" disabled={curPage === 0} onClick={() => setPage(curPage - 1)} style={{ fontSize: 12, padding: "3px 10px" }}>‹ 이전</button>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>{curPage + 1} / {pages}</span>
+            <button type="button" className="ghost sm" disabled={curPage >= pages - 1} onClick={() => setPage(curPage + 1)} style={{ fontSize: 12, padding: "3px 10px" }}>다음 ›</button>
+          </div>
+        )}
+        <p style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 6 }}>최근 12개월 · 총 {items.length}건</p>
+      </>)}
+    </div>
+  );
+}
+
 export function SectorNewsPanel({ ticker, name, kw: kwOverride }:
   { ticker?: string; name?: string; kw?: { kr: string[]; glob: string[] } }) {
   const [news, setNews] = useState<SectorNews | null>(null);
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<"kr" | "global">("kr");
-  const [page, setPage] = useState(0);   // 뉴스 페이지네이션(15건/페이지)
   useEffect(() => {
-    let alive = true; setBusy(true); setNews(null); setPage(0);
+    let alive = true; setBusy(true); setNews(null);
     // 종목이 속한 산업을 인식 → 산업별 키워드 + 종목명으로 동적 검색(해시태그는 화면 비노출).
     const run = (kw: { kr: string[]; glob: string[] }) => {
       const kr = name ? [name, ...kw.kr] : kw.kr;
@@ -1089,57 +1124,18 @@ export function SectorNewsPanel({ ticker, name, kw: kwOverride }:
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker, name]);
-  const all = tab === "kr" ? (news?.kr || []) : (news?.global || []);
-  const PER = 15;
-  const pages = Math.max(1, Math.ceil(all.length / PER));
-  const curPage = Math.min(page, pages - 1);
-  const items = all.slice(curPage * PER, curPage * PER + PER);
-  const tabBtn = (k: "kr" | "global", label: string) => (
-    <button type="button" onClick={() => { setTab(k); setPage(0); }}
-      style={{ fontSize: 12, fontWeight: 700, padding: "5px 14px", borderRadius: 8, cursor: "pointer",
-        border: `1px solid ${tab === k ? "#4f8ff5" : "var(--border)"}`,
-        background: tab === k ? "rgba(79,143,245,0.16)" : "transparent",
-        color: tab === k ? "#4f8ff5" : "var(--muted)" }}>{label}</button>
-  );
+  // 실시간 뉴스 — 좌(국내)·우(글로벌) 2열. 각 열 독립 페이지네이션(NewsColumn).
   return (
-    <>
-      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>{tabBtn("kr", "Local News")}{tabBtn("global", "Global News")}</div>
+    <div className="news-2col" style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
       {busy ? (
         <p style={{ color: "var(--muted)", fontSize: 13 }}>뉴스 불러오는 중…</p>
-      ) : all.length === 0 ? (
-        <p style={{ color: "var(--muted)", fontSize: 13 }}>관련 뉴스가 없습니다.</p>
-      ) : (<>
-        {/* 리스트 — 내용에 맞춰 늘되 760px에서 스크롤(maxHeight). 기사가 적으면 그만큼만 차지해 하단 공백 제거. */}
-        <div style={{ maxHeight: 760, overflowY: "auto" }} className="scroll-gold">
-        {items.map((n, i) => (
-          <a key={curPage * PER + i} href={n.url} target="_blank" rel="noreferrer"
-            style={{ display: "block", padding: "8px 2px", borderBottom: "1px solid var(--border)", textDecoration: "none", color: "inherit" }}>
-            <div style={{ fontWeight: 600, fontSize: "12pt", color: DOWN }}>{n.title}</div>
-            {/* 해외 기사: 영문 제목 하단에 국문 번역(링크 없음) */}
-            {n.title_ko && <div style={{ fontSize: "11pt", color: "var(--muted)", marginTop: 2 }}>{n.title_ko}</div>}
-            <div style={{ fontSize: "12pt", color: "var(--muted)", marginTop: 3 }}>{n.date ? `${n.date} · ` : ""}{n.source}</div>
-          </a>
-        ))}
-        </div>
-        {/* 페이지네이션 — 과거 기사 누적 탐색 (최근 12개월) */}
-        {pages > 1 && (
-          <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
-            <button type="button" className="ghost sm" disabled={curPage === 0} onClick={() => setPage(curPage - 1)}
-              style={{ fontSize: 12, padding: "3px 8px" }}>‹ 이전</button>
-            {Array.from({ length: pages }).map((_, p) => (
-              <button key={p} type="button" onClick={() => setPage(p)}
-                style={{ fontSize: 12, padding: "3px 9px", borderRadius: 6, cursor: "pointer",
-                  border: `1px solid ${p === curPage ? "#4f8ff5" : "var(--border)"}`,
-                  background: p === curPage ? "rgba(79,143,245,0.16)" : "transparent",
-                  fontWeight: p === curPage ? 700 : 400, color: p === curPage ? "#4f8ff5" : "var(--muted)" }}>{p + 1}</button>
-            ))}
-            <button type="button" className="ghost sm" disabled={curPage >= pages - 1} onClick={() => setPage(curPage + 1)}
-              style={{ fontSize: 12, padding: "3px 8px" }}>다음 ›</button>
-          </div>
-        )}
-        <p style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 6 }}>최근 12개월 · 총 {all.length}건</p>
-      </>)}
-    </>
+      ) : (
+        <>
+          <NewsColumn title="국내 뉴스" items={news?.kr || []} />
+          <NewsColumn title="글로벌 뉴스" items={news?.global || []} />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1710,6 +1706,18 @@ export default function IndustryAnalysis() {
   const [asOfReq, setAsOfReq] = useState("");   // 트리맵 기준일(yyyy-mm-dd, ""=최신 거래일)
   const [refreshing, setRefreshing] = useState(false);
   const [searchQ, setSearchQ] = useState("");   // 트리맵 기업 검색어
+  // 섹터 탭은 상단 nav의 '산업 분석' hover 드롭다운(?sector=…)으로 전환 — 인라인 대분류 바 제거.
+  const [params] = useSearchParams();
+  useEffect(() => {
+    const sec = params.get("sector");
+    if (!sec) return;
+    const g = INDUSTRY_GROUPS.find((x) => x.label === sec);
+    if (!g) return;
+    setOpenSector(g.label);
+    const inds = groupIndustries(g);
+    if (inds.length && !inds.includes(root)) { setRoot(inds[0]); setAsOfReq(""); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
 
   // 지연 로딩 — 트리맵(벌크 시총으로 즉시)이 뜬 뒤 느린 데이터를 받아 병합.
   // EBITDA = FnGuide D&A, 기간수익률(hover) = 종목별 DataReader. 둘 다 비차단.
@@ -1795,28 +1803,7 @@ export default function IndustryAnalysis() {
         const cur = groups.find((g) => g.label === openSector) || groups.find((g) => groupIndustries(g).length) || groups[0];
         // 그레이 네이비 팔레트 — 대분류 탭/패널 공용(활성 탭이 패널과 같은 색으로 '연결')
         const GN_BG = "var(--gn-bg)", GN_BD = "var(--gn-bd)";   // 테마 토큰(라이트=밝은 네이비 틴트+어두운 글자)
-        // 대분류 = 그레이 네이비 직사각형 탭. 클릭 시 펼침 + 단일 산업이면 바로 로드.
-        const secBtn = (g: IndustryGroup) => {
-          const on = !!cur && g.label === cur.label;
-          const empty = groupIndustries(g).length === 0;
-          return (
-            <button key={g.label} type="button"
-              onClick={() => { setOpenSector(g.label); const inds = groupIndustries(g); if (inds.length === 1 && inds[0] !== root) { setRoot(inds[0]); setAsOfReq(""); } }}
-              onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = "rgba(51,66,94,0.30)"; }}
-              onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = "transparent"; }}
-              style={{ fontSize: "13.5pt", fontWeight: 800, padding: "8px 18px", cursor: "pointer",
-                borderRadius: "6px 6px 0 0", marginBottom: -1,
-                transition: "background .12s ease",
-                background: on ? GN_BG : "transparent",
-                borderTop: `1px solid ${on ? GN_BD : "transparent"}`,
-                borderLeft: `1px solid ${on ? GN_BD : "transparent"}`,
-                borderRight: `1px solid ${on ? GN_BD : "transparent"}`,
-                borderBottom: `1px solid ${on ? GN_BG : "transparent"}`,
-                color: on ? "var(--text)" : "var(--navy-300)", opacity: empty ? 0.5 : 1 }}>
-              {g.label}
-            </button>
-          );
-        };
+        // (대분류 탭 바는 상단 nav '산업 분석' hover 드롭다운으로 이동 — 여기선 소분류 패널만.)
         // 소분류 = 파란 사각 버튼
         const tab = (nm: string) => {
           const on = nm === root;
@@ -1838,11 +1825,8 @@ export default function IndustryAnalysis() {
         );
         return (
           <div style={{ margin: "6px 0 14px" }}>
-            <div style={{ display: "flex", gap: 3, flexWrap: "wrap", borderBottom: `1px solid ${GN_BD}` }}>
-              {groups.map(secBtn)}
-            </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "12px 14px",
-              background: GN_BG, border: `1px solid ${GN_BD}`, borderTop: "none", borderRadius: "0 6px 6px 6px" }}>
+              background: GN_BG, border: `1px solid ${GN_BD}`, borderRadius: 6 }}>
               {cur?.subgroups ? (
                 // 소비재 등 — 하위분류별로 그룹핑 표시
                 <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>

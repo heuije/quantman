@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { useAuth } from "../auth";
@@ -12,10 +12,16 @@ const Ic = ({ children }: { children: React.ReactNode }) => (
     {children}
   </svg>
 );
-type NavItem = { to: string; label: string; icon: React.ReactNode; hide?: boolean; admin?: boolean };
+type SubTab = { label: string; to: string };
+type NavItem = { to: string; label: string; icon: React.ReactNode; hide?: boolean; admin?: boolean; sub?: SubTab[] };
+// 하위 탭 — 상단 탭 hover 시 드롭다운으로 표시(페이지 내부 인라인 바 대체). URL 파라미터로 전환.
+const HOME_SUBTABS: SubTab[] = ["Summary", "Ratings by Mystock", "Stock Price", "Peer Analysis", "Financials", "Estimates", "News"]
+  .map((t) => ({ label: t, to: `/dashboard?tab=${encodeURIComponent(t)}` }));
+const INDUSTRY_SUBTABS: SubTab[] = ["석유화학", "2차전지", "반도체.IT", "산업재", "소비재", "금융", "미디어 엔터테인먼트", "유틸리티"]
+  .map((s) => ({ label: s, to: `/industry?sector=${encodeURIComponent(s)}` }));
 const NAV: NavItem[] = [
-  { to: "/dashboard", label: "HOME", icon: <Ic><path d="M3 3v18h18" /><path d="m19 8-5 5-4-4-4 4" /></Ic> },
-  { to: "/industry", label: "산업 분석", icon: <Ic><rect x="3" y="3" width="8" height="12" rx="1" /><rect x="13" y="3" width="8" height="7" rx="1" /><rect x="13" y="13" width="8" height="8" rx="1" /><rect x="3" y="18" width="8" height="3" rx="1" /></Ic> },
+  { to: "/dashboard", label: "HOME", sub: HOME_SUBTABS, icon: <Ic><path d="M3 3v18h18" /><path d="m19 8-5 5-4-4-4 4" /></Ic> },
+  { to: "/industry", label: "산업 분석", sub: INDUSTRY_SUBTABS, icon: <Ic><rect x="3" y="3" width="8" height="12" rx="1" /><rect x="13" y="3" width="8" height="7" rx="1" /><rect x="13" y="13" width="8" height="8" rx="1" /><rect x="3" y="18" width="8" height="3" rx="1" /></Ic> },
   { to: "/global", label: "글로벌 시장", icon: <Ic><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18" /></Ic> },
   // 숨김(hide) — 라우트·페이지는 유지하되 네비에서만 감춤(직접 URL 접근은 가능). 베타 노출 축소.
   { to: "/overview", label: "개요", hide: true, icon: <Ic><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /></Ic> },
@@ -143,13 +149,30 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {/* 2행: 네비게이션(로그인 시) — 로고 아래로 이동 */}
         {email && (
           <nav className={"topnav-links" + (navOpen ? " open" : "")}>
-            {NAV.filter((n) => !n.hide && (!n.admin || isAdmin)).map((n) => (
-              <NavLink key={n.to} to={n.to} end={n.to === "/"}
-                className={({ isActive }) => "navlink" + (isActive ? " active" : "")}>
-                <span className="nav-ic" aria-hidden="true">{n.icon}</span>
-                <span>{n.label}</span>
-              </NavLink>
-            ))}
+            {NAV.filter((n) => !n.hide && (!n.admin || isAdmin)).map((n) => {
+              const link = (
+                <NavLink to={n.to} end={n.to === "/"}
+                  className={({ isActive }) => "navlink" + (isActive ? " active" : "")}
+                  onClick={() => setNavOpen(false)}>
+                  <span className="nav-ic" aria-hidden="true">{n.icon}</span>
+                  <span>{n.label}</span>
+                  {n.sub && <span className="nav-caret" aria-hidden="true">▾</span>}
+                </NavLink>
+              );
+              if (!n.sub) return <Fragment key={n.to}>{link}</Fragment>;
+              // 하위 탭 보유 — hover(데스크톱)/탭(모바일) 시 드롭다운. 각 항목은 URL 파라미터 링크.
+              return (
+                <div key={n.to} className="nav-drop">
+                  {link}
+                  <div className="nav-menu">
+                    {n.sub.map((s) => (
+                      <NavLink key={s.to} to={s.to} className="nav-menu-item"
+                        onClick={() => setNavOpen(false)}>{s.label}</NavLink>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </nav>
         )}
       </header>

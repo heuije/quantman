@@ -152,11 +152,28 @@ a:hover { text-decoration: underline; }
 .auth-cta.signup:hover { filter: brightness(1.08); }
 /* 2행 — 네비게이션(로고 아래) */
 .topnav-links {
-  display: flex; align-items: center; gap: 1px; min-width: 0; overflow-x: auto;
+  display: flex; align-items: center; gap: 1px; min-width: 0; overflow: visible; flex-wrap: wrap;
   padding: 0 14px 2px;
 }
 .topnav-links::-webkit-scrollbar { height: 0; }
 .topnav .navlink { padding: 6px 9px; gap: 6px; font-size: 13px; white-space: nowrap; }
+/* 하위 탭 hover 드롭다운 — 상단 탭에 커서 올리면(모바일은 탭) 펼침. 인라인 탭 바를 대체. */
+.nav-drop { position: relative; display: inline-flex; }
+.nav-caret { font-size: 9px; opacity: 0.55; margin-left: 1px; }
+.nav-menu {
+  position: absolute; top: 100%; left: 0; z-index: 60; display: none; min-width: 168px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.22); padding: 5px; margin-top: 3px;
+}
+.nav-drop:hover .nav-menu, .nav-drop:focus-within .nav-menu { display: block; }
+.nav-menu-item {
+  display: block; padding: 8px 12px; border-radius: 7px; color: var(--text);
+  text-decoration: none; font-size: 13px; white-space: nowrap; font-weight: 500;
+}
+.nav-menu-item:hover { background: var(--accent-soft); color: var(--accent-strong); }
+.nav-menu-item.active { background: var(--accent-soft); color: var(--accent-strong); }
+/* 실시간 뉴스 2열(국내/글로벌) — 좁은 화면에선 세로 스택. */
+@media (max-width: 720px) { .news-2col { flex-direction: column !important; gap: 24px !important; } }
 .topnav .nav-ic { display: none; }                       /* 데스크탑 상단바: 텍스트만(깔끔) */
 .topnav .navlink.active { box-shadow: inset 0 -3px 0 #4f8ff5; }   /* 가로바: 하단 인디케이터 */
 /* 우측 계정(로그인) 버튼 + 드롭다운 */
@@ -2239,6 +2256,11 @@ thead th { color: var(--muted); font-weight: 700; }
   .topnav .nav-ic { display: inline-flex; }   /* 모바일 드롭다운: 아이콘 표시 */
   .topnav .navlink { width: 100%; padding: 12px 14px; font-size: 15px; }
   .topnav .navlink.active { box-shadow: inset 3px 0 0 #4f8ff5; }
+  /* 모바일 드로어 — hover 없음. 하위 메뉴를 부모 아래 인라인(들여쓰기)으로 항상 펼침. */
+  .nav-drop { display: block; width: 100%; }
+  .nav-menu { position: static; display: block; box-shadow: none; border: none;
+    background: transparent; padding: 0 0 4px 30px; margin: 0; min-width: 0; }
+  .nav-menu-item { padding: 8px 12px; }
   .account-email { display: none; }           /* 모바일: 아이콘만 */
   .account-btn { padding: 7px 10px; }
 

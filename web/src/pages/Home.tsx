@@ -659,12 +659,18 @@ function StockHeader({ sym, name, market }: { sym: string; name: string; market?
 
 export default function Home() {
   const [listings, setListings] = useState<SymbolListing[]>([]);
-  // 선택 종목은 URL ?symbol로 관리 — 산업분석 트리맵·Peer Analysis 클릭이 이 값을 바꿔 종목 전환
+  // 선택 종목은 URL ?symbol로 관리 — 산업분석 트리맵·Peer Analysis 클릭이 이 값을 바꿔 종목 전환.
+  // 하위 탭은 상단 nav hover 드롭다운(?tab)으로 전환 — 드롭다운은 ?tab만 바꾸므로 종목은
+  // localStorage로 유지해 탭 전환 시 선택 종목이 초기화되지 않게 한다.
   const [params, setParams] = useSearchParams();
-  const sym = params.get("symbol") || "247540";       // 기본: 에코프로비엠
-  const setSym = (s: string) => setParams({ symbol: s });
+  const sym = params.get("symbol") || localStorage.getItem("qp_home_symbol") || "247540";  // 기본: 에코프로비엠
+  const paramTab = params.get("tab");
+  const tab: Tab = (TABS as readonly string[]).includes(paramTab || "") ? (paramTab as Tab) : "Summary";
+  const setSym = (s: string) => {
+    localStorage.setItem("qp_home_symbol", s);
+    setParams(tab === "Summary" ? { symbol: s } : { symbol: s, tab });
+  };
   const [q, setQ] = useState("");
-  const [tab, setTab] = useState<Tab>("Summary");
 
   useEffect(() => {
     api.marketListings().then((d) => setListings(d.listings || [])).catch(() => { /* 무시 */ });
@@ -711,15 +717,7 @@ export default function Home() {
         <h1>{name} <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 16 }}>{sym}</span></h1>
       )}
 
-      {/* 하위탭 */}
-      <div style={{ display: "flex", gap: 2, borderBottom: "2px solid var(--border)", margin: "8px 0 16px", flexWrap: "wrap" }}>
-        {TABS.map((t) => (
-          <button key={t} type="button" onClick={() => setTab(t)}
-            style={{ fontSize: 18, fontWeight: 700, padding: "11px 20px", border: 0,
-              background: "transparent", cursor: "pointer", color: tab === t ? "#4f8ff5" : "var(--muted)",
-              borderBottom: tab === t ? "2px solid #4f8ff5" : "2px solid transparent", marginBottom: -2 }}>{t}</button>
-        ))}
-      </div>
+      {/* 하위 탭은 상단 nav의 HOME hover 드롭다운으로 이동 — 인라인 바 제거. */}
 
       {tab === "Summary" && (
         <>
