@@ -286,6 +286,28 @@ a:hover { text-decoration: underline; }
 @media (max-width: 760px) { .ca-summary { grid-template-columns: repeat(2, 1fr); } }
 /* 서브차트 — 한 줄씩(full-width 세로 스택)으로 주가 차트와 X축 정렬 */
 .ca-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+/* 반응형 다단 그리드 — 모바일에서 1열로 접힌다.
+   인라인 style의 gridTemplateColumns는 미디어쿼리로 덮어쓸 수 없어 폰에서 2~3열이 그대로
+   유지되며 패널이 잘리던 것이 근본 원인이라(2026-07-25 모바일 QA), 열 정의를 CSS로 옮긴다.
+   gap은 호출부가 인라인으로 유지(데스크탑 간격 불변). */
+.ca-grid2 { display: grid; grid-template-columns: 1fr 1fr; align-items: stretch; }
+.ca-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 760px) {
+  .ca-grid2, .ca-grid3 { grid-template-columns: 1fr; }
+}
+/* 트리맵 하단 — 좌: 안내문구 / 우: 색상 범례. 모바일에선 세로로 쌓는다.
+   한 행에 두면 범례(칩 7개·고정 padding)가 폭을 다 먹어 안내문구가 0폭으로 압착돼
+   글자당 줄바꿈(세로 텍스트)이 나던 것을 막는다. */
+.tm-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 6px; }
+.tm-foot > span { font-size: 12px; color: var(--muted); }
+.tm-legend { display: flex; gap: 0; }
+.tm-legend span { color: #fff; font-size: 14px; font-weight: 700; padding: 5px 18px; }
+@media (max-width: 760px) {
+  .tm-foot { flex-direction: column; align-items: stretch; gap: 8px; }
+  .tm-legend { width: 100%; }
+  /* 칩 7개가 화면폭에 들어가도록 축소(가로 스크롤·잘림 방지) */
+  .tm-legend span { flex: 1 1 0; text-align: center; padding: 5px 4px; font-size: 12px; }
+}
 .ca-symchip {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 6px 4px 11px; background: rgba(79,143,245,0.12);

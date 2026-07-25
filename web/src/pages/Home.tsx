@@ -322,8 +322,8 @@ function FinCharts({ src, quarterly, stmt, from = "", to = "" }:
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px" }}>막대=금액(백만원·네이비) · 골드 선=비율(이익률 등) 또는 {lineLbl} 증감률(우축)</div>
-      {/* 한 행에 3개 */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+      {/* 한 행에 3개 (모바일은 .ca-grid3가 1열로 접음 — 좁은 폭에서 축 라벨 겹침·잘림 방지) */}
+      <div className="ca-grid3" style={{ gap: 10 }}>
         {shown.map((c) => (c.bars ? renderMulti(c) : renderChart(c)))}
       </div>
     </div>
@@ -723,7 +723,7 @@ export default function Home() {
         <>
           <StockHeader sym={sym} name={name} market={market} />
           {/* 기업 개요(좌·절반) | 주가 추이(우·절반) */}
-          <div className="ca-grid2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "stretch", marginBottom: 18 }}>
+          <div className="ca-grid2" style={{ gap: 16, marginBottom: 18 }}>
             <div className="panel" style={{ marginBottom: 0 }}>
               <h3 style={{ marginTop: 0 }}>기업 개요</h3>
               <ProfileBlock ticker={sym} name={name} />

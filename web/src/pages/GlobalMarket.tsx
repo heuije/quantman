@@ -229,7 +229,7 @@ function BondsPage() {
               <tbody>
                 {tailRows.map((r, i) => (
                   <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                    <td style={{ padding: "5px 8px", color: "var(--muted)" }}>{String(r.date)}</td>
+                    <td style={{ padding: "5px 8px", textAlign: "left", color: "var(--muted)" }}>{String(r.date)}</td>
                     {mats.map((m) => (
                       <td key={m} style={{ padding: "5px 8px", textAlign: "right" }}>
                         {r[m] != null ? Number(r[m]).toFixed(3) : "—"}</td>
@@ -261,7 +261,7 @@ export default function GlobalMarket() {
   const [selCom, setSelCom] = useState<string | null>(null);   // 차트로 펼친 원자재 심볼
   const [selBat, setSelBat] = useState<BatteryMetal | null>(null);   // 차트로 펼친 배터리광물
   const [econPage, setEconPage] = useState(0);   // 경제지표 과거 페이지네이션
-  const [page, setPage] = useState<"지수" | "원자재" | "경제지표" | "뉴스">("지수");   // 하위 탭
+  const [page, setPage] = useState<"지수" | "원자재" | "경제지표" | "국채" | "뉴스">("지수");   // 하위 탭
   const [showSrc, setShowSrc] = useState(false);   // 데이터 출처 — 좌측 통합·접기(기본 숨김)
 
   useEffect(() => {
@@ -359,7 +359,7 @@ export default function GlobalMarket() {
                   <tr key={r.key} onClick={r.onToggle} title="클릭하여 차트 보기"
                     style={{ borderBottom: "1px solid var(--border)", cursor: "pointer",
                       background: r.selected ? "rgba(79,143,245,0.10)" : undefined }}>
-                    <td style={{ padding: "7px 8px", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <td style={{ padding: "7px 8px", textAlign: "left", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       <span style={{ marginRight: 6, color: "var(--muted)" }}>{r.selected ? "▾" : "▸"}</span>{r.name}</td>
                     <td style={{ padding: "7px 8px", textAlign: "right", fontWeight: 700, whiteSpace: "nowrap" }}>{priceFmt(r.last, r.suffix)}</td>
                     <td style={{ padding: "7px 8px", textAlign: "right", fontWeight: 600, color: col }}>{sgn(r.change)}</td>
@@ -391,10 +391,11 @@ export default function GlobalMarket() {
       <p style={{ color: "var(--muted)", marginTop: 0, fontSize: 13 }}>
         세계 주요 지수·원자재 선물·미국 경제지표·국채 금리를 한 화면에. Source: FinanceDataReader · TradingView · FRED · MOF · ECB.
       </p>
-      {/* 하위 탭 — 지수 / 원자재 선물 / US 경제지표 / 글로벌 뉴스 (investing.com식 언더라인 탭) */}
+      {/* 하위 탭 — 지수 / 원자재 선물 / US 경제지표 / 글로벌 국채 금리 / 글로벌 뉴스 (investing.com식 언더라인 탭) */}
       <div style={{ display: "flex", gap: 2, marginBottom: 16, borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
         {([["지수", "지수", "INDEX"], ["원자재", "원자재 선물", "FUTURES"],
-           ["경제지표", "US 경제지표", "ECONOMY"], ["뉴스", "글로벌 뉴스", "NEWS"]] as const).map(([k, label, en]) => (
+           ["경제지표", "US 경제지표", "ECONOMY"], ["국채", "글로벌 국채 금리", "BONDS"],
+           ["뉴스", "글로벌 뉴스", "NEWS"]] as const).map(([k, label, en]) => (
           <button key={k} type="button" onClick={() => setPage(k)}
             style={{ appearance: "none", background: "none", border: "none", cursor: "pointer",
               fontSize: 14, fontWeight: 700, padding: "9px 16px 11px", position: "relative",
@@ -516,8 +517,10 @@ export default function GlobalMarket() {
                 <tbody>
                   {econUp.map((u, i) => (
                     <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={{ padding: "6px", color: "var(--accent-strong)", fontWeight: 600 }}>{u.date}</td>
-                      <td style={{ padding: "6px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      {/* textAlign 명시 — 전역 `th, td { text-align: right }`(index.css) 때문에
+                          헤더(left)와 데이터(right)가 어긋나 보이던 것을 헤더 정렬에 맞춘다. */}
+                      <td style={{ padding: "6px", textAlign: "left", color: "var(--accent-strong)", fontWeight: 600 }}>{u.date}</td>
+                      <td style={{ padding: "6px", textAlign: "left", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                         title={`${u.title}${u.unit ? ` (${u.unit})` : ""}`}>{u.title}</td>
                       <td style={{ padding: "6px", textAlign: "right", fontWeight: 700 }}>{numFmt(u.forecast)}{u.unit && <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 11 }}> {u.unit}</span>}</td>
                       <td style={{ padding: "6px", textAlign: "right", color: "var(--muted)" }}>{numFmt(u.previous)}</td>
@@ -546,8 +549,8 @@ export default function GlobalMarket() {
             <tbody>
               {eView.map((e, i) => (
                 <tr key={eCur * EPER + i} style={{ borderBottom: "1px solid var(--border)" }}>
-                  <td style={{ padding: "6px", color: "var(--muted)" }}>{e.date}</td>
-                  <td style={{ padding: "6px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  <td style={{ padding: "6px", textAlign: "left", color: "var(--muted)" }}>{e.date}</td>
+                  <td style={{ padding: "6px", textAlign: "left", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                     title={`${e.title}${e.unit ? ` (${e.unit})` : ""}`}>{e.title}</td>
                   <td style={{ padding: "6px", textAlign: "right", fontWeight: 700 }}>{numFmt(e.actual)}</td>
                   <td style={{ padding: "6px", textAlign: "right", color: "var(--muted)" }}>{numFmt(e.forecast)}</td>
@@ -573,9 +576,10 @@ export default function GlobalMarket() {
         </p>
       </div>
 
-      {/* 국채 금리 — US 경제지표 탭에 흡수(미 국채 수익률) */}
-      <div style={{ marginTop: 16 }}><BondsPage /></div>
       </>)}
+
+      {/* 4. 글로벌 국채 금리 — 별도 하위 탭(US 경제지표에서 분리). 국가별 만기 커브·시계열. */}
+      {page === "국채" && <BondsPage />}
 
       {page === "뉴스" && (<>
       {/* 4. 글로벌 시장 뉴스 */}
