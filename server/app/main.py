@@ -1235,10 +1235,18 @@ def _refresh_financials() -> None:
 
 
 def _refresh_bonds() -> None:
-    """국가별 국채 수익률곡선(미·일·유·한·중, FRED·MOF·ECB·무키) 일일 갱신 → 볼륨(bonds/{cc}.parquet).
-    GlobalMarket 국채 탭은 이 저장본을 즉시 서빙(재배포 warmup·요청당 크롤 제거·미스 시 서버 self-heal)."""
+    """국가별 국채 수익률곡선(미·일·유·한·중) 일일 갱신 → 볼륨(bonds/{cc}.parquet).
+
+    소스: FRED(US·CN)·MOF 누적+당월(JP)·ECB(EU)·KRX 국고채 지표물 재사용(KR·네트워크 없음).
+    GlobalMarket 국채 탭은 이 저장본을 즉시 서빙(재배포 warmup·요청당 크롤 제거·미스 시 self-heal).
+    stale 국가는 **경고로 승격** — HTTP 200으로 옛 데이터만 주는 소스 단종(중국 2023-11 정지를
+    2년 반 방치)은 행수·예외로 안 잡히고 저장본 마지막 날짜의 나이로만 드러난다."""
     from quant_core.data.feeds import bonds
-    _log.info("[altdata] 국채금리 수집(FRED/MOF/ECB): %s", bonds.refresh_all())
+    res = bonds.refresh_all()
+    stale = res.pop("_stale", None)
+    _log.info("[altdata] 국채금리 수집(FRED/MOF/ECB/KRX): %s", res)
+    if stale:
+        _log.warning("[altdata] ⚠ 국채 소스 stale(갱신 정지 의심) — %s", stale)
 
 
 def _initial_financials_prewarm() -> None:

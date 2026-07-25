@@ -195,12 +195,15 @@ register(DataTypeSpec(
 ))
 register(DataTypeSpec(
     key="macro.bonds", pclass=PClass.MACRO,
-    label="국가별 국채 수익률(미·일·유·중 전만기 커브·1M~40Y)",
+    label="국가별 국채 수익률(미·일·유·중 전만기 커브·1M~50Y)",
     frequency="daily", history_rule="백테스트 기간",
-    source="FRED(미·중)·재무성MOF(일)·ECB(유)", provides=["Close(=val)"],
+    source="FRED(미)·재무성MOF 누적+당월(일)·ECB(유)·ChinaBond 中债 공식커브(중)",
+    provides=["Close(=val)"],
     required_meta=_BASE_META,
     downstream=["study.label(국면 라벨)", "signal(브로드캐스트 ref)"], current_status="present",
-    notes="국채 피드(data/feeds/bonds.py)가 만기별 명명 시계열 발행. KR 국고채는 macro.krx(KRX 일별).",
+    notes="국채 피드(data/feeds/bonds.py)가 만기별 명명 시계열 발행. KR 국고채는 macro.krx(KRX 일별) — "
+          "국채 피드의 KR 표시커브도 그 매크로 시계열을 재사용한다(중복 수집 없음). 중국은 FRED "
+          "시리즈 2023-11 단종으로 ChinaBond(CCDC 공식·일별 14만기)로 전환(2026-07-25).",
 ))
 register(DataTypeSpec(
     key="macro.fred_lagged", pclass=PClass.MACRO,
