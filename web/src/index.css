@@ -294,6 +294,10 @@ a:hover { text-decoration: underline; }
 .ca-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 760px) {
   .ca-grid2, .ca-grid3 { grid-template-columns: 1fr; }
+  /* 좁은 라벨/값 표(기업 개요 등)는 모바일 `.panel table { display: block }`(넓은 표
+     가로스크롤용)의 예외 — block이 되면 내부 표가 내용폭으로 shrink-wrap 돼 값이 패널
+     오른쪽에 못 닿고 왼쪽으로 몰린다. 스크롤이 필요 없는 표에만 붙인다. */
+  .panel table.table-fit { display: table; width: 100%; white-space: normal; }
 }
 /* 트리맵 하단 — 좌: 안내문구 / 우: 색상 범례. 모바일에선 세로로 쌓는다.
    한 행에 두면 범례(칩 7개·고정 padding)가 폭을 다 먹어 안내문구가 0폭으로 압착돼

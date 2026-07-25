@@ -432,8 +432,10 @@ export function CompanyReport({ ticker, company, name, mode = "full" }:
 
   // 좌측 박스 = 컨센서스(목표주가·추정실적·멀티플, 고정) / 우측 박스 = 애널리스트 리포트(스크롤).
   const rating = ratingOf(tUpside);
+  // 열 정의는 CSS 클래스로 — 인라인 gridTemplateColumns는 미디어쿼리로 못 덮어써서
+  // 모바일에서도 2열이 유지되며 컨센서스·Estimates가 잘렸다(.ca-grid2가 760px 이하 1열).
   return (
-    <div style={{ display: "grid", gridTemplateColumns: mode === "full" ? "repeat(2, minmax(0, 1fr))" : "1fr", gap: 18, alignItems: "stretch" }}>
+    <div className={mode === "full" ? "ca-grid2" : "ca-grid"} style={{ gap: 18 }}>
       {/* 추정실적 박스 — full: 우측(order 2) / estimates: 상단(order 1). 컨센서스가 하단으로. */}
       {mode !== "consensus" && (
       <div className="panel scroll-gold" style={{ minWidth: 0, marginBottom: 0, order: mode === "full" ? 2 : 1, maxHeight: mode === "full" ? 560 : undefined, overflowY: "auto" }}>

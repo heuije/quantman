@@ -37,8 +37,10 @@ function ProfileBlock({ ticker, name }: { ticker: string; name: string }) {
       <td style={{ padding: "7px 6px" }}>{v}</td>
     </tr>
   );
+  // table-fit — 라벨/값 2열이라 가로 스크롤이 필요 없다. 모바일 전역 규칙(.panel table을
+  // display:block으로 만들어 넓은 표를 스크롤)에서 빠져야 값이 패널 오른쪽 끝에 정렬된다.
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+    <table className="table-fit" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
       <tbody>
         {row("기업명", <b>{name} ({ticker})</b>)}
         {row("주요 사업", p?.business || "—")}
